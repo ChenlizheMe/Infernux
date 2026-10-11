@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -81,6 +82,39 @@ static glm::quat SampleQuat(const std::vector<std::pair<double, glm::quat>> &key
     return glm::normalize(glm::slerp(a.second, b.second, glm::clamp(f, 0.0f, 1.0f)));
 }
 
+struct RootMotionPose
+{
+    glm::dvec3 translation{0.0};
+    glm::dquat rotation{1.0, 0.0, 0.0, 0.0};
+};
+
+static RootMotionPose ComposeRootMotion(const RootMotionPose &a, const RootMotionPose &b)
+{
+    return {a.translation + a.rotation * b.translation, glm::normalize(a.rotation * b.rotation)};
+}
+
+static RootMotionPose RelativeRootMotion(const RootMotionPose &from, const RootMotionPose &to)
+{
+    const glm::dquat inverse = glm::conjugate(from.rotation);
+    return {inverse * (to.translation - from.translation), glm::normalize(inverse * to.rotation)};
+}
+
+static RootMotionPose RootMotionPower(RootMotionPose cycle, uint64_t count)
+{
+    RootMotionPose result;
+    // A long frame can cross many loops. Compose the exact cycle transform in
+    // O(log(count)), including its rotated translation, rather than stepping
+    // through loops or multiplying translation and rotation independently.
+    while (count != 0) {
+        if (count & 1u)
+            result = ComposeRootMotion(result, cycle);
+        count >>= 1u;
+        if (count != 0)
+            cycle = ComposeRootMotion(cycle, cycle);
+    }
+    return result;
+}
+
 static void DecomposeTRS(const glm::mat4 &m, glm::vec3 &t, glm::quat &r, glm::vec3 &s)
 {
     t = glm::vec3(m[3]);
@@ -92,6 +126,12 @@ static void DecomposeTRS(const glm::mat4 &m, glm::vec3 &t, glm::quat &r, glm::ve
         rot[1] = glm::vec3(m[1]) / s.y;
     if (s.z > kEpsilon)
         rot[2] = glm::vec3(m[2]) / s.z;
+    // A quaternion can only encode a proper rotation. Keep reflections in a
+    // deterministic scale axis, matching the importer's strict TRS convention.
+    if (glm::determinant(rot) < 0.0f) {
+        rot[0] = -rot[0];
+        s.x = -s.x;
+    }
     r = glm::normalize(glm::quat_cast(rot));
 }
 
@@ -100,6 +140,20 @@ static SkinnedNodePose BindNodePose(const SkinnedRuntimeNode &node)
     SkinnedNodePose pose;
     DecomposeTRS(node.bindLocal, pose.translation, pose.rotation, pose.scale);
     return pose;
+}
+
+static void ApplyNodeTrack(SkinnedNodePose &pose, const SkinnedRuntimeAnimation &animation, size_t nodeIndex,
+                           double timeTicks)
+{
+    if (nodeIndex >= animation.trackByNodeIndex.size())
+        return;
+    const int trackIndex = animation.trackByNodeIndex[nodeIndex];
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= animation.tracks.size())
+        return;
+    const auto &track = animation.tracks[static_cast<size_t>(trackIndex)];
+    pose.translation = SampleVec3(track.positions, timeTicks, pose.translation);
+    pose.rotation = SampleQuat(track.rotations, timeTicks, pose.rotation);
+    pose.scale = SampleVec3(track.scales, timeTicks, pose.scale);
 }
 
 static double ToAnimationTicks(const SkinnedRuntimeAnimation *anim, float seconds, bool loop)
@@ -188,53 +242,70 @@ float SkinnedRuntimeAnimation::DurationSeconds() const
 RootMotionDelta InxSkinnedMesh::SampleRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
                                                       bool loop) const
 {
+    if (!std::isfinite(fromSeconds) || !std::isfinite(toSeconds))
+        throw std::invalid_argument("root motion sample times must be finite");
     RootMotionDelta delta;
     const auto *animation = FindAnimation(takeName);
     if (!animation || animation->rootMotionNodeIndex < 0 || animation->durationTicks <= 0.0 ||
         animation->ticksPerSecond <= 0.0)
         return delta;
 
+    const double duration = animation->durationTicks;
+    const auto poseAt = [&](double ticks) {
+        return RootMotionPose{glm::dvec3(SampleVec3(animation->rootMotionPositions, ticks, glm::vec3(0.0f))),
+                              glm::normalize(glm::dquat(SampleQuat(animation->rootMotionRotations, ticks,
+                                                                   glm::quat(1.0f, 0.0f, 0.0f, 0.0f))))};
+    };
     struct Sample
     {
-        glm::vec3 translation{0.0f};
-        glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        RootMotionPose pose;
+        int64_t cycle = 0;
     };
     const auto sample = [&](float seconds) {
-        const double duration = animation->durationTicks;
         double ticks = static_cast<double>(seconds) * animation->ticksPerSecond;
         int64_t cycle = 0;
         if (loop) {
-            cycle = static_cast<int64_t>(std::floor(ticks / duration));
-            ticks -= static_cast<double>(cycle) * duration;
-            if (ticks < 0.0) {
+            const double cycles = std::floor(ticks / duration);
+            // Guard the conversion before it can overflow. The positive
+            // bound is exclusive because int64 max rounds up as a double.
+            constexpr double cycleLimit = 9223372036854775808.0;
+            if (!(cycles >= -cycleLimit && cycles < cycleLimit))
+                throw std::out_of_range("root motion loop count exceeds the supported time range");
+            cycle = static_cast<int64_t>(cycles);
+            ticks = std::fmod(ticks, duration);
+            if (ticks < 0.0)
                 ticks += duration;
-                --cycle;
-            }
         } else {
             ticks = std::clamp(ticks, 0.0, duration);
         }
-        Sample value;
-        const glm::vec3 startTranslation = SampleVec3(animation->rootMotionPositions, 0.0, glm::vec3(0.0f));
-        const glm::vec3 endTranslation = SampleVec3(animation->rootMotionPositions, duration, startTranslation);
-        value.translation = SampleVec3(animation->rootMotionPositions, ticks, startTranslation);
-        const glm::quat startRotation =
-            SampleQuat(animation->rootMotionRotations, 0.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-        const glm::quat endRotation = SampleQuat(animation->rootMotionRotations, duration, startRotation);
-        value.rotation = SampleQuat(animation->rootMotionRotations, ticks, startRotation);
-        if (loop && cycle != 0) {
-            value.translation += static_cast<float>(cycle) * (endTranslation - startTranslation);
-            const glm::quat cycleRotation = glm::normalize(glm::inverse(startRotation) * endRotation);
-            const float cycleAngle = glm::angle(cycleRotation);
-            const glm::vec3 cycleAxis = cycleAngle > kEpsilon ? glm::axis(cycleRotation) : glm::vec3(0.0f, 1.0f, 0.0f);
-            const glm::quat accumulated = glm::angleAxis(cycleAngle * static_cast<float>(cycle), cycleAxis);
-            value.rotation = glm::normalize(startRotation * accumulated * glm::inverse(startRotation) * value.rotation);
-        }
-        return value;
+        return Sample{poseAt(ticks), cycle};
     };
     const Sample from = sample(fromSeconds);
     const Sample to = sample(toSeconds);
-    delta.translation = (to.translation - from.translation) * scaleFactor;
-    delta.rotation = glm::normalize(glm::inverse(from.rotation) * to.rotation);
+    RootMotionPose relative;
+    if (from.cycle == to.cycle) {
+        relative = RelativeRootMotion(from.pose, to.pose);
+    } else {
+        const RootMotionPose start = poseAt(0.0);
+        RootMotionPose cycle = RelativeRootMotion(start, poseAt(duration));
+        const bool forward = to.cycle > from.cycle;
+        if (!forward)
+            cycle = RelativeRootMotion(cycle, RootMotionPose{});
+        // Unsigned subtraction is the exact magnitude even when the signed
+        // endpoints straddle zero and their difference exceeds INT64_MAX.
+        const uint64_t count =
+            forward ? uint64_t(to.cycle) - uint64_t(from.cycle) : uint64_t(from.cycle) - uint64_t(to.cycle);
+        const RootMotionPose end = ComposeRootMotion(RootMotionPower(cycle, count), RelativeRootMotion(start, to.pose));
+        relative = RelativeRootMotion(RelativeRootMotion(start, from.pose), end);
+    }
+    relative.translation *= static_cast<double>(scaleFactor);
+    for (int axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(relative.translation[axis]) ||
+            std::abs(relative.translation[axis]) > std::numeric_limits<float>::max())
+            throw std::out_of_range("root motion displacement exceeds the supported float range");
+    }
+    delta.translation = glm::vec3(relative.translation);
+    delta.rotation = glm::quat(relative.rotation);
     return delta;
 }
 
@@ -687,24 +758,22 @@ std::vector<SkinnedNodePose> InxSkinnedMesh::BuildRetargetedLocalPoses(const Ske
                                                                        double timeTicks) const
 {
     std::vector<SkinnedNodePose> targetPoses(skeleton.nodes.size());
-    for (size_t index = 0; index < skeleton.nodes.size(); ++index)
+    const bool sameSkeleton = &sourceSkeleton == &skeleton;
+    for (size_t index = 0; index < skeleton.nodes.size(); ++index) {
         targetPoses[index] = BindNodePose(skeleton.nodes[index]);
-    if (!animation || sourceSkeleton.nodes.empty())
+        if (sameSkeleton && animation)
+            ApplyNodeTrack(targetPoses[index], *animation, index, timeTicks);
+    }
+    // An asset's own tracks already use its local joint coordinates. Retargeting
+    // them through global TRS loses shear introduced by scaled ancestors.
+    if (!animation || sameSkeleton || sourceSkeleton.nodes.empty())
         return targetPoses;
 
     std::vector<SkinnedNodePose> sourcePoses(sourceSkeleton.nodes.size());
     std::vector<glm::mat4> sourceGlobals(sourceSkeleton.nodes.size(), glm::mat4(1.0f));
     for (size_t index = 0; index < sourceSkeleton.nodes.size(); ++index) {
         sourcePoses[index] = BindNodePose(sourceSkeleton.nodes[index]);
-        if (index < animation->trackByNodeIndex.size()) {
-            const int trackIndex = animation->trackByNodeIndex[index];
-            if (trackIndex >= 0 && static_cast<size_t>(trackIndex) < animation->tracks.size()) {
-                const auto &track = animation->tracks[static_cast<size_t>(trackIndex)];
-                sourcePoses[index].translation = SampleVec3(track.positions, timeTicks, sourcePoses[index].translation);
-                sourcePoses[index].rotation = SampleQuat(track.rotations, timeTicks, sourcePoses[index].rotation);
-                sourcePoses[index].scale = SampleVec3(track.scales, timeTicks, sourcePoses[index].scale);
-            }
-        }
+        ApplyNodeTrack(sourcePoses[index], *animation, index, timeTicks);
         const glm::mat4 local =
             MakeTRS(sourcePoses[index].translation, sourcePoses[index].rotation, sourcePoses[index].scale);
         const int parent = sourceSkeleton.nodes[index].parent;
@@ -782,12 +851,16 @@ std::vector<SkinnedNodePose> InxSkinnedMesh::BuildRetargetedLocalPoses(const Ske
 
             const SkinnedNodePose sourceBindLocal =
                 BindNodePose(sourceSkeleton.nodes[static_cast<size_t>(sourceIndex)]);
+            // Global rotations above use the X-reflection convention. Compare
+            // scale deltas in that same representation, not the authored signs.
+            const glm::vec3 authoredScale = sourcePoses[static_cast<size_t>(sourceIndex)].scale;
+            glm::vec3 canonicalScale = glm::abs(authoredScale);
+            if ((authoredScale.x < 0.0f) ^ (authoredScale.y < 0.0f) ^ (authoredScale.z < 0.0f))
+                canonicalScale.x = -canonicalScale.x;
             for (glm::length_t component = 0; component < targetPoses[targetIndex].scale.length(); ++component) {
                 const float denominator = sourceBindLocal.scale[component];
                 const float scaleDelta =
-                    std::abs(denominator) > kEpsilon
-                        ? sourcePoses[static_cast<size_t>(sourceIndex)].scale[component] / denominator
-                        : 1.0f;
+                    std::abs(denominator) > kEpsilon ? canonicalScale[component] / denominator : 1.0f;
                 targetPoses[targetIndex].scale[component] *= scaleDelta;
             }
         }
@@ -823,9 +896,10 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatrices(const SkinnedSampleRequ
     // Same-take cross-fades at different times are valid (e.g. restarting a
     // clip with a fade) — only a missing blend animation disables blending.
     const float w = blendAnim ? glm::clamp(request.blendWeight, 0.0f, 1.0f) : 0.0f;
-    const SkeletonRetargetMap activeMapping = anim ? BuildRetargetMap(*activeSource, *anim) : SkeletonRetargetMap{};
+    const SkeletonRetargetMap activeMapping =
+        anim && activeSource != this ? BuildRetargetMap(*activeSource, *anim) : SkeletonRetargetMap{};
     const SkeletonRetargetMap blendMapping =
-        blendAnim ? BuildRetargetMap(*blendSource, *blendAnim) : SkeletonRetargetMap{};
+        blendAnim && blendSource != this ? BuildRetargetMap(*blendSource, *blendAnim) : SkeletonRetargetMap{};
     const std::vector<SkinnedNodePose> activePoses =
         BuildRetargetedLocalPoses(activeSource->skeleton, anim, activeMapping, tTicks);
     const std::vector<SkinnedNodePose> blendPoses =
@@ -890,7 +964,8 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatricesFromPoseStack(
                                             compatibilityReason);
         }
         const double tTicks = ToAnimationTicks(anim, layer.timeSeconds, layer.loop);
-        const SkeletonRetargetMap retarget = anim ? BuildRetargetMap(*source, *anim) : SkeletonRetargetMap{};
+        const SkeletonRetargetMap retarget =
+            anim && source != this ? BuildRetargetMap(*source, *anim) : SkeletonRetargetMap{};
         const std::vector<SkinnedNodePose> retargetedPoses =
             BuildRetargetedLocalPoses(source->skeleton, anim, retarget, tTicks);
 

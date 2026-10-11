@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Define material properties and render state, fill SurfaceData, and keep appearance independent from lighting.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/fragment-materials.html">
     <title>Fragment stages, surfaces, and materials · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -40,7 +40,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="gold-coin material style reference" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene and Material setup. The image is the visual target used by this lesson.</figcaption>
+  <figcaption>An Infernux demo capture illustrating a material style. The walkthrough below builds an unlit Cube; it does not recreate this scene.</figcaption>
 </figure>
 
 <h2 id="first-surface">A first surface</h2>
@@ -75,10 +75,10 @@
 <li>In the Hierarchy, choose <strong>Create &gt; 3D Object &gt; Cube</strong>. Select the Cube and assign <code>PaintedCube.mat</code> to <strong>Materials &gt; Element 0</strong> on its <code>MeshRenderer</code>. Select <code>PaintedCube.mat</code> in Project and set <code>baseColor</code> to <code>(0.9, 0.1, 0.2, 1)</code> (normalized RGBA). The default <code>white</code> texture makes that color visible without another asset.</li>
 <li>Save the scene, move the camera or Cube, and confirm that the object remains visible in Scene and Game views. Reopen <code>PaintedCube.mat</code>: Vertex must still read <code>Standard</code>, Fragment must still identify <code>Painted Unlit</code>, and Queue must be <code>2000</code>. These three observations distinguish a saved mesh binding from a Material preview alone.</li>
 </ol>
-<p>If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that <code>ShaderInfo Name</code> still matches the imported ID. If changing <code>Name</code> during hot reload reports that an asset reimport is required, restore the old ID or reimport and reassign the Fragment asset. A Material property that does not appear usually means the fragment import failed or the assigned Material still points at another fragment ID.</p>
+<p>If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that the Fragment field refers to the intended project asset. A successful save/import of a changed <code>ShaderInfo Name</code> updates referencing Materials automatically through the shader GUID; you do not need to reassign the Fragment asset. A rejected compile leaves the live references unchanged: correct the reported source error and save again. A missing Material property usually means the fragment import failed or the assigned Material still points at another fragment asset.</p>
 <h2 id="ownership">Who owns what: stages, properties, and bindings</h2>
-<p>A Material is a small document plus two stage references. The <strong>Vertex</strong> and <strong>Fragment</strong> selectors store <code>ShaderInfo Name</code> values, and the fragment's <code>ShaderInfo</code> block carries the <code>ShadingModel</code> entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.</p>
-<p>Properties are declared in the fragment's <code>ShaderInfo</code> block and become typed Material fields serialized into the <code>.mat</code> document. At draw time the engine packs the numeric fields into the material uniform block (<code>material</code>, set 0, binding 14) and binds each texture property from binding 2 upward, with <code>white</code> and <code>normal</code> as built-in defaults. The fragment reads them through the <code>material.*</code> members and the <code>sample*</code> helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.</p>
+<p>A Material is a small document plus two stage references. Project <strong>Vertex</strong> and <strong>Fragment</strong> assets are stored by GUID with a derived <code>ShaderInfo Name</code> label; built-in stages use symbolic identifiers. The fragment's <code>ShaderInfo</code> block carries the <code>ShadingModel</code> entry that picks the lighting model. Resolving the selected pair links its interfaces and produces the shared property schema and compatible material-pass programs. The Material document stores the stage references and authored values; it does not redefine the stages' property declarations.</p>
+<p>Both the vertex and fragment stages can declare Properties in their <code>ShaderInfo</code> blocks. The linker combines them into one typed Material schema serialized into the <code>.mat</code> document. A property declared in both stages must have the same type, default, range, and other contract metadata; incompatible declarations are rejected. At draw time the engine packs the numeric fields into the material uniform block (<code>material</code>, set 0, binding 14) and binds each texture property from binding 2 upward, with <code>white</code>, <code>black</code>, and <code>normal</code> as built-in defaults. Each stage reads the properties it declares through <code>material.*</code> members and the generated sampling helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.</p>
 <p>ShaderInfo entries affect different things:</p>
 <table>
 <thead>
@@ -90,7 +90,7 @@
 <tbody>
 <tr>
 <td><code>Name</code></td>
-<td>The stable, case-sensitive selector ID</td>
+<td>The case-sensitive stage identifier and displayed label</td>
 </tr>
 <tr>
 <td><code>ShadingModel</code></td>
@@ -131,7 +131,7 @@
 </tbody>
 </table>
 <h2 id="properties">Material properties</h2>
-<p>Properties become typed Material fields and Inspector controls. This is the property block from the built-in <code>lit.frag</code>:</p>
+<p>Properties become typed Material fields and Inspector controls. This excerpt selects the basic fields from the built-in <code>lit.frag</code>; the complete shader also declares UV selectors, packed-channel controls, roughness conversion, occlusion strength, and an emission texture:</p>
 <div class="highlight"><pre><span></span><code><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
 <span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
@@ -149,7 +149,7 @@
 </code></pre></div>
 
 <p><code>Range(min, max)</code> is optional UI metadata for a bounded float; the built-in Lit declaration leaves these floats unannotated. <code>HDR</code> allows a color above display white. <code>Internal</code> keeps an engine-managed property out of the ordinary Material UI.</p>
-<p>Texture defaults such as <code>white</code> and <code>normal</code> keep the material valid before users assign project assets. The renderer manages texture bindings; users do not declare descriptor sets.</p>
+<p>The declared texture default chooses the binding independently of the property name: <code>white</code>, <code>black</code>, or <code>normal</code>. An empty texture GUID in the <code>.mat</code> document means no project asset is assigned, so the renderer uses that ShaderInfo default. Clearing an assigned texture restores the declared default. A successful shader reload updates unassigned defaults while preserving assigned assets. The renderer manages texture bindings; users do not declare descriptor sets.</p>
 <p>Color space comes from the texture asset import settings and the property type. Select an image in the Project panel to edit <strong>Import Settings</strong>. Use <strong>Texture Type: Default</strong> with <strong>sRGB</strong> enabled for albedo and ordinary color. Use <strong>Texture Type: Data</strong> for metallic, smoothness, AO, height, masks, and packed channels. Use <strong>Texture Type: Normal Map</strong> for tangent-space normals. Selecting Data or Normal Map forces sRGB off and disables the checkbox. With <strong>Compression: Auto</strong>, Normal Map resolves to BC5 and Data resolves to no block compression.</p>
 <p><code>sampleAlbedoAlpha()</code> and <code>sampleGrayscale()</code> only sample the bound texture view. The imported sRGB GPU format decodes RGB to linear values and leaves alpha unchanged. A <code>Color</code> Material property is authored in sRGB and packed as linear RGB. <code>SurfaceData.albedo</code> and <code>SurfaceData.emission</code> therefore receive linear values.</p>
 <p>The current Normal Map importer has a narrow boundary: it changes the semantic, forces linear sampling, and may encode RG as BC5. It does not provide green-channel inversion, channel swizzling, or a DirectX/OpenGL convention selector. <code>sampleNormal()</code> reads RG as signed tangent-space XY and reconstructs positive Z. If bumps look recessed, fix the source texture or perform the required channel conversion explicitly in shader code; there is no import checkbox for that conversion today. The mesh also needs valid tangents and <code>v_Tangent.w</code>, because the helper constructs a world-space TBN basis.</p>
@@ -211,10 +211,13 @@
 </tbody>
 </table>
 <p>Do not use Queue as a disguised effect parameter. Queue is intentionally structural: a custom pipeline can route <code>1..100</code> through one path and <code>101..200</code> through another. Material authors choose the queue; pipeline authors decide what that queue means for a project.</p>
-<p><code>Surface Transparent</code> supplies transparent defaults for fields left unspecified: queue <code>3000</code>, alpha blending, depth writes off, and the transparent pass tag. Explicit Queue, DepthWrite, PassTag, and non-off Blend modes override those defaults. <code>Off</code> is also the parser's initial blend value, so this Surface setting normalizes <code>Blend Off</code> to <code>Alpha</code>. <code>Blend Alpha</code> expects straight RGB and uses source alpha for color blending. <code>Blend Premultiplied</code> expects <code>shading()</code> to return RGB already multiplied by alpha. <code>Blend Additive</code> adds source RGB. Blending happens after shading and does not discard a fragment.</p>
+<p>Shadow controls combine the shader and renderer settings. A mesh casts shadows only when its shader enables <code>CastShadows</code> and its <code>MeshRenderer.casts_shadows</code> is enabled. It receives shadows only when both <code>ReceiveShadows</code> and <code>MeshRenderer.receives_shadows</code> are enabled. Renderer switches update live and can differ between objects sharing one Material. These rules apply to Forward, Forward+, and Deferred; disabling reception keeps the light's illumination and removes only its shadow attenuation.</p>
+<p><code>Surface Transparent</code> supplies transparent defaults for fields left unspecified: queue <code>3000</code>, alpha blending, depth writes off, and the transparent pass tag. Explicit Queue, DepthWrite, PassTag, and non-off Blend modes override those defaults. <code>Off</code> is also the parser's initial blend value, so this Surface setting normalizes <code>Blend Off</code> to <code>Alpha</code>. These defaults are resolved before draw-list Queue filtering, including on first use and shader reload.</p>
+<p><code>Blend Alpha</code> expects straight RGB and composites <code>src.rgb * src.a + dst.rgb * (1-src.a)</code>; its output alpha is <code>src.a + dst.a * (1-src.a)</code>. It updates coverage even when the background alpha is zero. <code>Blend Premultiplied</code> expects <code>shading()</code> to return RGB already multiplied by alpha and uses the same alpha equation. <code>Blend Additive</code> sums source and destination RGB and alpha; alpha can exceed one in a floating-point target. Blending happens after shading and does not discard a fragment. For two unlit, half-alpha quads over transparent black, red in front of green produces linear RGB <code>(0.5, 0.25, 0)</code> and alpha <code>0.75</code>; reversing their depth swaps the red and green values. Display encoding changes RGB but preserves that alpha in Game and RenderTexture outputs.</p>
 <p>Alpha clipping is an earlier, binary decision. <code>AlphaClip 0.5</code> stores the threshold in the engine-managed <code>_AlphaClipThreshold</code>; <code>AlphaClip On</code> uses the same <code>0.5</code> default. After <code>surface()</code> returns, generated adapters discard when <code>s.alpha</code> is below that threshold. The check is shared by Forward, GBuffer, and compatible depth, shadow, motion, normal, base-color, and picking variants. A cutout material normally stays in the opaque queue with depth writes enabled and blending off. A translucent material normally uses the transparent queue, depth writes off, and one of the blend modes.</p>
 <p>State has a concrete priority. <code>Surface Transparent</code> is normalized first. The resulting <code>ShaderInfo</code> metadata supplies defaults to a Material. Inspector edits set per-field override bits for surface type, culling, depth, blend, Queue, and alpha clip, so those values survive shader reloads. Pass construction has the final route-specific word: variants outside Forward and Forward+ disable blending and derive depth write/test from the pass attachment; a read-only depth pass disables depth writes. A pass whose depth format has no stencil component disables stencil testing.</p>
 <p><code>Stencil</code> currently has no Material Inspector control or per-material override bit. Its value comes from <code>ShaderInfo</code>, for example <code>Stencil "less_equal,1,replace,keep,keep"</code>; it applies the same compare/reference/operations to front and back faces with <code>0xFF</code> masks. Invalid or underspecified stencil strings are not backed by a dedicated authoring diagnostic, so keep this field in reviewed shader source and verify it in a pipeline with a stencil-capable depth target.</p>
+<p><code>Stencil "equal,1,keep,keep,keep"</code> draws only where the stored stencil value is <code>1</code>; <code>not_equal</code> draws outside that mask. For a custom attachment, declare a distinct depth texture such as <code>graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)</code> and bind it to the participating passes. The conventional root texture named <code>depth</code> uses the Camera attachment and its format; declaring a stencil format on that name does not add stencil to a Camera whose depth attachment has none.</p>
 <h3 id="transparent-sorting-a-reproducible-diagnosis">Transparent sorting: a reproducible diagnosis</h3>
 <p>The built-in transparent route depth-tests against opaque depth without writing it and requests back-to-front sorting. Sorting uses each draw object's transform origin in camera view space. It does not sort individual triangles or use mesh bounds.</p>
 <ol>
@@ -310,7 +313,7 @@
 </table>
 <p>The zero <code>normalWS</code> has a specific job. Leave it untouched when the material has no authored normal. The generated pipeline adapter calls <code>ResolveSurfaceNormal()</code> after <code>surface()</code>, replacing the sentinel with the interpolated geometric normal and normalizing authored world-space normals. Normalizing the zero value inside <code>surface()</code> would destroy that signal.</p>
 <p>Surface code uses the following spaces: <code>v_WorldPos</code>, <code>v_Normal</code>, and <code>v_Tangent</code> are world-space values; <code>v_Tangent.w</code> carries the bitangent sign; <code>v_TexCoord</code> is the primary mesh UV; and <code>v_ViewDepth</code> is linear eye-space depth. <code>sampleNormal()</code> decodes a tangent-space normal map through the world-space TBN basis and returns a world-space normal. Assign world-space data to <code>s.normalWS</code>.</p>
-<p>The Lit fragment stage in Infernux follows the same shape:</p>
+<p>The Lit fragment stage in Infernux follows the same shape. This simplified example uses the primary UVs and basic channels; the complete built-in implementation also applies its UV selectors, packed-channel controls, roughness conversion, occlusion strength, and emission texture:</p>
 <div class="highlight"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
 <span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">texSampler</span><span class="p">);</span>
@@ -337,7 +340,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="金币材质风格参考" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux 场景与 Material 配置，也是本章使用的视觉目标。</figcaption>
+  <figcaption>来自 Infernux 演示项目的材质风格参考。下面的练习会创建无光照 Cube，不会复现这份场景。</figcaption>
 </figure>
 
 <h2 id="first-surface_1">第一份 Surface</h2>
@@ -372,10 +375,10 @@
 <li>在 Hierarchy 选择 <strong>创建 &gt; 3D Object &gt; Cube</strong>。选中 Cube，把 <code>PaintedCube.mat</code> 分配给 <code>MeshRenderer</code> 的 <strong>Materials &gt; Element 0</strong>，随后在 Project 中选择 <code>PaintedCube.mat</code>，将 <code>baseColor</code> 设为 <code>(0.9, 0.1, 0.2, 1)</code>（归一化 RGBA）。默认 <code>white</code> 贴图足以显示这个颜色。</li>
 <li>保存场景，移动相机或 Cube，确认对象在 Scene 与 Game View 都保持可见。重新打开 <code>PaintedCube.mat</code>：Vertex 应保持 <code>Standard</code>，Fragment 应保持 <code>Painted Unlit</code>，Queue 应为 <code>2000</code>。这三项观察可以确认场景保存了 Mesh 绑定，验证范围超过单独的 Material 预览。</li>
 </ol>
-<p>Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并检查 <code>ShaderInfo Name</code> 是否仍与导入 ID 一致。热重载期间修改 <code>Name</code> 会提示必须重新导入资产；可以恢复旧 ID，也可以重新导入后再次分配 Fragment。Material 属性没有出现时，常见原因是 Frag 导入失败，或当前 Material 仍指向另一个 Fragment ID。</p>
+<p>Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并确认 Fragment 字段引用了预期的项目资产。修改 <code>ShaderInfo Name</code> 后，成功保存并导入会通过 Shader GUID 自动更新引用它的 Material，无需重新分配 Fragment 资产。编译被拒绝时，当前运行引用保持不变；修正报告的源码错误后再次保存即可。Material 属性没有出现时，常见原因是片元导入失败，或当前 Material 仍指向另一个片元资产。</p>
 <h2 id="ownership_1">谁拥有什么：阶段、属性与绑定</h2>
-<p>Material 是一份小文档加上两个阶段引用。<strong>Vertex</strong> 与 <strong>Fragment</strong> 选择器保存 <code>ShaderInfo Name</code> 值，片元 <code>ShaderInfo</code> 块里的 <code>ShadingModel</code> 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。</p>
-<p>属性在片元的 <code>ShaderInfo</code> 块里声明，会变成有类型的 Material 字段，序列化进 <code>.mat</code> 文档。绘制时引擎把数值字段打包进材质 Uniform Block（<code>material</code>，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，<code>white</code> 与 <code>normal</code> 是内置默认值。片元通过 <code>material.*</code> 成员与 <code>sample*</code> 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。</p>
+<p>Material 是一份小文档加上两个阶段引用。项目中的 <strong>Vertex</strong> 与 <strong>Fragment</strong> 资产按 GUID 保存，并附带由 <code>ShaderInfo Name</code> 派生的显示名称；内置阶段使用符号标识。片元 <code>ShaderInfo</code> 块里的 <code>ShadingModel</code> 条目选择光照模型。解析选中的阶段组合时，引擎链接其接口，生成共享属性结构与兼容的材质 Pass 程序。Material 文档保存阶段引用和编辑后的参数值，不会重新定义阶段中的属性声明。</p>
+<p>顶点和片元阶段都可以在各自的 <code>ShaderInfo</code> 块里声明 Properties。链接器将它们合并成一份有类型的 Material 字段结构，序列化进 <code>.mat</code> 文档。同名属性同时出现在两个阶段时，类型、默认值、范围及其他契约元数据必须一致；不兼容的声明会被拒绝。绘制时引擎把数值字段打包进材质 Uniform Block（<code>material</code>，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，<code>white</code>、<code>black</code> 与 <code>normal</code> 是内置默认值。各阶段通过 <code>material.*</code> 成员与生成的采样辅助函数读取自己声明的属性。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。</p>
 <p>ShaderInfo 各条目影响不同环节：</p>
 <table>
 <thead>
@@ -387,7 +390,7 @@
 <tbody>
 <tr>
 <td><code>Name</code></td>
-<td>稳定且区分大小写的选择器 ID</td>
+<td>区分大小写的阶段标识与显示名称</td>
 </tr>
 <tr>
 <td><code>ShadingModel</code></td>
@@ -428,7 +431,7 @@
 </tbody>
 </table>
 <h2 id="properties_1">材质属性</h2>
-<p>Properties 会成为有类型的 Material 字段和 Inspector 控件。下面就是内置 <code>lit.frag</code> 的属性块：</p>
+<p>Properties 会成为有类型的 Material 字段和 Inspector 控件。下面摘录内置 <code>lit.frag</code> 的基础字段；完整 Shader 还声明了 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：</p>
 <div class="highlight"><pre><span></span><code><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
 <span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
@@ -446,7 +449,7 @@
 </code></pre></div>
 
 <p><code>Range(min, max)</code> 是可选的浮点数 UI 约束；内置 Lit 的这些 Float 没有添加该标记。<code>HDR</code> 允许颜色超过显示白，<code>Internal</code> 会隐藏由引擎管理的属性。</p>
-<p><code>white</code>、<code>normal</code> 等贴图默认值，让材质在用户尚未分配项目资源时仍然有效。纹理由渲染器绑定，用户不需要声明描述符 Set。</p>
+<p>纹理绑定由声明的默认值决定，与属性名称无关：可以使用 <code>white</code>、<code>black</code> 或 <code>normal</code>。<code>.mat</code> 文档中的纹理 GUID 为空，表示尚未分配项目资产，渲染器会使用对应的 ShaderInfo 默认值。清空已分配的纹理会恢复声明默认值；成功热重载 Shader 后，未分配资产的字段采用新默认值，已分配的资产保持不变。纹理由渲染器绑定，用户不需要声明描述符 Set。</p>
 <p>颜色空间由贴图资产导入设置和属性类型决定。在 Project 面板选中图片即可编辑 <strong>导入设置</strong>。Albedo 与普通颜色使用 <strong>贴图类型：默认</strong>，并启用 <strong>sRGB</strong>。金属度、光滑度、AO、高度、Mask 和打包通道使用 <strong>贴图类型：数据</strong>。切线空间法线使用 <strong>贴图类型：法线贴图</strong>。选择数据或法线贴图会强制关闭 sRGB 并禁用该复选框。采用 <strong>压缩：自动</strong> 时，法线贴图会解析为 BC5，数据贴图会解析为无块压缩。</p>
 <p><code>sampleAlbedoAlpha()</code> 与 <code>sampleGrayscale()</code> 只采样已绑定的 Texture View。导入后的 sRGB GPU 格式把 RGB 解码到线性值，Alpha 保持原值。<code>Color</code> Material 属性按 sRGB 输入，再以线性 RGB 写入 Shader。<code>SurfaceData.albedo</code> 和 <code>SurfaceData.emission</code> 因此接收线性值。</p>
 <p>当前法线贴图导入器的边界很窄：它设置语义、强制线性采样，并可把 RG 编码成 BC5。导入器没有绿色通道翻转、通道重排或 DirectX/OpenGL 约定选择器。<code>sampleNormal()</code> 把 RG 读取为带符号的切线空间 XY，并重建正 Z。凹凸方向相反时，需要修改源贴图，或在 Shader 中显式完成所需通道转换；目前没有对应的导入复选框。Mesh 还需要有效 Tangent 和 <code>v_Tangent.w</code>，辅助函数会用它们构建世界空间 TBN 基底。</p>
@@ -508,10 +511,13 @@
 </tbody>
 </table>
 <p>不要把 Queue 当成伪装的效果参数。Queue 是有意设计的结构信息：自定义管线可以让 <code>1..100</code> 走一条路径、<code>101..200</code> 走另一条。材质作者选择 Queue，管线作者决定这些 Queue 在项目里的含义。</p>
-<p><code>Surface Transparent</code> 会为尚未显式填写的字段提供透明表面默认值：Queue <code>3000</code>、Alpha 混合、关闭深度写入，并使用 transparent Pass Tag。显式 Queue、DepthWrite、PassTag 及非 Off 的 Blend 模式可以覆盖对应默认值。<code>Off</code> 同时是解析器的初始 Blend 值，因此该 Surface 设置会把 <code>Blend Off</code> 归一为 <code>Alpha</code>。<code>Blend Alpha</code> 接收未预乘的 RGB，并用源 Alpha 混合颜色。<code>Blend Premultiplied</code> 要求 <code>shading()</code> 返回已经乘过 Alpha 的 RGB，<code>Blend Additive</code> 累加源 RGB。混合发生在着色之后，不会丢弃片元。</p>
+<p>阴影开关同时取决于 Shader 与 Renderer。只有 Shader 启用 <code>CastShadows</code> 且 <code>MeshRenderer.casts_shadows</code> 启用时，网格才投射阴影；只有 <code>ReceiveShadows</code> 与 <code>MeshRenderer.receives_shadows</code> 都启用时，它才接收阴影。Renderer 开关实时生效，共用同一个 Material 的物体可以有不同设置。这些规则适用于 Forward、Forward+ 和 Deferred；关闭接收阴影只移除阴影衰减，仍然保留灯光照明。</p>
+<p><code>Surface Transparent</code> 会为尚未显式填写的字段提供透明表面默认值：Queue <code>3000</code>、Alpha 混合、关闭深度写入，并使用 transparent Pass Tag。显式 Queue、DepthWrite、PassTag 及非 Off 的 Blend 模式可以覆盖对应默认值。<code>Off</code> 同时是解析器的初始 Blend 值，因此该 Surface 设置会把 <code>Blend Off</code> 归一为 <code>Alpha</code>。这些默认值会在绘制列表按 Queue 筛选之前确定，首次使用和 Shader 热重载也遵循同一规则。</p>
+<p><code>Blend Alpha</code> 接收未预乘的 RGB，颜色公式为 <code>src.rgb * src.a + dst.rgb * (1-src.a)</code>，输出 Alpha 为 <code>src.a + dst.a * (1-src.a)</code>；背景 Alpha 为零时也会更新覆盖率。<code>Blend Premultiplied</code> 要求 <code>shading()</code> 返回已经乘过 Alpha 的 RGB，Alpha 使用相同公式。<code>Blend Additive</code> 累加源与目标的 RGB 和 Alpha，因此浮点目标中的 Alpha 可以超过一。混合发生在着色之后，不会丢弃片元。将两个 Alpha 为 <code>0.5</code> 的 Unlit Quad 放在透明黑背景上，红色在绿色前方时，线性 RGB 应为 <code>(0.5, 0.25, 0)</code>，Alpha 为 <code>0.75</code>；交换深度后红绿数值对调。Display Encode 会改变 RGB，但在 Game 和 RenderTexture 输出中保留该 Alpha。</p>
 <p>Alpha Clip 是更早执行的二值判断。<code>AlphaClip 0.5</code> 会把阈值写入引擎管理的 <code>_AlphaClipThreshold</code>；<code>AlphaClip On</code> 同样使用默认值 <code>0.5</code>。<code>surface()</code> 返回后，生成的适配代码会丢弃 <code>s.alpha</code> 低于阈值的片元。Forward、GBuffer 以及兼容的 Depth、Shadow、Motion、Normal、Base Color、Picking 变体共用这项检查。Cutout 材质通常留在不透明 Queue，开启深度写入并关闭混合；半透明材质通常进入透明 Queue，关闭深度写入并选择一种 Blend 模式。</p>
 <p>状态优先级是具体的。系统先归一化 <code>Surface Transparent</code>，得到的 <code>ShaderInfo</code> 元数据为 Material 提供默认值。Inspector 对 Surface Type、Cull、Depth、Blend、Queue 和 Alpha Clip 的编辑会设置逐字段 Override Bit，因此这些值在 Shader 重载后仍会保留。Pass 构建拥有最终的路径级决定权：Forward 与 Forward+ 以外的变体会关闭混合，并根据 Pass Attachment 设置深度写入与测试；只读深度 Pass 会关闭深度写入。深度格式不含 Stencil 分量时，Pass 会关闭 Stencil Test。</p>
 <p><code>Stencil</code> 目前没有 Material Inspector 控件，也没有逐 Material Override Bit。它来自 <code>ShaderInfo</code>，例如 <code>Stencil "less_equal,1,replace,keep,keep"</code>；正反面共用 Compare、Reference 和 Operation，Mask 固定为 <code>0xFF</code>。无效或字段不足的 Stencil 字符串缺少专用创作诊断，因此应把它留在经过审查的 Shader 源码中，并在使用 Stencil Depth Target 的管线里验收。</p>
+<p><code>Stencil "equal,1,keep,keep,keep"</code> 只绘制 Stencil 存储值为 <code>1</code> 的区域；<code>not_equal</code> 则绘制遮罩外侧。自定义附件应使用独立的深度纹理名，例如 <code>graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)</code>，并绑定到参与绘制的 Pass。约定的根纹理名 <code>depth</code> 使用 Camera 的附件及格式；仅在这个名字上声明 Stencil 格式，不会为本来不含 Stencil 的 Camera 深度附件添加 Stencil。</p>
 <h3 id="_1">透明排序：可复现排查</h3>
 <p>内置透明路径会读取不透明深度并进行 Depth Test，同时保持该深度不变，并请求从后向前排序。排序键来自每个 Draw Object 的 Transform Origin 在相机 View Space 中的位置。系统不会对单个三角形排序，也不会用 Mesh Bounds 计算排序键。</p>
 <ol>
@@ -607,7 +613,7 @@
 </table>
 <p>零向量 <code>normalWS</code> 有明确用途。材质没有编写法线时，应保留这个值。管线适配器会在 <code>surface()</code> 之后调用 <code>ResolveSurfaceNormal()</code>，把哨兵替换为插值后的几何法线，并归一化用户写入的世界空间法线。不要在 <code>surface()</code> 内归一化这个零向量，否则哨兵信息会丢失。</p>
 <p>Surface 代码使用的空间如下：<code>v_WorldPos</code>、<code>v_Normal</code>、<code>v_Tangent</code> 都在世界空间，<code>v_Tangent.w</code> 保存副切线方向符号；<code>v_TexCoord</code> 是主 UV；<code>v_ViewDepth</code> 是线性眼空间深度。<code>sampleNormal()</code> 使用世界空间 TBN 基底解码切线空间法线贴图，返回世界空间法线。写入 <code>s.normalWS</code> 的自定义法线也必须处于世界空间。</p>
-<p>Infernux 的 Lit Frag 也遵循同样的形状：</p>
+<p>Infernux 的 Lit Frag 也遵循同样的形状。下面的简化示例使用主 UV 与基础通道；内置完整实现还会应用 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：</p>
 <div class="highlight"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
 <span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">texSampler</span><span class="p">);</span>
@@ -633,10 +639,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

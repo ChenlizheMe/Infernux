@@ -1,0 +1,335 @@
+from infernux.runtime_utf8 import configure_process_utf8
+
+configure_process_utf8()
+
+import atexit
+import importlib
+import json
+import os
+import sys
+import uuid
+
+# ── Player mode detection ───────────────────────────────────────────
+# Set by the Nuitka boot script BEFORE any Infernux imports.
+# Guards editor-only imports to keep standalone builds fast and lean.
+_PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
+
+from infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, TextureData
+from infernux import resources as _resources
+from .engine import Engine, LogLevel
+from .path_utils import resolved_path, same_path
+
+from .headless import run_headless
+
+_EDITOR_UI_EXPORTS = {
+    "MenuBarPanel", "ToolbarPanel", "HierarchyPanel",
+    "InspectorPanel", "ConsolePanel", "SceneViewPanel", "GameViewPanel",
+    "ProjectPanel", "WindowManager", "TagLayerSettingsPanel", "StatusBarPanel",
+    "BuildSettingsPanel", "UIEditorPanel", "EditorPanel", "EditorServices",
+    "PanelRegistry", "editor_panel",
+}
+
+_EDITOR_SERVICE_EXPORTS = {
+    "PlayModeManager": (".play_mode", "PlayModeManager"),
+    "PlayModeState": (".play_mode", "PlayModeState"),
+    "SceneFileManager": (".scene_manager", "SceneFileManager"),
+}
+
+
+def __getattr__(name: str):
+    if name == "ResourcesManager":
+        value = importlib.import_module(".resources_manager", __name__).ResourcesManager
+    elif name in _EDITOR_SERVICE_EXPORTS:
+        module_name, export_name = _EDITOR_SERVICE_EXPORTS[name]
+        value = getattr(importlib.import_module(module_name, __name__), export_name)
+    elif name in _EDITOR_UI_EXPORTS:
+        value = getattr(importlib.import_module(".ui", __name__), name)
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
+
+
+def _signal_engine_loaded() -> None:
+    ready_file = os.environ.get("_INFERNUX_READY_FILE", "").strip()
+    if ready_file:
+        with open(ready_file, "w", encoding="utf-8") as f:
+            f.write("ENGINE_LOADED\n")
+            f.flush()
+            os.fsync(f.fileno())
+    if sys.platform == "android":
+        import ctypes
+
+        android_log_write = ctypes.CDLL("liblog.so").__android_log_write
+        android_log_write.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p)
+        android_log_write.restype = ctypes.c_int
+        android_log_write(4, b"InfernuxPlayer", b"ENGINE_LOADED")
+    print("ENGINE_LOADED", flush=True)
+
+
+def _is_pid_running(pid: int) -> bool:
+    from infernux_project_lock import is_pid_running
+    return is_pid_running(pid)
+
+
+def _default_lock_path(project_path: str) -> str:
+    from infernux_project_lock import lock_path
+    return lock_path(project_path)
+
+
+def _remove_project_lock(lock_path: str, token: str) -> None:
+    from infernux_project_lock import remove_lock
+    remove_lock(lock_path, token, probe=_is_pid_running)
+
+
+def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
+    from infernux_project_lock import claim
+    expected_path = _default_lock_path(project_path)
+    configured = os.environ.get("_INFERNUX_PROJECT_LOCK_PATH", "").strip()
+    if configured and not same_path(configured, expected_path):
+        raise ValueError("Project lock path must identify this project's canonical lock file")
+    token = os.environ.get("_INFERNUX_PROJECT_LOCK_TOKEN", "").strip() or uuid.uuid4().hex
+    lock_path = claim(project_path, token, mode, probe=_is_pid_running, require_reservation=bool(configured))
+    atexit.register(_remove_project_lock, lock_path, token)
+    return lock_path, token
+
+
+def release_engine(project_path: str, engine_log_level=LogLevel.Info):
+    """Launch Infernux with Unity-style editor layout.
+
+    Delegates to :class:`EditorBootstrap` for structured initialization.
+    """
+    from .project_version import validate_project_engine_version
+
+    validate_project_engine_version(project_path)
+    from .bootstrap import EditorBootstrap, _signal_progress
+
+    from .library_sync import sync_resources
+    # The launcher splash must become informative before project mirroring,
+    # which may touch many files on a cold machine.  Previously the first
+    # progress message arrived only after this work had already blocked.
+    _signal_progress(0, 13, "Synchronizing engine resources…")
+    lock_path, lock_token = _acquire_project_lock(project_path, "editor")
+    bootstrap = None
+    try:
+        sync_resources(project_path)
+        _resources.activate_library(project_path)
+        bootstrap = EditorBootstrap(project_path, engine_log_level)
+        bootstrap.run()
+
+        bootstrap.engine.set_window_icon(_resources.icon_path)
+
+        # Window title: "Infernux{version} - {project name}".  The source
+        # tree and wheel must use the same authoritative version module;
+        # relying on installed distribution metadata breaks source launches
+        # (notably the visible MCP editor) before the engine can start.
+        from infernux.version import ENGINE_VERSION
+        _engine_version = ENGINE_VERSION
+        _project_name = os.path.basename(resolved_path(project_path))
+        bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
+
+        # Signal the launcher splash and reveal the real window immediately.
+        # Launcher-owned presentation must never add fixed latency to engine
+        # readiness; it can finish its fade independently.
+        _signal_engine_loaded()
+
+        bootstrap.engine.show()
+        bootstrap.engine.run()
+    finally:
+        # Startup failures and interrupted test launches own the same resources
+        # as a normal window close. Never leave their observer/server running.
+        try:
+            if bootstrap is not None and bootstrap.engine is not None:
+                bootstrap.engine.exit()
+        finally:
+            _remove_project_lock(lock_path, lock_token)
+
+
+def _load_player_build_manifest(project_path: str) -> dict[str, object]:
+    """Load the build-owned Player presentation contract without defaults."""
+
+    manifest_path = os.path.join(project_path, "BuildManifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Player package has no BuildManifest.json: {manifest_path}"
+        ) from None
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Player BuildManifest.json is unreadable: {manifest_path}"
+        ) from error
+    if not isinstance(manifest, dict):
+        raise ValueError("Player BuildManifest.json must contain a JSON object")
+
+    string_fields = ("game_name", "icon_path", "display_mode")
+    for field in string_fields:
+        if field not in manifest or not isinstance(manifest[field], str):
+            raise TypeError(f"Player BuildManifest.json {field} must be a string")
+    if not str(manifest["game_name"]).strip():
+        raise ValueError("Player BuildManifest.json game_name must not be empty")
+    if manifest["display_mode"] not in {"fullscreen_borderless", "windowed"}:
+        raise ValueError("Player BuildManifest.json display_mode is invalid")
+
+    for field in ("window_width", "window_height"):
+        value = manifest.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"Player BuildManifest.json {field} must be an integer")
+        if value <= 0:
+            raise ValueError(f"Player BuildManifest.json {field} must be positive")
+    if not isinstance(manifest.get("window_resizable"), bool):
+        raise TypeError(
+            "Player BuildManifest.json window_resizable must be a boolean"
+        )
+    splash_items = manifest.get("splash_items")
+    if not isinstance(splash_items, list) or not all(
+        isinstance(item, dict) for item in splash_items
+    ):
+        raise TypeError("Player BuildManifest.json splash_items must contain objects")
+    scene_guids = manifest.get("scene_guids")
+    if not isinstance(scene_guids, list) or not all(
+        isinstance(scene_guid, str) and bool(scene_guid.strip())
+        for scene_guid in scene_guids
+    ):
+        raise TypeError(
+            "Player BuildManifest.json scene_guids must contain non-empty strings"
+        )
+    if not scene_guids:
+        raise ValueError("Player BuildManifest.json scene_guids must not be empty")
+
+    icon_path = str(manifest["icon_path"])
+    if icon_path:
+        normalized_icon = icon_path.replace("\\", "/")
+        parts = normalized_icon.split("/")
+        if normalized_icon.startswith("/") or any(
+            part in {"", ".", ".."} for part in parts
+        ):
+            raise ValueError("Player BuildManifest.json icon_path must be relative")
+        manifest["icon_path"] = "/".join(parts)
+    return manifest
+
+
+def run_player(project_path: str, engine_log_level=LogLevel.Info):
+    """Launch Infernux in standalone player mode (no editor chrome).
+
+    Opens the first scene declared by BuildManifest.json, applies its display
+    mode (fullscreen borderless or windowed with a custom resolution), and
+    reveals the window after runtime startup.
+    A project-configured splash remains optional and Play starts after it has
+    finished; the engine does not impose a default loading window.
+    """
+    from infernux.application import Application
+    from .player_bootstrap import PlayerBootstrap
+
+    # Packaged/standalone games skip the project lock entirely — they
+    # have their own self-contained Data folder and should never conflict
+    # with an editor instance or another packaged game.
+    is_packaged = os.environ.get("_INFERNUX_PLAYER_MODE") == "1"
+
+    # Packaged players already carry Infernux/resources. Only development
+    # players mirror those resources into the project's Library directory.
+    if not is_packaged:
+        from .library_sync import sync_resources
+        sync_resources(project_path)
+        _resources.activate_library(project_path)
+
+    lock_path = lock_token = None
+    if not is_packaged:
+        lock_path, lock_token = _acquire_project_lock(project_path, "player")
+
+    try:
+        manifest = _load_player_build_manifest(project_path)
+        display_mode = manifest["display_mode"]
+        window_width = manifest["window_width"]
+        window_height = manifest["window_height"]
+        window_resizable = manifest["window_resizable"]
+        splash_items = manifest["splash_items"]
+        scene_guids = manifest["scene_guids"]
+        build_icon_path = manifest["icon_path"]
+        game_name = manifest["game_name"]
+        title = game_name
+        window_icon = (
+            os.path.join(project_path, build_icon_path)
+            if isinstance(build_icon_path, str) and build_icon_path
+            else _resources.icon_path
+        )
+
+        # Publish chrome before native startup. The SDL window remains hidden
+        # until bootstrap finishes, then appears with its final title, icon,
+        # and display mode without an engine-owned loading window.
+        os.environ["_INFERNUX_PLAYER_FULLSCREEN"] = (
+            "1" if display_mode == "fullscreen_borderless" else "0"
+        )
+        os.environ["_INFERNUX_PLAYER_WINDOW_RESIZABLE"] = (
+            "1" if window_resizable else "0"
+        )
+        os.environ["_INFERNUX_PLAYER_WINDOW_TITLE"] = title
+        os.environ["_INFERNUX_PLAYER_WINDOW_ICON"] = window_icon
+
+        bootstrap = PlayerBootstrap(
+            project_path, engine_log_level,
+            scene_guids=scene_guids,
+            display_mode=display_mode,
+            window_width=window_width,
+            window_height=window_height,
+            splash_items=splash_items,
+            game_name=game_name,
+            window_icon=window_icon,
+            window_resizable=window_resizable,
+        )
+        bootstrap.run()
+        bootstrap.engine._set_process_owned_exit()
+
+        bootstrap.engine.set_window_title(title)
+        if display_mode == "fullscreen_borderless":
+            bootstrap.engine.set_fullscreen(True)
+        bootstrap.engine.set_window_icon(window_icon)
+
+        _signal_engine_loaded()
+        bootstrap.engine.show()
+        bootstrap.engine.run()
+        exit_code = Application._requested_exit_code()
+    finally:
+        if lock_path and lock_token:
+            _remove_project_lock(lock_path, lock_token)
+
+    os._exit(exit_code)
+
+__all__ = [
+    "Engine",
+    "LogLevel",
+    "InxGUIRenderable",
+    "InxGUIContext",
+    "TextureLoader",
+    "TextureData",
+    "release_engine",
+    "run_player",
+    "run_headless",
+]
+
+if not _PLAYER_MODE:
+    __all__ += [
+        "PlayModeManager",
+        "PlayModeState",
+        "SceneFileManager",
+        "ResourcesManager",
+        "MenuBarPanel",
+        "ToolbarPanel",
+        "HierarchyPanel",
+        "InspectorPanel",
+        "ConsolePanel",
+        "SceneViewPanel",
+        "GameViewPanel",
+        "UIEditorPanel",
+        "ProjectPanel",
+        "WindowManager",
+        "TagLayerSettingsPanel",
+        "StatusBarPanel",
+        "BuildSettingsPanel",
+        # Panel framework
+        "EditorPanel",
+        "EditorServices",
+        "PanelRegistry",
+        "editor_panel",
+    ]

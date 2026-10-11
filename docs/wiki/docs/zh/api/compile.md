@@ -30,9 +30,9 @@ Cook 阶段删除装饰器并直接生成普通 Python 字节码，Player 运行
 
 <!-- USER CONTENT START --> example
 ```python
-from infernux import jit
+import infernux as inx
 
-@jit.compile
+@inx.jit.compile
 def integrate(positions, velocities, dt):
     for i in range(len(positions)):
         positions[i] += velocities[i] * dt

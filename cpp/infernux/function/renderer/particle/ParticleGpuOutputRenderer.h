@@ -60,6 +60,10 @@ class ParticleGpuOutputRenderer
     [[nodiscard]] virtual uint32_t VertexCount() const noexcept = 0;
     [[nodiscard]] virtual rhi::BufferHandle InstanceBuffer() const noexcept = 0;
     [[nodiscard]] virtual rhi::BufferHandle RenderIndexBuffer() const noexcept = 0;
+    // A view owns its cull/sort indices. Remove its cached geometry binding when
+    // those indices retire; Device::Release keeps submitted descriptor leases alive.
+    virtual void ReleaseViewBinding(rhi::BufferHandle renderIndices) noexcept = 0;
+    [[nodiscard]] virtual size_t ViewBindingCount() const noexcept = 0;
     [[nodiscard]] virtual const std::vector<GpuParticleStaticBuffer> &StaticVertexStorageBuffers() const noexcept
     {
         static const std::vector<GpuParticleStaticBuffer> empty;

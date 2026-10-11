@@ -12,6 +12,7 @@
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <platform/filesystem/AssetDocument.h>
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 #include <function/renderer/shader/ShaderProgram.h>
 #endif
@@ -34,6 +35,10 @@ namespace infernux
 
 namespace
 {
+
+// One out-of-line publication shared by AssetRuntime and renderer DLLs.
+// Inline counters in the header would create independent Windows DLL copies.
+std::atomic<uint64_t> g_materialRoutingRevision{1};
 
 bool IsBuiltinTextureToken(const std::string &value)
 {
@@ -308,6 +313,8 @@ MaterialCompareOp ParseDepthCompareOpString(const std::string &value, MaterialCo
 {
     if (value == "on" || value == "true" || value == "less")
         return MaterialCompareOp::Less;
+    if (value == "equal")
+        return MaterialCompareOp::Equal;
     if (value == "less_equal")
         return MaterialCompareOp::LessOrEqual;
     if (value == "always")
@@ -316,6 +323,8 @@ MaterialCompareOp ParseDepthCompareOpString(const std::string &value, MaterialCo
         return MaterialCompareOp::Never;
     if (value == "greater")
         return MaterialCompareOp::Greater;
+    if (value == "not_equal")
+        return MaterialCompareOp::NotEqual;
     if (value == "greater_equal")
         return MaterialCompareOp::GreaterOrEqual;
     return fallback;
@@ -376,8 +385,8 @@ bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool can
         renderState.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
         renderState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
         renderState.colorBlendOp = MaterialBlendOp::Add;
-        renderState.srcAlphaBlendFactor = MaterialBlendFactor::Zero;
-        renderState.dstAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.srcAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
         renderState.alphaBlendOp = MaterialBlendOp::Add;
         return true;
     }
@@ -473,6 +482,16 @@ bool ApplyStencilMeta(RenderState &renderState, const std::string &stencil)
 
 } // namespace
 
+uint64_t InxMaterial::GetRoutingPublicationRevision() noexcept
+{
+    return g_materialRoutingRevision.load(std::memory_order_relaxed);
+}
+
+void InxMaterial::NotifyRoutingChanged() noexcept
+{
+    g_materialRoutingRevision.fetch_add(1, std::memory_order_relaxed);
+}
+
 // ============================================================================
 // RenderState Implementation
 // ============================================================================
@@ -480,7 +499,8 @@ bool ApplyStencilMeta(RenderState &renderState, const std::string &stencil)
 bool RenderState::operator==(const RenderState &other) const
 {
     return cullMode == other.cullMode && frontFace == other.frontFace && polygonMode == other.polygonMode &&
-           depthBiasEnable == other.depthBiasEnable && depthBiasConstantFactor == other.depthBiasConstantFactor &&
+           lineWidth == other.lineWidth && depthBiasEnable == other.depthBiasEnable &&
+           depthBiasConstantFactor == other.depthBiasConstantFactor &&
            depthBiasSlopeFactor == other.depthBiasSlopeFactor && depthBiasClamp == other.depthBiasClamp &&
            topology == other.topology && depthTestEnable == other.depthTestEnable &&
            depthWriteEnable == other.depthWriteEnable && depthCompareOp == other.depthCompareOp &&
@@ -501,6 +521,7 @@ size_t RenderState::Hash() const
     hashCombine(static_cast<size_t>(cullMode));
     hashCombine(static_cast<size_t>(frontFace));
     hashCombine(static_cast<size_t>(polygonMode));
+    hashCombine(std::hash<float>{}(lineWidth));
     hashCombine(static_cast<size_t>(depthBiasEnable));
     if (depthBiasEnable) {
         hashCombine(std::hash<float>{}(depthBiasConstantFactor));
@@ -562,7 +583,7 @@ size_t InxMaterial::GetRuntimeMemoryBytes() const noexcept
     bytes += m_properties.bucket_count() * sizeof(void *);
     bytes += m_properties.size() * sizeof(std::pair<const std::string, MaterialProperty>);
     for (const auto &[key, property] : m_properties) {
-        bytes += key.capacity() + property.name.capacity();
+        bytes += key.capacity() + property.name.capacity() + property.textureDefault.capacity();
         if (const auto *text = std::get_if<std::string>(&property.value))
             bytes += text->capacity();
     }
@@ -609,6 +630,7 @@ void InxMaterial::ResetRenderStateAuthorship()
     m_renderStateOverrides = 0;
     m_pipelineDirty = true;
     ++m_version;
+    NotifyRoutingChanged();
 }
 
 InxMaterial &InxMaterial::operator=(const InxMaterial &other)
@@ -648,6 +670,7 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_derivedVersion = 0;
     m_isDeleted = other.m_isDeleted;
 
+    NotifyRoutingChanged();
     return *this;
 }
 
@@ -669,7 +692,10 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
     m_runtimeTextureOverrides.erase(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
     const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
-    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range};
+    const std::string textureDefault = existing != m_properties.end() && type == MaterialPropertyType::Texture2D
+                                           ? existing->second.textureDefault
+                                           : std::string{};
+    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range, textureDefault};
     m_propertiesDirty = true;
     ++m_version;
 }
@@ -804,6 +830,7 @@ void InxMaterial::PublishTextureAssets(std::unordered_map<std::string, std::shar
 
 void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
 {
+    ++m_textureAssetRevision;
     // Modified assets publish into their existing graphics owner. Keep that
     // lease until resolution publishes the complete new binding set.
     if (deleted) {
@@ -848,7 +875,9 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     if (!m_guid.empty() && !previousGuid.empty() && !IsBuiltinTextureToken(previousGuid))
         AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, previousGuid);
 
-    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range};
+    const std::string textureDefault = it != m_properties.end() ? it->second.textureDefault : std::string{};
+    m_properties[name] =
+        MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range, textureDefault};
     m_propertiesDirty = true;
     ++m_version;
 
@@ -916,6 +945,20 @@ const MaterialProperty *InxMaterial::GetProperty(const std::string &name) const
     return nullptr;
 }
 
+std::string_view InxMaterial::GetTextureDefault(const std::string &name) const
+{
+    const auto *property = GetProperty(name);
+    if (property && property->type == MaterialPropertyType::Texture2D) {
+        const auto *value = std::get_if<std::string>(&property->value);
+        if (value && IsBuiltinTextureToken(*value))
+            return *value;
+        if (!property->textureDefault.empty())
+            return property->textureDefault;
+    }
+    // A raw sampler without a ShaderInfo property has the neutral white default.
+    return "white";
+}
+
 bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact &artifact)
 {
     bool changed = false;
@@ -932,7 +975,7 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         if (existing == m_properties.end() || !MaterialValueMatchesType(existing->second, *expectedType)) {
             m_properties[binding.name] =
                 MaterialProperty{binding.name, *expectedType, ParseShaderPropertyDefault(binding, *expectedType),
-                                 binding.hdr, binding.range};
+                                 binding.hdr,  binding.range, binding.textureDefault};
             changed = true;
             continue;
         }
@@ -950,6 +993,10 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         }
         if (existing->second.range != binding.range) {
             existing->second.range = binding.range;
+            changed = true;
+        }
+        if (existing->second.textureDefault != binding.textureDefault) {
+            existing->second.textureDefault = binding.textureDefault;
             changed = true;
         }
     }
@@ -987,6 +1034,8 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
                                         const std::string &alphaClip)
 {
     const uint64_t previousVersion = m_version;
+    const RenderState previousState = m_renderState;
+    const std::string previousPassTag = m_passTag;
     bool changed = false;
 
     // Shader metadata describes the complete default state, not a patch over
@@ -1110,8 +1159,15 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    if (changed)
+    // Default restoration is an intermediate calculation, not a publication.
+    // Reapplying the same shader contract must leave pipelines and versions
+    // stable, even when normalized defaults differ from RenderState{}.
+    changed = !(previousState == m_renderState) || previousPassTag != m_passTag;
+    if (changed) {
         m_pipelineDirty = true;
+        ++m_version;
+        NotifyRoutingChanged();
+    }
     m_derivedVersion += m_version - previousVersion;
 }
 
@@ -1276,6 +1332,8 @@ std::string InxMaterial::Serialize() const
 
 bool InxMaterial::SaveToFile() const
 {
+    if (IsCookedAssetDocument(m_filePath))
+        return false;
     if (m_isDeleted) {
         INXLOG_WARN("InxMaterial::SaveToFile: material '", m_name, "' is deleted, refusing to write");
         return false;
@@ -1285,7 +1343,7 @@ bool InxMaterial::SaveToFile() const
         return false;
     }
     try {
-        const std::string jsonStr = Serialize();
+        const std::string jsonStr = Serialize() + '\n';
         DocumentStore::Instance().WriteAndWait(m_filePath, jsonStr);
         INXLOG_DEBUG("InxMaterial::SaveToFile: Saved material '", m_name, "' to '", m_filePath, "'");
         return true;
@@ -1297,12 +1355,14 @@ bool InxMaterial::SaveToFile() const
 
 bool InxMaterial::SaveToFile(const std::string &path)
 {
+    if (IsCookedAssetDocument(path))
+        return false;
     if (m_isDeleted) {
         INXLOG_WARN("InxMaterial::SaveToFile: material '", m_name, "' is deleted, refusing to write");
         return false;
     }
     try {
-        const std::string jsonStr = Serialize();
+        const std::string jsonStr = Serialize() + '\n';
         DocumentStore::Instance().WriteAndWait(path, jsonStr);
 
         // Update stored file path
@@ -1326,13 +1386,34 @@ bool InxMaterial::Deserialize(const std::string &jsonStr)
     }
 }
 
+void InxMaterial::TrackRuntimeShaderReferences()
+{
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    // Asset materials are already owned by the asset registry. This weak
+    // enrollment covers runtime instances without extending their lifetime.
+    if (m_guid.empty() && (!m_vertexShader.guid.empty() || !m_fragmentShader.guid.empty())) {
+        auto &registry = AssetRegistry::Instance();
+        // Parsing/cloning a document outside an engine has no runtime owner.
+        if (registry.IsInitialized()) {
+            if (auto material = weak_from_this().lock())
+                registry.RegisterRuntimeMaterial(material);
+        }
+    }
+#endif
+}
+
 bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
 {
     InxMaterial staged(*this);
     if (!staged.ApplyDocument(document)) {
         return false;
     }
+    PublishDocument(std::move(staged));
+    return true;
+}
 
+void InxMaterial::PublishDocument(InxMaterial &&staged)
+{
     m_name = std::move(staged.m_name);
     m_builtin = staged.m_builtin;
     m_vertexShader = std::move(staged.m_vertexShader);
@@ -1345,10 +1426,23 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     // Runtime buffer publications do not belong to the serialized asset.
     m_buffers.clear();
     m_shaderPropertyOrder = std::move(staged.m_shaderPropertyOrder);
+    // Resolve authored texture GUIDs again after publication. Explicit runtime
+    // overrides survive only while their slot remains a texture property.
+    m_textureAssetsPending = true;
+    for (auto it = m_renderTextures.begin(); it != m_renderTextures.end();) {
+        const auto property = m_properties.find(it->first);
+        if (!HasRuntimeTextureOverride(it->first) || property == m_properties.end() ||
+            property->second.type != MaterialPropertyType::Texture2D) {
+            m_runtimeTextureOverrides.erase(it->first);
+            it = m_renderTextures.erase(it);
+        } else
+            ++it;
+    }
     m_pipelineDirty = true;
     m_propertiesDirty = true;
     ++m_version;
-    return true;
+    NotifyRoutingChanged();
+    TrackRuntimeShaderReferences();
 }
 
 bool InxMaterial::ApplyDocument(const nlohmann::json &document)
@@ -1492,18 +1586,6 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
             }
         }
 
-        m_pipelineDirty = true;
-        m_propertiesDirty = true;
-        m_textureAssetsPending = true;
-        for (auto it = m_renderTextures.begin(); it != m_renderTextures.end();) {
-            const auto property = m_properties.find(it->first);
-            if (!HasRuntimeTextureOverride(it->first) || property == m_properties.end() ||
-                property->second.type != MaterialPropertyType::Texture2D) {
-                m_runtimeTextureOverrides.erase(it->first);
-                it = m_renderTextures.erase(it);
-            } else
-                ++it;
-        }
         SyncAlphaClipProperty();
 
         return true;
@@ -1950,6 +2032,7 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     clone->m_version = 0;
     clone->m_isDeleted = false;
 
+    clone->TrackRuntimeShaderReferences();
     return clone;
 }
 

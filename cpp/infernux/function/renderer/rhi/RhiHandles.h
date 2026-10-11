@@ -15,7 +15,22 @@ inline constexpr DeviceId InvalidDeviceId = 0;
 /// Returns a process-wide device identity shared by every RHI backend DLL.
 /// Identities are not recycled during the process lifetime so stale handles
 /// cannot become valid when a backend device is destroyed and recreated.
-[[nodiscard]] DeviceId AllocateDeviceId() noexcept;
+/// Throws std::overflow_error when the finite device namespace is exhausted.
+[[nodiscard]] DeviceId AllocateDeviceId();
+
+/// Advance a released slot's version. Zero permanently retires an exhausted
+/// slot: it must never enter the free list again, including during Reset.
+[[nodiscard]] constexpr bool AdvanceHandleVersion(uint16_t &version) noexcept
+{
+    if (version == 0)
+        return false;
+    if (version == std::numeric_limits<uint16_t>::max()) {
+        version = 0;
+        return false;
+    }
+    ++version;
+    return true;
+}
 
 /// RHI handles remain 64-bit, but their generation is split into an owning
 /// device domain and a per-slot generation. This makes an accidental handle

@@ -17,7 +17,7 @@ This chapter builds a two-scene loop: `MainMenu.scene` contains a Play Button, a
 
 ## Prepare two authored scenes {#prepare-scenes}
 
-Create an `Assets/Scenes` folder, then prepare these saved scene assets:
+Create an `Assets/Scenes` folder, then prepare these saved scene assets. Keep an enabled Camera and a RenderStack in both scenes. **New Scene** supplies the default rendering objects; if you created an empty scene asset, use the Hierarchy context menu to add **Camera** and **Post Processing > RenderStack** before testing the menu:
 
 1. Save the first scene as `Assets/Scenes/MainMenu.scene`.
 2. In Hierarchy, create **UI > Canvas**.
@@ -29,7 +29,7 @@ Create an `Assets/Scenes` folder, then prepare these saved scene assets:
 
 A Button created through **UI > Button** already has a `UIButton` component. Its `interactable` state, visual transition settings, label, fill, and persistent **On Click ()** list are available in the Inspector.
 
-A new Canvas defaults to Screen Overlay. Two render modes exist: **Screen Overlay** draws after display encoding, on top of the finished image; **Camera Overlay** draws into the scene before post-processing, so scene effects can process the UI along with the geometry. Menu and HUD screens usually stay on Screen Overlay; choose Camera Overlay when the UI must react to bloom, color grading, or motion blur.
+A new Canvas defaults to Screen Overlay. Two render modes exist: **Screen Overlay** draws after display encoding, on top of the finished image; **Camera Overlay** draws into the scene before post-processing, so scene effects can process the UI along with the geometry. Menu and HUD screens usually stay on Screen Overlay; choose Camera Overlay when the UI must react to bloom, color grading, or motion blur. To target one Camera, assign its GameObject to the Canvas Target Camera field; scripts use `canvas.target_camera = camera_game_object`. The serialized reference follows the correct Camera through scene save/reload and hierarchy cloning.
 
 ## Write the scene actions component {#scene-actions-component}
 
@@ -57,7 +57,7 @@ Attach `SceneActions` to the `SceneFlow` GameObject in both scenes. The two meth
 
 `inx.SceneManager.load_scene(...)` accepts a build index or a string resolved against the build list. A bare name such as `"Level01"` matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so `True` does not mean that the new scene has already completed loading inside the current method call.
 
-<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
+<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
 
 ## Bind a Button to a component method {#bind-button}
 
@@ -95,7 +95,7 @@ class RuntimeButtonBinding(inx.InxComponent):
             button.on_click.add_listener(self.handle_click)
 
     def handle_click(self):
-        print("PlayButton clicked")
+        inx.Debug.log("PlayButton clicked", self)
 ```
 
 Use one binding route for one action. If the same method is present in **On Click ()** and added with `add_listener`, one click invokes it twice.
@@ -105,7 +105,7 @@ Use one binding route for one action. If the same method is present in **On Clic
 `SceneManager` resolves only scenes listed for the build. Add both assets before testing:
 
 1. Open `MainMenu.scene`.
-2. Open **Window > Build Settings**.
+2. Open **Project > Build Settings**.
 3. In **Scenes In Build**, choose **Add Open Scene**. Keep `MainMenu.scene` at index `0`.
 4. Open `Level01.scene`, return to Build Settings, and choose **Add Open Scene** again. Keep `Level01.scene` at index `1`.
 5. Save both scenes after their Button bindings are complete.
@@ -130,11 +130,11 @@ For an explicit API check, temporarily change `"Level01"` to `"MissingScene"`. T
 
 **The callback method does not appear.** Use a public method name without a leading underscore. Lifecycle methods are filtered from the picker. Save the script and confirm the Console has no compilation or import error.
 
-**Clicking logs “scene not found in build list.”** Add the saved `.scene` asset through **Window > Build Settings**. The bare string must match its filename; `"Level01"` resolves `Level01.scene`.
+**Clicking logs “scene not found in build list.”** Add the saved `.scene` asset through **Project > Build Settings**. The bare string must match its filename; `"Level01"` resolves `Level01.scene`.
 
 **The click runs twice.** Check for both a persistent **On Click ()** entry and a runtime `on_click.add_listener(...)` subscription for the same action. Keep one registration.
 
-**The Button never receives pointer input.** Confirm the Button and Canvas are enabled, `interactable` is enabled, the Button lies inside the Canvas, and no frontmost UI element configured as a raycast target covers it.
+**The Button never receives pointer input.** Confirm the Button is a child of the Canvas and lies in its visible area. Both components must be enabled, and the Button's `interactable` and `raycast_target` settings must be enabled. Check that no frontmost UI element configured as a raycast target covers it.
 
 **Code after `load_scene` assumes the new scene is active.** Treat a `True` return as an accepted request. Put new-scene setup in components belonging to the destination scene, using their `awake` and `start` callbacks.
 
@@ -161,7 +161,7 @@ You now have a complete authored action path: pointer click, serialized componen
 
 ## 准备两个场景 {#prepare-scenes_1}
 
-创建 `Assets/Scenes` 文件夹，再准备以下场景资产：
+创建 `Assets/Scenes` 文件夹，再准备以下场景资产。两个场景都需要启用的 Camera 和 RenderStack。**新建场景** 会提供默认渲染物体；如果创建的是空场景资产，先从 Hierarchy 右键菜单添加 **相机** 与 **后处理 > RenderStack**，再测试菜单：
 
 1. 把第一个场景保存为 `Assets/Scenes/MainMenu.scene`。
 2. 在 Hierarchy 中创建 **UI > Canvas**。
@@ -173,7 +173,7 @@ You now have a complete authored action path: pointer click, serialized componen
 
 通过 **UI > Button** 创建的对象已经带有 `UIButton`。Inspector 中可以设置 `interactable`、视觉过渡、label、填充和持久化 **On Click ()** 列表。
 
-新建 Canvas 默认是 Screen Overlay。Canvas 有两种渲染模式：**Screen Overlay** 在显示编码之后绘制，覆盖在成品图像上；**Camera Overlay** 在后处理之前画进场景，场景效果可以把 UI 与几何一起处理。菜单与 HUD 通常留在 Screen Overlay；需要 UI 参与 Bloom、调色或运动模糊时才选择 Camera Overlay。
+新建 Canvas 默认是 Screen Overlay。Canvas 有两种渲染模式：**Screen Overlay** 在显示编码之后绘制，覆盖在成品图像上；**Camera Overlay** 在后处理之前画进场景，场景效果可以把 UI 与几何一起处理。菜单与 HUD 通常留在 Screen Overlay；需要 UI 参与 Bloom、调色或运动模糊时才选择 Camera Overlay。只让某个 Camera 绘制时，将其 GameObject 拖入 Canvas 的 Target Camera 字段；脚本中使用 `canvas.target_camera = camera_game_object`。这是可序列化的对象引用，保存／重载场景或克隆层级后仍会指向正确的相机。
 
 ## 编写场景操作组件 {#scene-actions-component_1}
 
@@ -201,7 +201,7 @@ class SceneActions(inx.InxComponent):
 
 `inx.SceneManager.load_scene(...)` 接受 Build Index，也接受按构建列表解析的字符串。`"Level01"` 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 `True` 时，新场景仍可能处于待切换状态。
 
-<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
+<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
 
 ## 把 Button 绑定到组件方法 {#bind-button_1}
 
@@ -239,7 +239,7 @@ class RuntimeButtonBinding(inx.InxComponent):
             button.on_click.add_listener(self.handle_click)
 
     def handle_click(self):
-        print("PlayButton clicked")
+        inx.Debug.log("PlayButton clicked", self)
 ```
 
 一项操作保留一种绑定方式即可。如果同一方法既存在于 **On Click ()**，又通过 `add_listener` 添加，一次点击会调用两次。
@@ -249,7 +249,7 @@ class RuntimeButtonBinding(inx.InxComponent):
 `SceneManager` 只解析构建列表中的场景。测试前完成以下设置：
 
 1. 打开 `MainMenu.scene`。
-2. 打开 **Window > Build Settings**。
+2. 打开 **项目 > 构建设置（Project > Build Settings）**。
 3. 在 **Scenes In Build** 中选择 **Add Open Scene**，让 `MainMenu.scene` 保持在索引 `0`。
 4. 打开 `Level01.scene`，回到 Build Settings，再次选择 **Add Open Scene**，让 `Level01.scene` 保持在索引 `1`。
 5. 完成 Button 绑定后，再保存两个场景。
@@ -274,11 +274,11 @@ class RuntimeButtonBinding(inx.InxComponent):
 
 **方法没有出现在列表中。** 使用不以下划线开头的公开方法名。生命周期方法会被选择器过滤。保存脚本，并确认 Console 没有编译或导入错误。
 
-**点击后提示场景不在构建列表。** 通过 **Window > Build Settings** 添加已保存的 `.scene` 资产。裸字符串要与文件名一致；`"Level01"` 会解析 `Level01.scene`。
+**点击后提示场景不在构建列表。** 通过 **项目 > 构建设置（Project > Build Settings）** 添加已保存的 `.scene` 资产。裸字符串要与文件名一致；`"Level01"` 会解析 `Level01.scene`。
 
 **一次点击运行两次。** 检查同一操作是否同时存在持久化 **On Click ()** 记录和运行时 `on_click.add_listener(...)` 订阅，保留一处注册。
 
-**Button 收不到指针输入。** 确认 Button 与 Canvas 已启用、`interactable` 已开启、Button 位于 Canvas 内，并检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。
+**Button 收不到指针输入。** 确认 Button 是 Canvas 的子物体，并位于其可见区域内。两个组件都需要启用，Button 的 `interactable` 与 `raycast_target` 也要开启；再检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。
 
 **`load_scene` 后的代码立即使用新场景。** `True` 表示请求已接受。新场景初始化应放在目标场景组件的 `awake` 与 `start` 中。
 

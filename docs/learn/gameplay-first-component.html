@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Create a Python component, attach it to a GameObject, enter Play mode, and verify the lifecycle through the Console.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/gameplay-first-component.html">
     <title>Create and run your first component · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -74,7 +74,7 @@
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 </code></pre></div>
 
-<p>Private names beginning with <code>_</code> stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an <code>__init__</code> method: <code>InxComponent</code> owns construction and raises <code>TypeError</code> when a subclass overrides it. Use <code>awake</code> or <code>start</code> for setup.</p>
+<p>Ordinary private attributes beginning with <code>_</code> stay out of serialization and the Inspector. They are useful for runtime bookkeeping. To save private data explicitly, declare it with <code>serialized_field(..., hidden=True)</code>, as described in the next chapter. Do not add an <code>__init__</code> method: <code>InxComponent</code> owns construction and raises <code>TypeError</code> when a subclass overrides it. Use <code>awake</code> or <code>start</code> for setup.</p>
 <h2 id="attach-and-run">Attach and run</h2>
 <ol>
 <li>Create or select any active object in <strong>Hierarchy</strong> and rename it <code>HelloObject</code>.</li>
@@ -85,6 +85,8 @@
 <li>Stop Play mode. Teardown can add <code>OnDisable</code> and <code>OnDestroy</code> entries.</li>
 </ol>
 <p>The exercise passes when there are no import or lifecycle exceptions, the one-second message appears only once per component instance, and enable-state changes produce the matching callbacks.</p>
+<p>Entering Play replaces the Edit-mode component instance. If that instance has already received <code>awake</code>, its teardown can log <code>OnDestroy</code> before the fresh Play instance logs <code>Awake: HelloObject</code>. These messages belong to different instance lifetimes.</p>
+<p>During cleanup, <code>self.game_object</code> and the retiring component's fields remain available until its callback returns. If entering Play fails, the original Edit instance remains in place without running its destroy callback.</p>
 <h2 id="component-model">GameObject and component</h2>
 <p>A <code>GameObject</code> supplies scene identity, hierarchy, active state, tag, layer, and an always-present <code>Transform</code>. Components supply behavior or data. Several components can share one owner.</p>
 <p>Inside a live <code>InxComponent</code>:</p>
@@ -95,6 +97,10 @@
 <li><code>self.game_object.get_component(SomeType)</code> returns the first matching component or <code>None</code>.</li>
 </ul>
 <p>These owner properties are available during normal bound lifecycle use. Accessing them on a detached or destroyed component raises a runtime error, so cleanup should retain only the data it needs.</p>
+<h2 id="imports-reload">Imports and script reload</h2>
+<p><code>infernux</code> is the engine's Python package. Import it once as <code>import infernux as inx</code> and reach everything through <code>inx</code>: <code>inx.InxComponent</code>, <code>inx.Vector3</code>, <code>inx.RenderStack</code>, <code>inx.renderstack</code>, <code>inx.jit</code>. It is an ordinary Python import backed by the same component registry. Installed Python libraries can be imported on first use without an engine import whitelist, and their ordinary factories, decorators, and field metadata are allowed. Older scripts that import <code>Infernux</code> should switch to <code>import infernux as inx</code>.</p>
+<p>Ordinary standard-library declarations are allowed too: for example, <code>threading.Lock()</code>, <code>asyncio.iscoroutine(value)</code>, and <code>subprocess.list2cmdline(arguments)</code>. Reload checks diagnose explicit import-time operations such as starting processes, opening network connections, writing files, or changing interpreter-wide state. Put those operations in the appropriate lifecycle method and release resources when the component stops. The static check is not a sandbox and does not prove arbitrary library code has no side effects.</p>
+<p>Saving a script compiles its source and stages its project dependencies before publishing the new revision to existing components. Syntax or import failure keeps the previously published revision running and reports the rejected source. Correcting the source allows the next save to publish; restarting the editor is unnecessary. The transaction protects script publication, not arbitrary external library side effects. Keep scene changes, file writes, and process or thread startup in lifecycle callbacks rather than module declarations.</p>
 <h2 id="lifecycle">Lifecycle at a glance</h2>
 <p>When a scene starts, Infernux first runs <code>awake</code> and <code>on_enable</code> across active objects, then runs <code>start</code> on enabled components. Per-frame execution follows with <code>update(delta_time)</code> and then <code>late_update(delta_time)</code>. <code>fixed_update(fixed_delta_time)</code> runs on the fixed simulation step and belongs to physics work.</p>
 <table>
@@ -136,8 +142,9 @@
 </tbody>
 </table>
 <p>An inactive GameObject defers <code>awake</code> until it first becomes active. <code>start</code> runs once, immediately before that component's first simulation update. Regular <code>update</code>, <code>fixed_update</code>, and <code>late_update</code> callbacks run in Play mode.</p>
-<p>Edit-mode execution is a separate opt-in. The native component proxy reads the class attribute set by <code>@execute_in_edit_mode</code> and mirrors it onto the instance as <code>_execute_in_edit_mode</code>; both the native proxy (<code>PyComponentProxy</code>) and the Python scheduler check that instance attribute before running edit-mode callbacks. In a pure Python test context without a native proxy, the mirror step does not happen, so set the instance attribute directly when such a context needs edit-mode updates.</p>
+<p>Edit-mode execution is a separate opt-in with <code>@inx.execute_in_edit_mode</code>. You can add or remove this decorator while the component is attached: a successful script reload updates its edit-mode execution setting without replacing the component or losing serialized values. If the candidate fails to publish, the previous setting remains active. Play-mode callbacks continue to run regardless of this decorator.</p>
 <p>For opted-in Python components, the editor runs all <code>update</code> callbacks before all <code>late_update</code> callbacks in the same frame. This supports camera-follow and reflection previews without entering Play. It does not start fixed-step physics; ordinary gameplay components remain inactive.</p>
+<p>Edit-mode preview callbacks receive the editor frame duration. Use their <code>delta_time</code> argument for preview animation: <code>Time.delta_time</code> and <code>Time.frame_count</code> belong to the Play clock, which does not advance in Edit mode.</p>
 <h2 id="troubleshooting">Common errors</h2>
 <ul>
 <li><strong>The script is absent from Add Component.</strong> Save the file, confirm the class derives from <code>InxComponent</code>, and inspect the Console for an import or syntax error.</li>
@@ -191,7 +198,7 @@
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 </code></pre></div>
 
-<p>以 <code>_</code> 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 <code>__init__</code>：组件构造由 <code>InxComponent</code> 管理，子类覆写它时会抛出 <code>TypeError</code>。初始化工作放进 <code>awake</code> 或 <code>start</code>。</p>
+<p>以 <code>_</code> 开头的普通私有属性不会进入序列化和 Inspector，适合保存运行时状态。需要明确保存私有数据时，使用下一章介绍的 <code>serialized_field(..., hidden=True)</code>。请勿添加 <code>__init__</code>：组件构造由 <code>InxComponent</code> 管理，子类覆写它时会抛出 <code>TypeError</code>。初始化工作放进 <code>awake</code> 或 <code>start</code>。</p>
 <h2 id="attach-and-run_1">挂载并运行</h2>
 <ol>
 <li>在 <strong>Hierarchy</strong> 中创建或选择一个启用的物体，命名为 <code>HelloObject</code>。</li>
@@ -202,6 +209,8 @@
 <li>停止 Play。销毁流程可能继续输出 <code>OnDisable</code> 与 <code>OnDestroy</code>。</li>
 </ol>
 <p>没有导入或生命周期异常、一秒提示对每个组件实例只出现一次、切换启用状态能得到对应回调，就算验证通过。</p>
+<p>进入 Play 时，引擎会替换编辑态组件实例。如果旧实例已经执行过 <code>awake</code>，销毁它时可能先输出 <code>OnDestroy</code>，随后新的 Play 实例才输出 <code>Awake: HelloObject</code>。这些日志属于不同实例的生命周期。</p>
+<p>清理回调返回前，<code>self.game_object</code> 与旧组件自己的字段仍然可用。如果进入 Play 失败，原编辑态实例会保留，不会执行它的销毁回调。</p>
 <h2 id="component-model_1">GameObject 与组件</h2>
 <p><code>GameObject</code> 提供场景身份、层级、活动状态、Tag、Layer，以及始终存在的 <code>Transform</code>。组件负责行为或数据；一个物体可以同时拥有多个组件。</p>
 <p>在正常运行且已挂载的 <code>InxComponent</code> 中：</p>
@@ -212,6 +221,10 @@
 <li><code>self.game_object.get_component(SomeType)</code> 返回第一个匹配组件；找不到时返回 <code>None</code>。</li>
 </ul>
 <p>组件脱离物体或已经销毁后，所属物体属性将不可用。清理逻辑只应使用自己确实需要的数据。</p>
+<h2 id="imports-reload_1">导入与脚本热重载</h2>
+<p><code>infernux</code> 是引擎的 Python 包。只需 <code>import infernux as inx</code> 导入一次，之后都通过 <code>inx</code> 访问：<code>inx.InxComponent</code>、<code>inx.Vector3</code>、<code>inx.RenderStack</code>、<code>inx.renderstack</code>、<code>inx.jit</code>。这是普通的 Python 导入，背后是同一套组件注册表。已安装的 Python 库可以在首次使用时导入，不需要引擎导入白名单；普通工厂、装饰器和字段元数据也可以使用。旧脚本中的 <code>Infernux</code> 导入请改为 <code>import infernux as inx</code>。</p>
+<p>普通标准库声明也允许使用，例如 <code>threading.Lock()</code>、<code>asyncio.iscoroutine(value)</code> 和 <code>subprocess.list2cmdline(arguments)</code>。重载检查会诊断导入期间明确发生的启动进程、建立网络连接、写文件或修改解释器全局状态等操作。应把这些操作放到合适的生命周期方法里，并在组件停止时释放资源。静态检查不是沙箱，不能证明任意第三方库都没有副作用。</p>
+<p>保存脚本后，引擎会先编译源码并准备项目依赖，再把新修订发布给已有组件。语法或导入失败时，上一份已发布修订继续运行，并报告被拒绝的源码；修正后再次保存即可发布，无需重启编辑器。事务保护的是脚本发布，不能回滚任意外部库的副作用。场景修改、文件写入、进程或线程启动应放在生命周期回调中，而不是模块声明阶段。</p>
 <h2 id="lifecycle_1">生命周期速览</h2>
 <p>场景启动时，Infernux 会先在活动物体上完成 <code>awake</code> 与 <code>on_enable</code>，再为启用的组件调用 <code>start</code>。随后进入逐帧执行：<code>update(delta_time)</code> 完成后运行 <code>late_update(delta_time)</code>。<code>fixed_update(fixed_delta_time)</code> 按固定模拟步长运行，适合物理逻辑。</p>
 <table>
@@ -253,8 +266,9 @@
 </tbody>
 </table>
 <p>非活动 GameObject 会把 <code>awake</code> 推迟到第一次激活。<code>start</code> 只运行一次，位置在该组件第一次模拟更新之前。普通的 <code>update</code>、<code>fixed_update</code> 与 <code>late_update</code> 只在 Play 模式运行。</p>
-<p>编辑模式执行需要单独选择加入。原生组件代理读取 <code>@execute_in_edit_mode</code> 装饰器设置的类属性，并把它镜像到实例的 <code>_execute_in_edit_mode</code> 上；原生代理（<code>PyComponentProxy</code>）与 Python 调度器在运行编辑模式回调前都会检查这个实例属性。没有原生代理的纯 Python 测试环境不会发生镜像，如果这类环境需要编辑模式更新，请直接设置实例属性。</p>
+<p>编辑模式执行需要通过 <code>@inx.execute_in_edit_mode</code> 单独选择加入。组件挂载后仍可以添加或移除这个装饰器：脚本成功热重载时会更新编辑模式执行设置，不替换组件，也不丢失序列化值。如果候选脚本发布失败，之前的设置仍然生效。Play 模式下的回调不受这个装饰器限制。</p>
 <p>对选择加入的 Python 组件，编辑器在同一帧先执行所有 <code>update</code>，再执行所有 <code>late_update</code>。跟随相机和反射预览因此不必进入 Play 才能更新。这不会启动固定步物理，普通游戏逻辑也不会跟着执行。</p>
+<p>编辑模式预览回调收到的是编辑器帧时长。预览动画应使用回调的 <code>delta_time</code> 参数；<code>Time.delta_time</code> 和 <code>Time.frame_count</code> 属于 Play 时钟，在编辑模式下不会推进。</p>
 <h2 id="troubleshooting_1">常见错误</h2>
 <ul>
 <li><strong>Add Component 找不到脚本。</strong> 保存文件，确认类继承 <code>InxComponent</code>，再查看 Console 中的导入或语法错误。</li>
@@ -273,10 +287,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

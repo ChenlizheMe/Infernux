@@ -1,0 +1,136 @@
+"""Public early-import lifecycle for project and package Python scripts."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import os
+import re
+from typing import Any, Callable
+
+from infernux.engine.path_utils import (
+    is_path_within,
+    portable_relative_path,
+    resolved_path,
+)
+
+
+def _resolve_package_path(
+    project_root: str,
+    package_reference: str,
+    relative_path: str | os.PathLike[str],
+) -> str:
+    if not project_root:
+        raise RuntimeError("Package resources require an active project")
+    raw_reference = str(package_reference).strip()
+    reference = portable_relative_path(raw_reference)
+    if (
+        "\\" in raw_reference
+        or (len(reference) >= 2 and reference[1] == ":")
+        or any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part)
+            for part in reference.split("/")
+        )
+    ):
+        raise ValueError("InxPackage reference is invalid")
+    raw_relative = os.fspath(relative_path)
+    relative = portable_relative_path(raw_relative)
+    if "\0" in raw_relative or (len(relative) >= 2 and relative[1] == ":"):
+        raise ValueError(f"Package path must be portable and relative: {relative_path!r}")
+    package_root = resolved_path(
+        os.path.join(project_root, "Packages", *reference.split("/"))
+    )
+    target = resolved_path(os.path.join(package_root, *relative.split("/")))
+    if not is_path_within(target, package_root, allow_root=False):
+        raise ValueError(f"Package path escapes its package root: {relative_path!r}")
+    from infernux.engine.project_context import resolve_package_path
+
+    resolved = resolve_package_path(
+        target, project_root=project_root, allow_directory=True
+    )
+    if resolved is None:
+        raise FileNotFoundError(
+            f"Package resource is not available at runtime: "
+            f"{package_reference}/{relative}"
+        )
+    return resolved
+
+
+@dataclass(frozen=True, slots=True)
+class PreloadContext:
+    project_root: str
+    source_path: str
+    script_guid: str
+    type_id: str
+    package_reference: str = ""
+    engine: Any = None
+    runtime: bool = False
+    _restart_callback: Callable[[str], None] | None = None
+    _cleanup_callback: Callable[[Callable[[], None]], None] | None = None
+
+    def package_path(self, relative_path: str | os.PathLike[str]) -> str:
+        """Resolve one installed-package resource in Editor or Player.
+
+        The path is relative to this package's root, for example
+        ``runtime/server.jar``.  Player builds preserve that package-relative
+        identity even when their content is staged or extracted elsewhere, so
+        lifecycle scripts never need to infer a location from ``__file__``.
+        """
+
+        if not self.package_reference:
+            raise RuntimeError(
+                "PreloadContext.package_path() is only available to an installed package"
+            )
+        return _resolve_package_path(
+            self.project_root,
+            self.package_reference,
+            relative_path,
+        )
+
+    def require_restart(self, reason: str) -> None:
+        """Declare process state that cannot be safely undone by ``unload``."""
+
+        if self._restart_callback is not None:
+            self._restart_callback(str(reason or "Native state cannot be unloaded safely"))
+
+    def add_cleanup(self, callback: Callable[[], None]) -> None:
+        """Register one reversible resource cleanup for this preload.
+
+        Cleanups run in reverse registration order after ``unload()`` and also
+        when ``preload()`` fails partway through. Successful cleanups retire
+        once; failed cleanups remain owned and run on an explicit unload retry.
+        This is the preferred owner for HTTP servers, worker threads, file
+        watches, and callbacks.
+        """
+        if not callable(callback):
+            raise TypeError("Preload cleanup must be callable")
+        if self._cleanup_callback is None:
+            raise RuntimeError("Preload cleanup ownership is unavailable")
+        self._cleanup_callback(callback)
+
+    def own_python_library(self, relative_path: str) -> str:
+        """Declare bundled library sources managed by this preload's lifetime.
+
+        These files remain packaged assets, but are not component scripts and
+        do not participate in component hot reload. Load and release the library
+        in preload/unload; native libraries may require an Editor restart.
+        Ordinary package component scripts must stay outside this directory.
+        """
+        from infernux.engine.project_context import register_preload_python_library
+        path = self.package_path(relative_path)
+        register_preload_python_library(f"{self.project_root}:{self.script_guid}:{self.type_id}", path)
+        return path
+
+
+class InxPreload(ABC):
+    """Opt one script into early import and explicit startup/shutdown hooks."""
+
+    @abstractmethod
+    def preload(self, context: PreloadContext) -> None:
+        """Initialize before scenes and normal project script consumers."""
+
+    def unload(self) -> None:
+        """Release process-local state before reload, disable, or shutdown."""
+
+
+__all__ = ["InxPreload", "PreloadContext"]

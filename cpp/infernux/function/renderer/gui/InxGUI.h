@@ -19,6 +19,7 @@
 
 namespace infernux
 {
+struct TextureCpuData;
 
 namespace vk
 {
@@ -34,6 +35,7 @@ class InxGUI
     void Init(SDL_Window *window);
 
     void SetGUIFont(const char *fontPath, float fontSize);
+    void InvalidateFontAsset(const std::string &path);
     float GetDisplayScale() const
     {
         return m_dpiScale;
@@ -52,6 +54,9 @@ class InxGUI
     }
 
     void RecordCommand(VkCommandBuffer cmdBuf);
+    // Publish dynamic font images after runtime UI extraction and before any
+    // Scene/Game UI pass consumes their descriptors.
+    void PrepareRuntimeFontTextures();
     void Shutdown();
 
     void SetPlayerMode(bool enabled)
@@ -94,6 +99,7 @@ class InxGUI
     uint64_t PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
                                         bool pinned = false);
     uint64_t PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels);
     std::shared_ptr<rhi::RenderTexture> ResolveImGuiRenderTexture(uint64_t textureId) const;
 
     /// Invalidate queued uploads for a name without removing its currently
@@ -174,6 +180,8 @@ class InxGUI
     }
 
   private:
+    uint64_t SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels, VkFilter filter,
+                                      bool pinned, bool displayEncoding);
     void RefreshDisplayScale();
     void ReloadGUIFont();
 
@@ -202,6 +210,7 @@ class InxGUI
         uint64_t generation = 0;
         bool pinned = false;
         std::shared_ptr<vk::TextureUploadTicket> ticket;
+        bool requiresDisplayEncoding = false;
     };
 
     InxVkCoreModular *m_vkCore_ptr = nullptr;
@@ -239,6 +248,7 @@ class InxGUI
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
     bool m_hasDrawData = false;
+    bool m_presentationGeometryMismatch = false;
     EditorGuiInputRearmBudget m_syntheticInputRearm;
     EditorGuiFrameScheduler m_editorFrameScheduler;
 

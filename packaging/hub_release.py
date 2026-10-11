@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import configparser
+import runpy
 import json
+import ntpath
 import platform
 import tomllib
 import zipfile
@@ -30,12 +31,10 @@ def project_version(source_root: str | Path | None = None) -> str:
 
 def project_build_number(source_root: str | Path | None = None) -> int:
     root = Path(source_root).resolve() if source_root else Path(__file__).resolve().parents[1]
-    configuration = configparser.ConfigParser()
-    configuration.read(root / "setup.cfg", encoding="utf-8")
-    value = configuration.get("bdist_wheel", "build_number", fallback="")
-    if not value.isdigit() or int(value) < 1:
-        raise ValueError("setup.cfg must declare a positive bdist_wheel build_number")
-    return int(value)
+    value = runpy.run_path(str(root / "python/infernux/version.py"))["ENGINE_BUILD_NUMBER"]
+    if type(value) is not int or value < 1:
+        raise ValueError("infernux.version must declare a positive ENGINE_BUILD_NUMBER")
+    return value
 
 
 def hub_version_for(version: str, build: int) -> str:
@@ -94,12 +93,14 @@ def _payload_files(root: Path) -> list[Path]:
     )
 
 
-def _safe_relative_path(value: str) -> PurePosixPath:
-    path = PurePosixPath(value.replace("\\", "/"))
-    if path.is_absolute() or not path.parts or any(
-        part in ("", ".", "..") for part in path.parts
+def safe_update_path(value: str) -> PurePosixPath:
+    """Accept one canonical file identity, portable across all Hub hosts."""
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value or any(
+        part in ("", ".", "..") or ntpath.isreserved(part)
+        for part in value.split("/")
     ):
         raise ValueError(f"Unsafe update path: {value!r}")
+    path = PurePosixPath(value)
     if tuple(part.casefold() for part in path.parts[:2]) == ("infernuxhubdata", "shared"):
         raise ValueError("Hub updates cannot own user shared resources")
     return path
@@ -146,8 +147,10 @@ def validate_manifest(document: object) -> dict[str, object]:
     for entry in document["files"]:
         if not isinstance(entry, dict) or set(entry) != {"path"}:
             raise ValueError("Infernux Hub manifest file entry is invalid")
-        path = _safe_relative_path(entry["path"])
+        path = safe_update_path(entry["path"])
         normalized = path.as_posix()
+        if document["platform"] == "windows-x64":
+            normalized = normalized.casefold()
         if normalized in seen:
             raise ValueError(f"Duplicate Hub manifest path: {normalized}")
         seen.add(normalized)

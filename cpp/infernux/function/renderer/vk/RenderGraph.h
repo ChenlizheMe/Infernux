@@ -141,7 +141,7 @@ struct TextureDesc
     uint32_t arrayLayers = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
-    bool isTransient = true; // Can be aliased with other resources
+    bool isTransient = true; // Graph-owned transient usage; storage remains independent.
 };
 
 /**
@@ -525,6 +525,8 @@ class PassBuilder
     void SetClearDepth(float depth, uint32_t stencil = 0);
 
   private:
+    ResourceHandle AddBufferRead(ResourceHandle handle, ResourceUsage usage, rhi::PipelineStage stages,
+                                 rhi::Access access);
     RenderGraph *m_graph;
     uint32_t m_passId;
     bool m_depthTestEnabled = true;
@@ -886,7 +888,7 @@ class RenderGraph
      * @param height     Texture height
      * @param format     Vulkan format
      * @param samples    MSAA sample count
-     * @param isTransient If true, the resource can be memory-aliased
+     * @param isTransient Transient usage hint; graph-owned storage remains independent
      * @return ResourceHandle with a valid id
      */
     ResourceHandle RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
@@ -1002,6 +1004,10 @@ class RenderGraph
     {
         return m_submissionPlan;
     }
+
+    /// Actual access stages of live passes for an imported buffer. The compiler
+    /// excludes culled passes and graph-only version dependencies.
+    [[nodiscard]] rhi::PipelineStage GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept;
 
     [[nodiscard]] const std::vector<QueueOwnershipTransferInfo> &GetQueueOwnershipTransfers() const noexcept
     {
@@ -1175,6 +1181,7 @@ class RenderGraph
     std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
     rhi::SubmissionPlan m_submissionPlan;
+    std::unordered_map<VkBuffer, rhi::PipelineStage> m_importedBufferAccessStages;
 
     struct QueueOwnershipTransfer
     {

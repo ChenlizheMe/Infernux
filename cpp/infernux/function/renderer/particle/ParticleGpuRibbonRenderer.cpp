@@ -510,6 +510,16 @@ rhi::BindGroupHandle ParticleGpuRibbonRenderer::CreateGeometryGroup(rhi::BufferH
     return m_device->CreateBindGroup(group);
 }
 
+void ParticleGpuRibbonRenderer::ReleaseViewBinding(rhi::BufferHandle renderIndices) noexcept
+{
+    const auto binding = std::find_if(m_viewGroups.begin(), m_viewGroups.end(),
+                                      [&](const auto &entry) { return entry.renderIndices == renderIndices; });
+    if (binding == m_viewGroups.end())
+        return;
+    m_device->Release(binding->group);
+    m_viewGroups.erase(binding);
+}
+
 rhi::BindGroupHandle ParticleGpuRibbonRenderer::ResolveGeometryGroup(rhi::BufferHandle renderIndices)
 {
     if (!renderIndices.IsValid() || renderIndices == RenderIndexBuffer())
@@ -544,7 +554,9 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
     const auto pipeline = GetOrCreatePipeline(pass, usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
-    const bool usesBindlessTextures = m_surface.UsesBindlessTextures();
+    const bool usesBindlessTextures =
+        m_surface.UsesBindlessTextures() &&
+        (pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus);
     const auto bindlessTable = m_surface.BindlessTableBinding();
     if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid() ||
         (usesBindlessTextures && !bindlessTable.IsValid()))

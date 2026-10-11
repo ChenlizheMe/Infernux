@@ -309,8 +309,8 @@ class SceneLightCollector
     // ========================================================================
 
     /**
-     * @brief Collect all lights from a scene.
-     * @param scene The scene to collect lights from
+     * @brief Collect registered lights from all resident runtime scenes.
+     * @param scene Active scene context (nullptr clears the collection)
      * @param cameraPosition Camera world position for light sorting
      */
     void CollectLights(Scene *scene, const glm::vec3 &cameraPosition = glm::vec3(0.0f));
@@ -372,7 +372,7 @@ class SceneLightCollector
      * atlas.
      * Must be called AFTER CollectLights() and BEFORE BuildShaderLightingUBO().
      *
-     * @param scene         Active scene to search for lights
+     * @param scene         Active scene context (nullptr clears shadow views)
      * @param cameraPos     Camera world position
      * @param shadowMapResolution  Shadow atlas resolution (e.g. 4096)
      * @param camera        Camera whose frustum drives cascade fitting (nullptr = active camera)

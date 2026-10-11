@@ -8,6 +8,7 @@
 #include "SceneManager.h"
 #include "TransformECSStore.h"
 #include "core/threading/JobSystem.h"
+#include "core/types/Guid.h"
 #include "function/resources/AssetDependencyGraph.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
@@ -46,8 +47,8 @@ std::string DumpSceneDocument(const nlohmann::json &document, size_t objectCount
     if (objectCount < kDenseSceneObjectThreshold)
         return document.dump(2);
 
-    // Keep large authored scenes diffable by root object without paying the
-    // substantial whitespace cost of recursively pretty-printing every field.
+    // Compact large in-memory snapshots. Authored files always keep one
+    // property per line so ordinary version-control tools can merge edits.
     std::string output;
     output.reserve(objectCount * 1024 + 1024);
     output += "{\n";
@@ -94,12 +95,19 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         return false;
     }
     static const std::unordered_set<std::string> allowedSceneFields = {
-        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
+        "name",        "isPlaying",    "objects",         "mainCameraComponentId",
+        "environment", "nextObjectId", "nextComponentId", "authoring_identity",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;
         if (allowedSceneFields.find(key) == allowedSceneFields.end()) {
             INXLOG_ERROR("Scene::Deserialize: scene document contains unknown field: ", key);
+            return false;
+        }
+    }
+    for (const char *key : {"nextObjectId", "nextComponentId"}) {
+        if (document.contains(key) && (!document[key].is_number_unsigned() || document[key].get<uint64_t>() == 0)) {
+            INXLOG_ERROR("Scene::Deserialize: invalid allocation watermark: ", key);
             return false;
         }
     }
@@ -116,6 +124,7 @@ struct SceneCommitToken::Impl
     std::string name;
     std::vector<std::unique_ptr<GameObject>> rootObjects;
     std::unordered_map<uint64_t, GameObject *> objectsById;
+    SceneAuthoringIdentity authoringIdentity;
     std::vector<uint64_t> pendingDestroy;
     std::unordered_set<uint64_t> pendingDestroySet;
     std::vector<uint64_t> pendingStartComponentIds;
@@ -128,6 +137,8 @@ struct SceneCommitToken::Impl
     bool isPlaying = false;
     bool hasStarted = false;
     uint64_t structureVersion = 0;
+    uint64_t nextDocumentObjectId = 1;
+    uint64_t nextDocumentComponentId = 1;
     SceneEnvironmentSettings environment;
     std::unordered_map<uint64_t, uint64_t> objectIdRemap;
     std::unordered_map<uint64_t, uint64_t> componentIdRemap;
@@ -156,6 +167,11 @@ void RestoreSceneComponentRegistries(Scene &scene)
 
 SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>())
 {
+    // Commit pending body creation and broadphase membership before retaining
+    // the old graph. SuspendSceneResidency must remove actual resident bodies,
+    // not queued additions; no deferred creation may resurrect the old graph.
+    SceneManager::Instance().FlushPendingBroadphase();
+
     Impl &state = *m_impl;
     state.scene = &scene;
     state.name = scene.m_name;
@@ -164,6 +180,8 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     state.isPlaying = scene.m_isPlaying;
     state.hasStarted = scene.m_hasStarted;
     state.structureVersion = scene.m_structureVersion;
+    state.nextDocumentObjectId = scene.m_nextDocumentObjectId;
+    state.nextDocumentComponentId = scene.m_nextDocumentComponentId;
     state.environment = scene.m_environment;
 
     const std::vector<GameObject *> objects = scene.GetAllObjects();
@@ -195,6 +213,7 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
 
     state.rootObjects = std::move(scene.m_rootObjects);
     state.objectsById = std::move(scene.m_objectsById);
+    state.authoringIdentity = std::move(scene.m_authoringIdentity);
     state.pendingDestroy = std::move(scene.m_pendingDestroy);
     state.pendingDestroySet = std::move(scene.m_pendingDestroySet);
     state.pendingStartComponentIds = std::move(scene.m_pendingStartComponentIds);
@@ -237,14 +256,7 @@ bool SceneCommitToken::Rollback()
     Scene &scene = *state.scene;
     try {
         SceneManager::Instance().ClearComponentRegistries(&scene);
-        scene.m_mainCamera = nullptr;
-        scene.m_rootObjects.clear();
-        scene.m_objectsById.clear();
-        scene.m_pendingDestroy.clear();
-        scene.m_pendingDestroySet.clear();
-        scene.m_pendingStartComponentIds.clear();
-        scene.m_pendingStartComponentIdSet.clear();
-        scene.m_pendingPyComponents.clear();
+        scene.RetireRootObjects();
 
         auto &registry = Component::GetInstanceRegistry();
         registry.reserve(registry.size() + state.componentRegistryNodes.size());
@@ -257,6 +269,7 @@ bool SceneCommitToken::Rollback()
         scene.m_name = std::move(state.name);
         scene.m_rootObjects = std::move(state.rootObjects);
         scene.m_objectsById = std::move(state.objectsById);
+        scene.m_authoringIdentity = std::move(state.authoringIdentity);
         scene.m_pendingDestroy = std::move(state.pendingDestroy);
         scene.m_pendingDestroySet = std::move(state.pendingDestroySet);
         scene.m_pendingStartComponentIds = std::move(state.pendingStartComponentIds);
@@ -267,6 +280,8 @@ bool SceneCommitToken::Rollback()
         scene.m_isPlaying = state.isPlaying;
         scene.m_hasStarted = state.hasStarted;
         scene.m_structureVersion = state.structureVersion;
+        scene.m_nextDocumentObjectId = state.nextDocumentObjectId;
+        scene.m_nextDocumentComponentId = state.nextDocumentComponentId;
         scene.m_environment = state.environment;
         for (auto &root : scene.m_rootObjects)
             root->SetScene(&scene);
@@ -297,6 +312,7 @@ void SceneCommitToken::Finalize()
 
 std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(const nlohmann::json &document)
 {
+    RequireWritableWorld();
     // Reject bad headers before SceneCommitToken extracts the live world.
     // Otherwise a schema mismatch empties the scene, and a failed Rollback
     // Finalize() destroys the retained graph — save/load then crash.
@@ -313,17 +329,47 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
 
 Scene::~Scene()
 {
-    // Explicitly clear root objects to ensure destructors run while Scene members are valid
-    m_rootObjects.clear();
+    RetireRootObjects();
+}
+
+void Scene::RequireWritableWorld() const
+{
+    if (m_retiringObjects)
+        throw std::logic_error("Cannot add or replace objects while the Scene world is retiring");
+}
+
+void Scene::RetireRootObjects()
+{
+    // Publish an empty traversal before callbacks run. vector::clear keeps
+    // already deleted roots visible to OnDisable/OnDestroy scene queries.
+    // ID lookup remains valid until each object's own cleanup has finished.
+    m_retiringObjects = true;
+    std::vector<std::unique_ptr<GameObject>> retiring;
+    retiring.swap(m_rootObjects);
+    m_mainCamera = nullptr;
+    ++m_structureVersion;
+    m_lifecycleObjectCacheVersion = UINT64_MAX;
+    m_updateObjects.clear();
+    m_fixedUpdateObjects.clear();
+    m_lateUpdateObjects.clear();
+    retiring.clear();
+    m_objectsById.clear();
+    m_pendingDestroy.clear();
+    m_pendingDestroySet.clear();
+    m_pendingStartComponentIds.clear();
+    m_pendingStartComponentIdSet.clear();
+    m_pendingPyComponents.clear();
+    m_retiringObjects = false;
 }
 
 GameObject *Scene::CreateGameObject(const std::string &name)
 {
+    RequireWritableWorld();
     auto gameObject = std::make_unique<GameObject>(name);
     gameObject->m_scene = this;
 
     GameObject *ptr = gameObject.get();
-    m_objectsById[ptr->GetID()] = ptr;
+    RegisterGameObject(ptr);
     m_rootObjects.push_back(std::move(gameObject));
     ++m_structureVersion;
 
@@ -340,13 +386,12 @@ void Scene::ReserveCapacity(size_t count)
 
 void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject)
         return;
 
-    gameObject->m_scene = this;
-
-    GameObject *ptr = gameObject.get();
-    m_objectsById[ptr->GetID()] = ptr;
+    gameObject->SetScene(this);
+    RegisterObjectSubtree(gameObject.get());
 
     // If it has no parent, add to root objects
     if (gameObject->GetParent() == nullptr) {
@@ -356,7 +401,7 @@ void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 
 void Scene::RemoveGameObject(GameObject *gameObject)
 {
-    if (!gameObject)
+    if (!gameObject || gameObject->IsDestroying())
         return;
 
     // 1. Locate and Detach ownership
@@ -374,7 +419,7 @@ void Scene::RemoveGameObject(GameObject *gameObject)
 
 void Scene::DestroyGameObject(GameObject *gameObject)
 {
-    if (!gameObject)
+    if (!gameObject || gameObject->IsDestroying())
         return;
 
     // Queue for removal at frame-end, not immediate
@@ -408,25 +453,44 @@ std::unique_ptr<GameObject> Scene::DetachRootObject(GameObject *gameObject)
 
 void Scene::AttachRootObject(std::unique_ptr<GameObject> gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject)
         return;
     gameObject->SetScene(this); // Ensure scene is set
+    RegisterObjectSubtree(gameObject.get());
     m_rootObjects.push_back(std::move(gameObject));
     ++m_structureVersion;
 }
 
 bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
 {
-    if (!gameObject || gameObject->GetParent() || gameObject->GetScene() != this || &destination == this)
-        return false;
+    return gameObject && !gameObject->GetParent() && TransferObjectTo(gameObject, destination, nullptr);
+}
 
-    auto rootIt =
-        std::find_if(m_rootObjects.begin(), m_rootObjects.end(),
-                     [gameObject](const std::unique_ptr<GameObject> &root) { return root.get() == gameObject; });
-    if (rootIt == m_rootObjects.end() || IsPendingDestroy(gameObject))
+bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent)
+{
+    RequireWritableWorld();
+    destination.RequireWritableWorld();
+    if (!gameObject || gameObject->GetScene() != this || &destination == this || IsPreview() || destination.IsPreview())
+        return false;
+    if (destinationParent &&
+        (destinationParent->GetScene() != &destination || destination.IsPendingDestroy(destinationParent)))
+        return false;
+    for (GameObject *ancestor = gameObject; ancestor; ancestor = ancestor->GetParent())
+        if (ancestor->IsDestroying())
+            return false;
+    for (GameObject *ancestor = destinationParent; ancestor; ancestor = ancestor->GetParent())
+        if (ancestor->IsDestroying())
+            return false;
+
+    auto &sourceSiblings = gameObject->GetParent() ? gameObject->GetParent()->m_children : m_rootObjects;
+    const auto sourceIt = std::find_if(sourceSiblings.begin(), sourceSiblings.end(),
+                                       [gameObject](const auto &owned) { return owned.get() == gameObject; });
+    if (sourceIt == sourceSiblings.end() || IsPendingDestroy(gameObject))
         return false;
 
     std::vector<GameObject *> objects;
+    std::vector<Component *> components;
     std::vector<PyComponentProxy *> pythonComponents;
     std::unordered_set<uint64_t> componentIds;
     const auto collect = [&](const auto &self, GameObject *object) -> void {
@@ -435,11 +499,13 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
         objects.push_back(object);
         if (Transform *transform = object->GetTransform()) {
             componentIds.insert(transform->GetComponentID());
+            components.push_back(transform);
         }
         for (const auto &owned : object->GetAllComponents()) {
             if (!owned)
                 continue;
             componentIds.insert(owned->GetComponentID());
+            components.push_back(owned.get());
             if (auto *proxy = dynamic_cast<PyComponentProxy *>(owned.get()))
                 pythonComponents.push_back(proxy);
         }
@@ -449,12 +515,22 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
     collect(collect, gameObject);
 
     for (GameObject *object : objects) {
-        if (IsPendingDestroy(object))
+        if (object->IsDestroying() || IsPendingDestroy(object))
             return false;
         const auto collision = destination.m_objectsById.find(object->GetID());
         if (collision != destination.m_objectsById.end() && collision->second != object)
             return false;
     }
+
+    // All ownership/identity rejection happens before retiring source state.
+    auto &destinationSiblings = destinationParent ? destinationParent->m_children : destination.m_rootObjects;
+    destinationSiblings.reserve(destinationSiblings.size() + 1);
+    destination.m_objectsById.reserve(destination.m_objectsById.size() + objects.size());
+    destination.m_pendingStartComponentIds.reserve(destination.m_pendingStartComponentIds.size() +
+                                                   m_pendingStartComponentIds.size());
+    destination.m_pendingStartComponentIdSet.reserve(destination.m_pendingStartComponentIdSet.size() +
+                                                     m_pendingStartComponentIds.size());
+    destination.CopySubtreeAuthoringIdentity(*gameObject, *this);
 
     std::vector<uint64_t> migratedStarts;
     migratedStarts.reserve(m_pendingStartComponentIds.size());
@@ -477,15 +553,15 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
         }
     }
 
-    std::unique_ptr<GameObject> owned = std::move(*rootIt);
-    m_rootObjects.erase(rootIt);
+    std::unique_ptr<GameObject> owned = std::move(*sourceIt);
+    sourceSiblings.erase(sourceIt);
     for (GameObject *object : objects)
-        m_objectsById.erase(object->GetID());
+        UnregisterGameObject(object->GetID());
 
+    owned->m_parent = destinationParent;
     owned->SetScene(&destination);
-    for (GameObject *object : objects)
-        destination.m_objectsById[object->GetID()] = object;
-    destination.m_rootObjects.push_back(std::move(owned));
+    destination.RegisterObjectSubtree(owned.get());
+    destinationSiblings.push_back(std::move(owned));
     if (!destination.m_mainCamera && migratedMainCamera)
         destination.m_mainCamera = migratedMainCamera;
     for (uint64_t id : migratedStarts) {
@@ -499,13 +575,9 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
     // Component and GameObject handles include the owning Scene world ID.
     // Rebind the existing Python object to the same native proxy so the move
     // does not turn an otherwise-live script component into a stale wrapper.
-    for (PyComponentProxy *proxy : pythonComponents) {
-        try {
-            proxy->RebindPythonMirror();
-        } catch (const std::exception &error) {
-            INXLOG_ERROR("Failed to refresh persistent Python component binding: ", error.what());
-        }
-    }
+    PyComponentProxy::RebindBuiltinComponentMirrors(components);
+    for (PyComponentProxy *proxy : pythonComponents)
+        proxy->RebindPythonMirror();
     return true;
 }
 
@@ -531,14 +603,74 @@ void Scene::SetRootObjectSiblingIndex(GameObject *gameObject, int newIndex)
 
 void Scene::UnregisterGameObject(uint64_t id)
 {
+    const auto entry = m_objectsById.find(id);
+    if (entry != m_objectsById.end()) {
+        m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, id + 1);
+        GameObject *object = entry->second;
+        m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, object->GetTransform()->GetComponentID() + 1);
+        for (const auto &component : object->GetAllComponents())
+            m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, component->GetComponentID() + 1);
+    }
     m_objectsById.erase(id);
 }
 
 void Scene::RegisterGameObject(GameObject *gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject)
         return;
     m_objectsById[gameObject->GetID()] = gameObject;
+    if (m_authoringIdentity.objects.find(gameObject->GetID()) == m_authoringIdentity.objects.end())
+        m_authoringIdentity.objects.emplace(gameObject->GetID(), GenerateGuid());
+    m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, gameObject->GetID() + 1);
+    RegisterAuthoringComponent(gameObject->GetTransform()->GetComponentID());
+    for (const auto &component : gameObject->GetAllComponents())
+        RegisterAuthoringComponent(component->GetComponentID());
+}
+
+void Scene::RegisterAuthoringComponent(uint64_t componentId)
+{
+    if (m_authoringIdentity.components.find(componentId) == m_authoringIdentity.components.end())
+        m_authoringIdentity.components.emplace(componentId, GenerateGuid());
+    m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, componentId + 1);
+}
+
+void Scene::CopySubtreeAuthoringIdentity(const GameObject &object, const Scene &source)
+{
+    SceneAuthoringIdentity incoming;
+    const auto collect = [&](const auto &self, const GameObject &member) -> void {
+        incoming.objects.emplace(member.GetID(), source.m_authoringIdentity.objects.at(member.GetID()));
+        const auto addComponent = [&](uint64_t id) {
+            incoming.components.emplace(id, source.m_authoringIdentity.components.at(id));
+        };
+        addComponent(member.GetTransform()->GetComponentID());
+        for (const auto &component : member.GetAllComponents())
+            addComponent(component->GetComponentID());
+        for (const auto &child : member.GetChildren())
+            self(self, *child);
+    };
+    collect(collect, object);
+    const auto validate = [](const auto &destination, const auto &values) {
+        std::unordered_map<std::string, uint64_t> incomingGuids;
+        incomingGuids.reserve(values.size());
+        for (const auto &[id, guid] : values) {
+            if (!incomingGuids.emplace(guid, id).second)
+                throw std::logic_error("Scene move source aliases author identities");
+            const auto existing = destination.find(id);
+            if (existing != destination.end() && existing->second != guid)
+                throw std::invalid_argument("Scene move would replace a reserved runtime identity");
+        }
+        for (const auto &[id, guid] : destination) {
+            const auto incoming = incomingGuids.find(guid);
+            if (incoming != incomingGuids.end() && incoming->second != id)
+                throw std::invalid_argument("Scene move would duplicate an author identity in the destination");
+        }
+    };
+    // Preflight the entire subtree before changing either hierarchy or table.
+    validate(m_authoringIdentity.objects, incoming.objects);
+    validate(m_authoringIdentity.components, incoming.components);
+    m_authoringIdentity.objects.insert(incoming.objects.begin(), incoming.objects.end());
+    m_authoringIdentity.components.insert(incoming.components.begin(), incoming.components.end());
 }
 
 std::vector<GameObject *> Scene::GetAllObjects() const
@@ -1234,6 +1366,7 @@ Component *Scene::FindComponentByID(uint64_t componentId) const
 
 GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent, bool instantiateInWorldSpace)
 {
+    RequireWritableWorld();
     if (!source)
         return nullptr;
 
@@ -1318,6 +1451,7 @@ GameObject *Scene::InstantiateFromJson(const std::string &jsonStr, GameObject *p
 
 GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, GameObject *parent)
 {
+    RequireWritableWorld();
     const size_t firstPending = m_pendingPyComponents.size();
     auto clone = BuildGameObjectFromJsonImpl(document, /*preserveIds=*/false);
     if (!clone)
@@ -1434,12 +1568,32 @@ nlohmann::json Scene::SerializeDocument() const
         objects.push_back(std::move(document));
     j["objects"] = objectsArray;
 
+    for (const auto &[id, object] : m_objectsById) {
+        m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, id + 1);
+        m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, object->GetTransform()->GetComponentID() + 1);
+        for (const auto &component : object->GetAllComponents())
+            m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, component->GetComponentID() + 1);
+    }
+    j["nextObjectId"] = m_nextDocumentObjectId;
+    j["nextComponentId"] = m_nextDocumentComponentId;
+    j["authoring_identity"] = SerializeSceneAuthoringIdentity(m_authoringIdentity);
+
     return j;
 }
 
 std::string Scene::Serialize() const
 {
     return DumpSceneDocument(SerializeDocument(), m_objectsById.size());
+}
+
+nlohmann::json Scene::SerializeAuthoringDocument() const
+{
+    return EncodeSceneAuthoringDocument(SerializeDocument(), m_authoringIdentity);
+}
+
+std::string Scene::SerializeAuthoring() const
+{
+    return SerializeAuthoringDocument().dump(2) + '\n';
 }
 
 std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
@@ -1458,6 +1612,7 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
 bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap,
                                 std::unordered_map<uint64_t, uint64_t> *componentIdRemap)
 {
+    RequireWritableWorld();
     try {
         using ProfileClock = std::chrono::steady_clock;
         const auto profileStart = ProfileClock::now();
@@ -1466,6 +1621,21 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         };
         if (!ValidateSceneDocumentHeader(j))
             return false;
+
+        const bool hasAuthoringIdentity = j.contains("authoring_identity");
+        SceneAuthoringIdentity documentIdentity = hasAuthoringIdentity
+                                                      ? DeserializeSceneAuthoringIdentity(j.at("authoring_identity"))
+                                                      : SceneAuthoringIdentity{};
+        // Reserve tombstones too. A subsequently allocated component must not
+        // accidentally satisfy a reference to a deleted authoring target.
+        for (const auto &[id, guid] : documentIdentity.objects) {
+            (void)guid;
+            GameObject::EnsureNextID(id);
+        }
+        for (const auto &[id, guid] : documentIdentity.components) {
+            (void)guid;
+            Component::EnsureNextComponentID(id);
+        }
 
         // Build the complete graph with temporary IDs in an isolated Scene.
         // Transform/physics stores can hold both graphs, while temporary component
@@ -1587,16 +1757,27 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             for (const ObjectIdAssignment &assignment : collection.objects) {
                 if (!objectIds.insert(assignment.documentId).second)
                     throw std::invalid_argument("scene contains a duplicate GameObject id");
+                if (hasAuthoringIdentity) {
+                    if (!documentIdentity.objects.count(assignment.documentId))
+                        throw std::invalid_argument("Scene snapshot is missing author identity for GameObject " +
+                                                    std::to_string(assignment.documentId));
+                } else
+                    documentIdentity.objects.emplace(assignment.documentId, GenerateGuid());
             }
         }
 
         std::unordered_set<uint64_t> occupiedObjectIds;
+        std::unordered_set<uint64_t> occupiedComponentIds;
         const auto collectOccupiedObjectIds = [&](const Scene *scene) {
             if (!scene || scene == this)
                 return;
-            for (GameObject *object : scene->GetAllObjects()) {
-                if (object)
-                    occupiedObjectIds.insert(object->GetID());
+            for (const auto &[id, guid] : scene->m_authoringIdentity.objects) {
+                (void)guid;
+                occupiedObjectIds.insert(id);
+            }
+            for (const auto &[id, guid] : scene->m_authoringIdentity.components) {
+                (void)guid;
+                occupiedComponentIds.insert(id);
             }
         };
         const SceneManager &sceneManager = SceneManager::Instance();
@@ -1613,7 +1794,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
                 if (occupiedObjectIds.find(publishedId) != occupiedObjectIds.end()) {
                     do {
                         publishedId = GameObject::GenerateID();
-                    } while (objectIds.find(publishedId) != objectIds.end() ||
+                    } while (documentIdentity.objects.find(publishedId) != documentIdentity.objects.end() ||
                              publishedObjectIds.find(publishedId) != publishedObjectIds.end());
                     committedObjectIdRemap.emplace(assignment.documentId, publishedId);
                 }
@@ -1635,10 +1816,45 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
                 pythonComponentIds.push_back(componentId);
             }
         }
+        for (const uint64_t id : componentIds) {
+            if (hasAuthoringIdentity) {
+                if (!documentIdentity.components.count(id))
+                    throw std::invalid_argument("Scene snapshot is missing author identity for component " +
+                                                std::to_string(id));
+            } else
+                documentIdentity.components.emplace(id, GenerateGuid());
+        }
+        for (const auto &[id, guid] : documentIdentity.objects) {
+            (void)guid;
+            if (objectIds.count(id) || !publishedObjectIds.count(id))
+                continue;
+            uint64_t freshId;
+            do {
+                freshId = GameObject::GenerateID();
+            } while (documentIdentity.objects.count(freshId) || publishedObjectIds.count(freshId));
+            committedObjectIdRemap.emplace(id, freshId);
+            publishedObjectIds.insert(freshId);
+        }
+        for (const auto &[key, identities] :
+             {std::pair<const char *, const std::unordered_map<uint64_t, std::string> &>{"nextObjectId",
+                                                                                         documentIdentity.objects},
+              {"nextComponentId", documentIdentity.components}}) {
+            uint64_t largest = 0;
+            for (const auto &[id, guid] : identities) {
+                (void)guid;
+                largest = std::max(largest, id);
+            }
+            if (j.contains(key) && j[key].get<uint64_t>() <= largest)
+                throw std::invalid_argument(std::string(key) + " must exceed all document identities");
+        }
         const auto profileIndexed = ProfileClock::now();
 
         bool requiresFreshComponentIds = false;
         for (const auto &[component, componentId] : componentIdAssignments) {
+            if (occupiedComponentIds.count(componentId)) {
+                requiresFreshComponentIds = true;
+                break;
+            }
             Component *occupant = Component::FindByComponentId(componentId);
             if (!occupant || occupant == component)
                 continue;
@@ -1650,6 +1866,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             }
         }
         for (const uint64_t componentId : pythonComponentIds) {
+            if (occupiedComponentIds.count(componentId))
+                requiresFreshComponentIds = true;
             Component *occupant = Component::FindByComponentId(componentId);
             if (!occupant)
                 continue;
@@ -1690,10 +1908,6 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
                 nativeComponentIdRemap.emplace(componentId, component->GetComponentID());
                 componentId = component->GetComponentID();
             }
-            for (const auto &[component, componentId] : componentIdAssignments) {
-                (void)componentId;
-                component->RemapComponentReferences(nativeComponentIdRemap);
-            }
             committedComponentIdRemap = std::move(nativeComponentIdRemap);
 
             // Python components do not have native proxies during staging, so
@@ -1725,6 +1939,35 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             }
         }
 
+        std::unordered_set<uint64_t> publishedComponentIds = occupiedComponentIds;
+        for (const auto &[component, id] : componentIdAssignments) {
+            (void)component;
+            publishedComponentIds.insert(id);
+        }
+        publishedComponentIds.insert(pythonComponentIds.begin(), pythonComponentIds.end());
+        for (const auto &[id, guid] : documentIdentity.components) {
+            (void)guid;
+            if (componentIds.count(id))
+                continue;
+            Component *occupant = Component::FindByComponentId(id);
+            const auto *owner = occupant ? occupant->GetGameObject() : nullptr;
+            const bool otherWorld = occupant && (!owner || owner->GetScene() != this);
+            if (!publishedComponentIds.count(id) && !otherWorld)
+                continue;
+            uint64_t freshId;
+            do {
+                freshId = Component::GenerateComponentID();
+            } while (documentIdentity.components.count(freshId) || publishedComponentIds.count(freshId));
+            committedComponentIdRemap.emplace(id, freshId);
+            publishedComponentIds.insert(freshId);
+        }
+        for (const auto &[component, id] : componentIdAssignments) {
+            (void)id;
+            component->RemapComponentReferences(committedComponentIdRemap);
+        }
+        auto publishedIdentity =
+            RemapSceneAuthoringIdentity(documentIdentity, committedObjectIdRemap, committedComponentIdRemap);
+
         auto &componentRegistry = Component::GetInstanceRegistry();
         componentRegistry.reserve(componentRegistry.size() + componentIdAssignments.size());
         using ComponentRegistry = std::remove_reference_t<decltype(componentRegistry)>;
@@ -1742,12 +1985,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         // Commit starts here. All schema/factory/component validation has completed.
         m_mainCamera = nullptr;
         SceneManager::Instance().ClearComponentRegistries(this);
-        m_rootObjects.clear();
-        m_objectsById.clear();
-        m_pendingDestroy.clear();
-        m_pendingDestroySet.clear();
-        m_pendingStartComponentIds.clear();
-        m_pendingPyComponents.clear();
+        RetireRootObjects();
         m_hasStarted = false;
 
         m_name = std::move(staging.m_name);
@@ -1766,6 +2004,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             componentRegistry.insert(std::move(node));
         }
         m_objectsById = std::move(staging.m_objectsById);
+        m_authoringIdentity = std::move(publishedIdentity);
         for (auto &root : staging.m_rootObjects) {
             root->SetScene(this);
             m_rootObjects.push_back(std::move(root));
@@ -1778,8 +2017,20 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             (void)documentId;
             GameObject::EnsureNextID(publishedId);
         }
-        for (const uint64_t objectId : objectIds)
-            GameObject::EnsureNextID(objectId);
+        for (const auto &[id, guid] : m_authoringIdentity.objects) {
+            (void)guid;
+            GameObject::EnsureNextID(id);
+            m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, id + 1);
+        }
+        for (const auto &[id, guid] : m_authoringIdentity.components) {
+            (void)guid;
+            Component::EnsureNextComponentID(id);
+            m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, id + 1);
+        }
+        m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, j.value("nextObjectId", uint64_t{1}));
+        m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, j.value("nextComponentId", uint64_t{1}));
+        GameObject::EnsureNextID(m_nextDocumentObjectId - 1);
+        Component::EnsureNextComponentID(m_nextDocumentComponentId - 1);
         if (objectIdRemap)
             *objectIdRemap = std::move(committedObjectIdRemap);
         if (componentIdRemap)
@@ -1826,7 +2077,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
 bool Scene::SaveToFile(const std::string &path) const
 {
     try {
-        const std::string jsonStr = DumpSceneDocument(SerializeDocument(), m_objectsById.size());
+        const std::string jsonStr = SerializeAuthoring();
         DocumentStore::Instance().WriteAndWait(path, jsonStr);
         return true;
     } catch (const std::exception &e) {

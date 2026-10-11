@@ -22,6 +22,7 @@
 #include "MeshCollider.h"
 #include "SceneManager.h"
 #include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 
@@ -69,6 +70,17 @@ static uint32_t GetPrimaryBodyId(GameObject *go)
 {
     auto *col = GetPrimaryBodyCollider(go);
     return (col && col->GetBodyId() != 0xFFFFFFFF) ? col->GetBodyId() : 0xFFFFFFFF;
+}
+
+static bool RotationChanged(const glm::quat &current, const glm::quat &previous)
+{
+    // q and -q represent the same orientation. Compare aligned components:
+    // 1 - abs(dot(q, previous)) loses small angles to float cancellation, and
+    // a 1e-4 dot tolerance silently discards rotations below about 1.6 degrees.
+    const glm::quat aligned = glm::dot(current, previous) < 0.0f ? -previous : previous;
+    const glm::quat delta = current - aligned;
+    constexpr float componentToleranceSquared = 1e-12f;
+    return glm::dot(delta, delta) > componentToleranceSquared;
 }
 
 static int MapCollisionDetectionModeToMotionQuality(int mode, bool isKinematic)
@@ -313,7 +325,7 @@ void Rigidbody::SetMass(float mass)
         throw std::invalid_argument("mass must be finite and at least 0.001");
     auto &d = DataMut();
     d.mass = mass;
-    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyMassProperties(id, d.mass); });
+    ApplyConstraints();
 }
 
 void Rigidbody::SetDrag(float drag)
@@ -528,11 +540,12 @@ void Rigidbody::AddForceAtPosition(const glm::vec3 &force, const glm::vec3 &posi
 void Rigidbody::SubmitForceCommand(ForceCommand command)
 {
     const uint32_t bodyId = GetPrimaryBodyId(GetGameObject());
-    if (bodyId == 0xFFFFFFFF) {
+    auto &world = PhysicsWorld::Instance();
+    if (!world.IsBodyInBroadphase(bodyId)) {
         m_pendingForceCommands.push_back(std::move(command));
         return;
     }
-    ApplyForceCommand(PhysicsWorld::Instance(), bodyId, command);
+    ApplyForceCommand(world, bodyId, command);
 }
 
 void Rigidbody::ApplyForceCommand(PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command)
@@ -597,9 +610,12 @@ void Rigidbody::FlushPendingForceCommands()
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("cannot flush force commands without a physics body");
 
+    auto &world = PhysicsWorld::Instance();
+    if (!world.IsBodyInBroadphase(bodyId))
+        return;
+
     auto commands = std::move(m_pendingForceCommands);
     m_pendingForceCommands.clear();
-    auto &world = PhysicsWorld::Instance();
     for (const auto &command : commands)
         ApplyForceCommand(world, bodyId, command);
 }
@@ -627,8 +643,7 @@ void Rigidbody::MovePosition(const glm::vec3 &position)
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("MovePosition requires an enabled Collider body");
 
-    const glm::quat rotation = pw->GetBodyRotation(bodyId);
-    pw->MoveBodyKinematic(bodyId, position, rotation, dt);
+    pw->MoveBodyKinematicPosition(bodyId, position, dt);
 }
 
 void Rigidbody::MoveRotation(const glm::quat &rotation)
@@ -648,8 +663,7 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("MoveRotation requires an enabled Collider body");
 
-    const glm::vec3 position = pw->GetBodyPosition(bodyId);
-    pw->MoveBodyKinematic(bodyId, position, glm::normalize(rotation), dt);
+    pw->MoveBodyKinematicRotation(bodyId, glm::normalize(rotation), dt);
 }
 
 // ============================================================================
@@ -864,6 +878,8 @@ void Rigidbody::SyncPhysicsToTransform()
             c->SetLastSyncedTransform(cachePos, cacheRot);
         }
     }
+    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
+        PreserveDescendantPhysicsPoses();
 }
 
 void Rigidbody::ApplyInterpolatedTransform(float alpha)
@@ -907,6 +923,36 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
             c->SetLastSyncedTransform(presentedPos, d.lastSyncedRotation);
         }
     }
+    PreserveDescendantPhysicsPoses();
+}
+
+void Rigidbody::PreserveDescendantPhysicsPoses()
+{
+    auto *go = GetGameObject();
+    if (!go)
+        return;
+    auto &transforms = TransformECSStore::Instance();
+    const auto preserve = [&](auto &&self, GameObject *child) -> void {
+        if (!child->IsActive())
+            return;
+        auto *body = child->GetComponent<Rigidbody>();
+        if (body && body->IsEnabled() && !body->IsKinematic() && body->Data().hasPhysicsPose &&
+            body->HasLinkedColliders()) {
+            const auto handle = child->GetTransform()->GetECSHandle();
+            // An already published solver/interpolated or authored target is
+            // authoritative. Do not replace it with an older interpolation
+            // sample. Its own publication already handled its descendants.
+            if (!transforms.IsFrameCacheActiveFor(handle) || !transforms.HasFrameCacheWorldPoseOverride(handle))
+                body->ApplyInterpolatedTransform(1.0f);
+            return;
+        }
+        for (size_t i = 0; i < child->GetChildCount(); ++i)
+            self(self, child->GetChild(i));
+    };
+    // Only traverse this moving actor's descendants, never the whole physics
+    // pool. Cached solver poses need no Jolt read, wake-up or teleport.
+    for (size_t i = 0; i < go->GetChildCount(); ++i)
+        preserve(preserve, go->GetChild(i));
 }
 
 void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
@@ -924,7 +970,6 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     glm::quat currentRot = tf->GetWorldRotation();
 
     const float posEps = 1e-4f;
-    const float rotEps = 1e-4f;
 
     // First frame: initialise cache from current Transform.
     // Also check whether the script already moved the Transform away from
@@ -945,8 +990,7 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
 
         glm::vec3 bodyPos = pw.GetBodyPosition(bodyId);
         const glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bodyId));
-        bool firstFrameDiff =
-            glm::length(currentPos - bodyPos) > posEps || (1.0f - std::abs(glm::dot(currentRot, bodyRot))) > rotEps;
+        bool firstFrameDiff = glm::length(currentPos - bodyPos) > posEps || RotationChanged(currentRot, bodyRot);
         if (!firstFrameDiff)
             return;
 
@@ -963,14 +1007,10 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     }
 
     bool posDiff = glm::length(currentPos - d.lastSyncedPosition) > posEps;
-    bool rotDiff = (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))) > rotEps;
+    bool rotDiff = RotationChanged(currentRot, d.lastSyncedRotation);
 
     if (!posDiff && !rotDiff)
         return; // Transform unchanged since last physics write — nothing to do
-
-    // INXLOG_WARN("Rigidbody::SyncExternalMovesToPhysics TELEPORT — posDiff=", posDiff, " rotDiff=", rotDiff,
-    //             " posDelta=", glm::length(currentPos - d.lastSyncedPosition),
-    //             " rotDelta=", (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))));
 
     auto &pw = PhysicsWorld::Instance();
     if (!pw.IsInitialized())
@@ -1076,7 +1116,6 @@ void Rigidbody::ApplyConfigurationToBody(uint32_t bodyId)
         throw std::runtime_error("cannot configure a body before PhysicsWorld initialization");
 
     auto &data = DataMut();
-    world.SetBodyMassProperties(bodyId, data.mass);
     world.SetBodyDamping(bodyId, data.drag, data.angularDrag);
     world.SetBodyGravityFactor(bodyId, data.useGravity ? 1.0f : 0.0f);
     const int allowedDofs = 0x3F & ~(data.constraints >> 1);

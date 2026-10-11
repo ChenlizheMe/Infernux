@@ -18,6 +18,11 @@ class GraphicsCommandEncoder
         void (*pushConstants)(void *, GraphicsPipelineHandle, ShaderStage, uint32_t, const void *) = nullptr;
         void (*draw)(void *, uint32_t, uint32_t, uint32_t, uint32_t) = nullptr;
         void (*drawIndirect)(void *, BufferHandle, uint64_t, uint32_t, uint32_t) = nullptr;
+
+        [[nodiscard]] constexpr bool IsComplete() const noexcept
+        {
+            return bindPipeline && bindGroup && pushConstants && draw && drawIndirect;
+        }
     };
 
     constexpr GraphicsCommandEncoder() noexcept = default;
@@ -29,6 +34,14 @@ class GraphicsCommandEncoder
     [[nodiscard]] constexpr bool IsValid() const noexcept
     {
         return m_context != nullptr && m_dispatch != nullptr;
+    }
+
+    /// A valid context can still expose an incomplete optional table. Callers
+    /// that require the full graphics contract must check this explicitly;
+    /// incomplete tables are never treated as a successful command stream.
+    [[nodiscard]] constexpr bool HasCompleteDispatch() const noexcept
+    {
+        return IsValid() && m_dispatch->IsComplete();
     }
 
     void BindPipeline(GraphicsPipelineHandle pipeline) const
@@ -77,6 +90,11 @@ class ComputeCommandEncoder
         void (*pushConstants)(void *, ComputePipelineHandle, uint32_t, const void *) = nullptr;
         void (*dispatch)(void *, uint32_t, uint32_t, uint32_t) = nullptr;
         void (*dispatchIndirect)(void *, BufferHandle, uint64_t) = nullptr;
+
+        [[nodiscard]] constexpr bool IsComplete() const noexcept
+        {
+            return bindPipeline && bindGroup && pushConstants && dispatch && dispatchIndirect;
+        }
     };
 
     constexpr ComputeCommandEncoder() noexcept = default;
@@ -88,6 +106,11 @@ class ComputeCommandEncoder
     [[nodiscard]] constexpr bool IsValid() const noexcept
     {
         return m_context != nullptr && m_dispatch != nullptr;
+    }
+
+    [[nodiscard]] constexpr bool HasCompleteDispatch() const noexcept
+    {
+        return IsValid() && m_dispatch->IsComplete();
     }
 
     void BindPipeline(ComputePipelineHandle pipeline) const
@@ -165,6 +188,12 @@ class TransferCommandEncoder
         void (*copyTexture)(void *, TextureHandle, TextureHandle, const TextureCopyRegion &) = nullptr;
         void (*resolveTexture)(void *, TextureHandle, TextureHandle, const TextureResolveRegion &) = nullptr;
         bool (*fillBuffer)(void *, BufferHandle, uint64_t, uint64_t, uint32_t) = nullptr;
+        bool (*updateBuffer)(void *, BufferHandle, uint64_t, const void *, uint64_t) = nullptr;
+
+        [[nodiscard]] constexpr bool IsComplete() const noexcept
+        {
+            return copyBuffer && copyTexture && resolveTexture && fillBuffer && updateBuffer;
+        }
     };
 
     constexpr TransferCommandEncoder() noexcept = default;
@@ -176,6 +205,11 @@ class TransferCommandEncoder
     [[nodiscard]] constexpr bool IsValid() const noexcept
     {
         return m_context != nullptr && m_dispatch != nullptr;
+    }
+
+    [[nodiscard]] constexpr bool HasCompleteDispatch() const noexcept
+    {
+        return IsValid() && m_dispatch->IsComplete();
     }
 
     void CopyBuffer(BufferHandle source, BufferHandle destination, const BufferCopyRegion &region) const
@@ -193,6 +227,21 @@ class TransferCommandEncoder
     {
         return IsValid() && m_dispatch->fillBuffer && destination.IsValid() && byteSize > 0 && offset % 4 == 0 &&
                byteSize % 4 == 0 && m_dispatch->fillBuffer(m_context, destination, offset, byteSize, value);
+    }
+
+    /// Capture host bytes into this recording's immutable upload payload. The
+    /// caller may change or release data immediately after successful recording.
+    /// The destination changes only when the transfer executes. Callers own
+    /// transfer-write barriers and completion dependencies. Requires
+    /// TransferDestination usage and nonempty, four-byte-aligned ranges. Large
+    /// updates require submission-owned staging storage in the native recording
+    /// scope. This command must be outside a render pass.
+    [[nodiscard]] bool UpdateBuffer(BufferHandle destination, uint64_t offset, const void *data,
+                                    uint64_t byteSize) const
+    {
+        return IsValid() && m_dispatch->updateBuffer && destination.IsValid() && data && byteSize > 0 &&
+               offset % 4 == 0 && byteSize % 4 == 0 &&
+               m_dispatch->updateBuffer(m_context, destination, offset, data, byteSize);
     }
 
     void CopyTexture(TextureHandle source, TextureHandle destination, const TextureCopyRegion &region) const

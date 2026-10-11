@@ -1,7 +1,7 @@
 # Gizmos
 
 <div class="class-info">
-类位于 <b>Infernux.gizmos</b>
+类位于 <b>infernux.gizmos</b>
 </div>
 
 ## 描述

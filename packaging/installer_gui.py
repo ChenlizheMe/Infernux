@@ -7,14 +7,15 @@ import subprocess
 import sys
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
+    QFrame,
     QPushButton,
     QProgressBar,
     QVBoxLayout,
@@ -125,12 +126,16 @@ def _create_start_menu_shortcut(install_dir: str) -> None:
         shortcut_path = os.path.join(shortcut_dir, "Infernux Hub.lnk")
         exe_path = os.path.join(install_dir, "Infernux Hub.exe")
 
+        # Paths are PowerShell literals, never expandable strings or code.
+        def literal(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
         # Use PowerShell to create .lnk — avoids pywin32 dependency
         ps_script = (
             f'$ws = New-Object -ComObject WScript.Shell; '
-            f'$s = $ws.CreateShortcut("{shortcut_path}"); '
-            f'$s.TargetPath = "{exe_path}"; '
-            f'$s.WorkingDirectory = "{install_dir}"; '
+            f'$s = $ws.CreateShortcut({literal(shortcut_path)}); '
+            f'$s.TargetPath = {literal(exe_path)}; '
+            f'$s.WorkingDirectory = {literal(install_dir)}; '
             f'$s.Description = "Infernux Hub"; '
             f'$s.Save()'
         )
@@ -192,15 +197,59 @@ class InstallWorker(QObject):
             self.error.emit(str(exc))
 
 
+class _BrandRail(QWidget):
+    """Left rail of the installer: icon, product plate and a hazard spine."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(220)
+        icon_path = os.path.join(_resource_dir(), "icon.png")
+        self._icon = QPixmap(icon_path) if os.path.isfile(icon_path) else QPixmap()
+
+    def paintEvent(self, _event):
+        from view.forge import caps_font, qcolor, theme
+        palette = theme()
+        painter = QPainter(self)
+        rect = self.rect()
+        painter.fillRect(rect, QColor(palette.sidebar_bg))
+        stripe = 8
+        painter.fillRect(rect.width() - stripe, 0, stripe, rect.height(), QColor(palette.bg_deep))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(palette.accent_fill))
+        x0 = rect.width() - stripe
+        for y in range(-stripe * 2, rect.height() + stripe, stripe * 2):
+            painter.drawPolygon(QPolygonF([QPointF(x0, y + stripe), QPointF(x0 + stripe, y),
+                                           QPointF(x0 + stripe, y + stripe), QPointF(x0, y + stripe * 2)]))
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        if not self._icon.isNull():
+            painter.drawPixmap(QRectF(24, 28, 48, 48).toRect(), self._icon)
+        painter.setPen(QColor(palette.text_primary))
+        painter.setFont(caps_font(17, tracking=3.0))
+        painter.drawText(QRectF(24, 92, 180, 24), Qt.AlignmentFlag.AlignLeft, "INFERNUX")
+        painter.setPen(QColor(palette.accent))
+        painter.setFont(caps_font(10, tracking=1.6))
+        painter.drawText(QRectF(24, 120, 180, 16), Qt.AlignmentFlag.AlignLeft, tr("HUB INSTALLER"))
+        painter.setPen(qcolor(palette.text_muted, 220))
+        painter.setFont(caps_font(9, tracking=1.0))
+        lines = (f"PYTHON {_BUNDLED_PYTHON_VERSION}", tr("ISOLATED RUNTIME"), tr("USER-SCOPE INSTALL"))
+        for index, line in enumerate(lines):
+            painter.drawText(QRectF(24, rect.height() - 92 + index * 18, 180, 14), Qt.AlignmentFlag.AlignLeft, line)
+        painter.end()
+
+
 class InstallerWindow(QWidget):
     def __init__(self):
         super().__init__()
+        from view.forge import SegmentMeter, StatusLed, mono_label
         self._installed_dir = ""
         self._thread: QThread | None = None
         self._worker: InstallWorker | None = None
 
         self.setWindowTitle(tr("Infernux Hub Installer"))
-        self.setFixedWidth(600)
+        self.setObjectName("central")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedWidth(780)
 
         icon_path = os.path.join(_resource_dir(), "icon.png")
         if os.path.isfile(icon_path):
@@ -208,12 +257,19 @@ class InstallerWindow(QWidget):
 
         default_dir = _default_install_dir()
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 20, 20, 20)
-        root.setSpacing(14)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(_BrandRail())
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(30, 26, 30, 22)
+        root.setSpacing(10)
+        outer.addWidget(content, 1)
 
+        root.addWidget(mono_label("§01  /  " + tr("INSTALL"), "pageKicker", spacing=1.8))
         title = QLabel(tr("Install Infernux Hub"))
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        title.setObjectName("dialogTitle")
         root.addWidget(title)
 
         intro = QLabel(
@@ -224,14 +280,17 @@ class InstallerWindow(QWidget):
                 version=_BUNDLED_PYTHON_VERSION,
             )
         )
+        intro.setObjectName("dialogSubtitle")
         intro.setWordWrap(True)
-        intro.setMinimumHeight(56)
-        intro.setContentsMargins(0, 0, 0, 6)
         root.addWidget(intro)
+        root.addSpacing(6)
 
-        changes_title = QLabel(tr("Installation changes"))
-        changes_title.setStyleSheet("font-weight: 600;")
-        root.addWidget(changes_title)
+        changes_box = QFrame()
+        changes_box.setObjectName("subjectCard")
+        changes_layout = QVBoxLayout(changes_box)
+        changes_layout.setContentsMargins(14, 10, 14, 12)
+        changes_layout.setSpacing(4)
+        changes_layout.addWidget(mono_label(tr("Installation changes").upper(), "fieldLabel", spacing=1.4))
         changes = QLabel(
             tr(
                 "The installer adds Infernux Hub application files, an isolated "
@@ -240,48 +299,96 @@ class InstallerWindow(QWidget):
                 "Installing updates requires confirmation."
             )
         )
+        changes.setObjectName("settingsDescription")
         changes.setWordWrap(True)
-        root.addWidget(changes)
+        changes_layout.addWidget(changes)
         policy = QLabel(
-            '<a href="https://infernux-engine.com/code-signing-policy.html">'
+            '<a style="color: #ff6e6e;" href="https://infernux-engine.com/code-signing-policy.html">'
             + tr("Code signing policy and privacy disclosure")
             + "</a>"
         )
         policy.setTextFormat(Qt.TextFormat.RichText)
         policy.setOpenExternalLinks(True)
-        root.addWidget(policy)
+        changes_layout.addWidget(policy)
+        root.addWidget(changes_box)
+        root.addSpacing(6)
 
-        root.addWidget(QLabel(tr("Install location")))
-
+        root.addWidget(mono_label(tr("Install location").upper(), "fieldLabel", spacing=1.4))
         path_row = QHBoxLayout()
+        path_row.setSpacing(8)
         self.path_edit = QLineEdit(default_dir)
+        self.path_edit.setFixedHeight(36)
         path_row.addWidget(self.path_edit, 1)
         browse_button = QPushButton(tr("Browse..."))
+        browse_button.setFixedSize(104, 36)
         browse_button.clicked.connect(self._browse)
         path_row.addWidget(browse_button)
         root.addLayout(path_row)
+        root.addSpacing(8)
 
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self._led = StatusLed("idle")
+        status_row.addWidget(self._led, 0, Qt.AlignmentFlag.AlignVCenter)
         self.status_label = QLabel(tr("Ready to install."))
+        self.status_label.setObjectName("monoValue")
         self.status_label.setWordWrap(True)
-        root.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, 1)
+        root.addLayout(status_row)
+        self._meter = SegmentMeter(height=6)
+        root.addWidget(self._meter)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
-        root.addWidget(self.progress_bar)
+        self.progress_bar.hide()
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(8)
         button_row.addStretch()
         self.install_button = QPushButton(tr("Install"))
+        self.install_button.setObjectName("primaryBtn")
+        self.install_button.setFixedHeight(36)
+        self.install_button.setMinimumWidth(120)
         self.install_button.clicked.connect(self._start_install)
         button_row.addWidget(self.install_button)
         self.launch_button = QPushButton(tr("Launch Hub"))
+        self.launch_button.setFixedHeight(36)
+        self.launch_button.setMinimumWidth(120)
         self.launch_button.setEnabled(False)
         self.launch_button.clicked.connect(self._launch_hub)
         button_row.addWidget(self.launch_button)
+        root.addStretch(1)
         root.addLayout(button_row)
-        self.setFixedHeight(max(410, root.totalHeightForWidth(self.width())))
+        # Word-wrapped disclosure decides the height in either language; polish first
+        # so the stylesheet's type sizes are measured, not the platform defaults.
+        self.ensurePolished()
+        for child in self.findChildren(QWidget):
+            child.ensurePolished()
+        # Nested frames do not forward height-for-width; pin the wrapped text
+        # to its measured height at the fixed content width.
+        content_width = self.width() - 220 - 60
+        intro.setMinimumHeight(intro.heightForWidth(content_width))
+        changes.setMinimumHeight(changes.heightForWidth(content_width - 28))
+        # Slack goes to the stretch above the buttons, never into clipped text.
+        self.setFixedHeight(max(500, outer.totalHeightForWidth(self.width()) + 48))
+
+    def _set_progress(self, state: str) -> None:
+        if state == "busy":
+            self._meter.set_fraction(None)
+            self._meter.set_tone("accent")
+            self._led.set_kind("busy")
+        elif state == "done":
+            self._meter.set_fraction(1.0)
+            self._meter.set_tone("ok")
+            self._led.set_kind("ok")
+        elif state == "failed":
+            self._meter.set_fraction(0.0)
+            self._led.set_kind("error")
+        else:
+            self._meter.set_fraction(0.0)
+            self._led.set_kind("idle")
 
     def _browse(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, tr("Select installation directory"), self.path_edit.text())
@@ -289,19 +396,20 @@ class InstallerWindow(QWidget):
             self.path_edit.setText(folder)
 
     def _start_install(self) -> None:
+        from view import dialogs
         install_dir = os.path.abspath(self.path_edit.text().strip())
         if not install_dir:
-            QMessageBox.warning(self, tr("Missing Directory"), tr("Please select an installation directory."))
+            dialogs.warning(self, tr("Missing Directory"), tr("Please select an installation directory."))
             return
 
         safety_error = install_target_error(install_dir)
         if safety_error:
-            QMessageBox.critical(self, tr("Unsafe Install Location"), safety_error)
+            dialogs.critical(self, tr("Unsafe Install Location"), safety_error)
             return
 
         if os.path.exists(install_dir) and os.listdir(install_dir):
             if not is_recognized_install_dir(install_dir):
-                QMessageBox.critical(
+                dialogs.critical(
                     self,
                     tr("Unrecognized Install Location"),
                     tr(
@@ -314,18 +422,21 @@ class InstallerWindow(QWidget):
                 "The selected Infernux Hub directory already contains files. Updating it will close any running "
                 "Infernux Hub process and replace the application files. Continue?"
             )
-            answer = QMessageBox.question(
+            answer = dialogs.question(
                 self,
                 tr("Directory Not Empty"),
                 warning,
+                dialogs.Yes | dialogs.No, dialogs.No,
+                labels={dialogs.Yes: tr("Replace and update"), dialogs.No: tr("Cancel")},
             )
-            if answer != QMessageBox.Yes:
+            if answer != dialogs.Yes:
                 return
 
         self.install_button.setEnabled(False)
         self.launch_button.setEnabled(False)
         self.status_label.setText(tr("Starting installation..."))
         self.progress_bar.setRange(0, 0)
+        self._set_progress("busy")
 
         self._thread = QThread(self)
         self._worker = InstallWorker(install_dir)
@@ -344,23 +455,34 @@ class InstallerWindow(QWidget):
         self._installed_dir = install_dir
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
+        self._set_progress("done")
         self.status_label.setText(tr("Installation completed successfully. Installed to: {path}", path=install_dir))
         self.install_button.setEnabled(True)
+        self.install_button.setObjectName("normalBtn")
+        self.launch_button.setObjectName("primaryBtn")
+        for button in (self.install_button, self.launch_button):
+            button.style().unpolish(button)
+            button.style().polish(button)
         self.launch_button.setEnabled(True)
+        self.launch_button.setFocus()
 
     def _on_install_failed(self, message: str) -> None:
+        from view import dialogs
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
+        self._set_progress("failed")
         self.install_button.setEnabled(True)
         self.status_label.setText(tr("Installation failed."))
-        QMessageBox.critical(self, tr("Installation Failed"), message)
+        summary, _, rest = message.partition("\n")
+        dialogs.critical(self, tr("Installation Failed"), summary, detail=message if rest.strip() else "")
 
     def _launch_hub(self) -> None:
+        from view import dialogs
         if not self._installed_dir:
             return
         exe_path = os.path.join(self._installed_dir, _hub_executable_name())
         if not os.path.isfile(exe_path):
-            QMessageBox.warning(self, tr("Launch Failed"), tr("Hub executable not found: {path}", path=exe_path))
+            dialogs.warning(self, tr("Launch Failed"), tr("Hub executable not found: {path}", path=exe_path))
             return
         if sys.platform == "win32":
             os.startfile(exe_path)
@@ -376,12 +498,27 @@ class InstallerWindow(QWidget):
             )
 
 
+def _apply_installer_theme(app) -> None:
+    from PySide6.QtGui import QFontDatabase
+    from style import StyleManager
+    from view.forge import ui_font
+    fonts = os.path.join(_resource_dir(), "fonts")
+    if os.path.isdir(fonts):
+        for name in sorted(os.listdir(fonts)):
+            if name.lower().endswith(".ttf"):
+                QFontDatabase.addApplicationFont(os.path.join(fonts, name))
+    app.setFont(ui_font(13))
+    app.is_dark_theme = True
+    app.setStyleSheet(StyleManager.get_stylesheet(True))
+
+
 def main() -> int:
     from hub_logging import configure_logging
     from hub_network import configure_system_certificates
     configure_logging()
     configure_system_certificates()
     app = QApplication.instance() or QApplication(sys.argv)
+    _apply_installer_theme(app)
     window = InstallerWindow()
     window.show()
     return app.exec()

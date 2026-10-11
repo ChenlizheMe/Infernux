@@ -235,6 +235,9 @@ bool VkResourceManager::Initialize(VkDeviceContext &context, VulkanQueueManager 
     m_rhiDevice = &context.GetRhiDevice();
     m_deviceLifetime = m_rhiDevice->GetLifetime();
     m_queueManager = queueManager;
+    m_graphicsQueueFamily = context.GetQueueIndices().graphicsFamily.value();
+    m_computeQueueFamily = context.GetQueueIndices().computeFamily.value();
+    m_transferQueueFamily = context.GetQueueIndices().transferFamily.value();
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo{};
@@ -259,11 +262,13 @@ void VkResourceManager::Destroy() noexcept
 
     DrainBufferUploads();
     DrainAsyncGraphicsSubmissions();
-    DrainImageReadbacks();
 
     if (!m_skipWaitIdle) {
         vkDeviceWaitIdle(m_device);
     }
+    // A frame readback may still own staging referenced by the frame command
+    // buffer. Recycling can discard the allocation when the pool is full.
+    DrainImageReadbacks();
     ClearStagingPool();
 
     // Destroy samplers
@@ -319,7 +324,6 @@ void VkResourceManager::Destroy() noexcept
     m_deviceLifetime.reset();
     m_queueManager = nullptr;
     m_asyncTransfer = nullptr;
-    m_asyncReadback = nullptr;
 }
 
 // ============================================================================
@@ -387,6 +391,11 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
         throw std::invalid_argument("GPU buffer upload requires non-empty source data");
     if (finalUsage == 0)
         throw std::invalid_argument("GPU buffer upload has no supported destination usage");
+    constexpr auto validQueueAccess =
+        rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+    if (request.queueAccess == rhi::QueueAccessFlags::None ||
+        (static_cast<uint8_t>(request.queueAccess) & ~static_cast<uint8_t>(validQueueAccess)) != 0)
+        throw std::invalid_argument("GPU buffer upload requires valid consumer queue access");
     auto ticket = std::make_shared<BufferUploadTicket>();
     ticket->m_manager = this;
     ticket->m_size = size;
@@ -398,14 +407,24 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
     std::vector<uint32_t> queueFamilies;
     const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable() &&
                                 m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE;
-    if (canSubmitAsync)
-        queueFamilies = {m_graphicsQueueFamily, m_asyncTransfer->GetQueueFamily()};
+    const auto appendFamily = [&](uint32_t family) {
+        if (std::find(queueFamilies.begin(), queueFamilies.end(), family) == queueFamilies.end())
+            queueFamilies.push_back(family);
+    };
+    appendFamily(canSubmitAsync ? m_asyncTransfer->GetQueueFamily() : m_graphicsQueueFamily);
+    if (rhi::HasQueueAccess(request.queueAccess, rhi::QueueAccessFlags::Graphics))
+        appendFamily(m_graphicsQueueFamily);
+    if (rhi::HasQueueAccess(request.queueAccess, rhi::QueueAccessFlags::Compute))
+        appendFamily(m_computeQueueFamily);
+    if (rhi::HasQueueAccess(request.queueAccess, rhi::QueueAccessFlags::Transfer))
+        appendFamily(m_transferQueueFamily);
     ticket->m_destination =
         std::shared_ptr<VkBufferHandle>(CreateBufferInternal(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | finalUsage,
                                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, queueFamilies)
                                             .release());
     if (!ticket->m_destination)
         throw std::runtime_error("failed to allocate GPU upload destination buffer");
+    ticket->m_concurrentQueueSharing = queueFamilies.size() > 1;
     ++m_bufferUploadSubmissionCount;
 
     if (!canSubmitAsync) {
@@ -480,7 +499,8 @@ VkResourceManager::GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicke
     if (!resource) {
         if (!m_rhiDevice)
             throw std::logic_error("GPU buffer upload has no RHI device");
-        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size);
+        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size,
+                                                        ticket->m_concurrentQueueSharing);
         if (!handle.IsValid())
             throw std::runtime_error("failed to register uploaded GPU buffer with the RHI device");
         resource = std::make_shared<rhi::BufferResource>(*m_rhiDevice, handle, ticket->m_size, ticket->m_destination);
@@ -983,7 +1003,6 @@ void VkResourceManager::FinalizeImageReadback(const std::shared_ptr<ImageReadbac
         }
     }
     RecycleStagingBuffer(std::move(ticket->m_staging));
-    ticket->m_submission = {};
     ticket->m_graphicsSubmission.reset();
     ticket->m_frameCompletionEpoch = rhi::InvalidSubmissionSerial;
 }
@@ -994,14 +1013,15 @@ void VkResourceManager::PollImageReadbacks()
     size_t writeIndex = 0;
     for (size_t index = 0; index < m_pendingImageReadbacks.size(); ++index) {
         auto &ticket = m_pendingImageReadbacks[index];
-        const bool graphicsComplete =
-            ticket && ticket->m_graphicsSubmission && ticket->m_graphicsSubmission->IsComplete();
-        const bool transferComplete = ticket && !ticket->m_graphicsSubmission && m_asyncReadback &&
-                                      m_asyncReadback->IsComplete(ticket->m_submission);
-        const bool frameComplete = ticket && ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial &&
-                                   m_queueManager &&
-                                   m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch);
-        if (graphicsComplete || transferComplete || frameComplete) {
+        // Each readback has one completion owner: its standalone graphics
+        // submission, or the frame into which the copy was recorded. Cancellation
+        // changes the public status, never the lifetime of GPU-referenced staging.
+        const bool complete =
+            ticket && (ticket->m_graphicsSubmission
+                           ? ticket->m_graphicsSubmission->IsComplete()
+                           : ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial && m_queueManager &&
+                                 m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch));
+        if (complete) {
             FinalizeImageReadback(ticket);
             continue;
         }
@@ -1030,15 +1050,6 @@ void VkResourceManager::DrainImageReadbacks() noexcept
             ticket->Cancel();
             FinalizeImageReadback(ticket);
             continue;
-        }
-        if (m_asyncReadback && ticket->m_submission.IsValid()) {
-            try {
-                m_asyncReadback->Wait(ticket->m_submission);
-                FinalizeImageReadback(ticket);
-            } catch (...) {
-                ticket->m_error = "Failed while draining a pending GPU image readback";
-                ticket->m_status.store(ImageReadbackStatus::Failed, std::memory_order_release);
-            }
         }
     }
     m_pendingImageReadbacks.clear();

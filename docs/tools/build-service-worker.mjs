@@ -16,11 +16,14 @@ async function namedRoutes(directory, pattern) {
 }
 
 const hashedTemplateStyles = await namedRoutes("css", /^wiki-template\.[a-f0-9]{16}\.css$/);
+const fontRoutes = await namedRoutes("assets/fonts", /\.woff2$/);
+const shellFontRoutes = fontRoutes.filter((route) => !route.endsWith("/source-han-sans-sc-subset.woff2"));
 if (hashedTemplateStyles.length !== 1) throw new Error(`Expected one content-hashed Wiki template style, found ${hashedTemplateStyles.length}.`);
 const shellPages = [
     "/offline.html",
     "/404.html",
     "/index.html",
+    "/tutorials.html",
     "/start.html",
     "/learn.html",
     ...learningCourses.map((course) => `/learn/${course.slug}.html`),
@@ -49,9 +52,10 @@ async function shellRuntimeRoutes(pages) {
 const precacheRoutes = [
     ...shellPages,
     "/site.webmanifest",
-    "/assets/logo.png",
+    "/assets/logo-mark.webp",
+    "/assets/favicon-64.png",
     ...await shellRuntimeRoutes(shellPages),
-    ...await namedRoutes("assets/fonts", /\.woff2$/),
+    ...shellFontRoutes,
 ].filter((route, index, values) => values.indexOf(route) === index).sort();
 
 // These files participate in the worker version without being fetched during
@@ -66,8 +70,10 @@ const evidenceRoutes = [
     "/hub-catalog.json",
     "/release.json",
     "/release-notes.json",
+    ...await namedRoutes("data/roadmap", /\.json$/),
     ...await namedRoutes("css", /\.css$/),
     ...await namedRoutes("js", /\.js$/),
+    ...fontRoutes,
     ...hashedTemplateStyles,
 ].filter((route, index, values) => values.indexOf(route) === index).sort();
 
@@ -239,10 +245,6 @@ self.addEventListener("fetch", (event) => {
     if (/\\.(?:css|js|webmanifest)$/i.test(url.pathname)) {
         event.respondWith(staleWhileRevalidate(request));
     }
-});
-
-self.addEventListener("message", (event) => {
-    if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
 `;
 

@@ -64,7 +64,8 @@ void VkShaderCache::UnloadShader(const char *name, vk::VkPipelineManager &pm, co
         m_vertCodes.erase(nameStr);
     }
     if (shaderType.empty() || shaderType == "fragment") {
-        m_renderMetas.erase(nameStr);
+        if (m_renderMetas.erase(nameStr))
+            ++m_renderMetaRevision;
         auto fragIt = m_fragModules.find(nameStr);
         if (fragIt != m_fragModules.end()) {
             pm.DestroyShaderModule(fragIt->second);
@@ -113,6 +114,7 @@ void VkShaderCache::StoreRenderMeta(const std::string &shaderId, const std::stri
     meta.stencil = stencil;
     meta.alphaClip = alphaClip;
     m_renderMetas[shaderId] = meta;
+    ++m_renderMetaRevision;
 }
 
 const ShaderRenderMeta *VkShaderCache::GetRenderMeta(const std::string &shaderId) const
@@ -196,22 +198,8 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
         return result;
     }
 
-    // Validate the mandatory Forward program before replacing last-known-good.
-    // Optional semantic passes stay as SPIR-V until their first real consumer.
-    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
-    if (!forward) {
-        INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
+    if (!PrepareProgramArtifact(artifact))
         return result;
-    }
-
-    const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
-    ShaderProgramPublication forwardProgram =
-        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv);
-    if (!forwardProgram || !forwardProgram->IsValid()) {
-        INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
-        (void)m_programCache.TakePrograms(artifact.key);
-        return result;
-    }
 
     if (sameRevision) {
         result.accepted = true;
@@ -225,6 +213,38 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
     result.accepted = true;
     result.changed = true;
     return result;
+}
+
+bool VkShaderCache::PrepareProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    if (!artifact.IsValid())
+        return false;
+    if (m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward}))
+        return true;
+    // Optional semantic passes stay as SPIR-V until their first real consumer.
+    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
+    if (!forward) {
+        INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
+        return false;
+    }
+
+    const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
+    ShaderProgramPublication forwardProgram =
+        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv);
+    if (!forwardProgram || !forwardProgram->IsValid()) {
+        INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
+        (void)m_programCache.TakePrograms(artifact.key);
+        return false;
+    }
+
+    return true;
+}
+
+void VkShaderCache::DiscardPreparedProgramArtifact(const ShaderProgramKey &key)
+{
+    const auto *active = FindProgramArtifact(key.stages);
+    if (!active || active->key != key)
+        (void)m_programCache.TakePrograms(key);
 }
 
 const ShaderProgramArtifact *VkShaderCache::FindProgramArtifact(const ShaderStagePair &stages) const
@@ -245,6 +265,14 @@ std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::TakeUIProgramArtifac
     if (found == m_programArtifacts.end() || found->second->key != key ||
         (found->second->domain != ShaderProgramDomain::ScreenUI &&
          found->second->domain != ShaderProgramDomain::WorldUI))
+        return nullptr;
+    return TakeProgramArtifact(key);
+}
+
+std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::TakeProgramArtifact(const ShaderProgramKey &key)
+{
+    const auto found = m_programArtifacts.find(key.stages);
+    if (found == m_programArtifacts.end() || found->second->key != key)
         return nullptr;
     auto artifact = std::move(found->second);
     m_programArtifacts.erase(found);
@@ -293,6 +321,7 @@ void VkShaderCache::Clear()
     m_vertModules.clear();
     m_fragModules.clear();
     m_renderMetas.clear();
+    ++m_renderMetaRevision;
 }
 
 // ============================================================================

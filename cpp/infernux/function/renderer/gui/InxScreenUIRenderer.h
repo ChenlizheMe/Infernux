@@ -139,6 +139,11 @@ class InxScreenUIRenderer
     {
         m_textureColorSpaceQuery = std::move(query);
     }
+    void SetFontTexturePublisher(std::function<void()> publisher)
+    {
+        m_fontTexturePublisher = std::move(publisher);
+    }
+
     void SetMaterialProgramResolver(
         std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
             resolver)
@@ -401,6 +406,10 @@ class InxScreenUIRenderer
         VmaAllocation indexAlloc = VK_NULL_HANDLE;
         VkDeviceSize indexBufferSize = 0;
         uint64_t uploadedRevision = 0;
+        // Union of pose changes not yet consumed by this GPU frame slot.
+        // An empty range needs no upload; full geometry publication clears it.
+        int pendingPoseStart = 0;
+        int pendingPoseEnd = 0;
     };
 
     /**
@@ -549,6 +558,7 @@ class InxScreenUIRenderer
     std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_ownedMaterialPrograms;
     std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
         m_materialProgramResolver;
+    std::function<void()> m_fontTexturePublisher;
     std::function<bool(const std::string &, uint64_t)> m_materialIdentityValidator;
     std::function<void(const ShaderProgramKey &)> m_materialProgramRelease;
     std::function<void(const ShaderProgramKey &)> m_materialProgramAcquire;
@@ -569,7 +579,7 @@ class InxScreenUIRenderer
     std::array<GeometryStats, 3> m_geometryStats{};
     std::array<std::vector<GPUVertex>, 2> m_screenVertices;
     // Immutable local positions used by the native screen-pose segment. The
-    // GPU vertex array is rewritten every frame with the current pose.
+    // Prepared vertices are updated only when geometry or a bound pose changes.
     std::array<std::vector<ImVec2>, 2> m_screenLocalPositions;
     std::vector<WorldGPUVertex> m_worldVertices;
 

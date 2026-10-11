@@ -5,7 +5,7 @@
 # Build your first plugin
 
 This chapter turns a component and a text file into a reusable `.inxpkg`. You
-need Infernux 0.4.0 to test it. Packaging the repository itself only needs Python:
+need Infernux 0.4.1 to test it. Packaging the repository itself only needs Python:
 the official packer uses the standard library, without importing the engine.
 
 <div class="learn-article-toc"><strong>In this chapter</strong><a href="#layout">Choose a layout</a><a href="#component">Write a component</a><a href="#pages">Add documentation</a><a href="#panel-localization">Place and translate panels</a><a href="#package">Package and install</a><a href="#release">Publish and update</a></div>
@@ -17,7 +17,7 @@ the official packer uses the standard library, without importing the engine.
 
 ## Choose a layout {#layout}
 
-Start from the [official plugin template](https://github.com/ChenlizheMe/infernux_plugin_template).
+Start from the [official plugin template](https://github.com/InfernuxEngine/infernux_plugin_template).
 Keep its standalone `package.py` and release workflow. Replace the example
 payload with the following files; do not keep sample code you are not shipping.
 
@@ -43,7 +43,7 @@ Use lowercase, snake_case Python filenames. Set `package/inx_package.json` to:
   "reference": "my_studio/hello_plugin",
   "name": "Hello Plugin",
   "version": "0.1.0",
-  "engine": ">=0.4,<0.5",
+  "engine": ">=0.4.1,<0.5",
   "intro": "A component that reads its packaged text resource."
 }
 ```
@@ -107,21 +107,61 @@ plugin scripts into the same GUID map and type registry, including serialized
 fields and lifecycle methods. Do not create a second registry or run an import
 side channel for Player.
 
-A preload is also the owner of long-lived work. Register a cleanup immediately
-after starting a server, thread, file watch or callback:
+A preload is also the owner of long-lived work. This optional example is complete:
+put it in `editor/service_preload.py`. It starts a local HTTP service; open the
+address printed in the Console to read its message. Register cleanup immediately
+after acquiring each resource:
 
 ```python
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Event, Thread
+
+import infernux as inx
+
+
+class HelloHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        body = b"Hello from my plugin!"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
 class HelloPreload(inx.InxPreload):
     def preload(self, context: inx.PreloadContext) -> None:
-        service = start_service()
-        context.add_cleanup(service.stop)
+        server = HTTPServer(("127.0.0.1", 0), HelloHandler)
+        context.add_cleanup(server.server_close)
+        server.timeout = 0.1
+        stopping = Event()
 
-    def unload(self) -> None:
-        pass
+        def serve() -> None:
+            while not stopping.is_set():
+                server.handle_request()
+
+        worker = Thread(target=serve, name="hello-plugin-http", daemon=True)
+
+        def stop() -> None:
+            stopping.set()
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                raise RuntimeError("Hello Plugin HTTP worker did not stop")
+
+        worker.start()
+        context.add_cleanup(stop)
+        inx.Debug.log(f"Hello service: http://127.0.0.1:{server.server_port}")
 ```
 
+The worker checks for shutdown every 0.1 seconds. The registered cleanups first
+stop and join it, then close the server socket. Keep request handlers short;
+blocking work requires its own bounded cancellation. Save valid changes to reload
+the service, or disable the plugin to stop it.
+
 Cleanups run in reverse order after `unload()` and after a partial preload
-failure. Invalid saved Python keeps the last working lifecycle alive. Put Flask
+failure. A syntax error in saved Python keeps the last working lifecycle alive. Put Flask
 authoring tools in `editor/`, bind them to loopback on an operating-system
 allocated port, disable the development reloader, and register a bounded server
 shutdown and thread join. `requirements.txt` may include large packages such as
@@ -159,24 +199,96 @@ Declare a panel's complete location with slash-separated authored labels. The pa
 level literal. The renderer builds the path recursively, so one through five levels
 and deeper paths use the same contract.
 
+This optional Editor panel is runnable as written. Add these files; leave both `__init__.py` files empty.
+
+```text
+package/editor/
+  translations.json
+  my_studio/
+    __init__.py
+    hello_plugin_editor/
+      __init__.py
+      panel.py
+      preload.py
+```
+
+Put this code in `editor/my_studio/hello_plugin_editor/panel.py`:
+
 ```python
-@editor_panel(
-    "Live Diagnostics",
-    type_id="studio.example.live_diagnostics",
-    title_key="studio.example.panel_title",
-    menu_path="Extensions/Example/Tools/Diagnostics/Live",
+import infernux as inx
+
+
+@inx.editor.editor_panel(
+    "Hello Plugin",
+    type_id="my_studio.hello_plugin.panel",
+    title_key="my_studio.hello_plugin.panel_title",
+    menu_path="Extensions/Hello Plugin/Tools/Diagnostics/Live",
     menu_path_keys=(
         "menu.extensions",
-        "studio.example.menu_root",
-        "studio.example.menu_tools",
-        "studio.example.menu_diagnostics",
-        "studio.example.menu_live",
+        "my_studio.hello_plugin.menu_root",
+        "my_studio.hello_plugin.menu_tools",
+        "my_studio.hello_plugin.menu_diagnostics",
+        "my_studio.hello_plugin.menu_live",
     ),
-    interaction=PanelInteractionDescriptor(),
+    interaction=inx.editor.PanelInteractionDescriptor(),
 )
-class LiveDiagnostics(EditorPanel):
-    ...
+class HelloPluginPanel(inx.editor.EditorPanel):
+    def __init__(self) -> None:
+        super().__init__("Hello Plugin", "my_studio.hello_plugin.panel")
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 420.0, 240.0
+
+    def on_render_content(self, ctx) -> None:
+        ctx.text_wrapped(inx.editor.translate("my_studio.hello_plugin.panel_message"))
 ```
+
+Create `preload.py` beside it. Importing the panel during preload assigns its registration to the plugin lifecycle,
+so updating, disabling or closing the project removes it. Do not import this Editor module from a project component.
+
+```python
+from importlib import import_module
+
+import infernux as inx
+
+
+class HelloPluginEditorPreload(inx.InxPreload):
+    def preload(self, context: inx.PreloadContext) -> None:
+        import_module("my_studio.hello_plugin_editor.panel")
+
+    def unload(self) -> None:
+        pass
+```
+
+Put the catalog in `editor/translations.json`:
+
+```json
+{
+  "$schema": "infernux.editor_translations",
+  "locales": {
+    "en": {
+      "my_studio.hello_plugin.panel_title": "Hello Plugin",
+      "my_studio.hello_plugin.panel_message": "Hello from the plugin Editor panel!",
+      "my_studio.hello_plugin.menu_root": "Hello Plugin",
+      "my_studio.hello_plugin.menu_tools": "Tools",
+      "my_studio.hello_plugin.menu_diagnostics": "Diagnostics",
+      "my_studio.hello_plugin.menu_live": "Live"
+    },
+    "zh": {
+      "my_studio.hello_plugin.panel_title": "你好插件",
+      "my_studio.hello_plugin.panel_message": "来自插件 Editor 面板的问候！",
+      "my_studio.hello_plugin.menu_root": "你好插件",
+      "my_studio.hello_plugin.menu_tools": "工具",
+      "my_studio.hello_plugin.menu_diagnostics": "诊断",
+      "my_studio.hello_plugin.menu_live": "实时"
+    }
+  }
+}
+```
+
+Repackage and install through **Update Source**. Open **Extensions → Hello Plugin → Tools → Diagnostics → Live → Hello Plugin**,
+switch the Editor language and verify that the menu, panel title and content change together. Disabling the plugin
+must remove its menu and panel; enabling it must register them once. None of these files enters the Player.
 
 Put plugin-owned Editor strings in the fixed file `editor/translations.json`.
 The file uses the `infernux.editor_translations` schema, includes every supported
@@ -198,7 +310,8 @@ This produces the native InxPack container, not a renamed ZIP. Only `package/`
 is packed; the outer README, CMake/Gradle files and `dist/` are excluded.
 
 1. Open a separate test project in the Editor and open **Plugins**.
-2. Choose **Add plugin**, select the `.inxpkg`, review its contents and import it.
+2. Choose **Add plugin**, enter the local `.inxpkg` path and click **Install Source**.
+   Confirm the source in the installation dialog.
 3. Confirm **Hello Plugin** shows its introduction page in the selected language.
 4. Add `HelloResource` to an active GameObject, save the scene and enter Play.
 5. The Console must show `Hello from my plugin!` without an import or path error.
@@ -225,11 +338,27 @@ release on **Versions**. **Refresh catalog** updates discovery only, not install
 versions. Test updating an existing project as well as a fresh installation;
 local edits must not be silently overwritten.
 
-For larger examples, browse the [MCP](https://github.com/ChenlizheMe/infernux_mcp),
-[Windows](https://github.com/ChenlizheMe/infernux_windows),
-[Linux](https://github.com/ChenlizheMe/infernux_linux),
-[Android](https://github.com/ChenlizheMe/infernux_android) and
-[Web](https://github.com/ChenlizheMe/infernux_web) repositories. Platform plugins
+A published reference/version is immutable, including local package archives.
+Increase the version whenever its content changes. The shared cache retains the
+original archive as the baseline for checking local edits during updates.
+
+For a local `.inxpkg` update, enter the new path under **Add plugin** and choose
+**Update Source**. It updates the already installed reference and retains its
+GUIDs and selection. **Install Source** does not replace an existing package;
+an update also rejects conflicting local edits instead of overwriting them.
+
+The [Hello Plugin repository](https://github.com/InfernuxEngine/infernux_tutorial_hello_plugin)
+contains this tutorial's installable example with its own unique reference,
+`chenlizheme/tutorial_hello_plugin`. Paste its repository URL under **Add plugin**;
+use **Versions** to select the published 0.1.10 and 0.1.11 releases.
+Keep the template's `.gitattributes` so Windows checkouts and release CI use the
+same text bytes. This avoids turning a line-ending conversion into a package change.
+
+For larger examples, browse the [MCP](https://github.com/InfernuxEngine/infernux_mcp),
+[Windows](https://github.com/InfernuxEngine/infernux_windows),
+[Linux](https://github.com/InfernuxEngine/infernux_linux),
+[Android](https://github.com/InfernuxEngine/infernux_android) and
+[Web](https://github.com/InfernuxEngine/infernux_web) repositories. Platform plugins
 ship precompiled Players; installing one does not ask game authors to run CMake.
 Android additionally requires **Android support** installed through Hub.
 
@@ -239,7 +368,7 @@ Android additionally requires **Android support** installed through Hub.
 
 # 制作你的第一个插件
 
-这一章把一个组件和一份文本资源做成可复用的 `.inxpkg`。测试需要 Infernux 0.4.0，
+这一章把一个组件和一份文本资源做成可复用的 `.inxpkg`。测试需要 Infernux 0.4.1，
 但打包仓库本身只需要 Python：官方打包脚本仅使用标准库，不导入引擎。
 
 <div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-layout">选择目录结构</a><a href="#zh-component">编写组件</a><a href="#zh-pages">添加文档</a><a href="#zh-panel-localization">放置并翻译 Editor 面板</a><a href="#zh-package">打包与安装</a><a href="#zh-release">发布与更新</a></div>
@@ -251,7 +380,7 @@ Android additionally requires **Android support** installed through Hub.
 
 ## 选择目录结构 {#zh-layout}
 
-从[官方插件模板](https://github.com/ChenlizheMe/infernux_plugin_template)开始，保留独立的
+从[官方插件模板](https://github.com/InfernuxEngine/infernux_plugin_template)开始，保留独立的
 `package.py` 和发布工作流，把示例内容替换为下面这些文件，不要留下不准备分发的模板代码。
 
 ```text
@@ -276,7 +405,7 @@ Python 文件名采用小写 snake_case。将 `package/inx_package.json` 改为�
   "reference": "my_studio/hello_plugin",
   "name": "Hello Plugin",
   "version": "0.1.0",
-  "engine": ">=0.4,<0.5",
+  "engine": ">=0.4.1,<0.5",
   "intro": "读取插件内文本资源的示例组件。"
 }
 ```
@@ -329,17 +458,55 @@ class HelloResource(inx.InxComponent):
 Player 构建会自动发现 runtime 组件，把项目与插件脚本统一冻结到同一份 GUID 映射和类型注册表，
 其中包含序列化字段和生命周期方法。不要再建立第二份 Player 注册表，也不要通过额外导入旁路注册。
 
-preload 同时也是长期任务的所有者。启动服务、线程、文件监听或回调后，应立刻登记清理函数：
+preload 同时也是长期任务的所有者。下面是可直接运行的可选示例，将它放在
+`editor/service_preload.py`。它会启动本地 HTTP 服务，打开 Console 输出的地址即可读取消息。
+取得每个资源后都立即登记清理函数：
 
 ```python
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Event, Thread
+
+import infernux as inx
+
+
+class HelloHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        body = b"Hello from my plugin!"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
 class HelloPreload(inx.InxPreload):
     def preload(self, context: inx.PreloadContext) -> None:
-        service = start_service()
-        context.add_cleanup(service.stop)
+        server = HTTPServer(("127.0.0.1", 0), HelloHandler)
+        context.add_cleanup(server.server_close)
+        server.timeout = 0.1
+        stopping = Event()
 
-    def unload(self) -> None:
-        pass
+        def serve() -> None:
+            while not stopping.is_set():
+                server.handle_request()
+
+        worker = Thread(target=serve, name="hello-plugin-http", daemon=True)
+
+        def stop() -> None:
+            stopping.set()
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                raise RuntimeError("Hello Plugin HTTP worker did not stop")
+
+        worker.start()
+        context.add_cleanup(stop)
+        inx.Debug.log(f"Hello service: http://127.0.0.1:{server.server_port}")
 ```
+
+工作线程每 0.1 秒检查一次退出请求。登记的清理函数先停止并等待线程，再关闭服务套接字。
+请求处理应保持简短；阻塞任务需要自己的有界取消机制。保存合法修改会重载服务，禁用插件会停止服务。
 
 清理函数会在 `unload()` 后按逆序运行，preload 执行到一半失败时也会运行。保存的 Python
 候选存在语法错误时，最后一次正常运行的生命周期会继续保留。Flask 创作工具应放在 `editor/`，
@@ -372,6 +539,97 @@ Infernux 会检测新导入的原生 Python 扩展，在无法安全替换时要
 提供一个条目；空字符串表示该级保持原文。渲染器递归建立菜单树，因此一至五级以及更深
 路径都使用同一套协议。
 
+这是一个可直接运行的可选 Editor 面板。新增以下文件；两个 `__init__.py` 留空。
+
+```text
+package/editor/
+  translations.json
+  my_studio/
+    __init__.py
+    hello_plugin_editor/
+      __init__.py
+      panel.py
+      preload.py
+```
+
+将下面的代码放在 `editor/my_studio/hello_plugin_editor/panel.py`：
+
+```python
+import infernux as inx
+
+
+@inx.editor.editor_panel(
+    "Hello Plugin",
+    type_id="my_studio.hello_plugin.panel",
+    title_key="my_studio.hello_plugin.panel_title",
+    menu_path="Extensions/Hello Plugin/Tools/Diagnostics/Live",
+    menu_path_keys=(
+        "menu.extensions",
+        "my_studio.hello_plugin.menu_root",
+        "my_studio.hello_plugin.menu_tools",
+        "my_studio.hello_plugin.menu_diagnostics",
+        "my_studio.hello_plugin.menu_live",
+    ),
+    interaction=inx.editor.PanelInteractionDescriptor(),
+)
+class HelloPluginPanel(inx.editor.EditorPanel):
+    def __init__(self) -> None:
+        super().__init__("Hello Plugin", "my_studio.hello_plugin.panel")
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 420.0, 240.0
+
+    def on_render_content(self, ctx) -> None:
+        ctx.text_wrapped(inx.editor.translate("my_studio.hello_plugin.panel_message"))
+```
+
+再创建同目录的 `preload.py`。在 preload 中导入面板，引擎才能把注册归属到插件生命周期，
+在更新、禁用或关闭项目时移除它。不要在项目组件中导入这个 Editor 模块。
+
+```python
+from importlib import import_module
+
+import infernux as inx
+
+
+class HelloPluginEditorPreload(inx.InxPreload):
+    def preload(self, context: inx.PreloadContext) -> None:
+        import_module("my_studio.hello_plugin_editor.panel")
+
+    def unload(self) -> None:
+        pass
+```
+
+将词条放在 `editor/translations.json`：
+
+```json
+{
+  "$schema": "infernux.editor_translations",
+  "locales": {
+    "en": {
+      "my_studio.hello_plugin.panel_title": "Hello Plugin",
+      "my_studio.hello_plugin.panel_message": "Hello from the plugin Editor panel!",
+      "my_studio.hello_plugin.menu_root": "Hello Plugin",
+      "my_studio.hello_plugin.menu_tools": "Tools",
+      "my_studio.hello_plugin.menu_diagnostics": "Diagnostics",
+      "my_studio.hello_plugin.menu_live": "Live"
+    },
+    "zh": {
+      "my_studio.hello_plugin.panel_title": "你好插件",
+      "my_studio.hello_plugin.panel_message": "来自插件 Editor 面板的问候！",
+      "my_studio.hello_plugin.menu_root": "你好插件",
+      "my_studio.hello_plugin.menu_tools": "工具",
+      "my_studio.hello_plugin.menu_diagnostics": "诊断",
+      "my_studio.hello_plugin.menu_live": "实时"
+    }
+  }
+}
+```
+
+重新打包并通过**更新来源**安装。打开**扩展 → 你好插件 → 工具 → 诊断 → 实时 → 你好插件**，
+切换编辑器语言，确认菜单、面板标题和内容同步改变。禁用插件后，菜单与面板都应移除；
+重新启用后只注册一次。这些文件不会进入 Player。
+
 插件自己的 Editor 词条固定放在 `editor/translations.json`。文件使用
 `infernux.editor_translations` schema，包含 Editor 支持的全部语言，并在每种语言中
 声明完全相同、带插件命名空间的键集合。Infernux 会在包 preload 前发布词条，并在热重载、
@@ -391,7 +649,7 @@ python package.py verify dist/hello_plugin.inxpkg
 CMake/Gradle 配置和 `dist/` 都不会混进去。
 
 1. 在编辑器中打开另一个测试项目，打开**插件**窗口。
-2. 点击**添加插件**，选择 `.inxpkg`，检查包内内容后导入。
+2. 点击**添加插件**，输入本地 `.inxpkg` 路径，再点击**安装来源**，在安装对话框中确认来源。
 3. 确认 **Hello Plugin** 的介绍页能按当前语言显示。
 4. 给一个激活的 GameObject 添加 `HelloResource`，保存场景，进入 Play。
 5. Console 应出现 `Hello from my plugin!`，且没有导入或路径错误。
@@ -411,9 +669,23 @@ CMake/Gradle 配置和 `dist/` 都不会混进去。
 兼容 Release；**刷新官方列表**只更新发现目录，不自动升级安装内容。除了全新安装，也要验证
 旧项目升级，本地修改不能被无声覆盖。
 
-更完整的示例可以参考 [MCP](https://github.com/ChenlizheMe/infernux_mcp)、
-[Windows](https://github.com/ChenlizheMe/infernux_windows)、
-[Linux](https://github.com/ChenlizheMe/infernux_linux)、
-[Android](https://github.com/ChenlizheMe/infernux_android) 和
-[Web](https://github.com/ChenlizheMe/infernux_web) 仓库。平台插件携带预编译 Player，
+已经发布的 reference/version 不可覆盖，本地包也一样。内容变化时必须增加版本号。
+共享缓存保留原始归档，更新时用它区分作者发布的变化和项目里的本地修改。
+
+更新本地 `.inxpkg` 时，在**添加插件**中输入新包的路径，再选择**更新来源**。它更新已安装的
+reference，保留 GUID 和原来的内容选择。**安装来源**不会替换已有包；更新遇到本地修改冲突
+也会直接拒绝，不会覆盖修改。
+
+[Hello Plugin 仓库](https://github.com/InfernuxEngine/infernux_tutorial_hello_plugin)
+提供了本教程可安装的示例，使用自己的唯一 reference：
+`chenlizheme/tutorial_hello_plugin`。在**添加插件**中粘贴仓库地址，再在**版本**页
+选择已经发布的 0.1.10 和 0.1.11。
+保留模板的 `.gitattributes`，让 Windows 检出和发布 CI 使用相同的文本字节，
+避免换行转换被当作包内容变更。
+
+更完整的示例可以参考 [MCP](https://github.com/InfernuxEngine/infernux_mcp)、
+[Windows](https://github.com/InfernuxEngine/infernux_windows)、
+[Linux](https://github.com/InfernuxEngine/infernux_linux)、
+[Android](https://github.com/InfernuxEngine/infernux_android) 和
+[Web](https://github.com/InfernuxEngine/infernux_web) 仓库。平台插件携带预编译 Player，
 普通游戏作者安装后不需要运行 CMake；Android 另外要求先在 Hub 安装**安卓支持**。

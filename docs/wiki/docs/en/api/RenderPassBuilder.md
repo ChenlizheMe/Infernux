@@ -1,7 +1,7 @@
 # RenderPassBuilder
 
 <div class="class-info">
-class in <b>Infernux.rendergraph</b>
+class in <b>infernux.rendergraph</b>
 </div>
 
 ## Description

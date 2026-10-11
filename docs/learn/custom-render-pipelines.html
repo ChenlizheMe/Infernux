@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Use the declarative Python DSL to mix Forward, Forward+, and Deferred routes without writing a command-list renderer.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/custom-render-pipelines.html">
     <title>Build a custom render pipeline · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -61,28 +61,29 @@
 <p>These names have different jobs:</p>
 <ul>
 <li><code>SimpleForwardPipeline</code> is the Python class name. It identifies the implementation in code.</li>
-<li><code>name = "Simple Forward"</code> is the discovery key, Inspector label, saved pipeline selection, and key for saved pipeline parameters. Keep it unique and stable. Two classes with the same <code>name</code> collide in the discovery dictionary; renaming it makes existing scenes look for the old selection.</li>
+<li><code>name = "Simple Forward"</code> is the discovery key, Inspector label, saved pipeline selection, and key for saved pipeline parameters. Keep it unique and stable. Two live declarations with the same <code>name</code> make that name unavailable until the conflict is resolved; renaming it makes existing scenes look for the old selection.</li>
 <li>Strings passed to <code>effects()</code>, such as <code>"after_opaque"</code>, are EffectStage stable IDs. They bind saved Effect slots to topology. A stage <code>label</code> may change without breaking that binding; changing its stable ID leaves the old slots orphaned until they are remapped.</li>
 </ul>
 <p>There is currently no separate stable-ID field for a pipeline. Despite the serialized field name <code>pipeline_class_name</code>, RenderStack stores the pipeline's <code>name</code> value.</p>
-<p>If a candidate module fails to import, Editor discovery keeps the rest of the catalog available and omits the broken class until the script is fixed. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.</p>
+<p>A new source enters the catalog only after its module executes successfully. If an edit fails to import, Editor keeps that source's last accepted namespace and effect registrations and reports the import error; a first import failure contributes no class. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.</p>
+<p>Files with the same filename in different directories have independent module identities. Editor compiles the current Python source on a source change, so a rapid save with the same byte count cannot reuse stale timestamp-based bytecode. Standard source encoding declarations and Python decorators such as <code>dataclass</code> work during discovery. Packaged Player loads its cooked <code>.pyc</code> files.</p>
 <p>Use the Editor Console to separate import failures from catalog problems. This diagnostic reads the same discovery functions used by RenderStack:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()))</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_import_failures</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_name_conflicts</span><span class="p">())</span>
 </code></pre></div>
 
 <p>An import failure entry is keyed by source path and includes the exception type and message. An empty failure map plus a missing name usually means the file was skipped, the class inheritance was not recognized, or <code>name</code> is empty or begins with <code>_</code>.</p>
-<p>Duplicate pipeline names have a narrower current diagnostic boundary. Discovery stores <code>{pipeline.name: class}</code> and a later subclass silently replaces an earlier class under the same key. The Pipeline menu shows one entry and emits no collision diagnostic or candidate list. To identify the selected winner in the Console, run:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<p>Pipeline names must be unique, including built-in names. If two live declarations use the same name, discovery omits that ambiguous name instead of choosing a winner. The Inspector lists both source declarations. An already-saved ambiguous selection stays saved and reports an error; it does not select another pipeline. Inspect the same conflict map in the Console:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="n">pipeline_type</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()[</span><span class="s2">"Simple Forward"</span><span class="p">]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">pipeline_type</span><span class="o">.</span><span class="vm">__module__</span><span class="p">,</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getsourcefile</span><span class="p">(</span><span class="n">pipeline_type</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_name_conflicts</span><span class="p">())</span>
 </code></pre></div>
 
-<p>Give every project pipeline a unique, stable <code>name</code>. After a rename, select the new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.</p>
+<p>The map is <code>{name: tuple_of_source_declarations}</code>. Give each declaration a unique <code>name</code>, or remove the duplicate, then save and wait for asset refresh. Discovery admits the remaining unique declaration again. Importing one discovery-owned source through an alias does not create a second declaration, and retained classes from a previous project do not enter the current project's catalog. The same rule applies to RenderPass discovery; <code>discovery_name_conflicts("pass")</code> reports those conflicts.</p>
+<p>After renaming the selected pipeline, choose its new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.</p>
 <h2 id="minimal-pipeline">A minimal pipeline</h2>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
@@ -115,10 +116,10 @@
 <ol>
 <li>Select <strong>Simple Forward</strong>. Both renderers should remain visible, and the RenderStack topology should list <strong>After Opaque</strong> and <strong>Final Post Processing</strong>.</li>
 <li>Temporarily remove the transparent block, save the pipeline, and let the active pipeline reload. The transparent test renderer should disappear while the opaque renderer remains. Restore the block and save again.</li>
-<li>Change <code>name</code> only as a separate migration test. The old selection will fall back because RenderStack serializes the display name; choose the new entry and save the scene.</li>
+<li>Change <code>name</code> only as a separate migration test. RenderStack serializes the display name, so the old selection becomes unavailable and remains saved until you choose the new entry. Choose the new entry and save the scene.</li>
 <li>Make one reversible syntax error and save. The script transaction rejects the new module. Check the Console, repair the file, and save again.</li>
 </ol>
-<p>The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports <code>Pipeline graph rebuild rejected</code> and the last valid graph keeps rendering until another invalidation. On the first Editor build, failure attempts <code>DefaultForwardPipeline</code>; a packaged Player reports the missing or failed custom pipeline and does not substitute Default Forward. Fixing and saving the active source invalidates the failed state and requests another build.</p>
+<p>The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports <code>Pipeline graph rebuild rejected</code> and the last valid graph keeps rendering until another invalidation. With no accepted graph, construction fails explicitly in both Editor and Player; neither substitutes Default Forward. An unavailable pipeline name is also rejected without changing the saved selection. Fixing and saving the active source invalidates the failed state and requests another build.</p>
 <h2 id="mixed-pipeline">Mix Forward, Forward+, and Deferred</h2>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
@@ -161,7 +162,7 @@
 <p>Route effects see the route result. A layer effect sees the routes combined in that layer, a domain effect sees the domain result, and <code>pipeline.effects()</code> sees the accumulated scene composite at that position.</p>
 <figure class="learn-figure learn-figure-wide">
   <img src="../assets/learn/real-render-styles.webp" alt="illustrative stylized scene with distinct surface treatments" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux rendering setup. It shows the kind of deliberately split art direction that a project pipeline can compose.</figcaption>
+  <figcaption>An Infernux demo frame illustrating contrasting art styles that a project pipeline can compose.</figcaption>
 </figure>
 
 <h2 id="route-rules">Queue and otherwise rules</h2>
@@ -251,28 +252,29 @@
 <p>这三个名字各有用途：</p>
 <ul>
 <li><code>SimpleForwardPipeline</code> 是 Python 类名，用于在代码中标识实现。</li>
-<li><code>name = "Simple Forward"</code> 是发现键、Inspector 标签、场景保存的管线选择，也是管线参数的保存键。它应当全项目唯一并保持稳定。两个类使用同一个 <code>name</code> 会在发现字典中冲突；修改 <code>name</code> 后，旧场景仍会查找原来的值。</li>
+<li><code>name = "Simple Forward"</code> 是发现键、Inspector 标签、场景保存的管线选择，也是管线参数的保存键。它应当全项目唯一并保持稳定。两个活动声明使用同一个 <code>name</code> 时，该名称在冲突解决前不可用；修改 <code>name</code> 后，旧场景仍会查找原来的值。</li>
 <li><code>effects()</code> 的第一个字符串，例如 <code>"after_opaque"</code>，是 EffectStage 稳定 ID。场景靠它把已保存的 Effect Slot 重新挂到拓扑上。<code>label</code> 可以改而不破坏绑定；稳定 ID 改名后，旧 Slot 会成为 orphan，直到显式重映射。</li>
 </ul>
 <p>当前管线本身没有另一套 stable ID。虽然序列化字段名叫 <code>pipeline_class_name</code>，RenderStack 实际保存的是管线 <code>name</code>。</p>
-<p>候选模块导入失败时，Editor 仍会保留其它可用管线，只暂时不列出出错的类。修好脚本后再次保存即可重新发现。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。</p>
+<p>新源码只有在模块完整执行成功后才会进入目录。修改后的模块导入失败时，Editor 保留该源码最后一次接受的命名空间与效果注册项，并报告导入错误；首次导入失败则不会贡献任何类。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。</p>
+<p>不同目录中的同名文件拥有独立的模块身份。源码变化时，Editor 编译当前 Python 源码；即使快速保存前后的字节数相同，也不会复用基于时间戳判断的旧字节码。标准源码编码声明以及 <code>dataclass</code> 等 Python 装饰器可以在发现过程中正常使用。打包后的 Player 加载烘焙出的 <code>.pyc</code> 文件。</p>
 <p>可以在 Editor Console 中运行下列代码，把导入失败与目录问题分开检查。这些函数也由 RenderStack 的发现流程使用：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()))</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_import_failures</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_name_conflicts</span><span class="p">())</span>
 </code></pre></div>
 
 <p>导入失败表以源码路径为键，值中包含异常类型和消息。失败表为空且名称缺失时，应检查文件是否被跳过、类继承能否被识别，以及 <code>name</code> 是否为空或以下划线开头。</p>
-<p>同名管线的当前诊断范围更窄。发现结果保存为 <code>{pipeline.name: class}</code>，后遍历到的子类会静默覆盖同一个键中的早期子类。Pipeline 菜单只显示一项，也不会给出冲突诊断或候选列表。可在 Console 中确认当前胜出的类型与源码路径：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<p>管线名称必须唯一，也不能与内置管线重名。两个活动声明使用同一名称时，发现器会从可用目录中移除这个歧义名称，不选择任意一方。Inspector 会列出双方的源码声明。场景已经保存的歧义选择会保留并报错，不会改选其它管线。可在 Console 查看同一份冲突表：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="n">pipeline_type</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()[</span><span class="s2">"Simple Forward"</span><span class="p">]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">pipeline_type</span><span class="o">.</span><span class="vm">__module__</span><span class="p">,</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getsourcefile</span><span class="p">(</span><span class="n">pipeline_type</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_name_conflicts</span><span class="p">())</span>
 </code></pre></div>
 
-<p>项目中的每条管线都应使用唯一且稳定的 <code>name</code>。改名后需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。</p>
+<p>冲突表的结构是 <code>{名称: 源码声明元组}</code>。为每个声明设置唯一的 <code>name</code>，或删除重复声明，然后保存并等待资产刷新；恢复唯一性的声明会重新进入目录。同一份由发现器管理的源码经别名导入不会产生第二个声明，旧项目保留的类也不会进入当前项目目录。RenderPass 的发现流程遵循相同规则，可通过 <code>discovery_name_conflicts("pass")</code> 查看其冲突。</p>
+<p>修改当前管线名称后，需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。</p>
 <h2 id="minimal-pipeline_1">最小管线</h2>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
@@ -305,10 +307,10 @@
 <ol>
 <li>选择 <strong>Simple Forward</strong>。两个 Renderer 都应保持可见，RenderStack 拓扑中应出现 <strong>After Opaque</strong> 与 <strong>Final Post Processing</strong>。</li>
 <li>暂时删除透明 Domain 代码并保存，等待活动管线重载。透明测试对象应消失，不透明对象仍可见。恢复代码后再次保存。</li>
-<li>只在单独的迁移测试中修改 <code>name</code>。RenderStack 保存的是显示名称，旧选择会进入回退流程；选择新条目并保存场景。</li>
+<li>只在单独的迁移测试中修改 <code>name</code>。RenderStack 保存的是显示名称，旧选择会变成不可用，但仍保留在场景中，直到你选择新条目。选择新条目并保存场景。</li>
 <li>制造一个容易撤销的语法错误并保存。脚本事务会拒绝新模块。查看 Console，修复文件，再次保存。</li>
 </ol>
-<p>恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 <code>Pipeline graph rebuild rejected</code>，上一份有效 Graph 会继续渲染，直到下一次失效触发。Editor 首次构建失败时会尝试 <code>DefaultForwardPipeline</code>；打包 Player 会报告自定义管线缺失或失败，并保持错误可见，不会替换成 Default Forward。修复并保存活动源码会清除失败状态并请求再次构建。</p>
+<p>恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 <code>Pipeline graph rebuild rejected</code>，上一份有效 Graph 会继续渲染，直到下一次失效触发。没有已接受的 Graph 时，Editor 和 Player 都会明确报告构建失败，不会替换成 Default Forward。不可用的管线名称同样会被拒绝，已保存的选择不会被改写。修复并保存活动源码会清除失败状态并请求再次构建。</p>
 <h2 id="mixed-pipeline_1">混合 Forward、Forward+ 与 Deferred</h2>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
@@ -351,7 +353,7 @@
 <p>Route Effect 读取该 Route 的结果；Layer Effect 读取该 Layer 内路由的合并结果；Domain Effect 读取整个 Domain；<code>pipeline.effects()</code> 则读取执行到当前位置时累计的场景 Composite。</p>
 <figure class="learn-figure learn-figure-wide">
   <img src="../assets/learn/real-render-styles.webp" alt="采用不同表面处理的风格化场景示意" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux 渲染配置，用于展示项目管线可以组合出的割裂式美术风格。</figcaption>
+  <figcaption>来自 Infernux 演示项目的画面，用于参考项目管线可以组合出的不同美术风格。</figcaption>
 </figure>
 
 <h2 id="route-rules_1">Queue 与 otherwise 规则</h2>
@@ -418,10 +420,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

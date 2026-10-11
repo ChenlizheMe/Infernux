@@ -195,6 +195,16 @@ rhi::BindGroupHandle ParticleGpuMeshRenderer::CreateGeometryGroup(rhi::BufferHan
     return m_device->CreateBindGroup(group);
 }
 
+void ParticleGpuMeshRenderer::ReleaseViewBinding(rhi::BufferHandle renderIndices) noexcept
+{
+    const auto binding = std::find_if(m_viewGroups.begin(), m_viewGroups.end(),
+                                      [&](const auto &entry) { return entry.renderIndices == renderIndices; });
+    if (binding == m_viewGroups.end())
+        return;
+    m_device->Release(binding->group);
+    m_viewGroups.erase(binding);
+}
+
 rhi::BindGroupHandle ParticleGpuMeshRenderer::ResolveGeometryGroup(rhi::BufferHandle renderIndices)
 {
     if (!renderIndices.IsValid() || renderIndices == m_renderIndices)

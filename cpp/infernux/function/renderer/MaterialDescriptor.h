@@ -138,6 +138,7 @@ struct MaterialDescriptorSet
     std::unique_ptr<MaterialUBO> materialUBO;
     std::unique_ptr<MaterialUBO> vertexMaterialUBO; // Vertex-stage material UBO (binding 14)
     std::unique_ptr<MaterialUBO> textureIndexUBO;   // Bindless ABI (binding 15)
+    uint64_t materialUBOVersion = 0;
     std::vector<MergedDescriptorBinding> bindings;
     std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
     std::unordered_map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> storageBufferBindings;
@@ -284,7 +285,7 @@ class MaterialDescriptorManager
     /**
      * @brief Update descriptor set with new material values
      */
-    void UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material);
+    [[nodiscard]] bool UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material);
 
     /**
      * @brief Re-resolve Texture2D properties for an existing descriptor set
@@ -312,7 +313,8 @@ class MaterialDescriptorManager
     /// lease after its last possible submission. Active sets are immutable.
     [[nodiscard]] bool PublishDescriptorReplacement(
         MaterialDescriptorSet &descriptorSet,
-        const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings);
+        const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings,
+        const InxMaterial *material = nullptr);
 
   public:
     /// Bind submission-serial retirement for descriptor-owned buffers.
@@ -384,10 +386,12 @@ class MaterialDescriptorManager
 
     /**
      * @brief Set default normal map texture (flat normal = 0.5, 0.5, 1.0)
-     * Used as fallback for sampler bindings whose name contains "normal"
+     * Selected by the ShaderInfo Texture2D default token.
      */
     void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
                                  std::shared_ptr<const rhi::TextureGpuView> gpuView);
+    void SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
+                                std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
   private:
     VmaAllocator m_vmaAllocator = VK_NULL_HANDLE;
@@ -420,6 +424,9 @@ class MaterialDescriptorManager
     VkImageView m_defaultNormalImageView = VK_NULL_HANDLE;
     VkSampler m_defaultNormalSampler = VK_NULL_HANDLE;
     std::shared_ptr<const rhi::TextureGpuView> m_defaultNormalGpuView;
+    VkImageView m_defaultBlackImageView = VK_NULL_HANDLE;
+    VkSampler m_defaultBlackSampler = VK_NULL_HANDLE;
+    std::shared_ptr<const rhi::TextureGpuView> m_defaultBlackGpuView;
 
   public:
     /// @brief Get default texture image view (for per-view descriptor fallback)
@@ -472,9 +479,7 @@ class MaterialDescriptorManager
 
     [[nodiscard]] bool IsPlaceholderTexturePath(std::string_view texturePath) const;
 
-    [[nodiscard]] bool IsNormalBindingName(std::string_view bindingName) const;
-
-    [[nodiscard]] bool TryGetDefaultTextureBinding(std::string_view bindingName,
+    [[nodiscard]] bool TryGetDefaultTextureBinding(std::string_view textureDefault,
                                                    MaterialDescriptorSet::TextureBinding &outBinding) const;
 
     [[nodiscard]] bool ResolveBindlessIndex(MaterialDescriptorSet::TextureBinding &binding) const;

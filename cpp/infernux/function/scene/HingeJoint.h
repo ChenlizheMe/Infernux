@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Component.h"
+#include "physics/PhysicsConstraintOwner.h"
 #include <glm/glm.hpp>
 
 namespace infernux
@@ -10,7 +11,7 @@ class Rigidbody;
 
 /// A single-axis Jolt hinge. The joint lives on the same GameObject as its
 /// required Rigidbody and may connect to another Rigidbody or the fixed world.
-class HingeJoint final : public Component
+class HingeJoint final : public Component, private PhysicsConstraintOwner
 {
   public:
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
@@ -87,7 +88,9 @@ class HingeJoint final : public Component
 
   private:
     void RebuildConstraint();
+    void UpdateConstraintSettings();
     void ReleaseConstraint();
+    void OnPhysicsConstraintDestroyed() noexcept override;
     [[nodiscard]] uint32_t ResolveBodyId(const Rigidbody *body) const;
 
     glm::vec3 m_anchor{0.0f};

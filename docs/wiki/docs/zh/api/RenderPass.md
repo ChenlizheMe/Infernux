@@ -1,7 +1,7 @@
 # RenderPass
 
 <div class="class-info">
-类位于 <b>Infernux.renderstack</b>
+类位于 <b>infernux.renderstack</b>
 </div>
 
 ## 描述

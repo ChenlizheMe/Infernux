@@ -15,6 +15,7 @@
 #include "RendererSelection.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "gui/WorldUIDepthReplay.h"
 #include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
@@ -77,9 +78,10 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
     if (!camera)
         return result;
 
-    const auto cameraToWorld = camera->GetCameraToWorldMatrix();
-    const glm::vec3 cameraPosition(cameraToWorld[3]);
-    const glm::vec3 cameraForward = glm::normalize(glm::vec3(cameraToWorld[2]));
+    // Cascade selection in the shader uses view-space z, including any
+    // affine view override. A normalized world forward changes those units.
+    const auto view = camera->GetViewMatrix();
+    const glm::vec3 depthAxis(view[0][2], view[1][2], view[2][2]);
     float nearest = std::numeric_limits<float>::max();
     float farthest = 0.0f;
     for (const DrawCall &drawCall : drawCalls) {
@@ -87,8 +89,8 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
             continue;
         const glm::vec3 center = (drawCall.worldBounds.min + drawCall.worldBounds.max) * 0.5f;
         const glm::vec3 extent = (drawCall.worldBounds.max - drawCall.worldBounds.min) * 0.5f;
-        const float centerDepth = glm::dot(center - cameraPosition, cameraForward);
-        const float depthRadius = glm::dot(glm::abs(cameraForward), extent);
+        const float centerDepth = glm::dot(center, depthAxis) + view[3][2];
+        const float depthRadius = glm::dot(glm::abs(depthAxis), extent);
         const float objectFar = centerDepth + depthRadius;
         if (objectFar <= 0.0f)
             continue;
@@ -96,15 +98,17 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
         // A huge receiver crossing the camera should not collapse the entire
         // logarithmic distribution onto the near clip plane.
         const float boundedRadius = std::min(depthRadius, std::max(centerDepth * 0.5f, 0.0f));
-        nearest = std::min(nearest, std::max(centerDepth - boundedRadius, camera->GetNearClip()));
+        nearest = std::min(nearest, std::max(centerDepth - boundedRadius, 0.001f));
         farthest = std::max(farthest, objectFar);
     }
     if (farthest <= 0.0f || nearest == std::numeric_limits<float>::max())
         return result;
 
-    const float span = std::max(farthest - nearest, camera->GetNearClip());
+    // These are geometry bounds. ComputeShadowVP intersects them with the
+    // effective projection; dormant authored clipping planes do not apply.
+    const float span = std::max(farthest - nearest, 0.001f);
     result.nearDepth = nearest;
-    result.farDepth = std::min(farthest + span * 0.05f, camera->GetFarClip());
+    result.farDepth = farthest + span * 0.05f;
     return result;
 }
 
@@ -1064,49 +1068,27 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     const auto depthResolveSupport = vkCore->GetDeviceContext().GetCapabilities().CheckFormat(
         rhi::PixelFormat::R32SFloat, rhi::FormatFeature::Sampled | rhi::FormatFeature::Storage);
     if (depthResolveSupport.IsSupported()) {
-        InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-        const auto bytes = compiler.CompileComputeGlsl(std::string(SceneDepthResolver::ShaderSource()),
-                                                       "Infernux/SceneDepthResolve.comp");
-        if (bytes.size() >= 5 * sizeof(uint32_t) && bytes.size() % sizeof(uint32_t) == 0) {
-            std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
-            std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            if (!m_sceneDepthResolver.Initialize(vkCore->GetDeviceContext().GetRhiDevice(), spirv.data(),
-                                                 spirv.size())) {
-                INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI scene-depth resolver");
-            }
-        } else {
-            INXLOG_ERROR("SceneRenderGraph: failed to compile the RHI scene-depth resolve shader");
-        }
+        if (!m_sceneDepthResolver.Initialize(vkCore->GetSceneDepthResolveProgram()))
+            return false;
     } else {
         INXLOG_WARN("SceneRenderGraph: R32SFloat sampled-storage textures are unavailable; MSAA soft particles are "
                     "disabled on this adapter");
     }
 
-    {
-        InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-        const auto bytes = compiler.CompileComputeGlsl(std::string(lighting::ForwardPlusLightGrid::ShaderSource()),
-                                                       "Infernux/ForwardPlusLightGrid.comp");
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0) {
-            INXLOG_ERROR("SceneRenderGraph: failed to compile the Forward+ tiled-light shader");
-        } else {
-            std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
-            std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
-                INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_perViewLayout.IsValid() || !m_forwardPlusParticleGrid.Initialize(
-                                                         rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
-                INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
-            } else {
-                for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
-                    const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
-                    if (lights.buffer.IsValid()) {
-                        (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
-                                                                     CanonicalLightAffectsGeometry, lights.buffer);
-                        (void)m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
-                                                                     CanonicalLightAffectsParticles, lights.buffer);
-                    }
-                }
-            }
+    // These two fixed built-in programs belong to the device, not a camera.
+    // Recreating a Scene/Game view must not compile the same shaders again.
+    const auto lightGridProgram = vkCore->GetForwardPlusGridProgram();
+    if (!m_forwardPlusGeometryGrid.Initialize(lightGridProgram, kMaxFramesInFlight) ||
+        !m_forwardPlusParticleGrid.Initialize(lightGridProgram, kMaxFramesInFlight))
+        return false;
+    for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+        const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
+        if (lights.buffer.IsValid()) {
+            if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                        CanonicalLightAffectsGeometry, lights.buffer) ||
+                !m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                        CanonicalLightAffectsParticles, lights.buffer))
+                return false;
         }
     }
 
@@ -1259,8 +1241,16 @@ uint64_t SceneRenderGraph::CurrentParticleDrawRegistryRevision() const noexcept
     return m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;
 }
 
+void SceneRenderGraph::ReleaseParticleViewBindings() noexcept
+{
+    for (auto &[id, binding] : m_particleViewBindings)
+        binding.renderer->ReleaseViewBinding(binding.indices);
+    m_particleViewBindings.clear();
+}
+
 void SceneRenderGraph::InvalidateParticleViews()
 {
+    ReleaseParticleViewBindings();
     const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
         if (!culler)
             return;
@@ -1318,6 +1308,7 @@ void SceneRenderGraph::RetireImportedTextureAssets()
 
 void SceneRenderGraph::Destroy()
 {
+    ReleaseParticleViewBindings();
     if (m_particleViewDiagnosticState) {
         std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
         for (const auto &request : m_pendingParticleViewDiagnostics) {
@@ -1471,6 +1462,7 @@ void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuff
             capture.diagnostic.emitterIndex = entry.emitterIndex;
             capture.diagnostic.outputStableId = entry.outputStableId;
             capture.diagnostic.capacity = entry.capacity;
+            capture.diagnostic.residentViewBindingCount = static_cast<uint32_t>(entry.renderer->ViewBindingCount());
             capture.diagnostic.cullMode = entry.cullMode;
             capture.diagnostic.sortMode = entry.semantics.sortMode;
             const auto sorter = m_particleSorters.find(entry.id);
@@ -1868,11 +1860,11 @@ MaterialPassPipelineDescriptor SceneRenderGraph::ResolveMaterialPass(const Rende
     return result;
 }
 
-void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
+bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
     if (!m_vkCore || !m_sceneTarget) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: Not initialized");
-        return;
+        return false;
     }
 
     RenderGraphDescription normalizedDesc = desc;
@@ -1917,11 +1909,11 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             m_pythonGraphSourceRevision = desc.sourceRevision;
             m_pythonGraphDesc.sourceRevision = desc.sourceRevision;
         }
-        return;
+        return true;
     }
 
     if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc, static_cast<uint32_t>(callbackSamples))) {
-        return;
+        return false;
     }
 
     if (topologyChanged) {
@@ -2107,6 +2099,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     if (topologyChanged || callbackContractChanged) {
         m_needsRebuild = true;
     }
+    return true;
 }
 
 void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
@@ -2272,12 +2265,9 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                  (!overrideMaterial && !tag.empty() && tag != command->passTag)))
                 return;
             if (command->materialFilter != GraphMaterialFilter::All) {
-                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-                if (const auto *committed =
-                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
-                    stages = committed->programKey.stages;
-                const auto *artifact =
-                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+                const auto *committed = m_vkCore->ResolveMeshMaterial(material);
+                const auto artifact =
+                    committed ? m_vkCore->ShareShaderProgramArtifact(committed->programKey.stages) : nullptr;
                 const bool deferred = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
                 if ((command->materialFilter == GraphMaterialFilter::DeferredCompatible && !deferred) ||
                     (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred))
@@ -2327,22 +2317,27 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
     }
 }
 
-rhi::SubmissionTicket SceneRenderGraph::GetLatestComputeBufferWriteSubmission() const noexcept
+rhi::SubmissionTicket
+SceneRenderGraph::GetLatestComputeBufferWriteSubmission(rhi::PipelineStage &consumerStages) const noexcept
 {
     rhi::SubmissionTicket latest{};
-    for (const auto &read : m_materialBufferReads) {
-        if (!read.buffer)
-            continue;
-        const auto ticket = read.buffer->GetLastWriteSubmission();
-        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
+    consumerStages = rhi::PipelineStage::None;
+    const auto include = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+        if (!buffer || !m_renderGraph)
+            return;
+        const auto stages = m_renderGraph->GetImportedBufferAccessStages(buffer->GetBuffer());
+        const auto ticket = buffer->GetLastWriteSubmission();
+        if (!ticket.IsValid() || stages == rhi::PipelineStage::None)
+            return;
+        if (!latest.IsValid() || ticket.serial > latest.serial)
             latest = ticket;
+        consumerStages = consumerStages | stages;
+    };
+    for (const auto &read : m_materialBufferReads) {
+        include(read.buffer);
     }
     for (const auto &buffer : m_pythonGraphDesc.buffers) {
-        if (!buffer.computeBuffer)
-            continue;
-        const auto ticket = buffer.computeBuffer->GetLastWriteSubmission();
-        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
-            latest = ticket;
+        include(buffer.computeBuffer);
     }
     return latest;
 }
@@ -2359,17 +2354,20 @@ void SceneRenderGraph::EnsureGraphBuilt()
 
     uint64_t worldUIDepthSignature = 0;
     if (m_screenUIRenderer) {
-        uint32_t mask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
-        for (const auto &pass : m_pythonGraphDesc.passes) {
+        const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        for (size_t passIndex = 0; passIndex < m_pythonGraphDesc.passes.size(); ++passIndex) {
+            const auto &pass = m_pythonGraphDesc.passes[passIndex];
             const auto *command = PrimaryCommand(pass);
-            if (command && command->type == GraphCommandType::DrawWorldUI) {
-                mask &= command->worldUILayerMask;
-                break;
-            }
-        }
-        if (m_screenUIRenderer->HasSelectiveWorldOcclusion(mask)) {
+            if (!command || command->type != GraphCommandType::DrawWorldUI)
+                continue;
+            const uint32_t mask = cameraMask & command->worldUILayerMask;
+            if (!m_screenUIRenderer->HasSelectiveWorldOcclusion(mask))
+                continue;
             const auto runs = m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask);
-            worldUIDepthSignature = 1469598103934665603ull;
+            if (!worldUIDepthSignature)
+                worldUIDepthSignature = 1469598103934665603ull;
+            worldUIDepthSignature = (worldUIDepthSignature ^ passIndex) * 1099511628211ull;
+            worldUIDepthSignature = (worldUIDepthSignature ^ mask) * 1099511628211ull;
             for (const auto &run : runs) {
                 for (const uint64_t value : {uint64_t(run.firstOrdinal), uint64_t(run.endOrdinal),
                                              run.ignoredOccluderId, uint64_t(run.alwaysOnTop)}) {
@@ -2383,13 +2381,29 @@ void SceneRenderGraph::EnsureGraphBuilt()
         m_needsRebuild = true;
     }
     if (worldUIDepthSignature && m_vkCore) {
-        const GraphCommandDesc *opaqueCommand = nullptr;
+        std::optional<WorldUIDepthReplay> replay;
+        const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
         for (const auto &pass : m_pythonGraphDesc.passes) {
-            if (pass.name == "OpaquePass") {
-                opaqueCommand = PrimaryCommand(pass);
-                break;
+            const auto *command = PrimaryCommand(pass);
+            if (!command || command->type != GraphCommandType::DrawWorldUI ||
+                !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraMask & command->worldUILayerMask))
+                continue;
+            auto candidate = BuildWorldUIDepthReplay(m_pythonGraphDesc,
+                                                     m_cameraClearFlags == CameraClearFlags::DontClear, pass.name);
+            if (!candidate) {
+                INXLOG_ERROR("Selective World UI occlusion requires one cleared Forward scene-depth writer; "
+                             "pass '",
+                             pass.name, "' or camera depth-preservation policy cannot be replayed exactly");
+                m_graphBuilt = false;
+                m_needsRebuild = true;
+                return;
             }
+            // Every accepted stage shares the one scene-depth producer. Keep
+            // its owned command for material checks, independent of its name.
+            if (!replay)
+                replay = std::move(candidate);
         }
+        const GraphCommandDesc *opaqueCommand = replay ? &replay->draw : nullptr;
         if (opaqueCommand && opaqueCommand->type == GraphCommandType::DrawRenderers) {
             const auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
             for (const auto &draw : GetCachedDrawCalls()) {
@@ -2405,20 +2419,9 @@ void SceneRenderGraph::EnsureGraphBuilt()
                 const auto &state = material->GetRenderState();
                 if (!state.depthWriteEnable)
                     continue;
-                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-                if (const auto *committed =
-                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
-                    stages = committed->programKey.stages;
-                const auto *artifact =
-                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-                if (!artifact) {
-                    m_vkCore->RefreshMaterialPipeline(material, material->GetVertShaderName(),
-                                                      material->GetFragShaderName());
-                    if (const auto *committed =
-                            m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
-                        stages = committed->programKey.stages;
-                    artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-                }
+                const auto *committed = m_vkCore->ResolveMeshMaterial(material);
+                const auto artifact =
+                    committed ? m_vkCore->ShareShaderProgramArtifact(committed->programKey.stages) : nullptr;
                 if (!state.depthTestEnable || state.stencilTestEnable || !artifact ||
                     !artifact->FindVariant(ShaderCompileTarget::Depth)) {
                     INXLOG_ERROR("Selective World UI occlusion cannot replay depth-writing material '",
@@ -2563,6 +2566,11 @@ bool SceneRenderGraph::UsesForwardPlus() const
         for (const auto &command : pass.commands) {
             if (command.type == GraphCommandType::DrawRenderers &&
                 command.shaderTarget == ShaderCompileTarget::ForwardPlus) {
+                return true;
+            }
+            // Deferred lighting consumes the same per-view light grid even
+            // when the graph contains no Forward+ geometry pass.
+            if (command.type == GraphCommandType::FullscreenQuad && command.shaderName == "Deferred Lighting") {
                 return true;
             }
         }
@@ -2909,6 +2917,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
             m_vkCore->ClearPerViewShadowMap(viewFrame.EditorOverlaySet());
             viewFrame.shadowBinding = {};
+            viewFrame.shadowBinding.usesDefaultTexture = true;
         }
         return;
     }
@@ -3202,12 +3211,18 @@ bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
         switch (tex.attachment) {
         case GraphTextureAttachment::Color:
             customRTHandles[tex.name] = attachments.color;
+            m_graphTextureSamplers[tex.name] = generation->ColorAttachment().GetSampler();
+            m_graphTextureFormats[tex.name] = generation->ColorAttachment().GetFormat();
             break;
         case GraphTextureAttachment::Depth:
             customRTHandles[tex.name] = attachments.depth;
+            m_graphTextureSamplers[tex.name] = generation->depth->GetSampler();
+            m_graphTextureFormats[tex.name] = generation->depth->GetFormat();
             break;
         case GraphTextureAttachment::Resolve:
             customRTHandles[tex.name] = attachments.resolve;
+            m_graphTextureSamplers[tex.name] = generation->color->GetSampler();
+            m_graphTextureFormats[tex.name] = generation->color->GetFormat();
             break;
         }
         m_persistentTextureRevisions[tex.renderTexture.get()] = generation->revision;
@@ -3480,6 +3495,7 @@ void SceneRenderGraph::BuildRenderGraph()
     if (currentViewFrame.EditorOverlaySet() != VK_NULL_HANDLE)
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.EditorOverlaySet());
     currentViewFrame.shadowBinding = {};
+    currentViewFrame.shadowBinding.usesDefaultTexture = true;
 
     // Graph topology and material pipeline compatibility are independent.
     // Effect-stack edits commonly rebuild transient graph resources while the
@@ -3631,6 +3647,32 @@ void SceneRenderGraph::BuildRenderGraph()
         it = m_particleSorters.erase(it);
     }
 
+    // Reconcile ownership only when the graph topology changes. An output can
+    // replace its renderer while retaining its culler, or replace cull/sort
+    // buffers while retaining its renderer; both invalidate the old binding.
+    for (const auto &entry : particleEntries) {
+        const auto culler = m_particleCullers.find(entry.id);
+        if (culler == m_particleCullers.end())
+            continue;
+        const auto sorter = m_particleSorters.find(entry.id);
+        const auto indices =
+            sorter == m_particleSorters.end() ? culler->second->VisibleIndexBuffer() : sorter->second->SortedIndices();
+        auto [binding, inserted] =
+            m_particleViewBindings.try_emplace(entry.id, ParticleViewBinding{entry.renderer, indices});
+        if (!inserted && (binding->second.renderer != entry.renderer || binding->second.indices != indices)) {
+            binding->second.renderer->ReleaseViewBinding(binding->second.indices);
+            binding->second = {entry.renderer, indices};
+        }
+    }
+    for (auto binding = m_particleViewBindings.begin(); binding != m_particleViewBindings.end();) {
+        if (activeCullers.find(binding->first) != activeCullers.end()) {
+            ++binding;
+        } else {
+            binding->second.renderer->ReleaseViewBinding(binding->second.indices);
+            binding = m_particleViewBindings.erase(binding);
+        }
+    }
+
     if (!m_hasPythonGraph) {
         return;
     }
@@ -3684,49 +3726,22 @@ void SceneRenderGraph::BuildRenderGraph()
 
         const auto &sortedPasses = m_pythonGraphDesc.passes;
 
-        uint32_t worldUIMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        const uint32_t cameraWorldUIMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        std::unordered_map<std::string, WorldUIDepthReplay> worldUIOpaqueSources;
         for (const auto &candidate : sortedPasses) {
             const auto *candidateCommand = PrimaryCommand(candidate);
-            if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
-                worldUIMask &= candidateCommand->worldUILayerMask;
-                break;
-            }
-        }
-        const bool hasSelectiveWorldUI =
-            m_screenUIRenderer && m_screenUIRenderer->HasSelectiveWorldOcclusion(worldUIMask);
-        const auto worldUIDepthRuns =
-            hasSelectiveWorldUI ? m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, worldUIMask)
-                                : std::vector<InxScreenUIRenderer::WorldDepthRun>{};
-        const GraphPassDesc *worldUIOpaqueSource = nullptr;
-        if (hasSelectiveWorldUI) {
-            bool seenWorldUI = false;
-            bool invalidDepthWriter =
-                m_pythonGraphDesc.name != "Default Forward" || m_cameraClearFlags == CameraClearFlags::DontClear;
-            for (const auto &candidate : sortedPasses) {
-                const auto *candidateCommand = PrimaryCommand(candidate);
-                if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
-                    seenWorldUI = true;
-                    break;
-                }
-                if (candidate.writeDepth != "depth")
-                    continue;
-                if (candidate.name == "OpaquePass" && candidateCommand &&
-                    candidateCommand->type == GraphCommandType::DrawRenderers &&
-                    candidateCommand->shaderTarget == ShaderCompileTarget::Forward &&
-                    candidate.type == GraphPassType::Raster && candidate.commands.size() == 1 && candidate.clearDepth &&
-                    candidate.clearDepthValue == 1.0f && !candidateCommand->rendererSelection &&
-                    candidateCommand->overrideMaterial.empty() &&
-                    candidateCommand->materialFilter == GraphMaterialFilter::All) {
-                    worldUIOpaqueSource = &candidate;
-                } else {
-                    invalidDepthWriter = true;
-                }
-            }
-            if (!seenWorldUI || !worldUIOpaqueSource || invalidDepthWriter) {
-                INXLOG_ERROR("Selective World UI occlusion requires the unmodified Default Forward scene-depth "
-                             "writer; this graph or camera depth-preservation policy cannot be replayed exactly");
+            if (!candidateCommand || candidateCommand->type != GraphCommandType::DrawWorldUI || !m_screenUIRenderer ||
+                !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraWorldUIMask & candidateCommand->worldUILayerMask))
+                continue;
+            auto source = BuildWorldUIDepthReplay(m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear,
+                                                  candidate.name);
+            if (!source) {
+                INXLOG_ERROR("Selective World UI occlusion requires one cleared Forward scene-depth writer; "
+                             "pass '",
+                             candidate.name, "' or camera depth-preservation policy cannot be replayed exactly");
                 return;
             }
+            worldUIOpaqueSources.emplace(candidate.name, std::move(*source));
         }
 
         uint32_t width = m_width;
@@ -3873,16 +3888,23 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.ReadWrite(resources.simulationControl, rhi::PipelineStage::ComputeShader);
                 resources.indirectArguments = builder.WriteStorageBuffer(resources.indirectArguments);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
-                return [this, culler](vk::RenderContext &ctx) {
-                    culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                return [this, culler, ownerLayerMask = entry.ownerLayerMask](vk::RenderContext &ctx) {
+                    const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+                    // Keep each view's indirect output and visibility feedback
+                    // consistent. A masked view must not keep offscreen
+                    // simulation awake for other cameras.
+                    culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes,
+                                        (ownerLayerMask & cameraMask) != 0);
                     ctx.RecordComputeDispatch(1, 1, 1, culler->Capacity(), false);
                 };
             });
             m_renderGraph->AddComputePass(prefix + "/Cull", [&, culler](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(resources.visibility);
+                builder.ReadStorageBuffer(resources.instances);
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
                 builder.ReadStorageBuffer(resources.sourceRenderIndices);
                 builder.ReadIndirectBuffer(resources.sortDispatchArguments);
+                builder.ReadStorageBuffer(resources.sortDispatchArguments);
                 resources.renderIndices = builder.WriteStorageBuffer(resources.renderIndices);
                 resources.indirectArguments =
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
@@ -4680,10 +4702,12 @@ void SceneRenderGraph::BuildRenderGraph()
                                          "' to an incompatible shader resource dimension at binding ", binding);
                             return;
                         }
+                    }
+                    if (texture.role == GraphTextureRole::Asset || texture.role == GraphTextureRole::Persistent) {
                         const auto formatIt = m_graphTextureFormats.find(name);
                         const auto samplerIt = m_graphTextureSamplers.find(name);
                         if (formatIt == m_graphTextureFormats.end() || samplerIt == m_graphTextureSamplers.end()) {
-                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' Texture asset '", name,
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' imported texture '", name,
                                          "' has no resident GPU publication");
                             return;
                         }
@@ -4800,6 +4824,15 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
+                if (shaderName == "Display Encode") {
+                    // Scene View is an opaque editor display. Keep coverage alpha
+                    // in graph intermediates and Game/RenderTexture output, while
+                    // exposing black background and overlays even without a sky.
+                    packedPushConstants.values[2] = m_renderView.kind == rhi::RenderViewKind::Scene ? 1.0f : 0.0f;
+                    packedPushConstantSize =
+                        std::max(packedPushConstantSize, 3u * static_cast<uint32_t>(sizeof(float)));
+                }
+
                 // Determine output target (primary color)
                 vk::ResourceHandle fsOutputTarget = primaryColorTarget;
                 vk::ResourceHandle fsWrittenVersion;
@@ -4879,6 +4912,17 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
                                      [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
                         builder.ReadSampledDepth(fullscreenShadowInput);
+                    }
+                    if (shaderName == "Deferred Lighting") {
+                        for (const auto &resources : forwardPlusResources) {
+                            if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
+                                !resources.lightMasks.IsValid()) {
+                                continue;
+                            }
+                            builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
+                        }
                     }
                     // Declare color output
                     fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
@@ -4989,6 +5033,12 @@ void SceneRenderGraph::BuildRenderGraph()
                             drawPushConstants.values[cameraStopNaNsParameterIndex] = m_cameraStopNaNs ? 1.0f : 0.0f;
                         }
 
+                        if (shaderName == "Display Encode") {
+                            drawPushConstants.values[2] = m_renderView.kind == rhi::RenderViewKind::Scene ? 1.0f : 0.0f;
+                            drawPushConstantSize =
+                                std::max(drawPushConstantSize, 3u * static_cast<uint32_t>(sizeof(float)));
+                        }
+
                         fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),
                                          drawPushConstants, drawPushConstantSize);
                     };
@@ -5040,21 +5090,25 @@ void SceneRenderGraph::BuildRenderGraph()
             const vk::ResourceHandle rendererListHandle =
                 usesShadowRendererList ? m_shadowRendererList
                                        : (usesVisibleRendererList ? m_visibleRendererList : vk::ResourceHandle{});
-            if (hasSelectiveWorldUI && command && command->type == GraphCommandType::DrawWorldUI) {
+            const auto selectiveSource = worldUIOpaqueSources.find(passDesc.name);
+            if (selectiveSource != worldUIOpaqueSources.end()) {
                 if (!primaryColorTarget.IsValid() || !sharedDepth.IsValid() || colorTargets.size() != 1 ||
                     colorTargets.begin()->first != 0) {
                     INXLOG_ERROR("Selective World UI requires one existing color target and scene depth");
                     return;
                 }
-                const auto *opaqueCommand = PrimaryCommand(*worldUIOpaqueSource);
-                auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource->name);
+                const auto &worldUIOpaqueSource = selectiveSource->second;
+                const auto worldUIDepthRuns = m_screenUIRenderer->GetWorldDepthRuns(
+                    m_cachedProj * m_drawView, cameraWorldUIMask & command->worldUILayerMask);
+                const auto opaqueCommand = worldUIOpaqueSource.draw;
+                auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource.passName);
                 const auto uiMaterialPass = m_pythonMaterialPasses.at(passDesc.name);
                 const uint32_t worldUILayerMask = command->worldUILayerMask;
                 replayPipeline.target = ShaderCompileTarget::Depth;
                 replayPipeline.colorFormats.clear();
                 replayPipeline.depthReadOnly = false;
                 std::vector<vk::ResourceHandle> replayTextureReads;
-                if (const auto inputs = m_drawTextureInputs.find(worldUIOpaqueSource->name);
+                if (const auto inputs = m_drawTextureInputs.find(worldUIOpaqueSource.passName);
                     inputs != m_drawTextureInputs.end()) {
                     for (const auto &generation : inputs->second) {
                         const auto resources = m_renderGraph->ImportRenderTexture(
@@ -5074,7 +5128,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle writtenAlternateDepth;
                     m_renderGraph->AddPass(replayName, [=, &writtenAlternateDepth](vk::PassBuilder &builder) {
                         builder.ReadRendererList(m_visibleRendererList);
-                        declareMaterialBufferReads(builder, worldUIOpaqueSource->name);
+                        declareMaterialBufferReads(builder, worldUIOpaqueSource.passName);
                         for (const auto texture : replayTextureReads)
                             builder.Read(texture,
                                          rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
@@ -5088,9 +5142,9 @@ void SceneRenderGraph::BuildRenderGraph()
                             if (!vkCore->UsesDrawCalls(draws))
                                 vkCore->SetDrawCalls(draws);
                             vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(),
-                                                      m_drawView, opaqueCommand->queueMin, opaqueCommand->queueMax,
-                                                      opaqueCommand->sortMode, "", opaqueCommand->passTag,
-                                                      &replayPipeline, opaqueCommand->materialFilter, nullptr,
+                                                      m_drawView, opaqueCommand.queueMin, opaqueCommand.queueMax,
+                                                      opaqueCommand.sortMode, "", opaqueCommand.passTag,
+                                                      &replayPipeline, opaqueCommand.materialFilter, nullptr,
                                                       excludedId, true);
                         };
                     });
@@ -5459,6 +5513,9 @@ void SceneRenderGraph::BuildRenderGraph()
                             particlePerView.group = viewFrame.particleGroup;
                         }
                         for (const auto &packet : particlePackets) {
+                            const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+                            if ((packet.ownerLayerMask & cameraMask) == 0)
+                                continue;
                             auto packetView = view;
                             std::memcpy(&packetView.lightingControl[3], &packet.ownerLayerMask,
                                         sizeof(packet.ownerLayerMask));

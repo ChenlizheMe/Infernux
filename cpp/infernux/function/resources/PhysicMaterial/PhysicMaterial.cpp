@@ -1,4 +1,5 @@
 #include "PhysicMaterial.h"
+#include <platform/filesystem/AssetDocument.h>
 
 #include <cmath>
 #include <platform/filesystem/DocumentStore.h>
@@ -66,6 +67,13 @@ void PhysicMaterial::DeserializeDocument(const nlohmann::json &document)
         !document.at("friction_combine").is_number_integer() || !document.at("bounce_combine").is_number_integer())
         throw std::invalid_argument("PhysicMaterial fields have invalid types");
 
+    // Check the original JSON integer (including uint64) before get<int>() or
+    // the byte-sized enum can discard its high bits.
+    for (const char *field : {"friction_combine", "bounce_combine"}) {
+        const auto &value = document.at(field);
+        if (value < 0 || value > static_cast<int>(PhysicsMaterialCombine::Maximum))
+            throw std::invalid_argument(std::string("PhysicMaterial ") + field + " is invalid");
+    }
     PhysicMaterial staged;
     staged.SetFriction(document.at("friction").get<float>());
     staged.SetBounciness(document.at("bounciness").get<float>());
@@ -84,6 +92,8 @@ void PhysicMaterial::CopyValuesFrom(const PhysicMaterial &other)
 
 void PhysicMaterial::SaveToFile() const
 {
+    if (IsCookedAssetDocument(m_filePath))
+        throw std::logic_error("Cooked physics material is read-only");
     if (m_filePath.empty())
         throw std::logic_error("PhysicMaterial has no file path");
     DocumentStore::Instance().WriteAndWait(m_filePath, SerializeDocument().dump(2));

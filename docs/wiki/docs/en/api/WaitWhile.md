@@ -1,7 +1,7 @@
 # WaitWhile
 
 <div class="class-info">
-class in <b>Infernux.coroutine</b>
+class in <b>infernux.coroutine</b>
 </div>
 
 ## Description

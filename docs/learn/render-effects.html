@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Create fullscreen effects whose parameters behave like materials and can be shared, edited, and changed at runtime.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/render-effects.html">
     <title>Reusable RenderEffect assets · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -134,10 +134,10 @@
 <p>Then complete the path in this order:</p>
 <ol>
 <li>Save <code>Assets/Rendering/edge_fade_effect.py</code> with the registered class above and save <code>Assets/Shaders/edge_fade.frag</code> with the fullscreen shader. The scan root is the current project's <code>Assets</code> directory. Hidden directories and <code>__pycache__</code>, <code>build</code>, <code>dist</code>, <code>.venv</code>, <code>venv</code>, and <code>.runtime</code> are skipped; Python source candidates must mention <code>render_effect_feature</code> or <code>register_render_effect_feature</code>.</li>
-<li>Save <code>Assets/Rendering/Edge Fade.effect</code> with the strict JSON below. Querying its <code>feature_type</code> triggers the candidate import and registry lookup. The Project panel's <strong>Create &gt; Render Effect</strong> submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing <code>Edge Fade.effect</code> path instead of replacing it.</li>
-<li>Import compiles the document before publication: it validates the four-key schema, resolves the registered feature, rejects unknown parameters, records the passes emitted by <code>setup_passes()</code>, prepares declared shader dependencies, and writes the successful product under <code>Library/Artifacts/RenderEffect/&lt;guid&gt;.inxeffect</code>. The source receives a <code>.meta</code> GUID; references retain both that GUID and <code>path_hint</code>.</li>
+<li>After the shader is imported, read <code>metadata.guid.value</code> from <code>Assets/Shaders/edge_fade.frag.meta</code>. Replace <code>EDGE_FADE_SHADER_GUID</code> in the strict JSON below with that actual GUID, then save <code>Assets/Rendering/Edge Fade.effect</code>. An empty GUID is an unassigned reference; a path does not resolve it. Querying its <code>feature_type</code> triggers the candidate import and registry lookup. The Project panel's <strong>Create &gt; Render Effect</strong> submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing <code>Edge Fade.effect</code> path instead of replacing it.</li>
+<li>Import validates the portable declaration before publication: it checks the four-key schema, resolves the registered feature, rejects unknown parameters and unresolved dependency GUIDs, records resource requirements and topology parameters, and writes the successful product under <code>Library/Artifacts/RenderEffect/&lt;guid&gt;.inxeffect</code>. Import does not execute <code>setup_passes()</code>, because no mount stage or View resources exist yet. Dependency and feature checks also run before reusing a cached product. Shader preparation and <code>setup_passes()</code> run when the renderer compiles the actual mounted graph. The source receives a <code>.meta</code> GUID; references store only that GUID. Paths select files while authoring and are not serialized reference identities.</li>
 <li>Add a RenderStack component, select its GameObject, and drag <code>Edge Fade.effect</code> into <code>final</code>. RenderStack resolves the enabled slot, instantiates a feature for that mount, and invokes <code>setup_passes()</code> when the graph reaches <code>final</code>.</li>
-<li>Verify the result in Game view: set <code>intensity</code> to <code>0</code> and then <code>1</code>. The center remains unchanged while the corners darken at <code>1</code>. Confirm that <strong>Effect Compile Errors</strong> is empty in the RenderStack Inspector. A missing project shader should instead report <code>failed to prepare effect shader dependency</code>; an unimportable feature ends as <code>unknown render effect feature</code> for the mounted stage and slot, while the original Python import exception is retained by discovery and logged during the failed import/reload path.</li>
+<li>Verify the result in Game view: set <code>intensity</code> to <code>0</code> and then <code>1</code>. The center remains unchanged while the corners darken at <code>1</code>. Confirm that <strong>Effect Compile Errors</strong> is empty in the RenderStack Inspector. An unresolved dependency GUID reports <code>effect dependency GUID is unavailable</code> during import. A Shader that fails renderer preparation reports <code>failed to prepare effect shader dependency</code> when the mounted graph is compiled. An unimportable feature ends as <code>unknown render effect feature</code> for the mounted stage and slot, while the original Python import exception is retained by discovery and logged during the failed import/reload path.</li>
 </ol>
 <p>Discovery, asset import, and graph compilation respond to data changes. They do not scan source every frame.</p>
 <h2 id="effect-asset">The <code>.effect</code> document</h2>
@@ -145,8 +145,7 @@
 <span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"dependencies"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Shaders/edge_fade.frag"</span>
+<span class="w">      </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">"EDGE_FADE_SHADER_GUID"</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">],</span>
 <span class="w">  </span><span class="nt">"feature_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
@@ -168,8 +167,8 @@
 <li>A direct <code>.effect</code> mount has one shared loaded <code>RenderEffect</code> document. Asset Inspector and Slot Inspector send edits to that same document, so the most recently accepted edit is immediately visible in both views and in every direct mount of the asset. A direct slot has no private parameter override.</li>
 <li>Every accepted Inspector edit enters the global Undo history as a document edit. Undo reverses the latest accepted edit regardless of which view made it, republishes the restored in-memory document, and schedules persistence again. An external file reload is a filesystem consequence and creates no Undo entry.</li>
 <li>The <code>.effect</code> document autosaves through a 0.5-second debounced snapshot. Saving the scene persists Slot identity, stage, order, asset reference, and enabled state; it does not replace the separate asset autosave. Closing or changing scenes drains pending autosave work through the resource-document lifecycle.</li>
-<li>Watcher notifications that exactly match an Editor write are acknowledged. A notification arriving while that local write is pending is deferred. Once a different durable revision is confirmed, this non-scene asset follows the disk revision automatically: queued local asset persistence is cancelled, the loaded resource is refreshed, and both views update.</li>
-<li>External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID/path reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.</li>
+<li>Watcher notifications that exactly match an Editor write are acknowledged. While an accepted local edit is waiting for its debounced save or disk write, the local edit has priority: notifications are deferred, and the pending save can replace an intervening external disk edit. After local persistence completes, a later external revision is imported automatically; the shared resource and its Inspector views follow that disk revision. To keep an external edit, make it after the local save has finished.</li>
+<li>External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.</li>
 </ul>
 <h2 id="resource-contract">Declare what the effect reads and writes</h2>
 <p><code>requires</code>, <code>modifies</code>, and <code>creates</code> describe semantic resources:</p>
@@ -198,25 +197,26 @@
 <p>RenderStack collects <code>requires ∪ modifies</code> from all enabled slots before the pipeline is built. This lets the pipeline produce optional geometry buffers such as normals, motion, or the read-only camera-local <code>light_list</code> only when an effect asks for them. At the mount point, the <code>EffectStage</code> contract decides which handles enter the local bus. An effect that needs depth, motion, or <code>light_list</code> must bind and check those stage-local handles; an unavailable handle produces a stage-and-slot compile diagnostic in the built-in implementations. <code>light_list</code> is a native per-frame view resource, not a writable/imported project buffer.</p>
 <p>Keep the declaration in sync with <code>setup_passes()</code>. Declaring <code>modifies = {"color"}</code> does not write color by itself; the implementation must publish the replacement handle to the bus.</p>
 <p><code>creates</code> is also declarative. The implementation must create the graph resource and call <code>bus.set("semantic_name", handle)</code>. A later effect can consume it in the same stage; a later stage receives it only when that pipeline stage includes the semantic in <code>inputs</code>. The current <code>ResourceBus.set()</code> replaces an existing handle with the same semantic name, so two successful effects that publish one name are resolved by Slot/Group order and the later publisher wins. There is no automatic duplicate-<code>creates</code> diagnostic. Use separate semantic names when both products must survive.</p>
-<p>Route-policy conflicts are rejected separately. For example, an <code>ADDITIVE_EXTRACT</code> effect cannot share one route with a color-replacement policy, and <code>CUSTOM_FEATURE</code> cannot mix with built-in policies. The graph-build diagnostic lists the affected stage IDs and the policy incompatibility.</p>
+<p>For low-level pipeline authoring, carry published semantic handles in an explicit <code>PassResult</code>: publish the initial result with <code>graph.publish_pass_result()</code> and declare the stages inside <code>with graph.pass_result(result):</code>. A successful effect updates the current result; a later stage's <code>inputs</code> selects which of those handles its local bus receives. Adding a name to <code>inputs</code> does not create or publish that resource. See the RenderGraph chapter for result publication and derivation.</p>
+<p>Additive and color-replacement effects can share one route. Their policies merge into <code>ORDERED_COMPOSITE</code>: the complete chain executes in Slot/Group order, then the result is partitioned into geometry-bound color and overflow before returning to its parent. Bloom and Edge Detection can therefore remain at the same mount point; swapping their order changes which image each effect processes. <code>CUSTOM_FEATURE</code> is reserved for specialized composition and cannot mix with built-in policies; the built-in pipeline compiler does not implement a custom route composer.</p>
 <p>Failure recovery has three concrete boundaries:</p>
 <ol>
-<li>Feature registration is replaceable only by the same source identity. A second source registering <code>game.post.edge_fade</code> raises <code>already registered</code>; the first registration remains active.</li>
+<li>Feature registration is replaceable only by the same source identity. A second source registering <code>game.post.edge_fade</code> raises <code>already registered</code>; the first registration remains active. Discovery publishes a source's registrations only after the entire module succeeds. A rejected edit preserves its accepted registrations; successfully removing a declaration or deleting its source retires that registration. Existing assets and Slots retain their references and report an unknown feature until its declaration is restored.</li>
 <li>Effect/group import is compile-then-publish. A malformed document, missing dependency, group cycle, unknown override, or feature failure leaves the previous artifact and loaded asset active. If creation wrote the new source file before its first import failed, that source file remains in <code>Assets</code>; fix it and reimport it or remove it explicitly.</li>
-<li>During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its <code>setup_passes()</code> raises, only additions from that effect are removed and its bus snapshot is restored. <strong>Effect Compile Errors</strong> records <code>&lt;stage_id&gt;/&lt;slot_id&gt;: &lt;error&gt;</code>; other slots can still compile. If a broader pipeline rebuild raises, the Editor keeps the last valid graph. A packaged Player refuses the Editor's default-pipeline fallback and leaves the failure visible for packaged-product repair.</li>
+<li>During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its <code>setup_passes()</code> raises, only additions from that effect are removed and its bus snapshot is restored. <strong>Effect Compile Errors</strong> records <code>&lt;stage_id&gt;/&lt;slot_id&gt;: &lt;error&gt;</code>; other slots can still compile. If a broader pipeline rebuild raises, RenderStack keeps its last valid graph when one exists. With no accepted graph, both Editor and Player fail explicitly instead of substituting a default pipeline.</li>
 </ol>
 <p>Most parameter edits only change a parameter block. Put a field in the decorator's <code>topology_parameters</code> only when it can change pass count, resource shape, or binding layout. Built-in Bloom, for example, marks <code>max_iterations</code>; changing it rebuilds the graph, while changing intensity updates runtime data.</p>
+<p>Each mount retains its own stage resource context for parameter updates, including typed textures and buffers, formats, sample counts, and absent resources. On a parameter revision, <code>setup_passes()</code> records updated values against an isolated copy of that context. It does not mutate the live graph or fabricate depth/normal/motion inputs. Unchanged frames do not repeat this work. If the recorded shader, resource structure, or pass layout changes, the graph must be rebuilt rather than uploading values to the old layout.</p>
 <h2 id="groups-runtime">Effect groups, policy, and runtime edits</h2>
 <p>Before stacking groups, pin down the four records this course uses. A <strong>RenderEffect feature</strong> is a Python class registered with <code>render_effect_feature(type_id, ...)</code>; it owns <code>setup_passes()</code> and the parameter schema. A <strong><code>.effect</code> asset</strong> stores a <code>feature_type</code> plus concrete parameter values, and <code>RenderEffect</code> is its mutable runtime wrapper. An <strong><code>.effectgroup</code></strong> is an asset document whose entries reference effects or nested groups with optional overrides; when mounted, the group expands in place and has no separate runtime object. <strong>EffectStage</strong> and <strong>EffectSlot</strong> belong to the pipeline and the scene, and the next chapter covers them.</p>
-<p>An <code>.effectgroup</code> is an ordered list of <code>.effect</code> or nested <code>.effectgroup</code> references. Each entry has a stable <code>entry_id</code>, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source <code>.effect</code> value intact.</p>
+<p>An <code>.effectgroup</code> is an ordered list of <code>.effect</code> or nested <code>.effectgroup</code> references. Each entry has a stable <code>entry_id</code>, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source <code>.effect</code> value intact. Before saving the JSON below, replace <code>EDGE_FADE_EFFECT_GUID</code> with <code>metadata.guid.value</code> from the imported <code>Assets/Rendering/Edge Fade.effect.meta</code>. The group entry stores that GUID; an empty GUID leaves the entry unassigned and it is skipped.</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect_group"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"entries"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
 <span class="w">      </span><span class="nt">"entry_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"edge_fade"</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">"asset"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
-<span class="w">        </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Rendering/Edge Fade.effect"</span>
+<span class="w">        </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">"EDGE_FADE_EFFECT_GUID"</span>
 <span class="w">      </span><span class="p">},</span>
 <span class="w">      </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">"overrides"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
@@ -260,8 +260,12 @@
 <td>Return additive energy such as bloom</td>
 </tr>
 <tr>
+<td><code>ORDERED_COMPOSITE</code></td>
+<td>Automatically selected for mixed additive/replacement chains; preserve Slot/Group order, geometry coverage, and overflow</td>
+</tr>
+<tr>
 <td><code>CUSTOM_FEATURE</code></td>
-<td>Let specialized feature code own composition</td>
+<td>Reserved for specialized route composers; not implemented by the built-in pipeline compiler</td>
 </tr>
 </tbody>
 </table>
@@ -370,10 +374,10 @@
 <p>然后按以下顺序完成接入：</p>
 <ol>
 <li>把上面的注册类保存到 <code>Assets/Rendering/edge_fade_effect.py</code>，把全屏 Shader 保存到 <code>Assets/Shaders/edge_fade.frag</code>。扫描根目录是当前项目的 <code>Assets</code>。隐藏目录以及 <code>__pycache__</code>、<code>build</code>、<code>dist</code>、<code>.venv</code>、<code>venv</code>、<code>.runtime</code> 会被跳过；Python 源码候选文件必须出现 <code>render_effect_feature</code> 或 <code>register_render_effect_feature</code>。</li>
-<li>使用下方严格 JSON 保存 <code>Assets/Rendering/Edge Fade.effect</code>。系统查询其中的 <code>feature_type</code> 时，会导入候选模块并查找注册项。Project 面板的 <strong>Create &gt; Render Effect</strong> 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 <code>Edge Fade.effect</code> 已存在时会拒绝覆盖。</li>
-<li>导入过程先编译文档，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数、记录 <code>setup_passes()</code> 生成的 Pass、准备声明的 Shader 依赖，最后把成功产物写到 <code>Library/Artifacts/RenderEffect/&lt;guid&gt;.inxeffect</code>。源码通过 <code>.meta</code> 获得 GUID；引用同时保留 GUID 与 <code>path_hint</code>。</li>
+<li>Shader 导入后，从 <code>Assets/Shaders/edge_fade.frag.meta</code> 读取 <code>metadata.guid.value</code>，用这个实际 GUID 替换下方严格 JSON 中的 <code>EDGE_FADE_SHADER_GUID</code>，再保存 <code>Assets/Rendering/Edge Fade.effect</code>。空 GUID 表示未赋值的引用，路径不会代替它解析资产。系统查询其中的 <code>feature_type</code> 时，会导入候选模块并查找注册项。Project 面板的 <strong>Create &gt; Render Effect</strong> 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 <code>Edge Fade.effect</code> 已存在时会拒绝覆盖。</li>
+<li>导入过程先验证可独立于阶段使用的声明，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数和无法解析的依赖 GUID、记录资源需求与拓扑参数，最后把成功产物写到 <code>Library/Artifacts/RenderEffect/&lt;guid&gt;.inxeffect</code>。导入时尚无挂载阶段或 View 资源，因此不执行 <code>setup_passes()</code>。命中缓存产物时也会检查依赖与 Feature。Shader 的渲染准备和 <code>setup_passes()</code> 在编译实际挂载后的渲染图时进行。源码通过 <code>.meta</code> 获得 GUID；引用只保存 GUID。路径用于创作时选择文件，不是序列化引用的身份。</li>
 <li>加入 RenderStack 组件并选中其 GameObject，把 <code>Edge Fade.effect</code> 拖入 <code>final</code>。RenderStack 解析启用的 Slot，为这次挂载实例化 Feature，并在图到达 <code>final</code> 时调用 <code>setup_passes()</code>。</li>
-<li>在 Game 视图验收：先把 <code>intensity</code> 设为 <code>0</code>，再设为 <code>1</code>。中心应保持原样，四角在 <code>1</code> 时变暗。确认 RenderStack Inspector 的 <strong>Effect Compile Errors</strong> 为空。项目 Shader 缺失时应出现 <code>failed to prepare effect shader dependency</code>；Feature 无法导入时，挂载位置最终显示 <code>unknown render effect feature</code>，其中带 Stage 与 Slot，原始 Python 导入异常则由发现系统保留，并在失败的导入或重载路径中记录。</li>
+<li>在 Game 视图验收：先把 <code>intensity</code> 设为 <code>0</code>，再设为 <code>1</code>。中心应保持原样，四角在 <code>1</code> 时变暗。确认 RenderStack Inspector 的 <strong>Effect Compile Errors</strong> 为空。依赖 GUID 无法解析时，导入阶段报告 <code>effect dependency GUID is unavailable</code>。Shader 的渲染准备失败时，编译挂载后的渲染图会报告 <code>failed to prepare effect shader dependency</code>。Feature 无法导入时，挂载位置最终显示 <code>unknown render effect feature</code>，其中带 Stage 与 Slot，原始 Python 导入异常则由发现系统保留，并在失败的导入或重载路径中记录。</li>
 </ol>
 <p>发现、资产导入与图编译由数据变化触发，运行时不会每帧扫描源码。</p>
 <h2 id="effect-asset_1"><code>.effect</code> 文档</h2>
@@ -381,8 +385,7 @@
 <span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"dependencies"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Shaders/edge_fade.frag"</span>
+<span class="w">      </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">"EDGE_FADE_SHADER_GUID"</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">],</span>
 <span class="w">  </span><span class="nt">"feature_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
@@ -404,8 +407,8 @@
 <li>直接挂载的 <code>.effect</code> 只有一份共享的已加载 <code>RenderEffect</code> 文档。资产 Inspector 与 Slot Inspector 都把修改提交给这份文档，因此最后一次被接受的修改会立即出现在两个视图和该资产的所有直接挂载中。直接 Slot 没有私有参数 Override。</li>
 <li>每次被接受的 Inspector 修改都会作为文档操作进入全局 Undo 历史。Undo 会撤销最后一次被接受的修改，不受修改入口影响；恢复后的内存文档会再次发布，并重新安排持久化。外部文件重载属于文件系统结果，不会新增 Undo 条目。</li>
 <li><code>.effect</code> 文档通过 0.5 秒防抖快照自动保存。保存场景会持久化 Slot 身份、Stage、顺序、资产引用与启用状态；<code>.effect</code> 资产仍由自己的自动保存负责。关闭场景或切换场景时，资源文档生命周期会排空待完成的自动保存。</li>
-<li>与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。通知在本地写入尚未完成时会被延后。系统确认磁盘上出现另一份持久 Revision 后，这类非 Scene 资产会自动跟随磁盘内容：排队中的本地资产持久化会取消，已加载资源会刷新，两个视图也会更新。</li>
-<li>外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID/路径引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。</li>
+<li>与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。已接受的本地修改还在等待防抖保存或磁盘写入时，本地修改优先：通知会被延后，待完成的保存可能覆盖这期间发生的外部磁盘修改。本地持久化完成后，后续外部版本会自动导入，共享资源与 Inspector 视图都会跟随磁盘内容。要保留外部修改，应等本地保存完成后再修改文件。</li>
+<li>外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID 引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。</li>
 </ul>
 <h2 id="resource-contract_1">声明读写资源</h2>
 <p><code>requires</code>、<code>modifies</code> 与 <code>creates</code> 描述语义资源：</p>
@@ -431,28 +434,29 @@
 </tr>
 </tbody>
 </table>
-<p>构建管线前，RenderStack 会收集所有启用 Slot 的 <code>requires ∪ modifies</code>。这样法线、Motion 等可选几何 Buffer 只会在有 Effect 需要时生成。到了挂载点，<code>EffectStage</code> 契约决定局部 Bus 能拿到哪些 Handle。需要深度或 Motion 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。</p>
+<p>构建管线前，RenderStack 会收集所有启用 Slot 的 <code>requires ∪ modifies</code>。这样法线、Motion 等可选几何 Buffer，以及只读、每相机的 <code>light_list</code>，只会在有 Effect 需要时准备。到了挂载点，<code>EffectStage</code> 契约决定局部 Bus 能拿到哪些 Handle。需要深度、Motion 或 <code>light_list</code> 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。<code>light_list</code> 是原生逐帧 View 资源，不是可写入或从项目导入的 Buffer。</p>
 <p>声明必须和 <code>setup_passes()</code> 一致。写下 <code>modifies = {"color"}</code> 不会自动修改颜色，Feature 仍要把替换后的 Handle 发布回 Bus。</p>
 <p><code>creates</code> 同样只负责声明。实现代码必须创建图资源，并调用 <code>bus.set("semantic_name", handle)</code>。同一 Stage 中的后续 Effect 可以消费它；后续 Stage 只有在管线把该语义列入 <code>inputs</code> 时才能收到它。当前 <code>ResourceBus.set()</code> 会替换同名语义的已有 Handle，所以两个成功 Effect 发布同一名称时，结果由 Slot/Group 顺序决定，后发布者生效。系统目前没有重复 <code>creates</code> 的自动诊断；需要同时保留两份产物时，请使用不同语义名称。</p>
-<p>Route Policy 冲突走另一条校验路径。例如，<code>ADDITIVE_EXTRACT</code> 无法与颜色替换 Policy 共用同一 Route，<code>CUSTOM_FEATURE</code> 也无法与内置 Policy 混用。图构建诊断会列出相关 Stage ID 与 Policy 不兼容原因。</p>
+<p>编写底层管线时，用显式 <code>PassResult</code> 传递已发布的语义 Handle：先通过 <code>graph.publish_pass_result()</code> 发布初始结果，再在 <code>with graph.pass_result(result):</code> 内声明各个 Stage。成功的 Effect 会更新当前 Result；后续 Stage 的 <code>inputs</code> 决定它的局部 Bus 接收哪些 Handle。仅向 <code>inputs</code> 添加名称不会创建或发布该资源。Result 的发布与派生见 RenderGraph 章节。</p>
+<p>发光与颜色替换效果可以共用同一 Route，其 Policy 会合并为 <code>ORDERED_COMPOSITE</code>：完整效果链按 Slot/Group 顺序执行，再将结果分成物体覆盖区域内的颜色与区域外的效果像素，合回父级。Bloom 与 Edge Detection 可以保持在同一挂点；交换顺序会改变各自处理的输入图像。<code>CUSTOM_FEATURE</code> 预留给专用合成逻辑，不能与内置 Policy 混用；内置管线编译器目前没有实现自定义 Route 合成器。</p>
 <p>失败恢复有三个明确边界：</p>
 <ol>
-<li>Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 <code>game.post.edge_fade</code> 时会抛出 <code>already registered</code>，首次注册项继续生效。</li>
+<li>Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 <code>game.post.edge_fade</code> 时会抛出 <code>already registered</code>，首次注册项继续生效。发现器会等整个模块执行成功后才发布该源码的注册项。被拒绝的修改保留已接受的注册项；成功移除声明或删除源码后，对应注册项会被注销。现有资产和 Slot 继续保留引用，并报告未知 Feature，直到声明恢复。</li>
 <li>Effect/Group 导入采用“编译完成后发布”。文档格式错误、依赖缺失、Group 循环、未知 Override 或 Feature 失败时，上一份 Artifact 与已加载资产继续生效。如果创建流程已经写入新 Source，首次导入随后失败，这个 Source 文件会留在 <code>Assets</code> 中；修复后重新导入，或显式移除该文件。</li>
-<li>编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。<code>setup_passes()</code> 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。<strong>Effect Compile Errors</strong> 记录 <code>&lt;stage_id&gt;/&lt;slot_id&gt;: &lt;error&gt;</code>，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，Editor 保留上一份有效图。打包 Player 不采用 Editor 的默认管线回退，打包产物问题会保持可见，等待修复对应产物。</li>
+<li>编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。<code>setup_passes()</code> 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。<strong>Effect Compile Errors</strong> 记录 <code>&lt;stage_id&gt;/&lt;slot_id&gt;: &lt;error&gt;</code>，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，RenderStack 会保留已有的上一份有效图。没有已接受的图时，Editor 和 Player 都明确报告失败，不会替换成默认管线。</li>
 </ol>
 <p>大多数参数修改只需更新参数块。会改变 Pass 数量、资源形状或绑定布局的字段才应放进装饰器的 <code>topology_parameters</code>。例如内置 Bloom 把 <code>max_iterations</code> 列为拓扑参数；改迭代次数会重建图，改强度只更新运行时数据。</p>
+<p>每次挂载都会保留自己的阶段资源上下文，包括 Texture 与 Buffer 的类型、格式、采样数，以及哪些资源不存在。参数 Revision 变化时，<code>setup_passes()</code> 在这个上下文的隔离副本上记录新值，不会修改运行中的图，也不会虚构 Depth、Normal 或 Motion 输入。参数未变化的帧不会重复执行这一步。如果记录的 Shader、资源结构或 Pass 布局改变，就必须重建图，不能把新值上传到旧布局。</p>
 <h2 id="groups-runtime_1">EffectGroup、Policy 与运行时修改</h2>
 <p>在叠加 Group 之前，先固定本课程用到的四类记录。<strong>RenderEffect Feature</strong> 是注册了 <code>render_effect_feature(type_id, ...)</code> 的 Python 类，它拥有 <code>setup_passes()</code> 和参数 Schema。<strong><code>.effect</code> 资产</strong>保存 <code>feature_type</code> 与具体参数值，<code>RenderEffect</code> 是它的可变运行时包装。<strong><code>.effectgroup</code></strong> 是资产文档，条目引用 Effect 或嵌套 Group，可以带 Override；挂载时 Group 就地展开，没有独立的运行时对象。<strong>EffectStage</strong> 与 <strong>EffectSlot</strong> 属于管线与场景，下一章介绍。</p>
-<p><code>.effectgroup</code> 是一份有序的 <code>.effect</code> 或嵌套 <code>.effectgroup</code> 引用列表。每项有稳定的 <code>entry_id</code>、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 <code>.effect</code> 数值保持不变。</p>
+<p><code>.effectgroup</code> 是一份有序的 <code>.effect</code> 或嵌套 <code>.effectgroup</code> 引用列表。每项有稳定的 <code>entry_id</code>、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 <code>.effect</code> 数值保持不变。保存下方 JSON 前，从已导入的 <code>Assets/Rendering/Edge Fade.effect.meta</code> 读取 <code>metadata.guid.value</code>，用它替换 <code>EDGE_FADE_EFFECT_GUID</code>。组条目保存这个 GUID；空 GUID 表示未赋值，该条目会被跳过。</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.render_effect_group"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"entries"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
 <span class="w">      </span><span class="nt">"entry_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"edge_fade"</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">"asset"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
-<span class="w">        </span><span class="nt">"path_hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assets/Rendering/Edge Fade.effect"</span>
+<span class="w">        </span><span class="nt">"guid"</span><span class="p">:</span><span class="w"> </span><span class="s2">"EDGE_FADE_EFFECT_GUID"</span>
 <span class="w">      </span><span class="p">},</span>
 <span class="w">      </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">"overrides"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
@@ -496,8 +500,12 @@
 <td>返回 Bloom 等加法能量</td>
 </tr>
 <tr>
+<td><code>ORDERED_COMPOSITE</code></td>
+<td>发光与颜色替换混用时自动选用；保留 Slot/Group 顺序、物体覆盖区域与外溢效果</td>
+</tr>
+<tr>
 <td><code>CUSTOM_FEATURE</code></td>
-<td>由专用 Feature 负责合成</td>
+<td>预留给专用 Route 合成器；内置管线编译器尚未实现</td>
 </tr>
 </tbody>
 </table>
@@ -511,10 +519,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

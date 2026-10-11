@@ -1,4 +1,5 @@
 #include "ConcreteImporters.h"
+#include "PluginPageTextureMetadata.h"
 #include <function/resources/InxMesh/InxMesh.h>
 
 #include <core/log/InxLog.h>
@@ -160,6 +161,12 @@ class BlenderSource
 bool IsBuiltinTextureToken(const std::string &value)
 {
     return value == "white" || value == "black" || value == "normal";
+}
+
+bool IsBuiltinMeshToken(const std::string &value)
+{
+    return value == "builtin-mesh:Cube" || value == "builtin-mesh:Sphere" || value == "builtin-mesh:Capsule" ||
+           value == "builtin-mesh:Cylinder" || value == "builtin-mesh:Plane" || value == "builtin-mesh:Quad";
 }
 
 void RejectPathOnlyReference(const std::string &guid, const std::string &pathHint, const std::string &location)
@@ -339,6 +346,7 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
     EnsureDefaultSettings(artifact.metadata);
+    ApplyPluginPageTextureMetadata(artifact.metadata, request.sourcePath, request.projectRoot);
     std::string extension = FromFsPath(ToFsPath(request.sourcePath).extension());
     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
     if (extension == ".inxvfield") {
@@ -368,9 +376,17 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
-    const auto cpuData = TextureDecoder::Decode(request.sourcePath, artifact.metadata);
+    const auto cpuData =
+        TextureDecoder::Decode(request.sourcePath, artifact.metadata,
+                               IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
+    if (extension == ".svg") {
+        // Publish the raster dimensions without a second decode for metadata.
+        artifact.metadata.AddMetadata("width", static_cast<int>(cpuData->mipLevels.front().width));
+        artifact.metadata.AddMetadata("height", static_cast<int>(cpuData->mipLevels.front().height));
+        artifact.metadata.AddMetadata("channels", 4);
+    }
     artifact.metadata.AddMetadata("artifact_width", static_cast<int>(cpuData->mipLevels.front().width));
     artifact.metadata.AddMetadata("artifact_height", static_cast<int>(cpuData->mipLevels.front().height));
     artifact.metadata.AddMetadata("artifact_depth", static_cast<int>(cpuData->mipLevels.front().depth));
@@ -623,9 +639,9 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         const std::string guid = reference["guid"].get<std::string>();
         const std::string pathHint = reference["path_hint"].get<std::string>();
         RejectPathOnlyReference(guid, pathHint, location);
-        // Built-in texture tokens are renderer symbols, not AssetDatabase
+        // Built-in texture and mesh tokens are renderer symbols, not AssetDatabase
         // identities, so they deliberately do not create dependency edges.
-        if (!guid.empty() && !IsBuiltinTextureToken(guid))
+        if (!guid.empty() && !IsBuiltinTextureToken(guid) && !IsBuiltinMeshToken(guid))
             dependencies.insert(guid);
     };
     std::function<void(const nlohmann::json &, const std::string &)> scanReferences;

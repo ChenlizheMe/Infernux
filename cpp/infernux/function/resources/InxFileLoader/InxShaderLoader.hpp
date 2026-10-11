@@ -10,6 +10,7 @@
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string_view>
@@ -79,17 +80,66 @@ class InxShaderLoader
         std::unique_lock<std::recursive_mutex> m_lock;
     };
 
+    /// A publication caller owns returned source diagnostics, so expected
+    /// failures do not leave unrelated C++ Console entries after recovery.
+    class SourceDiagnosticScope
+    {
+      public:
+        SourceDiagnosticScope();
+        ~SourceDiagnosticScope();
+        SourceDiagnosticScope(const SourceDiagnosticScope &) = delete;
+        SourceDiagnosticScope &operator=(const SourceDiagnosticScope &) = delete;
+
+      private:
+        bool m_previous;
+    };
+    [[nodiscard]] static bool AreSourceDiagnosticsCaptured() noexcept;
+
+    /// Keep the running programs' subscriptions until their entire reload
+    /// batch is accepted. Rejected candidates remain subscribed for recovery.
+    class SourceDependencyPublication
+    {
+      public:
+        SourceDependencyPublication();
+        ~SourceDependencyPublication();
+        SourceDependencyPublication(const SourceDependencyPublication &) = delete;
+        SourceDependencyPublication &operator=(const SourceDependencyPublication &) = delete;
+        void Commit();
+        struct Prepared;
+        /// Move compiler subscriptions to the owner without publishing them.
+        [[nodiscard]] std::shared_ptr<const Prepared> Detach();
+        static void Publish(const std::shared_ptr<const Prepared> &prepared);
+
+      private:
+        struct State;
+        CompilationGuard m_guard;
+        std::unique_ptr<State> m_state;
+    };
+
     /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
-    /// Invalidate cached shader-id maps and shading-model descriptors for a
-    /// directory so the next compile rescans the filesystem.
-    /// Pass an empty string to clear ALL cached directories.
+    /// Replace the active project's shader roots. Built-in programs (including
+    /// DeferredLighting) resolve the same project imports/models as materials.
+    /// Player passes its cooked artifact root instead of authoring Assets.
+    static void SetProjectShaderSearchPaths(const std::vector<std::string> &directories);
+
+    /// Invalidate shared shader-id maps and shading-model descriptors after
+    /// an edit. A directory event also affects programs in other roots.
     static void InvalidateDirectoryCache(const std::string &dir = "");
 
     /// Invalidate cached shader templates so edits under _templates/ are
     /// picked up on the next compile / reload.
     static void InvalidateTemplateCache();
+
+    /// In-memory revision of shared declarations, search roots and templates.
+    /// Async preparations cannot publish across an invalidation of this input.
+    [[nodiscard]] static uint64_t GetSourceEnvironmentRevision() noexcept;
+
+    /// Root stages that actually consumed this source/declaration during
+    /// preprocessing, including failed imports awaiting a declaration.
+    [[nodiscard]] static std::vector<std::string> GetDependentStageSources(const std::string &sourcePath,
+                                                                           const std::string &declarationId = "");
 
     /// Select the device-supported material texture ABI used by generated
     /// shader source. When disabled, shaders that declare BindlessTextures
@@ -185,12 +235,9 @@ class InxShaderLoader
     void InitGLSLBuiltResources();
     EShLanguage GetShaderType(const std::string &typeStr);
 
-    /// Trim trailing content after last '}' and trailing whitespace.
-    static std::string TrimShaderSource(const std::string &source);
-
     /// Compile GLSL source to SPIR-V. Returns false on failure (sets s_lastCompileError).
     bool CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
-                     std::vector<char> &outSpirv);
+                     std::vector<char> &outSpirv, bool reportDiagnostics = true);
 
     [[nodiscard]] LinkedShaderProgramCompilation
     CompileLinkedProgramVariant(const std::string &vertexSource, const std::string &vertexPath,
@@ -204,7 +251,8 @@ class InxShaderLoader
     /// Full preprocessing pipeline: parse → resolve imports → generate GLSL.
     std::string PreprocessShaderSource(const std::string &source, const std::string &filePath = "",
                                        ShaderCompileTarget target = ShaderCompileTarget::Forward,
-                                       const ShaderProgramInterfaceArtifact *linkedInterface = nullptr);
+                                       const ShaderProgramInterfaceArtifact *linkedInterface = nullptr,
+                                       std::vector<std::string> *errors = nullptr);
 
     /// Generate final GLSL text from a descriptor, import-resolved source, and optional shading model.
     std::string GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
@@ -227,7 +275,7 @@ class InxShaderLoader
     /// Resolve structured Imports by inlining referenced shader libraries.
     std::string ResolveImports(const std::string &source, const std::vector<std::string> &imports,
                                const std::unordered_map<std::string, std::string> &shaderIdMap,
-                               std::set<std::string> &includeStack, int depth = 0);
+                               std::set<std::string> &includeStack, std::vector<std::string> &errors, int depth = 0);
 
     /// Load and parse a .shadingmodel file by its shader_id.
     ShaderDescriptor LoadShadingModel(const std::string &modelName,
@@ -241,6 +289,7 @@ class InxShaderLoader
 
     /// Additional directories registered via AddShaderSearchPath()
     static std::vector<std::string> s_additionalSearchPaths;
+    static std::vector<std::string> s_projectSearchPaths;
 
     /// Template file cache (static — shared across all loader instances)
     static std::unordered_map<std::string, std::string> s_templateCache;

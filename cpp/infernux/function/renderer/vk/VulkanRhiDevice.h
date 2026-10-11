@@ -7,6 +7,7 @@
 #include <function/renderer/rhi/RhiDevice.h>
 
 #include "VkDescriptorManager.h"
+#include "VulkanFeatureState.h"
 
 #include <array>
 #include <cstdint>
@@ -126,12 +127,28 @@ struct VulkanCapabilitySnapshot final
     bool timelineSemaphoreExtension = false;
     bool dynamicRenderingExtension = false;
     bool synchronization2Extension = false;
-    rhi::DeviceCapabilityState supported;
+    vk::VulkanFeatureState supported;
 
     [[nodiscard]] static VulkanCapabilityProbeData QueryProbe(VkPhysicalDevice physicalDevice,
                                                               uint32_t apiVersionLimit = UINT32_MAX);
     [[nodiscard]] static VulkanCapabilitySnapshot FromProbe(const VulkanCapabilityProbeData &probe) noexcept;
 };
+
+/// Required features shared by adapter selection and logical-device creation.
+[[nodiscard]] bool MeetsVulkanDeviceRequirements(const VulkanCapabilityProbeData &probe) noexcept;
+
+/// Candidates have already passed the surface, queue and swapchain checks.
+struct VulkanPhysicalDeviceCandidate final
+{
+    VkPhysicalDevice device = VK_NULL_HANDLE;
+    int score = 0;
+    VulkanCapabilityProbeData probe;
+};
+
+/// Returns a candidate owned by the input vector, or nullptr when none qualify.
+/// Equal scores retain enumeration order; unsupported devices never participate.
+[[nodiscard]] const VulkanPhysicalDeviceCandidate *
+SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &candidates) noexcept;
 
 /// Builds only the capability feature chain requested by the caller. The
 /// object owns every pNext node, so the returned VkPhysicalDeviceFeatures2
@@ -144,16 +161,16 @@ class VulkanDeviceFeatureChain final
     VulkanDeviceFeatureChain(const VulkanDeviceFeatureChain &) = delete;
     VulkanDeviceFeatureChain &operator=(const VulkanDeviceFeatureChain &) = delete;
 
-    [[nodiscard]] bool Enable(const rhi::DeviceCapabilityRequest &request) noexcept;
+    [[nodiscard]] bool Enable(const vk::DeviceCapabilityRequest &request) noexcept;
     [[nodiscard]] const VkPhysicalDeviceFeatures2 &GetFeatures2() const noexcept
     {
         return m_features2;
     }
-    [[nodiscard]] const rhi::DeviceCapabilityState &GetEnabledState() const noexcept
+    [[nodiscard]] const vk::VulkanFeatureState &GetEnabledState() const noexcept
     {
         return m_enabled;
     }
-    [[nodiscard]] const rhi::DeviceCapabilityCheck &GetFailure() const noexcept
+    [[nodiscard]] const vk::DeviceCapabilityCheck &GetFailure() const noexcept
     {
         return m_failure;
     }
@@ -171,8 +188,8 @@ class VulkanDeviceFeatureChain final
     [[nodiscard]] bool EnableSynchronization2() noexcept;
 
     VulkanCapabilitySnapshot m_supported;
-    rhi::DeviceCapabilityState m_enabled{};
-    rhi::DeviceCapabilityCheck m_failure{};
+    vk::VulkanFeatureState m_enabled{};
+    vk::DeviceCapabilityCheck m_failure{};
     VkPhysicalDeviceFeatures2 m_features2{};
     VkPhysicalDeviceVulkan12Features m_vulkan12{};
     VkPhysicalDeviceVulkan13Features m_vulkan13{};
@@ -196,7 +213,7 @@ class VulkanRhiDevice final : public rhi::Device
     explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
                              const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
                              uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-                             const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
+                             const vk::VulkanFeatureState &capabilityState = {});
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
@@ -213,7 +230,7 @@ class VulkanRhiDevice final : public rhi::Device
     {
         return m_capabilities;
     }
-    [[nodiscard]] const rhi::DeviceCapabilityState &GetCapabilityState() const noexcept override
+    [[nodiscard]] const vk::VulkanFeatureState &GetVulkanFeatures() const noexcept
     {
         return m_capabilityState;
     }
@@ -225,9 +242,10 @@ class VulkanRhiDevice final : public rhi::Device
     void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
                const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
                uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-               const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
+               const vk::VulkanFeatureState &capabilityState = {}) noexcept;
 
-    [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0);
+    [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0,
+                                                   bool concurrentQueueSharing = false);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
     [[nodiscard]] rhi::TextureViewHandle RegisterTextureView(VkImageView view);
     [[nodiscard]] rhi::SamplerHandle RegisterSampler(VkSampler sampler);
@@ -383,7 +401,7 @@ class VulkanRhiDevice final : public rhi::Device
     template <typename Payload> struct Slot
     {
         Payload payload{};
-        uint16_t generation = 1;
+        uint16_t generation = 1; // Zero permanently retires this slot.
         uint32_t nextFree = UINT32_MAX;
         bool occupied = false;
     };
@@ -400,6 +418,8 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
     void RetireNativeResource(std::function<void()> deleter) noexcept;
     void DestroyOwnedResources() noexcept;
+    [[nodiscard]] bool SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32_t pushConstantBytes,
+                                              const char *pipelineKind) const;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
     static void BindGroup(void *context, rhi::GraphicsPipelineHandle pipeline, uint32_t setIndex,
@@ -423,6 +443,8 @@ class VulkanRhiDevice final : public rhi::Device
                            const rhi::BufferCopyRegion &region);
     static bool FillBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, uint64_t byteSize,
                            uint32_t value);
+    static bool UpdateBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, const void *data,
+                             uint64_t byteSize);
     static void CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
                             const rhi::TextureCopyRegion &region);
     static void ResolveTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
@@ -438,7 +460,7 @@ class VulkanRhiDevice final : public rhi::Device
     std::string m_pipelineCachePath;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     rhi::DeviceCaps m_capabilities{};
-    rhi::DeviceCapabilityState m_capabilityState{};
+    vk::VulkanFeatureState m_capabilityState{};
     uint32_t m_graphicsQueueFamily = 0;
     uint32_t m_computeQueueFamily = 0;
     uint32_t m_transferQueueFamily = 0;

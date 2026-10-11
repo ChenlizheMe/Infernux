@@ -1,10 +1,12 @@
 #include "InxTextureLoader.hpp"
+#include <function/resources/InxTexture/SvgRasterizer.h>
 
 #include <algorithm>
 #include <cctype>
 #include <core/log/InxLog.h>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <platform/filesystem/InxPath.h>
 #include <stb_image.h>
 #include <vector>
@@ -61,10 +63,6 @@ bool ReadPnmInt(const unsigned char *data, size_t dataSize, size_t &pos, int &ou
 
 unsigned char ScalePnmSample(int value, int maxValue)
 {
-    if (maxValue <= 0) {
-        return 0;
-    }
-    value = std::clamp(value, 0, maxValue);
     return static_cast<unsigned char>((value * 255 + maxValue / 2) / maxValue);
 }
 
@@ -96,11 +94,23 @@ bool DecodePnmToRgba(const unsigned char *data, size_t dataSize, InxTextureData 
     }
 
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
-    result.width = width;
-    result.height = height;
-    result.channels = 4;
-    result.pixels.clear();
-    result.pixels.resize(pixelCount * 4);
+    const int srcChannels = (asciiRgb || binaryRgb) ? 3 : 1;
+    const int bytesPerSample = maxValue > 255 ? 2 : 1;
+    // Even ASCII needs at least one byte per sample. Reject impossible headers
+    // before allocating pixels, and never expose a partially decoded image.
+    if (pixelCount > (dataSize - pos) / static_cast<size_t>(srcChannels) ||
+        pixelCount > (std::numeric_limits<size_t>::max)() / 4)
+        return false;
+    if (binaryRgb || binaryGray) {
+        // The single separator ends the header. Subsequent whitespace and '#'
+        // bytes are pixel values, not padding or comments.
+        if (pos >= dataSize || !std::isspace(static_cast<unsigned char>(data[pos])))
+            return false;
+        ++pos;
+        if (pixelCount > (dataSize - pos) / (static_cast<size_t>(srcChannels) * bytesPerSample))
+            return false;
+    }
+    std::vector<unsigned char> pixels(pixelCount * 4);
 
     if (asciiRgb || asciiGray) {
         for (size_t i = 0; i < pixelCount; ++i) {
@@ -119,97 +129,102 @@ bool DecodePnmToRgba(const unsigned char *data, size_t dataSize, InxTextureData 
                 g = r;
                 b = r;
             }
+            if (r > maxValue || g > maxValue || b > maxValue)
+                return false;
             const size_t out = i * 4;
-            result.pixels[out + 0] = ScalePnmSample(r, maxValue);
-            result.pixels[out + 1] = ScalePnmSample(g, maxValue);
-            result.pixels[out + 2] = ScalePnmSample(b, maxValue);
-            result.pixels[out + 3] = 255;
+            pixels[out + 0] = ScalePnmSample(r, maxValue);
+            pixels[out + 1] = ScalePnmSample(g, maxValue);
+            pixels[out + 2] = ScalePnmSample(b, maxValue);
+            pixels[out + 3] = 255;
         }
-        return true;
-    }
-
-    // Binary P5/P6: one whitespace byte separates the header from pixel bytes.
-    SkipPnmWhitespaceAndComments(data, dataSize, pos);
-    const int srcChannels = binaryRgb ? 3 : 1;
-    const int bytesPerSample = maxValue > 255 ? 2 : 1;
-    const size_t required = pixelCount * static_cast<size_t>(srcChannels) * static_cast<size_t>(bytesPerSample);
-    if (pos + required > dataSize) {
-        return false;
-    }
-
-    for (size_t i = 0; i < pixelCount; ++i) {
-        int samples[3] = {0, 0, 0};
-        for (int c = 0; c < srcChannels; ++c) {
-            if (bytesPerSample == 1) {
-                samples[c] = data[pos++];
-            } else {
-                samples[c] = (static_cast<int>(data[pos]) << 8) | static_cast<int>(data[pos + 1]);
-                pos += 2;
+    } else {
+        for (size_t i = 0; i < pixelCount; ++i) {
+            int samples[3] = {0, 0, 0};
+            for (int c = 0; c < srcChannels; ++c) {
+                if (bytesPerSample == 1) {
+                    samples[c] = data[pos++];
+                } else {
+                    samples[c] = (static_cast<int>(data[pos]) << 8) | static_cast<int>(data[pos + 1]);
+                    pos += 2;
+                }
+                if (samples[c] > maxValue)
+                    return false;
             }
+            if (srcChannels == 1) {
+                samples[1] = samples[0];
+                samples[2] = samples[0];
+            }
+            const size_t out = i * 4;
+            pixels[out + 0] = ScalePnmSample(samples[0], maxValue);
+            pixels[out + 1] = ScalePnmSample(samples[1], maxValue);
+            pixels[out + 2] = ScalePnmSample(samples[2], maxValue);
+            pixels[out + 3] = 255;
         }
-        if (srcChannels == 1) {
-            samples[1] = samples[0];
-            samples[2] = samples[0];
-        }
-        const size_t out = i * 4;
-        result.pixels[out + 0] = ScalePnmSample(samples[0], maxValue);
-        result.pixels[out + 1] = ScalePnmSample(samples[1], maxValue);
-        result.pixels[out + 2] = ScalePnmSample(samples[2], maxValue);
-        result.pixels[out + 3] = 255;
     }
+    result.width = width;
+    result.height = height;
+    result.channels = 4;
+    result.pixels = std::move(pixels);
     return true;
 }
 
 } // namespace
 
-InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const std::string &name)
+bool InxTextureLoader::IsPnmSource(const unsigned char *data, size_t dataSize)
+{
+    return data && dataSize >= 2 && data[0] == 'P' &&
+           (data[1] == '2' || data[1] == '3' || data[1] == '5' || data[1] == '6');
+}
+
+InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const std::string &name, int svgMaxSize)
 {
     InxTextureData result;
     result.sourcePath = filePath;
     result.name = name.empty() ? FromFsPath(ToFsPath(filePath).stem()) : name;
 
-    int width, height, channels;
     // Read file bytes first to support Unicode paths on Windows
     std::vector<unsigned char> fileBytes;
     if (!ReadFileBytes(filePath, fileBytes) || fileBytes.empty()) {
         INXLOG_ERROR("Failed to read texture file: ", filePath);
         return result;
     }
-    stbi_uc *pixels = stbi_load_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()), &width, &height,
-                                            &channels, STBI_rgb_alpha);
-
-    if (!pixels) {
-        if (DecodePnmToRgba(fileBytes.data(), fileBytes.size(), result)) {
-            return result;
-        }
-        INXLOG_ERROR("stbi_load failed for: ", filePath, " - ", stbi_failure_reason());
-        return result;
-    }
-
-    result.width = width;
-    result.height = height;
-    result.channels = 4; // Always RGBA
-    size_t dataSize = static_cast<size_t>(width) * height * 4;
-    result.pixels.assign(pixels, pixels + dataSize);
-
-    stbi_image_free(pixels);
-
+    result = LoadFromMemory(fileBytes.data(), fileBytes.size(), result.name, svgMaxSize);
+    result.sourcePath = filePath;
     return result;
 }
 
-InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_t dataSize, const std::string &name)
+InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_t dataSize, const std::string &name,
+                                                int svgMaxSize)
 {
     InxTextureData result;
     result.name = name;
 
+    if (!data || dataSize == 0 || dataSize > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        INXLOG_ERROR("Texture source is empty or exceeds decoder limits: ", name);
+        return result;
+    }
+    if (IsSvgSource(data, dataSize)) {
+        if (SvgUsesFilters(data, dataSize))
+            INXLOG_WARN("SVG filters are not supported and will be omitted: ", name,
+                        ". Export filter effects as an embedded raster image for faithful rendering.");
+        try {
+            result = RasterizeSvg(data, dataSize, svgMaxSize);
+            result.name = name;
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("SVG texture decode failed: ", name, ": ", error.what());
+        }
+        return result;
+    }
+    if (IsPnmSource(data, dataSize)) {
+        if (!DecodePnmToRgba(data, dataSize, result))
+            INXLOG_ERROR("Failed to decode PNM texture: ", name);
+        return result;
+    }
     int width, height, channels;
     stbi_uc *pixels =
         stbi_load_from_memory(data, static_cast<int>(dataSize), &width, &height, &channels, STBI_rgb_alpha);
 
     if (!pixels) {
-        if (DecodePnmToRgba(data, dataSize, result)) {
-            return result;
-        }
         INXLOG_ERROR("stbi_load_from_memory failed: ", stbi_failure_reason());
         return result;
     }

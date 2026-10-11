@@ -92,6 +92,8 @@ struct SkinnedRuntimeAnimation
 
 struct RootMotionDelta
 {
+    // Relative rigid transform in the root's from-time frame, in engine units.
+    // Apply translation along the owner's current axes, then compose rotation.
     glm::vec3 translation{0.0f};
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
 };
@@ -247,6 +249,8 @@ class InxSkinnedMesh
 
     [[nodiscard]] const SkinnedRuntimeAnimation *FindAnimation(const std::string &takeName) const;
     [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName) const;
+    /// Looping composes the complete cycle transform (including translation).
+    /// Supports reverse intervals; non-looping samples clamp to clip bounds.
     [[nodiscard]] RootMotionDelta SampleRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
                                                         bool loop) const;
     /// Build the authoritative target-node -> source-node map for one take.

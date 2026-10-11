@@ -35,6 +35,8 @@ enum class PixelFormat : uint8_t
     BC7Srgb,
     D32SFloat,
     D24UNormS8UInt,
+    RGBA32UInt,
+    D32SFloatS8UInt,
     Count,
 };
 
@@ -134,17 +136,18 @@ enum class TextureLayout : uint8_t
 
 [[nodiscard]] constexpr bool IsDepthFormat(PixelFormat format) noexcept
 {
-    return format == PixelFormat::D32SFloat || format == PixelFormat::D24UNormS8UInt;
+    return format == PixelFormat::D32SFloat || format == PixelFormat::D24UNormS8UInt ||
+           format == PixelFormat::D32SFloatS8UInt;
 }
 
 [[nodiscard]] constexpr bool IsStencilFormat(PixelFormat format) noexcept
 {
-    return format == PixelFormat::D24UNormS8UInt;
+    return format == PixelFormat::D24UNormS8UInt || format == PixelFormat::D32SFloatS8UInt;
 }
 
 [[nodiscard]] constexpr bool IsIntegerFormat(PixelFormat format) noexcept
 {
-    return format == PixelFormat::RG32UInt;
+    return format == PixelFormat::RG32UInt || format == PixelFormat::RGBA32UInt;
 }
 
 [[nodiscard]] constexpr bool IsValidPixelFormat(PixelFormat format) noexcept

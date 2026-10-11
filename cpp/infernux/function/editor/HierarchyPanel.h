@@ -137,6 +137,7 @@ class HierarchyPanel : public EditorPanel
 
     // ── Root-object cache ────────────────────────────────────────────
     std::string m_cachedSceneKey;
+    std::string m_cachedSearchKey;
     uint64_t m_cachedStructureVer = UINT64_MAX;
     size_t m_cachedRawRootCount = 0;
     std::vector<GameObject *> m_cachedRoots;
@@ -144,10 +145,6 @@ class HierarchyPanel : public EditorPanel
     float m_lastRootRefreshTime = 0.0f;
     static constexpr float STALE_ROOT_INTERVAL = 0.12f;
     static constexpr int STALE_ROOT_THRESHOLD = 128;
-
-    // ── Ordered IDs cache (for shift-range select) ───────────────────
-    std::vector<uint64_t> m_cachedOrderedIds;
-    bool m_orderedIdsDirty = true;
 
     // ── Search ───────────────────────────────────────────────────────
     char m_searchBuf[256] = {};
@@ -170,6 +167,7 @@ class HierarchyPanel : public EditorPanel
         bool sceneHeader = false;
     };
     std::vector<FlatItem> m_flatItems;
+    std::vector<FlatItem> m_persistentFlatItems;
     EditorTreeProjectionModel<uint64_t> m_treeProjection;
     std::unordered_set<uint64_t> m_forceExpandIds; // one-shot SetNextItemOpen
     std::unordered_set<uint64_t> m_collapsedSceneWorldIds;
@@ -270,7 +268,7 @@ class HierarchyPanel : public EditorPanel
     void CancelRename();
 
     // Ordered IDs
-    std::vector<uint64_t> CollectOrderedIds(const std::vector<GameObject *> &roots) const;
+    std::vector<uint64_t> CollectOrderedIds() const;
 
     bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "",
                               const std::string &source = "context_menu") const;

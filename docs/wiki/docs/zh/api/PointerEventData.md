@@ -1,7 +1,7 @@
 # PointerEventData
 
 <div class="class-info">
-类位于 <b>Infernux.ui</b>
+类位于 <b>infernux.ui</b>
 </div>
 
 ## 描述

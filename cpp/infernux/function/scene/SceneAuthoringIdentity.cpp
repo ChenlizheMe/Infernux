@@ -1,0 +1,294 @@
+#include "SceneAuthoringIdentity.h"
+#include "core/types/Guid.h"
+
+#include <charconv>
+#include <limits>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
+#include <unordered_set>
+
+namespace infernux
+{
+namespace
+{
+using Json = nlohmann::json;
+using IdentityTable = std::unordered_map<uint64_t, std::string>;
+
+void RequireGuid(const std::string &guid)
+{
+    bool nonzero = false;
+    if (guid.size() != 32)
+        throw std::invalid_argument("Scene author identity must be a canonical 32-character GUID");
+    for (const char digit : guid) {
+        if (!((digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f')))
+            throw std::invalid_argument("Scene author identity must be a lowercase hexadecimal GUID");
+        nonzero = nonzero || digit != '0';
+    }
+    if (!nonzero)
+        throw std::invalid_argument("Scene author identity must not be the zero GUID");
+}
+
+uint64_t ReadRuntimeId(const Json &value, bool nullable)
+{
+    if (!value.is_number_unsigned())
+        throw std::invalid_argument("Scene runtime document identity must be an unsigned integer");
+    const auto id = value.get<uint64_t>();
+    if (id == 0 && !nullable)
+        throw std::invalid_argument("Scene object/component identity must not be null");
+    return id;
+}
+
+template <class ObjectId, class ComponentId>
+void RewriteFields(Json &value, ObjectId &objectId, ComponentId &componentId)
+{
+    if (value.is_array()) {
+        for (auto &item : value)
+            RewriteFields(item, objectId, componentId);
+    } else if (value.is_object()) {
+        const auto type = value.find("$type");
+        if (type != value.end() && *type == "game_object_ref") {
+            value.at("object_id") = objectId(value.at("object_id"), true, false);
+            return;
+        }
+        if (type != value.end() && *type == "component_ref") {
+            value.at("game_object_id") = objectId(value.at("game_object_id"), true, false);
+            if (value.contains("component_id"))
+                value["component_id"] = componentId(value.at("component_id"), true, false);
+            return;
+        }
+        for (auto &item : value)
+            RewriteFields(item, objectId, componentId);
+    }
+}
+
+template <class ObjectId, class ComponentId>
+void RewriteDeclarations(Json &object, ObjectId &objectId, ComponentId &componentId)
+{
+    object.at("id") = objectId(object.at("id"), false, true);
+    auto &transform = object.at("transform");
+    transform.at("component_id") = componentId(transform.at("component_id"), false, true);
+    for (auto &component : object.at("components"))
+        component.at("component_id") = componentId(component.at("component_id"), false, true);
+    for (auto &child : object.at("children"))
+        RewriteDeclarations(child, objectId, componentId);
+}
+
+template <class ObjectId, class ComponentId>
+void RewriteReferences(Json &object, ObjectId &objectId, ComponentId &componentId)
+{
+    for (auto &component : object.at("components")) {
+        const std::string type = component.at("type_id").get<std::string>();
+        auto &fields = component.at("data");
+        if (type == "native:infernux.HingeJoint" || type == "native:infernux.SliderJoint")
+            fields.at("connected_body_component_id") =
+                componentId(fields.at("connected_body_component_id"), true, false);
+        if (type.rfind("python:", 0) == 0)
+            RewriteFields(fields, objectId, componentId);
+    }
+    // Prefab baselines/provenance and arbitrary native property dictionaries
+    // belong to other namespaces. Never rewrite integers merely by field name.
+    for (auto &child : object.at("children"))
+        RewriteReferences(child, objectId, componentId);
+}
+
+template <class ObjectId, class ComponentId>
+void RewriteDocument(Json &document, ObjectId objectId, ComponentId componentId)
+{
+    if (!document.is_object() || !document.contains("objects") || !document["objects"].is_array())
+        throw std::invalid_argument("Scene authoring document requires an objects array");
+    // Reserve all declarations before assigning missing-reference placeholders.
+    for (auto &object : document["objects"])
+        RewriteDeclarations(object, objectId, componentId);
+    for (auto &object : document["objects"])
+        RewriteReferences(object, objectId, componentId);
+    if (document.contains("mainCameraComponentId"))
+        document["mainCameraComponentId"] = componentId(document.at("mainCameraComponentId"), false, false);
+}
+
+class Encoder
+{
+  public:
+    explicit Encoder(const IdentityTable &identities) : m_identities(identities)
+    {
+        std::unordered_set<std::string> guids;
+        for (const auto &[id, guid] : identities) {
+            if (id == 0)
+                throw std::invalid_argument("Scene author identity table contains a null runtime ID");
+            RequireGuid(guid);
+            if (!guids.insert(guid).second)
+                throw std::invalid_argument("Scene author identity table aliases two runtime IDs to one GUID");
+        }
+    }
+
+    Json operator()(const Json &value, bool nullable, bool declaration)
+    {
+        const auto id = ReadRuntimeId(value, nullable);
+        if (id == 0)
+            return "";
+        if (declaration && !m_declared.insert(id).second)
+            throw std::invalid_argument("Scene authoring document contains a duplicate runtime declaration");
+        const auto found = m_identities.find(id);
+        if (found == m_identities.end())
+            throw std::invalid_argument("Scene authoring document has an unallocated persistent identity");
+        return found->second;
+    }
+
+  private:
+    const IdentityTable &m_identities;
+    std::unordered_set<uint64_t> m_declared;
+};
+
+class Decoder
+{
+  public:
+    explicit Decoder(IdentityTable &identities) : m_identities(identities)
+    {
+    }
+
+    Json operator()(const Json &value, bool nullable, bool declaration)
+    {
+        if (!value.is_string())
+            throw std::invalid_argument("Scene authoring document identities must be GUID strings");
+        const auto &guid = value.get_ref<const std::string &>();
+        if (nullable && guid.empty())
+            return uint64_t{0};
+        RequireGuid(guid);
+        if (declaration && !m_declared.insert(guid).second)
+            throw std::invalid_argument("Scene authoring document contains a duplicate GUID declaration");
+        const auto found = m_runtimeIds.find(guid);
+        if (found != m_runtimeIds.end())
+            return found->second;
+        if (m_nextId == std::numeric_limits<uint64_t>::max())
+            throw std::overflow_error("Scene authoring document exhausted runtime identities");
+        const auto id = m_nextId++;
+        m_runtimeIds.emplace(guid, id);
+        m_identities.emplace(id, guid);
+        return id;
+    }
+
+  private:
+    IdentityTable &m_identities;
+    std::unordered_map<std::string, uint64_t> m_runtimeIds;
+    std::unordered_set<std::string> m_declared;
+    uint64_t m_nextId = 1;
+};
+} // namespace
+
+nlohmann::json SerializeSceneAuthoringIdentity(const SceneAuthoringIdentity &identities)
+{
+    const auto encode = [](const IdentityTable &table) {
+        Json document = Json::object();
+        for (const auto &[id, guid] : table)
+            document[std::to_string(id)] = guid;
+        return document;
+    };
+    return {{"objects", encode(identities.objects)}, {"components", encode(identities.components)}};
+}
+
+SceneAuthoringIdentity DeserializeSceneAuthoringIdentity(const nlohmann::json &document)
+{
+    if (!document.is_object() || document.size() != 2 || !document.contains("objects") ||
+        !document.contains("components"))
+        throw std::invalid_argument("Scene snapshot requires object and component author identity tables");
+    const auto decode = [](const Json &value) {
+        if (!value.is_object())
+            throw std::invalid_argument("Scene snapshot identity table must be an object");
+        IdentityTable table;
+        table.reserve(value.size());
+        std::unordered_set<std::string> guids;
+        for (const auto &[key, entry] : value.items()) {
+            uint64_t id = 0;
+            const auto parsed = std::from_chars(key.data(), key.data() + key.size(), id);
+            if (parsed.ec != std::errc{} || parsed.ptr != key.data() + key.size() || id == 0 ||
+                id == std::numeric_limits<uint64_t>::max() || std::to_string(id) != key || !entry.is_string())
+                throw std::invalid_argument("Scene snapshot identity table contains an invalid runtime ID or GUID");
+            const auto &guid = entry.get_ref<const std::string &>();
+            RequireGuid(guid);
+            if (!guids.insert(guid).second)
+                throw std::invalid_argument("Scene snapshot author identity table contains a GUID alias");
+            table.emplace(id, guid);
+        }
+        return table;
+    };
+    return {decode(document.at("objects")), decode(document.at("components"))};
+}
+
+SceneAuthoringIdentity RemapSceneAuthoringIdentity(const SceneAuthoringIdentity &identities,
+                                                   const std::unordered_map<uint64_t, uint64_t> &objectIdRemap,
+                                                   const std::unordered_map<uint64_t, uint64_t> &componentIdRemap)
+{
+    const auto remap = [](const IdentityTable &table, const auto &mapping) {
+        IdentityTable result;
+        result.reserve(table.size());
+        for (const auto &[id, guid] : table) {
+            const auto entry = mapping.find(id);
+            const uint64_t target = entry == mapping.end() ? id : entry->second;
+            if (target == 0 || target == std::numeric_limits<uint64_t>::max() || !result.emplace(target, guid).second)
+                throw std::invalid_argument("Scene author identity publication aliases runtime IDs");
+        }
+        return result;
+    };
+    return {remap(identities.objects, objectIdRemap), remap(identities.components, componentIdRemap)};
+}
+
+nlohmann::json EncodeSceneAuthoringDocument(const nlohmann::json &runtimeDocument,
+                                            const SceneAuthoringIdentity &identities)
+{
+    if (runtimeDocument.contains("identity_format"))
+        throw std::invalid_argument("Expected a runtime scene snapshot, not an authoring file");
+    Json result = runtimeDocument;
+    RewriteDocument(result, Encoder(identities.objects), Encoder(identities.components));
+    result.erase("nextObjectId");
+    result.erase("nextComponentId");
+    result.erase("authoring_identity");
+    result["identity_format"] = "guid-v1";
+    return result;
+}
+
+nlohmann::json DecodeSceneAuthoringDocument(const nlohmann::json &assetDocument, SceneAuthoringIdentity &identities)
+{
+    if (!assetDocument.is_object() || assetDocument.value("identity_format", Json{}) != "guid-v1" ||
+        assetDocument.contains("nextObjectId") || assetDocument.contains("nextComponentId") ||
+        assetDocument.contains("authoring_identity"))
+        throw std::invalid_argument("Expected the GUID scene authoring format without runtime watermarks");
+    Json result = assetDocument;
+    SceneAuthoringIdentity candidate;
+    RewriteDocument(result, Decoder(candidate.objects), Decoder(candidate.components));
+    result.erase("identity_format");
+    result["nextObjectId"] = static_cast<uint64_t>(candidate.objects.size()) + 1;
+    result["nextComponentId"] = static_cast<uint64_t>(candidate.components.size()) + 1;
+    result["authoring_identity"] = SerializeSceneAuthoringIdentity(candidate);
+    identities = std::move(candidate);
+    return result;
+}
+
+nlohmann::json DecodeSceneRuntimeArtifact(const nlohmann::json &artifactDocument)
+{
+    if (!artifactDocument.is_object() || artifactDocument.value("identity_format", Json{}) != "runtime-v1" ||
+        artifactDocument.contains("authoring_identity") || artifactDocument.contains("nextObjectId") ||
+        artifactDocument.contains("nextComponentId"))
+        throw std::invalid_argument("Expected a cooked runtime-v1 Scene without authoring tables or watermarks");
+    Json result = artifactDocument;
+    SceneAuthoringIdentity identities;
+    uint64_t nextObject = 1, nextComponent = 1;
+    const auto reserve = [](IdentityTable &table, uint64_t &next) {
+        return [&table, &next](const Json &value, bool nullable, bool) -> Json {
+            const uint64_t id = ReadRuntimeId(value, nullable);
+            if (id == std::numeric_limits<uint64_t>::max())
+                throw std::invalid_argument("Cooked Scene contains an exhausted runtime identity");
+            if (id) {
+                if (!table.count(id))
+                    table.emplace(id, GenerateGuid());
+                next = std::max(next, id + 1);
+            }
+            return id;
+        };
+    };
+    RewriteDocument(result, reserve(identities.objects, nextObject), reserve(identities.components, nextComponent));
+    result.erase("identity_format");
+    result["nextObjectId"] = nextObject;
+    result["nextComponentId"] = nextComponent;
+    result["authoring_identity"] = SerializeSceneAuthoringIdentity(identities);
+    return result;
+}
+} // namespace infernux

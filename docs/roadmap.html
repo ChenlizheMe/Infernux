@@ -5,34 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="The road to Neural Network-Native Engine (3N): 041 engine foundations, model workflows, world schemas, replay, batch simulation and a tensor data plane through 0.5.2.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="description" content="A visual roadmap for the Infernux engine.">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/roadmap.html">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
-    <meta property="og:title" content="Infernux roadmap — 0.4.1 to 0.5.2">
-    <meta property="og:description" content="From a complete engine on Windows to cross-platform shipping, models running through the data plane, and agents that can build tools safely.">
+    <meta property="og:title" content="Infernux roadmap">
+    <meta property="og:description" content="Follow the engine systems as they take shape.">
     <meta property="og:url" content="https://infernux-engine.com/roadmap.html">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Infernux roadmap — 0.4.1 to 0.5.2">
-    <meta name="twitter:description" content="Cross-platform Players, Torch workflows, replayable worlds, and tools an agent can safely build.">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:title" content="Infernux roadmap">
+    <meta name="twitter:description" content="Follow the engine systems as they take shape.">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <title>Infernux · 熔炉 — Roadmap</title>
-    <link rel="icon" type="image/png" href="assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
-    <link rel="stylesheet" href="css/fonts.css?v=1">
-    <link rel="stylesheet" href="css/style.css?v=20">
+    <link rel="stylesheet" href="css/fonts.css?v=3">
+    <link rel="stylesheet" href="css/style.css?v=27">
     <link rel="stylesheet" href="css/docs-search.css?v=3">
-    <link rel="stylesheet" href="css/mission.css?v=2">
-    <link rel="stylesheet" href="css/roadmap.css?v=3">
+    <link rel="stylesheet" href="css/mission.css?v=3">
+    <link rel="stylesheet" href="css/roadmap.css?v=19">
+    <link rel="stylesheet" href="css/changelog.css?v=2">
     <link rel="stylesheet" href="css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -48,14 +49,13 @@
         <nav class="navbar" aria-label="Primary navigation">
             <div class="nav-container">
                 <a href="index.html" class="nav-logo">
-                    <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                    <span class="logo-icon"><img src="assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                     <span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span>
                 </a>
                 <div class="nav-links" id="primary-navigation">
-                    <a href="start.html" class="nav-priority" data-i18n="nav.start">Start</a>
-                    <a href="learn.html" data-i18n="nav.learn">Learn</a>
+                    <a href="tutorials.html" class="nav-priority" data-i18n="nav.tutorials">Tutorials</a>
                     <a href="wiki/site/en/api/index.html" data-href-en="wiki/site/en/api/index.html" data-href-zh="wiki/site/zh/api/index.html" data-i18n="nav.api">API</a>
-                    <a href="roadmap.html" class="active" aria-current="page" data-i18n="nav.roadmap">Roadmap</a><a href="changelog.html" data-i18n="nav.changelog">Changelog</a>
+                    <a href="roadmap.html" class="active" aria-current="page" data-i18n="nav.roadmap">Roadmap</a>
                     <a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a>
                     <a href="download.html" data-i18n="nav.download">Download</a>
                     <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
@@ -63,9 +63,6 @@
                     </a>
                 </div>
                 <div class="nav-right">
-                    <button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false">
-                        <i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i>
-                    </button>
                     <button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language">
                         <span id="lang-text">中文</span>
                     </button>
@@ -79,130 +76,145 @@
 
     <main class="page-shell roadmap-layout" id="main-content">
         <div class="container">
-            <section class="subpage-hero roadmap-hero">
-                <div class="hero-codename">
-                    <span class="badge" data-i18n="roadmap.hero.badge">CURRENT CYCLE · 0.4.1 → 0.5.2</span>
-                    <span data-i18n="roadmap.hero.kicker">Roadmap</span>
-                </div>
-                <h1 data-i18n="roadmap.hero.title">Infernux roadmap</h1>
-                <p data-i18n="roadmap.hero.description">Our destination is a Neural Network-Native Engine (3N). This roadmap connects world authoring to model workflows, inference, replay and batch simulation; the 041 line strengthens the engine foundation.</p>
-                <div class="hub-actions">
-                    <a href="https://github.com/ChenlizheMe/Infernux/issues" class="btn btn-primary" target="_blank" rel="noopener" data-i18n="roadmap.hero.primary">Track issues</a>
-                    <a href="start.html" class="btn btn-secondary" data-i18n="roadmap.hero.secondary">Get started</a>
-                </div>
-            </section>
-
-            <section class="release-grid">
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">041 · WORLD AUTHORING</div>
-                    <strong>041</strong>
-                    <h3 data-i18n="roadmap.release.current.title">Multi-scene worlds and live tools</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.current.item1">The 041 development line deepens multi-scene editing, model import and source synchronization, world UI, CPU/GPU JIT preparation and physics queries.</li>
-                        <li data-i18n="roadmap.release.current.item2">Plugin components share live reload with project scripts. Player type registration, preload cleanup, localization and platform build options make extensions part of the everyday workflow.</li>
-                    </ul>
-                </article>
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">0.4.1 · PUBLISHED</div>
-                    <strong>v0.4.1</strong>
-                    <h3 data-i18n="roadmap.release.next.title">Worlds, Compute and Live Tools</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.next.item1">0.4.1 brings larger worlds, live Python authoring and target-aware computation into the same engine workflow. This release expands multi-scene editing, prefab authoring, model import, rendering and audio, then carries their resource and component lifecycles into exported Players. It also rebuilds key parts of the plugin experience in response to community reports.</li>
-                        <li data-i18n="roadmap.release.next.item2">Read the Changelog for features, fixes, platform boundaries and upgrade notes.</li>
-                    </ul>
-                </article>
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.mid.tag">0.4.1–0.4.4 · PLUMBING</div>
-                    <strong>v0.4.1–0.4.4</strong>
-                    <h3 data-i18n="roadmap.release.mid.title">Headless, semantics, replay, batch data</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.mid.item1">041 establishes the cross-platform runtime and authoring foundation. The planned 0.4.2–0.4.4 stages focus on shared schemas, snapshots and replay, then batch worlds and the tensor data plane.</li>
-                        <li data-i18n="roadmap.release.mid.item2">Each stage needs usable public APIs and measurable behavior so games, tools and model workflows can build on the same contracts.</li>
-                    </ul>
-                </article>
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.long.tag">0.5.0–0.5.2 · CONVERGENCE</div>
-                    <strong>v0.5.0–0.5.2</strong>
-                    <h3 data-i18n="roadmap.release.long.title">Tools an agent can build, on an engine that holds together</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.long.item1">0.5.0 formalises Engine Tools and draws a hard line between trusted and untrusted execution. 0.5.1 ships the distribution format for plugins and models, with their own tests run in a sandbox before anything lands in your project.</li>
-                        <li data-i18n="roadmap.release.long.item2">0.5.2 has to string cross-platform Players, models, schemas, replay, batch worlds and tool governance into one path somebody can walk end to end, live.</li>
-                    </ul>
-                </article>
-            </section>
-
-            <section class="roadmap-bands">
-                <div class="section-head">
-                    <div>
-                        <div class="section-kicker" data-i18n="roadmap.lanes.kicker">Four tracks</div>
-                        <h2 class="section-title" data-i18n="roadmap.lanes.title">Four tracks, and they all have to end up in one engine.</h2>
+            <section class="subpage-hero roadmap-hero"><div class="roadmap-hero-id"><span class="roadmap-hero-code" aria-hidden="true">FLIGHT PLAN · 3N PROGRAM · REV 041</span><h1 data-i18n="roadmap.hero.title">ROADMAP</h1></div><p data-i18n="roadmap.hero.description">An engine is too large for a single plan. Ten flight maps chart every system on the road to a 3N engine (Neural Network-Native), from the deterministic core to neural networks. Each node is one goal, marked with its honest status.</p></section>
+            <section class="tree-workspace" data-roadmap-app>
+                <nav class="tree-page-tabs" role="tablist" aria-label="Roadmap categories">
+                    <button class="tree-page-tab is-active" role="tab" type="button" data-tree-page="foundation" aria-controls="tree-foundation" aria-selected="true" data-i18n="roadmap.galaxy.foundation.title">FOUNDATION</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="pipeline" aria-controls="tree-pipeline" aria-selected="false" data-i18n="roadmap.galaxy.rendering.title">RENDERING</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="runtime" aria-controls="tree-runtime" aria-selected="false" data-i18n="roadmap.galaxy.animation.title">ANIMATION SYSTEM</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="agents" aria-controls="tree-agents" aria-selected="false" data-i18n="roadmap.galaxy.physics.title">PHYSICS SYSTEM</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="audio" aria-controls="tree-audio" aria-selected="false" data-i18n="roadmap.galaxy.audio.title">AUDIO</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="gameplay" aria-controls="tree-gameplay" aria-selected="false" data-i18n="roadmap.galaxy.gameplay.title">GAMEPLAY</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="toolchain" aria-controls="tree-toolchain" aria-selected="false" data-i18n="roadmap.galaxy.toolchain.title">TOOLCHAIN</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="network" aria-controls="tree-network" aria-selected="false" data-i18n="roadmap.galaxy.network.title">NETWORK</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="data" aria-controls="tree-data" aria-selected="false" data-i18n="roadmap.galaxy.data.title">DATA-ORIENTED</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="neural" aria-controls="tree-neural" aria-selected="false" data-i18n="roadmap.galaxy.neural.title">NEURAL NETWORKS & HPC</button>
+                </nav>
+                <div class="map-main">
+                <div class="galaxy-toolbar">
+                    <div class="map-search">
+                        <input type="search" data-roadmap-search data-i18n="roadmap.graph.search" data-i18n-aria-label="roadmap.graph.search" aria-label="Find a node in this map" placeholder="Find a node in this map" aria-controls="roadmap-results" autocomplete="off">
+                        <div class="map-search-results" id="roadmap-results" data-roadmap-results hidden></div>
                     </div>
-                    <p class="section-intro" data-i18n="roadmap.lanes.intro">They share their plumbing. Platform contracts decide where a Player can run. Schemas decide who is allowed to change the world. Replay serves debugging and training equally well. Tool governance covers plugins and agents with the same machinery.</p>
+                    <span class="map-hint" data-i18n="roadmap.graph.hint">Drag to pan · scroll to zoom · click a branch to fly in</span>
+                    <div class="map-zoom-controls">
+                        <button type="button" data-map-zoom="out" data-i18n-aria-label="roadmap.graph.zoomOut" aria-label="Zoom out">−</button>
+                        <button type="button" data-map-zoom="fit" data-i18n="roadmap.graph.fit">Fit map</button>
+                        <button type="button" data-map-zoom="in" data-i18n-aria-label="roadmap.graph.zoomIn" aria-label="Zoom in">+</button>
+                    </div>
                 </div>
-                <div class="lane-grid">
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-toolbox"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card1.title">Shipping</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card1.item1">One project exporting an Android APK/AAB and a Web package you can deploy as it is.</li>
-                            <li data-i18n="roadmap.lanes.card1.item2">A Linux Player, plus windowless and offscreen runs for CI, servers and large-scale simulation.</li>
-                            <li data-i18n="roadmap.lanes.card1.item3">Platform capabilities declared up front, and missing ones failing loudly. No silent downgrades; quiet fallback is a debugging nightmare.</li>
-                        </ul>
-                    </article>
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-layer-group"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card2.title">Model data</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card2.item1">Standard PyTorch right in the editor: develop, train, evaluate and export without switching environments.</li>
-                            <li data-i18n="roadmap.lanes.card2.item2">A Player that carries only the inference runtime its platform needs. No CUDA Toolkit, no entire training stack riding along.</li>
-                            <li data-i18n="roadmap.lanes.card2.item3">Every hop between Torch, DLPack and GPU buffers measured, and every copy written down in the docs.</li>
-                        </ul>
-                    </article>
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-ship"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card3.title">Semantic world</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card3.item1">Versioned reflection plus Command/Query schemas, so UI, Python and MCP read one definition instead of each reimplementing it.</li>
-                            <li data-i18n="roadmap.lanes.card3.item2">World snapshot and delta, deterministic replay contracts, and batched create, step and reset.</li>
-                        </ul>
-                    </article>
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-microchip"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card4.title">Tools and ecosystem</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card4.item1">An Engine Tool ships with its schema, permissions, tests, provenance, resource limits and lifecycle attached.</li>
-                            <li data-i18n="roadmap.lanes.card4.item2">Plugins and models get a real distribution format, and their own tests run in a sandbox before anything enters your project.</li>
-                            <li data-i18n="roadmap.lanes.card4.item3">Anything an agent builds clears the same bar as human-written code before it goes near someone else's project.</li>
-                        </ul>
-                    </article>
+                <div class="map-overview">
+                    <div class="map-telemetry" data-roadmap-telemetry aria-hidden="true"></div>
+                    <span class="map-count" data-roadmap-count></span>
+                    <div class="map-legend"><span class="legend-live" data-i18n="roadmap.graph.live">Implemented</span><span class="legend-partial" data-i18n="roadmap.graph.partial">Partially implemented</span><span class="legend-progress" data-i18n="roadmap.graph.progress">In progress</span><span class="legend-planned" data-i18n="roadmap.graph.planned">Planned</span><span class="legend-future" data-i18n="roadmap.graph.future">Long-term research</span></div>
+                </div>
+                                <article class="tree-page galaxy-panel" id="tree-foundation" role="tabpanel" data-tree-panel="foundation" data-galaxy="foundation">
+                    <div class="galaxy-bar"><span class="galaxy-code">A / 01</span><h2 data-i18n="roadmap.galaxy.foundation.title">FOUNDATION</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive foundation star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-foundation graph-desc-foundation">
+                            <title id="graph-title-foundation">FOUNDATION star map</title><desc id="graph-desc-foundation">A flat vector constellation for the foundation system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-pipeline" role="tabpanel" data-tree-panel="pipeline" data-galaxy="rendering" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">B / 02</span><h2 data-i18n="roadmap.galaxy.rendering.title">RENDERING</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive rendering star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-rendering graph-desc-rendering">
+                            <title id="graph-title-rendering">RENDERING star map</title><desc id="graph-desc-rendering">A flat vector constellation for the rendering system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-runtime" role="tabpanel" data-tree-panel="runtime" data-galaxy="animation" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">C / 03</span><h2 data-i18n="roadmap.galaxy.animation.title">ANIMATION SYSTEM</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive animation system star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-animation graph-desc-animation">
+                            <title id="graph-title-animation">ANIMATION SYSTEM star map</title><desc id="graph-desc-animation">A flat vector constellation for the animation system system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-agents" role="tabpanel" data-tree-panel="agents" data-galaxy="physics" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">D / 04</span><h2 data-i18n="roadmap.galaxy.physics.title">PHYSICS SYSTEM</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive physics system star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-physics graph-desc-physics">
+                            <title id="graph-title-physics">PHYSICS SYSTEM star map</title><desc id="graph-desc-physics">A flat vector constellation for the physics system system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-audio" role="tabpanel" data-tree-panel="audio" data-galaxy="audio" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">E / 05</span><h2 data-i18n="roadmap.galaxy.audio.title">AUDIO</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive audio star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-audio graph-desc-audio">
+                            <title id="graph-title-audio">AUDIO star map</title><desc id="graph-desc-audio">A flat vector constellation for the audio system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-gameplay" role="tabpanel" data-tree-panel="gameplay" data-galaxy="gameplay" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">F / 06</span><h2 data-i18n="roadmap.galaxy.gameplay.title">GAMEPLAY</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive gameplay star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-gameplay graph-desc-gameplay">
+                            <title id="graph-title-gameplay">GAMEPLAY star map</title><desc id="graph-desc-gameplay">A flat vector constellation for the gameplay system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-toolchain" role="tabpanel" data-tree-panel="toolchain" data-galaxy="toolchain" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">G / 07</span><h2 data-i18n="roadmap.galaxy.toolchain.title">TOOLCHAIN</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive toolchain star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-toolchain graph-desc-toolchain">
+                            <title id="graph-title-toolchain">TOOLCHAIN star map</title><desc id="graph-desc-toolchain">A flat vector constellation for the toolchain system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-network" role="tabpanel" data-tree-panel="network" data-galaxy="network" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">H / 08</span><h2 data-i18n="roadmap.galaxy.network.title">NETWORK</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive network star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-network graph-desc-network">
+                            <title id="graph-title-network">NETWORK star map</title><desc id="graph-desc-network">A flat vector constellation for the network system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-data" role="tabpanel" data-tree-panel="data" data-galaxy="data" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">I / 09</span><h2 data-i18n="roadmap.galaxy.data.title">DATA-ORIENTED</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive data-oriented star map. Drag to drift and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-data graph-desc-data">
+                            <title id="graph-title-data">DATA-ORIENTED star map</title><desc id="graph-desc-data">A flat vector constellation for the data-oriented system.</desc>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <article class="tree-page galaxy-panel" id="tree-neural" role="tabpanel" data-tree-panel="neural" data-galaxy="neural" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">N / 10</span><h2 data-i18n="roadmap.galaxy.neural.title">NEURAL NETWORKS & HPC</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive neural networks and high-performance computing map. Drag to explore and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid meet" viewBox="0 0 2400 1800" role="group" aria-labelledby="graph-title-neural graph-desc-neural">
+                            <title id="graph-title-neural">NEURAL NETWORKS &amp; HPC</title><desc id="graph-desc-neural">Model runtimes, accelerated computation and learning environments.</desc>
+                            <g class="graph-camera" data-graph-camera></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <div class="map-detail" data-roadmap-detail aria-live="polite"></div>
+                <p class="map-note" data-i18n="roadmap.graph.note">Category colour marks what ships today; charcoal marks what is still ahead. The arc around a branch shows how much of it is done, and only work that is actively under way pulses. Search across all ten maps, or click a branch to fly in.</p>
                 </div>
             </section>
-
-            <section class="section">
-                <div class="section-head">
-                    <div>
-                        <div class="section-kicker" data-i18n="roadmap.priorities.kicker">NEXT FOUNDATIONS FOR 3N</div>
-                        <h2 class="section-title" data-i18n="roadmap.priorities.title">Connect models, worlds and deployment.</h2>
-                    </div>
-                    <p class="section-intro" data-i18n="roadmap.priorities.intro">Four-platform exports are in place. Further work focuses on compute boundaries, repeatable world operations and model deployment across those targets.</p>
-                </div>
-                <div class="priority-grid">
-                    <article class="priority-card">
-                        <div class="card-mark"><i class="fas fa-link"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card1.title">A shared language for world state</h3>
-                        <p data-i18n="roadmap.priorities.card1.body">Define shared schemas for state, commands and queries, building on the existing editor command path and batch APIs. Tools and models should be able to discover exactly what they can read and change.</p>
-                    </article>
-                    <article class="priority-card">
-                        <div class="card-mark"><i class="fas fa-cubes"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card2.title">Repeatable simulation and data exchange</h3>
-                        <p data-i18n="roadmap.priorities.card2.body">Develop snapshot, delta and replay contracts, then batch stepping and tensor exchange. Make copying, synchronization and ownership explicit so workloads can be measured and improved.</p>
-                    </article>
-                    <article class="priority-card">
-                        <div class="card-mark"><i class="fas fa-vector-square"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card3.title">Model workflows and portable inference</h3>
-                        <p data-i18n="roadmap.priorities.card3.body">Keep the Python ML ecosystem close to authoring. Choose deployment backends using model coverage, latency, memory and package size on each target, and ship only the runtime the game needs.</p>
-                    </article>
-                </div>
+            <section class="roadmap-changelog" id="release-log"><header class="roadmap-changelog-heading"><h2 data-i18n="roadmap.changelog.title">CHANGELOG</h2></header>
+<section class="roadmap-release-language" data-page-language="en"><ol class="release-list" aria-label="CHANGELOG"><li class="release-card"><div class="release-meta"><strong>v0.4.1</strong><time datetime="2026-10-01">2026-10-01</time></div><h3><a href="changelog/0.4.1.html?lang=en">Worlds, compute and live tools.</a></h3><a class="release-read" href="changelog/0.4.1.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.4.0</strong><time datetime="2026-09-06">2026-09-06</time></div><h3><a href="changelog/0.4.0.html?lang=en">Multiplatform players and distribution.</a></h3><a class="release-read" href="changelog/0.4.0.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.7</strong><time datetime="2026-08-27">2026-08-27</time></div><h3><a href="changelog/0.3.7.html?lang=en">Plugins and skeletal animation.</a></h3><a class="release-read" href="changelog/0.3.7.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.6</strong><time datetime="2026-08-24">2026-08-24</time></div><h3><a href="changelog/0.3.6.html?lang=en">Unified hierarchy and Hub updates.</a></h3><a class="release-read" href="changelog/0.3.6.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.5</strong><time datetime="2026-08-23">2026-08-23</time></div><h3><a href="changelog/0.3.5.html?lang=en">Release maintenance and fixes.</a></h3><a class="release-read" href="changelog/0.3.5.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.4</strong><time datetime="2026-08-21">2026-08-21</time></div><h3><a href="changelog/0.3.4.html?lang=en">Runtime and editor improvements.</a></h3><a class="release-read" href="changelog/0.3.4.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.9</strong><time datetime="2026-07-17">2026-07-17</time></div><h3><a href="changelog/0.2.9.html?lang=en">Core authoring improvements.</a></h3><a class="release-read" href="changelog/0.2.9.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.1</strong><time datetime="2026-07-10">2026-07-10</time></div><h3><a href="changelog/0.2.1.html?lang=en">Editor workflow improvements.</a></h3><a class="release-read" href="changelog/0.2.1.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.0</strong><time datetime="2026-06-25">2026-06-25</time></div><h3><a href="changelog/0.2.0.html?lang=en">First public engine line.</a></h3><a class="release-read" href="changelog/0.2.0.html?lang=en">Details →</a></li></ol></section>
+<section class="roadmap-release-language" data-page-language="zh" hidden><ol class="release-list" aria-label="更新日志"><li class="release-card"><div class="release-meta"><strong>v0.4.1</strong><time datetime="2026-10-01">2026-10-01</time></div><h3><a href="changelog/0.4.1.html?lang=zh">世界、计算与实时工具。</a></h3><a class="release-read" href="changelog/0.4.1.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.4.0</strong><time datetime="2026-09-06">2026-09-06</time></div><h3><a href="changelog/0.4.0.html?lang=zh">多平台 Player 与分发。</a></h3><a class="release-read" href="changelog/0.4.0.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.7</strong><time datetime="2026-08-27">2026-08-27</time></div><h3><a href="changelog/0.3.7.html?lang=zh">插件系统与骨骼动画。</a></h3><a class="release-read" href="changelog/0.3.7.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.6</strong><time datetime="2026-08-24">2026-08-24</time></div><h3><a href="changelog/0.3.6.html?lang=zh">统一 Hierarchy 与 Hub 更新。</a></h3><a class="release-read" href="changelog/0.3.6.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.5</strong><time datetime="2026-08-23">2026-08-23</time></div><h3><a href="changelog/0.3.5.html?lang=zh">发布维护与问题修复。</a></h3><a class="release-read" href="changelog/0.3.5.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.4</strong><time datetime="2026-08-21">2026-08-21</time></div><h3><a href="changelog/0.3.4.html?lang=zh">运行时与编辑器改进。</a></h3><a class="release-read" href="changelog/0.3.4.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.9</strong><time datetime="2026-07-17">2026-07-17</time></div><h3><a href="changelog/0.2.9.html?lang=zh">核心创作能力改进。</a></h3><a class="release-read" href="changelog/0.2.9.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.1</strong><time datetime="2026-07-10">2026-07-10</time></div><h3><a href="changelog/0.2.1.html?lang=zh">编辑器工作流改进。</a></h3><a class="release-read" href="changelog/0.2.1.html?lang=zh">详情 →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.0</strong><time datetime="2026-06-25">2026-06-25</time></div><h3><a href="changelog/0.2.0.html?lang=zh">首个公开引擎版本。</a></h3><a class="release-read" href="changelog/0.2.0.html?lang=zh">详情 →</a></li></ol></section>
             </section>
         </div>
     </main>
@@ -212,16 +224,15 @@
             <div class="footer-content">
                 <div class="footer-brand">
                     <div class="nav-logo">
-                        <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                        <span class="logo-icon"><img src="assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                         <span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span>
                     </div>
-                    <p data-i18n="footer.tagline">A Python-first game engine on the road to a Neural Network-Native Engine. Open source under MIT.</p>
+                    <p data-i18n="footer.tagline">A game engine you write in Python, built toward a Neural Network-Native future. Open source under MIT.</p>
                 </div>
                 <div class="footer-links">
                     <div class="footer-column">
                         <h4 data-i18n="footer.resources">Resources</h4>
-                        <a href="start.html" data-i18n="nav.start">Start</a>
-                        <a href="learn.html" data-i18n="nav.learn">Learn</a>
+                        <a href="tutorials.html" class="nav-priority" data-i18n="nav.tutorials">Tutorials</a>
                         <a href="https://github.com/ChenlizheMe/Infernux#readme" target="_blank" rel="noopener">README</a>
                     </div>
                     <div class="footer-column">
@@ -235,9 +246,9 @@
         </div>
     </footer>
 
-    <script src="js/i18n-roadmap.js?v=2"></script>
-    <script src="js/i18n.js?v=19"></script>
-    <script src="js/main.js?v=15"></script>
+    <script src="js/i18n-roadmap.js?v=11"></script>
+    <script src="js/i18n.js?v=21"></script>
+    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=17"></script><script src="js/motion.js?v=5"></script><script src="js/roadmap-data.js?v=4"></script><script src="js/roadmap-layout.js?v=6"></script><script src="js/roadmap.js?v=16"></script><script src="js/bilingual-page.js?v=1"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script type="application/ld+json">
     {

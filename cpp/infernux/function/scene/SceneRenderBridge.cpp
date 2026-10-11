@@ -51,6 +51,22 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
     // active camera. Every camera culls independently in CullAndBuildForCamera.
     const size_t visible =
         m_extractor.ExtractEditorFrame(m_sceneRenderer.WritableRenderWorld(), useActiveCameraCulling);
+    const auto world = m_sceneRenderer.GetRenderWorld().Acquire();
+    // Cull lists belong to their camera and the published renderer set. A
+    // camera removed by Stop or scene unload will never request another cull,
+    // so waiting for a cache miss would retain its materials indefinitely.
+    // Retire stale lists at the frame boundary, before consumers borrow them.
+    auto &caches = m_sceneRenderer.m_cameraCullCaches;
+    for (auto it = caches.begin(); it != caches.end();) {
+        const auto &cache = *it->second;
+        if (!world || cache.worldId != world->WorldId() || cache.structuralRevision != world->StructuralRevision() ||
+            Component::FindByComponentId(it->first) == nullptr) {
+            it = caches.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    m_sceneRenderer.m_buildOwner.reset();
     m_sceneRenderer.m_visibleCount.store(visible, std::memory_order_relaxed);
 }
 

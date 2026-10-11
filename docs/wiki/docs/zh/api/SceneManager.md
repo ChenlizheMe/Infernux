@@ -1,7 +1,7 @@
 # SceneManager
 
 <div class="class-info">
-类位于 <b>Infernux.scene</b>
+类位于 <b>infernux.scene</b>
 </div>
 
 ## 描述

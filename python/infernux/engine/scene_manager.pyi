@@ -1,0 +1,157 @@
+"""SceneFileManager — scene load / save / new / prefab-mode lifecycle.
+
+Central authority for scene file operations: opening, saving, creating,
+prefab editing mode, document-aware close decisions, and camera state
+persistence.
+
+Example::
+
+    sfm = SceneFileManager()
+    sfm.set_asset_database(asset_db)
+    sfm.set_engine(native_engine)
+    sfm.open_scene("/path/to/scene.infscene")
+    sfm.save_current_scene()
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+
+class SceneFileManager:
+    """Manages the active scene lifecycle (load, save, new, prefab mode)."""
+
+    @classmethod
+    def instance(cls) -> Optional[SceneFileManager]:
+        """Return the singleton, or ``None`` if not yet created."""
+        ...
+
+    def __init__(self) -> None: ...
+
+    def set_asset_database(self, asset_db: object) -> None: ...
+    def set_engine(self, engine: object) -> None: ...
+
+    @property
+    def current_scene_path(self) -> Optional[str]:
+        """Absolute path of the currently loaded scene, or ``None``."""
+        ...
+
+    @property
+    def is_dirty(self) -> bool:
+        """``True`` if the scene has unsaved modifications."""
+        ...
+
+    @property
+    def is_loading(self) -> bool:
+        """``True`` while a scene load operation is in progress."""
+        ...
+
+    @property
+    def last_scene_load(self) -> dict[str, str]:
+        """Latest scene file-load status, path, and specific failure reason."""
+        ...
+
+    def mark_dirty(self) -> None:
+        """Mark the current scene as having unsaved changes."""
+        ...
+
+    def set_on_scene_changed(self, cb: Callable[[], None]) -> None:
+        """Register a callback fired after a new scene finishes loading.
+
+        Args:
+            cb: Callable with no arguments.
+        """
+        ...
+
+    def save_current_scene(self) -> bool:
+        """Save the current scene to its existing path.
+
+        Returns:
+            ``True`` on success. ``False`` if no path is set (use ``save_scene_as``).
+        """
+        ...
+
+    def save_scene_as(self) -> bool:
+        """Open a save-as dialog then save."""
+        ...
+
+    def open_scene(self, path: str) -> bool:
+        """Open a scene from *path*, prompting to save if needed.
+
+        Args:
+            path: Absolute path to an ``.infscene`` file.
+        """
+        ...
+
+    def reload_from_resource(self, *, document_id: str, resource_path: str) -> object:
+        """Reload the addressed resident scene from its latest durable disk contents."""
+        ...
+    def request_external_reload(self, *, document_id: str, resource_path: str) -> object: ...
+    def poll_pending_writes(self) -> int: ...
+    def owns_document(self, document_id: str) -> bool: ...
+    def document_id_for_scene(self, scene_or_world_id: object) -> str: ...
+    def scene_for_document(self, document_id: str) -> object: ...
+    def loaded_scene_document_ids(self) -> tuple[str, ...]: ...
+    def register_loaded_scene(self, scene: object, resource_path: str, *, dirty: bool = ...) -> str: ...
+    def activate_loaded_scene(self, scene_or_world_id: object) -> bool: ...
+    def unregister_loaded_scene(self, scene_or_world_id: object) -> bool: ...
+    def open_scene_additive(self, path: str, *, record_history: bool = ...) -> bool: ...
+    def open_scene_additive_guid(self, asset_guid: str, *, record_history: bool = ...) -> bool: ...
+    def request_unload_scene(self, scene_or_world_id: object) -> bool: ...
+    def request_unload_scene_path(self, path: str) -> bool: ...
+    def request_unload_scene_guid(self, asset_guid: str) -> bool: ...
+    def restore_loaded_scene_locator(self, locator: object) -> object: ...
+
+    def new_scene(self) -> None:
+        """Create a blank scene, prompting to save the current one first."""
+        ...
+
+    def request_close(self) -> None:
+        """Request engine close, prompting to save if dirty."""
+        ...
+
+    def load_last_scene_or_default(self) -> None:
+        """Load the most recently opened scene, or create a default."""
+        ...
+
+    def poll_deferred_load(self) -> None:
+        """Tick deferred scene open/new operations (per frame)."""
+        ...
+
+    def get_display_name(self) -> str:
+        """Human-readable name for the current scene (filename sans extension)."""
+        ...
+
+    def open_prefab_mode(
+        self,
+        prefab_path: str,
+        preserve_undo_history: bool = False,
+    ) -> bool:
+        """Enter prefab editing mode for *prefab_path*."""
+        ...
+    def capture_prefab_mode_document(self) -> tuple[dict, dict, dict, dict]:
+        """Capture draft content plus exact runtime-to-source identity maps."""
+        ...
+    def exit_prefab_mode(self) -> bool:
+        """Leave prefab editing mode and return to the previous scene."""
+        ...
+    @property
+    def is_prefab_mode(self) -> bool:
+        """True when editing a prefab."""
+        ...
+    @property
+    def prefab_mode_guid(self) -> str:
+        """GUID of the prefab being edited, or an empty string outside Prefab Mode."""
+        ...
+    @property
+    def prefab_mode_path(self) -> Optional[str]:
+        """Current filesystem projection of the prefab being edited, or None."""
+        ...
+    @property
+    def prefab_envelope(self) -> dict:
+        """The serialized prefab envelope data."""
+        ...
+
+    def sync_all_prefab_instances(self, scene: object = ...) -> None:
+        """Sync all prefab instances in the scene to their latest on-disk data."""
+        ...

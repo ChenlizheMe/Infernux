@@ -1,5 +1,6 @@
 #include "VulkanSubmissionExecutor.h"
 #include "RhiVulkanTypes.h"
+#include "VulkanCommandUploads.h"
 
 #include "DescriptorBindTrace.h"
 #include "VkDeviceContext.h"
@@ -117,6 +118,7 @@ bool VulkanSubmissionExecutor::CreatePools(FrameState &frame)
         createInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
         createInfo.queueFamilyIndex = snapshot.family;
         RolePool &target = frame.roles[RoleIndex(role)];
+        target.uploads = std::make_unique<VulkanCommandUploads>(m_deviceContext->GetVmaAllocator());
         if (vkCreateCommandPool(m_device, &createInfo, nullptr, &target.pool) != VK_SUCCESS)
             return false;
     }
@@ -223,11 +225,16 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     }
 
     FrameState &frame = m_frames[frameSlot];
-    frame.submittedTickets.clear();
+    if (!frame.submittedTickets.empty()) {
+        INXLOG_ERROR("VulkanSubmissionExecutor frame slot must complete before command and upload reuse");
+        return output;
+    }
     for (RolePool &role : frame.roles) {
         role.cursor = 0;
         if (role.pool != VK_NULL_HANDLE && vkResetCommandPool(m_device, role.pool, 0) != VK_SUCCESS)
             return output;
+        if (role.uploads)
+            role.uploads->Reset();
     }
 
     std::vector<rhi::SubmissionTicket> tickets;
@@ -260,6 +267,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
                 return output;
             }
             commands.push_back(commandBuffer);
+            VulkanCommandUploads::Scope uploadScope(*frame.roles[RoleIndex(batch.queue)].uploads, commandBuffer);
 
             VkCommandBufferBeginInfo beginInfo{};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

@@ -1,4 +1,5 @@
 #include "InxGUIContext.h"
+#include "EditorMenuItem.h"
 #include "EditorWindowBounds.h"
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
@@ -12,6 +13,7 @@
 #include <function/editor/EditorThemeRegistry.h>
 #include <imgui_internal.h>
 #include <limits>
+#include <misc/cpp/imgui_stdlib.h>
 #include <stdexcept>
 #include <type_traits>
 
@@ -166,11 +168,6 @@ ImTextureID ToImTextureID(uint64_t textureId)
         return (ImTextureID)(static_cast<uintptr_t>(textureId));
     }
     return static_cast<ImTextureID>(textureId);
-}
-
-float ResolveFontSize(float fontSize)
-{
-    return textlayout::ResolveFontSize(fontSize);
 }
 
 ImGuiPopupFlags ContextPopupFlagsForMouseButton(int mouseButton)
@@ -340,6 +337,38 @@ bool InxGUIContext::Selectable(const std::string &label, bool selected, int flag
     return clicked;
 }
 
+bool InxGUIContext::SelectableRow(const std::string &label, bool selected, const std::string &status,
+                                  const std::array<float, 4> &statusColor, float height, float paddingX)
+{
+    if (ImGui::GetCurrentWindow()->SkipItems)
+        return false;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float rowHeight = std::max(height, ImGui::GetTextLineHeight());
+    const float inset = std::clamp(paddingX, 0.0f, width * 0.5f);
+    // Selectable owns the full-row input/background. Draw both captions inside
+    // that row using the same font, inset and vertical alignment.
+    const size_t idStart = label.find("###");
+    const std::string widgetId = idStart == std::string::npos ? "##" + label : label.substr(idStart);
+    const bool clicked = ImGui::Selectable(widgetId.c_str(), selected, 0, ImVec2(width, rowHeight));
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("selectable", label);
+
+    const ImVec2 statusSize = ImGui::CalcTextSize(status.c_str());
+    const float right = origin.x + width - inset;
+    const float statusLeft = std::max(origin.x + inset, right - statusSize.x);
+    const ImRect nameClip(ImVec2(origin.x + inset, origin.y),
+                          ImVec2(std::max(origin.x + inset, statusLeft - inset), origin.y + rowHeight));
+    ImGui::RenderTextClipped(nameClip.Min, nameClip.Max, label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()),
+                             nullptr, ImVec2(0.0f, 0.5f), &nameClip);
+    const ImRect statusClip(ImVec2(statusLeft, origin.y), ImVec2(right, origin.y + rowHeight));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(statusColor[0], statusColor[1], statusColor[2], statusColor[3]));
+    ImGui::RenderTextClipped(statusClip.Min, statusClip.Max, status.c_str(), nullptr, &statusSize, ImVec2(1.0f, 0.5f),
+                             &statusClip);
+    ImGui::PopStyleColor();
+    return clicked;
+}
+
 int InxGUIContext::SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt)
 {
     if (!labelAt || itemCount == 0)
@@ -505,6 +534,31 @@ void InxGUIContext::TextArea(const std::string &label, char *buffer, size_t buff
     ImGui::InputTextMultiline(label.c_str(), buffer, bufferSize, ImVec2(-FLT_MIN, 100.0f * GetDpiScale()));
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("text_area", label, true, "", std::nullopt, std::nullopt, std::string(buffer));
+}
+
+bool InxGUIContext::TextInput(const std::string &label, std::string &value)
+{
+    const bool changed = ImGui::InputText(label.c_str(), &value);
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("text_input", label, true, "", std::nullopt, std::nullopt, value);
+    return changed;
+}
+
+bool InxGUIContext::TextArea(const std::string &label, std::string &value)
+{
+    const bool changed = ImGui::InputTextMultiline(label.c_str(), &value, ImVec2(-FLT_MIN, 100.0f * GetDpiScale()));
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("text_area", label, true, "", std::nullopt, std::nullopt, value);
+    return changed;
+}
+
+bool InxGUIContext::InputTextWithHint(const std::string &label, const std::string &hint, std::string &value, int flags)
+{
+    const bool changed = ImGui::InputTextWithHint(label.c_str(), hint.c_str(), &value, flags);
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("text_input", label.empty() || label.rfind("##", 0) == 0 ? hint : label, true, label,
+                           std::nullopt, std::nullopt, value);
+    return changed;
 }
 
 bool InxGUIContext::InputTextWithHint(const std::string &label, const std::string &hint, char *buffer,
@@ -1033,7 +1087,7 @@ void InxGUIContext::EndMenu()
 bool InxGUIContext::MenuItem(const std::string &label, const std::string &shortcut, bool selected, bool enabled)
 {
     const bool clicked =
-        ImGui::MenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
+        EditorMenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("menu_item", label, enabled);
     return clicked;
@@ -1707,6 +1761,44 @@ void InxGUIContext::EndDisabled()
 }
 
 /* Drag and Drop */
+namespace
+{
+// ImGui copies opaque bytes. A small explicit tag preserves the value kind
+// across native/Python panels without guessing from its length or source.
+enum class DragValueKind : unsigned char
+{
+    Unknown = 0,
+    UInt64 = 1,
+    String = 2
+};
+constexpr size_t DragValueHeaderSize = 4;
+
+DragValueKind GetDragValueKind(const ImGuiPayload *payload)
+{
+    if (!payload || !payload->Data || payload->DataSize < static_cast<int>(DragValueHeaderSize))
+        return DragValueKind::Unknown;
+    const auto *bytes = static_cast<const unsigned char *>(payload->Data);
+    if (bytes[0] != 'I' || bytes[1] != 'N' || bytes[2] != 'X')
+        return DragValueKind::Unknown;
+    const auto kind = static_cast<DragValueKind>(bytes[3]);
+    if (kind == DragValueKind::String)
+        return kind;
+    if (kind == DragValueKind::UInt64 && payload->DataSize == DragValueHeaderSize + sizeof(uint64_t))
+        return kind;
+    return DragValueKind::Unknown;
+}
+
+const char *DragValueData(const ImGuiPayload *payload)
+{
+    return static_cast<const char *>(payload->Data) + DragValueHeaderSize;
+}
+
+void ReadDragString(const ImGuiPayload *payload, std::string *value)
+{
+    value->assign(DragValueData(payload), payload->DataSize - DragValueHeaderSize);
+}
+} // namespace
+
 bool InxGUIContext::BeginDragDropSource(int flags)
 {
     return ImGui::BeginDragDropSource(static_cast<ImGuiDragDropFlags>(flags));
@@ -1714,12 +1806,17 @@ bool InxGUIContext::BeginDragDropSource(int flags)
 
 bool InxGUIContext::SetDragDropPayload(const std::string &type, uint64_t data)
 {
-    return ImGui::SetDragDropPayload(type.c_str(), &data, sizeof(data));
+    std::array<unsigned char, DragValueHeaderSize + sizeof(data)> bytes = {
+        'I', 'N', 'X', static_cast<unsigned char>(DragValueKind::UInt64)};
+    std::memcpy(bytes.data() + DragValueHeaderSize, &data, sizeof(data));
+    return ImGui::SetDragDropPayload(type.c_str(), bytes.data(), bytes.size());
 }
 
 bool InxGUIContext::SetDragDropPayload(const std::string &type, const std::string &data)
 {
-    return ImGui::SetDragDropPayload(type.c_str(), data.c_str(), data.size() + 1);
+    std::string bytes{'I', 'N', 'X', static_cast<char>(DragValueKind::String)};
+    bytes.append(data);
+    return ImGui::SetDragDropPayload(type.c_str(), bytes.data(), bytes.size());
 }
 
 void InxGUIContext::EndDragDropSource()
@@ -1743,19 +1840,25 @@ bool InxGUIContext::BeginDragDropTargetRect(float minX, float minY, float maxX, 
 
 bool InxGUIContext::AcceptDragDropPayload(const std::string &type, uint64_t *outData)
 {
+    const ImGuiPayload *preview = ImGui::GetDragDropPayload();
+    if (GetDragValueKind(preview) != DragValueKind::UInt64 || !preview->IsDataType(type.c_str()))
+        return false;
     const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(type.c_str());
-    if (payload && payload->DataSize == sizeof(uint64_t)) {
-        *outData = *static_cast<const uint64_t *>(payload->Data);
+    if (payload) {
+        std::memcpy(outData, DragValueData(payload), sizeof(*outData));
         return true;
     }
     return false;
 }
 
-bool InxGUIContext::AcceptDragDropPayload(const std::string &type, std::string *outData)
+bool InxGUIContext::AcceptDragDropPayload(const std::string &type, std::string *outData, int flags)
 {
-    const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(type.c_str());
-    if (payload && payload->DataSize > 0) {
-        *outData = std::string(static_cast<const char *>(payload->Data), payload->DataSize - 1);
+    const ImGuiPayload *preview = ImGui::GetDragDropPayload();
+    if (GetDragValueKind(preview) != DragValueKind::String || !preview->IsDataType(type.c_str()))
+        return false;
+    const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(type.c_str(), flags);
+    if (payload) {
+        ReadDragString(payload, outData);
         return true;
     }
     return false;
@@ -1765,23 +1868,21 @@ bool InxGUIContext::AcceptAnyDragDropPayload(std::string *outType, uint64_t *out
                                              bool *outIsU64)
 {
     const ImGuiPayload *preview = ImGui::GetDragDropPayload();
-    if (!preview || preview->DataType[0] == '\0')
+    const DragValueKind kind = GetDragValueKind(preview);
+    if (kind == DragValueKind::Unknown)
         return false;
     const ImGuiPayload *acc = ImGui::AcceptDragDropPayload(preview->DataType);
     if (!acc)
         return false;
     outType->assign(preview->DataType);
-    if (acc->DataSize == sizeof(uint64_t)) {
+    if (kind == DragValueKind::UInt64) {
         *outIsU64 = true;
-        *outU64 = *reinterpret_cast<const uint64_t *>(acc->Data);
+        std::memcpy(outU64, DragValueData(acc), sizeof(*outU64));
         return true;
     }
     *outIsU64 = false;
-    if (acc->DataSize > 0) {
-        *outStr = std::string(static_cast<const char *>(acc->Data), acc->DataSize - 1);
-        return true;
-    }
-    return false;
+    ReadDragString(acc, outStr);
+    return true;
 }
 
 void InxGUIContext::EndDragDropTarget()
@@ -2173,8 +2274,7 @@ void InxGUIContext::DrawText(float x, float y, const std::string &text, float r,
     if (!drawList)
         return;
     ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, "", ResolveFontSize(fontSize), 0.0f, 1.0f, 0.0f});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
     if (!layout.lines.empty()) {
         drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
         textlayout::RenderLine(drawList, layout, layout.lines.front(), x, y, col, 0.0f);
@@ -2189,8 +2289,7 @@ void InxGUIContext::DrawTextAligned(float minX, float minY, float maxX, float ma
     if (!drawList)
         return;
 
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, "", ResolveFontSize(fontSize), 0.0f, 1.0f, 0.0f});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
 
     float boxW = maxX - minX;
     float boxH = maxY - minY;
@@ -2216,8 +2315,7 @@ void InxGUIContext::DrawTextRotated90Aligned(float minX, float minY, float maxX,
     if (!drawList || text.empty())
         return;
 
-    const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, "", ResolveFontSize(fontSize), 0.0f, 1.0f, 0.0f});
+    const textlayout::TextLayoutResult layout = textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
     const ImVec2 textSize(layout.totalWidth, layout.totalHeight);
 
     float rotatedW = textSize.y;
@@ -2289,8 +2387,8 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
     if (!drawList || text.empty())
         return;
 
-    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
-        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
+    const textlayout::TextLayoutResult layout =
+        textlayout::LayoutText({text, fontPath, fontSize, wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     const ImVec2 textSize(layout.totalWidth, layout.totalHeight);
 
     if (std::fabs(rotation) < 0.001f && !mirrorH && !mirrorV) {
@@ -2345,8 +2443,8 @@ std::pair<float, float> InxGUIContext::CalcTextSizeA(const std::string &text, fl
                                                      const std::string &fontPath, float lineHeight, float letterSpacing,
                                                      const std::vector<std::string> &fallbackFontPaths)
 {
-    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
-        {text, fontPath, ResolveFontSize(fontSize), 0.0f, lineHeight, letterSpacing, fallbackFontPaths});
+    const textlayout::TextLayoutResult layout =
+        textlayout::LayoutText({text, fontPath, fontSize, 0.0f, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
@@ -2355,8 +2453,8 @@ std::pair<float, float> InxGUIContext::CalcTextSizeWrappedA(const std::string &t
                                                             float letterSpacing,
                                                             const std::vector<std::string> &fallbackFontPaths)
 {
-    const textlayout::TextLayoutResult layout = textlayout::LayoutText(
-        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
+    const textlayout::TextLayoutResult layout =
+        textlayout::LayoutText({text, fontPath, fontSize, wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
@@ -2520,23 +2618,17 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
         }
         case PropertyDesc::String: {
             doLabel(d.label);
-            char buf[4096];
-            const std::string shown = d.mixed ? std::string("--") : d.sVal;
-            size_t len = std::min(shown.size(), sizeof(buf) - 1);
-            std::memcpy(buf, shown.c_str(), len);
-            buf[len] = '\0';
-            if (d.multiline)
-                ImGui::InputTextMultiline(d.widgetId.c_str(), buf, sizeof(buf), ImVec2(-1, 80.0f * GetDpiScale()));
-            else
-                ImGui::InputText(d.widgetId.c_str(), buf, 256);
+            std::string value = d.mixed ? std::string("--") : d.sVal;
+            const bool edited =
+                d.multiline ? ImGui::InputTextMultiline(d.widgetId.c_str(), &value, ImVec2(-1, 80.0f * GetDpiScale()))
+                            : ImGui::InputText(d.widgetId.c_str(), &value);
             if (captureSemantics)
                 RecordSemanticItem(d.multiline ? "text_area" : "text_input", d.label, true, semanticId);
-            std::string newStr(buf);
-            if ((!d.mixed && newStr != d.sVal) || (d.mixed && newStr != "--")) {
+            if (edited && (d.mixed || value != d.sVal)) {
                 PropertyChange c;
                 c.index = i;
                 c.type = PropertyDesc::String;
-                c.sVal = std::move(newStr);
+                c.sVal = std::move(value);
                 changes.push_back(c);
             }
             break;

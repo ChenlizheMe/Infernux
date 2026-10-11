@@ -29,6 +29,65 @@ failures, HTTP failures, and filesystem permissions. Switching KDE/other desktop
 environments is not a diagnosis of these failures. Do not disable TLS verification.
 The install page also accepts a locally downloaded compatible engine wheel.
 
+A fresh installation does not need the network for its first project: release
+installers carry the engine wheel of their own release in
+`<Hub app dir>/InfernuxHubData/engines`. On start, once the managed Python runtime
+is installed, the Hub copies it into the `Engines` cache (validating it like a
+local wheel import). Each bundled wheel is seeded only once and recorded in
+`Engines/_bundled_engines_seeded.json`, so an engine removed from Installs is not
+reinstalled on the next start. Locally built installers without a release wheel
+skip this step and print a build warning.
+
+## Windows selected a manylinux wheel / CPython ABI mismatch
+
+An engine version and the Hub application version are different. Installing
+engine `0.4.1-v3` does not update Hub itself. In particular, old Hubs using
+`%USERPROFILE%\.infernux\versions` and `.runtime/python312` selected the first
+GitHub wheel and the first cached ZIP without filtering OS or Python ABI.
+With a release containing Linux and CPython 3.13 artifacts, that can produce
+both `manylinux ... is not a supported wheel` and a 3.12/3.13 mismatch.
+
+Close the old Hub, install and launch the current **Windows Hub installer**,
+then install the engine's required Python runtime and the exact engine release
+shown in Installs. A manually downloaded Windows `cp313` wheel is not enough
+to fix an old Hub that still creates Python 3.12 projects. For a failed new
+project creation, retry creation from the updated Hub. Do not delete an existing
+project's Assets or ProjectSettings to repair a runtime cache.
+
+The current wheel cache is under the shared resource directory shown in Hub
+settings: `Engines/<package-version>/<complete-wheel-filename>`. The catalog
+file `_releases_cache.json` contains all platforms; Linux entries in that JSON
+are normal. Each selection filters the running OS/architecture and exact release
+again. Downloads verify wheel metadata and published size/SHA-256 when supplied;
+cached catalog digests are also used on offline reads. Downloads and catalog
+updates are published atomically. Project installation separately checks the
+wheel's ABI against both the project pin and the actual project interpreter.
+
+For a new report, collect the **Hub version and executable location**, engine
+release, full wheel filename, project Python path and Hub log. Keep the suspect
+cache long enough to compare it against the release digest. A CDN problem cannot
+be diagnosed from the engine version alone: engine wheels come from PyPI/GitHub,
+while the Hub installer/update archive can come from the Cloudflare mirror.
+
+Download/runtime compatibility is not the same as the project-template contract.
+The Hub locates each template by its unique filename inside the selected wheel,
+without assuming its directory. Missing required or ambiguous templates are
+errors. The engine package's exact spelling comes from the installed wheel's
+metadata in the child process, so both `infernux` and historical `Infernux` entry
+points work without importing an engine into Hub. Wheels without authored scene
+templates let their own Editor create the initial scene; Hub never injects newer
+component serialization into an older engine. Test project creation and actual
+launch for each supported wheel, not just download/platform selection.
+
+## CMake versions
+
+Installing an engine wheel and creating a Hub project do not require CMake.
+For source builds, the minimum is CMake 3.25 because the checked-in schema-6
+presets include workflows. There is no maximum-version check; CMake 4.x is not
+excluded. In `cmake_minimum_required(VERSION min...policy_max)`, the second number
+controls policy behavior, not the newest allowed executable. Do not lower the
+minimum or force every dependency to the newest policy merely to hide a warning.
+
 The original Linux 0.4.1 Hub bundled OpenSSL with a build-machine conda certificate
 path. On a clean machine this can cause `CERTIFICATE_VERIFY_FAILED` for both the
 engine catalog and Blender downloads. The rebuilt Hub uses the distribution's

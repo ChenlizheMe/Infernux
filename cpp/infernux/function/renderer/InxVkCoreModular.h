@@ -60,6 +60,7 @@
 
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -74,6 +75,13 @@ struct SDL_Window;
 
 namespace infernux
 {
+
+class FullscreenPipelineCache;
+struct SceneDepthResolveProgram;
+namespace lighting
+{
+struct ForwardPlusGridPipeline;
+}
 
 struct FrameSubmissionTelemetry
 {
@@ -123,6 +131,9 @@ class InxVkCoreModular
      */
     explicit InxVkCoreModular(int maxFrameInFlight = 2);
     ~InxVkCoreModular();
+    [[nodiscard]] std::shared_ptr<FullscreenPipelineCache> GetFullscreenPipelineCache();
+    [[nodiscard]] std::shared_ptr<const SceneDepthResolveProgram> GetSceneDepthResolveProgram();
+    [[nodiscard]] std::shared_ptr<const lighting::ForwardPlusGridPipeline> GetForwardPlusGridProgram();
 
     // Non-copyable, non-movable (like original InxVkCore)
     InxVkCoreModular(const InxVkCoreModular &) = delete;
@@ -191,6 +202,10 @@ class InxVkCoreModular
         m_framebufferResized = true;
     }
 
+    /// Apply a pending resize before building GUI/render graphs or acquiring an
+    /// image. Returns false while the surface is not ready (e.g. minimized).
+    [[nodiscard]] bool RefreshPresentationSize();
+
     /// @brief Change the swapchain present mode and recreate the swapchain.
     /// 0 = IMMEDIATE, 1 = MAILBOX, 2 = FIFO, 3 = FIFO_RELAXED
     void SetPresentMode(int mode);
@@ -230,11 +245,13 @@ class InxVkCoreModular
     [[nodiscard]] bool EnsureShaderAvailable(const std::string &name, const std::string &type);
     [[nodiscard]] uint64_t GetShaderCodeFingerprint(const std::string &name, const std::string &type) const;
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    bool PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     ShareShaderProgramArtifact(const ShaderStagePair &stages) const;
     /// Retire the exact UI-only publication when its final UI command owner releases it.
     bool ReleaseUIShaderProgramArtifact(const ShaderProgramKey &key);
+    void RetireShaderProgramArtifact(const ShaderProgramKey &key);
     void AcquireUIShaderProgramOwner(const ShaderProgramKey &key);
     void ReleaseUIShaderProgramOwner(const ShaderProgramKey &key);
     void SweepReleasedUIShaderProgramArtifacts();
@@ -416,6 +433,14 @@ class InxVkCoreModular
         return m_maxFramesInFlight == 0 ? 0 : m_currentFrame % m_maxFramesInFlight;
     }
 
+    /// Exact device-wide completion epoch assigned to the most recently
+    /// submitted frame. Resource pools use this value after DrawFrame()
+    /// instead of guessing from a frame count.
+    [[nodiscard]] rhi::SubmissionSerial GetLastSubmittedCompletionEpoch() const noexcept
+    {
+        return m_lastSubmittedCompletionEpoch;
+    }
+
     /// Arm the next successful hidden-window presentation as the complete
     /// startup frame. The native Windows Player is revealed only after this
     /// boundary, so the compositor never exposes an unpainted client area.
@@ -432,11 +457,9 @@ class InxVkCoreModular
         return completed;
     }
 
-    /// @brief Update material UBO with current material properties (stub)
+    /// Publish current material properties with submission-safe GPU ownership.
     void UpdateMaterialUBO(InxMaterial &material);
 
-    /// @brief Ensure a material has its own UBO buffer allocated (stub)
-    void EnsureMaterialUBO(std::shared_ptr<InxMaterial> material);
     void SetRenderTextureAssetLoader(std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> loader)
     {
         m_renderTextureAssetLoader = std::move(loader);
@@ -732,6 +755,8 @@ class InxVkCoreModular
     /// callback falls back to the Graphics command buffer otherwise until
     /// cross-graph queue-family ownership is fully published.
     void SetFrameComputeExecutor(std::function<void(VkCommandBuffer cmdBuf)> executor);
+    /// Acknowledge command submission separately from recording and presentation.
+    void SetFrameComputeSubmissionCallback(std::function<void(bool)> callback);
 
     /// Publish whether the optional frame compute callback has work for the
     /// current frame.  The executor is installed for the lifetime of the
@@ -937,6 +962,8 @@ class InxVkCoreModular
     /// @brief Refresh a material's pipeline using its vertex and fragment shader names.
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                  const std::string &fragShaderName);
+    /// Resolve one committed Mesh generation for filtering and draw recording.
+    MaterialRenderData *ResolveMeshMaterial(const std::shared_ptr<InxMaterial> &material);
     bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                         const std::string &fragShaderName, bool reportDomainMismatch = true);
 
@@ -985,6 +1012,9 @@ class InxVkCoreModular
 
     /// @brief Initialize material system (default material, pipelines)
     void InitializeMaterialSystem();
+
+    /// Resolve shader defaults before publishing queue/tag-dependent draw lists.
+    void PrepareMaterialRenderState(const std::shared_ptr<InxMaterial> &material);
 
     /// @brief Transactionally publish a new material-pipeline MSAA generation.
     /// Shader programs and descriptors remain resident; replaced GPU objects
@@ -1168,11 +1198,6 @@ class InxVkCoreModular
         return m_asyncTransferContext;
     }
 
-    [[nodiscard]] vk::AsyncTransferContext &GetAsyncReadbackContext()
-    {
-        return m_asyncReadbackContext;
-    }
-
   private:
     // ========================================================================
     // Internal Methods
@@ -1201,7 +1226,6 @@ class InxVkCoreModular
     vk::VkPipelineManager m_pipelineManager;
     vk::VkResourceManager m_resourceManager;
     vk::AsyncTransferContext m_asyncTransferContext;
-    vk::AsyncTransferContext m_asyncReadbackContext;
     vk::RenderGraph m_renderGraph;
     vk::VulkanFrameSubmission m_frameSubmission;
     vk::VulkanSubmissionExecutor m_submissionExecutor;
@@ -1228,6 +1252,7 @@ class InxVkCoreModular
     vk::DeviceConfig m_deviceConfig;
     uint32_t m_maxFramesInFlight;
     uint32_t m_currentFrame = 0;
+    rhi::SubmissionSerial m_lastSubmittedCompletionEpoch = rhi::InvalidSubmissionSerial;
     bool m_framebufferResized = false;
     bool m_firstVisiblePresentationPending = false;
     bool m_firstVisiblePresentationCompleted = false;
@@ -1337,6 +1362,9 @@ class InxVkCoreModular
 
     // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
     VkShaderCache m_shaderCache;
+    std::shared_ptr<FullscreenPipelineCache> m_fullscreenPipelines;
+    std::shared_ptr<const SceneDepthResolveProgram> m_sceneDepthProgram;
+    std::shared_ptr<const lighting::ForwardPlusGridPipeline> m_forwardPlusProgram;
     std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_pendingUIProgramRelease;
     std::unordered_map<ShaderProgramKey, size_t, ShaderProgramKeyHash> m_uiProgramOwners;
     std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>
@@ -1603,10 +1631,14 @@ class InxVkCoreModular
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetMeshGpuResidency() const;
 
     // Render callbacks (RenderGraph-based)
+    // An acquired image and recorded simulation cannot be replayed after an
+    // uncertain submission. Only a new renderer instance starts a new session.
+    std::exception_ptr m_frameFailure;
     std::function<void(VkCommandBuffer cmdBuf)> m_renderGraphExecutor;
     FrameSubmissionBuildCallback m_frameSubmissionBuilder;
     FramePreSetupCallback m_framePreSetupBuilder;
     std::function<void(VkCommandBuffer cmdBuf)> m_frameComputeExecutor;
+    std::function<void(bool)> m_frameComputeSubmissionCallback;
     std::function<bool()> m_frameComputeWorkPredicate;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncSimulationExecutor;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncExportExecutor;
@@ -1661,6 +1693,10 @@ class InxVkCoreModular
     const std::vector<DrawCall> *m_shadowListMetadataSource = nullptr;
     uint64_t m_drawListBufferRevision = 0;
     uint64_t m_shadowListBufferRevision = 0;
+    uint64_t m_drawListRenderMetaRevision = 0;
+    uint64_t m_shadowListRenderMetaRevision = 0;
+    uint64_t m_drawListMaterialRoutingRevision = 0;
+    uint64_t m_shadowListMaterialRoutingRevision = 0;
     std::vector<DrawListMetadata> m_drawListMetadata;
     std::vector<DrawListMetadata> m_shadowListMetadata;
     // SkyboxPass has an explicit RenderDomain contract. Keep its indices so
@@ -2034,7 +2070,7 @@ class InxVkCoreModular
     void PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances);
     [[nodiscard]] bool WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
                                               const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                              uint64_t objectId, uint32_t layerMask);
+                                              uint64_t objectId, uint32_t layerMask, bool receivesShadows);
 };
 
 } // namespace infernux

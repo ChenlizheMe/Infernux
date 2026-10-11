@@ -22,6 +22,9 @@ namespace infernux
  */
 struct SceneEnvironmentSettings
 {
+    // Shared by authored serialization and typed dependency preflight.
+    static constexpr const char *SkyboxMaterialGuidKey = "skyboxMaterialGuid";
+
     /// Ambient light source, mirrors Unity's Environment Lighting > Source.
     enum class AmbientSource : int
     {
@@ -57,7 +60,7 @@ struct SceneEnvironmentSettings
     [[nodiscard]] nlohmann::json ToJson() const
     {
         nlohmann::json j;
-        j["skyboxMaterialGuid"] = skyboxMaterialGuid;
+        j[SkyboxMaterialGuidKey] = skyboxMaterialGuid;
         j["skyTopColor"] = {skyTopColor.r, skyTopColor.g, skyTopColor.b};
         j["skyHorizonColor"] = {skyHorizonColor.r, skyHorizonColor.g, skyHorizonColor.b};
         j["skyGroundColor"] = {skyGroundColor.r, skyGroundColor.g, skyGroundColor.b};
@@ -82,8 +85,8 @@ struct SceneEnvironmentSettings
                 out = glm::vec3(j[key][0].get<float>(), j[key][1].get<float>(), j[key][2].get<float>());
             }
         };
-        if (j.contains("skyboxMaterialGuid") && j["skyboxMaterialGuid"].is_string())
-            env.skyboxMaterialGuid = j["skyboxMaterialGuid"].get<std::string>();
+        if (j.contains(SkyboxMaterialGuidKey) && j[SkyboxMaterialGuidKey].is_string())
+            env.skyboxMaterialGuid = j[SkyboxMaterialGuidKey].get<std::string>();
         readColor("skyTopColor", env.skyTopColor);
         readColor("skyHorizonColor", env.skyHorizonColor);
         readColor("skyGroundColor", env.skyGroundColor);

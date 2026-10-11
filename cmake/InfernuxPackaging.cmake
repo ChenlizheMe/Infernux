@@ -54,7 +54,7 @@ add_custom_target(package_python
         -P "${CMAKE_SOURCE_DIR}/cmake/ensure_python_packaging_tools.cmake"
 
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/build"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/python/Infernux.egg-info"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux.egg-info"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_WHEEL_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_PYTHON_WHEEL_DIR}"
     COMMAND ${CMAKE_COMMAND} -E chdir "${INFERNUX_PYTHON_STAGE_DIR}"
@@ -84,7 +84,7 @@ add_custom_target(install_python_wheel
         -DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
         -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
-        -P "${CMAKE_SOURCE_DIR}/install_wheel.cmake"
+        -P "${CMAKE_SOURCE_DIR}/cmake/install_wheel.cmake"
     DEPENDS package_python
     COMMENT "Installing the verified Infernux wheel into the active Python environment"
     VERBATIM

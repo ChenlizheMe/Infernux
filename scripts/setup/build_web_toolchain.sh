@@ -25,12 +25,15 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     echo "The Web toolchain setup requires a Linux host or WSL2." >&2
     exit 2
 fi
-for command in cmake curl git make ninja python3 sha256sum tar; do
+for command in cmake curl git make ninja python3 sha256sum tar /usr/bin/pkg-config; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command is unavailable: $command" >&2
         exit 2
     fi
 done
+# Conda's wrapper appends native libraries to Emscripten's target-only search.
+# The system implementation respects the SDK's PKG_CONFIG_LIBDIR boundary.
+export PKG_CONFIG=/usr/bin/pkg-config
 
 toolchain_root="$(realpath -m "$1")"
 downloads="$toolchain_root/downloads"
@@ -94,6 +97,9 @@ config_path.write_text(
 )
 PY
 export EM_CONFIG="$cpython_em_config"
+# CPython requests ports before its first emcc invocation. Initialize their
+# destination explicitly so a cold or relocated SDK cache is also valid.
+embuilder build sysroot
 
 cpython_archive="$downloads/Python-${CPYTHON_VERSION}.tar.xz"
 fetch_and_verify "$CPYTHON_URL" "$CPYTHON_SHA256" "$cpython_archive"

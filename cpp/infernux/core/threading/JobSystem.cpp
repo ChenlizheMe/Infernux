@@ -776,8 +776,8 @@ void JobSystem::ResetProfilerCounters()
         state->cancelled.store(0, std::memory_order_relaxed);
         state->blocked.store(0, std::memory_order_relaxed);
         state->helped.store(0, std::memory_order_relaxed);
-        state->running.store(0, std::memory_order_relaxed);
-        state->queued.store(0, std::memory_order_relaxed);
+        // Live gauges belong to enqueue/dequeue and execution, not to the
+        // profiling interval. Jobs already in flight will still decrement them.
     };
     reset(m_globalProfiler);
     std::lock_guard<std::mutex> lock(m_profilerMutex);

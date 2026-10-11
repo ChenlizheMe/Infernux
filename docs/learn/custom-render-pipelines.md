@@ -37,12 +37,14 @@ The file uses the public `inx.renderstack.RenderPipeline` base; do not import it
 These names have different jobs:
 
 - `SimpleForwardPipeline` is the Python class name. It identifies the implementation in code.
-- `name = "Simple Forward"` is the discovery key, Inspector label, saved pipeline selection, and key for saved pipeline parameters. Keep it unique and stable. Two classes with the same `name` collide in the discovery dictionary; renaming it makes existing scenes look for the old selection.
+- `name = "Simple Forward"` is the discovery key, Inspector label, saved pipeline selection, and key for saved pipeline parameters. Keep it unique and stable. Two live declarations with the same `name` make that name unavailable until the conflict is resolved; renaming it makes existing scenes look for the old selection.
 - Strings passed to `effects()`, such as `"after_opaque"`, are EffectStage stable IDs. They bind saved Effect slots to topology. A stage `label` may change without breaking that binding; changing its stable ID leaves the old slots orphaned until they are remapped.
 
 There is currently no separate stable-ID field for a pipeline. Despite the serialized field name `pipeline_class_name`, RenderStack stores the pipeline's `name` value.
 
-If a candidate module fails to import, Editor discovery keeps the rest of the catalog available and omits the broken class until the script is fixed. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.
+A new source enters the catalog only after its module executes successfully. If an edit fails to import, Editor keeps that source's last accepted namespace and effect registrations and reports the import error; a first import failure contributes no class. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.
+
+Files with the same filename in different directories have independent module identities. Editor compiles the current Python source on a source change, so a rapid save with the same byte count cannot reuse stale timestamp-based bytecode. Standard source encoding declarations and Python decorators such as `dataclass` work during discovery. Packaged Player loads its cooked `.pyc` files.
 
 Use the Editor Console to separate import failures from catalog problems. This diagnostic reads the same discovery functions used by RenderStack:
 
@@ -51,21 +53,22 @@ import infernux as inx
 
 print(sorted(inx.renderstack.discover_pipelines()))
 print(inx.renderstack.discovery_import_failures())
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
 An import failure entry is keyed by source path and includes the exception type and message. An empty failure map plus a missing name usually means the file was skipped, the class inheritance was not recognized, or `name` is empty or begins with `_`.
 
-Duplicate pipeline names have a narrower current diagnostic boundary. Discovery stores `{pipeline.name: class}` and a later subclass silently replaces an earlier class under the same key. The Pipeline menu shows one entry and emits no collision diagnostic or candidate list. To identify the selected winner in the Console, run:
+Pipeline names must be unique, including built-in names. If two live declarations use the same name, discovery omits that ambiguous name instead of choosing a winner. The Inspector lists both source declarations. An already-saved ambiguous selection stays saved and reports an error; it does not select another pipeline. Inspect the same conflict map in the Console:
 
 ```python
-import inspect
 import infernux as inx
 
-pipeline_type = inx.renderstack.discover_pipelines()["Simple Forward"]
-print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
-Give every project pipeline a unique, stable `name`. After a rename, select the new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.
+The map is `{name: tuple_of_source_declarations}`. Give each declaration a unique `name`, or remove the duplicate, then save and wait for asset refresh. Discovery admits the remaining unique declaration again. Importing one discovery-owned source through an alias does not create a second declaration, and retained classes from a previous project do not enter the current project's catalog. The same rule applies to RenderPass discovery; `discovery_name_conflicts("pass")` reports those conflicts.
+
+After renaming the selected pipeline, choose its new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.
 
 ## A minimal pipeline {#minimal-pipeline}
 
@@ -104,10 +107,10 @@ Use a small scene with an active Camera, one RenderStack, one visible opaque ren
 
 1. Select **Simple Forward**. Both renderers should remain visible, and the RenderStack topology should list **After Opaque** and **Final Post Processing**.
 2. Temporarily remove the transparent block, save the pipeline, and let the active pipeline reload. The transparent test renderer should disappear while the opaque renderer remains. Restore the block and save again.
-3. Change `name` only as a separate migration test. The old selection will fall back because RenderStack serializes the display name; choose the new entry and save the scene.
+3. Change `name` only as a separate migration test. RenderStack serializes the display name, so the old selection becomes unavailable and remains saved until you choose the new entry. Choose the new entry and save the scene.
 4. Make one reversible syntax error and save. The script transaction rejects the new module. Check the Console, repair the file, and save again.
 
-The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports `Pipeline graph rebuild rejected` and the last valid graph keeps rendering until another invalidation. On the first Editor build, failure attempts `DefaultForwardPipeline`; a packaged Player reports the missing or failed custom pipeline and does not substitute Default Forward. Fixing and saving the active source invalidates the failed state and requests another build.
+The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports `Pipeline graph rebuild rejected` and the last valid graph keeps rendering until another invalidation. With no accepted graph, construction fails explicitly in both Editor and Player; neither substitutes Default Forward. An unavailable pipeline name is also rejected without changing the saved selection. Fixing and saving the active source invalidates the failed state and requests another build.
 
 ## Mix Forward, Forward+, and Deferred {#mixed-pipeline}
 
@@ -155,7 +158,7 @@ Route effects see the route result. A layer effect sees the routes combined in t
 
 <figure class="learn-figure learn-figure-wide">
   <img src="../assets/learn/real-render-styles.webp" alt="illustrative stylized scene with distinct surface treatments" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux rendering setup. It shows the kind of deliberately split art direction that a project pipeline can compose.</figcaption>
+  <figcaption>An Infernux demo frame illustrating contrasting art styles that a project pipeline can compose.</figcaption>
 </figure>
 
 ## Queue and otherwise rules {#route-rules}
@@ -269,12 +272,14 @@ class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
 这三个名字各有用途：
 
 - `SimpleForwardPipeline` 是 Python 类名，用于在代码中标识实现。
-- `name = "Simple Forward"` 是发现键、Inspector 标签、场景保存的管线选择，也是管线参数的保存键。它应当全项目唯一并保持稳定。两个类使用同一个 `name` 会在发现字典中冲突；修改 `name` 后，旧场景仍会查找原来的值。
+- `name = "Simple Forward"` 是发现键、Inspector 标签、场景保存的管线选择，也是管线参数的保存键。它应当全项目唯一并保持稳定。两个活动声明使用同一个 `name` 时，该名称在冲突解决前不可用；修改 `name` 后，旧场景仍会查找原来的值。
 - `effects()` 的第一个字符串，例如 `"after_opaque"`，是 EffectStage 稳定 ID。场景靠它把已保存的 Effect Slot 重新挂到拓扑上。`label` 可以改而不破坏绑定；稳定 ID 改名后，旧 Slot 会成为 orphan，直到显式重映射。
 
 当前管线本身没有另一套 stable ID。虽然序列化字段名叫 `pipeline_class_name`，RenderStack 实际保存的是管线 `name`。
 
-候选模块导入失败时，Editor 仍会保留其它可用管线，只暂时不列出出错的类。修好脚本后再次保存即可重新发现。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。
+新源码只有在模块完整执行成功后才会进入目录。修改后的模块导入失败时，Editor 保留该源码最后一次接受的命名空间与效果注册项，并报告导入错误；首次导入失败则不会贡献任何类。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。
+
+不同目录中的同名文件拥有独立的模块身份。源码变化时，Editor 编译当前 Python 源码；即使快速保存前后的字节数相同，也不会复用基于时间戳判断的旧字节码。标准源码编码声明以及 `dataclass` 等 Python 装饰器可以在发现过程中正常使用。打包后的 Player 加载烘焙出的 `.pyc` 文件。
 
 可以在 Editor Console 中运行下列代码，把导入失败与目录问题分开检查。这些函数也由 RenderStack 的发现流程使用：
 
@@ -283,21 +288,22 @@ import infernux as inx
 
 print(sorted(inx.renderstack.discover_pipelines()))
 print(inx.renderstack.discovery_import_failures())
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
 导入失败表以源码路径为键，值中包含异常类型和消息。失败表为空且名称缺失时，应检查文件是否被跳过、类继承能否被识别，以及 `name` 是否为空或以下划线开头。
 
-同名管线的当前诊断范围更窄。发现结果保存为 `{pipeline.name: class}`，后遍历到的子类会静默覆盖同一个键中的早期子类。Pipeline 菜单只显示一项，也不会给出冲突诊断或候选列表。可在 Console 中确认当前胜出的类型与源码路径：
+管线名称必须唯一，也不能与内置管线重名。两个活动声明使用同一名称时，发现器会从可用目录中移除这个歧义名称，不选择任意一方。Inspector 会列出双方的源码声明。场景已经保存的歧义选择会保留并报错，不会改选其它管线。可在 Console 查看同一份冲突表：
 
 ```python
-import inspect
 import infernux as inx
 
-pipeline_type = inx.renderstack.discover_pipelines()["Simple Forward"]
-print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
-项目中的每条管线都应使用唯一且稳定的 `name`。改名后需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。
+冲突表的结构是 `{名称: 源码声明元组}`。为每个声明设置唯一的 `name`，或删除重复声明，然后保存并等待资产刷新；恢复唯一性的声明会重新进入目录。同一份由发现器管理的源码经别名导入不会产生第二个声明，旧项目保留的类也不会进入当前项目目录。RenderPass 的发现流程遵循相同规则，可通过 `discovery_name_conflicts("pass")` 查看其冲突。
+
+修改当前管线名称后，需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。
 
 ## 最小管线 {#minimal-pipeline_1}
 
@@ -336,10 +342,10 @@ class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
 
 1. 选择 **Simple Forward**。两个 Renderer 都应保持可见，RenderStack 拓扑中应出现 **After Opaque** 与 **Final Post Processing**。
 2. 暂时删除透明 Domain 代码并保存，等待活动管线重载。透明测试对象应消失，不透明对象仍可见。恢复代码后再次保存。
-3. 只在单独的迁移测试中修改 `name`。RenderStack 保存的是显示名称，旧选择会进入回退流程；选择新条目并保存场景。
+3. 只在单独的迁移测试中修改 `name`。RenderStack 保存的是显示名称，旧选择会变成不可用，但仍保留在场景中，直到你选择新条目。选择新条目并保存场景。
 4. 制造一个容易撤销的语法错误并保存。脚本事务会拒绝新模块。查看 Console，修复文件，再次保存。
 
-恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 `Pipeline graph rebuild rejected`，上一份有效 Graph 会继续渲染，直到下一次失效触发。Editor 首次构建失败时会尝试 `DefaultForwardPipeline`；打包 Player 会报告自定义管线缺失或失败，并保持错误可见，不会替换成 Default Forward。修复并保存活动源码会清除失败状态并请求再次构建。
+恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 `Pipeline graph rebuild rejected`，上一份有效 Graph 会继续渲染，直到下一次失效触发。没有已接受的 Graph 时，Editor 和 Player 都会明确报告构建失败，不会替换成 Default Forward。不可用的管线名称同样会被拒绝，已保存的选择不会被改写。修复并保存活动源码会清除失败状态并请求再次构建。
 
 ## 混合 Forward、Forward+ 与 Deferred {#mixed-pipeline_1}
 
@@ -387,7 +393,7 @@ Route Effect 读取该 Route 的结果；Layer Effect 读取该 Layer 内路由�
 
 <figure class="learn-figure learn-figure-wide">
   <img src="../assets/learn/real-render-styles.webp" alt="采用不同表面处理的风格化场景示意" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux 渲染配置，用于展示项目管线可以组合出的割裂式美术风格。</figcaption>
+  <figcaption>来自 Infernux 演示项目的画面，用于参考项目管线可以组合出的不同美术风格。</figcaption>
 </figure>
 
 ## Queue 与 otherwise 规则 {#route-rules_1}

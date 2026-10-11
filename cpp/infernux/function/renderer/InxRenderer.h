@@ -26,6 +26,7 @@
 
 namespace infernux
 {
+struct TextureCpuData;
 enum class ShaderProgramDomain : uint8_t;
 // ============================================================================
 // Forward declarations for private subsystem types.
@@ -340,7 +341,9 @@ class InxRenderer
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
     void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    bool PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts);
     void InvalidateUIMaterialProgram(const ShaderStagePair &stages);
+    void RetireShaderProgramArtifact(const ShaderProgramKey &key);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
@@ -388,6 +391,7 @@ class InxRenderer
     void CancelClose();
 
     void SetGUIFont(const char *fontPath, float fontSize);
+    void InvalidateGUIFontAsset(const std::string &path);
     float GetDisplayScale() const;
     void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void UnregisterGUIRenderable(const char *name);
@@ -398,6 +402,7 @@ class InxRenderer
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false);
     uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels);
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;

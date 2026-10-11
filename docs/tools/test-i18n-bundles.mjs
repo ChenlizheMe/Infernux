@@ -9,6 +9,7 @@ const source = JSON.parse(await readFile(path.join(docsRoot, "tools", "i18n-sour
 const routeKeys = {
     "404": "error.title",
     index: "home.hero.title",
+    tutorials: "pageTitle.tutorials",
     start: "pageTitle.start",
     changelog: "pageTitle.changelog",
     roadmap: "roadmap.hero.title",
@@ -42,7 +43,7 @@ for (const [page, pageKey] of Object.entries(routeKeys)) {
 
     const translate = (key, language) => vm.runInContext(`translateSiteKey(${JSON.stringify(key)}, ${JSON.stringify(language)})`, sandbox);
     for (const language of ["en", "zh"]) {
-        assert.equal(translate("nav.start", language), source[language]["nav.start"], `${page}: shared navigation copy must resolve in ${language}`);
+        assert.equal(translate("nav.tutorials", language), source[language]["nav.tutorials"], `${page}: shared Tutorials navigation copy must resolve in ${language}`);
         assert.equal(translate(pageKey, language), source[language][pageKey], `${page}: route copy must resolve in ${language}`);
     }
     const foreignKey = page === "index" ? routeKeys.download : routeKeys.index;

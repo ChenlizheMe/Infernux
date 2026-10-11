@@ -81,7 +81,9 @@ struct GpuParticleMeshInterfaceProgram
     bool worldSpace = false;
     std::array<float, 16> meshToSpace{};
     std::shared_ptr<InxMesh> mesh;
-    ObjectHandle skinnedRenderer;
+    // Non-owning, lifetime-aware source identity. A live component may change
+    // its Scene world without changing its instance or rebuilding this graph.
+    std::function<ObjectHandle()> skinnedRendererHandle;
 };
 
 struct GpuParticleSkinnedMeshSnapshot
@@ -185,6 +187,7 @@ struct GpuParticleBatchFrameItem
     std::vector<GpuParticleFrameRequest> prerollRequests;
     GpuParticleFrameRequest request;
     GpuParticleTransforms transforms;
+    uint32_t ownerLayerMask = 1u;
 };
 
 /// One authoritative publication transaction for a live ParticleGraph.
@@ -327,7 +330,7 @@ class ParticleGpuSystemManager
                const GpuParticleMigrationProgram &migrationProgram = {},
                const GpuParticleSpawnProgram &spawnProgram = {},
                const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, uint32_t framesInFlight = 2);
+               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph
@@ -340,10 +343,12 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error = nullptr);
     /// Update graph-instance parameters in place. No shader, pipeline, or
     /// particle-state resource is rebuilt.
-    [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords,
+    [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId,
+                                             const std::vector<GpuParticleParameterUpdate> &updates,
                                              std::string *error = nullptr);
     /// Publish a scene-owned collider snapshot. No GPU work is recorded until
     /// the next particle simulation boundary.
+    void NotifySubmission(bool submitted) noexcept;
     [[nodiscard]] bool PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
                                              std::string *error = nullptr);
     [[nodiscard]] uint64_t CollisionSceneRevision() const noexcept;
@@ -357,6 +362,9 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
                                               std::shared_ptr<const ShaderProgramArtifact> shaderProgram,
                                               std::string *error = nullptr);
+    /// Notify resident output materials even when a failed texture has never
+    /// published a GPU slot and the output uses a transient material instance.
+    void InvalidateTextureAssets(const std::string &textureGuid);
     void Clear();
 
     [[nodiscard]] bool BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,

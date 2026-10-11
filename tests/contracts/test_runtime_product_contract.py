@@ -77,7 +77,7 @@ def test_manifest_rejects_contract_drift(service_contract, drift, message):
     c = service_contract
     document = _document(c, c.RuntimeFlavor.PLAYER_RELEASE, c.RuntimeFeatureSet())
     if drift == "module":
-        document["services"]["graph"][0]["module"] = "Infernux/engine/undo/_manager.pyc"
+        document["services"]["graph"][0]["module"] = "infernux/engine/undo/_manager.pyc"
     elif drift == "declared":
         document["services"]["declared"].append("player_control_debug")
     else:

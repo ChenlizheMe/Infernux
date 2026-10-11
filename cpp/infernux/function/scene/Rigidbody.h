@@ -340,6 +340,10 @@ class Rigidbody : public Component
     /// and update the transform/interpolation caches.
     void TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot);
 
+    /// Nested dynamic actors keep independent solver poses when this actor
+    /// moves, including sleeping actors absent from the active readback list.
+    void PreserveDescendantPhysicsPoses();
+
     /// Pool-backed data — read access
     [[nodiscard]] const RigidbodyECSData &Data() const
     {

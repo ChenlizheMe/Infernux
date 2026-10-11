@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <unordered_set>
 
@@ -142,7 +143,9 @@ struct ParticleGpuRuntime::DataInterfaceState
     rhi::BufferHandle metadataBuffer;
     std::vector<rhi::BufferHandle> ownedBuffers;
     std::vector<GpuMeshInterfaceDesc> meshInterfaces;
+    std::vector<rhi::BufferBinding> bufferBindings;
     std::vector<uint32_t> metadataWords;
+    bool metadataDirty = true;
 };
 
 struct ParticleGpuRuntime::VectorFieldState
@@ -201,6 +204,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_layout, replacement.m_layout);
     std::swap(m_group, replacement.m_group);
     std::swap(m_dataInterfaces, replacement.m_dataInterfaces);
+    std::swap(m_pendingUploads, replacement.m_pendingUploads);
     std::swap(m_vectorFields, replacement.m_vectorFields);
     std::swap(m_emptyDataInterfaceLayout, replacement.m_emptyDataInterfaceLayout);
     std::swap(m_emptyDataInterfaceGroup, replacement.m_emptyDataInterfaceGroup);
@@ -211,6 +215,10 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_supportsFusedUpdateRendering, replacement.m_supportsFusedUpdateRendering);
     std::swap(m_continuation, replacement.m_continuation);
     std::swap(m_contacts, replacement.m_contacts);
+    // Metadata belongs to the exchanged interfaces, while transforms may have
+    // been prepared independently on either runtime before publication.
+    m_hasCachedTransforms = false;
+    replacement.m_hasCachedTransforms = false;
     return true;
 }
 
@@ -288,8 +296,8 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState->aliveControl = createRenderExport(4u * sizeof(uint32_t), storage);
         rhi::BufferDesc transformDesc;
         transformDesc.byteSize = sizeof(GpuParticleTransforms);
-        transformDesc.usage = rhi::BufferUsageFlags::Uniform;
-        transformDesc.memory = rhi::BufferMemory::Upload;
+        transformDesc.usage = rhi::BufferUsageFlags::Uniform | rhi::BufferUsageFlags::TransferDestination;
+        transformDesc.memory = rhi::BufferMemory::DeviceLocal;
         transformDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         m_residentState->transforms = device.CreateBuffer(transformDesc);
         rhi::BufferDesc simulationControlDesc;
@@ -442,8 +450,11 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                     [&](uint32_t binding) { return binding >= usedBindings.size() || usedBindings[binding]; }) ||
                 duplicateBinding || mesh.vertexCount == 0 || mesh.triangleCount == 0 || mesh.edgeCount == 0 ||
                 !mesh.vertices.IsValid() || !mesh.triangles.IsValid() || !mesh.keepAlive ||
-                (mesh.boneCount == 0 && (!mesh.initialPalette.empty() || mesh.influences.IsValid())) ||
-                (mesh.boneCount != 0 && (!mesh.influences.IsValid() || mesh.initialPalette.size() != mesh.boneCount))) {
+                mesh.vertexBufferBytes == 0 || mesh.triangleBufferBytes == 0 ||
+                (mesh.boneCount == 0 &&
+                 (!mesh.initialPalette.empty() || mesh.influences.IsValid() || mesh.influenceBufferBytes != 0)) ||
+                (mesh.boneCount != 0 && (!mesh.influences.IsValid() || mesh.influenceBufferBytes == 0 ||
+                                         mesh.initialPalette.size() != mesh.boneCount))) {
                 Destroy();
                 return false;
             }
@@ -471,6 +482,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 influenceDesc.initialData = dummyInfluence.data();
                 influenceDesc.initialDataBytes = influenceDesc.byteSize;
                 runtimeMesh.influences = device.CreateBuffer(influenceDesc);
+                runtimeMesh.influenceBufferBytes = influenceDesc.byteSize;
                 if (!runtimeMesh.influences.IsValid()) {
                     Destroy();
                     return false;
@@ -479,16 +491,15 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             }
             rhi::BufferDesc paletteDesc;
             paletteDesc.byteSize = paletteBytes;
-            paletteDesc.usage = rhi::BufferUsageFlags::Storage;
-            paletteDesc.memory = rhi::BufferMemory::Upload;
+            paletteDesc.usage = rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination;
+            paletteDesc.memory = rhi::BufferMemory::DeviceLocal;
             paletteDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-            paletteDesc.initialData = paletteData;
-            paletteDesc.initialDataBytes = paletteBytes;
             runtimeMesh.palette = device.CreateBuffer(paletteDesc);
             if (!runtimeMesh.palette.IsValid()) {
                 Destroy();
                 return false;
             }
+            PrepareUpload(runtimeMesh.palette, paletteData, static_cast<size_t>(paletteBytes));
             dataInterfaces->ownedBuffers.push_back(runtimeMesh.palette);
             dataInterfaces->meshInterfaces.push_back(runtimeMesh);
             dataLayoutDesc.entries[dataLayoutDesc.entryCount++] = {mesh.vertexBinding, rhi::BindingType::StorageBuffer,
@@ -500,28 +511,32 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             dataLayoutDesc.entries[dataLayoutDesc.entryCount++] = {mesh.paletteBinding, rhi::BindingType::StorageBuffer,
                                                                    rhi::ShaderStage::Compute, 1};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {mesh.vertexBinding, rhi::BindingType::StorageBuffer,
-                                                                  mesh.vertices};
+                                                                  mesh.vertices, 0, mesh.vertexBufferBytes};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {mesh.triangleBinding, rhi::BindingType::StorageBuffer,
-                                                                  mesh.triangles};
+                                                                  mesh.triangles, 0, mesh.triangleBufferBytes};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {
-                mesh.influenceBinding, rhi::BindingType::StorageBuffer, runtimeMesh.influences};
+                mesh.influenceBinding, rhi::BindingType::StorageBuffer, runtimeMesh.influences, 0,
+                runtimeMesh.influenceBufferBytes};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {mesh.paletteBinding, rhi::BindingType::StorageBuffer,
-                                                                  runtimeMesh.palette};
+                                                                  runtimeMesh.palette, 0, paletteBytes};
         }
 
         rhi::BufferDesc metadataBufferDesc;
         metadataBufferDesc.byteSize = dataInterfaces->metadataWords.size() * sizeof(uint32_t);
-        metadataBufferDesc.usage = rhi::BufferUsageFlags::Storage;
-        metadataBufferDesc.memory = rhi::BufferMemory::Upload;
+        metadataBufferDesc.usage = rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination;
+        metadataBufferDesc.memory = rhi::BufferMemory::DeviceLocal;
         metadataBufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-        metadataBufferDesc.initialData = dataInterfaces->metadataWords.data();
-        metadataBufferDesc.initialDataBytes = metadataBufferDesc.byteSize;
         dataInterfaces->metadataBuffer = device.CreateBuffer(metadataBufferDesc);
         if (!dataInterfaces->metadataBuffer.IsValid()) {
             Destroy();
             return false;
         }
+        PrepareUpload(dataInterfaces->metadataBuffer, dataInterfaces->metadataWords.data(),
+                      static_cast<size_t>(metadataBufferDesc.byteSize));
         dataGroupDesc.buffers[0].buffer = dataInterfaces->metadataBuffer;
+        dataGroupDesc.buffers[0].byteSize = metadataBufferDesc.byteSize;
+        dataInterfaces->bufferBindings.assign(dataGroupDesc.buffers.begin(),
+                                              dataGroupDesc.buffers.begin() + dataGroupDesc.bufferCount);
         dataInterfaces->layout = device.CreateBindingLayout(dataLayoutDesc);
         if (!dataInterfaces->layout.IsValid()) {
             Destroy();
@@ -605,16 +620,16 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
 
         rhi::BufferDesc metadataDesc;
         metadataDesc.byteSize = vectorFields->metadataWords.size() * sizeof(uint32_t);
-        metadataDesc.usage = rhi::BufferUsageFlags::Storage;
-        metadataDesc.memory = rhi::BufferMemory::Upload;
+        metadataDesc.usage = rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination;
+        metadataDesc.memory = rhi::BufferMemory::DeviceLocal;
         metadataDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-        metadataDesc.initialData = vectorFields->metadataWords.data();
-        metadataDesc.initialDataBytes = metadataDesc.byteSize;
         vectorFields->metadataBuffer = device.CreateBuffer(metadataDesc);
         if (!vectorFields->metadataBuffer.IsValid()) {
             Destroy();
             return false;
         }
+        PrepareUpload(vectorFields->metadataBuffer, vectorFields->metadataWords.data(),
+                      static_cast<size_t>(metadataDesc.byteSize));
         groupDesc.buffers[0].buffer = vectorFields->metadataBuffer;
         vectorFields->layout = device.CreateBindingLayout(layoutDesc);
         if (!vectorFields->layout.IsValid()) {
@@ -752,6 +767,7 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_collisionSceneLayout = {};
     m_collisionSceneGroup = {};
     m_pipelines.fill({});
+    m_pendingUploads.clear();
     m_cachedTransforms = {};
     m_hasCachedTransforms = false;
 }
@@ -888,6 +904,49 @@ void ParticleGpuRuntime::MarkStateInitialized() noexcept
     }
 }
 
+void ParticleGpuRuntime::PrepareUpload(rhi::BufferHandle buffer, const void *data, size_t byteSize)
+{
+    auto found = std::find_if(m_pendingUploads.begin(), m_pendingUploads.end(),
+                              [buffer](const PendingUpload &upload) { return upload.buffer == buffer; });
+    if (found == m_pendingUploads.end()) {
+        m_pendingUploads.push_back({buffer});
+        found = std::prev(m_pendingUploads.end());
+    }
+    found->bytes.resize(byteSize);
+    std::memcpy(found->bytes.data(), data, byteSize);
+    ++found->revision;
+}
+
+bool ParticleGpuRuntime::HasPendingUploads() const noexcept
+{
+    return std::any_of(m_pendingUploads.begin(), m_pendingUploads.end(),
+                       [](const PendingUpload &upload) { return upload.revision != upload.submittedRevision; });
+}
+
+bool ParticleGpuRuntime::RecordPendingUploads(const rhi::TransferCommandEncoder &encoder)
+{
+    if (!IsValid() || !encoder.IsValid())
+        return false;
+    for (const auto &upload : m_pendingUploads) {
+        if (upload.revision != upload.submittedRevision && upload.revision != upload.recordedRevision &&
+            !encoder.UpdateBuffer(upload.buffer, 0, upload.bytes.data(), upload.bytes.size()))
+            return false;
+    }
+    for (auto &upload : m_pendingUploads)
+        if (upload.revision != upload.submittedRevision)
+            upload.recordedRevision = upload.revision;
+    return true;
+}
+
+void ParticleGpuRuntime::NotifySubmission(bool submitted) noexcept
+{
+    for (auto &upload : m_pendingUploads) {
+        if (submitted && upload.recordedRevision != 0)
+            upload.submittedRevision = upload.recordedRevision;
+        upload.recordedRevision = 0;
+    }
+}
+
 bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources)
 {
     if (!m_device)
@@ -903,13 +962,15 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
         if (found == m_dataInterfaces->meshInterfaces.end() || found->boneCount == 0 ||
             source.currentPalette->size() != found->boneCount || !found->palette.IsValid())
             return false;
-        found->worldSpace = true;
-        found->meshToSpace = source.sourceToWorld;
+        if (!found->worldSpace || found->meshToSpace != source.sourceToWorld) {
+            found->worldSpace = true;
+            found->meshToSpace = source.sourceToWorld;
+            m_dataInterfaces->metadataDirty = true;
+        }
         if (found->poseRevision == source.poseRevision)
             continue;
         const uint64_t byteSize = source.currentPalette->size() * sizeof(glm::mat4);
-        if (!m_device->WriteBuffer(found->palette, 0, source.currentPalette->data(), byteSize))
-            return false;
+        PrepareUpload(found->palette, source.currentPalette->data(), static_cast<size_t>(byteSize));
         found->poseRevision = source.poseRevision;
     }
     return true;
@@ -917,12 +978,28 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
 
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
-    if (m_hasCachedTransforms && std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) == 0)
+    const bool transformsChanged =
+        !m_hasCachedTransforms || std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) != 0;
+    const bool meshChanged = m_dataInterfaces && m_dataInterfaces->metadataDirty;
+    if (!transformsChanged && !meshChanged)
         return true;
-    if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
+    if (!m_device)
         return false;
-    if (!UpdateMeshInterfaceMetadata(transforms) || !UpdateVectorFieldMetadata(transforms))
+    m_hasCachedTransforms = false;
+    if (!UpdateMeshInterfaceMetadata(transforms) || (transformsChanged && !UpdateVectorFieldMetadata(transforms)))
         return false;
+    // Publish only after every derived matrix has passed validation. These
+    // bytes are CPU preparation, not writes into buffers used by earlier frames.
+    if (transformsChanged)
+        PrepareUpload(TransformBuffer(), &transforms, sizeof(transforms));
+    if (m_dataInterfaces) {
+        PrepareUpload(m_dataInterfaces->metadataBuffer, m_dataInterfaces->metadataWords.data(),
+                      m_dataInterfaces->metadataWords.size() * sizeof(uint32_t));
+        m_dataInterfaces->metadataDirty = false;
+    }
+    if (transformsChanged && m_vectorFields)
+        PrepareUpload(m_vectorFields->metadataBuffer, m_vectorFields->metadataWords.data(),
+                      m_vectorFields->metadataWords.size() * sizeof(uint32_t));
     m_cachedTransforms = transforms;
     m_hasCachedTransforms = true;
     return true;
@@ -950,8 +1027,7 @@ bool ParticleGpuRuntime::UpdateMeshInterfaceMetadata(const GpuParticleTransforms
         StoreMatrix(m_dataInterfaces->metadataWords, base + 4u, meshToSimulation);
         StoreNormalMatrix(m_dataInterfaces->metadataWords, base + 20u, normalToSimulation);
     }
-    return m_device->WriteBuffer(m_dataInterfaces->metadataBuffer, 0, m_dataInterfaces->metadataWords.data(),
-                                 m_dataInterfaces->metadataWords.size() * sizeof(uint32_t));
+    return true;
 }
 
 bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms)
@@ -988,8 +1064,13 @@ bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &
         StoreNormalMatrix(m_vectorFields->metadataWords, base + 16, directionToSimulation);
         m_vectorFields->metadataWords[base + 28] = FloatBits(scalar);
     }
-    return m_device->WriteBuffer(m_vectorFields->metadataBuffer, 0, m_vectorFields->metadataWords.data(),
-                                 m_vectorFields->metadataWords.size() * sizeof(uint32_t));
+    return true;
+}
+
+const std::vector<rhi::BufferBinding> &ParticleGpuRuntime::MeshBufferBindings() const noexcept
+{
+    static const std::vector<rhi::BufferBinding> empty;
+    return m_dataInterfaces ? m_dataInterfaces->bufferBindings : empty;
 }
 
 rhi::BufferHandle ParticleGpuRuntime::StateBuffer() const noexcept

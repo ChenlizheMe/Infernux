@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Drop below the declarative pipeline only when you need custom resources, dependencies, passes, or geometry buffers.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/rendergraph-advanced.html">
     <title>RenderGraph for specialized pipelines · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -55,7 +55,7 @@
 </ul>
 <p>Choose one method for each pipeline class. The built-in pipelines remain useful references for low-level code because they currently implement <code>define_topology(graph)</code> directly.</p>
 <h2 id="host-matrix">RenderStack and standalone capability matrix</h2>
-<p><code>RenderPipeline.render(context, camera)</code> is the standalone host. RenderStack has a separate build path that installs Effect callbacks, sets the pipeline's private defining-graph state, completes the standard tail, and applies failure recovery. Those differences are observable in the current source:</p>
+<p><code>RenderPipeline.render(context, camera)</code> is the standalone host. Both hosts establish the topology-definition context used by the pipeline's public result helpers. RenderStack additionally installs mounted Effect callbacks, completes the standard tail, and applies failure recovery:</p>
 <table>
 <thead>
 <tr>
@@ -72,13 +72,13 @@
 </tr>
 <tr>
 <td><code>self.require_buffer()</code></td>
-<td>Supported while RenderStack calls the override</td>
-<td><strong>Unsupported currently:</strong> raises because <code>_defining_graph</code> was not set</td>
+<td>Supported while defining topology</td>
+<td>Supported while defining topology</td>
 </tr>
 <tr>
 <td><code>self.publish_result()</code> and <code>self.write_buffer()</code></td>
-<td>Supported while RenderStack calls the override</td>
-<td><strong>Unsupported currently:</strong> same <code>_defining_graph</code> limitation</td>
+<td>Supported while defining topology</td>
+<td>Supported while defining topology</td>
 </tr>
 <tr>
 <td>Direct <code>graph.require_geometry_buffers()</code>, <code>graph.publish_pass_result()</code>, <code>graph.write_buffer()</code></td>
@@ -88,7 +88,7 @@
 <tr>
 <td><code>@geometry_buffer</code> plus <code>self.geometry_stage()</code></td>
 <td>Supported; RenderStack also adds mounted Effect requirements</td>
-<td>Supported only when requirements are set directly on <code>graph</code></td>
+<td>Supported; declare requirements with <code>self.require_buffer()</code> or directly on <code>graph</code></td>
 </tr>
 <tr>
 <td>Mounted RenderStack Effects and stage-local resource buses</td>
@@ -102,12 +102,12 @@
 </tr>
 <tr>
 <td>Failed rebuild</td>
-<td>Keeps a previous valid graph or uses the documented first-build Editor fallback</td>
+<td>Keeps a previous valid graph; without one, construction fails explicitly</td>
 <td>No fallback cache; the build exception leaves <code>_standalone_desc</code> unset and the next call retries</td>
 </tr>
 </tbody>
 </table>
-<p>The three <code>self.*</code> helpers are not promised for a standalone override in the current implementation. A standalone author can use the direct <code>graph.*</code> result methods. Setting <code>self._defining_graph</code> manually relies on private state and is excluded from the supported contract. The complete example below intentionally targets RenderStack.</p>
+<p>The three <code>self.*</code> helpers are valid only during <code>define_topology()</code> in either host. The direct <code>graph.*</code> result methods are also available. No manual private-state setup is needed. The complete example below can build through either host; use RenderStack when mounting reusable Effects.</p>
 <p>In both hosts, return from <code>define_topology()</code> after recording declarations; the host calls <code>graph.build()</code>. Call <code>build()</code> directly only in an isolated topology test like the verification used for this chapter.</p>
 <h2 id="minimal-graph">Complete RenderStack graph: provider to present</h2>
 <p>Save this class under <code>Assets</code>, select <strong>Base Color Present</strong> on the scene RenderStack, and use an active Camera with an opaque MeshRenderer. It performs a depth prepass, lazily materializes a custom base-color Provider, publishes that texture through a <code>PassResult</code>, copies it to the camera target, runs the canonical UI/display tail, and presents the result.</p>
@@ -122,22 +122,32 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">preview</span> <span class="o">=</span> <span class="n">target</span>
+        <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">preview</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_resolved"</span><span class="p">,</span>
+                <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+                <span class="n">samples</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span>
         <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">preview</span><span class="p">)</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
                 <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
                 <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
                 <span class="n">material_pass</span><span class="o">=</span><span class="s2">"base_color"</span><span class="p">,</span>
             <span class="p">)</span>
-        <span class="k">return</span> <span class="n">target</span>
+        <span class="k">return</span> <span class="n">preview</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
-        <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span>
         <span class="p">)</span>
@@ -157,6 +167,7 @@
             <span class="s2">"opaque"</span><span class="p">,</span>
             <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
             <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+            <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">preview</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">opaque</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 
@@ -180,6 +191,7 @@
             <span class="n">present_pass</span><span class="o">.</span><span class="n">present</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
 </code></pre></div>
 
+<p>The Provider matches its raster target to <code>context.msaa_samples</code> so the color and depth attachments agree. It publishes a single-sample resolve for fullscreen sampling when the Camera target uses MSAA; a fixed RenderTexture can override the pipeline's requested sample count.</p>
 <p><code>present(color)</code> is a typed terminal action and also calls <code>set_output(color)</code>. A graph may use <code>set_output()</code> without a Present pass, but this example makes the camera-target/export boundary visible. <code>graph.build()</code> also chooses the first camera target when no explicit output exists; production pipelines should express the intended output directly.</p>
 <p>To verify the example, check that the camera shows unlit base color, the RenderStack topology contains the standard tail and <strong>Present</strong>, and the Console has no graph validation error. Temporarily add <code>print(graph.get_debug_string())</code> as the final line of <code>define_topology()</code> to record the authored resources, actions, accesses, and output, then remove the print after diagnosis.</p>
 <p>Logical names are graph-wide resource identities. Reusable fragments can use <code>graph.name_scope()</code> to keep generated names unique. Pass order is recorded as authored, while declared accesses give the native compiler dependency and transition information. The native compiler can cull work that has no path to an output or explicit side effect, so authored order alone does not prove execution.</p>
@@ -198,12 +210,14 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RG32_UINT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span>
         <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
-            <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
                 <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
                 <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
@@ -214,18 +228,22 @@
 
 <p>A Provider receives a <code>GeometryBufferProviderContext</code>. It may read <code>context.graph</code>, <code>context.source</code>, <code>context.phase</code>, <code>context.queue_range</code>, <code>context.msaa_samples</code>, <code>context.sort_mode</code>, <code>context.clear</code>, and already available semantic textures through <code>context.sample()</code>. It must return a non-null graph <code>TextureHandle</code>; <code>geometry_stage()</code> publishes that handle under the decorator's semantic. Dependencies name other semantics that must already exist or have a Provider in the same phase.</p>
 <p>A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.</p>
+<p>The Picking pass requires an <code>RG32_UINT</code> color output and a writable depth attachment. This Provider clears the ID target to zero and rebuilds the supplied opaque depth with the same renderer queue. Merely declaring <code>read(depth)</code> is rejected. A consumer must read IDs as integers: use <code>Texture2DUInt</code> at one sample, or <code>Texture2DMSUInt</code> with <code>texelFetch()</code> for a multisampled result. The ordinary <code>Fullscreen Blit</code> samples floating-point color and is not an integer-ID consumer.</p>
+<p>Pass the effective count returned by <code>graph.set_msaa_samples()</code> into <code>geometry_stage(msaa_samples=...)</code>; this value becomes <code>context.msaa_samples</code> in each Provider. An integer multisampled result such as <code>object_index</code> remains multisampled unless its Provider declares a suitable resolve, so its consumer must use a matching multisample shader input.</p>
 <p>During <code>define_topology()</code>, call <code>self.require_buffer("object_index")</code> before the relevant <code>geometry_stage()</code>. The stage starts from its supplied buffers, runs only the providers needed by current requirements, and returns a <code>PassResult</code>. Effects mounted in RenderStack contribute their declared geometry requirements before the pipeline topology is built, so unused built-in providers such as normal or motion remain unmaterialized.</p>
-<div class="highlight"><pre><span></span><code><span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
 <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
     <span class="n">graph</span><span class="p">,</span>
     <span class="s2">"opaque"</span><span class="p">,</span>
     <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
     <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+    <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">object_index</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 </code></pre></div>
 
-<p><code>require_buffer()</code> is valid only while RenderStack or the base DSL implementation has set the defining graph. The returned <code>BufferHandle</code> is a semantic request from <code>Infernux.renderstack</code>; it is separate from the transient GPU <code>BufferHandle</code> returned by <code>graph.create_buffer()</code>. Standalone overrides use <code>graph.require_geometry_buffers({"object_index"})</code>, then pass the same graph into <code>geometry_stage()</code>.</p>
+<p><code>require_buffer()</code> is valid during <code>define_topology()</code> in either RenderStack or standalone pipelines. The returned <code>BufferHandle</code> is a semantic request from <code>infernux.renderstack</code>; it is separate from the transient GPU <code>BufferHandle</code> returned by <code>graph.create_buffer()</code>. Either host also supports calling <code>graph.require_geometry_buffers({"object_index"})</code> directly before passing the same graph into <code>geometry_stage()</code>.</p>
 <h2 id="pass-results">PassResult, handles, and native actions</h2>
 <p>A <code>PassResult</code> is a source-scoped map from semantic names such as <code>color</code>, <code>depth</code>, <code>normal</code>, and <code>motion</code> to texture handles. <code>source</code> must be unique within one graph build. The graph assigns an increasing <code>revision</code> each time it publishes or derives a result.</p>
 <p>In the built-in Forward and Forward+ pipelines, an effect requiring <code>normal</code> or <code>motion</code> causes a raster pass after opaque depth is complete. The pass tests against that View's opaque depth without changing it. <code>normal</code> is encoded world-space XYZ in <code>[0,1]</code> with alpha <code>1</code> on covered samples and <code>0</code> on the cleared background; <code>motion</code> is current minus previous screen UV, so previous UV is <code>uv - motion</code>. <code>color</code>, <code>depth</code>, <code>normal</code>, and <code>motion</code> use the View render resolution. With MSAA, normal and motion raster targets match the depth sample count and their published handles are single-sample color resolves; normal alpha may be fractional at coverage edges. A fullscreen <code>Texture2D</code> depth input resolves to the nearest covered sample (minimum device depth). The <code>PassBuffers</code> shader helpers in <code>lib/pass_buffers.glsl</code> take upper-left-origin UVs, reconstruct world position from Vulkan <code>[0,1]</code> device depth and this View's inverse view-projection, and use the selected buffer's size for pixel motion. Sample these resources in an effect stage after their producer, such as <code>after_opaque</code>; an unavailable semantic fails binding instead of supplying a previous frame.</p>
@@ -253,8 +271,8 @@
 
 <p><code>write_buffer()</code> derives a result with one semantic replaced. The parent still refers to the earlier texture, so later topology can deliberately sample either revision. The revision number is local to the graph build: it expresses publication order, not a frame number, persistent asset ID, or mutable GPU-resource version.</p>
 <p>Lazy geometry providers may add a missing semantic to the result that owns them. Once a write derives a new result, earlier semantic bindings stay intact.</p>
-<p><code>publish_pass_result()</code> accepts only semantic names mapped to graph <code>TextureHandle</code> objects, and every <code>source</code> must be unique in that graph build. <code>PassResult.sample()</code> returns the logical handle; <code>snapshot</code> returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU image. A pass declaration must still write the texture, and a downstream pass must declare its read.</p>
-<p>Texture and GPU Buffer handles are lightweight logical-name records owned by one builder run. Do not retain them on the pipeline instance, reuse them after a rebuild, or pass them into another graph. The Python handle type does not carry a graph ID, so a same-name cross-graph mistake can evade early identity checks. The resulting <code>RenderGraphDescription</code> contains names and resource descriptions; the native per-camera graph creates the actual resources.</p>
+<p><code>publish_pass_result()</code> maps semantic names to <code>TextureHandle</code> or GPU <code>BufferHandle</code> objects owned by that graph; for example, <code>color</code> is a texture and <code>light_list</code> is a buffer. Every <code>source</code> must be unique in that graph build. <code>PassResult.sample()</code> returns the logical handle; <code>snapshot</code> returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU resource. A pass declaration must still produce the resource, and a downstream pass must declare its read using the matching texture or buffer API.</p>
+<p>Texture and GPU Buffer handles are lightweight logical-name records owned by one builder run. Do not retain them on the pipeline instance, reuse them after a rebuild, or pass them into another graph. Equal names do not prove ownership: the graph checks the identity of each handle when publishing results, binding pass resources, or selecting an output, and rejects foreign handles even when their names match. Deriving a result also requires a parent from the same graph. The resulting <code>RenderGraphDescription</code> contains names and resource descriptions; the native per-camera graph creates the actual resources.</p>
 <p>All camera targets in one graph alias the camera's physical color target. Declaring more than one emits a warning. A persistent <code>inx.RenderTexture</code> has separate ownership: assign it to <code>Camera.target_texture</code>, <code>UIImage.texture</code>, or a material texture binding, and use <code>graph.import_texture()</code> for explicit graph access. Rebuilding a graph does not destroy the resource. These runtime references do not fabricate asset GUIDs or become saved texture assets.</p>
 <p>Choose either fixed pixels or a scale relative to the Game render resolution. Create the resource on the engine thread, for example in a component's <code>start()</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="n">PixelFormat</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span>
@@ -271,14 +289,14 @@
 </code></pre></div>
 
 <p>The relative target follows <strong>Game render pixels</strong>, not the Game panel's display zoom, desktop DPI, Scene View size, or the dimensions of the last camera drawn. At a 641×401 Game resolution, <code>half_size.width, half_size.height</code> is <code>(321, 201)</code>: fractional pixels round up. Both factors must be positive and finite; factors above one request supersampling. Changing the Game resolution updates the existing owner and its Camera, material and UI bindings together. Do not call <code>resize()</code> every frame.</p>
-<p><code>fixed.scale</code> is <code>None</code> and <code>fixed.resize(width, height)</code> changes its pixel dimensions. A relative target's <code>scale</code> is read-only and pixel <code>resize()</code> is rejected. Changing size mode, scale, format, depth or MSAA means creating a new resource and replacing the reference. Allocation failures leave the old allocations intact and report the error; they do not silently select a smaller size or another format. <code>sampled_depth=True</code> explicitly enables depth texture sampling; enable it when the Camera pipeline uses TAA or another depth-sampling effect. A graph that samples an attachment without this declaration is rejected before submission. <code>storage=True</code> requests storage-image use, not ordinary raster rendering.</p>
+<p><code>fixed.scale</code> is <code>None</code> and <code>fixed.resize(width, height)</code> changes its pixel dimensions. A relative target's <code>scale</code> is read-only and pixel <code>resize()</code> is rejected. Changing size mode, scale, format, depth or MSAA means creating a new resource and replacing the reference. Allocation failures leave the old allocations intact and report the error; they do not silently select a smaller size or another format. <code>sampled_depth=True</code> explicitly enables depth texture sampling. Enable it for Default Deferred, whose lighting pass samples depth even without effects, or when a Camera pipeline uses TAA or another depth-sampling effect. Saved RenderTexture assets need the same declaration. A graph that samples an attachment without this declaration is rejected before submission. <code>storage=True</code> requests storage-image use, not ordinary raster rendering.</p>
 <p>This reference-size concept is comparable to <a href="https://docs.unity.cn/Packages/com.unity.render-pipelines.core%4016.0/manual/rthandle-system-using.html">Unity's RTHandle scale allocation</a>, but the public Infernux type remains <code>RenderTexture</code>. Infernux allocates the requested rounded size on each resolution change, including shrink; it does not promise Unity's maximum-reference-size allocation policy.</p>
 <p>For a reusable asset, choose <strong>Create &gt; Render Texture</strong> in Project. New assets have a D32 depth attachment, ready for Camera assignment; color-only uses can explicitly disable depth in the Inspector. The Inspector edits the same size, format, MSAA and usage description; edits use ordinary autosave and Undo/Redo. Selecting the asset does not allocate a GPU image. The importer creates <code>Library/Artifacts/RenderTexture/&lt;guid&gt;.inxrtex</code>; Cook includes this binary description, not the source JSON or rendered pixels.</p>
 <p>Expose an ordinary serialized field and assign that asset in the Inspector:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Monitor</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span>
+    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Camera</span><span class="p">)</span><span class="o">.</span><span class="n">target_texture</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">output</span>
@@ -318,7 +336,8 @@
 </code></pre></div>
 
 <p><code>read_buffer()</code> and <code>write_buffer()</code> validate storage, indirect, or transfer access against those flags. <code>copy_buffer()</code> adds transfer source/destination flags to its two handles. These declarations describe access and synchronization; an executable pass action still has to use the resource.</p>
-<p><code>samples = graph.set_msaa_samples(1|2|4|8)</code> declares the screen preference and returns the effective sample count. A fixed <code>Camera.target_texture</code> owns its sampling contract and takes precedence. Build MSAA-dependent attachments and resolve passes using the returned value, not a hard-coded count; do not rewrite the authored pipeline parameter for each Camera. RenderStack and standalone pipelines cache separate graph variants by this contract. <code>set_msaa_samples(0)</code> delegates screen sampling to the native setting; it is not suitable for choosing explicit resolve topology. Camera targets and scene-sized depth textures default to inherited <code>samples=0</code>; other transient textures default to one sample. Raster color and depth attachments must agree.</p>
+<p><code>samples = graph.set_msaa_samples(requested_samples)</code> declares the screen preference and returns the effective sample count; <code>requested_samples</code> must be one of <code>1</code>, <code>2</code>, <code>4</code>, or <code>8</code>. A fixed <code>Camera.target_texture</code> owns its sampling contract and takes precedence. Build MSAA-dependent attachments and resolve passes using the returned value, not a hard-coded count; do not rewrite the authored pipeline parameter for each Camera. RenderStack and standalone pipelines cache separate graph variants by this contract. <code>set_msaa_samples(0)</code> delegates screen sampling to the native setting; it is not suitable for choosing explicit resolve topology. Camera targets and scene-sized depth textures default to inherited <code>samples=0</code>; other transient textures default to one sample. Raster color and depth attachments must agree.</p>
+<p><code>Default Deferred</code> currently requires a single-sample Camera target. Create its target with <code>samples=1</code>; a multisampled target is rejected before graph submission. Forward and Forward+ accept fixed targets with different sample counts without changing the authored pipeline preference.</p>
 <p>Use <code>write_resolve()</code> when a multisampled color result must become a single-sample texture:</p>
 <div class="highlight"><pre><span></span><code><span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
 <span class="n">resolved</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
@@ -336,6 +355,7 @@
 <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"Route"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
     <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
     <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">depth</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
         <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">resolved</span><span class="p">)</span>
     <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
@@ -343,6 +363,25 @@
 </code></pre></div>
 
 <p>The pass must have exactly one color output at slot <code>0</code>. The source must be multisampled; the target must be a transient, single-sample color texture with matching format and extent. The current Python API has no depth-resolve operation.</p>
+<h2 id="renderer-selection-en">Draw selected renderers</h2>
+<p>Use <code>RendererSelection</code> to draw ordinary MeshRenderers and selected submeshes with a replacement material, without copying meshes or editing their original materials. Create the selection once when initializing the pipeline; <code>mask_material</code> is a project material and <code>target_renderer</code> is an Inspector reference or a renderer selected by gameplay code:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+<span class="n">selection</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">RendererSelection</span><span class="p">(</span><span class="n">mask_material</span><span class="p">)</span>
+<span class="n">parameters</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">DrawParameterBlock</span><span class="p">()</span>
+<span class="n">parameters</span><span class="o">.</span><span class="n">set_color</span><span class="p">(</span><span class="s2">"baseColor"</span><span class="p">,</span> <span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+<span class="n">selection</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">target_renderer</span><span class="p">,</span> <span class="n">parameters</span><span class="o">=</span><span class="n">parameters</span><span class="p">)</span>
+
+<span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"SelectedMask"</span><span class="p">)</span> <span class="k">as</span> <span class="n">p</span><span class="p">:</span>
+    <span class="n">p</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">mask</span><span class="p">)</span>
+    <span class="n">p</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">mask_depth</span><span class="p">)</span>
+    <span class="n">p</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">p</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">renderer_selection</span><span class="o">=</span><span class="n">selection</span><span class="p">)</span>
+</code></pre></div>
+
+<p>Create <code>mask</code> and <code>mask_depth</code> on the same graph with matching dimensions and sample counts. The project chooses independent mask depth or scene depth. Parameters must be declared by the selection material's ShaderInfo; they do not modify the original shared material or search other parameter domains.</p>
+<p><code>set(renderer, submesh=2, parameters=parameters)</code> selects one submesh; the default <code>submesh=-1</code> selects all. An exact submesh entry takes precedence over an all-submeshes entry. Each <code>set()</code> captures the parameter values; later changes to the block take effect only after another <code>set()</code>. Use <code>remove(renderer, submesh=2)</code> or <code>clear()</code> to edit membership.</p>
+<p>Update the existing selection during Update/LateUpdate without rebuilding topology. The graph retains the selection and its material; drawing uses the current camera-visible geometry, transforms, skinning and GPU vertex buffers, filtered by the original material's Queue/Pass Tag. Retired renderers are not selected by a reused object ID. A replacement vertex shader must implement source-shader deformation explicitly; deformation already stored in the shared GPU mesh remains visible. Per-draw texture overrides currently accept ordinary texture GUIDs; bind RenderTextures on the selection material or through explicit graph inputs.</p>
 <h2 id="object-data-mask-en">Raw object-data masks</h2>
 <p>A replacement material can write data instead of surface color. For example, a project outline can store a logical owner ID, positive eye depth, an invalid-state bit, and two flags. Register the renderers through <code>RendererSelection</code>; the engine still draws their current geometry. Group parts under the same Rigidbody in project code, rather than using the scene's picking IDs as gameplay group IDs.</p>
 <p>Create a fragment shader asset named <code>ObjectDataMask.frag</code> and assign it to a material in the Inspector, with the built-in <code>Standard</code> vertex shader:</p>
@@ -382,8 +421,8 @@
 <span class="n">graph</span><span class="o">.</span><span class="n">screen_ui_overlay_section</span><span class="p">()</span>  <span class="c1"># Display encoding and screen overlay UI.</span>
 </code></pre></div>
 
-<p>World UI always keeps its normal depth test, using the depth attachment you declare for that pass. Drawing later does not make a label visible through walls. A project may instead attach a compatible depth snapshot from an earlier stage; the snapshot must be produced explicitly. Keep masks disjoint to avoid drawing an element twice. <code>screen_ui_section(world_ui_layer_mask=...)</code> forwards the same filter to its ordinary World UI pass; predeclared passes retain their own settings. Screen-space UI is unaffected. RenderTexture dependencies are collected from the same filtered elements that are drawn.</p>
-<p>For a World UI element attached to one scene object, <code>world_ignored_occluder</code> accepts a persistent GameObject reference. By default every scene depth writer still occludes the element. With this opt-in reference, the Default Forward graph replays opaque and alpha-cutout scene depth without that GameObject's renderer draws; all other renderer depth remains. The option is not supported by custom scene-depth writers or preserved camera depth, and those combinations are rejected rather than treated as always-on-top. Runtime pointer input has a separate Physics contract: it ignores collider hits owned by the referenced GameObject, but other non-trigger collider hits still block the element. A visible mesh without a collider can contribute render depth without blocking pointer input, just as it does for ordinary World UI. Scene View selection continues to merge its existing renderer and physics candidates; it is not an alpha-accurate multi-layer GPU pick.</p>
+<p>By default, World UI tests the depth attachment declared for its pass; drawing later does not make a label visible through walls. Setting <code>world_always_on_top=True</code> on an element explicitly bypasses scene depth and pointer occlusion. A project may instead attach a compatible depth snapshot from an earlier stage; the snapshot must be produced explicitly. Keep masks disjoint to avoid drawing an element twice. <code>screen_ui_section(world_ui_layer_mask=...)</code> forwards the same filter to its ordinary World UI pass; predeclared passes retain their own settings. Screen-space UI is unaffected. RenderTexture dependencies are collected from the same filtered elements that are drawn.</p>
+<p>For a World UI element attached to one scene object, <code>world_ignored_occluder</code> accepts a persistent GameObject reference. By default every scene depth writer still occludes the element. With this opt-in reference, a graph containing one cleared Forward scene-depth producer replays opaque and alpha-cutout depth without that GameObject's renderer draws; all other renderer depth remains. Default Forward satisfies this contract. Each World UI Pass uses its own Camera/layer-mask intersection and validates the depth history before that Pass. Incompatible depth producers or attachments, additional depth writers, depth cleared by a World UI Pass, and preserved camera depth are rejected rather than treated as always-on-top. Runtime pointer input has a separate Physics contract: it ignores collider hits owned by the referenced GameObject, but other non-trigger collider hits still block the element. A visible mesh without a collider can contribute render depth without blocking pointer input, just as it does for ordinary World UI. Scene View selection continues to merge its existing renderer and physics candidates; it is not an alpha-accurate multi-layer GPU pick.</p>
 <h2 id="fullscreen-raster-state-en">Fullscreen depth and blending</h2>
 <p>These controls cover the roles of Unity's <a href="https://docs.unity3d.com/6000.0/Documentation/Manual/SL-ZTest.html">ZTest</a>, <a href="https://docs.unity3d.com/6000.0/Documentation/Manual/SL-ZWrite.html">ZWrite</a>, and straight-alpha <a href="https://docs.unity3d.com/6000.0/Documentation/Manual/SL-Blend.html">Blend</a>, expressed as graph-pass declarations. This is not the full ShaderLab render-state surface.</p>
 <p><code>fullscreen_quad()</code> replaces color by default, with depth testing and writing disabled. An overlay can instead use the existing attachments:</p>
@@ -435,6 +474,7 @@
 <p><code>graph.build()</code> checks duplicate resource and pass names, missing resources, action/pass-type mismatches, Buffer usage, attachment formats, sample-count agreement, resolve contracts, extension-point placement, and final output. The native compiler then validates and schedules the resulting graph.</p>
 <p>RenderStack rejects a failed topology edit and retains the last accepted graph with its paired effect bindings for that output-sample contract. The Inspector reports the error alongside its last accepted topology probe. If there is no accepted graph, construction fails explicitly in both Editor and Player; it does not substitute Default Forward. Repairing a watched pipeline file or changing a pipeline parameter invalidates the failed state. This author-edit transaction is not permission to sample an unwritten texture or silently reuse old camera output.</p>
 <p>Standalone <code>RenderPipeline.render()</code> has no last-valid or Default Forward recovery. A failed <code>define_topology()</code> or <code>build()</code> leaves <code>_standalone_desc</code> unset, so the exception remains visible and a later render call retries. After an accepted code replacement, <code>dispose()</code> clears an older standalone description when the pipeline is retired.</p>
+<p>For per-camera dynamic parameters, apply the graph before calling <code>context.update_parameter_blocks()</code>, then call <code>context.submit_culling(culling)</code>. Submission freezes the parameter values alongside that camera's renderer list; updates after submission belong to a later submission. An overridden <code>render_camera()</code> must preserve this order instead of calling the base submission before updating its values.</p>
 <p>There is currently no graphical RenderGraph debugger in the Editor. Use <code>graph.get_debug_string()</code> for a text summary of resources, pass actions, reads, writes, resolves, and output, then confirm behavior in both Editor and a build. This string describes one topology artifact, so it cannot distinguish camera-local native instances. For multi-camera runtime logs, include the camera identity available to your host, <code>context.graph_instance_id</code>, and <code>RenderGraphDescription.source_revision</code>; <code>graph_instance_id</code> distinguishes native graph instances while the source revision identifies the shared Python topology.</p>
 <p>Before shipping a low-level pipeline, check these points:</p>
 <ol>
@@ -467,7 +507,7 @@
 </ul>
 <p>每个管线类选择一个方法。内置管线当前直接实现 <code>define_topology(graph)</code>，可作为低层代码参考。</p>
 <h2 id="host-matrix_1">RenderStack 与 standalone 能力矩阵</h2>
-<p><code>RenderPipeline.render(context, camera)</code> 是 standalone Host。RenderStack 使用另一条构建路径，它会安装 Effect Callback、设置管线的私有 Defining Graph 状态、补全标准帧尾并执行失败恢复。当前源码中的差异如下：</p>
+<p><code>RenderPipeline.render(context, camera)</code> 是 standalone Host。两种 Host 都会建立管线公开 Result Helper 所需的拓扑定义上下文。RenderStack 还会安装已挂载 Effect 的 Callback、补全标准帧尾并执行失败恢复：</p>
 <table>
 <thead>
 <tr>
@@ -484,13 +524,13 @@
 </tr>
 <tr>
 <td><code>self.require_buffer()</code></td>
-<td>RenderStack 调用 Override 期间支持</td>
-<td><strong>当前不支持：</strong> <code>_defining_graph</code> 未设置，会抛出异常</td>
+<td>定义拓扑期间支持</td>
+<td>定义拓扑期间支持</td>
 </tr>
 <tr>
 <td><code>self.publish_result()</code> 与 <code>self.write_buffer()</code></td>
-<td>RenderStack 调用 Override 期间支持</td>
-<td><strong>当前不支持：</strong> 受同一 <code>_defining_graph</code> 限制</td>
+<td>定义拓扑期间支持</td>
+<td>定义拓扑期间支持</td>
 </tr>
 <tr>
 <td>直接调用 <code>graph.require_geometry_buffers()</code>、<code>graph.publish_pass_result()</code>、<code>graph.write_buffer()</code></td>
@@ -500,7 +540,7 @@
 <tr>
 <td><code>@geometry_buffer</code> 与 <code>self.geometry_stage()</code></td>
 <td>支持；RenderStack 还会加入已挂载 Effect 的需求</td>
-<td>需要直接在 <code>graph</code> 上设置需求后使用</td>
+<td>支持；通过 <code>self.require_buffer()</code> 或直接在 <code>graph</code> 上声明需求</td>
 </tr>
 <tr>
 <td>已挂载的 RenderStack Effect 与 Stage 局部 Resource Bus</td>
@@ -514,12 +554,12 @@
 </tr>
 <tr>
 <td>重建失败</td>
-<td>保留上一份有效 Graph，或使用已说明的 Editor 首次构建回退</td>
+<td>保留上一份有效 Graph；没有有效 Graph 时明确报告构建失败</td>
 <td>没有回退缓存；异常后 <code>_standalone_desc</code> 为空，下次调用重试</td>
 </tr>
 </tbody>
 </table>
-<p>当前实现没有承诺三项 <code>self.*</code> Helper 可用于 standalone Override。Standalone 作者可以改用直接的 <code>graph.*</code> Result 方法。手动设置 <code>self._defining_graph</code> 会依赖私有状态，不属于受支持契约。下面的完整样例明确以 RenderStack 为 Host。</p>
+<p>三项 <code>self.*</code> Helper 在两种 Host 的 <code>define_topology()</code> 期间都有效，也可以直接使用 <code>graph.*</code> Result 方法，无需手动设置私有状态。下面的完整样例可以通过两种 Host 构建；需要挂载可复用 Effect 时使用 RenderStack。</p>
 <p>两种 Host 都要求 <code>define_topology()</code> 记录完声明后直接返回，由 Host 调用 <code>graph.build()</code>。只有独立拓扑测试才应直接调用 <code>build()</code>，例如本章样例采用的验证方式。</p>
 <h2 id="minimal-graph_1">完整 RenderStack Graph：从 Provider 到 Present</h2>
 <p>把这个类保存到 <code>Assets</code> 下，在场景 RenderStack 中选择 <strong>Base Color Present</strong>，并准备一台活动 Camera 和一个不透明 MeshRenderer。样例先执行 Depth Prepass，再惰性生成自定义 Base-color Provider，通过 <code>PassResult</code> 发布纹理，把结果复制到 Camera Target，执行标准 UI/显示帧尾，最后 Present。</p>
@@ -534,22 +574,32 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">preview</span> <span class="o">=</span> <span class="n">target</span>
+        <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">preview</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_resolved"</span><span class="p">,</span>
+                <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+                <span class="n">samples</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span>
         <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">preview</span><span class="p">)</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
                 <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
                 <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
                 <span class="n">material_pass</span><span class="o">=</span><span class="s2">"base_color"</span><span class="p">,</span>
             <span class="p">)</span>
-        <span class="k">return</span> <span class="n">target</span>
+        <span class="k">return</span> <span class="n">preview</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
-        <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span>
         <span class="p">)</span>
@@ -569,6 +619,7 @@
             <span class="s2">"opaque"</span><span class="p">,</span>
             <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
             <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+            <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">preview</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">opaque</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 
@@ -592,6 +643,7 @@
             <span class="n">present_pass</span><span class="o">.</span><span class="n">present</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
 </code></pre></div>
 
+<p>Provider 使用 <code>context.msaa_samples</code> 创建光栅目标，保证颜色与深度附件的采样数一致。Camera Target 启用 MSAA 时，Provider 显式 Resolve 并发布单采样纹理供全屏 Pass 采样；固定 RenderTexture 可以覆盖管线请求的采样数。</p>
 <p><code>present(color)</code> 是带类型的终止 Action，同时会调用 <code>set_output(color)</code>。Graph 也可以只使用 <code>set_output()</code>，省略 Present Pass；本例显式展示 Camera Target 与导出边界。没有显式输出时，<code>graph.build()</code> 会选取第一张 Camera Target，生产管线仍应明确表达目标输出。</p>
 <p>验证时应看到 Camera 输出未受光照的 Base Color，RenderStack 拓扑包含标准帧尾与 <strong>Present</strong>，Console 中没有 Graph 校验错误。诊断期间可以在 <code>define_topology()</code> 最后一行暂时加入 <code>print(graph.get_debug_string())</code>，记录资源、Action、Access 与输出；检查完成后删除该输出。</p>
 <p>逻辑名称是 Graph 范围内的资源身份。可复用片段可以使用 <code>graph.name_scope()</code>，避免生成的名称冲突。Pass 顺序按书写顺序记录；声明的 Access 为 Native Compiler 提供依赖与转换信息。Native Compiler 可以剔除无法到达输出且未声明 Side Effect 的工作，因此编写顺序本身不能证明执行。</p>
@@ -610,12 +662,14 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RG32_UINT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span>
         <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
-            <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
                 <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
                 <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
@@ -626,18 +680,22 @@
 
 <p>Provider 接收 <code>GeometryBufferProviderContext</code>。它可以读取 <code>context.graph</code>、<code>context.source</code>、<code>context.phase</code>、<code>context.queue_range</code>、<code>context.msaa_samples</code>、<code>context.sort_mode</code>、<code>context.clear</code>，并通过 <code>context.sample()</code> 取得已有 Semantic Texture。Provider 必须返回非空的 Graph <code>TextureHandle</code>；<code>geometry_stage()</code> 会以 Decorator 中的 Semantic 发布该 Handle。Dependency 表示同一 Phase 中必须已存在或可由 Provider 生成的其它 Semantic。</p>
 <p>派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。</p>
+<p>Picking Pass 必须声明 <code>RG32_UINT</code> 颜色输出和可写的深度附件。这个 Provider 将 ID 目标清零，并用同一 Renderer Queue 重建传入的不透明深度；只声明 <code>read(depth)</code> 会被拒绝。消费者必须按整数读取 ID：单采样使用 <code>Texture2DUInt</code>，多采样使用 <code>Texture2DMSUInt</code> 和 <code>texelFetch()</code>。普通 <code>Fullscreen Blit</code> 读取浮点颜色，不能用来消费整数 ID。</p>
+<p>把 <code>graph.set_msaa_samples()</code> 返回的有效采样数传给 <code>geometry_stage(msaa_samples=...)</code>，Provider 才能通过 <code>context.msaa_samples</code> 取得正确值。<code>object_index</code> 这类整数多采样结果在 Provider 没有声明适用的 Resolve 时仍是多采样纹理，消费它的 Shader Input 也必须匹配。</p>
 <p>在 <code>define_topology()</code> 中，应先调用 <code>self.require_buffer("object_index")</code>，再进入对应的 <code>geometry_stage()</code>。Stage 从传入的 Buffer 集合开始，只运行当前需求涉及的 Provider，最后返回 <code>PassResult</code>。RenderStack 中已挂载 Effect 声明的 Geometry 需求会在管线构建前加入 Graph，因此未使用的内置 Normal、Motion 等 Provider 不会生成资源。</p>
-<div class="highlight"><pre><span></span><code><span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
 <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
     <span class="n">graph</span><span class="p">,</span>
     <span class="s2">"opaque"</span><span class="p">,</span>
     <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
     <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+    <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">object_index</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 </code></pre></div>
 
-<p><code>require_buffer()</code> 只在 RenderStack 或基础 DSL 实现已设置 Defining Graph 时有效。它返回的是 <code>Infernux.renderstack</code> 中的语义请求 <code>BufferHandle</code>；<code>graph.create_buffer()</code> 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。Standalone Override 应先调用 <code>graph.require_geometry_buffers({"object_index"})</code>，再把同一 Graph 传给 <code>geometry_stage()</code>。</p>
+<p><code>require_buffer()</code> 在 RenderStack 与 standalone 管线的 <code>define_topology()</code> 期间都有效。它返回的是 <code>infernux.renderstack</code> 中的语义请求 <code>BufferHandle</code>；<code>graph.create_buffer()</code> 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。两种 Host 也都支持先直接调用 <code>graph.require_geometry_buffers({"object_index"})</code>，再把同一 Graph 传给 <code>geometry_stage()</code>。</p>
 <h2 id="pass-results_1">PassResult、Handle 生命周期与 Native Action</h2>
 <p><code>PassResult</code> 是带 Source 作用域的语义映射，把 <code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code> 等名称指向 Texture Handle。<code>source</code> 在一次 Graph 构建中必须唯一。每次发布或派生 Result 时，Graph 都会分配递增的 <code>revision</code>。</p>
 <p>内置 Forward 与 Forward+ 管线中，Effect 声明需要 <code>normal</code> 或 <code>motion</code> 时，会在当前 View 的不透明深度完成后生成光栅 Pass；这些 Pass 读取深度进行测试，不改写深度。<code>normal</code> 的 RGB 是映射到 <code>[0,1]</code> 的世界空间法线，覆盖采样点的 A 为 <code>1</code>，清空背景为 <code>0</code>；<code>motion</code> 为当前屏幕 UV 减去前一帧屏幕 UV，因此前一帧 UV 是 <code>uv - motion</code>。<code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code> 都使用 View 渲染分辨率。启用 MSAA 时，法线与运动的绘制目标与深度采样数一致，对外发布的是单采样颜色 Resolve；覆盖边缘的法线 A 可能是分数。全屏 <code>Texture2D</code> 深度输入解析为最近的覆盖采样点（最小设备深度）。<code>lib/pass_buffers.glsl</code> 的 <code>PassBuffers</code> 帮助函数使用左上角为原点的 UV、Vulkan <code>[0,1]</code> 设备深度及当前 View 的逆视图投影矩阵重建世界坐标，像素运动量按所选纹理尺寸换算。应在生产者之后的 EffectStage（如 <code>after_opaque</code>）采样；语义缺失时报绑定错误，不会提供旧帧资源。</p>
@@ -665,8 +723,8 @@
 
 <p><code>write_buffer()</code> 会派生一份替换了单个 Semantic 的 Result。Parent 仍指向较早的纹理，后续拓扑可以有意采样任一 Revision。Revision 只在当前 Graph 构建内表示发布顺序，不代表帧号、持久资产 ID 或可变 GPU 资源版本。</p>
 <p>惰性 Geometry Provider 可以把缺失的 Semantic 加入拥有它的 Result。一次写入派生出新 Result 后，早期 Result 的语义绑定仍保持原值。</p>
-<p><code>publish_pass_result()</code> 只接受由 Semantic 名称映射到 Graph <code>TextureHandle</code> 的数据，同一次 Graph 构建中的 <code>source</code> 必须唯一。<code>PassResult.sample()</code> 返回逻辑 Handle；<code>snapshot</code> 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU Image。仍需由 Pass 声明写入纹理，并由下游 Pass 声明读取。</p>
-<p>Texture Handle 与 GPU Buffer Handle 是一次 Builder 运行所拥有的轻量逻辑名称记录。不要把它们保存在 Pipeline 实例上，不要在重建后继续使用，也不要传给另一个 Graph。Python Handle 类型不携带 Graph ID，因此同名的跨 Graph 错误可能绕过早期身份检查。最终的 <code>RenderGraphDescription</code> 保存名称与资源描述，实际资源由每相机 Native Graph 创建。</p>
+<p><code>publish_pass_result()</code> 将 Semantic 名称映射到属于同一 Graph 的 <code>TextureHandle</code> 或 GPU <code>BufferHandle</code>；例如 <code>color</code> 是纹理，<code>light_list</code> 是 Buffer。同一次 Graph 构建中的 <code>source</code> 必须唯一。<code>PassResult.sample()</code> 返回逻辑 Handle；<code>snapshot</code> 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU 资源。仍需由 Pass 声明生成资源，并由下游 Pass 使用对应的纹理或 Buffer API 声明读取。</p>
+<p>Texture Handle 与 GPU Buffer Handle 是一次 Builder 运行所拥有的轻量逻辑名称记录。不要把它们保存在 Pipeline 实例上，不要在重建后继续使用，也不要传给另一个 Graph。同名不代表所有权相同：Graph 在发布 Result、绑定 Pass 资源和指定输出时检查 Handle 的对象身份，即使名称相同也会拒绝其它 Graph 的 Handle。派生 Result 同样要求 Parent 属于当前 Graph。最终的 <code>RenderGraphDescription</code> 保存名称与资源描述，实际资源由每相机 Native Graph 创建。</p>
 <p>同一个 Graph 中的所有 Camera Target 都指向相机的物理颜色输出，声明多张时会产生警告。持久的 <code>inx.RenderTexture</code> 则拥有独立的资源生命周期：可以赋给 <code>Camera.target_texture</code>、<code>UIImage.texture</code> 或材质纹理参数，也可以通过 <code>graph.import_texture()</code> 显式接入渲染图。重建图不会销毁该资源。这些运行时引用不生成资产 GUID，也不会自动保存成纹理资产。</p>
 <p>尺寸可以指定为固定像素，也可以相对于 Game 的渲染分辨率。资源在引擎线程创建，例如放在组件的 <code>start()</code> 中：</p>
 <div class="highlight"><pre><span></span><code><span class="n">PixelFormat</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span>
@@ -683,14 +741,14 @@
 </code></pre></div>
 
 <p>这里的基准是 <strong>Game 实际渲染像素</strong>，不是 Game 面板的显示缩放、桌面 DPI、Scene View 的尺寸或最后绘制的相机尺寸。Game 为 641×401 时，<code>half_size.width, half_size.height</code> 为 <code>(321, 201)</code>，不足一个像素的部分向上取整。两个比例必须为正的有限数值，大于 1 表示超采样。Game 分辨率变化时，同一资源及其 Camera、材质、UI 引用一起更新，不需要逐帧调用 <code>resize()</code>。</p>
-<p>固定尺寸资源的 <code>scale</code> 为 <code>None</code>，可以用 <code>resize(width, height)</code> 修改像素尺寸；相对尺寸资源的 <code>scale</code> 只读，不能再用像素 <code>resize()</code>。修改尺寸模式、比例、格式、深度或 MSAA 时，创建新资源并替换引用。分配失败会保留旧分配并报告错误，不静默降低尺寸或替换格式。相机管线使用 TAA 等需要读取深度的效果时，应显式设置 <code>sampled_depth=True</code>；未声明这个用途的深度采样会在图提交前被拒绝。<code>storage=True</code> 声明 storage image 用途，普通光栅绘制不需要它。</p>
+<p>固定尺寸资源的 <code>scale</code> 为 <code>None</code>，可以用 <code>resize(width, height)</code> 修改像素尺寸；相对尺寸资源的 <code>scale</code> 只读，不能再用像素 <code>resize()</code>。修改尺寸模式、比例、格式、深度或 MSAA 时，创建新资源并替换引用。分配失败会保留旧分配并报告错误，不静默降低尺寸或替换格式。使用 Default Deferred 时应显式设置 <code>sampled_depth=True</code>，因为它的光照 Pass 即使没有效果也会读取深度；相机管线使用 TAA 等需要读取深度的效果时也需要这个声明。保存的 RenderTexture 资产同样需要启用它。未声明这个用途的深度采样会在图提交前被拒绝。<code>storage=True</code> 声明 storage image 用途，普通光栅绘制不需要它。</p>
 <p>参考尺寸的概念可对照 <a href="https://docs.unity.cn/Packages/com.unity.render-pipelines.core%4016.0/manual/rthandle-system-using.html">Unity RTHandle 的比例分配</a>，但 Infernux 对外仍然只有 <code>RenderTexture</code>。这里按当前分辨率分配向上取整后的尺寸，也会随分辨率缩小，不承诺 Unity 按最大参考尺寸保留分配的策略。</p>
 <p>需要复用资产时，在 Project 中选择 <strong>创建 &gt; 渲染纹理</strong>。新建资产默认带 D32 深度，可直接交给 Camera；只需要颜色的用途可以在 Inspector 中关闭深度。Inspector 编辑的仍是同一份尺寸、格式、MSAA 和用途描述，支持普通的自动保存、撤销和重做。只选中资产不会分配 GPU 纹理。导入器生成 <code>Library/Artifacts/RenderTexture/&lt;guid&gt;.inxrtex</code>，Cook 收集的是这份二进制描述，不是源 JSON，也不是渲染出来的像素。</p>
 <p>在脚本中声明普通序列化字段，再到 Inspector 中挂上资产即可：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Monitor</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span>
+    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Camera</span><span class="p">)</span><span class="o">.</span><span class="n">target_texture</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">output</span>
@@ -730,7 +788,8 @@
 </code></pre></div>
 
 <p><code>read_buffer()</code> 与 <code>write_buffer()</code> 会根据这些标志校验 Storage、Indirect 或 Transfer Access。<code>copy_buffer()</code> 会给两端 Handle 补充 Transfer Source/Destination 标志。这些声明负责描述访问与同步；资源还需要被可执行 Pass Action 实际使用。</p>
-<p><code>samples = graph.set_msaa_samples(1|2|4|8)</code> 声明屏幕管线的采样偏好，并返回实际采样数。绑定了 <code>Camera.target_texture</code> 时，以目标资源的采样数为准。创建多采样附件和 Resolve Pass 必须使用返回值，不要写死采样数，也不要为不同相机反复改写作者参数。RenderStack 和独立管线按这个采样配置复用不同的图。<code>set_msaa_samples(0)</code> 把屏幕采样设置交给原生层，不适合用来决定显式 Resolve 拓扑。Camera Target 和场景尺寸的 Depth Texture 默认继承 <code>samples=0</code>，其它瞬态 Texture 默认单采样；同一 Raster Pass 的颜色与深度附件必须使用相同采样数。</p>
+<p><code>samples = graph.set_msaa_samples(requested_samples)</code> 声明屏幕管线的采样偏好，并返回实际采样数；<code>requested_samples</code> 必须是 <code>1</code>、<code>2</code>、<code>4</code>、<code>8</code> 之一。绑定了 <code>Camera.target_texture</code> 时，以目标资源的采样数为准。创建多采样附件和 Resolve Pass 必须使用返回值，不要写死采样数，也不要为不同相机反复改写作者参数。RenderStack 和独立管线按这个采样配置复用不同的图。<code>set_msaa_samples(0)</code> 把屏幕采样设置交给原生层，不适合用来决定显式 Resolve 拓扑。Camera Target 和场景尺寸的 Depth Texture 默认继承 <code>samples=0</code>，其它瞬态 Texture 默认单采样；同一 Raster Pass 的颜色与深度附件必须使用相同采样数。</p>
+<p><code>Default Deferred</code> 当前要求 Camera Target 使用单采样。为它创建目标时设置 <code>samples=1</code>；多采样目标会在提交渲染图之前被拒绝。Forward 和 Forward+ 支持使用不同采样数的固定目标，不会改写作者设置的管线采样偏好。</p>
 <p>多采样 Color 需要变成单采样 Texture 时，使用 <code>write_resolve()</code>：</p>
 <div class="highlight"><pre><span></span><code><span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
 <span class="n">resolved</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
@@ -748,6 +807,7 @@
 <span class="k">with</span> <span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span><span class="s2">"Route"</span><span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
     <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
     <span class="n">render_pass</span><span class="o">.</span><span class="n">write_depth</span><span class="p">(</span><span class="n">depth</span><span class="p">)</span>
+    <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
         <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">resolved</span><span class="p">)</span>
     <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span><span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
@@ -814,8 +874,8 @@
 <span class="n">graph</span><span class="o">.</span><span class="n">screen_ui_overlay_section</span><span class="p">()</span>  <span class="c1"># 显示编码及屏幕叠加 UI。</span>
 </code></pre></div>
 
-<p>世界 UI 仍按正常规则测试该 Pass 声明的深度；晚绘制不等于穿墙显示。项目也可以选择较早阶段的兼容深度快照，但必须显式生成快照。两组掩码应互不重叠，避免同一个元素画两次。<code>screen_ui_section(world_ui_layer_mask=...)</code> 会把同样的过滤条件传给普通世界 UI Pass，预先声明的 Pass 则保留原设置。屏幕空间 UI 不受影响。RenderTexture 依赖也只从该 Pass 实际绘制的元素收集。</p>
-<p>若世界 UI 元素明确关联某个场景对象，可将其持久化 GameObject 引用设为 <code>world_ignored_occluder</code>。默认仍受所有场景深度遮挡；启用后，Default Forward 图会重放不含该对象 renderer 绘制的 opaque／alpha-cutout 深度，其他对象的深度照常遮挡。自定义场景深度写入和相机保留深度不支持这一策略，会明确拒绝，而不会变成始终置顶。运行时指针使用独立的 Physics 合同：只跳过关联对象拥有的 Collider 命中，其余非 Trigger Collider 仍可阻挡。没有 Collider 的可见网格可以写入渲染深度，却不会阻挡指针；普通世界 UI 也存在这一边界。Scene View 选择仍合并原有的 renderer／physics 候选，不是精确到 alpha 像素的 GPU 多层拾取。</p>
+<p>默认情况下，世界 UI 测试该 Pass 声明的深度；晚绘制不等于穿墙显示。只有在元素上显式设置 <code>world_always_on_top=True</code>，才会跳过场景深度及指针遮挡。项目也可以选择较早阶段的兼容深度快照，但必须显式生成快照。两组掩码应互不重叠，避免同一个元素画两次。<code>screen_ui_section(world_ui_layer_mask=...)</code> 会把同样的过滤条件传给普通世界 UI Pass，预先声明的 Pass 则保留原设置。屏幕空间 UI 不受影响。RenderTexture 依赖也只从该 Pass 实际绘制的元素收集。</p>
+<p>若世界 UI 元素明确关联某个场景对象，可将其持久化 GameObject 引用设为 <code>world_ignored_occluder</code>。默认仍受所有场景深度遮挡；启用后，图必须只有一个明确清空深度的 Forward 场景深度生产者，重放时只排除关联对象的 opaque／alpha-cutout 绘制，其他对象的深度照常遮挡。Default Forward 满足这一合同。每个世界 UI Pass 都按自身与 Camera 的层掩码交集计算策略，并验证该 Pass 之前的深度来源。不兼容的深度生产者或附件、额外的深度写入、世界 UI Pass 清空深度，以及相机保留深度等组合会明确拒绝，而不会变成始终置顶。运行时指针使用独立的 Physics 合同：只跳过关联对象拥有的 Collider 命中，其余非 Trigger Collider 仍可阻挡。没有 Collider 的可见网格可以写入渲染深度，却不会阻挡指针；普通世界 UI 也存在这一边界。Scene View 选择仍合并原有的 renderer／physics 候选，不是精确到 alpha 像素的 GPU 多层拾取。</p>
 <h2 id="fullscreen-raster-state">全屏深度与混合</h2>
 <p>这些控制分别承担 Unity 中 <a href="https://docs.unity3d.com/6000.0/Documentation/Manual/SL-ZTest.html">ZTest</a>、<a href="https://docs.unity3d.com/6000.0/Documentation/Manual/SL-ZWrite.html">ZWrite</a> 和常规透明 <a href="https://docs.unity3d.com/6000.0/Documentation/Manual/SL-Blend.html">Blend</a> 的职责，在这里通过图的 Pass 声明；并不代表已覆盖 ShaderLab 的所有渲染状态。</p>
 <p>全屏效果默认替换颜色，不测试或写入深度。需要遮挡或叠加的效果可以显式声明状态，使用同一个 RenderGraph 和渲染设备：</p>
@@ -869,6 +929,7 @@
 <p><code>graph.build()</code> 会检查资源与 Pass 重名、资源缺失、Action 与 Pass Type 不匹配、Buffer Usage、Attachment 格式、采样数一致性、Resolve 契约、扩展点位置和最终输出。随后由 Native Compiler 校验并调度生成的 Graph。</p>
 <p>拓扑编辑失败时，RenderStack 拒绝这次修改，保留该输出采样配置上最后一次成功的图及其配套效果绑定；Inspector 在保留已有拓扑视图的同时报告错误。如果从未构建成功，Editor 和 Player 都明确报错，不会换成 Default Forward。修复被监听的管线文件或修改管线参数会清除失败状态。这是作者编辑事务的处理，不代表允许读取未写入的纹理，也不代表可以偷偷拿旧相机画面充当本帧输出。</p>
 <p>Standalone <code>RenderPipeline.render()</code> 没有上一份有效图或 Default Forward 恢复。<code>define_topology()</code> 或 <code>build()</code> 失败后，<code>_standalone_desc</code> 保持为空，异常继续可见，后续 Render 调用会重试。管线被替换时，<code>dispose()</code> 会清除旧的 Standalone Description。</p>
+<p>更新相机专属的动态参数时，先应用 Graph，再调用 <code>context.update_parameter_blocks()</code>，最后调用 <code>context.submit_culling(culling)</code>。提交会同时冻结该相机的参数值和 Renderer List；提交后的参数更新属于后续提交。覆盖 <code>render_camera()</code> 时应保持这个顺序，不能先调用基类完成提交，再修改本次绘制所需的参数。</p>
 <p>当前 Editor 没有图形化 RenderGraph Debugger。可使用 <code>graph.get_debug_string()</code> 查看资源、Pass Action、读写、Resolve 与输出的文本摘要，再到 Editor 和真实构建中确认行为。这段文本描述一份 Topology Artifact，无法区分每台相机的 Native 实例。多相机运行日志应同时包含 Host 可取得的 Camera 身份、<code>context.graph_instance_id</code> 与 <code>RenderGraphDescription.source_revision</code>；Graph Instance ID 用于区分 Native Graph 实例，Source Revision 标识共享的 Python 拓扑。</p>
 <p>低层管线交付前，至少检查以下几点：</p>
 <ol>
@@ -885,10 +946,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

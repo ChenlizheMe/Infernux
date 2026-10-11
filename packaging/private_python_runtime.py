@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import shutil
@@ -9,6 +10,8 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 from python_runtime_catalog import (
@@ -119,12 +122,6 @@ def runtime_archive_for_machine(
     )
 
 
-def _remove_tree(path: Path) -> None:
-    if not path.exists():
-        return
-    shutil.rmtree(path)
-
-
 def write_private_runtime_marker(
     runtime_root: str | os.PathLike[str],
     archive_name: str,
@@ -189,40 +186,92 @@ def is_current_private_runtime_root(
     )
 
 
+def _replace_runtime_directory(source: Path, destination: Path) -> None:
+    # Windows can briefly retain image/scanner handles after the candidate
+    # interpreter exits. Retry the atomic rename, never recopy or delete the
+    # live runtime. Persistent permissions/sharing failures still propagate.
+    delays = (0.05, 0.1, 0.2, 0.4, 0.8, 0.8)
+    for attempt in range(len(delays) + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            if (sys.platform != "win32" or getattr(exc, "winerror", None) not in {5, 32, 33}
+                    or attempt == len(delays)):
+                raise
+            time.sleep(delays[attempt])
+
+
+@contextmanager
+def runtime_publication(destination: str | os.PathLike[str], *, replace_existing: bool = True):
+    """Prepare an owned candidate, then replace the live tree on successful exit."""
+    target = Path(destination).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    extract_root = Path(
+        tempfile.mkdtemp(prefix=f".{target.name}.extract-", dir=target.parent)
+    )
+    backup = extract_root / "previous-runtime"
+    committed = False
+    try:
+        unpacked_runtime = extract_root / "python"
+        yield unpacked_runtime
+        if not unpacked_runtime.is_dir():
+            raise RuntimeError("Runtime publication requires a prepared python/ directory.")
+
+        # Keep the live tree until extraction, its marker, and validation have
+        # all succeeded. A failed rename restores the previous tree once;
+        # this is transaction rollback, never a second installation attempt.
+        if target.exists():
+            if not replace_existing:
+                raise FileExistsError(str(target))
+            _replace_runtime_directory(target, backup)
+        try:
+            _replace_runtime_directory(unpacked_runtime, target)
+        except BaseException:
+            if backup.exists():
+                try:
+                    _replace_runtime_directory(backup, target)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Runtime publication and restoration failed; the previous runtime is preserved at {backup}"
+                    ) from exc
+            raise
+        committed = True
+    finally:
+        # A failed restore must leave its backup available for recovery. Once
+        # committed, cleanup failure cannot turn a valid install into failure.
+        if committed or not backup.exists():
+            try:
+                shutil.rmtree(extract_root)
+            except OSError as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not clean runtime extraction directory %s: %s", extract_root, exc,
+                )
+
+
 def extract_runtime_archive(
     archive_path: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
+    validate: Callable[[Path], None] | None = None,
 ) -> None:
     archive = Path(archive_path).resolve()
-    target = Path(destination).resolve()
     if not archive.is_file():
         raise RuntimeError(f"Private Python runtime archive not found: {archive}")
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    extract_root = Path(
-        tempfile.mkdtemp(prefix=f".{target.name}.extract-", dir=target.parent)
-    )
-    try:
+    with runtime_publication(destination) as candidate:
         try:
             with tarfile.open(archive, mode="r:gz") as package:
-                package.extractall(extract_root, filter="data")
+                package.extractall(candidate.parent, filter="data")
         except (tarfile.TarError, OSError) as exc:
             raise RuntimeError(f"Invalid private Python runtime archive: {archive}") from exc
-
-        unpacked_runtime = extract_root / "python"
-        if not unpacked_runtime.is_dir():
+        if not candidate.is_dir():
             raise RuntimeError(
                 "Unexpected private Python runtime archive layout: missing the python/ root."
             )
-
-        if target.exists():
-            _remove_tree(target)
-        os.replace(unpacked_runtime, target)
-        write_private_runtime_marker(target, archive.name, runtime=runtime)
-    finally:
-        shutil.rmtree(extract_root, ignore_errors=True)
+        write_private_runtime_marker(candidate, archive.name, runtime=runtime)
+        if validate is not None:
+            validate(candidate)
 
 
 def prune_runtime_staging_cache(

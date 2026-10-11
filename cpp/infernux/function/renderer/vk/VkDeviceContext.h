@@ -22,6 +22,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "VulkanFeatureState.h"
 #include <array>
 #include <function/renderer/rhi/RhiDevice.h>
 #include <functional>
@@ -50,7 +51,7 @@ class VkDeviceContext
 {
   public:
     /// @brief Default constructor - creates uninitialized context
-    VkDeviceContext() = default;
+    VkDeviceContext();
 
     /// @brief Destructor - automatically cleans up all Vulkan objects
     ~VkDeviceContext();
@@ -168,6 +169,8 @@ class VkDeviceContext
         return m_surface;
     }
 
+    /// Adopt the externally-created surface, including before device creation.
+    /// Destroy releases this surface before releasing its instance.
     /// Replace the externally-created presentation surface without rebuilding
     /// the logical device. The caller must retire the old swapchain and destroy
     /// the old surface before publishing the replacement.
@@ -247,6 +250,11 @@ class VkDeviceContext
     /// capabilities expose the generic attachment baseline; render targets
     /// with transfer/resolve usage must validate the exact usage combination.
     [[nodiscard]] rhi::SampleCountMask GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept;
+
+    [[nodiscard]] bool HasRhiDevice() const noexcept
+    {
+        return m_rhiDevice != nullptr;
+    }
 
     [[nodiscard]] VulkanRhiDevice &GetRhiDevice() noexcept
     {
@@ -402,7 +410,7 @@ class VkDeviceContext
     VkPhysicalDeviceFeatures m_deviceFeatures{};
     uint32_t m_instanceApiVersion = VK_API_VERSION_1_2;
     rhi::DeviceCaps m_capabilities{};
-    rhi::DeviceCapabilityState m_rhiCapabilityState{};
+    vk::VulkanFeatureState m_vulkanFeatures{};
     std::unique_ptr<VulkanRhiDevice> m_rhiDevice;
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate

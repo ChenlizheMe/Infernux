@@ -801,8 +801,9 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             m_syntheticMouseButtonsReadyForRelease &= static_cast<uint8_t>(~mouseButtonMask);
         }
         m_lastProcessedSyntheticInputSequence.store(synthetic.sequence, std::memory_order_release);
-        if (m_closeRequested)
-            break;
+        // A close request may remain pending throughout a Save/Discard/Cancel
+        // modal. Its input batch still belongs to the live window; never drop
+        // the remaining transitions merely because confirmation is pending.
     }
 
     if (!deferredEvents.empty()) {
@@ -1039,7 +1040,15 @@ void InxView::SetWindowResizable(bool resizable)
 
 void InxView::SDLInit()
 {
+#if INFERNUX_COMPILE_OUT_DEBUG_LOGS
+    // A development Player explicitly opts into platform diagnostics. The
+    // shipping Editor/Player otherwise keeps SDL startup chatter out of logs.
+    const char *debugPlayerFlag = std::getenv("_INFERNUX_PLAYER_DEBUG_BUILD");
+    const bool debugPlayer = debugPlayerFlag != nullptr && debugPlayerFlag[0] == '1' && debugPlayerFlag[1] == '\0';
+    SDL_SetLogPriorities(debugPlayer ? SDL_LOG_PRIORITY_VERBOSE : SDL_LOG_PRIORITY_WARN);
+#else
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
+#endif
     // The Editor and Windows Player are Per-Monitor V2 applications. Make the
     // process contract explicit before SDL initializes video; silently using
     // system DPI awareness would make monitor transitions geometrically wrong.
@@ -1106,6 +1115,7 @@ void InxView::SDLInit()
         INXLOG_ERROR("Could not create a window: ", error);
         throw std::runtime_error("SDL window creation failed: " + error);
     }
+    VerifyRequiredWindowsDpiPolicy(m_window);
     INXLOG_DEBUG("Window created successfully.");
 
     // X11 must commit the initial map before maximizing a hidden editor or
@@ -1126,6 +1136,12 @@ void InxView::SDLInit()
     }
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
     SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
+    // Keep this one startup record in release logs too, without adding noise
+    // to the user's Console or enabling verbose per-frame native logging.
+    INXLOG_DIAGNOSTIC("INFERNUX_WINDOW_GEOMETRY driver=", SDL_GetCurrentVideoDriver(), " sdl=", SDL_GetVersion(),
+                      " window=", m_windowWidth, "x", m_windowHeight, " pixels=", m_framebufferWidth, "x",
+                      m_framebufferHeight, " displayScale=", SDL_GetWindowDisplayScale(m_window),
+                      " pixelDensity=", SDL_GetWindowPixelDensity(m_window), " ", DescribeWindowsDpiPolicy(m_window));
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)

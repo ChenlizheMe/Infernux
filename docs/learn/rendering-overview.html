@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Follow one object from Material and shader stages through lighting, pipeline routing, effects, UI, and final display.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/rendering-overview.html">
     <title>How authored rendering enters an Infernux frame · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -46,19 +46,19 @@
 <div class="learn-note"><strong>The frame contains more work.</strong><p>The default pipelines and renderer add shadow rendering, depth work, GPU picking, motion-vector variants, and MSAA color/depth resolves around this path when a view or effect needs them. These engine-internal paths sit outside the sequence of authoring stages shown above.</p></div>
 
 <h2 id="first-result">Get one material on screen first</h2>
-<p><strong>Prerequisites.</strong> Open an Infernux project with a writable <code>Assets</code> folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, <code>Standard</code> vertex stage, and <code>Lit</code> fragment stage; it needs no imported asset, custom shader, or RenderStack. Use a clean project, or first rename any project shader whose <code>ShaderInfo Name</code> is <code>Standard</code> or <code>Lit</code>: project shaders are scanned before built-ins and the current selector does not label their origin. A newly created scene already contains <strong>Main Camera</strong> and <strong>Directional Light</strong>. The camera/light steps below also cover a scene whose Hierarchy was cleared.</p>
+<p><strong>Prerequisites.</strong> Open an Infernux project with a writable <code>Assets</code> folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, <code>Standard</code> vertex stage, and <code>Lit</code> fragment stage; it needs no imported asset, custom shader, or RenderStack. Keep project shader names distinct from those built-in stage identifiers, because linked programs currently use stage names for their program namespace. A newly created scene already contains <strong>Main Camera</strong> and <strong>Directional Light</strong>. The camera/light steps below also cover a scene whose Hierarchy was cleared.</p>
 <p>Reproduce the complete baseline from an otherwise empty scene:</p>
 <ol>
 <li>Right-click empty space in <strong>Hierarchy</strong>, choose <strong>Create 3D Object &gt; Cube</strong>, and leave the Cube Transform at position <code>(0, 0, 0)</code>. Its MeshRenderer should show one mesh and one material slot.</li>
 <li>If no enabled Camera exists, right-click Hierarchy and choose <strong>Camera</strong>. Set its position to <code>(0, 1, -10)</code> and rotation to <code>(0, 0, 0)</code> so the Cube is inside the Game view. If no enabled light exists, choose <strong>Light &gt; Directional Light</strong>; the creation command supplies a useful initial rotation.</li>
-<li>In <strong>Project</strong>, open <code>Assets</code> or a child folder, right-click empty space, and choose <strong>Material (.mat)</strong>. Name it <code>FirstCube</code>. The current template creates a Material whose <strong>Vertex</strong> selector is <code>Standard</code> and <strong>Fragment</strong> selector is <code>Unlit</code>. For this lighting baseline, change <strong>Fragment</strong> to the built-in <code>Lit</code> in its Inspector.</li>
+<li>In <strong>Project</strong>, open <code>Assets</code> or a child folder, right-click empty space, and choose <strong>Material (.mat)</strong>. Name it <code>FirstCube</code>. The current template creates a Material whose <strong>Vertex</strong> selector is <code>Standard</code> and <strong>Fragment</strong> selector is <code>Lit</code>; keep those built-in stages for this lighting baseline.</li>
 <li>Select the Cube. Under <strong>MeshRenderer &gt; Materials</strong>, drag <code>FirstCube.mat</code> onto <strong>Element 0</strong>, or use that slot's asset picker.</li>
 <li>Keep the scene free of a RenderStack for this first check. The renderer uses <strong>Default Forward</strong> when no RenderStack is present.</li>
 <li>Open <strong>Scene</strong> and <strong>Game</strong>. Select <code>FirstCube.mat</code> and change <strong>Base Color</strong> to a saturated color that is easy to distinguish from white.</li>
 </ol>
 <p>The baseline passes when the same Cube is visible in both views, its lit faces show different brightness, the chosen Base Color appears on the Cube, and the Material preview changes with it. The Console must contain no new shader import, stage-link, or pipeline error. Scene-visible/Game-missing usually points to the scene Camera; missing in both views points first to the Cube's mesh, enabled MeshRenderer, or <strong>Element 0</strong> assignment.</p>
 <p>For a second, explicit pipeline check, create <strong>Post Processing &gt; RenderStack</strong> from the Hierarchy context menu and select <strong>Default Forward</strong> in its Inspector. With an empty effect list, the Cube should remain visually unchanged. This comparison checks that the explicit baseline is usable; pixels alone do not prove which route produced them.</p>
-<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (Standard vertex + Unlit fragment; this chapter switches the fragment to the built-in Lit), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
+<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (Standard vertex + Lit fragment), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
 
 <h3 id="verify-the-asset-not-just-its-preview">Verify the asset, not just its preview</h3>
 <p>For a repeatable color check, keep the Cube Scale at <code>(1, 1, 1)</code> and Rotation at <code>(0, 0, 0)</code>, and place the game Camera at <code>(0, 1, -10)</code> with Rotation <code>(0, 0, 0)</code> even when a Camera already exists. Use the default Directional Light and no post-processing. Edit <strong>the Project asset</strong> <code>FirstCube.mat</code>: set Base Color RGBA to <code>(0.9, 0.1, 0.2, 1)</code>, then <code>(0.2, 0.7, 0.1, 1)</code> in normalized 0–1 units. Keep Metallic at <code>0</code> and Smoothness at <code>0.5</code> for this comparison. Lighting changes brightness, so compare the red-to-green change rather than expecting exact RGB pixels.</p>
@@ -67,7 +67,7 @@
 <h2 id="the-rendering-chain">The authored rendering chain</h2>
 <p>Start with one object in a scene:</p>
 <ol>
-<li>Its <strong>Material</strong> chooses one <code>.vert</code> and one <code>.frag</code> by their case-sensitive <code>ShaderInfo Name</code>, then stores the property values declared by those stages.</li>
+<li>Its <strong>Material</strong> binds one vertex stage and one fragment stage, then stores the property values declared by those stages. Project <code>.vert</code> and <code>.frag</code> assets are referenced by GUID and display their current, case-sensitive <code>ShaderInfo Name</code>; built-in stages use symbolic identifiers such as <code>Standard</code> and <code>Lit</code>.</li>
 <li>The <strong>vertex stage</strong> decides where the mesh vertices end up. If it contains no <code>vertex()</code> hook, Infernux uses the standard object-to-clip transform.</li>
 <li>The <strong>fragment stage</strong> samples textures and turns the material inputs into <code>SurfaceData</code>: albedo, normal, metallic, smoothness, emission, alpha, and related surface facts.</li>
 <li>The <strong>ShadingModel</strong> decides how that surface interacts with the current camera's lights. PBR, unlit, toon, and project-specific lighting belong here.</li>
@@ -78,7 +78,7 @@
 <p>The useful boundary is between <em>what a surface is</em> and <em>when it is drawn</em>. A toon material stays independent of the scene's Forward+ or mixed-pipeline choice, while the pipeline can route its queue without reimplementing toon lighting.</p>
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="visual evidence from an Infernux capture showing two characters with contrasting appearances" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux demo scene, materials, shading models, pipeline, and RenderStack configuration used by this chapter.</figcaption>
+  <figcaption>An Infernux demo capture showing contrasting material styles; follow the baseline above to verify the current authoring path.</figcaption>
 </figure>
 
 <div class="learn-note"><strong>Evidence scope.</strong><p>This capture is visual evidence that the displayed frame existed in that project and session. It does not identify the scene asset, Material or ShadingModel names, active RenderPipeline, RenderStack contents, engine commit, or capture settings. Reproduce architecture claims with the baseline workflow and current source contracts above, not by inferring hidden configuration from the pixels.</p></div>
@@ -154,19 +154,19 @@
 <div class="learn-note"><strong>一帧还包含更多工作。</strong><p>默认管线和渲染器会按相机与效果的需要，在这条路径周围安排阴影、深度、GPU 拾取、运动向量变体，以及 MSAA 颜色/深度 Resolve。这些引擎内部路径位于上图所示的作者阶段序列之外。</p></div>
 
 <h2 id="first-result_1">先让一个材质正确出现在画面里</h2>
-<p><strong>准备条件。</strong> 打开一个 <code>Assets</code> 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、<code>Standard</code> 顶点阶段和 <code>Lit</code> 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。请使用干净项目，或先给 <code>ShaderInfo Name</code> 为 <code>Standard</code>、<code>Lit</code> 的项目 Shader 改名：选择器会先扫描项目 Shader，再扫描内置 Shader，当前菜单也不显示来源。新建场景已经带有 <strong>Main Camera</strong> 与 <strong>Directional Light</strong>；下面也包含 Hierarchy 被清空后的补建步骤。</p>
+<p><strong>准备条件。</strong> 打开一个 <code>Assets</code> 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、<code>Standard</code> 顶点阶段和 <code>Lit</code> 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。项目 Shader 名称应与这些内置阶段标识符保持区别，因为当前链接程序仍以阶段名作为程序命名空间。新建场景已经带有 <strong>Main Camera</strong> 与 <strong>Directional Light</strong>；下面也包含 Hierarchy 被清空后的补建步骤。</p>
 <p>从其余内容为空的场景复现完整基线：</p>
 <ol>
 <li>在 <strong>Hierarchy</strong> 空白处右键，选择 <strong>Create 3D Object &gt; Cube</strong>，保持 Cube 的 Transform 位置为 <code>(0, 0, 0)</code>。它的 MeshRenderer 应显示一个 Mesh 和一个 Material Slot。</li>
 <li>场景里没有启用的 Camera 时，在 Hierarchy 空白处右键选择 <strong>Camera</strong>，把位置设为 <code>(0, 1, -10)</code>、旋转设为 <code>(0, 0, 0)</code>，让 Cube 进入 Game 画面。没有启用的灯光时，选择 <strong>Light &gt; Directional Light</strong>；该创建命令会提供可用的初始旋转。</li>
-<li>在 <strong>Project</strong> 中打开 <code>Assets</code> 或其子目录，在空白处右键选择 <strong>Material (.mat)</strong>，命名为 <code>FirstCube</code>。当前模板会创建 <strong>Vertex</strong> 为 <code>Standard</code>、<strong>Fragment</strong> 为 <code>Unlit</code> 的 Material。本章要观察受光面的明暗变化，请在 Inspector 中把 <strong>Fragment</strong> 换成内置的 <code>Lit</code>。</li>
+<li>在 <strong>Project</strong> 中打开 <code>Assets</code> 或其子目录，在空白处右键选择 <strong>Material (.mat)</strong>，命名为 <code>FirstCube</code>。当前模板会创建 <strong>Vertex</strong> 为 <code>Standard</code>、<strong>Fragment</strong> 为 <code>Lit</code> 的 Material；本章的光照基线保持这两个内置阶段即可。</li>
 <li>选中 Cube，在 <strong>MeshRenderer &gt; Materials</strong> 中把 <code>FirstCube.mat</code> 拖到 <strong>Element 0</strong>，也可以使用该 Slot 的资产选择器。</li>
 <li>第一次检查先不创建 RenderStack。场景缺少 RenderStack 时，渲染器使用 <strong>Default Forward</strong>。</li>
 <li>打开 <strong>Scene</strong> 与 <strong>Game</strong>。选中 <code>FirstCube.mat</code>，把 <strong>Base Color</strong> 改成容易与白色区分的高饱和颜色。</li>
 </ol>
 <p>以下现象同时出现就算通过：两个视图都能看到同一个 Cube；受光面有明暗变化；Cube 显示所选 Base Color；Material 预览同步变化；Console 没有新增 Shader 导入、阶段链接或 Pipeline 错误。Scene 可见但 Game 缺失时，先查场景 Camera；两个视图都缺失时，先查 Cube 的 Mesh、MeshRenderer 启用状态与 <strong>Element 0</strong> 赋值。</p>
 <p>再做一次显式 Pipeline 检查：从 Hierarchy 右键菜单创建 <strong>Post Processing &gt; RenderStack</strong>，在 Inspector 中选择 <strong>Default Forward</strong>。Effect 列表为空时，Cube 画面应保持一致。这个对照可以确认显式基线可用；仅凭像素无法证明背后的实际路由。</p>
-<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（Standard 顶点 + Unlit 片元，本章再把片元切换为内置 Lit）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
+<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（Standard 顶点 + Lit 片元）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
 
 <h3 id="_1">检查资产同步，而不只是预览图</h3>
 <p>为了复现颜色变化，保持 Cube Scale 为 <code>(1, 1, 1)</code>、Rotation 为 <code>(0, 0, 0)</code>，即使场景已有相机，也将游戏 Camera Position 明确设为 <code>(0, 1, -10)</code>、Rotation 设为 <code>(0, 0, 0)</code>。使用默认 Directional Light，不加后处理。选择 <strong>Project 中的资产</strong> <code>FirstCube.mat</code>，按 0–1 归一化值先将 Base Color RGBA 设为 <code>(0.9, 0.1, 0.2, 1)</code>，再改为 <code>(0.2, 0.7, 0.1, 1)</code>；对比期间 Metallic 保持 <code>0</code>、Smoothness 保持 <code>0.5</code>。光照会影响亮度，观察红色变绿色，不要求画面像素等于输入 RGB。</p>
@@ -175,7 +175,7 @@
 <h2 id="the-rendering-chain_1">用户编写的渲染链</h2>
 <p>从场景里的一个物体开始：</p>
 <ol>
-<li><strong>Material</strong> 按区分大小写的 <code>ShaderInfo Name</code> 选择一份 <code>.vert</code> 和一份 <code>.frag</code>，并保存这些阶段声明的材质参数。</li>
+<li><strong>Material</strong> 绑定一个顶点阶段和一个片元阶段，并保存这些阶段声明的材质参数。项目 <code>.vert</code>、<code>.frag</code> 资产通过 GUID 引用，显示其当前且区分大小写的 <code>ShaderInfo Name</code>；内置阶段使用 <code>Standard</code>、<code>Lit</code> 等符号化标识符。</li>
 <li><strong>顶点阶段</strong>决定网格顶点最终在哪里。没有提供 <code>vertex()</code> Hook 时，Infernux 使用标准的物体空间到裁剪空间变换。</li>
 <li><strong>片元阶段</strong>采样贴图，把材质输入整理成 <code>SurfaceData</code>：基础色、法线、金属度、平滑度、自发光、透明度等表面事实。</li>
 <li><strong>ShadingModel</strong> 决定表面怎样和当前相机的光源交互。PBR、无光照、卡通渲染和项目独有的光照风格都属于这一层。</li>
@@ -189,7 +189,7 @@
   <figcaption>来自 Infernux 演示项目的真实画面，用于观察两种材质风格的差异，不用于推断画面背后的管线配置。</figcaption>
 </figure>
 
-<div class="learn-note"><strong>配套工程。</strong><p>这份截图来自本章对应的 Scene、Material、ShadingModel、活动 RenderPipeline 与 RenderStack 配置。上面的基线流程使用同一套资源，便于在当前版本中复现画面并检查渲染契约。</p></div>
+<div class="learn-note"><strong>证据范围。</strong><p>这份截图证明演示项目在对应会话中出现过该画面，但没有标明 Scene 资产、Material 或 ShadingModel 名称、活动 RenderPipeline、RenderStack 内容、引擎提交或捕获设置。请用上面的基线流程和当前源码契约复现架构行为，不要从像素推断画面背后的配置。</p></div>
 
 <h2 id="four-levels_1">四个定制层级</h2>
 <p>优先选择能解决问题的最低层级：</p>
@@ -255,10 +255,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

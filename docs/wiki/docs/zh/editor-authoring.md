@@ -41,14 +41,10 @@ class ObstacleTools(inx.InxPreload):
 Inspector 与 Scene 工具会遵守同一规则：
 
 ```python
-from infernux.components import (
-    DrivenTransformProperties,
-    InxComponent,
-    drives_transform,
-)
+import infernux as inx
 
-@drives_transform(DrivenTransformProperties.SCALE)
-class ProceduralSurface(InxComponent):
+@inx.drives_transform(inx.DrivenTransformProperties.SCALE)
+class ProceduralSurface(inx.InxComponent):
     pass
 ```
 

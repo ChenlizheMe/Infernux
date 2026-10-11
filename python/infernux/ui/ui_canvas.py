@@ -1,0 +1,383 @@
+"""UICanvas — root container for screen-space UI elements.
+
+A UICanvas is attached to a GameObject in the Hierarchy.
+UI elements (UIText, etc.) are children of the Canvas's GameObject.
+The Canvas owns layout configuration and input geometry. Runtime submission
+builds GPU UI commands; the UI Editor previews the same logical layout.
+
+The canvas defines a *design* reference resolution (default 1920×1080).
+At runtime the Game View scales from design resolution to actual viewport
+size so that all positions, sizes and font sizes adapt proportionally.
+
+Hierarchy:
+    InxComponent → InxUIComponent → UICanvas
+"""
+
+import math
+from numbers import Integral
+
+from infernux.components import (
+    disallow_multiple,
+    add_component_menu,
+    serialized_field,
+    int_field,
+    GameObjectRef,
+)
+from infernux.components.fields import FieldType
+from .inx_ui_component import InxUIComponent
+from .inx_ui_screen_component import is_ui_screen_component
+from .enums import RenderMode, UIScaleMode, ScreenMatchMode
+from .ui_render_revision import is_unchanged_ui_scalar, mark_runtime_ui_dirty
+
+
+def _log2(x: float) -> float:
+    return math.log2(max(x, 1e-6))
+
+
+def _pow2(x: float) -> float:
+    return 2.0 ** x
+
+
+@disallow_multiple
+@add_component_menu("UI/Canvas")
+class UICanvas(InxUIComponent):
+    """Screen-space UI canvas.
+
+    reference_width / reference_height are the *design* reference resolution.
+    They are user-editable and default to 1920×1080.  At runtime the Game
+    View overlay scales all element positions, sizes and font sizes
+    proportionally from this reference to the actual viewport.
+
+    The owner's Transform (and its ancestors) never changes screen geometry.
+    Child controls keep their own local layout positions and rotations.
+
+    Attributes:
+        render_mode: ScreenOverlay or CameraOverlay.
+        sort_order: Rendering order (lower draws first).
+        target_camera: Camera GameObject reference (CameraOverlay mode only).
+        target_camera_id: Compatibility access to the reference's runtime ID.
+    """
+
+    render_mode: RenderMode = serialized_field(default=RenderMode.ScreenOverlay)
+    sort_order: int = int_field(0, range=(-1000, 1000), tooltip="Render order (lower = earlier)")
+    target_camera: GameObjectRef = serialized_field(
+        default=None,
+        field_type=FieldType.GAME_OBJECT,
+        required_component="Camera",
+        tooltip="Camera GameObject for CameraOverlay mode",
+    )
+
+    @property
+    def target_camera_id(self) -> int:
+        """Runtime ID view of the serialized camera reference."""
+        reference = type(self).target_camera.get_raw(self)
+        return int(reference.persistent_id) if reference is not None else 0
+
+    @target_camera_id.setter
+    def target_camera_id(self, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise TypeError("Canvas target_camera_id must be an integer runtime ID")
+        if value < 0:
+            raise ValueError("Canvas target_camera_id must not be negative")
+        self.target_camera = GameObjectRef(persistent_id=int(value)) if value else None
+
+    def _deserialize_fields_document(self, data, **kwargs):
+        if isinstance(data, dict) and "target_camera_id" in data:
+            if "target_camera" in data:
+                raise ValueError("Canvas document declares both target_camera and target_camera_id")
+            data = dict(data)
+            legacy_id = data.pop("target_camera_id")
+            if isinstance(legacy_id, bool) or not isinstance(legacy_id, Integral) or legacy_id < 0:
+                raise ValueError("Legacy Canvas target_camera_id must be a nonnegative runtime ID")
+            data["target_camera"] = {"$type": "game_object_ref", "object_id": int(legacy_id)}
+        return super()._deserialize_fields_document(data, **kwargs)
+
+    # Design reference resolution (serialized, user-editable)
+    reference_width: int = int_field(1920, range=(1, 8192), tooltip="Design reference width", slider=False)
+    reference_height: int = int_field(1080, range=(1, 8192), tooltip="Design reference height", slider=False)
+
+    # ── Canvas Scaler (Unity-aligned) ──
+    ui_scale_mode: UIScaleMode = serialized_field(
+        default=UIScaleMode.ScaleWithScreenSize,
+        tooltip="How the canvas scales UI elements",
+    )
+    screen_match_mode: ScreenMatchMode = serialized_field(
+        default=ScreenMatchMode.MatchWidthOrHeight,
+        tooltip="How to blend width/height matching when using ScaleWithScreenSize",
+    )
+    match_width_or_height: float = serialized_field(
+        default=0.5, range=(0.0, 1.0),
+        tooltip="0 = match width, 1 = match height, 0.5 = blend both",
+        slider=True,
+    )
+    pixel_perfect: bool = serialized_field(
+        default=False,
+        tooltip="Round positions to nearest pixel for crisp rendering",
+    )
+    reference_pixels_per_unit: float = serialized_field(
+        default=100.0, range=(1.0, 10000.0),
+        tooltip="Pixels per unit for sprites in the canvas",
+        slider=False,
+    )
+
+    @staticmethod
+    def _publish_canvas_membership_change() -> None:
+        from .ui_canvas_utils import invalidate_canvas_cache
+
+        invalidate_canvas_cache()
+
+    def _set_game_object(self, game_object):
+        super()._set_game_object(game_object)
+        # Rebinding the same owner after a Scene move changes world membership.
+        # Publish at that lifecycle boundary, not through per-frame polling.
+        self._publish_canvas_membership_change()
+
+    def _invalidate_native_binding(self, *, release_fields: bool = True):
+        was_bound = self.__dict__.get("_game_object") is not None
+        super()._invalidate_native_binding(release_fields=release_fields)
+        if was_bound:
+            self._publish_canvas_membership_change()
+
+    def _call_on_destroy(self):
+        was_bound = self.__dict__.get("_game_object") is not None
+        super()._call_on_destroy()
+        if was_bound:
+            self._publish_canvas_membership_change()
+
+    def __setattr__(self, name, value):
+        unchanged = is_unchanged_ui_scalar(self, name, value)
+        super().__setattr__(name, value)
+        if not name.startswith("_") and not unchanged:
+            mark_runtime_ui_dirty()
+            if name == "sort_order":
+                self._publish_canvas_membership_change()
+
+    # ------------------------------------------------------------------
+    # Scaling helpers (Unity CanvasScaler-aligned)
+    # ------------------------------------------------------------------
+
+    def compute_scale(self, screen_w: float, screen_h: float) -> tuple:
+        """Compute (scale_x, scale_y, text_scale) for the given screen size.
+
+        Mirrors Unity's CanvasScaler behaviour for the three supported
+        ``UIScaleMode`` values.
+
+        Returns:
+            (scale_x, scale_y, text_scale) where text_scale is used for
+            proportional font-size scaling.
+        """
+        ref_w = max(1.0, float(self.reference_width))
+        ref_h = max(1.0, float(self.reference_height))
+        if screen_w < 1 or screen_h < 1:
+            return 1.0, 1.0, 1.0
+
+        mode = self.ui_scale_mode
+
+        if mode == UIScaleMode.ConstantPixelSize:
+            return 1.0, 1.0, 1.0
+
+        if mode == UIScaleMode.ConstantPhysicalSize:
+            # Future: factor in DPI. For now, same as ConstantPixelSize.
+            return 1.0, 1.0, 1.0
+
+        # ScaleWithScreenSize
+        log_w = _log2(screen_w / ref_w) if ref_w > 0 else 0.0
+        log_h = _log2(screen_h / ref_h) if ref_h > 0 else 0.0
+
+        match_mode = self.screen_match_mode
+
+        if match_mode == ScreenMatchMode.MatchWidthOrHeight:
+            match_val = max(0.0, min(1.0, float(self.match_width_or_height)))
+            log_blend = log_w * (1.0 - match_val) + log_h * match_val
+            scale = _pow2(log_blend)
+        elif match_mode == ScreenMatchMode.Expand:
+            scale = min(screen_w / ref_w, screen_h / ref_h)
+        elif match_mode == ScreenMatchMode.Shrink:
+            scale = max(screen_w / ref_w, screen_h / ref_h)
+        else:
+            scale = min(screen_w / ref_w, screen_h / ref_h)
+
+        scale_x = scale
+        scale_y = scale
+
+        if self.pixel_perfect:
+            scale_x = max(1.0, round(scale_x))
+            scale_y = max(1.0, round(scale_y))
+
+        return scale_x, scale_y, min(scale_x, scale_y)
+
+    def compute_logical_size(self, screen_w: float, screen_h: float) -> tuple:
+        """Return the live Canvas rect in logical canvas pixels.
+
+        The reference resolution selects the CanvasScaler scale factor; it is
+        not a fixed rectangle that should be centered and cropped. Anchors
+        resolve against the current screen divided by that scale.
+        """
+        scale_x, scale_y, _ = self.compute_scale(screen_w, screen_h)
+        return (
+            max(1.0, float(screen_w) / max(scale_x, 1e-6)),
+            max(1.0, float(screen_h) / max(scale_y, 1e-6)),
+        )
+
+    # ------------------------------------------------------------------
+    # Cached element list (invalidated when hierarchy changes)
+    # ------------------------------------------------------------------
+    _cached_elements: list = None
+    _cached_elements_version: int = -1
+    _input_logical_size: tuple[float, float] | None = None
+
+    def set_input_logical_size(self, width: float, height: float) -> None:
+        """Publish the layout extent used by the current pointer snapshot."""
+        self._input_logical_size = (max(1.0, float(width)), max(1.0, float(height)))
+
+    @property
+    def input_logical_size(self) -> tuple[float, float]:
+        if self._input_logical_size is not None:
+            return self._input_logical_size
+        return float(self.reference_width), float(self.reference_height)
+
+    def invalidate_element_cache(self):
+        """Mark the cached element list as stale.
+
+        Called automatically when structure_version changes.
+        Also call manually after hierarchy changes (add/remove children).
+        """
+        self._cached_elements = None
+
+    def _get_elements(self):
+        """Return the cached element list, rebuilding if necessary.
+
+        Uses scene.structure_version to avoid DFS every frame.
+        """
+        go = self.game_object
+        if go is not None:
+            scene = go.scene
+            if scene is not None:
+                ver = scene.structure_version
+                if ver != self._cached_elements_version:
+                    self._cached_elements = None
+                    self._cached_elements_version = ver
+                    from .inx_ui_screen_component import _invalidate_rect_cache
+
+                    _invalidate_rect_cache()
+        if self._cached_elements is None:
+            self._cached_elements = list(self.iter_ui_elements())
+        return self._cached_elements
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def iter_ui_elements(self):
+        """Yield this canvas's screen-space UI components (depth-first).
+
+        Nested child canvases define their own rendering and input islands, so
+        their subtrees must not be folded into the parent canvas. This matches
+        Unity-style nested canvas semantics where each canvas owns its own draw
+        list and render mode.
+        """
+        go = self.game_object
+        if go is None:
+            return
+        from .inx_ui_screen_component import InxUIScreenComponent
+
+        for comp in go.get_py_components():
+            if is_ui_screen_component(comp):
+                yield comp
+        yield from self._walk_children(go)
+
+    def _walk_children(self, parent):
+        from .ui_canvas_utils import _is_uicanvas_component
+
+        for child in parent.get_children():
+            components = child.get_py_components()
+            if any(_is_uicanvas_component(comp, UICanvas) for comp in components):
+                continue
+            for comp in components:
+                if is_ui_screen_component(comp):
+                    yield comp
+            yield from self._walk_children(child)
+
+    def raycast(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        tolerance: float = 0.0,
+        layout_width: float | None = None,
+        layout_height: float | None = None,
+    ):
+        """Return the front-most element hit at (canvas_x, canvas_y), or None.
+
+        Iterates children in reverse depth-first order (last drawn = top).
+        Only elements with ``raycast_target = True`` participate.
+        Uses AABB pre-rejection before the full rotated hit-test.
+        """
+        return next(self._raycast_hits(canvas_x, canvas_y, tolerance, layout_width, layout_height), None)
+
+    def raycast_all(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        tolerance: float = 0.0,
+        layout_width: float | None = None,
+        layout_height: float | None = None,
+    ):
+        """Return all elements hit at (canvas_x, canvas_y), front-to-back order."""
+        return list(self._raycast_hits(canvas_x, canvas_y, tolerance, layout_width, layout_height))
+
+    def _raycast_hits(self, canvas_x, canvas_y, tolerance, layout_width, layout_height):
+        if (layout_width is None) != (layout_height is None):
+            raise ValueError("layout_width and layout_height must be provided together")
+        ref_w, ref_h = (
+            self.input_logical_size
+            if layout_width is None
+            else (max(1.0, float(layout_width)), max(1.0, float(layout_height)))
+        )
+        for elem, left, top, right, bottom, clip in self._hit_candidates(ref_w, ref_h):
+            if not (left - tolerance <= canvas_x <= right + tolerance
+                    and top - tolerance <= canvas_y <= bottom + tolerance):
+                continue
+            if clip is not None and not (clip[0] <= canvas_x <= clip[2] and clip[1] <= canvas_y <= clip[3]):
+                continue
+            # Preserve custom control hit shapes; only broad-phase candidates
+            # enter Python geometry/field access, not every decorative sibling.
+            if elem.contains_point(canvas_x, canvas_y, ref_w, ref_h, tolerance):
+                yield elem
+
+    def _hit_candidates(self, ref_w, ref_h):
+        """Retain broad-phase bounds until topology, pose, layout or policy changes."""
+        from .ui_transform_dependencies import create_ui_transform_dependencies
+        from .inx_ui_screen_component import clear_rect_cache, _get_layout_revision
+        from .ui_render_revision import _get_hit_policy_revision
+
+        elements = self._get_elements()
+        if not elements:
+            return ()
+        owner = self.game_object
+        scene = owner.scene
+        topology = (owner, scene.world_id, scene.structure_version,
+                    scene.temporal_discontinuity_revision, id(elements))
+        if self.__dict__.get('_hit_topology') != topology:
+            self._hit_geometry = create_ui_transform_dependencies([e.game_object for e in elements], [])
+            self._hit_topology = topology
+            self._hit_pose = None
+            self._hit_key = None
+        pose = self._hit_geometry.poll()
+        if pose != self._hit_pose:
+            # A child's cached rect depends on its UI ancestors too, not just
+            # its own local Transform signature.
+            clear_rect_cache((id(self), pose))
+            self._hit_pose = pose
+        key = (pose, _get_hit_policy_revision(), _get_layout_revision(), ref_w, ref_h)
+        if self._hit_key != key:
+            candidates = []
+            for element in reversed(elements):
+                if (not element.game_object.active_in_hierarchy or not element.enabled
+                        or not element.effectively_blocks_raycast()):
+                    continue
+                x, y, width, height = element.get_visual_rect(ref_w, ref_h)
+                clip = element.get_effective_clip_rect(ref_w, ref_h)
+                candidates.append((element, x, y, x + width, y + height, clip))
+            self._hit_candidates_cache = tuple(candidates)
+            self._hit_key = key
+        return self._hit_candidates_cache

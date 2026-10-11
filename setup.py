@@ -13,6 +13,7 @@ from setuptools.command.build_py import build_py as _build_py
 import os
 import json
 import shutil
+import runpy
 from pathlib import Path
 
 
@@ -32,7 +33,7 @@ class CleanPackageDataBuild(_build_py):
                 "through the CMake package_python target instead."
             )
 
-        native_source = Path.cwd() / "python" / "Infernux" / "lib"
+        native_source = Path.cwd() / "python" / "infernux" / "lib"
         native_extensions = tuple(native_source.glob("_Infernux*.pyd")) + tuple(
             native_source.glob("_Infernux*.so")
         ) + tuple(native_source.glob("_Infernux*.dylib"))
@@ -55,17 +56,16 @@ class CleanPackageDataBuild(_build_py):
         if contract != expected_contract:
             raise RuntimeError("The staged wheel source has an invalid Player native contract.")
 
-        font_output = Path(self.build_lib) / "Infernux" / "resources" / "fonts"
+        font_output = Path(self.build_lib) / "infernux" / "resources" / "fonts"
         if font_output.is_dir():
             shutil.rmtree(font_output)
         super().run()
-        public_stub = Path.cwd() / "python" / "infernux.pyi"
-        if not public_stub.is_file():
-            raise RuntimeError(
-                "The staged Infernux wheel source is missing python/infernux.pyi. "
-                "Rebuild the CMake package_python target."
-            )
-        shutil.copy2(public_stub, Path(self.build_lib) / "infernux.pyi")
 
 
-setup(distclass=BinaryDistribution, cmdclass={"build_py": CleanPackageDataBuild})
+
+release = runpy.run_path(str(Path(__file__).parent / "python/infernux/version.py"))
+setup(
+    distclass=BinaryDistribution,
+    cmdclass={"build_py": CleanPackageDataBuild},
+    options={"bdist_wheel": {"build_number": str(release["ENGINE_BUILD_NUMBER"])}},
+)

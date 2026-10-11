@@ -32,20 +32,20 @@ Choose one method for each pipeline class. The built-in pipelines remain useful 
 
 ## RenderStack and standalone capability matrix {#host-matrix}
 
-`RenderPipeline.render(context, camera)` is the standalone host. RenderStack has a separate build path that installs Effect callbacks, sets the pipeline's private defining-graph state, completes the standard tail, and applies failure recovery. Those differences are observable in the current source:
+`RenderPipeline.render(context, camera)` is the standalone host. Both hosts establish the topology-definition context used by the pipeline's public result helpers. RenderStack additionally installs mounted Effect callbacks, completes the standard tail, and applies failure recovery:
 
 | Capability in an overridden `define_topology(graph)` | Through RenderStack | Standalone `RenderPipeline.render()` |
 | --- | --- | --- |
 | `graph.create_texture()`, pass builders, `graph.set_output()` | Supported | Supported |
-| `self.require_buffer()` | Supported while RenderStack calls the override | **Unsupported currently:** raises because `_defining_graph` was not set |
-| `self.publish_result()` and `self.write_buffer()` | Supported while RenderStack calls the override | **Unsupported currently:** same `_defining_graph` limitation |
+| `self.require_buffer()` | Supported while defining topology | Supported while defining topology |
+| `self.publish_result()` and `self.write_buffer()` | Supported while defining topology | Supported while defining topology |
 | Direct `graph.require_geometry_buffers()`, `graph.publish_pass_result()`, `graph.write_buffer()` | Supported | Supported |
-| `@geometry_buffer` plus `self.geometry_stage()` | Supported; RenderStack also adds mounted Effect requirements | Supported only when requirements are set directly on `graph` |
+| `@geometry_buffer` plus `self.geometry_stage()` | Supported; RenderStack also adds mounted Effect requirements | Supported; declare requirements with `self.require_buffer()` or directly on `graph` |
 | Mounted RenderStack Effects and stage-local resource buses | Compiled at declared stages | No RenderStack instance is present, so stages are declarations only |
 | Missing standard post-process and Screen UI tail | RenderStack appends the safety net | Pipeline must call the needed section helpers itself |
-| Failed rebuild | Keeps a previous valid graph or uses the documented first-build Editor fallback | No fallback cache; the build exception leaves `_standalone_desc` unset and the next call retries |
+| Failed rebuild | Keeps a previous valid graph; without one, construction fails explicitly | No fallback cache; the build exception leaves `_standalone_desc` unset and the next call retries |
 
-The three `self.*` helpers are not promised for a standalone override in the current implementation. A standalone author can use the direct `graph.*` result methods. Setting `self._defining_graph` manually relies on private state and is excluded from the supported contract. The complete example below intentionally targets RenderStack.
+The three `self.*` helpers are valid only during `define_topology()` in either host. The direct `graph.*` result methods are also available. No manual private-state setup is needed. The complete example below can build through either host; use RenderStack when mounting reusable Effects.
 
 In both hosts, return from `define_topology()` after recording declarations; the host calls `graph.build()`. Call `build()` directly only in an isolated topology test like the verification used for this chapter.
 
@@ -65,22 +65,32 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_preview_color",
             format=inx.rendergraph.Format.RGBA16_SFLOAT,
+            samples=context.msaa_samples,
         )
+        preview = target
+        if context.msaa_samples > 1:
+            preview = context.graph.create_texture(
+                f"{context.source}_preview_resolved",
+                format=inx.rendergraph.Format.RGBA16_SFLOAT,
+                samples=1,
+            )
         with context.graph.add_pass(
             f"{context.source}_preview_color"
         ) as render_pass:
             render_pass.read(context.sample("depth"))
             render_pass.write_color(target)
+            if context.msaa_samples > 1:
+                render_pass.write_resolve(preview)
             render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
                 material_pass="base_color",
             )
-        return target
+        return preview
 
     def define_topology(self, graph):
-        graph.set_msaa_samples(1)
+        samples = graph.set_msaa_samples(1)
         depth = graph.create_texture(
             "depth", format=inx.rendergraph.Format.D32_SFLOAT
         )
@@ -100,6 +110,7 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
             "opaque",
             buffers={"depth": depth},
             queue_range=(0, 2500),
+            msaa_samples=samples,
         )
         preview = self.sample_buffer(opaque, requested)
 
@@ -122,6 +133,8 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         with graph.add_present_pass("Present") as present_pass:
             present_pass.present(color)
 ```
+
+The Provider matches its raster target to `context.msaa_samples` so the color and depth attachments agree. It publishes a single-sample resolve for fullscreen sampling when the Camera target uses MSAA; a fixed RenderTexture can override the pipeline's requested sample count.
 
 `present(color)` is a typed terminal action and also calls `set_output(color)`. A graph may use `set_output()` without a Present pass, but this example makes the camera-target/export boundary visible. `graph.build()` also chooses the first camera target when no explicit output exists; production pipelines should express the intended output directly.
 
@@ -149,12 +162,14 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_object_index",
             format=inx.rendergraph.Format.RG32_UINT,
+            samples=context.msaa_samples,
         )
         with context.graph.add_pass(
             f"{context.source}_object_index"
         ) as render_pass:
-            render_pass.read(context.sample("depth"))
+            render_pass.write_depth(context.sample("depth"))
             render_pass.write_color(target)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
@@ -167,20 +182,26 @@ A Provider receives a `GeometryBufferProviderContext`. It may read `context.grap
 
 A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.
 
+The Picking pass requires an `RG32_UINT` color output and a writable depth attachment. This Provider clears the ID target to zero and rebuilds the supplied opaque depth with the same renderer queue. Merely declaring `read(depth)` is rejected. A consumer must read IDs as integers: use `Texture2DUInt` at one sample, or `Texture2DMSUInt` with `texelFetch()` for a multisampled result. The ordinary `Fullscreen Blit` samples floating-point color and is not an integer-ID consumer.
+
+Pass the effective count returned by `graph.set_msaa_samples()` into `geometry_stage(msaa_samples=...)`; this value becomes `context.msaa_samples` in each Provider. An integer multisampled result such as `object_index` remains multisampled unless its Provider declares a suitable resolve, so its consumer must use a matching multisample shader input.
+
 During `define_topology()`, call `self.require_buffer("object_index")` before the relevant `geometry_stage()`. The stage starts from its supplied buffers, runs only the providers needed by current requirements, and returns a `PassResult`. Effects mounted in RenderStack contribute their declared geometry requirements before the pipeline topology is built, so unused built-in providers such as normal or motion remain unmaterialized.
 
 ```python
+samples = graph.set_msaa_samples(1)
 requested = self.require_buffer("object_index")
 result = self.geometry_stage(
     graph,
     "opaque",
     buffers={"color": color, "depth": depth},
     queue_range=(0, 2500),
+    msaa_samples=samples,
 )
 object_index = self.sample_buffer(result, requested)
 ```
 
-`require_buffer()` is valid only while RenderStack or the base DSL implementation has set the defining graph. The returned `BufferHandle` is a semantic request from `Infernux.renderstack`; it is separate from the transient GPU `BufferHandle` returned by `graph.create_buffer()`. Standalone overrides use `graph.require_geometry_buffers({"object_index"})`, then pass the same graph into `geometry_stage()`.
+`require_buffer()` is valid during `define_topology()` in either RenderStack or standalone pipelines. The returned `BufferHandle` is a semantic request from `infernux.renderstack`; it is separate from the transient GPU `BufferHandle` returned by `graph.create_buffer()`. Either host also supports calling `graph.require_geometry_buffers({"object_index"})` directly before passing the same graph into `geometry_stage()`.
 
 ## PassResult, handles, and native actions {#pass-results}
 
@@ -215,9 +236,9 @@ after = self.write_buffer(
 
 Lazy geometry providers may add a missing semantic to the result that owns them. Once a write derives a new result, earlier semantic bindings stay intact.
 
-`publish_pass_result()` accepts only semantic names mapped to graph `TextureHandle` objects, and every `source` must be unique in that graph build. `PassResult.sample()` returns the logical handle; `snapshot` returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU image. A pass declaration must still write the texture, and a downstream pass must declare its read.
+`publish_pass_result()` maps semantic names to `TextureHandle` or GPU `BufferHandle` objects owned by that graph; for example, `color` is a texture and `light_list` is a buffer. Every `source` must be unique in that graph build. `PassResult.sample()` returns the logical handle; `snapshot` returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU resource. A pass declaration must still produce the resource, and a downstream pass must declare its read using the matching texture or buffer API.
 
-Texture and GPU Buffer handles are lightweight logical-name records owned by one builder run. Do not retain them on the pipeline instance, reuse them after a rebuild, or pass them into another graph. The Python handle type does not carry a graph ID, so a same-name cross-graph mistake can evade early identity checks. The resulting `RenderGraphDescription` contains names and resource descriptions; the native per-camera graph creates the actual resources.
+Texture and GPU Buffer handles are lightweight logical-name records owned by one builder run. Do not retain them on the pipeline instance, reuse them after a rebuild, or pass them into another graph. Equal names do not prove ownership: the graph checks the identity of each handle when publishing results, binding pass resources, or selecting an output, and rejects foreign handles even when their names match. Deriving a result also requires a parent from the same graph. The resulting `RenderGraphDescription` contains names and resource descriptions; the native per-camera graph creates the actual resources.
 
 All camera targets in one graph alias the camera's physical color target. Declaring more than one emits a warning. A persistent `inx.RenderTexture` has separate ownership: assign it to `Camera.target_texture`, `UIImage.texture`, or a material texture binding, and use `graph.import_texture()` for explicit graph access. Rebuilding a graph does not destroy the resource. These runtime references do not fabricate asset GUIDs or become saved texture assets.
 
@@ -239,7 +260,7 @@ image.texture = half_size
 
 The relative target follows **Game render pixels**, not the Game panel's display zoom, desktop DPI, Scene View size, or the dimensions of the last camera drawn. At a 641×401 Game resolution, `half_size.width, half_size.height` is `(321, 201)`: fractional pixels round up. Both factors must be positive and finite; factors above one request supersampling. Changing the Game resolution updates the existing owner and its Camera, material and UI bindings together. Do not call `resize()` every frame.
 
-`fixed.scale` is `None` and `fixed.resize(width, height)` changes its pixel dimensions. A relative target's `scale` is read-only and pixel `resize()` is rejected. Changing size mode, scale, format, depth or MSAA means creating a new resource and replacing the reference. Allocation failures leave the old allocations intact and report the error; they do not silently select a smaller size or another format. `sampled_depth=True` explicitly enables depth texture sampling; enable it when the Camera pipeline uses TAA or another depth-sampling effect. A graph that samples an attachment without this declaration is rejected before submission. `storage=True` requests storage-image use, not ordinary raster rendering.
+`fixed.scale` is `None` and `fixed.resize(width, height)` changes its pixel dimensions. A relative target's `scale` is read-only and pixel `resize()` is rejected. Changing size mode, scale, format, depth or MSAA means creating a new resource and replacing the reference. Allocation failures leave the old allocations intact and report the error; they do not silently select a smaller size or another format. `sampled_depth=True` explicitly enables depth texture sampling. Enable it for Default Deferred, whose lighting pass samples depth even without effects, or when a Camera pipeline uses TAA or another depth-sampling effect. Saved RenderTexture assets need the same declaration. A graph that samples an attachment without this declaration is rejected before submission. `storage=True` requests storage-image use, not ordinary raster rendering.
 
 This reference-size concept is comparable to [Unity's RTHandle scale allocation](https://docs.unity.cn/Packages/com.unity.render-pipelines.core%4016.0/manual/rthandle-system-using.html), but the public Infernux type remains `RenderTexture`. Infernux allocates the requested rounded size on each resolution change, including shrink; it does not promise Unity's maximum-reference-size allocation policy.
 
@@ -251,7 +272,7 @@ Expose an ordinary serialized field and assign that asset in the Inspector:
 import infernux as inx
 
 class Monitor(inx.InxComponent):
-    output: inx.RenderTexture
+    output: inx.RenderTexture = inx.serialized_field(default=None)
 
     def start(self):
         self.game_object.get_component(inx.Camera).target_texture = self.output
@@ -307,7 +328,9 @@ draw_data = graph.create_buffer(
 
 `read_buffer()` and `write_buffer()` validate storage, indirect, or transfer access against those flags. `copy_buffer()` adds transfer source/destination flags to its two handles. These declarations describe access and synchronization; an executable pass action still has to use the resource.
 
-`samples = graph.set_msaa_samples(1|2|4|8)` declares the screen preference and returns the effective sample count. A fixed `Camera.target_texture` owns its sampling contract and takes precedence. Build MSAA-dependent attachments and resolve passes using the returned value, not a hard-coded count; do not rewrite the authored pipeline parameter for each Camera. RenderStack and standalone pipelines cache separate graph variants by this contract. `set_msaa_samples(0)` delegates screen sampling to the native setting; it is not suitable for choosing explicit resolve topology. Camera targets and scene-sized depth textures default to inherited `samples=0`; other transient textures default to one sample. Raster color and depth attachments must agree.
+`samples = graph.set_msaa_samples(requested_samples)` declares the screen preference and returns the effective sample count; `requested_samples` must be one of `1`, `2`, `4`, or `8`. A fixed `Camera.target_texture` owns its sampling contract and takes precedence. Build MSAA-dependent attachments and resolve passes using the returned value, not a hard-coded count; do not rewrite the authored pipeline parameter for each Camera. RenderStack and standalone pipelines cache separate graph variants by this contract. `set_msaa_samples(0)` delegates screen sampling to the native setting; it is not suitable for choosing explicit resolve topology. Camera targets and scene-sized depth textures default to inherited `samples=0`; other transient textures default to one sample. Raster color and depth attachments must agree.
+
+`Default Deferred` currently requires a single-sample Camera target. Create its target with `samples=1`; a multisampled target is rejected before graph submission. Forward and Forward+ accept fixed targets with different sample counts without changing the authored pipeline preference.
 
 Use `write_resolve()` when a multisampled color result must become a single-sample texture:
 
@@ -328,6 +351,7 @@ depth = graph.create_texture(
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(color)
     render_pass.write_depth(depth)
+    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
     if samples > 1:
         render_pass.write_resolve(resolved)
     render_pass.draw_renderers(queue_range=(0, 2500))
@@ -335,6 +359,31 @@ graph.set_output(resolved)
 ```
 
 The pass must have exactly one color output at slot `0`. The source must be multisampled; the target must be a transient, single-sample color texture with matching format and extent. The current Python API has no depth-resolve operation.
+
+## Draw selected renderers {#renderer-selection-en}
+
+Use `RendererSelection` to draw ordinary MeshRenderers and selected submeshes with a replacement material, without copying meshes or editing their original materials. Create the selection once when initializing the pipeline; `mask_material` is a project material and `target_renderer` is an Inspector reference or a renderer selected by gameplay code:
+
+```python
+import infernux as inx
+
+selection = inx.rendergraph.RendererSelection(mask_material)
+parameters = inx.rendergraph.DrawParameterBlock()
+parameters.set_color("baseColor", (1.0, 0.2, 0.05, 1.0))
+selection.set(target_renderer, parameters=parameters)
+
+with graph.add_pass("SelectedMask") as p:
+    p.write_color(mask)
+    p.write_depth(mask_depth)
+    p.set_clear(color=(0, 0, 0, 0), depth=1.0)
+    p.draw_renderers(renderer_selection=selection)
+```
+
+Create `mask` and `mask_depth` on the same graph with matching dimensions and sample counts. The project chooses independent mask depth or scene depth. Parameters must be declared by the selection material's ShaderInfo; they do not modify the original shared material or search other parameter domains.
+
+`set(renderer, submesh=2, parameters=parameters)` selects one submesh; the default `submesh=-1` selects all. An exact submesh entry takes precedence over an all-submeshes entry. Each `set()` captures the parameter values; later changes to the block take effect only after another `set()`. Use `remove(renderer, submesh=2)` or `clear()` to edit membership.
+
+Update the existing selection during Update/LateUpdate without rebuilding topology. The graph retains the selection and its material; drawing uses the current camera-visible geometry, transforms, skinning and GPU vertex buffers, filtered by the original material's Queue/Pass Tag. Retired renderers are not selected by a reused object ID. A replacement vertex shader must implement source-shader deformation explicitly; deformation already stored in the shared GPU mesh remains visible. Per-draw texture overrides currently accept ordinary texture GUIDs; bind RenderTextures on the selection material or through explicit graph inputs.
 
 ## Raw object-data masks {#object-data-mask-en}
 
@@ -388,9 +437,9 @@ with graph.add_pass("LateLabels") as p:
 graph.screen_ui_overlay_section()  # Display encoding and screen overlay UI.
 ```
 
-World UI always keeps its normal depth test, using the depth attachment you declare for that pass. Drawing later does not make a label visible through walls. A project may instead attach a compatible depth snapshot from an earlier stage; the snapshot must be produced explicitly. Keep masks disjoint to avoid drawing an element twice. `screen_ui_section(world_ui_layer_mask=...)` forwards the same filter to its ordinary World UI pass; predeclared passes retain their own settings. Screen-space UI is unaffected. RenderTexture dependencies are collected from the same filtered elements that are drawn.
+By default, World UI tests the depth attachment declared for its pass; drawing later does not make a label visible through walls. Setting `world_always_on_top=True` on an element explicitly bypasses scene depth and pointer occlusion. A project may instead attach a compatible depth snapshot from an earlier stage; the snapshot must be produced explicitly. Keep masks disjoint to avoid drawing an element twice. `screen_ui_section(world_ui_layer_mask=...)` forwards the same filter to its ordinary World UI pass; predeclared passes retain their own settings. Screen-space UI is unaffected. RenderTexture dependencies are collected from the same filtered elements that are drawn.
 
-For a World UI element attached to one scene object, `world_ignored_occluder` accepts a persistent GameObject reference. By default every scene depth writer still occludes the element. With this opt-in reference, the Default Forward graph replays opaque and alpha-cutout scene depth without that GameObject's renderer draws; all other renderer depth remains. The option is not supported by custom scene-depth writers or preserved camera depth, and those combinations are rejected rather than treated as always-on-top. Runtime pointer input has a separate Physics contract: it ignores collider hits owned by the referenced GameObject, but other non-trigger collider hits still block the element. A visible mesh without a collider can contribute render depth without blocking pointer input, just as it does for ordinary World UI. Scene View selection continues to merge its existing renderer and physics candidates; it is not an alpha-accurate multi-layer GPU pick.
+For a World UI element attached to one scene object, `world_ignored_occluder` accepts a persistent GameObject reference. By default every scene depth writer still occludes the element. With this opt-in reference, a graph containing one cleared Forward scene-depth producer replays opaque and alpha-cutout depth without that GameObject's renderer draws; all other renderer depth remains. Default Forward satisfies this contract. Each World UI Pass uses its own Camera/layer-mask intersection and validates the depth history before that Pass. Incompatible depth producers or attachments, additional depth writers, depth cleared by a World UI Pass, and preserved camera depth are rejected rather than treated as always-on-top. Runtime pointer input has a separate Physics contract: it ignores collider hits owned by the referenced GameObject, but other non-trigger collider hits still block the element. A visible mesh without a collider can contribute render depth without blocking pointer input, just as it does for ordinary World UI. Scene View selection continues to merge its existing renderer and physics candidates; it is not an alpha-accurate multi-layer GPU pick.
 
 ## Fullscreen depth and blending {#fullscreen-raster-state-en}
 
@@ -463,6 +512,8 @@ RenderStack rejects a failed topology edit and retains the last accepted graph w
 
 Standalone `RenderPipeline.render()` has no last-valid or Default Forward recovery. A failed `define_topology()` or `build()` leaves `_standalone_desc` unset, so the exception remains visible and a later render call retries. After an accepted code replacement, `dispose()` clears an older standalone description when the pipeline is retired.
 
+For per-camera dynamic parameters, apply the graph before calling `context.update_parameter_blocks()`, then call `context.submit_culling(culling)`. Submission freezes the parameter values alongside that camera's renderer list; updates after submission belong to a later submission. An overridden `render_camera()` must preserve this order instead of calling the base submission before updating its values.
+
 There is currently no graphical RenderGraph debugger in the Editor. Use `graph.get_debug_string()` for a text summary of resources, pass actions, reads, writes, resolves, and output, then confirm behavior in both Editor and a build. This string describes one topology artifact, so it cannot distinguish camera-local native instances. For multi-camera runtime logs, include the camera identity available to your host, `context.graph_instance_id`, and `RenderGraphDescription.source_revision`; `graph_instance_id` distinguishes native graph instances while the source revision identifies the shared Python topology.
 
 Before shipping a low-level pipeline, check these points:
@@ -507,20 +558,20 @@ Before shipping a low-level pipeline, check these points:
 
 ## RenderStack 与 standalone 能力矩阵 {#host-matrix_1}
 
-`RenderPipeline.render(context, camera)` 是 standalone Host。RenderStack 使用另一条构建路径，它会安装 Effect Callback、设置管线的私有 Defining Graph 状态、补全标准帧尾并执行失败恢复。当前源码中的差异如下：
+`RenderPipeline.render(context, camera)` 是 standalone Host。两种 Host 都会建立管线公开 Result Helper 所需的拓扑定义上下文。RenderStack 还会安装已挂载 Effect 的 Callback、补全标准帧尾并执行失败恢复：
 
 | 覆盖 `define_topology(graph)` 后的能力 | 通过 RenderStack | Standalone `RenderPipeline.render()` |
 | --- | --- | --- |
 | `graph.create_texture()`、Pass Builder、`graph.set_output()` | 支持 | 支持 |
-| `self.require_buffer()` | RenderStack 调用 Override 期间支持 | **当前不支持：** `_defining_graph` 未设置，会抛出异常 |
-| `self.publish_result()` 与 `self.write_buffer()` | RenderStack 调用 Override 期间支持 | **当前不支持：** 受同一 `_defining_graph` 限制 |
+| `self.require_buffer()` | 定义拓扑期间支持 | 定义拓扑期间支持 |
+| `self.publish_result()` 与 `self.write_buffer()` | 定义拓扑期间支持 | 定义拓扑期间支持 |
 | 直接调用 `graph.require_geometry_buffers()`、`graph.publish_pass_result()`、`graph.write_buffer()` | 支持 | 支持 |
-| `@geometry_buffer` 与 `self.geometry_stage()` | 支持；RenderStack 还会加入已挂载 Effect 的需求 | 需要直接在 `graph` 上设置需求后使用 |
+| `@geometry_buffer` 与 `self.geometry_stage()` | 支持；RenderStack 还会加入已挂载 Effect 的需求 | 支持；通过 `self.require_buffer()` 或直接在 `graph` 上声明需求 |
 | 已挂载的 RenderStack Effect 与 Stage 局部 Resource Bus | 在声明位置编译 | 没有 RenderStack 实例，Stage 只保留声明信息 |
 | 缺失的标准后处理与 Screen UI 帧尾 | RenderStack 会追加安全网 | 管线必须自行调用所需 Section Helper |
-| 重建失败 | 保留上一份有效 Graph，或使用已说明的 Editor 首次构建回退 | 没有回退缓存；异常后 `_standalone_desc` 为空，下次调用重试 |
+| 重建失败 | 保留上一份有效 Graph；没有有效 Graph 时明确报告构建失败 | 没有回退缓存；异常后 `_standalone_desc` 为空，下次调用重试 |
 
-当前实现没有承诺三项 `self.*` Helper 可用于 standalone Override。Standalone 作者可以改用直接的 `graph.*` Result 方法。手动设置 `self._defining_graph` 会依赖私有状态，不属于受支持契约。下面的完整样例明确以 RenderStack 为 Host。
+三项 `self.*` Helper 在两种 Host 的 `define_topology()` 期间都有效，也可以直接使用 `graph.*` Result 方法，无需手动设置私有状态。下面的完整样例可以通过两种 Host 构建；需要挂载可复用 Effect 时使用 RenderStack。
 
 两种 Host 都要求 `define_topology()` 记录完声明后直接返回，由 Host 调用 `graph.build()`。只有独立拓扑测试才应直接调用 `build()`，例如本章样例采用的验证方式。
 
@@ -540,22 +591,32 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_preview_color",
             format=inx.rendergraph.Format.RGBA16_SFLOAT,
+            samples=context.msaa_samples,
         )
+        preview = target
+        if context.msaa_samples > 1:
+            preview = context.graph.create_texture(
+                f"{context.source}_preview_resolved",
+                format=inx.rendergraph.Format.RGBA16_SFLOAT,
+                samples=1,
+            )
         with context.graph.add_pass(
             f"{context.source}_preview_color"
         ) as render_pass:
             render_pass.read(context.sample("depth"))
             render_pass.write_color(target)
+            if context.msaa_samples > 1:
+                render_pass.write_resolve(preview)
             render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
                 material_pass="base_color",
             )
-        return target
+        return preview
 
     def define_topology(self, graph):
-        graph.set_msaa_samples(1)
+        samples = graph.set_msaa_samples(1)
         depth = graph.create_texture(
             "depth", format=inx.rendergraph.Format.D32_SFLOAT
         )
@@ -575,6 +636,7 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
             "opaque",
             buffers={"depth": depth},
             queue_range=(0, 2500),
+            msaa_samples=samples,
         )
         preview = self.sample_buffer(opaque, requested)
 
@@ -597,6 +659,8 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         with graph.add_present_pass("Present") as present_pass:
             present_pass.present(color)
 ```
+
+Provider 使用 `context.msaa_samples` 创建光栅目标，保证颜色与深度附件的采样数一致。Camera Target 启用 MSAA 时，Provider 显式 Resolve 并发布单采样纹理供全屏 Pass 采样；固定 RenderTexture 可以覆盖管线请求的采样数。
 
 `present(color)` 是带类型的终止 Action，同时会调用 `set_output(color)`。Graph 也可以只使用 `set_output()`，省略 Present Pass；本例显式展示 Camera Target 与导出边界。没有显式输出时，`graph.build()` 会选取第一张 Camera Target，生产管线仍应明确表达目标输出。
 
@@ -624,12 +688,14 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_object_index",
             format=inx.rendergraph.Format.RG32_UINT,
+            samples=context.msaa_samples,
         )
         with context.graph.add_pass(
             f"{context.source}_object_index"
         ) as render_pass:
-            render_pass.read(context.sample("depth"))
+            render_pass.write_depth(context.sample("depth"))
             render_pass.write_color(target)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
@@ -642,20 +708,26 @@ Provider 接收 `GeometryBufferProviderContext`。它可以读取 `context.graph
 
 派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。
 
+Picking Pass 必须声明 `RG32_UINT` 颜色输出和可写的深度附件。这个 Provider 将 ID 目标清零，并用同一 Renderer Queue 重建传入的不透明深度；只声明 `read(depth)` 会被拒绝。消费者必须按整数读取 ID：单采样使用 `Texture2DUInt`，多采样使用 `Texture2DMSUInt` 和 `texelFetch()`。普通 `Fullscreen Blit` 读取浮点颜色，不能用来消费整数 ID。
+
+把 `graph.set_msaa_samples()` 返回的有效采样数传给 `geometry_stage(msaa_samples=...)`，Provider 才能通过 `context.msaa_samples` 取得正确值。`object_index` 这类整数多采样结果在 Provider 没有声明适用的 Resolve 时仍是多采样纹理，消费它的 Shader Input 也必须匹配。
+
 在 `define_topology()` 中，应先调用 `self.require_buffer("object_index")`，再进入对应的 `geometry_stage()`。Stage 从传入的 Buffer 集合开始，只运行当前需求涉及的 Provider，最后返回 `PassResult`。RenderStack 中已挂载 Effect 声明的 Geometry 需求会在管线构建前加入 Graph，因此未使用的内置 Normal、Motion 等 Provider 不会生成资源。
 
 ```python
+samples = graph.set_msaa_samples(1)
 requested = self.require_buffer("object_index")
 result = self.geometry_stage(
     graph,
     "opaque",
     buffers={"color": color, "depth": depth},
     queue_range=(0, 2500),
+    msaa_samples=samples,
 )
 object_index = self.sample_buffer(result, requested)
 ```
 
-`require_buffer()` 只在 RenderStack 或基础 DSL 实现已设置 Defining Graph 时有效。它返回的是 `Infernux.renderstack` 中的语义请求 `BufferHandle`；`graph.create_buffer()` 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。Standalone Override 应先调用 `graph.require_geometry_buffers({"object_index"})`，再把同一 Graph 传给 `geometry_stage()`。
+`require_buffer()` 在 RenderStack 与 standalone 管线的 `define_topology()` 期间都有效。它返回的是 `infernux.renderstack` 中的语义请求 `BufferHandle`；`graph.create_buffer()` 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。两种 Host 也都支持先直接调用 `graph.require_geometry_buffers({"object_index"})`，再把同一 Graph 传给 `geometry_stage()`。
 
 ## PassResult、Handle 生命周期与 Native Action {#pass-results_1}
 
@@ -690,9 +762,9 @@ after = self.write_buffer(
 
 惰性 Geometry Provider 可以把缺失的 Semantic 加入拥有它的 Result。一次写入派生出新 Result 后，早期 Result 的语义绑定仍保持原值。
 
-`publish_pass_result()` 只接受由 Semantic 名称映射到 Graph `TextureHandle` 的数据，同一次 Graph 构建中的 `source` 必须唯一。`PassResult.sample()` 返回逻辑 Handle；`snapshot` 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU Image。仍需由 Pass 声明写入纹理，并由下游 Pass 声明读取。
+`publish_pass_result()` 将 Semantic 名称映射到属于同一 Graph 的 `TextureHandle` 或 GPU `BufferHandle`；例如 `color` 是纹理，`light_list` 是 Buffer。同一次 Graph 构建中的 `source` 必须唯一。`PassResult.sample()` 返回逻辑 Handle；`snapshot` 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU 资源。仍需由 Pass 声明生成资源，并由下游 Pass 使用对应的纹理或 Buffer API 声明读取。
 
-Texture Handle 与 GPU Buffer Handle 是一次 Builder 运行所拥有的轻量逻辑名称记录。不要把它们保存在 Pipeline 实例上，不要在重建后继续使用，也不要传给另一个 Graph。Python Handle 类型不携带 Graph ID，因此同名的跨 Graph 错误可能绕过早期身份检查。最终的 `RenderGraphDescription` 保存名称与资源描述，实际资源由每相机 Native Graph 创建。
+Texture Handle 与 GPU Buffer Handle 是一次 Builder 运行所拥有的轻量逻辑名称记录。不要把它们保存在 Pipeline 实例上，不要在重建后继续使用，也不要传给另一个 Graph。同名不代表所有权相同：Graph 在发布 Result、绑定 Pass 资源和指定输出时检查 Handle 的对象身份，即使名称相同也会拒绝其它 Graph 的 Handle。派生 Result 同样要求 Parent 属于当前 Graph。最终的 `RenderGraphDescription` 保存名称与资源描述，实际资源由每相机 Native Graph 创建。
 
 同一个 Graph 中的所有 Camera Target 都指向相机的物理颜色输出，声明多张时会产生警告。持久的 `inx.RenderTexture` 则拥有独立的资源生命周期：可以赋给 `Camera.target_texture`、`UIImage.texture` 或材质纹理参数，也可以通过 `graph.import_texture()` 显式接入渲染图。重建图不会销毁该资源。这些运行时引用不生成资产 GUID，也不会自动保存成纹理资产。
 
@@ -714,7 +786,7 @@ image.texture = half_size
 
 这里的基准是 **Game 实际渲染像素**，不是 Game 面板的显示缩放、桌面 DPI、Scene View 的尺寸或最后绘制的相机尺寸。Game 为 641×401 时，`half_size.width, half_size.height` 为 `(321, 201)`，不足一个像素的部分向上取整。两个比例必须为正的有限数值，大于 1 表示超采样。Game 分辨率变化时，同一资源及其 Camera、材质、UI 引用一起更新，不需要逐帧调用 `resize()`。
 
-固定尺寸资源的 `scale` 为 `None`，可以用 `resize(width, height)` 修改像素尺寸；相对尺寸资源的 `scale` 只读，不能再用像素 `resize()`。修改尺寸模式、比例、格式、深度或 MSAA 时，创建新资源并替换引用。分配失败会保留旧分配并报告错误，不静默降低尺寸或替换格式。相机管线使用 TAA 等需要读取深度的效果时，应显式设置 `sampled_depth=True`；未声明这个用途的深度采样会在图提交前被拒绝。`storage=True` 声明 storage image 用途，普通光栅绘制不需要它。
+固定尺寸资源的 `scale` 为 `None`，可以用 `resize(width, height)` 修改像素尺寸；相对尺寸资源的 `scale` 只读，不能再用像素 `resize()`。修改尺寸模式、比例、格式、深度或 MSAA 时，创建新资源并替换引用。分配失败会保留旧分配并报告错误，不静默降低尺寸或替换格式。使用 Default Deferred 时应显式设置 `sampled_depth=True`，因为它的光照 Pass 即使没有效果也会读取深度；相机管线使用 TAA 等需要读取深度的效果时也需要这个声明。保存的 RenderTexture 资产同样需要启用它。未声明这个用途的深度采样会在图提交前被拒绝。`storage=True` 声明 storage image 用途，普通光栅绘制不需要它。
 
 参考尺寸的概念可对照 [Unity RTHandle 的比例分配](https://docs.unity.cn/Packages/com.unity.render-pipelines.core%4016.0/manual/rthandle-system-using.html)，但 Infernux 对外仍然只有 `RenderTexture`。这里按当前分辨率分配向上取整后的尺寸，也会随分辨率缩小，不承诺 Unity 按最大参考尺寸保留分配的策略。
 
@@ -726,7 +798,7 @@ image.texture = half_size
 import infernux as inx
 
 class Monitor(inx.InxComponent):
-    output: inx.RenderTexture
+    output: inx.RenderTexture = inx.serialized_field(default=None)
 
     def start(self):
         self.game_object.get_component(inx.Camera).target_texture = self.output
@@ -782,7 +854,9 @@ draw_data = graph.create_buffer(
 
 `read_buffer()` 与 `write_buffer()` 会根据这些标志校验 Storage、Indirect 或 Transfer Access。`copy_buffer()` 会给两端 Handle 补充 Transfer Source/Destination 标志。这些声明负责描述访问与同步；资源还需要被可执行 Pass Action 实际使用。
 
-`samples = graph.set_msaa_samples(1|2|4|8)` 声明屏幕管线的采样偏好，并返回实际采样数。绑定了 `Camera.target_texture` 时，以目标资源的采样数为准。创建多采样附件和 Resolve Pass 必须使用返回值，不要写死采样数，也不要为不同相机反复改写作者参数。RenderStack 和独立管线按这个采样配置复用不同的图。`set_msaa_samples(0)` 把屏幕采样设置交给原生层，不适合用来决定显式 Resolve 拓扑。Camera Target 和场景尺寸的 Depth Texture 默认继承 `samples=0`，其它瞬态 Texture 默认单采样；同一 Raster Pass 的颜色与深度附件必须使用相同采样数。
+`samples = graph.set_msaa_samples(requested_samples)` 声明屏幕管线的采样偏好，并返回实际采样数；`requested_samples` 必须是 `1`、`2`、`4`、`8` 之一。绑定了 `Camera.target_texture` 时，以目标资源的采样数为准。创建多采样附件和 Resolve Pass 必须使用返回值，不要写死采样数，也不要为不同相机反复改写作者参数。RenderStack 和独立管线按这个采样配置复用不同的图。`set_msaa_samples(0)` 把屏幕采样设置交给原生层，不适合用来决定显式 Resolve 拓扑。Camera Target 和场景尺寸的 Depth Texture 默认继承 `samples=0`，其它瞬态 Texture 默认单采样；同一 Raster Pass 的颜色与深度附件必须使用相同采样数。
+
+`Default Deferred` 当前要求 Camera Target 使用单采样。为它创建目标时设置 `samples=1`；多采样目标会在提交渲染图之前被拒绝。Forward 和 Forward+ 支持使用不同采样数的固定目标，不会改写作者设置的管线采样偏好。
 
 多采样 Color 需要变成单采样 Texture 时，使用 `write_resolve()`：
 
@@ -803,6 +877,7 @@ depth = graph.create_texture(
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(color)
     render_pass.write_depth(depth)
+    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
     if samples > 1:
         render_pass.write_resolve(resolved)
     render_pass.draw_renderers(queue_range=(0, 2500))
@@ -890,9 +965,9 @@ with graph.add_pass("LateLabels") as p:
 graph.screen_ui_overlay_section()  # 显示编码及屏幕叠加 UI。
 ```
 
-世界 UI 仍按正常规则测试该 Pass 声明的深度；晚绘制不等于穿墙显示。项目也可以选择较早阶段的兼容深度快照，但必须显式生成快照。两组掩码应互不重叠，避免同一个元素画两次。`screen_ui_section(world_ui_layer_mask=...)` 会把同样的过滤条件传给普通世界 UI Pass，预先声明的 Pass 则保留原设置。屏幕空间 UI 不受影响。RenderTexture 依赖也只从该 Pass 实际绘制的元素收集。
+默认情况下，世界 UI 测试该 Pass 声明的深度；晚绘制不等于穿墙显示。只有在元素上显式设置 `world_always_on_top=True`，才会跳过场景深度及指针遮挡。项目也可以选择较早阶段的兼容深度快照，但必须显式生成快照。两组掩码应互不重叠，避免同一个元素画两次。`screen_ui_section(world_ui_layer_mask=...)` 会把同样的过滤条件传给普通世界 UI Pass，预先声明的 Pass 则保留原设置。屏幕空间 UI 不受影响。RenderTexture 依赖也只从该 Pass 实际绘制的元素收集。
 
-若世界 UI 元素明确关联某个场景对象，可将其持久化 GameObject 引用设为 `world_ignored_occluder`。默认仍受所有场景深度遮挡；启用后，Default Forward 图会重放不含该对象 renderer 绘制的 opaque／alpha-cutout 深度，其他对象的深度照常遮挡。自定义场景深度写入和相机保留深度不支持这一策略，会明确拒绝，而不会变成始终置顶。运行时指针使用独立的 Physics 合同：只跳过关联对象拥有的 Collider 命中，其余非 Trigger Collider 仍可阻挡。没有 Collider 的可见网格可以写入渲染深度，却不会阻挡指针；普通世界 UI 也存在这一边界。Scene View 选择仍合并原有的 renderer／physics 候选，不是精确到 alpha 像素的 GPU 多层拾取。
+若世界 UI 元素明确关联某个场景对象，可将其持久化 GameObject 引用设为 `world_ignored_occluder`。默认仍受所有场景深度遮挡；启用后，图必须只有一个明确清空深度的 Forward 场景深度生产者，重放时只排除关联对象的 opaque／alpha-cutout 绘制，其他对象的深度照常遮挡。Default Forward 满足这一合同。每个世界 UI Pass 都按自身与 Camera 的层掩码交集计算策略，并验证该 Pass 之前的深度来源。不兼容的深度生产者或附件、额外的深度写入、世界 UI Pass 清空深度，以及相机保留深度等组合会明确拒绝，而不会变成始终置顶。运行时指针使用独立的 Physics 合同：只跳过关联对象拥有的 Collider 命中，其余非 Trigger Collider 仍可阻挡。没有 Collider 的可见网格可以写入渲染深度，却不会阻挡指针；普通世界 UI 也存在这一边界。Scene View 选择仍合并原有的 renderer／physics 候选，不是精确到 alpha 像素的 GPU 多层拾取。
 
 ## 全屏深度与混合 {#fullscreen-raster-state}
 
@@ -966,6 +1041,8 @@ with graph.add_pass("CommitGrade") as render_pass:
 拓扑编辑失败时，RenderStack 拒绝这次修改，保留该输出采样配置上最后一次成功的图及其配套效果绑定；Inspector 在保留已有拓扑视图的同时报告错误。如果从未构建成功，Editor 和 Player 都明确报错，不会换成 Default Forward。修复被监听的管线文件或修改管线参数会清除失败状态。这是作者编辑事务的处理，不代表允许读取未写入的纹理，也不代表可以偷偷拿旧相机画面充当本帧输出。
 
 Standalone `RenderPipeline.render()` 没有上一份有效图或 Default Forward 恢复。`define_topology()` 或 `build()` 失败后，`_standalone_desc` 保持为空，异常继续可见，后续 Render 调用会重试。管线被替换时，`dispose()` 会清除旧的 Standalone Description。
+
+更新相机专属的动态参数时，先应用 Graph，再调用 `context.update_parameter_blocks()`，最后调用 `context.submit_culling(culling)`。提交会同时冻结该相机的参数值和 Renderer List；提交后的参数更新属于后续提交。覆盖 `render_camera()` 时应保持这个顺序，不能先调用基类完成提交，再修改本次绘制所需的参数。
 
 当前 Editor 没有图形化 RenderGraph Debugger。可使用 `graph.get_debug_string()` 查看资源、Pass Action、读写、Resolve 与输出的文本摘要，再到 Editor 和真实构建中确认行为。这段文本描述一份 Topology Artifact，无法区分每台相机的 Native 实例。多相机运行日志应同时包含 Host 可取得的 Camera 身份、`context.graph_instance_id` 与 `RenderGraphDescription.source_revision`；Graph Instance ID 用于区分 Native Graph 实例，Source Revision 标识共享的 Python 拓扑。
 

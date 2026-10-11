@@ -1,0 +1,845 @@
+"""
+SpriteRenderer — renders a single frame from a sprite-sheet texture.
+
+Wraps the C++ ``SpriteRenderer`` component (which inherits from
+``MeshRenderer`` for rendering pipeline compatibility) and manages the
+``sprite_unlit`` material and renderer-owned UV/texture parameters from Python.
+
+This component is completely independent of the Python ``MeshRenderer``
+wrapper — the two are parallel, same-level renderer types.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from infernux.components.builtin_component import BuiltinComponent, CppProperty
+from infernux.components.fields import FieldType
+from infernux.debug import Debug
+from infernux.engine.path_utils import lexical_path, portable_path
+from infernux.core.material import Material
+
+
+def _to_native_material(value):
+    """Unwrap a Python Material wrapper to native InxMaterial."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    native = getattr(value, "_native", None) or getattr(value, "native", None)
+    return native if native is not None else value
+
+
+def _sprite_color_to_list(t):
+    """C++ sprite_color tuple → [r,g,b,a] list for COLOR field."""
+    return [t[0], t[1], t[2], t[3]]
+
+
+def _list_to_sprite_color(lst):
+    """[r,g,b,a] list → tuple for C++ sprite_color."""
+    c = lst if lst and len(lst) >= 4 else [1, 1, 1, 1]
+    return (c[0], c[1], c[2], c[3])
+
+
+def _get_asset_database():
+    """Return the AssetManager-owned database for this engine lifetime."""
+    from infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
+
+
+class SpriteRenderer(BuiltinComponent):
+    """Renders one frame of a sprite-sheet texture on a Quad mesh.
+
+    Wraps the C++ ``SpriteRenderer`` component.  Properties delegate to C++
+    for serialization; material management (shader, texture, UV) is handled
+    in this Python wrapper.
+    """
+
+    _cpp_type_name = "SpriteRenderer"
+    _component_category_ = "Rendering"
+    _component_menu_path_ = "Rendering/Sprite Renderer"
+
+    # ── CppProperty descriptors (scalar fields → C++) ───────────────
+    #
+    # IMPORTANT: Python descriptor names MUST match ``cpp_attr`` so that
+    # ``_record_builtin_property(comp, cpp_attr, ...)`` → ``setattr``
+    # goes through the CppProperty descriptor and reaches C++.
+
+    sprite_guid = CppProperty(
+        "sprite_guid",
+        FieldType.STRING,
+        default="",
+    )
+
+    frame_id = CppProperty(
+        "frame_id",
+        FieldType.STRING,
+        default="",
+        tooltip="Stable ID of the frame to display",
+        visible_when=lambda comp: not comp._is_driven_by_animator(),
+    )
+
+    sprite_color = CppProperty(
+        "sprite_color",
+        FieldType.COLOR,
+        default=None,
+        tooltip="Tint color (RGBA)",
+        get_converter=_sprite_color_to_list,
+        set_converter=_list_to_sprite_color,
+    )
+
+    flip_x = CppProperty(
+        "flip_x",
+        FieldType.BOOL,
+        default=False,
+        tooltip="Flip sprite horizontally",
+    )
+
+    flip_y = CppProperty(
+        "flip_y",
+        FieldType.BOOL,
+        default=False,
+        tooltip="Flip sprite vertically",
+    )
+
+    casts_shadows = CppProperty(
+        "casts_shadows",
+        FieldType.BOOL,
+        default=False,
+        tooltip="Whether this renderer casts shadows",
+    )
+
+    receives_shadows = CppProperty(
+        "receives_shadows",
+        FieldType.BOOL,
+        default=True,
+        tooltip="Whether this renderer receives shadows",
+    )
+
+    # ── Private runtime state ───────────────────────────────────────
+
+    _sprite_material = None
+    _sprite_frames: list = []
+    _sprite_frames_by_id: dict = {}
+    _tex_w: int = 0
+    _tex_h: int = 0
+    _last_frame_id: str = ""
+    _reported_missing_frame_id: str = ""
+    _last_flip_x: bool = False
+    _last_flip_y: bool = False
+    _last_color: tuple = None
+    _last_sprite: str = ""
+    _material_ready: bool = False
+    _last_material_version: int = -1
+    # ── Binding hook ────────────────────────────────────────────────
+
+    def _bind_cpp(self, cpp_component, game_object):
+        super()._bind_cpp(cpp_component, game_object)
+        # Reset per-instance state (class-level defaults are shared).
+        self._sprite_frames = []
+        self._sprite_frames_by_id = {}
+        self._tex_w = 0
+        self._tex_h = 0
+        self._last_frame_id = ""
+        self._reported_missing_frame_id = ""
+        self._last_flip_x = False
+        self._last_flip_y = False
+        self._last_color = None
+        self._last_sprite = ""
+        self._material_ready = False
+        self._sprite_material = None
+        self._last_material_version = -1
+        self._ensure_material()
+        self._subscribe_asset_events()
+
+    # ── Asset-change notification ───────────────────────────────────
+
+    def _subscribe_asset_events(self):
+        """Subscribe to typed asset mutations so texture reimport refreshes this renderer."""
+        from infernux.application import Application
+
+        self._unsubscribe_asset_events()
+        if Application.is_player():
+            return
+        from infernux.engine.interaction import AssetMutationService
+
+        service = AssetMutationService.instance()
+        self._asset_mutation_service = service
+        if service is not None:
+            service.add_component_listener(self._on_asset_changed)
+
+    def _unsubscribe_asset_events(self):
+        """Release the mutation-service reference while this wrapper is live."""
+        service = self.__dict__.get("_asset_mutation_service")
+        if service is not None:
+            service.remove_component_listener(self._on_asset_changed)
+        self._asset_mutation_service = None
+
+    def _invalidate_native_binding(self):
+        """Detach before removing callbacks that inspect the owner's identity."""
+        # Listener removal reads component_id. Once the native owner is gone,
+        # resolving that ID through a live-looking binding would re-enter this
+        # method. Publish the detached state before releasing subscriptions.
+        super()._invalidate_native_binding()
+        self._unsubscribe_asset_events()
+        self._sprite_material = None
+        self._material_ready = False
+        self._sprite_frames = []
+        self._sprite_frames_by_id = {}
+
+    def _on_asset_changed(self, change):
+        """Refresh only mutations carrying this renderer's sprite identity."""
+        from infernux.engine.interaction import iter_asset_mutations
+
+        guid = self.sprite
+        if not guid:
+            return
+        for mutation in iter_asset_mutations(change):
+            mutation_guid = str(mutation.guid or "").strip()
+            if mutation_guid and mutation_guid == guid:
+                self._load_sprite_data()
+                self._apply_uv_rect()
+                self._apply_color()
+                break
+
+    # ── Scene-wide initialization ───────────────────────────────────
+
+    @staticmethod
+    def init_all_in_scene(scene=None):
+        """Force wrapper creation for all SpriteRenderers in the scene.
+
+        This ensures each SpriteRenderer publishes its own texture/UV/color
+        parameters *before* the first render frame, avoiding
+        the white-quad-until-clicked problem.
+        """
+        if scene is None:
+            from infernux.lib import SceneManager
+            scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            return
+        for obj in scene.find_objects_with_component("SpriteRenderer"):
+            cpp_comp = obj.get_component("SpriteRenderer")
+            if cpp_comp is not None:
+                w = SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
+                w._ensure_material()
+
+    # ── Sprite GUID (wraps C++ string, exposes as TEXTURE for Inspector) ──
+
+    @property
+    def sprite(self) -> str:
+        """Asset GUID of the sprite texture."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            return cpp.sprite_guid or ""
+        return ""
+
+    @sprite.setter
+    def sprite(self, value):
+        assignment = self._sprite_assignment_snapshot(value)
+        self._restore_sprite_assignment(assignment)
+
+    def _resolve_sprite_reference_candidate(self, candidate) -> str:
+        if candidate is None or candidate == "":
+            return ""
+        if isinstance(candidate, dict):
+            # A structured value is persisted reference data: its GUID is the
+            # only identity.  Never revive it from a stale path hint.
+            guid = str(candidate.get("guid") or "").strip()
+        elif isinstance(candidate, str):
+            # Raw strings enter here only from the editor file picker/drop
+            # boundary, which resolves them immediately to an imported GUID.
+            guid = self._resolve_texture_guid(candidate.strip())
+        else:
+            guid = self._extract_guid(candidate)
+        if not guid:
+            raise ValueError("sprite must reference an imported Texture asset")
+        return guid
+
+    def _sprite_assignment_snapshot(self, candidate) -> dict:
+        guid = self._resolve_sprite_reference_candidate(candidate)
+        if not guid:
+            return {"sprite_guid": "", "frame_id": ""}
+        requested_frame_id = (
+            str(
+                candidate.get("frame_id")
+                or candidate.get("subresource_id")
+                or ""
+            ).strip()
+            if isinstance(candidate, dict)
+            else ""
+        )
+        adb = _get_asset_database()
+        asset_path = adb.get_path_from_guid(guid) if adb else ""
+        if not asset_path:
+            raise ValueError("sprite texture is missing from the Asset Database")
+        from infernux.core.asset_types import (
+            TextureType,
+            read_texture_import_settings,
+        )
+
+        settings = read_texture_import_settings(asset_path)
+        if settings.texture_type is not TextureType.SPRITE:
+            raise ValueError("SpriteRenderer requires a texture imported as Sprite")
+        if not settings.sprite_frames:
+            raise ValueError("SpriteRenderer requires at least one persisted SpriteFrame")
+        frame_ids = {frame.stable_id for frame in settings.sprite_frames}
+        if requested_frame_id and requested_frame_id not in frame_ids:
+            raise ValueError(
+                f"SpriteFrame '{requested_frame_id}' does not belong to the selected texture"
+            )
+        current_frame_id = self.frame_id if self.sprite_guid == guid else ""
+        frame_id = (
+            requested_frame_id
+            or (
+                current_frame_id
+                if current_frame_id in frame_ids
+                else settings.sprite_frames[0].stable_id
+            )
+        )
+        return {"sprite_guid": guid, "frame_id": frame_id}
+
+    def _frame_assignment_snapshot(self, candidate) -> dict:
+        frame_id = str(candidate or "").strip()
+        guid = self.sprite_guid
+        if not guid:
+            raise ValueError("a SpriteFrame cannot be selected without a Sprite texture")
+        return self._sprite_assignment_snapshot(
+            {"guid": guid, "frame_id": frame_id}
+        )
+
+    def _restore_sprite_assignment(self, assignment: dict) -> None:
+        if type(assignment) is not dict or set(assignment) != {
+            "sprite_guid",
+            "frame_id",
+        }:
+            raise ValueError("sprite assignment must use the complete current field set")
+        guid = assignment["sprite_guid"]
+        frame_id = assignment["frame_id"]
+        if type(guid) is not str or type(frame_id) is not str:
+            raise TypeError("sprite assignment identity fields must be strings")
+        cpp = self._cpp_component
+        if cpp is not None:
+            cpp.sprite_guid = guid
+            cpp.frame_id = frame_id
+        self._load_sprite_data()
+        self._apply_uv_rect()
+
+    # ── Material access (direct to C++ SpriteRenderer) ──────────────
+
+    @property
+    def material(self) -> Optional[Material]:
+        """The material on slot 0."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            native = cpp.get_material(0)
+        else:
+            native = self._sprite_material
+        return Material.from_native(native) if native is not None else None
+
+    @material.setter
+    def material(self, value):
+        cpp = self._cpp_component
+        if cpp is not None:
+            cpp.set_material(0, _to_native_material(value))
+            self._ensure_material()
+
+    @property
+    def shared_material(self):
+        return self.material
+
+    @shared_material.setter
+    def shared_material(self, value):
+        self.material = value
+
+    # ── Public API ──────────────────────────────────────────────────
+
+    @property
+    def sprite_frames(self) -> list:
+        """Currently loaded sprite frames (read-only at runtime)."""
+        return list(self._sprite_frames)
+
+    @property
+    def frame_count(self) -> int:
+        return len(self._sprite_frames)
+
+    # ── Custom Inspector rendering ──────────────────────────────────
+
+    def render_inspector(self, ctx):
+        """Custom Inspector: texture picker + material + color bar + CppProperty fields."""
+        from infernux.engine.ui.inspector_components import (
+            render_builtin_via_setters, field_label, max_label_w,
+            render_asset_reference_field, _record_builtin_property,
+        )
+        from infernux.engine.ui.inspector_utils import _render_color_bar
+
+        labels = ["Sprite", "Material", "Color", "Frame", "Flip X", "Flip Y"]
+        lw = max_label_w(ctx, labels)
+
+        # ── Sprite texture picker ──────────────────────────────
+        guid = self.sprite
+        display = "None (Texture)"
+        sprite_path = ""
+        if guid:
+            adb = _get_asset_database()
+            path = adb.get_path_from_guid(guid)
+            if path:
+                import os
+                sprite_path = str(path)
+                display = os.path.basename(path)
+
+        field_label(ctx, "Sprite", lw)
+        from infernux.engine.interaction import SnapshotPropertyTransaction
+
+        game_object_id = int(getattr(self.game_object, "id", 0) or 0)
+        component_id = int(getattr(self, "component_id", 0) or 0)
+        sprite_transaction = SnapshotPropertyTransaction(
+            f"SpriteRenderer:{game_object_id}:{component_id}:sprite",
+            lambda: {
+                "sprite_guid": self.sprite_guid,
+                "frame_id": self.frame_id,
+            },
+            self._restore_sprite_assignment,
+            description="Set Sprite",
+            value_type="Texture",
+            normalize=self._sprite_assignment_snapshot,
+            clear_value="",
+            mergeable=False,
+        )
+        render_asset_reference_field(
+            ctx,
+            "##sprite_texture",
+            display,
+            "Texture",
+            ping_path=sprite_path or None,
+            has_value=bool(guid),
+            asset_type="Texture",
+            reference_value={"guid": guid, "path_hint": sprite_path},
+            transaction=sprite_transaction,
+        )
+
+        # ── Stable SpriteFrame picker ──────────────────────────
+        if not self._is_driven_by_animator() and self._sprite_frames:
+            frame_ids = [frame.stable_id for frame in self._sprite_frames]
+            frame_labels = [
+                str(frame.name or f"Frame {index}")
+                for index, frame in enumerate(self._sprite_frames)
+            ]
+            current_frame_id = self.frame_id
+            current_index = next(
+                (
+                    index
+                    for index, frame_id in enumerate(frame_ids)
+                    if frame_id == current_frame_id
+                ),
+                -1,
+            )
+            labels = frame_labels
+            combo_index = current_index
+            if current_index < 0:
+                missing_label = (
+                    f"Missing ({current_frame_id[:8]})"
+                    if current_frame_id
+                    else "None"
+                )
+                labels = [missing_label, *frame_labels]
+                combo_index = 0
+
+            field_label(ctx, "Frame", lw)
+            selected_index = ctx.combo(
+                "##sprite_frame",
+                combo_index,
+                labels,
+                len(labels),
+            )
+            if selected_index != combo_index:
+                source_index = (
+                    selected_index
+                    if current_index >= 0
+                    else selected_index - 1
+                )
+                if 0 <= source_index < len(frame_ids):
+                    SnapshotPropertyTransaction(
+                        f"SpriteRenderer:{game_object_id}:{component_id}:frame",
+                        lambda: {
+                            "sprite_guid": self.sprite_guid,
+                            "frame_id": self.frame_id,
+                        },
+                        self._restore_sprite_assignment,
+                        description="Set Sprite Frame",
+                        normalize=self._frame_assignment_snapshot,
+                        mergeable=False,
+                    ).commit_or_raise(frame_ids[source_index])
+
+        # ── Material slot (supports custom materials) ──────────
+        mat = self._get_material()
+        mat_display = "Default (sprite_unlit)"
+        if mat is not None and not self._is_default_material(mat):
+            mat_name = getattr(mat, 'name', None) or getattr(mat, 'path', None)
+            if mat_name:
+                import os
+                mat_display = os.path.basename(str(mat_name))
+            else:
+                mat_display = "Custom Material"
+        field_label(ctx, "Material", lw)
+        material_path = str(
+            getattr(mat, "file_path", "")
+            or ""
+        )
+        has_custom_material = bool(
+            mat is not None and not self._is_default_material(mat)
+        )
+        render_asset_reference_field(
+            ctx,
+            "##sprite_material",
+            mat_display,
+            "Material",
+            asset_type="Material",
+            on_assign=self._on_material_drop,
+            on_clear=self._on_material_clear,
+            ping_path=material_path or None,
+            has_value=has_custom_material,
+            reference_value=mat if has_custom_material else None,
+        )
+
+        # ── Color (Unity-style color bar, same as Material Inspector) ──
+        c = self.sprite_color
+        if c is None or len(c) < 4:
+            c = [1.0, 1.0, 1.0, 1.0]
+        field_label(ctx, "Color", lw)
+        nr, ng, nb, na = _render_color_bar(
+            ctx, "##sprite_color", c[0], c[1], c[2], c[3])
+        if (nr, ng, nb, na) != (c[0], c[1], c[2], c[3]):
+            _record_builtin_property(
+                self, "sprite_color", c, [nr, ng, nb, na], "Set color")
+            self._apply_color()
+
+        # ── Remaining CppProperty fields (frame_id, flip_x, flip_y) ──
+        render_builtin_via_setters(
+            ctx, self, type(self),
+            skip_fields={'sprite_guid', 'sprite_color', 'frame_id'})
+
+        # ── Sync material state after Inspector edits ──────────
+        self._sync_material_if_dirty()
+
+    def _on_material_drop(self, payload):
+        mat_path = str(payload)
+        from infernux.core.material import Material
+        from infernux.engine.ui._inspector_undo import _record_generic_component
+
+        mat = Material.load(mat_path)
+        cpp = self._cpp_component
+        if mat is None or cpp is None:
+            raise RuntimeError(f"SpriteRenderer material is unavailable: {mat_path}")
+        old_document = self.serialize_document()
+        cpp.set_material(0, mat._native)
+        new_document = self.serialize_document()
+        _record_generic_component(self, old_document, new_document)
+        self._sprite_material = cpp.get_material(0)
+        self._material_ready = True
+        self._apply_texture_to_material()
+        self._apply_uv_rect()
+        self._apply_color()
+
+    def _on_material_clear(self):
+        """Reset to default sprite_unlit material."""
+        cpp = self._cpp_component
+        if cpp is None:
+            return
+        from infernux.engine.ui._inspector_undo import _record_generic_component
+
+        old_document = self.serialize_document()
+        cpp.set_material(0, None)
+        self._sprite_material = None
+        self._material_ready = False
+        self._ensure_material()
+        new_document = self.serialize_document()
+        _record_generic_component(self, old_document, new_document)
+        self._sprite_material = cpp.get_material(0)
+        self._material_ready = self._sprite_material is not None
+
+    def _is_default_material(self, mat):
+        """Check if a material is the auto-created sprite_unlit default."""
+        frag = getattr(mat, 'frag_shader_name', None)
+        native = getattr(mat, '_native', None) or getattr(mat, 'native', mat)
+        path = getattr(native, 'file_path', '') or ''
+        return frag == 'Sprite Unlit' and not path
+
+    # ── Internals ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_guid(value) -> str:
+        """Extract a GUID string from various input types."""
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return ""
+        guid = getattr(value, "guid", None)
+        if guid:
+            return guid
+        return str(value)
+
+    @staticmethod
+    def _resolve_texture_guid(path_str: str) -> str:
+        """Resolve a file path to an asset GUID using the editor-aware asset DB."""
+        if not path_str:
+            return ""
+        adb = _get_asset_database()
+        existing_path = str(adb.get_path_from_guid(path_str) or "").strip()
+        if existing_path:
+            return path_str
+
+        candidates = [path_str]
+        normalized = portable_path(path_str)
+        if normalized not in candidates:
+            candidates.append(normalized)
+
+        normpath = lexical_path(path_str)
+        if normpath not in candidates:
+            candidates.append(normpath)
+        slash_norm = portable_path(normpath)
+        if slash_norm not in candidates:
+            candidates.append(slash_norm)
+
+        for candidate in candidates:
+            guid = adb.get_guid_from_path(candidate)
+            if guid:
+                return guid
+        return ""
+
+    def sync_visual(self):
+        """Public API: push the current C++ properties (frame, flip, color)
+        to this renderer. Called by external drivers like SpiritAnimator
+        after they update ``frame_id`` from Python."""
+        self._sync_material_if_dirty()
+
+    def deserialize_document(self, document: dict) -> bool:
+        restored = super().deserialize_document(document)
+        if restored:
+            # Derived runtime parameters are intentionally absent from the
+            # document. Restore them even if the authored values are unchanged.
+            self._ensure_material()
+        return restored
+
+    def deserialize(self, json_str: str) -> bool:
+        restored = super().deserialize(json_str)
+        if restored:
+            self._ensure_material()
+        return restored
+
+    def _is_driven_by_animator(self) -> bool:
+        """Return True if a SpiritAnimator is attached to this GameObject."""
+        go = self.game_object
+        if go is None:
+            return False
+        from infernux.components.spirit_animator import SpiritAnimator
+        return go.get_component(SpiritAnimator) is not None
+
+    def _sync_material_if_dirty(self):
+        """Publish changed sprite fields without modifying the shared material."""
+        cpp = self._cpp_component
+        if cpp is None:
+            return
+
+        material = cpp.get_material(0)
+        if (
+            material is not self._sprite_material
+            or material is None
+            or material.get_version() != self._last_material_version
+        ):
+            self._ensure_material()
+            return
+
+        guid = self.sprite
+        frame_id = cpp.frame_id
+        fx = cpp.flip_x
+        fy = cpp.flip_y
+        c = tuple(cpp.sprite_color)
+
+        uv_dirty = (
+            frame_id != self._last_frame_id
+            or fx != self._last_flip_x
+            or fy != self._last_flip_y
+            or guid != self._last_sprite
+        )
+        color_dirty = c != self._last_color
+
+        if guid != self._last_sprite:
+            self._load_sprite_data()
+
+        if uv_dirty:
+            self._apply_uv_rect()
+        if color_dirty:
+            self._apply_color()
+
+    def _get_material(self):
+        """Get the Python Material wrapper for slot 0."""
+        cpp = self._cpp_component
+        if cpp is None:
+            return None
+        native = cpp.get_material(0)
+        if native is None:
+            return None
+        from infernux.core.material import Material
+        if isinstance(native, Material):
+            return native
+        return Material.from_native(native)
+
+    def _ensure_material(self):
+        """Create the default sprite_unlit material if none is assigned."""
+        cpp = self._cpp_component
+        if cpp is None:
+            return
+        existing = cpp.get_material(0)
+        if existing is not None:
+            self._sprite_material = existing
+            self._material_ready = True
+            # Reload sprite data in case we're restoring from a scene
+            self._load_sprite_data()
+            self._apply_uv_rect()
+            self._apply_color()
+            self._last_material_version = existing.get_version()
+            return
+        from infernux.core.material import Material
+        mat = Material.create_unlit()
+        mat.frag_shader_name = "Sprite Unlit"
+        mat.surface_type = "opaque"
+        mat.alpha_clip_enabled = True
+        mat.alpha_clip_threshold = 0.5
+        # Material identity is native ownership, not its display name. A runtime
+        # component ID would change the embedded scene document on every reopen.
+        mat._native.name = "Sprite Unlit (Generated)"
+        mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
+        mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
+        self._sprite_material = mat._native
+        self._material_ready = True
+        cpp.set_material(0, mat._native)
+        self._load_sprite_data()
+        self._apply_uv_rect()
+        self._apply_color()
+        self._last_material_version = mat._native.get_version()
+
+    def _load_sprite_data(self):
+        """Load sprite frame list and texture dimensions from the asset .meta."""
+        self._sprite_frames = []
+        self._sprite_frames_by_id = {}
+        self._tex_w = 0
+        self._tex_h = 0
+        self._reported_missing_frame_id = ""
+
+        guid = self.sprite
+        self._last_sprite = guid
+        if not guid:
+            self._apply_texture_to_material()
+            return
+
+        adb = _get_asset_database()
+        asset_path = adb.get_path_from_guid(guid)
+        if not asset_path:
+            self._apply_texture_to_material()
+            return
+
+        from infernux.core.asset_types import read_asset_metadata
+        meta = read_asset_metadata(asset_path, guid=guid)
+        if meta is None:
+            self._apply_texture_to_material()
+            return
+
+        self._tex_w = int(meta.get("width", 0))
+        self._tex_h = int(meta.get("height", 0))
+
+        tex_type = meta.get("texture_type", "default")
+        if tex_type == "sprite":
+            raw_frames = meta.get("sprite_frames", [])
+            if type(raw_frames) is not list:
+                raise TypeError("texture sprite_frames must be an array")
+
+            from infernux.core.asset_types import SpriteFrame
+            self._sprite_frames = [SpriteFrame.from_dict(f) for f in raw_frames]
+            self._sprite_frames_by_id = {
+                frame.stable_id: frame for frame in self._sprite_frames
+            }
+            if len(self._sprite_frames_by_id) != len(self._sprite_frames):
+                raise ValueError("texture sprite frame stable_id values must be unique")
+
+        self._apply_texture_to_material()
+
+    def _apply_texture_to_material(self):
+        """Bind this sprite's texSampler without modifying the shared asset."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            cpp._publish_sprite_texture()
+
+    def _apply_uv_rect(self):
+        """Compute and apply UV rect and display scale from the current frame."""
+        cpp = self._cpp_component
+        if cpp is None:
+            return
+
+        frame_id = cpp.frame_id
+        fx = cpp.flip_x
+        fy = cpp.flip_y
+        # Default: full texture
+        u, v, su, sv = 0.0, 0.0, 1.0, 1.0
+        ds_x, ds_y = 1.0, 1.0  # displayScale for aspect-fit centering
+
+        if self._sprite_frames and self._tex_w > 0 and self._tex_h > 0:
+            frame = (
+                self._sprite_frames[0]
+                if not frame_id
+                else self._sprite_frames_by_id.get(frame_id)
+            )
+            if frame is None:
+                if self._reported_missing_frame_id != frame_id:
+                    Debug.log_error(
+                        "SpriteRenderer: frame ID "
+                        f"'{frame_id}' is missing from texture '{self.sprite}'"
+                    )
+                    self._reported_missing_frame_id = frame_id
+                u, v, su, sv = 0.0, 0.0, 0.0, 0.0
+                ds_x, ds_y = 0.0, 0.0
+                frame = None
+            else:
+                self._reported_missing_frame_id = ""
+        else:
+            frame = None
+
+        if frame is not None:
+            tw, th = float(self._tex_w), float(self._tex_h)
+            u = frame.x / tw
+            v = frame.y / th
+            su = frame.w / tw
+            sv = frame.h / th
+            fw = float(frame.w) if frame.w > 0 else 1.0
+            fh = float(frame.h) if frame.h > 0 else 1.0
+            max_dim = max(fw, fh)
+            ds_x = fw / max_dim
+            ds_y = fh / max_dim
+
+        if fx:
+            u = u + su
+            su = -su
+        if not fy:
+            # Default (flip_y=False): invert V to correct Vulkan UV orientation
+            v = v + sv
+            sv = -sv
+
+        # displayScale tells the shader what fraction of the quad the sprite
+        # occupies.  The shader centers the image and discards outside pixels.
+        cpp._publish_sprite_uv((u, v, su, sv), (ds_x, ds_y, 0.0, 0.0))
+        self._last_frame_id = frame_id
+        self._last_flip_x = fx
+        self._last_flip_y = fy
+        self._last_sprite = self.sprite
+
+    def _apply_color(self):
+        """Publish this sprite's tint in its own runtime parameter layer."""
+        cpp = self._cpp_component
+        if cpp is None:
+            return
+
+        c = cpp.sprite_color
+        c = (c[0], c[1], c[2], c[3])
+
+        cpp._publish_sprite_color()
+        self._last_color = c

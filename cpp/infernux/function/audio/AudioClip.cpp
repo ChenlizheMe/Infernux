@@ -65,19 +65,24 @@ AudioClip &AudioClip::operator=(AudioClip &&other) noexcept
     return *this;
 }
 
-bool AudioClip::LoadFromFile(const std::string &filePath)
+bool AudioClip::LoadFromFile(const std::string &filePath, const InxResourceMeta *metadata)
 {
     Unload();
     try {
-        InxResourceMeta meta;
-        const auto metaPath = InxResourceMeta::GetMetaFilePath(filePath);
-        if (std::filesystem::exists(ToFsPath(metaPath))) {
-            if (!meta.LoadFromFile(metaPath))
-                throw std::runtime_error("Cannot read audio import metadata");
-            if (meta.HasKey("force_mono"))
-                m_forceMono = meta.GetDataAs<bool>("force_mono");
+        InxResourceMeta sidecar;
+        if (!metadata) {
+            const auto metaPath = InxResourceMeta::GetMetaFilePath(filePath);
+            if (std::filesystem::exists(ToFsPath(metaPath))) {
+                if (!sidecar.LoadFromFile(metaPath))
+                    throw std::runtime_error("Cannot read audio import metadata");
+                metadata = &sidecar;
+            }
+        }
+        if (metadata) {
+            if (metadata->HasKey("force_mono"))
+                m_forceMono = metadata->GetDataAs<bool>("force_mono");
             const auto mode =
-                meta.HasKey("load_type") ? meta.GetDataAs<std::string>("load_type") : "decompress_on_load";
+                metadata->HasKey("load_type") ? metadata->GetDataAs<std::string>("load_type") : "decompress_on_load";
             if (mode != "decompress_on_load" && mode != "streaming")
                 throw std::invalid_argument("Audio load_type must be decompress_on_load or streaming");
             m_streaming = mode == "streaming";

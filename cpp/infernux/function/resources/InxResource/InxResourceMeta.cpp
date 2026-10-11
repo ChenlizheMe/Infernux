@@ -1,11 +1,11 @@
 #include "InxResourceMeta.h"
 
 #include <core/log/InxLog.h>
+#include <core/types/Guid.h>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPath.h>
 
-#include <array>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -13,8 +13,7 @@
 #include <functional>
 #include <iomanip>
 #include <limits>
-#include <mutex>
-#include <random>
+#include <optional>
 #include <sstream>
 #include <string_view>
 
@@ -111,39 +110,75 @@ std::string ComputeContentHashHex(const char *content, size_t contentSize)
     return ss.str();
 }
 
-std::string GenerateGuid()
-{
-    static std::mutex mutex;
-    static std::mt19937_64 generator = [] {
-        std::random_device device;
-        std::array<uint32_t, 10> seedData{};
-        for (auto &value : seedData)
-            value = device();
-
-        const auto timestamp =
-            static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
-        seedData[8] ^= static_cast<uint32_t>(timestamp);
-        seedData[9] ^= static_cast<uint32_t>(timestamp >> 32u);
-        std::seed_seq seed(seedData.begin(), seedData.end());
-        return std::mt19937_64(seed);
-    }();
-
-    uint64_t hi = 0;
-    uint64_t lo = 0;
-    {
-        std::lock_guard lock(mutex);
-        hi = generator();
-        lo = generator();
-    }
-
-    std::stringstream stream;
-    stream << std::hex << std::setfill('0') << std::setw(16) << hi << std::setw(16) << lo;
-    return stream.str();
-}
-
 std::string NormalizeMetadataFilePath(const std::string &filePath)
 {
     return ResolveFilesystemPath(filePath);
+}
+
+std::optional<std::string> PortableMetadataFilePath(const std::string &filePath, const std::string &projectRoot)
+{
+    const auto virtualSuffix = filePath.find("::");
+    const std::string filesystemPath = filePath.substr(0, virtualSuffix);
+    const std::string suffix = virtualSuffix == std::string::npos ? "" : filePath.substr(virtualSuffix);
+
+    const auto resolved = ToFsPath(filesystemPath).is_absolute()
+                              ? filesystemPath
+                              : FromFsPath(ToFsPath(projectRoot) / ToFsPath(filesystemPath));
+    std::string relative;
+    if (TryMakeRelativeFilesystemPath(resolved, projectRoot, relative))
+        return relative + suffix;
+
+    // Tools may explicitly import an external source for temporary authoring.
+    // Its sidecar owns the GUID; its physical caller path supplies the location.
+    // There is no project-relative path hint to persist for that source.
+    return std::nullopt;
+}
+
+void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRoot)
+{
+    if (document.is_array()) {
+        for (auto &item : document)
+            MakeMetadataPortable(item, projectRoot);
+        return;
+    }
+    if (!document.is_object())
+        return;
+    auto fields = document.find("metadata");
+    if (fields != document.end() && fields->is_object()) {
+        // Source observations belong to the local import index. Persisting
+        // them makes unrelated scene/script edits collide in their sidecars.
+        // Keep the complete in-memory document for inspectors and the index.
+        for (const auto *key :
+             {"last_modified", "content_hash", "file_size", "file_type", "file_extension", "line_count",
+              "character_count", "encoding", "size_category", "binary_type", "language"})
+            fields->erase(key);
+        // Default loaders report readability as an observation. Models use
+        // the same name for their authored CPU Read/Write import setting.
+        const auto resourceType = fields->find("resource_type");
+        if (resourceType != fields->end() && resourceType->at("value") != "Mesh")
+            fields->erase("is_readable");
+        for (const auto *key : {"file_path"}) {
+            auto entry = fields->find(key);
+            if (entry != fields->end() && entry->at("type") == "string") {
+                const auto portable = PortableMetadataFilePath(entry->at("value").get<std::string>(), projectRoot);
+                if (portable)
+                    (*entry)["value"] = *portable;
+                else
+                    fields->erase(entry);
+            }
+        }
+        // Model tables contain serialized metadata documents inside strings.
+        for (const auto *key : {"model_textures", "model_animations"}) {
+            auto entry = fields->find(key);
+            if (entry != fields->end()) {
+                auto table = nlohmann::json::parse(entry->at("value").get<std::string>());
+                MakeMetadataPortable(table, projectRoot);
+                (*entry)["value"] = table.dump();
+            }
+        }
+    }
+    for (auto &value : document)
+        MakeMetadataPortable(value, projectRoot);
 }
 } // namespace
 
@@ -419,6 +454,15 @@ nlohmann::json InxResourceMeta::SerializeDocument() const
     return root;
 }
 
+nlohmann::json InxResourceMeta::SerializeDocumentPortable(const std::string &projectRoot) const
+{
+    if (projectRoot.empty())
+        throw std::invalid_argument("portable metadata requires a project root");
+    auto root = SerializeDocument();
+    MakeMetadataPortable(root, projectRoot);
+    return root;
+}
+
 void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
 {
     if (!document.is_object() || document.size() != 1 || !document.contains("metadata"))
@@ -444,6 +488,15 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
         } else if (typeName == "int") {
             if (!value.is_number_integer())
                 throw std::invalid_argument("metadata int value expected: " + key);
+            // Check while the JSON value still has its full signed/unsigned
+            // precision. get<int>() alone silently narrows out-of-range input.
+            const bool outsideRange =
+                value.is_number_unsigned()
+                    ? value.get<uint64_t>() > static_cast<uint64_t>(std::numeric_limits<int>::max())
+                    : (value.get<int64_t>() < std::numeric_limits<int>::min() ||
+                       value.get<int64_t>() > std::numeric_limits<int>::max());
+            if (outsideRange)
+                throw std::invalid_argument("metadata int value out of range: " + key);
             staged.m_metadata[key] = std::make_pair(typeName, MetadataValue(value.get<int>()));
         } else if (typeName == "bool") {
             if (!value.is_boolean())
@@ -481,10 +534,14 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
     m_metadata = std::move(staged.m_metadata);
 }
 
-bool InxResourceMeta::SaveToFile(const std::string &metaFilePath) const
+bool InxResourceMeta::SaveToFile(const std::string &metaFilePath, const std::string &projectRoot) const
 {
     try {
-        DocumentStore::Instance().WriteAndWait(metaFilePath, SerializeDocument().dump(4) + "\n");
+        const auto document = SerializeDocumentPortable(projectRoot);
+        const auto target = ToFsPath(metaFilePath).is_absolute()
+                                ? metaFilePath
+                                : FromFsPath(ToFsPath(projectRoot) / ToFsPath(metaFilePath));
+        DocumentStore::Instance().WriteAndWait(ResolveFilesystemPath(target), document.dump(4) + "\n");
 
         return true;
     } catch (const std::exception &e) {

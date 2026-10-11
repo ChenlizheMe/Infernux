@@ -97,6 +97,12 @@ struct GpuParticleSpawnShaderSources
     [[nodiscard]] static std::string_view Prepare() noexcept;
 };
 
+struct GpuParticleParameterUpdate
+{
+    uint32_t wordOffset = 0;
+    std::vector<uint32_t> words;
+};
+
 /// One GPU spawn request domain per live ParticleGraph instance. A Burst node
 /// only appends a count to the addressed emitter's request queue; it never
 /// transfers source particles or source state. The next graph execution moves
@@ -107,6 +113,22 @@ struct GpuParticleSpawnShaderSources
 class ParticleGpuGraphSpawnDomain
 {
   public:
+    /// Resource versions belong to one RenderGraph construction, independently
+    /// of the resident GPU domain shared by old and replacement graphs.
+    struct GraphResources
+    {
+        vk::ResourceHandle burstRequests;
+        vk::ResourceHandle consuming;
+        vk::ResourceHandle metadata;
+        vk::ResourceHandle parameters;
+        vk::ResourceHandle playingRequests;
+        vk::ResourceHandle playingStates;
+
+        [[nodiscard]] bool IsValid() const noexcept;
+        void DeclarePrepare(vk::PassBuilder &builder);
+        void DeclareKernelWrite(vk::PassBuilder &builder);
+        void DeclareInitRead(vk::PassBuilder &builder);
+    };
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint64_t MetadataStride = sizeof(GpuParticleSpawnMetadata);
     static constexpr uint64_t IndirectOffset = offsetof(GpuParticleSpawnMetadata, dispatchGroupCountX);
@@ -125,8 +147,11 @@ class ParticleGpuGraphSpawnDomain
     [[nodiscard]] bool RegisterEmitter(uint32_t targetSlot, const ParticleGpuRuntime &runtime);
     [[nodiscard]] bool SetEmitterAcceptingBurstRequests(uint32_t targetSlot, bool accepting);
     [[nodiscard]] bool SetEmitterPlaying(uint32_t targetSlot, bool playing);
-    [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
-    [[nodiscard]] bool Attach(vk::RenderGraph &graph, const std::string &namePrefix);
+    [[nodiscard]] bool UpdateParameters(const std::vector<GpuParticleParameterUpdate> &updates);
+    [[nodiscard]] bool HasPendingUploads() const noexcept;
+    [[nodiscard]] bool RecordPendingUploads(const rhi::TransferCommandEncoder &encoder);
+    void NotifySubmission(bool submitted) noexcept;
+    [[nodiscard]] bool Attach(vk::RenderGraph &graph, const std::string &namePrefix, GraphResources &resources);
     /// Arm the graph-level spawn prepass for the next graph execution. The
     /// manager calls this only when an emitter in this graph has work.
     void MarkFramePending() noexcept
@@ -146,9 +171,6 @@ class ParticleGpuGraphSpawnDomain
     {
         return m_framePending;
     }
-    void DeclarePrepare(vk::PassBuilder &builder);
-    void DeclareKernelWrite(vk::PassBuilder &builder);
-    void DeclareInitRead(vk::PassBuilder &builder);
     void RecordPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t targetSlot, uint32_t capacity,
                        const GpuParticleFrameRequest &request, bool discardCpuSpawn, bool resetPreviousState) const;
 
@@ -196,6 +218,30 @@ class ParticleGpuGraphSpawnDomain
     }
 
   private:
+    // CPU values are upload sources, not a mirror of GPU-written state. Only
+    // explicitly authored slots become dirty after the initial upload.
+    struct PendingInputs
+    {
+        struct Slot
+        {
+            uint64_t revision = 1;
+            uint64_t recorded = 0;
+            uint64_t submitted = 0;
+        };
+        rhi::BufferHandle buffer;
+        uint32_t wordsPerSlot = 1;
+        std::vector<uint32_t> words;
+        std::vector<Slot> slots;
+        size_t pendingCount = 0;
+        void Initialize(rhi::BufferHandle destination, const uint32_t *data, size_t count, uint32_t stride);
+        void Set(uint32_t offset, const uint32_t *data, size_t count);
+        [[nodiscard]] bool Record(const rhi::TransferCommandEncoder &encoder);
+        void NotifySubmission(bool submitted) noexcept;
+    };
+    PendingInputs m_acceptanceInputs;
+    PendingInputs m_playingRequestInputs;
+    PendingInputs m_playingStateInputs;
+    PendingInputs m_parameterInputs;
     rhi::Device *m_device = nullptr;
     uint64_t m_graphInstanceId = 0;
     uint32_t m_slotCount = 0;
@@ -209,19 +255,12 @@ class ParticleGpuGraphSpawnDomain
     uint32_t m_parameterWordCount = 0;
     rhi::BindingLayoutHandle m_domainLayout;
     rhi::BindGroupHandle m_advanceGroup;
-    rhi::BindGroupHandle m_prepareGroup;
     rhi::ComputePipelineHandle m_advancePipeline;
     rhi::ComputePipelineHandle m_preparePipeline;
     bool m_resetPending = true;
     bool m_framePending = false;
     std::vector<rhi::BindGroupHandle> m_runtimeGroups;
     std::vector<rhi::BindGroupHandle> m_prepareRuntimeGroups;
-    vk::ResourceHandle m_burstRequestResource;
-    vk::ResourceHandle m_consumingResource;
-    vk::ResourceHandle m_metadataResource;
-    vk::ResourceHandle m_parameterResource;
-    vk::ResourceHandle m_emitterPlayingRequestResource;
-    vk::ResourceHandle m_emitterPlayingStateResource;
 };
 
 struct GpuParticleGraphOutputs
@@ -256,7 +295,8 @@ class ParticleRenderGraph
     ParticleRenderGraph &operator=(ParticleRenderGraph &&) = delete;
 
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
-                              ParticleGpuGraphSpawnDomain &spawnDomain, uint32_t graphEmitterIndex,
+                              ParticleGpuGraphSpawnDomain &spawnDomain,
+                              ParticleGpuGraphSpawnDomain::GraphResources &spawnResources, uint32_t graphEmitterIndex,
                               const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr,
                               ParticleGpuRibbonTopology *ribbonTopology = nullptr);
     [[nodiscard]] static bool IsFrameRequestValid(const GpuParticleFrameRequest &request) noexcept;
@@ -264,6 +304,9 @@ class ParticleRenderGraph
                                                             const ParticleGpuRuntime &runtime) noexcept;
     [[nodiscard]] bool CanBeginFrame(const GpuParticleFrameRequest &request) const noexcept;
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
+    /// Preserve scheduling when rebuilding around the same resident emitter.
+    /// Graph-local pass/resource handles remain those of the new attachment.
+    [[nodiscard]] bool PreserveSchedulingFrom(const ParticleRenderGraph &previous) noexcept;
     void Reset() noexcept;
     [[nodiscard]] bool HasCompletedMigration() const noexcept
     {

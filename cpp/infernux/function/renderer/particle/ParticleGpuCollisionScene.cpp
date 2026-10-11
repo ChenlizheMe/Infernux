@@ -326,13 +326,11 @@ ParticleGpuCollisionScene::~ParticleGpuCollisionScene()
     Destroy();
 }
 
-bool ParticleGpuCollisionScene::Create(rhi::Device &device, uint32_t capacity, uint32_t uploadPageCount,
-                                       uint32_t meshVertexCapacity, uint32_t meshIndexCapacity,
-                                       uint32_t meshBvhNodeCapacity)
+bool ParticleGpuCollisionScene::Create(rhi::Device &device, uint32_t capacity, uint32_t meshVertexCapacity,
+                                       uint32_t meshIndexCapacity, uint32_t meshBvhNodeCapacity)
 {
     Destroy();
-    if (capacity == 0 || uploadPageCount == 0 || meshVertexCapacity == 0 || meshIndexCapacity == 0 ||
-        meshBvhNodeCapacity == 0 ||
+    if (capacity == 0 || meshVertexCapacity == 0 || meshIndexCapacity == 0 || meshBvhNodeCapacity == 0 ||
         static_cast<uint64_t>(capacity) > std::numeric_limits<uint64_t>::max() / sizeof(GpuParticleColliderRecord) ||
         static_cast<uint64_t>(meshVertexCapacity) >
             std::numeric_limits<uint64_t>::max() / sizeof(std::array<float, 4>) ||
@@ -357,12 +355,11 @@ bool ParticleGpuCollisionScene::Create(rhi::Device &device, uint32_t capacity, u
     // exclusive buffers hang that queue the same way resident particle state did.
     const auto sharedAccess =
         rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
-    const auto createShared = [&](uint64_t bytes, rhi::BufferUsageFlags usage,
-                                  rhi::BufferMemory memory = rhi::BufferMemory::DeviceLocal) {
+    const auto createShared = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
         rhi::BufferDesc desc;
         desc.byteSize = bytes;
         desc.usage = usage;
-        desc.memory = memory;
+        desc.memory = rhi::BufferMemory::DeviceLocal;
         desc.queueAccess = sharedAccess;
         return device.CreateBuffer(desc);
     };
@@ -374,22 +371,6 @@ bool ParticleGpuCollisionScene::Create(rhi::Device &device, uint32_t capacity, u
     m_meshVertexBuffer = createShared(meshVertexBytes, destUsage);
     m_meshIndexBuffer = createShared(meshIndexBytes, destUsage);
     m_meshBvhBuffer = createShared(meshBvhBytes, destUsage);
-    m_uploadPages.resize(uploadPageCount);
-    for (auto &page : m_uploadPages) {
-        page.header = createShared(sizeof(GpuParticleCollisionSceneHeader), rhi::BufferUsageFlags::TransferSource,
-                                   rhi::BufferMemory::Upload);
-        page.colliders = createShared(colliderBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
-        page.gridOffsets =
-            createShared(gridOffsetBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
-        page.gridColliderIndices =
-            createShared(gridIndexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
-        page.meshVertices =
-            createShared(meshVertexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
-        page.meshIndices =
-            createShared(meshIndexBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
-        page.meshBvhNodes =
-            createShared(meshBvhBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload);
-    }
     if (!IsValid()) {
         Destroy();
         return false;
@@ -412,15 +393,6 @@ void ParticleGpuCollisionScene::Destroy() noexcept
         m_device->Release(m_meshVertexBuffer);
         m_device->Release(m_meshIndexBuffer);
         m_device->Release(m_meshBvhBuffer);
-        for (auto &page : m_uploadPages) {
-            m_device->Release(page.header);
-            m_device->Release(page.colliders);
-            m_device->Release(page.gridOffsets);
-            m_device->Release(page.gridColliderIndices);
-            m_device->Release(page.meshVertices);
-            m_device->Release(page.meshIndices);
-            m_device->Release(page.meshBvhNodes);
-        }
     }
     m_device = nullptr;
     m_headerBuffer = {};
@@ -430,25 +402,21 @@ void ParticleGpuCollisionScene::Destroy() noexcept
     m_meshVertexBuffer = {};
     m_meshIndexBuffer = {};
     m_meshBvhBuffer = {};
-    m_uploadPages.clear();
+    m_stagedHeader = {};
+    m_recordedHeader = {};
+    m_recordedRevision = 0;
+    m_recordedTopologyRevision = 0;
+    m_recordedGridReferenceCount = 0;
     m_capacity = 0;
     m_meshVertexCapacity = 0;
     m_meshIndexCapacity = 0;
     m_meshBvhNodeCapacity = 0;
-    m_pendingUploadPage = 0;
-    m_nextUploadPage = 0;
-    m_pendingColliderCount = 0;
-    m_pendingStaticColliderCount = 0;
     m_publishedColliderCount = 0;
     m_publishedStaticColliderCount = 0;
-    m_pendingGridOffsetCount = 0;
-    m_pendingGridReferenceCount = 0;
     m_publishedGridReferenceCount = 0;
     m_publishedMeshVertexCount = 0;
     m_publishedMeshIndexCount = 0;
     m_publishedMeshBvhNodeCount = 0;
-    m_pendingCopyOffset = 0;
-    m_pendingCopyBytes = 0;
     m_pendingRevision = 0;
     m_publishedRevision = 0;
     m_pendingTopologyRevision = 0;
@@ -461,9 +429,8 @@ void ParticleGpuCollisionScene::Destroy() noexcept
     m_stagedMeshIndices.clear();
     m_stagedMeshBvhNodes.clear();
     m_stagedGeometryByIdentity.clear();
-    m_pendingMeshVertexCount = 0;
-    m_pendingMeshIndexCount = 0;
-    m_pendingMeshBvhNodeCount = 0;
+    m_pendingStaticUpload = false;
+    m_pendingDynamicUpload = false;
     m_pendingTopologyUpload = false;
     m_uploadPending = false;
 }
@@ -551,71 +518,13 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
         SetError(error, "GPU particle collision broadphase grid exceeds its reference capacity");
         return false;
     }
-    const uint32_t uploadPage = m_uploadPending ? m_pendingUploadPage : m_nextUploadPage;
-    auto &page = m_uploadPages[uploadPage];
-    if (!m_device->WriteBuffer(page.header, 0, &header, sizeof(header))) {
-        SetError(error, "GPU particle collision header staging upload failed");
-        return false;
-    }
-    if (!m_device->WriteBuffer(page.gridOffsets, 0, gridOffsets.data(), gridOffsets.size() * sizeof(uint32_t))) {
-        SetError(error, "GPU particle collision grid offset staging upload failed");
-        return false;
-    }
-    if (!gridColliderIndices.empty() && !m_device->WriteBuffer(page.gridColliderIndices, 0, gridColliderIndices.data(),
-                                                               gridColliderIndices.size() * sizeof(uint32_t))) {
-        SetError(error, "GPU particle collision grid index staging upload failed");
-        return false;
-    }
-    if (snapshot.replaceMeshTopology) {
-        if (!replacementTopology.vertices.empty() &&
-            !m_device->WriteBuffer(page.meshVertices, 0, replacementTopology.vertices.data(),
-                                   replacementTopology.vertices.size() * sizeof(replacementTopology.vertices[0]))) {
-            SetError(error, "GPU particle mesh vertex staging upload failed");
-            return false;
-        }
-        if (!replacementTopology.indices.empty() &&
-            !m_device->WriteBuffer(page.meshIndices, 0, replacementTopology.indices.data(),
-                                   replacementTopology.indices.size() * sizeof(uint32_t))) {
-            SetError(error, "GPU particle mesh index staging upload failed");
-            return false;
-        }
-        if (!replacementTopology.nodes.empty() &&
-            !m_device->WriteBuffer(page.meshBvhNodes, 0, replacementTopology.nodes.data(),
-                                   replacementTopology.nodes.size() * sizeof(GpuParticleCollisionBvhNode))) {
-            SetError(error, "GPU particle mesh BVH staging upload failed");
-            return false;
-        }
-    }
-
     const bool staticChanged = !EqualRecords(effectiveSnapshot.staticColliders, m_stagedStaticColliders);
     const bool dynamicChanged = !EqualRecords(effectiveSnapshot.dynamicColliders, m_stagedDynamicColliders);
-    const uint64_t staticBytes = effectiveSnapshot.staticColliders.size() * sizeof(GpuParticleColliderRecord);
-    const uint64_t dynamicBytes = effectiveSnapshot.dynamicColliders.size() * sizeof(GpuParticleColliderRecord);
-    if (staticChanged) {
-        if (staticBytes > 0 &&
-            !m_device->WriteBuffer(page.colliders, 0, effectiveSnapshot.staticColliders.data(), staticBytes)) {
-            SetError(error, "GPU particle static collider staging upload failed");
-            return false;
-        }
-        if (dynamicBytes > 0 && !m_device->WriteBuffer(page.colliders, staticBytes,
-                                                       effectiveSnapshot.dynamicColliders.data(), dynamicBytes)) {
-            SetError(error, "GPU particle dynamic collider staging upload failed");
-            return false;
-        }
-        m_pendingCopyOffset = 0;
-        m_pendingCopyBytes = staticBytes + dynamicBytes;
-    } else if (dynamicChanged) {
-        if (dynamicBytes > 0 && !m_device->WriteBuffer(page.colliders, staticBytes,
-                                                       effectiveSnapshot.dynamicColliders.data(), dynamicBytes)) {
-            SetError(error, "GPU particle dynamic collider staging upload failed");
-            return false;
-        }
-        m_pendingCopyOffset = staticBytes;
-        m_pendingCopyBytes = dynamicBytes;
-    } else {
-        m_pendingCopyOffset = 0;
-        m_pendingCopyBytes = 0;
-    }
+    // A second Publish before submission must preserve earlier unsent changes.
+    // Moving the static boundary also relocates every dynamic record.
+    m_pendingStaticUpload = m_pendingStaticUpload || staticChanged;
+    m_pendingDynamicUpload = m_pendingDynamicUpload || staticChanged || dynamicChanged;
+    m_stagedHeader = header;
 
     m_stagedStaticColliders = std::move(effectiveSnapshot.staticColliders);
     m_stagedDynamicColliders = std::move(effectiveSnapshot.dynamicColliders);
@@ -626,18 +535,10 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
         m_stagedMeshIndices = std::move(replacementTopology.indices);
         m_stagedMeshBvhNodes = std::move(replacementTopology.nodes);
         m_stagedGeometryByIdentity = std::move(replacementTopology.geometryByIdentity);
-        m_pendingMeshVertexCount = static_cast<uint32_t>(m_stagedMeshVertices.size());
-        m_pendingMeshIndexCount = static_cast<uint32_t>(m_stagedMeshIndices.size());
-        m_pendingMeshBvhNodeCount = static_cast<uint32_t>(m_stagedMeshBvhNodes.size());
         m_pendingTopologyUpload = true;
     }
-    m_pendingColliderCount = static_cast<uint32_t>(colliderCount);
-    m_pendingStaticColliderCount = static_cast<uint32_t>(snapshot.staticColliders.size());
-    m_pendingGridOffsetCount = static_cast<uint32_t>(m_stagedGridOffsets.size());
-    m_pendingGridReferenceCount = static_cast<uint32_t>(m_stagedGridColliderIndices.size());
     m_pendingRevision = snapshot.revision;
     m_pendingTopologyRevision = snapshot.topologyRevision;
-    m_pendingUploadPage = uploadPage;
     m_uploadPending = true;
     return true;
 }
@@ -648,61 +549,65 @@ bool ParticleGpuCollisionScene::RecordPendingUpload(const rhi::TransferCommandEn
         return true;
     if (!IsValid() || !encoder.IsValid())
         return false;
+    if (m_recordedRevision != 0)
+        return m_recordedRevision == m_pendingRevision;
 
-    const auto &page = m_uploadPages[m_pendingUploadPage];
-    encoder.CopyBuffer(page.header, m_headerBuffer, {0, 0, sizeof(GpuParticleCollisionSceneHeader)});
-    encoder.CopyBuffer(page.gridOffsets, m_gridOffsetBuffer,
-                       {0, 0, static_cast<uint64_t>(m_pendingGridOffsetCount) * sizeof(uint32_t)});
-    if (m_pendingGridReferenceCount > 0) {
-        encoder.CopyBuffer(page.gridColliderIndices, m_gridColliderIndexBuffer,
-                           {0, 0, static_cast<uint64_t>(m_pendingGridReferenceCount) * sizeof(uint32_t)});
-    }
-    if (m_pendingCopyBytes > 0) {
-        encoder.CopyBuffer(page.colliders, m_colliderBuffer,
-                           {m_pendingCopyOffset, m_pendingCopyOffset, m_pendingCopyBytes});
-    }
-    if (m_pendingTopologyUpload) {
-        if (m_pendingMeshVertexCount > 0) {
-            encoder.CopyBuffer(page.meshVertices, m_meshVertexBuffer,
-                               {0, 0, static_cast<uint64_t>(m_pendingMeshVertexCount) * sizeof(std::array<float, 4>)});
-        }
-        if (m_pendingMeshIndexCount > 0) {
-            encoder.CopyBuffer(page.meshIndices, m_meshIndexBuffer,
-                               {0, 0, static_cast<uint64_t>(m_pendingMeshIndexCount) * sizeof(uint32_t)});
-        }
-        if (m_pendingMeshBvhNodeCount > 0) {
-            encoder.CopyBuffer(
-                page.meshBvhNodes, m_meshBvhBuffer,
-                {0, 0, static_cast<uint64_t>(m_pendingMeshBvhNodeCount) * sizeof(GpuParticleCollisionBvhNode)});
-        }
-        m_publishedMeshVertexCount = m_pendingMeshVertexCount;
-        m_publishedMeshIndexCount = m_pendingMeshIndexCount;
-        m_publishedMeshBvhNodeCount = m_pendingMeshBvhNodeCount;
-    }
-    m_publishedColliderCount = m_pendingColliderCount;
-    m_publishedStaticColliderCount = m_pendingStaticColliderCount;
-    m_publishedGridReferenceCount = m_pendingGridReferenceCount;
-    m_publishedRevision = m_pendingRevision;
-    m_publishedTopologyRevision = m_pendingTopologyRevision;
-    m_pendingRevision = 0;
-    m_pendingTopologyRevision = 0;
-    m_nextUploadPage = (m_pendingUploadPage + 1u) % static_cast<uint32_t>(m_uploadPages.size());
-    m_pendingCopyOffset = 0;
-    m_pendingCopyBytes = 0;
-    m_pendingGridOffsetCount = 0;
-    m_pendingGridReferenceCount = 0;
-    m_pendingTopologyUpload = false;
-    m_uploadPending = false;
+    const auto upload = [&](rhi::BufferHandle buffer, uint64_t offset, const auto &values) {
+        return values.empty() || encoder.UpdateBuffer(buffer, offset, values.data(), values.size() * sizeof(values[0]));
+    };
+    if (!encoder.UpdateBuffer(m_headerBuffer, 0, &m_stagedHeader, sizeof(m_stagedHeader)) ||
+        !upload(m_gridOffsetBuffer, 0, m_stagedGridOffsets) ||
+        !upload(m_gridColliderIndexBuffer, 0, m_stagedGridColliderIndices))
+        return false;
+    if (m_pendingStaticUpload && !upload(m_colliderBuffer, 0, m_stagedStaticColliders))
+        return false;
+    const uint64_t dynamicOffset = m_stagedStaticColliders.size() * sizeof(GpuParticleColliderRecord);
+    if (m_pendingDynamicUpload && !upload(m_colliderBuffer, dynamicOffset, m_stagedDynamicColliders))
+        return false;
+    if (m_pendingTopologyUpload &&
+        (!upload(m_meshVertexBuffer, 0, m_stagedMeshVertices) || !upload(m_meshIndexBuffer, 0, m_stagedMeshIndices) ||
+         !upload(m_meshBvhBuffer, 0, m_stagedMeshBvhNodes)))
+        return false;
+    m_recordedHeader = m_stagedHeader;
+    m_recordedRevision = m_pendingRevision;
+    m_recordedTopologyRevision = m_pendingTopologyRevision;
+    m_recordedGridReferenceCount = static_cast<uint32_t>(m_stagedGridColliderIndices.size());
     return true;
+}
+
+void ParticleGpuCollisionScene::NotifySubmission(bool submitted) noexcept
+{
+    if (m_recordedRevision == 0)
+        return;
+    if (submitted) {
+        m_publishedRevision = m_recordedRevision;
+        m_publishedTopologyRevision = m_recordedTopologyRevision;
+        m_publishedColliderCount = m_recordedHeader.colliderCount;
+        m_publishedStaticColliderCount = m_recordedHeader.staticColliderCount;
+        m_publishedGridReferenceCount = m_recordedGridReferenceCount;
+        m_publishedMeshVertexCount = m_recordedHeader.topology[0];
+        m_publishedMeshIndexCount = m_recordedHeader.topology[1];
+        m_publishedMeshBvhNodeCount = m_recordedHeader.topology[2];
+        if (m_pendingRevision == m_recordedRevision) {
+            m_pendingRevision = 0;
+            m_pendingTopologyRevision = 0;
+            m_pendingStaticUpload = false;
+            m_pendingDynamicUpload = false;
+            m_pendingTopologyUpload = false;
+            m_uploadPending = false;
+        }
+    }
+    m_recordedRevision = 0;
+    m_recordedTopologyRevision = 0;
+    m_recordedGridReferenceCount = 0;
+    m_recordedHeader = {};
 }
 
 bool ParticleGpuCollisionScene::IsValid() const noexcept
 {
     return m_device && m_capacity > 0 && m_headerBuffer.IsValid() && m_colliderBuffer.IsValid() &&
            m_gridOffsetBuffer.IsValid() && m_gridColliderIndexBuffer.IsValid() && m_meshVertexBuffer.IsValid() &&
-           m_meshIndexBuffer.IsValid() && m_meshBvhBuffer.IsValid() && !m_uploadPages.empty() &&
-           std::all_of(m_uploadPages.begin(), m_uploadPages.end(),
-                       [](const UploadPage &page) { return page.IsValid(); });
+           m_meshIndexBuffer.IsValid() && m_meshBvhBuffer.IsValid();
 }
 
 } // namespace infernux::particle

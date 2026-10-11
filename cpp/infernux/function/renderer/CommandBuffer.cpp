@@ -2,8 +2,8 @@
  * @file CommandBuffer.cpp
  * @brief Implementation of the deferred-recording CommandBuffer.
  *
- * Each public method simply pushes a RenderCommand variant onto the internal
- * command list.  Actual GPU work is deferred to
+ * Supported operations capture a RenderCommand in the internal command list.
+ * Unsupported target mutations are rejected before recording. GPU work is deferred to
  * ScriptableRenderContext::ExecuteCommandBuffer().
  */
 
@@ -353,36 +353,22 @@ void CommandBuffer::ReleaseTemporaryRT(RenderTargetHandle handle)
     m_commands.push_back({RenderCommandType::ReleaseTemporaryRT, params});
 }
 
-void CommandBuffer::SetRenderTarget(RenderTargetHandle colorTarget)
+void CommandBuffer::SetRenderTarget(RenderTargetHandle)
 {
-    SetRenderTargetParams params;
-    params.colorHandleId = colorTarget.id;
-    params.depthHandleId = UINT32_MAX; // no explicit depth
-
-    m_commands.push_back({RenderCommandType::SetRenderTarget, params});
+    throw std::logic_error("CommandBuffer.set_render_target is not supported; use RenderGraph pass "
+                           "write_color/write_depth and set_clear to declare attachments and clear values");
 }
 
-void CommandBuffer::SetRenderTarget(RenderTargetHandle colorTarget, RenderTargetHandle depthTarget)
+void CommandBuffer::SetRenderTarget(RenderTargetHandle, RenderTargetHandle)
 {
-    SetRenderTargetParams params;
-    params.colorHandleId = colorTarget.id;
-    params.depthHandleId = depthTarget.id;
-
-    m_commands.push_back({RenderCommandType::SetRenderTarget, params});
+    throw std::logic_error("CommandBuffer.set_render_target_with_depth is not supported; use RenderGraph pass "
+                           "write_color/write_depth and set_clear to declare attachments and clear values");
 }
 
-void CommandBuffer::ClearRenderTarget(bool clearColor, bool clearDepth, float r, float g, float b, float a, float depth)
+void CommandBuffer::ClearRenderTarget(bool, bool, float, float, float, float, float)
 {
-    ClearRenderTargetParams params;
-    params.clearColor = clearColor;
-    params.clearDepth = clearDepth;
-    params.r = r;
-    params.g = g;
-    params.b = b;
-    params.a = a;
-    params.depth = depth;
-
-    m_commands.push_back({RenderCommandType::ClearRenderTarget, params});
+    throw std::logic_error("CommandBuffer.clear_render_target is not supported; use RenderGraph pass "
+                           "write_color/write_depth and set_clear to declare attachments and clear values");
 }
 
 void CommandBuffer::DrawMesh(const std::shared_ptr<InxMesh> &mesh, const glm::mat4 &worldMatrix,

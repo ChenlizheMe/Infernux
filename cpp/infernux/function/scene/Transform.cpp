@@ -82,7 +82,7 @@ glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 glm::vec3 Transform::GetWorldPosition() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPositionOverride(m_ecsHandle)) {
         return store.GetCachedWorldPosition(m_ecsHandle.index);
     }
 
@@ -186,7 +186,7 @@ void Transform::InvalidateWorldMatrix(bool clearWorldEulerExact) const
 glm::quat Transform::GetWorldRotation() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle)) {
         return store.GetCachedWorldRotation(m_ecsHandle.index);
     }
 

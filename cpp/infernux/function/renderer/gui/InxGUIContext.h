@@ -132,6 +132,8 @@ class InxGUIContext
     bool RadioButton(const std::string &label, bool active);
     bool Selectable(const std::string &label, bool selected = false, int flags = 0, float width = 0.0f,
                     float height = 0.0f);
+    bool SelectableRow(const std::string &label, bool selected, const std::string &status,
+                       const std::array<float, 4> &statusColor, float height, float paddingX);
     int SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt);
 
     /* value editors */
@@ -147,6 +149,9 @@ class InxGUIContext
 
     void TextInput(const std::string &label, char *buffer, size_t bufferSize);
     void TextArea(const std::string &label, char *buffer, size_t bufferSize);
+    bool TextInput(const std::string &label, std::string &value);
+    bool TextArea(const std::string &label, std::string &value);
+    bool InputTextWithHint(const std::string &label, const std::string &hint, std::string &value, int flags = 0);
     bool InputTextWithHint(const std::string &label, const std::string &hint, char *buffer, size_t bufferSize,
                            int flags = 0);
     bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0,
@@ -356,7 +361,7 @@ class InxGUIContext
     bool BeginDragDropTarget();
     bool BeginDragDropTargetRect(float minX, float minY, float maxX, float maxY, const std::string &targetId);
     bool AcceptDragDropPayload(const std::string &type, uint64_t *outData);
-    bool AcceptDragDropPayload(const std::string &type, std::string *outData);
+    bool AcceptDragDropPayload(const std::string &type, std::string *outData, int flags = 0);
     /// Accept whichever payload is being dragged (uses current ImGui payload ``DataType``).
     bool AcceptAnyDragDropPayload(std::string *outType, uint64_t *outU64, std::string *outStr, bool *outIsU64);
     void EndDragDropTarget();

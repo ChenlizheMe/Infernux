@@ -38,7 +38,6 @@ class AudioListener : public Component
     // Lifecycle
     // ========================================================================
 
-    void Awake() override;
     void OnEnable() override;
     void OnDisable() override;
     void OnDestroy() override;

@@ -5,6 +5,7 @@
 
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
+#include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
@@ -38,6 +39,24 @@ namespace
 {
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
+
+void ApplyDocumentationTextureMovePolicy(AssetDatabase &database, AssetMutationResult &result)
+{
+    if (result.resourceType != ResourceType::Texture)
+        return;
+    const auto metadata = database.GetMetaByGuid(result.guid);
+    if (!metadata || HasCurrentPluginPageTextureMetadata(*metadata, result.path, database.GetProjectRoot()))
+        return;
+    // Relocation keeps the GUID, but entering a documentation directory
+    // changes the import policy even when the source bytes are unchanged.
+    const auto imported = database.ReimportAsset(result.path);
+    if (!imported.succeeded) {
+        result.succeeded = false;
+        result.errorCode = AssetMutationErrorCode::RuntimeApplyFailed;
+        result.error = imported.error;
+    }
+    result.queryGeneration = database.GetQueryGeneration();
+}
 
 bool IsCanonicalAssetGuid(std::string_view value)
 {
@@ -167,6 +186,9 @@ void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const 
     // Asset identity is GUID-only: paths and path_hint values are mutable
     // presentation metadata and must never be accepted as graph identities.
     for (const auto &dependency : artifact.dependencies) {
+        if (dependency == artifact.metadata.GetGuid()) {
+            throw std::runtime_error("Importer for '" + sourcePath + "' produced a self-dependency");
+        }
         if (!IsCanonicalAssetGuid(dependency)) {
             throw std::runtime_error("Importer for '" + sourcePath + "' produced a non-GUID dependency identity '" +
                                      dependency + "'");
@@ -215,18 +237,65 @@ template <typename Resolve> void ValidateModelMaterialTargets(const ImportArtifa
     }
 }
 
-InxResourceMeta LoadMetadataDocument(const std::string &path)
+InxResourceMeta LoadMetadataDocument(const std::string &path, AtomicFileState *consumedState = nullptr)
 {
-    std::ifstream file(ToFsPath(path));
-    if (!file)
-        throw std::runtime_error("metadata sidecar cannot be opened: " + path);
-    const nlohmann::json document = nlohmann::json::parse(file);
+    const auto snapshot = ReadTextFileSnapshot(path);
+    const nlohmann::json document = nlohmann::json::parse(snapshot.content);
     InxResourceMeta metadata;
     metadata.DeserializeDocument(document);
-    if (!metadata.HasKey("content_hash") || metadata.GetDataAs<std::string>("content_hash").empty())
-        throw std::invalid_argument("metadata sidecar has no current content_hash: " + path);
+    if (consumedState)
+        *consumedState = snapshot.state;
     return metadata;
 }
+
+std::string CopiedSkeletonOwner(const ImportRequest &request)
+{
+    if (request.resourceType != ResourceType::Mesh)
+        return {};
+    const auto settings = MeshImportSettings::Read(request.metadata);
+    if (settings.skeletonDefinitionMode != "copy")
+        return {};
+    if (!IsCanonicalAssetGuid(settings.skeletonDefinitionGuid) || settings.skeletonDefinitionGuid == request.guid)
+        throw std::invalid_argument("copied skeleton definition must reference another mesh asset GUID");
+    return settings.skeletonDefinitionGuid;
+}
+
+std::string SkeletonSourceHash(const InxResourceMeta *metadata)
+{
+    if (!metadata || metadata->GetResourceType() != ResourceType::Mesh || !metadata->HasKey("content_hash"))
+        throw std::invalid_argument("copied skeleton definition asset is unavailable");
+    return metadata->GetDataAs<std::string>("content_hash");
+}
+
+std::shared_ptr<const SkeletonDefinitionSnapshot>
+ReadSkeletonSnapshot(const std::string &guid, const std::string &sourceHash, const std::string &artifactPath)
+{
+    std::ifstream stream(ToFsPath(artifactPath), std::ios::binary);
+    if (!stream)
+        throw std::invalid_argument("copied skeleton definition has no current skinned artifact");
+    stream.seekg(0, std::ios::end);
+    const std::streamoff size = stream.tellg();
+    if (size <= 0 || static_cast<uintmax_t>(size) > std::numeric_limits<size_t>::max())
+        throw std::invalid_argument("copied skeleton definition artifact is invalid");
+    stream.seekg(0, std::ios::beg);
+    auto snapshot = std::make_shared<SkeletonDefinitionSnapshot>();
+    snapshot->ownerGuid = guid;
+    snapshot->sourceContentHash = sourceHash;
+    snapshot->artifactBytes.resize(static_cast<size_t>(size));
+    if (!stream.read(snapshot->artifactBytes.data(), size))
+        throw std::invalid_argument("copied skeleton definition artifact could not be read");
+    return snapshot;
+}
+
+// A reused definition is read once on an import worker and shared by all its
+// consumers. Captured GUID/hash/path are immutable; failed reads are retained,
+// not retried by each model and never resolved against a mutable live catalog.
+struct CachedSkeletonCapture
+{
+    std::once_flag once;
+    std::shared_ptr<const SkeletonDefinitionSnapshot> snapshot;
+    std::exception_ptr failure;
+};
 
 std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
@@ -314,8 +383,29 @@ bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
         RuntimeArtifactRelativePath(entry.guid, ResourceType::Mesh, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
     error.clear();
     const auto skinnedPath = projectRoot / std::filesystem::u8path(skinned);
-    return std::filesystem::is_regular_file(skinnedPath, error) && !error &&
-           HasCurrentRuntimeArtifactHeader(skinnedPath, type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
+    if (!std::filesystem::is_regular_file(skinnedPath, error) || error ||
+        !HasCurrentRuntimeArtifactHeader(skinnedPath, type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh))
+        return false;
+    // Embedded textures have no source file to scan. Their owner is the only
+    // importer capable of rebuilding a missing or obsolete child artifact.
+    if (entry.metadata.HasKey("model_textures")) {
+        const auto textures = nlohmann::json::parse(entry.metadata.GetDataAs<std::string>("model_textures"));
+        for (const auto &texture : textures) {
+            const auto path = projectRoot / std::filesystem::u8path(RuntimeArtifactRelativePath(
+                                                texture.at("guid").get<std::string>(), ResourceType::Texture));
+            if (!HasCurrentRuntimeArtifactHeader(path, ResourceType::Texture,
+                                                 ImportArtifact::RuntimeArtifactKind::Primary))
+                return false;
+        }
+    }
+    return true;
+}
+
+size_t CountSourceAssets(const AssetIndex &index)
+{
+    return static_cast<size_t>(std::count_if(index.Entries().begin(), index.Entries().end(), [](const auto &item) {
+        return !item.second.metadata.HasKey("import_owner_guid");
+    }));
 }
 
 std::vector<DocumentTransactionEntry>
@@ -632,6 +722,80 @@ void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const Query
     }
 }
 
+void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
+{
+    struct Change
+    {
+        std::string guid;
+        ResourceType type;
+        AssetEvent event;
+        bool moved = false;
+    };
+    std::vector<Change> changes;
+    for (const auto &[guid, metadata] : previous.metas) {
+        if (!metadata->HasKey("import_owner_guid") && m_metas.find(guid) == m_metas.end())
+            changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Deleted});
+    }
+    for (const auto &[guid, metadata] : m_metas) {
+        if (metadata->HasKey("import_owner_guid"))
+            continue; // Model-owned resources have their own publication below.
+        const auto result = m_importResults.find(guid);
+        if (result != m_importResults.end() && !result->second.succeeded)
+            continue; // An unsuccessful import does not replace the last valid runtime payload.
+        const auto old = previous.metas.find(guid);
+        if (old == previous.metas.end()) {
+            changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Modified});
+            continue;
+        }
+        const auto &path = m_guidToPath.at(guid);
+        const auto &oldPath = previous.guidToPath.at(guid);
+        const bool moved = path != oldPath;
+        const auto oldFile = previous.fileStates.find(FilesystemPathKey(oldPath));
+        const auto file = m_fileStates.find(FilesystemPathKey(path));
+        const auto oldResult = previous.importResults.find(guid);
+        bool modified = oldFile == previous.fileStates.end() || file == m_fileStates.end() ||
+                        oldFile->second.source != file->second.source ||
+                        (oldResult != previous.importResults.end() && !oldResult->second.succeeded);
+        if (!modified && old->second != metadata) {
+            // Source observations live in the local index; only authored settings
+            // can change the runtime contract without a source change. A path-only
+            // move must retain the payload and its published runtime version.
+            auto oldSettings = old->second->SerializeDocumentPortable(m_projectRoot);
+            auto settings = metadata->SerializeDocumentPortable(m_projectRoot);
+            oldSettings["metadata"].erase("file_path");
+            settings["metadata"].erase("file_path");
+            modified = oldSettings != settings;
+        }
+        if (modified || moved)
+            changes.push_back(
+                {guid, metadata->GetResourceType(), modified ? AssetEvent::Modified : AssetEvent::Moved, moved});
+    }
+    std::sort(changes.begin(), changes.end(),
+              [](const Change &left, const Change &right) { return left.guid < right.guid; });
+    auto &registry = AssetRegistry::Instance();
+    // Install every CPU cache change before notifying consumers, which may load
+    // other changed assets through the already-published catalog.
+    for (const auto &change : changes) {
+        if (change.event == AssetEvent::Deleted) {
+            registry.RemoveAsset(change.guid);
+            continue;
+        }
+        if (change.moved)
+            registry.UpdateLoadedAssetPath(change.guid, m_guidToPath.at(change.guid));
+        if (change.event == AssetEvent::Modified) {
+            const bool loaded = registry.IsLoaded(change.guid);
+            if (!registry.ReloadAsset(change.guid) && loaded)
+                throw std::runtime_error("Could not publish refreshed runtime asset: " + change.guid);
+        }
+    }
+    auto &graph = AssetDependencyGraph::Instance();
+    for (const auto &change : changes) {
+        graph.NotifyEvent(change.guid, change.type, change.event);
+        if (change.event == AssetEvent::Deleted)
+            graph.RemoveAsset(change.guid);
+    }
+}
+
 void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
 {
     const auto previous = LoadQuerySnapshot();
@@ -909,7 +1073,8 @@ bool AssetDatabase::RestoreCachedCatalog()
                 return false;
             }
         }
-        if (!HasCurrentBuiltinSceneIconMetadata(entry.metadata, path, entry.readOnly))
+        if (!HasCurrentBuiltinSceneIconMetadata(entry.metadata, path, entry.readOnly) ||
+            !HasCurrentPluginPageTextureMetadata(entry.metadata, path, m_projectRoot))
             return false;
 
         restored.guidToPath.emplace(entry.guid, path);
@@ -1002,7 +1167,7 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
         const auto runtimeArtifacts = entry.find("runtime_artifacts");
         if (runtimeArtifacts != entry.end() && runtimeArtifacts->is_array()) {
             const std::string primaryArtifactId = entry.value("primary_runtime_artifact_id", std::string{});
-            constexpr std::string_view builtinPrefix = "Infernux/resources/";
+            constexpr std::string_view builtinPrefix = "infernux/resources/";
             bool resolvedPrimaryArtifact = false;
             for (const auto &artifact : *runtimeArtifacts) {
                 if (!artifact.is_object())
@@ -1152,14 +1317,19 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
             continue;
         }
 
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(rootPath)) {
+        for (auto iterator = std::filesystem::recursive_directory_iterator(rootPath);
+             iterator != std::filesystem::recursive_directory_iterator(); ++iterator) {
+            const auto &entry = *iterator;
+            const std::filesystem::path filePath = entry.path();
+            if (IsIgnoredImportPath(filePath)) {
+                if (entry.is_directory())
+                    iterator.disable_recursion_pending();
+                continue;
+            }
             std::error_code typeError;
             if (!entry.is_regular_file(typeError) || typeError)
                 continue;
 
-            const std::filesystem::path filePath = entry.path();
-            if (IsIgnoredImportPath(filePath))
-                continue;
             const std::string path = FromFsPath(filePath);
             if (filePath.extension() == ".tmp") {
                 if (!scanRoot.readOnly)
@@ -1242,7 +1412,6 @@ void AssetDatabase::BeginRefresh()
                 state->failure = failure;
                 state->complete = true;
             }
-            state->completedCv.notify_all();
         });
     } catch (...) {
         m_pendingAssetScan.reset();
@@ -1268,6 +1437,10 @@ bool AssetDatabase::TryCommitRefresh()
             }
             if (state->phase == PendingRefreshCommit::Phase::Import) {
                 if (state->importJobs.IsValid() && !state->importJobs.IsComplete())
+                    return false;
+                for (const auto index : state->importWave)
+                    state->workerImports[index].complete = true;
+                if (BeginNextImportWave(state))
                     return false;
                 state->phase = PendingRefreshCommit::Phase::ImportMerge;
             }
@@ -1372,9 +1545,13 @@ void AssetDatabase::WaitForPendingWork() const noexcept
         } catch (...) {
         }
     }
-    if (const auto scan = m_pendingAssetScan) {
-        std::unique_lock<std::mutex> lock(scan->mutex);
-        scan->completedCv.wait(lock, [&scan] { return scan->complete; });
+    if (m_pendingAssetScan) {
+        // The scan is a JobSystem task. Waiting on its fence also drives it in
+        // inline mode, where no worker exists to signal a condition variable.
+        try {
+            JobSystem::Get().WaitPassive(m_pendingAssetScanJob);
+        } catch (...) {
+        }
         return;
     }
     if (const auto commit = m_pendingRefreshCommit) {
@@ -1433,6 +1610,8 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
 
         const std::string metaPath = InxResourceMeta::GetMetaFilePath(item.file.path);
         const bool sidecarExists = std::filesystem::is_regular_file(ToFsPath(metaPath));
+        if (!item.file.readOnly)
+            item.expectedMetadata = AtomicFileState{};
         InxResourceMeta metadata;
         InxResourceMeta previousMetadata;
         bool previousMetadataLoaded = false;
@@ -1441,7 +1620,7 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         // Read-only package roots never consume sidecars. They are derived
         // project state and may have been produced by a different engine.
         if (sidecarExists && !item.file.readOnly) {
-            InxResourceMeta loadedMetadata = LoadMetadataDocument(metaPath);
+            InxResourceMeta loadedMetadata = LoadMetadataDocument(metaPath, &*item.expectedMetadata);
             if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
                 item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
                 // The current source fingerprint is authoritative. Rebuild
@@ -1459,6 +1638,8 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         const char *contentData = content.empty() ? &emptySource : content.data();
         item.loader->CreateMeta(contentData, content.size(), item.file.path, metadata);
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
+        item.createdGuid = metadata.GetGuid();
+        item.inheritedGuid = !previousMetadataLoaded && !item.file.readOnly && !preservedGuid.empty();
 
         if (item.mode == WorkerMetadataPrepare::Mode::Rebuild && previousMetadataLoaded) {
             for (const auto &[key, value] : previousMetadata.GetMetadata())
@@ -1529,9 +1710,9 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         std::filesystem::remove(ToFsPath(tempPath), error);
     }
 
-    bool unchanged = !m_assetIndexDirty && artifact.files.size() == artifact.index.Size() &&
+    bool unchanged = !m_assetIndexDirty && artifact.files.size() == CountSourceAssets(artifact.index) &&
                      m_guidToPath.size() == artifact.index.Size() && m_pathToGuid.size() == artifact.index.Size() &&
-                     m_fileStates.size() == artifact.files.size();
+                     m_fileStates.size() == artifact.index.Size();
     for (const auto &file : artifact.files) {
         if (!unchanged)
             break;
@@ -1545,7 +1726,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             pathMapping->second != indexed->guid || fileState == m_fileStates.end() ||
             fileState->second.source != file.source || fileState->second.meta != file.meta ||
             fileState->second.readOnly != file.readOnly ||
-            !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly)) {
+            !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) ||
+            !HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             unchanged = false;
             break;
         }
@@ -1605,7 +1787,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             indexed->readOnly == file.readOnly && indexed->importSucceeded &&
             HasReusableRuntimeArtifact(*indexed, type, ToFsPath(m_projectRoot)) &&
             (file.readOnly || file.meta.size > 0) &&
-            HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly)) {
+            HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) &&
+            HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             m_metas[indexed->guid] = std::make_shared<InxResourceMeta>(indexed->metadata);
             updateScannedMapping(indexed->guid, file);
             restoredDependencies.emplace(indexed->guid, indexed->dependencies);
@@ -1621,15 +1804,22 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         if (loader == m_loaders.end() || !loader->second)
             throw std::logic_error("AssetDatabase metadata preparation has no loader");
         item.loader = loader->second;
+        if (!file.readOnly) {
+            // The live catalog owns registered identities. A derived index can
+            // disappear while a sidecar is being rebuilt; losing that cache
+            // must not create a new GUID for an existing path.
+            const auto registered = previousWorkingSet.pathToGuid.find(file.normalizedPath);
+            if (registered != previousWorkingSet.pathToGuid.end())
+                item.fallbackGuid = registered->second;
+            else if (indexed)
+                item.fallbackGuid = indexed->guid;
+        }
         if (indexed && !file.readOnly && indexed->resourceType != type) {
             item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-            item.fallbackGuid = indexed->guid;
         } else if (indexed && !file.readOnly && indexed->source == file.source && indexed->meta != file.meta) {
             item.mode = WorkerMetadataPrepare::Mode::LoadExisting;
-            item.fallbackGuid = indexed->guid;
         } else if (indexed && !file.readOnly && indexed->source != file.source) {
             item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-            item.fallbackGuid = indexed->guid;
         } else {
             item.mode = WorkerMetadataPrepare::Mode::CreateOrLoad;
         }
@@ -1677,7 +1867,28 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     auto &workingSet = state->stagedWorkingSet;
     if (state->metadataMergeCursor == 0 && state->pendingImports.empty())
         state->pendingImports.reserve(state->workerMetadata.size());
-    while (state->metadataMergeCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+
+    // Resolve authored identities for the complete batch before assigning a
+    // missing sidecar's inherited path identity. An external move carries its
+    // GUID in the sidecar; a new source at the old path is a different asset.
+    // Keep both passes inside the existing owner-thread merge budget.
+    while (state->metadataIdentityCursor < state->workerMetadata.size() &&
+           HasOwnerMergeBudget(ownerStarted, processed)) {
+        const auto &item = state->workerMetadata[state->metadataIdentityCursor++];
+        if (!item.error.empty())
+            throw std::runtime_error("Metadata preparation failed for '" + item.file.path + "': " + item.error);
+        if (!item.metadata)
+            throw std::logic_error("Metadata worker completed without an artifact");
+        if (!item.inheritedGuid) {
+            const std::string guid = item.metadata->GetGuid();
+            const auto [existing, inserted] = state->authoredGuidPaths.emplace(guid, item.file.path);
+            if (!inserted && existing->second != item.file.path)
+                throw std::runtime_error("Duplicate asset GUID produced during refresh: " + guid);
+        }
+        ++processed;
+    }
+    while (state->metadataIdentityCursor == state->workerMetadata.size() &&
+           state->metadataMergeCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
         auto &item = state->workerMetadata[state->metadataMergeCursor++];
         if (item.producerThread != m_ownerThread)
             ++m_lastRefreshWorkerMetadataCount;
@@ -1686,6 +1897,17 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         if (!item.metadata)
             throw std::logic_error("Metadata worker completed without an artifact");
 
+        if (item.inheritedGuid) {
+            const std::string inherited = item.metadata->GetGuid();
+            const auto authored = state->authoredGuidPaths.find(inherited);
+            const auto restored = workingSet.guidToPath.find(inherited);
+            if ((authored != state->authoredGuidPaths.end() && authored->second != item.file.path) ||
+                (restored != workingSet.guidToPath.end() && restored->second != item.file.path)) {
+                if (item.createdGuid.empty())
+                    throw std::logic_error("Metadata worker produced no identity for a replacement asset");
+                item.metadata->AddMetadata("guid", item.createdGuid);
+            }
+        }
         const std::string guid = item.metadata->GetGuid();
         if (guid.empty())
             throw std::logic_error("Metadata worker produced an empty GUID");
@@ -1700,7 +1922,8 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         workingSet.guidToPath[guid] = item.file.path;
         workingSet.pathToGuid[item.file.normalizedPath] = guid;
         state->pendingImports.push_back({guid, item.file.path, item.file.normalizedPath, item.file.source,
-                                         item.file.meta, item.file.readOnly, !item.file.readOnly});
+                                         item.file.meta, item.file.readOnly, !item.file.readOnly,
+                                         item.expectedMetadata});
         ++processed;
     }
 
@@ -1726,14 +1949,7 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         WorkerImport item;
         item.assetIndex = assetIndex;
         item.importer = importer;
-        item.request.sourcePath = asset.path;
-        item.request.projectRoot = m_projectRoot;
-        item.request.blenderExecutable = m_blenderExecutable;
-        item.request.blenderExportScript = m_blenderExportScript;
-        item.request.guid = asset.guid;
-        item.request.resourceType = metadata->second->GetResourceType();
-        item.request.metadata = *metadata->second;
-        item.request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(asset.path));
+        item.request = MakeImportRequestBase(asset.guid, asset.path, false, *metadata->second);
         item.expectedSource = asset.source;
         state->workerImports.push_back(std::move(item));
         ++processed;
@@ -1755,6 +1971,10 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     // One immutable catalog for the batch, including freshly assigned GUIDs
     // whose sidecars have not yet been written. Workers never query live state.
     std::shared_ptr<QuerySnapshot> textureCatalog;
+    std::unordered_map<std::string, size_t> importByGuid;
+    for (size_t index = 0; index < state->workerImports.size(); ++index)
+        importByGuid.emplace(state->workerImports[index].request.guid, index);
+    std::unordered_map<std::string, std::shared_ptr<CachedSkeletonCapture>> reusedDefinitions;
     for (auto &item : state->workerImports) {
         if (item.request.resourceType != ResourceType::Mesh)
             continue;
@@ -1764,19 +1984,104 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
             textureCatalog->metas.insert(workingSet.metas.begin(), workingSet.metas.end());
         }
         item.request.resolveTextureGuid = ModelTextureResolver(textureCatalog);
+        try {
+            const auto owner = CopiedSkeletonOwner(item.request);
+            if (owner.empty())
+                continue;
+            const auto metadata = workingSet.metas.find(owner);
+            const auto sourceHash =
+                SkeletonSourceHash(metadata == workingSet.metas.end() ? nullptr : metadata->second.get());
+            if (const auto dependency = importByGuid.find(owner); dependency != importByGuid.end()) {
+                item.skeletonDependency = dependency->second;
+                state->workerImports[dependency->second].providesSkeletonDefinition = true;
+            } else {
+                const auto result = workingSet.importResults.find(owner);
+                if (result != workingSet.importResults.end() && !result->second.succeeded)
+                    throw std::invalid_argument("copied skeleton definition import failed: " + owner);
+                auto &capture = reusedDefinitions[owner];
+                if (!capture)
+                    capture = std::make_shared<CachedSkeletonCapture>();
+                const auto artifactPath = GetSkinnedMeshArtifactPath(owner);
+                item.captureSkeletonDefinition = [capture, owner, sourceHash, artifactPath] {
+                    std::call_once(capture->once, [&] {
+                        try {
+                            capture->snapshot = ReadSkeletonSnapshot(owner, sourceHash, artifactPath);
+                        } catch (...) {
+                            capture->failure = std::current_exception();
+                        }
+                    });
+                    if (capture->failure)
+                        std::rethrow_exception(capture->failure);
+                    return capture->snapshot;
+                };
+            }
+        } catch (const std::exception &exception) {
+            item.error = exception.what();
+        }
     }
 
     state->phase = PendingRefreshCommit::Phase::Import;
     state->importStarted = std::chrono::steady_clock::now();
+    (void)BeginNextImportWave(state);
+    return true;
+}
+
+bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state)
+{
+    state->importWave.clear();
+    for (size_t index = 0; index < state->workerImports.size(); ++index) {
+        auto &item = state->workerImports[index];
+        if (item.scheduled || item.complete)
+            continue;
+        if (item.skeletonDependency && !state->workerImports[*item.skeletonDependency].complete)
+            continue;
+        item.scheduled = true;
+        state->importWave.push_back(index);
+    }
+    if (state->importWave.empty()) {
+        // Every runnable predecessor has finished. Remaining nodes are in, or
+        // blocked by, a cycle; they never consume stale on-disk artifacts.
+        for (auto &item : state->workerImports) {
+            if (!item.complete) {
+                item.error = "copied skeleton import dependency cycle: " + item.request.guid;
+                item.complete = true;
+                item.producerThread = m_ownerThread;
+            }
+        }
+        return false;
+    }
     state->importJobs =
-        JobSystem::Get().ScheduleBatch(static_cast<uint32_t>(state->workerImports.size()), [state](uint32_t index) {
+        JobSystem::Get().ScheduleBatch(static_cast<uint32_t>(state->importWave.size()), [state](uint32_t waveIndex) {
+            const auto index = state->importWave[waveIndex];
             return [state, index] {
                 auto &item = state->workerImports[index];
                 item.producerThread = std::this_thread::get_id();
                 try {
+                    if (!item.error.empty())
+                        return;
+                    if (item.skeletonDependency) {
+                        const auto &dependency = state->workerImports[*item.skeletonDependency];
+                        if (!dependency.error.empty() || !dependency.producedSkeletonDefinition)
+                            throw std::invalid_argument("copied skeleton definition import failed: " +
+                                                        dependency.request.guid);
+                        item.request.skeletonDefinition = dependency.producedSkeletonDefinition;
+                    } else if (item.captureSkeletonDefinition) {
+                        item.request.skeletonDefinition = item.captureSkeletonDefinition();
+                    }
                     item.artifact = item.importer->Import(item.request);
                     ValidateImportedDependencyIdentities(*item.artifact, item.request.sourcePath);
                     RequireUnchangedFingerprint(item.request.sourcePath, item.expectedSource);
+                    if (item.providesSkeletonDefinition) {
+                        const auto &outputs = item.artifact->runtimeCpuArtifacts;
+                        const auto skinned = std::find_if(outputs.begin(), outputs.end(), [](const auto &output) {
+                            return output.kind == ImportArtifact::RuntimeArtifactKind::SkinnedMesh;
+                        });
+                        if (skinned == outputs.end())
+                            throw std::invalid_argument("copied skeleton definition has no skinned artifact");
+                        item.producedSkeletonDefinition =
+                            std::make_shared<const SkeletonDefinitionSnapshot>(SkeletonDefinitionSnapshot{
+                                item.request.guid, SkeletonSourceHash(&item.artifact->metadata), skinned->bytes});
+                    }
                 } catch (const std::exception &exception) {
                     item.error = exception.what();
                 } catch (...) {
@@ -1842,7 +2147,9 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                 workingSet.importResults[asset.guid] = {false, "Pending import has no metadata to persist"};
             } else {
                 const std::string metaPath = InxResourceMeta::GetMetaFilePath(asset.path);
-                state->metadataWrites.push_back({metaPath, metadata->second->SerializeDocument().dump(4) + "\n"});
+                state->metadataWrites.push_back(
+                    {metaPath, metadata->second->SerializeDocumentPortable(m_projectRoot).dump(4) + "\n",
+                     asset.expectedMetadata});
             }
         }
         ++processed;
@@ -1881,6 +2188,8 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
         state->metadataWriteJob = JobSystem::Get().Schedule([state, projectRoot, journalPath, assetIndexPath,
                                                              writes = std::move(state->metadataWrites)]() mutable {
             try {
+                for (const auto &asset : state->pendingImports)
+                    RequireUnchangedFingerprint(asset.path, asset.source);
                 const DocumentTransactionStats stats =
                     DocumentTransaction::Commit(projectRoot, journalPath, std::move(writes), {assetIndexPath});
                 state->journalUncompressedBytes = stats.uncompressedBytes;
@@ -2062,9 +2371,9 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
             state->committedDependencies[guid] = {metadata->GetDataAs<std::string>("import_owner_guid")};
 
     const bool reusedLoadedIndex =
-        state->pendingImports.empty() && m_lastRefreshReusedCount == state->stagedWorkingSet.assetIndex.Size() &&
+        state->pendingImports.empty() && m_lastRefreshReusedCount == state->scanArtifact.files.size() &&
         state->stagedWorkingSet.guidToPath.size() == state->stagedWorkingSet.assetIndex.Size() &&
-        state->scanArtifact.files.size() == state->stagedWorkingSet.assetIndex.Size();
+        state->scanArtifact.files.size() == CountSourceAssets(state->stagedWorkingSet.assetIndex);
     state->indexRebuildRequired = !reusedLoadedIndex;
     const std::string normalizedProjectRoot = FilesystemPathKey(m_projectRoot);
     const std::string assetIndexPath = m_assetIndexPath;
@@ -2157,6 +2466,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         state->ownerFinalizeMilliseconds +
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - finalizeStarted).count();
     restorePreviousWorkingSet.Release();
+    PublishRefreshAssetEvents(previousWorkingSet);
     PublishModelSubAssetEvents(previousSnapshot);
     // INXLOG_INFO("AssetDatabase.Refresh completed. Total assets: ", m_guidToPath.size(),
     //             ", scanned: ", m_lastRefreshScannedCount, ", scan_ms: ", m_lastRefreshScanMilliseconds,
@@ -2244,7 +2554,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
 
     if (IsIgnoredImportPath(fsPath)) {
         result.errorCode = AssetMutationErrorCode::UnsupportedType;
-        result.error = "Python bytecode and cache paths are not importable assets";
+        result.error = "version control files, bytecode and cache paths are not importable assets";
         return result;
     }
 
@@ -2263,7 +2573,8 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
 
     const std::string normalizedPath = FilesystemPathKey(path);
     const bool readOnly = IsReadOnlyPath(normalizedPath);
-    std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath);
+    std::optional<AtomicFileState> expectedMetadata;
+    std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath, &expectedMetadata);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = "asset metadata could not be created or loaded";
@@ -2278,7 +2589,8 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     // metadata sidecar that CreateOrLoadMetadata just persisted and commits a
     // heavyweight filesystem transaction on the editor thread.
     const bool imported = type == ResourceType::Script ? (m_importResults[guid] = {true, {}}, true)
-                                                       : RunImporter(guid, path, false, !readOnly);
+                                                       : RunImporter(guid, path, false, !readOnly, nullptr, nullptr,
+                                                                     expectedMetadata ? &*expectedMetadata : nullptr);
     if (!imported) {
         const auto importResult = m_importResults.find(guid);
         const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
@@ -2331,7 +2643,8 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
         return result;
     if (ownedTexture)
         ApplyModelTextureSettings(*candidate.metadata, selected->GetGuid(), settings);
-    if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source)) {
+    if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source,
+                     &candidate.expectedMetadata.value())) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = m_importResults.at(result.guid).error;
         return result;
@@ -2349,7 +2662,7 @@ bool AssetDatabase::PrepareReimportInput(const std::string &path, WorkerMetadata
     const std::filesystem::path fsPath = ToFsPath(path);
     if (IsIgnoredImportPath(fsPath)) {
         result.errorCode = AssetMutationErrorCode::UnsupportedType;
-        result.error = "Python bytecode and cache paths are not importable assets";
+        result.error = "version control files, bytecode and cache paths are not importable assets";
         return false;
     }
     if (!std::filesystem::is_regular_file(fsPath) || IsMetaFile(fsPath) || result.resourceType == ResourceType::Meta) {
@@ -2516,7 +2829,8 @@ std::optional<AssetMutationResult> AssetDatabase::TryCommitModelReimport()
             throw std::runtime_error("Model import settings changed outside this Apply");
         m_lastModelReimportWorkerMilliseconds = pending->workerMilliseconds;
         PublishImportArtifact(worker.request, std::move(*worker.artifact), true,
-                              &m_lastModelReimportPrepareMilliseconds, &m_lastModelReimportPersistenceMilliseconds,
+                              &pending->metadata.expectedMetadata.value(), &m_lastModelReimportPrepareMilliseconds,
+                              &m_lastModelReimportPersistenceMilliseconds,
                               &m_lastModelReimportLivePublicationMilliseconds);
         const auto livePublicationStart = std::chrono::steady_clock::now();
         FinishReimport(result);
@@ -2607,10 +2921,19 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
         result.error = "asset relocation source has no registered GUID";
         return result;
     }
+    std::error_code destinationError;
+    if (!std::filesystem::exists(ToFsPath(newPath), destinationError)) {
+        result.errorCode = destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound;
+        result.error = destinationError
+                           ? "asset relocation destination cannot be inspected: " + destinationError.message()
+                           : "asset relocation destination must exist before notification";
+        return result;
+    }
     MoveMetadata(oldPath, newPath);
 
     UpdateMapping(guid, newPath);
-    RemoveMappingByPath(oldPath);
+    if (normalizedOldPath != FilesystemPathKey(newPath))
+        RemoveMappingByPath(oldPath);
     m_fileStates.erase(normalizedOldPath);
     UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
     m_assetIndexDirty = true;
@@ -2624,6 +2947,7 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     result.guid = std::move(guid);
     result.resourceType = type;
     result.queryGeneration = GetQueryGeneration();
+    ApplyDocumentationTextureMovePolicy(*this, result);
     return result;
 }
 
@@ -2663,7 +2987,8 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
     for (const auto &[oldPath, newPath] : moves) {
         const std::string oldKey = FilesystemPathKey(oldPath);
         const std::string newKey = FilesystemPathKey(newPath);
-        if (oldKey.empty() || newKey.empty() || oldKey == newKey)
+        if (oldKey.empty() || newKey.empty() ||
+            NormalizeFilesystemPathLexically(oldPath) == NormalizeFilesystemPathLexically(newPath))
             return failure(oldPath, newPath, AssetMutationErrorCode::InvalidPath,
                            "asset relocation requires two different paths");
         if (!sourceKeys.insert(oldKey).second || !destinationKeys.insert(newKey).second)
@@ -2673,6 +2998,13 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         if (guid.empty())
             return failure(oldPath, newPath, AssetMutationErrorCode::NotFound,
                            "asset relocation source has no registered GUID");
+        std::error_code destinationError;
+        if (!std::filesystem::exists(ToFsPath(newPath), destinationError))
+            return failure(oldPath, newPath,
+                           destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound,
+                           destinationError
+                               ? "asset relocation destination cannot be inspected: " + destinationError.message()
+                               : "asset relocation destination must exist before notification");
         prepared.push_back({oldPath, newPath, oldKey, newKey, guid, GetResourceTypeForPath(newPath)});
     }
 
@@ -2695,7 +3027,8 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
             MoveMetadata(move.oldPath, move.newPath);
             metadataMoved.push_back(&move);
             UpdateMapping(move.guid, move.newPath);
-            RemoveMappingByPath(move.oldPath);
+            if (move.oldKey != move.newKey)
+                RemoveMappingByPath(move.oldPath);
             m_fileStates.erase(move.oldKey);
             UpdateCachedFileState(move.newPath, IsReadOnlyPath(move.newKey));
         }
@@ -2737,6 +3070,7 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         result.previousPath = move.oldPath;
         result.resourceType = move.resourceType;
         result.queryGeneration = GetQueryGeneration();
+        ApplyDocumentationTextureMovePolicy(*this, result);
         results.push_back(std::move(result));
     }
     return results;
@@ -2889,7 +3223,8 @@ bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
         return value;
     };
     for (const auto &component : path) {
-        if (lowercase(FromFsPath(component)) == "__pycache__")
+        const std::string name = lowercase(FromFsPath(component));
+        if (name == "__pycache__" || name == ".git" || name == ".hg" || name == ".svn")
             return true;
     }
 
@@ -2897,11 +3232,14 @@ bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
     if (extension == ".pyc" || extension == ".pyo")
         return true;
 
+    const std::string filename = lowercase(FromFsPath(path.filename()));
+    if (filename == ".gitignore" || filename == ".gitattributes" || filename == ".gitmodules" || filename == ".gitkeep")
+        return true;
+
     // Blender's normal save flow keeps numbered copies beside the source
     // (Model.blend1, Model.blend2, ...). They are file-history generations,
     // not importable assets. Registering one can move the live model GUID to
     // the backup when Blender atomically replaces Model.blend.
-    const std::string filename = lowercase(FromFsPath(path.filename()));
     const size_t marker = filename.rfind(".blend");
     if (marker != std::string::npos && marker + 6 < filename.size() &&
         std::all_of(filename.begin() + static_cast<std::ptrdiff_t>(marker + 6), filename.end(),
@@ -2978,7 +3316,8 @@ void AssetDatabase::UpdateCachedFileState(const std::string &path, bool readOnly
 }
 
 bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata,
-                                const InxResourceMeta *candidateMetadata, const AssetFileFingerprint *expectedSource)
+                                const InxResourceMeta *candidateMetadata, const AssetFileFingerprint *expectedSource,
+                                const AtomicFileState *expectedMetadata)
 {
     if (guid.empty() || path.empty())
         throw std::invalid_argument("AssetDatabase importer request requires GUID and path");
@@ -3005,7 +3344,7 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
                                       : (isReimport ? importer->Reimport(request) : importer->Import(request));
         if (expectedSource)
             RequireUnchangedFingerprint(path, *expectedSource);
-        PublishImportArtifact(request, std::move(artifact), persistMetadata);
+        PublishImportArtifact(request, std::move(artifact), persistMetadata, expectedMetadata);
         return true;
     } catch (const std::exception &exception) {
         error = exception.what();
@@ -3020,6 +3359,25 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
 ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                                const InxResourceMeta &metadata) const
 {
+    auto request = MakeImportRequestBase(guid, path, isReimport, metadata);
+    if (request.resourceType == ResourceType::Mesh)
+        request.resolveTextureGuid = ModelTextureResolver(LoadQuerySnapshot());
+    const auto owner = CopiedSkeletonOwner(request);
+    if (!owner.empty()) {
+        const auto definitionMeta = m_metas.find(owner);
+        const auto sourceHash =
+            SkeletonSourceHash(definitionMeta == m_metas.end() ? nullptr : definitionMeta->second.get());
+        const auto result = m_importResults.find(owner);
+        if (result != m_importResults.end() && !result->second.succeeded)
+            throw std::invalid_argument("copied skeleton definition import failed: " + owner);
+        request.skeletonDefinition = ReadSkeletonSnapshot(owner, sourceHash, GetSkinnedMeshArtifactPath(owner));
+    }
+    return request;
+}
+
+ImportRequest AssetDatabase::MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
+                                                   const InxResourceMeta &metadata) const
+{
     ImportRequest request;
     request.sourcePath = path;
     request.projectRoot = m_projectRoot;
@@ -3028,44 +3386,14 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
     request.guid = guid;
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = metadata;
+    request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(path));
     request.isReimport = isReimport;
-    if (request.resourceType == ResourceType::Mesh) {
-        request.resolveTextureGuid = ModelTextureResolver(LoadQuerySnapshot());
-        const MeshImportSettings settings = MeshImportSettings::Read(metadata);
-        if (settings.skeletonDefinitionMode == "copy") {
-            if (!IsCanonicalAssetGuid(settings.skeletonDefinitionGuid) || settings.skeletonDefinitionGuid == guid)
-                throw std::invalid_argument("copied skeleton definition must reference another mesh asset GUID");
-            const auto definitionMeta = m_metas.find(settings.skeletonDefinitionGuid);
-            const auto definitionPath = m_guidToPath.find(settings.skeletonDefinitionGuid);
-            if (definitionMeta == m_metas.end() || !definitionMeta->second || definitionPath == m_guidToPath.end() ||
-                GetResourceTypeForPath(definitionPath->second) != ResourceType::Mesh ||
-                !definitionMeta->second->HasKey("content_hash"))
-                throw std::invalid_argument("copied skeleton definition asset is unavailable");
-            const std::string artifactPath = GetSkinnedMeshArtifactPath(settings.skeletonDefinitionGuid);
-            std::ifstream stream(ToFsPath(artifactPath), std::ios::binary);
-            if (!stream)
-                throw std::invalid_argument("copied skeleton definition has no current skinned artifact");
-            stream.seekg(0, std::ios::end);
-            const std::streamoff size = stream.tellg();
-            if (size <= 0 || static_cast<uintmax_t>(size) > std::numeric_limits<size_t>::max())
-                throw std::invalid_argument("copied skeleton definition artifact is invalid");
-            stream.seekg(0, std::ios::beg);
-            SkeletonDefinitionSnapshot snapshot;
-            snapshot.ownerGuid = settings.skeletonDefinitionGuid;
-            snapshot.sourceContentHash = definitionMeta->second->GetDataAs<std::string>("content_hash");
-            snapshot.artifactBytes.resize(static_cast<size_t>(size));
-            stream.read(snapshot.artifactBytes.data(), size);
-            if (!stream)
-                throw std::invalid_argument("copied skeleton definition artifact could not be read");
-            request.skeletonDefinition = std::move(snapshot);
-        }
-    }
     return request;
 }
 
 void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
-                                          double *prepareMilliseconds, double *persistenceMilliseconds,
-                                          double *livePublicationMilliseconds)
+                                          const AtomicFileState *expectedMetadata, double *prepareMilliseconds,
+                                          double *persistenceMilliseconds, double *livePublicationMilliseconds)
 {
     const auto prepareStart = std::chrono::steady_clock::now();
     const auto &guid = request.guid;
@@ -3079,10 +3407,13 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
     std::vector<DocumentTransactionEntry> writes;
     writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
     if (persistMetadata) {
+        if (!expectedMetadata)
+            throw std::logic_error("Author metadata publication requires its captured input state");
         const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
         if (metaPath.empty())
             throw std::runtime_error("Failed to resolve importer metadata path");
-        writes.push_back({metaPath, artifact.metadata.SerializeDocument().dump(4) + "\n"});
+        writes.push_back(
+            {metaPath, artifact.metadata.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", *expectedMetadata});
     }
     auto runtimeArtifactWrites =
         TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
@@ -3106,7 +3437,9 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
                         throw std::runtime_error("Failed to create external import target directory: " +
                                                  directoryError.message());
                 }
-                (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content));
+                DocumentWriteOptions options;
+                options.expectedFileState = write.expectedFileState;
+                (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content), options);
             }
             std::error_code indexError;
             std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
@@ -3246,7 +3579,8 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 }
 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
-                                                bool persistMetadata, const std::string &identityKey)
+                                                bool persistMetadata, const std::string &identityKey,
+                                                std::optional<AtomicFileState> *expectedMetadata)
 {
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
@@ -3272,9 +3606,10 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     InxResourceMeta metaFile;
     std::string metaFilePath = InxResourceMeta::GetMetaFilePath(filePath);
     bool loadedExistingMeta = false;
+    AtomicFileState metadataState;
     std::string preservedGuid = GetGuidFromPath(filePath);
     if (!readOnly && std::filesystem::is_regular_file(ToFsPath(metaFilePath))) {
-        metaFile = LoadMetadataDocument(metaFilePath);
+        metaFile = LoadMetadataDocument(metaFilePath, &metadataState);
         loadedExistingMeta = true;
     }
     if (!loadedExistingMeta) {
@@ -3289,16 +3624,39 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         if (type == ResourceType::Mesh)
             MeshImportSettings::InitializeDefaults(metaFile);
         ApplyBuiltinSceneIconMetadata(metaFile, filePath, readOnly);
-        if (!readOnly && persistMetadata) {
-            if (!metaFile.SaveToFile(metaFilePath))
-                throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);
-        }
     } else {
         if (metaFile.GetResourceType() != type)
             throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
+        // Refresh intrinsic source observations without reapplying loader
+        // defaults over authored settings such as Mesh Read/Write.
+        const std::string existingGuid = metaFile.GetGuid();
+        metaFile.Init(contentPtr, content.size(), filePath, type);
+        metaFile.AddMetadata("guid", existingGuid);
     }
 
     std::string guid = metaFile.GetGuid();
+    // Incremental import publishes one asset, not a replacement catalog. It
+    // must not reinterpret an existing GUID as a move or replace a path's
+    // registered identity. Explicit relocation and full Refresh own those
+    // operations, including when a previous source has disappeared on disk.
+    const auto registered = m_guidToPath.find(guid);
+    if (registered != m_guidToPath.end() && FilesystemPathKey(registered->second) != FilesystemPathKey(filePath))
+        throw std::runtime_error("Asset GUID is already registered at another path: " + guid + " ('" +
+                                 registered->second + "', '" + filePath + "')");
+    if (!preservedGuid.empty() && guid != preservedGuid)
+        throw std::runtime_error("Asset metadata changed the registered GUID at path: " + filePath);
+
+    // Validate ownership before the first durable write or live catalog edit.
+    if (!loadedExistingMeta && !readOnly && persistMetadata) {
+        DocumentWriteOptions options;
+        options.expectedFileState = metadataState;
+        const auto ticket = DocumentStore::Instance().Submit(
+            metaFilePath, metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options);
+        ticket->Wait();
+        metadataState = ticket->GetCommittedFileState().value();
+    }
+    if (expectedMetadata && !readOnly)
+        *expectedMetadata = metadataState;
     m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
     UpdateMapping(guid, filePath);
 
@@ -3334,14 +3692,19 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
     if (fs::exists(oldMetaFsPath) && meta.LoadFromFile(oldMetaPath)) {
         existingGuid = meta.GetGuid();
 
+        const bool sameMetadata = FilesystemPathKey(oldMetaPath) == FilesystemPathKey(newMetaPath);
+        if (sameMetadata && oldMetaFsPath.filename() != ToFsPath(newMetaPath).filename())
+            fs::rename(oldMetaFsPath, ToFsPath(newMetaPath));
         meta.UpdateFilePath(newPath);
-        if (!meta.SaveToFile(newMetaPath))
-            throw std::runtime_error("Failed to persist moved asset metadata: " + newMetaPath);
-        std::error_code removeError;
-        if (!fs::remove(oldMetaFsPath, removeError) || removeError) {
-            std::error_code rollbackError;
-            fs::remove(ToFsPath(newMetaPath), rollbackError);
-            throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
+        DocumentStore::Instance().WriteAndWait(newMetaPath,
+                                               meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n");
+        if (!sameMetadata) {
+            std::error_code removeError;
+            if (!fs::remove(oldMetaFsPath, removeError) || removeError) {
+                std::error_code rollbackError;
+                fs::remove(ToFsPath(newMetaPath), rollbackError);
+                throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
+            }
         }
 
         auto it = m_metas.find(existingGuid);
@@ -3354,13 +3717,30 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
         INXLOG_INFO("AssetDatabase: moved metadata ", oldPath, " -> ", newPath, " (guid preserved: ", existingGuid,
                     ")");
     } else {
-        std::string ext = FromFsPath(ToFsPath(newPath).extension());
-        ResourceType type = GetResourcesType(ext);
-
-        if (type != ResourceType::Meta) {
-            CreateOrLoadMetadata(newPath, type, false, true, FilesystemPathKey(newPath));
-            INXLOG_INFO("AssetDatabase: created metadata at moved path: ", newPath);
+        // Directory relocation has already moved its sidecars on disk. This
+        // is still an explicit move of the registered asset, never an import
+        // of a new identity at the destination.
+        const auto source = m_pathToGuid.find(FilesystemPathKey(oldPath));
+        if (source == m_pathToGuid.end())
+            throw std::runtime_error("asset metadata relocation requires a registered source: " + oldPath);
+        const auto current = m_metas.at(source->second);
+        AtomicFileState destinationState;
+        if (fs::is_regular_file(ToFsPath(newMetaPath))) {
+            meta = LoadMetadataDocument(newMetaPath, &destinationState);
+            if (meta.GetGuid() != source->second || meta.GetResourceType() != current->GetResourceType())
+                throw std::runtime_error("asset relocation destination metadata has a different identity: " + newPath);
+        } else {
+            meta = *current;
         }
+        meta.UpdateFilePath(newPath);
+        DocumentWriteOptions options;
+        options.expectedFileState = destinationState;
+        DocumentStore::Instance()
+            .Submit(newMetaPath, meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options)
+            ->Wait();
+        auto movedMeta = std::make_shared<InxResourceMeta>(*current);
+        movedMeta->UpdateFilePath(newPath);
+        m_metas[source->second] = std::move(movedMeta);
     }
 }
 

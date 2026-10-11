@@ -406,12 +406,8 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
 
     // Drag-drop target for scripts on the whole PropertiesModule
     if (m_selectedObjectId != 0 && ImGui::BeginDragDropTarget()) {
-        const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("SCRIPT_FILE");
-        if (payload) {
-            std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
-            // Remove trailing null if present
-            if (!path.empty() && path.back() == '\0')
-                path.pop_back();
+        std::string path;
+        if (ctx->AcceptDragDropPayload("SCRIPT_FILE", &path)) {
             ExecuteEditorCommand("component.add", MakeComponentAddCommandArgument("", false, path), "drag_drop");
         }
         ImGui::EndDragDropTarget();
@@ -563,10 +559,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
     // Transform (skip for screen-space UI elements)
     if (!info.hideTransform) {
-        if (m_cachedTransformIconId == 0 && getComponentIconId)
-            m_cachedTransformIconId = getComponentIconId("Transform", false);
+        const uint64_t transformIcon = getComponentIconId ? getComponentIconId("Transform", false) : 0;
         const auto header = RenderComponentHeader(
-            ctx, "Transform", "transform", m_cachedTransformIconId,
+            ctx, "Transform", "transform", transformIcon,
             /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
             /*defaultOpen=*/true, "inspector.object." + std::to_string(objId) + ".component.transform", "transform_ctx",
             IsComponentSelected(info.transformComponentId), {objId}, {info.transformComponentId}, false);
@@ -647,8 +642,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
         const char *scriptSuffix = comp.isBroken ? " (Missing Script)" : " (Script)";
         const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
+        const uint64_t iconId = getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : comp.iconId;
         const auto header = RenderComponentHeader(
-            ctx, componentLabel, "comp_" + std::to_string(comp.componentId), comp.iconId,
+            ctx, componentLabel, "comp_" + std::to_string(comp.componentId), iconId,
             /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
@@ -925,8 +921,7 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             const auto &comp = entry.display;
             ImGui::PushID(static_cast<int>(comp.componentId));
 
-            uint64_t iconId =
-                comp.iconId ? comp.iconId : (getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : 0);
+            const uint64_t iconId = getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : comp.iconId;
 
             const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
             const auto componentHeader = RenderComponentHeader(
@@ -1613,17 +1608,14 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
             }
         }
         if (targetComponentId != 0) {
-            if (const ImGuiPayload *payload =
-                    ImGui::AcceptDragDropPayload("SCRIPT_FILE", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            std::string path;
+            if (ctx->AcceptDragDropPayload("SCRIPT_FILE", &path, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
                 const bool insertAfter =
                     !allowComponentReorder || ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
                 const float lineY = insertAfter ? headerMax.y : headerMin.y;
                 ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
                                                     ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f * dpi);
-                if (payload->IsDelivery()) {
-                    std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
-                    if (!path.empty() && path.back() == '\0')
-                        path.pop_back();
+                if (ImGui::GetDragDropPayload()->IsDelivery()) {
                     const uint64_t commandTargetId = allowComponentReorder ? targetComponentId : 0;
                     const bool insertAtStart = !allowComponentReorder;
                     if (!ExecuteEditorCommand("component.add",
@@ -1648,11 +1640,16 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     const float overlayX = ImGui::GetWindowPos().x + indent;
     ImGui::SetCursorScreenPos(ImVec2(overlayX, headerMin.y));
 
+    const float iconSize = EditorTheme::COMPONENT_ICON_SIZE * dpi;
+    const float headerItemSpacing = EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi;
+    // Reserve this slot even while the texture upload is pending. Header
+    // geometry must not depend on asynchronous descriptor publication.
+    ImGui::Dummy(ImVec2(iconSize, (std::max)(headerHeight, iconSize)));
+    const ImVec2 slotMin = ImGui::GetItemRectMin();
+    const ImVec2 slotMax = ImGui::GetItemRectMax();
+    if (ctx && captureSemantics)
+        ctx->RecordSemanticItem("component_icon", displayName, true, semanticBase + ".icon", iconId != 0);
     if (iconId != 0) {
-        float iconSize = EditorTheme::COMPONENT_ICON_SIZE * dpi;
-        ImGui::Dummy(ImVec2(iconSize, (std::max)(headerHeight, iconSize)));
-        ImVec2 slotMin = ImGui::GetItemRectMin();
-        ImVec2 slotMax = ImGui::GetItemRectMax();
         float drawSize = (std::min)({iconSize, slotMax.x - slotMin.x, slotMax.y - slotMin.y});
         float drawX = slotMin.x + (std::max)(0.0f, (slotMax.x - slotMin.x - drawSize) * 0.5f);
         float drawY = slotMin.y + (std::max)(0.0f, (slotMax.y - slotMin.y - drawSize) * 0.5f);
@@ -1664,32 +1661,31 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
         ImDrawList *drawList = ImGui::GetWindowDrawList();
         ImTextureRef texRef(static_cast<ImTextureID>(iconId));
         drawList->AddImage(texRef, ImVec2(drawX, drawY), ImVec2(drawX + drawSize, drawY + drawSize));
-
-        ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi);
     }
 
+    const float controlsX = overlayX + iconSize + headerItemSpacing;
     bool enabledClicked = false;
     if (showEnabled) {
         const float checkboxRowHeight =
             (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX * dpi, ImGui::GetTextLineHeight());
-        ImGui::SetCursorScreenPos(
-            ImVec2(ImGui::GetCursorScreenPos().x, headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f));
+        ImGui::SetCursorScreenPos(ImVec2(controlsX, headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f));
         ctx->CheckboxInspector("##hdr_en", &newEnabled);
         enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         if (ctx && captureSemantics)
             ctx->RecordSemanticItem("component_enabled", displayName, true, semanticBase + ".enabled");
-        ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi);
         // Center the component name on the checkbox's center line so the text
         // always lines up with the square regardless of header-row height.
         const ImVec2 cbMin = ImGui::GetItemRectMin();
         const ImVec2 cbMax = ImGui::GetItemRectMax();
         const float labelH = ImGui::GetTextLineHeight();
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, (cbMin.y + cbMax.y) * 0.5f - labelH * 0.5f));
+        ImGui::SetCursorScreenPos(ImVec2(cbMax.x + headerItemSpacing, (cbMin.y + cbMax.y) * 0.5f - labelH * 0.5f));
         ImGui::TextUnformatted(displayName.c_str());
     } else {
-        ImGui::AlignTextToFramePadding();
+        ImGui::SetCursorScreenPos(ImVec2(controlsX, headerMin.y + (headerHeight - ImGui::GetTextLineHeight()) * 0.5f));
         ImGui::TextUnformatted(displayName.c_str());
     }
+    if (ctx && captureSemantics)
+        ctx->RecordSemanticItem("component_label", displayName, true, semanticBase + ".label");
 
     bool optionsClicked = false;
     if (!contextPopupId.empty()) {

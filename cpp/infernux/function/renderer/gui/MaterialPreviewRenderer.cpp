@@ -80,7 +80,7 @@ static float SRGBToLinear(float x)
 static inline void SphereUV(const glm::vec3 &n, float &u, float &v)
 {
     u = 0.5f + std::atan2(n.z, n.x) / (2.0f * PI);
-    v = 0.5f - std::asin(clamp01(std::max(-1.0f, std::min(1.0f, n.y)))) / PI;
+    v = 0.5f - std::asin(std::clamp(n.y, -1.0f, 1.0f)) / PI;
 }
 
 // ============================================================================

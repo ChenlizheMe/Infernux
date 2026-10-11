@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+from infernux.engine.import_coordinator import (
+    AssetFsEvent,
+    AssetFsEventKind,
+    ImportCoordinator,
+    is_document_store_temporary_path,
+)
+
+
+class _Clock:
+    def __init__(self):
+        self.value = 100.0
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+def _coordinator(clock):
+    return ImportCoordinator(
+        debounce_seconds=0.1,
+        delete_grace_seconds=1.0,
+        meta_delete_grace_seconds=0.6,
+        retry_delay_seconds=0.2,
+        max_attempts=3,
+        clock=clock,
+    )
+
+
+def test_repeated_modifications_coalesce_to_one_event(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "asset.txt"
+    for _ in range(20):
+        coordinator.submit(AssetFsEventKind.MODIFIED, str(path))
+    assert coordinator.drain() == []
+    clock.advance(0.11)
+    events = coordinator.drain()
+    assert len(events) == 1
+    assert events[0].kind is AssetFsEventKind.MODIFIED
+
+
+@pytest.mark.parametrize("kinds", [
+    (AssetFsEventKind.META_MODIFIED, AssetFsEventKind.META_MODIFIED),
+    (AssetFsEventKind.META_DELETED, AssetFsEventKind.META_MODIFIED),
+    (AssetFsEventKind.META_MODIFIED, AssetFsEventKind.META_DELETED),
+])
+def test_metadata_events_share_one_queue_entry_distinct_from_source(tmp_path, kinds):
+    coordinator = _coordinator(_Clock())
+    path = str(tmp_path / "image.png")
+    coordinator.submit(AssetFsEventKind.MODIFIED, path)
+    for kind in kinds:
+        coordinator.submit(kind, path)
+    events = coordinator.drain(force=True)
+    assert [event.kind for event in events] == [AssetFsEventKind.MODIFIED, kinds[-1]]
+
+
+def test_one_submission_can_use_a_shorter_debounce(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "fast.py"
+
+    coordinator.submit(
+        AssetFsEventKind.MODIFIED,
+        str(path),
+        debounce_seconds=0.025,
+    )
+    clock.advance(0.024)
+    assert coordinator.drain() == []
+    clock.advance(0.002)
+    events = coordinator.drain()
+    assert [event.kind for event in events] == [AssetFsEventKind.MODIFIED]
+
+
+def test_create_modify_stays_created_and_ephemeral_create_delete_disappears(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    kept = tmp_path / "kept.txt"
+    transient = tmp_path / "transient.txt"
+    coordinator.submit(AssetFsEventKind.CREATED, str(kept))
+    coordinator.submit(AssetFsEventKind.MODIFIED, str(kept))
+    coordinator.submit(AssetFsEventKind.CREATED, str(transient))
+    coordinator.submit(AssetFsEventKind.DELETED, str(transient))
+    events = coordinator.drain(force=True)
+    assert [(event.kind, event.path) for event in events] == [
+        (AssetFsEventKind.CREATED, str(kept.resolve())),
+    ]
+
+
+def test_guid_matched_delete_create_becomes_move_and_chains(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    third = tmp_path / "third.txt"
+    coordinator.submit(AssetFsEventKind.DELETED, str(first), guid_hint="same-guid")
+    coordinator.submit(AssetFsEventKind.CREATED, str(second), guid_hint="same-guid")
+    coordinator.submit(AssetFsEventKind.MOVED, str(second), destination=str(third), guid_hint="same-guid")
+    events = coordinator.drain(force=True)
+    assert len(events) == 1
+    assert events[0].kind is AssetFsEventKind.MOVED
+    assert events[0].path == str(first.resolve())
+    assert events[0].destination == str(third.resolve())
+
+
+@pytest.mark.parametrize("modified", [False, True])
+def test_same_guid_create_then_delete_is_not_an_atomic_replacement(tmp_path, modified):
+    coordinator = _coordinator(_Clock())
+    path = str(tmp_path / "NewTarget.rendertexture")
+    coordinator.submit(AssetFsEventKind.CREATED, path, guid_hint="target-guid")
+    if modified:
+        coordinator.submit(AssetFsEventKind.MODIFIED, path)
+    coordinator.submit(AssetFsEventKind.DELETED, path, guid_hint="target-guid")
+    assert coordinator.drain(force=True) == []
+
+
+def test_same_guid_delete_then_create_preserves_atomic_replacement(tmp_path):
+    coordinator = _coordinator(_Clock())
+    path = str(tmp_path / "Target.rendertexture")
+    coordinator.submit(AssetFsEventKind.DELETED, path, guid_hint="target-guid")
+    coordinator.submit(AssetFsEventKind.CREATED, path, guid_hint="target-guid")
+    event, = coordinator.drain(force=True)
+    assert event.kind is AssetFsEventKind.MODIFIED
+    assert event.guid_hint == "target-guid"
+    assert not event.destination
+
+
+def test_delete_and_meta_delete_have_independent_grace_periods(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    asset = tmp_path / "asset.txt"
+    owner = tmp_path / "owner.txt"
+    coordinator.submit(AssetFsEventKind.DELETED, str(asset))
+    coordinator.submit(AssetFsEventKind.META_DELETED, str(owner))
+    clock.advance(0.61)
+    events = coordinator.drain()
+    assert [event.kind for event in events] == [AssetFsEventKind.META_DELETED]
+    clock.advance(0.4)
+    assert [event.kind for event in coordinator.drain()] == [AssetFsEventKind.DELETED]
+
+
+def test_retry_is_non_blocking_and_bounded(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "asset.txt"
+    coordinator.submit(AssetFsEventKind.CREATED, str(path))
+    event = coordinator.drain(force=True)[0]
+    assert coordinator.retry(event)
+    assert coordinator.drain() == []
+    clock.advance(0.21)
+    event = coordinator.drain()[0]
+    assert event.attempt == 1
+    assert coordinator.retry(event)
+    clock.advance(0.21)
+    event = coordinator.drain()[0]
+    assert event.attempt == 2
+    assert not coordinator.retry(event)
+
+
+def test_defer_preserves_import_retry_budget(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "asset.mat"
+    coordinator.submit(AssetFsEventKind.MODIFIED, str(path))
+    event = coordinator.drain(force=True)[0]
+
+    for _ in range(8):
+        coordinator.defer(event)
+        clock.advance(0.21)
+        event = coordinator.drain()[0]
+        assert event.attempt == 0
+
+    assert coordinator.retry(event)
+
+
+def test_document_store_temporary_events_are_filtered_and_atomic_move_becomes_modified(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    target = tmp_path / "atomic.mat"
+    temporary = tmp_path / "atomic.mat.tmp.123456.7"
+
+    assert is_document_store_temporary_path(str(temporary))
+    assert not is_document_store_temporary_path(str(tmp_path / "design.tmp.notes"))
+
+    for kind in (
+        AssetFsEventKind.CREATED,
+        AssetFsEventKind.MODIFIED,
+        AssetFsEventKind.DELETED,
+    ):
+        coordinator.submit(kind, str(temporary))
+    assert coordinator.pending_count == 0
+
+    coordinator.submit(AssetFsEventKind.MOVED, str(temporary), destination=str(target))
+    events = coordinator.drain(force=True)
+    assert len(events) == 1
+    assert events[0].kind is AssetFsEventKind.MODIFIED
+    assert events[0].path == str(target.resolve())
+    assert events[0].destination == ""
+
+    leaked_temporary_event = AssetFsEvent(AssetFsEventKind.MODIFIED, str(temporary.resolve()))
+    assert not coordinator.retry(leaked_temporary_event)
+    assert coordinator.pending_count == 0
+
+
+def test_concurrent_submit_is_thread_safe(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "shared.txt"
+
+    def submit_many():
+        for _ in range(250):
+            coordinator.submit(AssetFsEventKind.MODIFIED, str(path))
+
+    workers = [threading.Thread(target=submit_many) for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert coordinator.pending_count == 1
+    assert len(coordinator.drain(force=True)) == 1
+
+
+@pytest.mark.parametrize("staging_name", ["TankBattle.py.tmp.47892.966d5eeabe93", ".editor-save", "draft.tmp"])
+def test_unregistered_rename_publication_consumes_staging_events(tmp_path, staging_name):
+    coordinator = _coordinator(_Clock())
+    source = str(tmp_path / staging_name)
+    target = str(tmp_path / "TankBattle.py")
+    coordinator.submit(AssetFsEventKind.CREATED, source)
+    coordinator.submit(AssetFsEventKind.MODIFIED, source)
+    coordinator.submit(AssetFsEventKind.DELETED, target, guid_hint="target-guid")
+    coordinator.submit(
+        AssetFsEventKind.MOVED, source, destination=target,
+        source_registered=False, guid_hint="target-guid",
+    )
+
+    event, = coordinator.drain(force=True)
+    assert event.kind is AssetFsEventKind.MODIFIED
+    assert event.path == str((tmp_path / "TankBattle.py").resolve())
+    assert event.destination == ""
+    assert event.guid_hint == "target-guid"
+
+
+def test_bounded_drain_preserves_ready_fifo_and_force_drains_remainder(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    paths = [tmp_path / f"asset-{index}.txt" for index in range(4)]
+    for index, path in enumerate(paths):
+        coordinator.submit(
+            AssetFsEventKind.MODIFIED,
+            str(path),
+            observed_at=clock.value + index * 0.01,
+        )
+    clock.advance(0.2)
+
+    first = coordinator.drain(max_events=1)
+    second = coordinator.drain(max_events=2)
+
+    assert [event.path for event in first] == [str(paths[0].resolve())]
+    assert [event.path for event in second] == [
+        str(paths[1].resolve()),
+        str(paths[2].resolve()),
+    ]
+    assert coordinator.pending_count == 1
+    assert [event.path for event in coordinator.drain(force=True, max_events=1)] == [
+        str(paths[3].resolve())
+    ]

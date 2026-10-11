@@ -129,8 +129,8 @@ void SliderJoint::RebuildConstraint()
     auto *transform = gameObject->GetTransform();
     const glm::vec3 worldAnchor = transform->TransformPoint(m_anchor);
     const glm::vec3 worldAxis = transform->TransformDirection(m_axis);
-    m_constraintId = world.CreateSliderConstraint(bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
-                                                  m_minimumDistance, m_maximumDistance, m_enableCollision);
+    m_constraintId = world.CreateSliderConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_anchor,
+                                                  m_useLimits, m_minimumDistance, m_maximumDistance, m_enableCollision);
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;
 }
@@ -139,6 +139,11 @@ void SliderJoint::ReleaseConstraint()
 {
     if (m_constraintId != 0 && PhysicsWorld::Instance().IsInitialized())
         PhysicsWorld::Instance().DestroyConstraint(m_constraintId);
+    OnPhysicsConstraintDestroyed();
+}
+
+void SliderJoint::OnPhysicsConstraintDestroyed() noexcept
+{
     m_constraintId = 0;
     m_boundBodyId = 0xFFFFFFFF;
     m_boundConnectedBodyId = 0xFFFFFFFF;
@@ -174,8 +179,7 @@ void SliderJoint::SetConnectedBody(Rigidbody *body)
 void SliderJoint::SetUseLimits(bool value)
 {
     m_useLimits = value;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
 }
 
 void SliderJoint::SetMinimumDistance(float metres)
@@ -183,8 +187,7 @@ void SliderJoint::SetMinimumDistance(float metres)
     if (!std::isfinite(metres) || metres > 0.0f || metres > m_maximumDistance)
         throw std::invalid_argument("slider minimum distance must not exceed zero or maximum distance");
     m_minimumDistance = metres;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
 }
 
 void SliderJoint::SetMaximumDistance(float metres)
@@ -192,15 +195,23 @@ void SliderJoint::SetMaximumDistance(float metres)
     if (!std::isfinite(metres) || metres < 0.0f || metres < m_minimumDistance)
         throw std::invalid_argument("slider maximum distance must not precede zero or minimum distance");
     m_maximumDistance = metres;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
 }
 
 void SliderJoint::SetEnableCollision(bool value)
 {
     m_enableCollision = value;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
+}
+
+void SliderJoint::UpdateConstraintSettings()
+{
+    if (m_constraintId == 0) {
+        RebuildConstraint();
+        return;
+    }
+    PhysicsWorld::Instance().UpdateSliderConstraintSettings(m_constraintId, m_useLimits, m_minimumDistance,
+                                                            m_maximumDistance, m_enableCollision);
 }
 
 float SliderJoint::GetCurrentPosition() const

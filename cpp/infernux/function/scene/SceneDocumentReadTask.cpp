@@ -4,6 +4,7 @@
 #include <function/scene/ComponentFactory.h>
 #include <function/scene/ComponentRecord.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/SceneAuthoringIdentity.h>
 #include <functional>
 #include <stdexcept>
 #include <thread>
@@ -155,10 +156,13 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
                        componentIds, componentTypes);
 }
 
-void ValidateSceneDocument(const json &document)
+} // namespace
+
+void ValidateResolvedSceneDocument(const nlohmann::json &document)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
+        "name",        "isPlaying",    "objects",         "mainCameraComponentId",
+        "environment", "nextObjectId", "nextComponentId", "authoring_identity",
     };
     RequireExactFields(document, allowed, "Scene");
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
@@ -173,6 +177,17 @@ void ValidateSceneDocument(const json &document)
         ValidateObject(document["objects"][index], "Scene.objects[" + std::to_string(index) + "]", objectIds,
                        componentIds, componentTypes);
 
+    for (const auto &[key, identities] :
+         {std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
+          {"nextComponentId", componentIds}}) {
+        if (!document.contains(key))
+            continue;
+        const uint64_t next = RequirePositiveId(document, key, "Scene");
+        for (const uint64_t id : identities)
+            if (id >= next)
+                throw std::invalid_argument(std::string("Scene.") + key + " must exceed all document identities");
+    }
+
     if (document.contains("mainCameraComponentId")) {
         const uint64_t cameraId = RequirePositiveId(document, "mainCameraComponentId", "Scene");
         const auto camera = componentTypes.find(cameraId);
@@ -180,8 +195,6 @@ void ValidateSceneDocument(const json &document)
             throw std::invalid_argument("Scene.mainCameraComponentId must reference a native Camera");
     }
 }
-
-} // namespace
 
 bool SceneDocumentReadTicket::IsComplete() const noexcept
 {
@@ -287,7 +300,16 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
             }
             const auto snapshot = ReadTextFileSnapshot(path);
             json document = json::parse(snapshot.content);
-            ValidateSceneDocument(document);
+            // These are two explicit file contracts, never a legacy numeric
+            // fallback. Editor assets and cooked Player artifacts share the
+            // runtime staging/preflight path after this boundary.
+            if (document.value("identity_format", json{}) == "runtime-v1") {
+                document = DecodeSceneRuntimeArtifact(document);
+            } else {
+                SceneAuthoringIdentity identities;
+                document = DecodeSceneAuthoringDocument(document, identities);
+            }
+            ValidateResolvedSceneDocument(document);
             std::lock_guard<std::mutex> lock(state->mutex);
             if (state->cancelRequested.load(std::memory_order_acquire)) {
                 state->status.store(SceneDocumentReadTicket::Status::Cancelled, std::memory_order_release);

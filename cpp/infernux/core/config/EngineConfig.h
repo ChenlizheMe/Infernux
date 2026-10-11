@@ -21,35 +21,6 @@ namespace infernux
 struct EngineConfig
 {
     // ========================================================================
-    // Rendering — Descriptor Pools
-    // ========================================================================
-
-    /// Initial maximum number of materials before descriptor pool expansion.
-    uint32_t maxMaterialsPerPool = 256;
-
-    /// Number of UBO descriptors allocated per material slot in the pool.
-    uint32_t uboDescriptorsPerMaterial = 4;
-
-    /// Number of combined-image-sampler descriptors allocated per material slot.
-    uint32_t samplerDescriptorsPerMaterial = 8;
-
-    /// Number of fullscreen descriptor sets allocated per frame-in-flight.
-    uint32_t fullscreenDescriptorSetsPerFrame = 128;
-
-    /// Number of fullscreen sampled-image descriptors allocated per frame-in-flight.
-    uint32_t fullscreenSamplerDescriptorsPerFrame = 256;
-
-    // ========================================================================
-    // Rendering — Textures
-    // ========================================================================
-
-    /// Whether to auto-generate mipmaps when loading textures (unless size is 1×1).
-    bool enableMipmap = true;
-
-    /// Max anisotropy multiplier (1.0 = use device max). Values < 1.0 scale down.
-    float anisotropyScale = 1.0f;
-
-    // ========================================================================
     // Rendering — Render Queue Ranges
     // ========================================================================
 
@@ -87,9 +58,6 @@ struct EngineConfig
     // ========================================================================
     // Rendering — Swapchain
     // ========================================================================
-
-    /// Preferred number of swapchain images (double/triple buffering).
-    uint32_t preferredSwapchainImageCount = 3;
 
     /// Max frames in flight for the renderer.
     uint32_t maxFramesInFlight = 2;
@@ -141,9 +109,10 @@ struct EngineConfig
     float physicsTimeBeforeSleep = 0.5f;
 
     /// Maximum tracked point velocity for sleep eligibility (m/s).
-    // Unity exposes a mass-normalized energy threshold of 0.005. Jolt uses a
-    // point-velocity threshold, whose translational equivalent is sqrt(2E)=0.1 m/s.
-    float physicsPointVelocitySleepThreshold = 0.1f;
+    // Jolt bounds point movement over the sleep window, not kinetic energy.
+    // Keep that tolerance at millimetre scale so a pendulum's turning point
+    // cannot be mistaken for rest several visible degrees from equilibrium.
+    float physicsPointVelocitySleepThreshold = 0.005f;
 
     /// Default gravity vector.
     glm::vec3 physicsGravity{0.0f, -9.81f, 0.0f};
@@ -174,9 +143,6 @@ struct EngineConfig
     // ========================================================================
     // Physics — Layers
     // ========================================================================
-
-    /// Number of game-layer slots.
-    uint32_t physicsLayerCount = 32;
 
     /// Default layer mask for queries (all layers except layer 2 by convention).
     uint32_t defaultQueryLayerMask = 0xFFFFFFFFu & ~(1u << 2);

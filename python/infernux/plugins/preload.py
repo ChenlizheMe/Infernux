@@ -1,0 +1,1547 @@
+"""Static discovery and GUID-keyed runtime for :class:`InxPreload`."""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import inspect
+import json
+import os
+import sys
+import time
+import types
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Iterator, Mapping
+
+from infernux.debug import Debug
+from infernux.engine.path_utils import (
+    VERSION_CONTROL_DIRECTORIES,
+    is_path_within,
+    lexical_path_key,
+    path_key,
+    portable_path,
+    relative_path,
+    resolved_path,
+)
+from infernux.lifecycle import InxPreload, PreloadContext
+
+from .registry import PluginRegistry
+from .project_index import project_guid_paths
+
+
+_SCRIPT_NAMESPACE = uuid.UUID("90c16393-d740-4fa3-a45f-8003e2459753")
+_TYPE_NAMESPACE = uuid.UUID("11a563a9-a178-45b4-b5bc-93c50b8da675")
+_SKIPPED_DIRECTORIES = VERSION_CONTROL_DIRECTORIES | {
+    "__pycache__", ".venv", "venv", "build", "dist", ".runtime",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassDeclaration:
+    path: str
+    module: str
+    name: str
+    bases: tuple[str, ...]
+
+    @property
+    def key(self) -> str:
+        return f"{self.module}.{self.name}"
+
+
+@dataclass(slots=True)
+class PreloadState:
+    identity: str
+    script_guid: str
+    type_id: str
+    type_name: str
+    source_path: str
+    package_reference: str = ""
+    loaded: bool = False
+    error: str = ""
+    import_ms: float = 0.0
+    preload_ms: float = 0.0
+    unload_ms: float = 0.0
+    module_name: str = ""
+    module_names: tuple[str, ...] = ()
+    restart_required: bool = False
+    restart_reason: str = ""
+    contribution_owner: str = ""
+    instance: InxPreload | None = field(default=None, repr=False)
+    cleanup_callbacks: list[Any] = field(default_factory=list, repr=False)
+    unload_completed: bool = field(default=False, repr=False)
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "identity": self.identity,
+            "script_guid": self.script_guid,
+            "type_id": self.type_id,
+            "type_name": self.type_name,
+            "source_path": self.source_path,
+            "package_reference": self.package_reference,
+            "loaded": self.loaded,
+            "error": self.error,
+            "import_ms": self.import_ms,
+            "preload_ms": self.preload_ms,
+            "unload_ms": self.unload_ms,
+            "module_names": list(self.module_names),
+            "restart_required": self.restart_required,
+            "restart_reason": self.restart_reason,
+            "contribution_owner": self.contribution_owner,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleOnlyImport:
+    source_path: str
+    package_reference: str
+    contribution_owner: str
+    module_names: tuple[str, ...]
+
+
+class PreloadManager:
+    """Project-scoped authority for early-import lifecycle candidates."""
+
+    def __init__(
+        self,
+        project_root: str,
+        *,
+        engine: Any = None,
+        runtime: bool = False,
+        registry: PluginRegistry | None = None,
+    ) -> None:
+        self.project_root = resolved_path(project_root)
+        if not self.project_root:
+            raise ValueError("PreloadManager requires a project root")
+        self.engine = engine
+        self.runtime = bool(runtime)
+        self.registry = registry or PluginRegistry(self.project_root)
+        self.states: dict[str, PreloadState] = {}
+        self._module_only_imports: dict[str, _ModuleOnlyImport] = {}
+        self.failures: dict[str, str] = {}
+        self._ownership_cache: dict[str, dict[str, object]] | None = None
+        self._declarations_by_path: dict[str, tuple[_ClassDeclaration, ...]] = {}
+        self._declaration_stamps: dict[str, tuple[int, int]] = {}
+        self._catalog_initialized = False
+        self._translation_packages: set[str] = set()
+        # ``infernux`` is the process-wide public facade. Gameplay modules and
+        # plugin preloads may retain direct references to it for the whole
+        # Editor lifetime, so a reload transaction may mutate attributes but
+        # must never replace the module object.
+        import infernux as public_namespace
+
+        self._public_namespace = public_namespace
+
+    def _assert_public_namespace_stable(self) -> None:
+        current = sys.modules.get("infernux")
+        if current is self._public_namespace:
+            return
+        sys.modules["infernux"] = self._public_namespace
+        raise RuntimeError(
+            "Plugin lifecycle replaced the process-wide 'infernux' module object"
+        )
+
+    def reload_all(self) -> tuple[PreloadState, ...]:
+        failures = self.unload_all()
+        # A failed unload can mean a live server, thread, callback, or native
+        # object still owns the old module.  Never load a second instance on
+        # top of it; expose the failed state until the owner can stop or the
+        # process is restarted.
+        if failures:
+            return tuple(self.states.values())
+        self._ownership_cache = None
+        self.failures.clear()
+        self._refresh_declaration_catalog()
+        declarations = self._catalog_declarations()
+        candidates = self._candidate_declarations(declarations)
+        ordered_paths = self._ordered_candidate_paths(candidates)
+        result: list[PreloadState] = []
+        declarations_by_path: dict[str, set[str]] = {}
+        for declaration in candidates:
+            declarations_by_path.setdefault(path_key(declaration.path), set()).add(
+                declaration.name
+            )
+        for path in ordered_paths:
+            result.extend(
+                self._load_path(path, declarations_by_path.get(path_key(path), set()))
+            )
+        return tuple(result)
+
+    def catch_up(self) -> tuple[PreloadState, ...]:
+        """Load lifecycle declarations that appeared after the initial preload.
+
+        Editor startup preloads plugins before the AssetDatabase refresh has
+        committed, so a brand-new script (no ``.meta`` yet) is not in the GUID
+        catalog at that point. Once the refresh has committed, this pass
+        re-reads the catalog and loads only the candidates that have no live
+        state yet — already-loaded lifecycles (e.g. a running MCP server) are
+        left untouched.
+        """
+        self._ownership_cache = None
+        self._refresh_declaration_catalog()
+        candidates = self._candidate_declarations(self._catalog_declarations())
+        loaded_paths = {path_key(state.source_path) for state in self.states.values()}
+        new_by_path: dict[str, set[str]] = {}
+        for declaration in candidates:
+            key = path_key(declaration.path)
+            if key in loaded_paths or key in self.failures:
+                continue
+            new_by_path.setdefault(key, set()).add(declaration.name)
+        if not new_by_path:
+            return ()
+        ordered = self._ordered_candidate_paths(
+            item for item in candidates if path_key(item.path) in new_by_path
+        )
+        result: list[PreloadState] = []
+        for path in ordered:
+            result.extend(self._load_path(path, new_by_path[path_key(path)]))
+        return tuple(result)
+
+    def reload_path(self, file_path: str) -> tuple[PreloadState, ...]:
+        target = resolved_path(file_path)
+        if not target or not is_path_within(target, self.project_root, allow_root=False):
+            return ()
+        if not self._catalog_initialized:
+            self._refresh_declaration_catalog()
+        normalized = path_key(target)
+        previous = self._declarations_by_path.get(normalized, ())
+        previous_candidates = self._candidate_declarations(
+            self._catalog_declarations()
+        )
+        self.failures.pop(normalized, None)
+        if os.path.isfile(target):
+            try:
+                current = self._read_path_declarations(target)
+            except (OSError, SyntaxError, ValueError) as exc:
+                self.failures[normalized] = f"{type(exc).__name__}: {exc}"
+                # Parsing is the prepare phase of a reload. Keep the published
+                # lifecycle alive when the candidate is invalid; unloading it
+                # here would turn one bad save into a process-wide service loss.
+                return tuple(
+                    state
+                    for state in self.states.values()
+                    if path_key(state.source_path) == normalized
+                )
+            self._declarations_by_path[normalized] = current
+            self._declaration_stamps[normalized] = _file_stamp(target)
+        else:
+            current = ()
+            self._declarations_by_path.pop(normalized, None)
+            self._declaration_stamps.pop(normalized, None)
+        current_candidates = self._candidate_declarations(
+            self._catalog_declarations()
+        )
+        package_reference = self._package_for_path(target)
+        affected_paths = self._affected_candidate_paths(
+            target,
+            previous,
+            current,
+            previous_candidates,
+            current_candidates,
+        )
+        if package_reference:
+            affected_paths.update(
+                path_key(item.path)
+                for item in (*previous_candidates, *current_candidates)
+                if self._package_for_path(item.path).casefold()
+                == package_reference.casefold()
+            )
+        affected_states = [
+            state
+            for state in self.states.values()
+            if path_key(state.source_path) in affected_paths
+            or (
+                package_reference
+                and state.package_reference.casefold() == package_reference.casefold()
+            )
+        ]
+        if not affected_states and not affected_paths:
+            return ()
+        open_views = self._capture_editor_views(affected_states)
+        for state in reversed(affected_states):
+            if not self._unload_state(state):
+                return (state,)
+            self.states.pop(state.identity, None)
+        self._unload_module_only_imports(package_reference, paths=affected_paths)
+        if package_reference:
+            self._unregister_package_translations(package_reference)
+        candidates_by_path: dict[str, set[str]] = {}
+        for declaration in current_candidates:
+            key = path_key(declaration.path)
+            if key in affected_paths:
+                candidates_by_path.setdefault(key, set()).add(declaration.name)
+        loaded: list[PreloadState] = []
+        ordered = self._ordered_candidate_paths(
+            item
+            for item in current_candidates
+            if path_key(item.path) in candidates_by_path
+        )
+        for path in ordered:
+            loaded.extend(
+                self._load_path(path, candidates_by_path[path_key(path)])
+            )
+        self._restore_editor_views(open_views)
+        return tuple(loaded)
+
+    def unload_all(self) -> tuple[PreloadState, ...]:
+        failures: list[PreloadState] = []
+        for state in reversed(tuple(self.states.values())):
+            if self._unload_state(state):
+                self.states.pop(state.identity, None)
+            else:
+                failures.append(state)
+        if not failures:
+            self._unload_module_only_imports()
+        live_packages = {
+            state.package_reference.casefold()
+            for state in self.states.values()
+            if state.package_reference
+        }
+        for reference in tuple(self._translation_packages):
+            if reference not in live_packages:
+                self._unregister_package_translations(reference)
+        return tuple(failures)
+
+    def unload_package(self, reference: str) -> tuple[PreloadState, ...]:
+        """Unload only lifecycle instances owned by one package."""
+
+        key = str(reference).casefold()
+        failures: list[PreloadState] = []
+        targets = [
+            state
+            for state in self.states.values()
+            if state.package_reference.casefold() == key
+        ]
+        for state in reversed(targets):
+            if self._unload_state(state):
+                self.states.pop(state.identity, None)
+            else:
+                failures.append(state)
+        if not failures:
+            self._unload_module_only_imports(reference)
+            self._unregister_package_translations(reference)
+        return tuple(failures)
+
+    def reload_package(self, reference: str) -> tuple[PreloadState, ...]:
+        """Refresh and reload the declaration slice owned by one package."""
+
+        catalog_path = self._package_translation_path(reference)
+        try:
+            self._validate_package_translations(reference)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            self.failures[path_key(catalog_path)] = f"{type(exc).__name__}: {exc}"
+            return tuple(
+                state
+                for state in self.states.values()
+                if state.package_reference.casefold() == str(reference).casefold()
+            )
+        self.failures.pop(path_key(catalog_path), None)
+        package_states = tuple(
+            state
+            for state in self.states.values()
+            if state.package_reference.casefold() == str(reference).casefold()
+        )
+        if not self._catalog_initialized:
+            self._refresh_declaration_catalog()
+        self._ownership_cache = None
+        paths = self._package_source_paths(reference)
+        active_keys = {path_key(path) for path in paths}
+        next_declarations = dict(self._declarations_by_path)
+        next_stamps = dict(self._declaration_stamps)
+        stale_keys: set[str] = set()
+        for key, declarations in tuple(next_declarations.items()):
+            path = declarations[0].path if declarations else key
+            if key not in active_keys and self._path_belongs_to_package(
+                path, reference
+            ):
+                next_declarations.pop(key, None)
+                next_stamps.pop(key, None)
+                stale_keys.add(key)
+
+        # Parse every package source before publishing any lifecycle change.
+        # Package reload is one transaction: an invalid member must not tear
+        # down already-running services or open Editor panels.
+        parse_failures: dict[str, str] = {}
+        for path in paths:
+            key = path_key(path)
+            try:
+                next_declarations[key] = self._read_path_declarations(path)
+                next_stamps[key] = _file_stamp(path)
+            except (OSError, SyntaxError, ValueError) as exc:
+                parse_failures[key] = f"{type(exc).__name__}: {exc}"
+        if parse_failures:
+            self.failures.update(parse_failures)
+            return package_states
+
+        staged_catalog = [
+            declaration
+            for declarations in next_declarations.values()
+            for declaration in declarations
+        ]
+        candidates = [
+            item
+            for item in self._candidate_declarations(staged_catalog)
+            if self._path_belongs_to_package(item.path, reference)
+        ]
+        open_views = self._capture_editor_views(package_states)
+        failures = self.unload_package(reference)
+        if failures:
+            return failures
+        self._declarations_by_path = next_declarations
+        self._declaration_stamps = next_stamps
+        for key in (*active_keys, *stale_keys):
+            self.failures.pop(key, None)
+        expected: dict[str, set[str]] = {}
+        for declaration in candidates:
+            expected.setdefault(path_key(declaration.path), set()).add(
+                declaration.name
+            )
+        loaded: list[PreloadState] = []
+        for path in self._ordered_candidate_paths(candidates):
+            loaded.extend(self._load_path(path, expected[path_key(path)]))
+        self._restore_editor_views(open_views)
+        return tuple(loaded)
+
+    def reload_package_translations(self, reference: str) -> bool:
+        """Publish one package catalog without restarting its Editor lifecycle."""
+
+        if self.runtime or not reference:
+            return False
+        catalog_path = self._package_translation_path(reference)
+        try:
+            document = self._translation_document(reference)
+            if document is None:
+                self._unregister_package_translations(reference)
+            else:
+                from infernux.engine.i18n import register_translation_catalog
+
+                register_translation_catalog(
+                    self._translation_owner(reference), document
+                )
+                self._translation_packages.add(reference.casefold())
+            self.failures.pop(path_key(catalog_path), None)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            self.failures[path_key(catalog_path)] = f"{type(exc).__name__}: {exc}"
+            Debug.log_error(
+                f"Plugin translation reload failed [{catalog_path}]: {exc}"
+            )
+            return False
+
+        from infernux.engine.ui.window_manager import WindowManager
+
+        windows = WindowManager.instance()
+        if windows is not None:
+            windows.refresh_type_labels()
+        return True
+
+    def forget_package(self, reference: str) -> None:
+        """Drop cached declarations after a package has been removed."""
+
+        for key, declarations in tuple(self._declarations_by_path.items()):
+            path = declarations[0].path if declarations else key
+            if self._path_belongs_to_package(path, reference):
+                self._declarations_by_path.pop(key, None)
+                self._declaration_stamps.pop(key, None)
+                self.failures.pop(key, None)
+        self._ownership_cache = None
+        self._unregister_package_translations(reference)
+
+    def snapshots(self) -> tuple[dict[str, object], ...]:
+        return tuple(state.snapshot() for state in self.states.values())
+
+    def _capture_editor_views(
+        self,
+        states: tuple[PreloadState, ...] | list[PreloadState],
+    ) -> tuple[tuple[str, str], ...]:
+        if self.runtime:
+            return ()
+        owners = tuple(
+            dict.fromkeys(
+                state.contribution_owner
+                for state in states
+                if state.contribution_owner
+            )
+        )
+        if not owners:
+            return ()
+        from infernux.engine.ui.panel_registry import PanelRegistry
+
+        return PanelRegistry.capture_open_views_for_owners(owners)
+
+    def _restore_editor_views(
+        self,
+        views: tuple[tuple[str, str], ...],
+    ) -> None:
+        if self.runtime or not views:
+            return
+        from infernux.engine.ui.panel_registry import PanelRegistry
+
+        PanelRegistry.restore_reloaded_views(views)
+
+    def _refresh_declaration_catalog(self) -> None:
+        declarations: dict[str, tuple[_ClassDeclaration, ...]] = {}
+        stamps: dict[str, tuple[int, int]] = {}
+        package_files = self._package_file_records() if self.runtime else {}
+        for path in self._source_paths():
+            key = path_key(path)
+            try:
+                stamp = _file_stamp(path)
+                if self._declaration_stamps.get(key) == stamp:
+                    declarations[key] = self._declarations_by_path.get(key, ())
+                    stamps[key] = stamp
+                    continue
+                # _source_paths already applies the filesystem role rules.
+                declarations[key] = self._read_path_declarations(
+                    path, package_files=package_files, role_checked=True
+                )
+                stamps[key] = stamp
+                self.failures.pop(key, None)
+            except (OSError, SyntaxError, ValueError) as exc:
+                declarations[key] = ()
+                self.failures[key] = f"{type(exc).__name__}: {exc}"
+        self._declarations_by_path = declarations
+        self._declaration_stamps = stamps
+        self._catalog_initialized = True
+
+    def _catalog_declarations(self) -> list[_ClassDeclaration]:
+        return [
+            declaration
+            for values in self._declarations_by_path.values()
+            for declaration in values
+        ]
+
+    def _package_file_records(self) -> dict[str, Mapping[str, object]]:
+        records: dict[str, Mapping[str, object]] = {}
+        for package in self.registry.installed():
+            for item in package.get("files", []):
+                if not isinstance(item, Mapping):
+                    continue
+                for field in ("path_hint", "compiled_path_hint"):
+                    hint = portable_path(str(item.get(field, ""))).strip("/")
+                    if not hint:
+                        continue
+                    candidate = os.path.join(self.project_root, *hint.split("/"))
+                    records.setdefault(path_key(candidate), item)
+        return records
+
+    def _read_path_declarations(
+        self, path: str, *, package_files: Mapping[str, Mapping[str, object]] | None = None,
+        role_checked: bool = False,
+    ) -> tuple[_ClassDeclaration, ...]:
+        reference = self._package_for_path(path)
+        owner = self.registry.installed_record(reference) if reference else None
+        if owner is not None and not bool(owner.get("enabled", True)):
+            return ()
+        if self.runtime and not role_checked and _is_editor_source(path, self.project_root, owner):
+            return ()
+        if not path.casefold().endswith(".pyc"):
+            return _read_declarations(path, self.project_root)
+        if package_files is None:
+            package_files = self._package_file_records()
+        record = package_files.get(path_key(path))
+        raw_declarations = (
+            record.get("preload_declarations", []) if record is not None else []
+        )
+        if not isinstance(raw_declarations, list):
+            raise ValueError("Compiled preload declarations must be a list")
+        if not raw_declarations:
+            return ()
+        module = _module_name(path, self.project_root)
+        declarations: list[_ClassDeclaration] = []
+        for raw in raw_declarations:
+            if not isinstance(raw, Mapping):
+                raise ValueError("Compiled preload declaration must be an object")
+            name = str(raw.get("name", ""))
+            bases = raw.get("bases", [])
+            if not name.isidentifier() or not isinstance(bases, list) or any(
+                not isinstance(base, str) or not base for base in bases
+            ):
+                raise ValueError("Compiled preload declaration is invalid")
+            declarations.append(
+                _ClassDeclaration(path, module, name, tuple(bases))
+            )
+        return tuple(declarations)
+
+    @staticmethod
+    def _affected_candidate_paths(
+        target: str,
+        previous: Iterable[_ClassDeclaration],
+        current: Iterable[_ClassDeclaration],
+        previous_candidates: Iterable[_ClassDeclaration],
+        current_candidates: Iterable[_ClassDeclaration],
+    ) -> set[str]:
+        old_values = list(previous)
+        new_values = list(current)
+        old_candidates = list(previous_candidates)
+        new_candidates = list(current_candidates)
+        target_key = path_key(target)
+        old_keys = {item.key for item in old_candidates}
+        new_keys = {item.key for item in new_candidates}
+        affected = {
+            target_key
+            for item in (*old_values, *new_values)
+            if item.key in old_keys or item.key in new_keys
+        }
+        symbols = {
+            value
+            for item in (*old_values, *new_values)
+            for value in (item.key, item.name)
+        }
+        changed = True
+        all_candidates = (*old_candidates, *new_candidates)
+        while changed:
+            changed = False
+            for item in all_candidates:
+                if path_key(item.path) in affected:
+                    symbols.update((item.key, item.name))
+                    continue
+                if not any(
+                    base in symbols or base.rsplit(".", 1)[-1] in symbols
+                    for base in item.bases
+                ):
+                    continue
+                affected.add(path_key(item.path))
+                symbols.update((item.key, item.name))
+                changed = True
+        return affected
+
+    @staticmethod
+    def _candidate_declarations(
+        declarations: Iterable[_ClassDeclaration],
+    ) -> list[_ClassDeclaration]:
+        values = list(declarations)
+        by_key = {item.key: item for item in values}
+        simple: dict[str, set[str]] = {}
+        for item in values:
+            simple.setdefault(item.name, set()).add(item.key)
+        known = {
+            "infernux.lifecycle.InxPreload",
+            "infernux.InxPreload",
+            "infernux.lifecycle.InxPreload",
+            "InxPreload",
+        }
+        selected: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for item in values:
+                if item.key in selected:
+                    continue
+                resolved: set[str] = set()
+                for base in item.bases:
+                    resolved.add(base)
+                    if "." not in base:
+                        resolved.add(f"{item.module}.{base}")
+                        if len(simple.get(base, ())) == 1:
+                            resolved.update(simple[base])
+                if not any(base in known or base in selected for base in resolved):
+                    continue
+                selected.add(item.key)
+                known.add(item.key)
+                changed = True
+        return [item for item in values if item.key in selected]
+
+    def _source_paths(self) -> Iterator[str]:
+        guid_paths, native = project_guid_paths(
+            self.project_root,
+            engine=self.engine,
+        )
+        if native:
+            candidates = {
+                path_key(path): path
+                for path in guid_paths.values()
+                if path.casefold().endswith((".py", ".pyc"))
+                and os.path.isfile(path)
+            }
+            for package in self.registry.installed():
+                for item in package.get("files", []):
+                    if not isinstance(item, Mapping):
+                        continue
+                    hint = portable_path(
+                        str(
+                            item.get("compiled_path_hint", "")
+                            or item.get("path_hint", "")
+                            if self.runtime
+                            else item.get("path_hint", "")
+                        )
+                    ).strip("/")
+                    if not hint.casefold().endswith((".py", ".pyc")):
+                        continue
+                    path = resolved_path(
+                        os.path.join(self.project_root, *hint.split("/"))
+                    )
+                    if os.path.isfile(path):
+                        candidates[path_key(path)] = path
+            ownership = self._path_ownership(guid_paths)
+            for path in sorted(candidates.values(), key=path_key):
+                owner = ownership.get(path_key(path))
+                if owner is not None and not bool(owner.get("enabled", True)):
+                    continue
+                if self.runtime and _is_editor_source(
+                    path, self.project_root, owner
+                ):
+                    continue
+                yield path
+            return
+        roots = [
+            os.path.join(self.project_root, "Assets"),
+            os.path.join(self.project_root, "Packages"),
+        ]
+        ownership = self._path_ownership()
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for walk_root, dirs, names in os.walk(root):
+                dirs[:] = sorted(
+                    name
+                    for name in dirs
+                    if name not in _SKIPPED_DIRECTORIES and not name.startswith(".")
+                )
+                for name in sorted(names):
+                    if not name.endswith((".py", ".pyc")) or name.startswith("."):
+                        continue
+                    path = os.path.join(walk_root, name)
+                    owner = ownership.get(path_key(path))
+                    if owner is not None and not bool(owner.get("enabled", True)):
+                        continue
+                    if self.runtime and _is_editor_source(path, self.project_root, owner):
+                        continue
+                    yield path
+
+    def _package_source_paths(self, reference: str) -> tuple[str, ...]:
+        record = self.registry.installed_record(reference)
+        if record is None or not bool(record.get("enabled", True)):
+            return ()
+        guid_paths, _native = project_guid_paths(
+            self.project_root,
+            engine=self.engine,
+        )
+        result: dict[str, str] = {}
+        # Current catalog membership includes scripts authored after install;
+        # the durable file ledger only describes uninstall ownership.
+        for path in guid_paths.values():
+            if (
+                path.casefold().endswith((".py", ".pyc"))
+                and self._package_for_path(path).casefold() == reference.casefold()
+            ):
+                result[path_key(path)] = path
+        for item in record.get("files", []):
+            if not isinstance(item, Mapping):
+                continue
+            hint = portable_path(
+                str(
+                    item.get("compiled_path_hint", "")
+                    or item.get("path_hint", "")
+                    if self.runtime
+                    else item.get("path_hint", "")
+                )
+            ).strip("/")
+            if not hint.casefold().endswith((".py", ".pyc")):
+                continue
+            guid = str(item.get("guid", "")).casefold()
+            path = guid_paths.get(guid)
+            if not path or not os.path.isfile(path):
+                path = resolved_path(
+                    os.path.join(self.project_root, *hint.split("/"))
+                )
+            if path and os.path.isfile(path):
+                result[path_key(path)] = path
+        return tuple(sorted(result.values(), key=path_key))
+
+    def _path_belongs_to_package(self, path: str, reference: str) -> bool:
+        if self._package_for_path(path).casefold() == str(reference).casefold():
+            return True
+        roots = (
+            os.path.join(
+                self.project_root, "Packages", *str(reference).split("/")
+            ),
+        )
+        return any(is_path_within(path, root, allow_root=False) for root in roots)
+
+    def _path_ownership(
+        self, guid_paths: Mapping[str, str] | None = None
+    ) -> dict[str, dict[str, object]]:
+        if self._ownership_cache is not None:
+            return self._ownership_cache
+        result: dict[str, dict[str, object]] = {}
+        if guid_paths is None:
+            guid_paths, _native = project_guid_paths(
+                self.project_root,
+                engine=self.engine,
+            )
+        for package in self.registry.installed():
+            for item in package.get("files", []):
+                if not isinstance(item, Mapping):
+                    continue
+                guid = str(item.get("guid", "")).casefold()
+                path = guid_paths.get(guid)
+                if path and os.path.isfile(path):
+                    result[path_key(path)] = package
+                compiled_hint = portable_path(
+                    str(item.get("compiled_path_hint", ""))
+                ).strip("/")
+                if compiled_hint:
+                    compiled_path = resolved_path(
+                        os.path.join(self.project_root, *compiled_hint.split("/"))
+                    )
+                    if os.path.isfile(compiled_path):
+                        result[path_key(compiled_path)] = package
+        self._ownership_cache = result
+        return result
+
+    def _package_for_path(self, path: str) -> str:
+        owner = self._path_ownership().get(path_key(path))
+        if owner is not None:
+            return str(owner.get("reference", ""))
+        from infernux.engine.project_context import package_script_reference
+
+        return package_script_reference(path, self.project_root)
+
+    def package_reference_for_path(self, path: str) -> str:
+        """Return the installed package that owns *path*, or an empty string."""
+
+        return self._package_for_path(resolved_path(path))
+
+    def package_errors(self, reference: str) -> tuple[str, ...]:
+        """Report discovery/import errors owned by one package, including new files."""
+        return tuple(
+            f"{portable_path(relative_path(path, self.project_root))}: {error}"
+            for path, error in sorted(self.failures.items())
+            if self._path_belongs_to_package(path, reference)
+        )
+
+    def _ordered_candidate_paths(
+        self, candidates: Iterable[_ClassDeclaration]
+    ) -> tuple[str, ...]:
+        unique = {path_key(item.path): item.path for item in candidates}
+        ranks = self._package_ranks()
+        return tuple(
+            path
+            for _key, path in sorted(
+                unique.items(),
+                key=lambda item: (
+                    ranks.get(self._package_for_path(item[1]).casefold(), -1),
+                    portable_path(relative_path(item[1], self.project_root)).casefold(),
+                ),
+            )
+        )
+
+    def _package_ranks(self) -> dict[str, int]:
+        installed = {
+            str(item.get("reference", "")).casefold(): item
+            for item in self.registry.installed()
+        }
+        ranks: dict[str, int] = {}
+        visiting: set[str] = set()
+
+        def visit(key: str) -> int:
+            if key in ranks:
+                return ranks[key]
+            if key in visiting:
+                raise RuntimeError(f"Circular InxPackage dependency: {key}")
+            visiting.add(key)
+            record = installed.get(key, {})
+            dependencies = [str(item).casefold() for item in record.get("dependencies", [])]
+            rank = 1 + max((visit(item) for item in dependencies if item in installed), default=-1)
+            visiting.remove(key)
+            ranks[key] = rank
+            return rank
+
+        for key in installed:
+            visit(key)
+        return ranks
+
+    def _load_path(self, path: str, expected_classes: set[str]) -> list[PreloadState]:
+        record = self._package_file_records().get(path_key(path))
+        script_guid = (
+            str(record.get("guid", "")).strip().casefold()
+            if record is not None
+            else ""
+        ) or _ensure_script_guid(path, self.project_root)
+        package_reference = self._package_for_path(path)
+        try:
+            self._register_package_translations(package_reference)
+        except Exception as exc:
+            self.failures[path_key(path)] = f"{type(exc).__name__}: {exc}"
+            Debug.log_error(
+                f"InxPackage editor translations failed [{package_reference}]: {exc}"
+            )
+            return []
+        # Package-owned lifecycle scripts keep their real import identity so
+        # normal Python package semantics (including ``from . import ...``)
+        # work during preload. Loose Assets scripts retain a GUID namespace to
+        # avoid colliding with gameplay modules that share a filename.
+        module_name = (
+            _module_name(path, self.project_root)
+            if package_reference
+            else f"_infernux_preload_{script_guid}"
+        )
+        contribution_owner = f"preload:{script_guid}"
+        modules_before = set(sys.modules)
+        started = time.perf_counter()
+        try:
+            with _editor_contribution_scope(
+                contribution_owner,
+                runtime=self.runtime,
+            ):
+                module = _load_module(
+                    module_name, path, self.project_root, package_reference
+                )
+                self._assert_public_namespace_stable()
+        except Exception as exc:
+            try:
+                _remove_editor_contribution_owner(
+                    contribution_owner,
+                    runtime=self.runtime,
+                )
+            except Exception:
+                pass
+            self.failures[path_key(path)] = f"{type(exc).__name__}: {exc}"
+            Debug.log_error(f"InxPreload import failed [{path}]: {exc}")
+            if package_reference and not any(
+                state.package_reference.casefold() == package_reference.casefold()
+                for state in self.states.values()
+            ):
+                self._unregister_package_translations(package_reference)
+            return []
+        import_ms = (time.perf_counter() - started) * 1000.0
+        states: list[PreloadState] = []
+        classes = sorted(
+            (
+                value
+                for value in vars(module).values()
+                if inspect.isclass(value)
+                and value is not InxPreload
+                and issubclass(value, InxPreload)
+                and value.__module__ == module.__name__
+                and not inspect.isabstract(value)
+                and value.__name__ in expected_classes
+            ),
+            key=lambda value: value.__qualname__,
+        )
+        for preload_type in classes:
+            type_id = uuid.uuid5(
+                _TYPE_NAMESPACE, f"{script_guid}:{preload_type.__qualname__}"
+            ).hex
+            identity = f"{script_guid}:{type_id}"
+            state = PreloadState(
+                identity,
+                script_guid,
+                type_id,
+                preload_type.__qualname__,
+                path,
+                package_reference,
+                import_ms=import_ms,
+                module_name=module_name,
+                contribution_owner=contribution_owner,
+            )
+            try:
+                instance = preload_type()
+                context = PreloadContext(
+                    self.project_root,
+                    path,
+                    script_guid,
+                    type_id,
+                    package_reference,
+                    self.engine,
+                    self.runtime,
+                    lambda reason, target=state: _mark_restart_required(
+                        target, reason
+                    ),
+                    state.cleanup_callbacks.append,
+                )
+                started = time.perf_counter()
+                with _editor_contribution_scope(
+                    contribution_owner,
+                    runtime=self.runtime,
+                ):
+                    with _temporary_import_paths(
+                        path, self.project_root, package_reference
+                    ):
+                        instance.preload(context)
+                self._assert_public_namespace_stable()
+                state.preload_ms = (time.perf_counter() - started) * 1000.0
+                state.instance = instance
+                state.loaded = True
+            except Exception as exc:
+                state.error = f"{type(exc).__name__}: {exc}"
+                cleanup_error = self._run_cleanup_callbacks(state)
+                if cleanup_error:
+                    state.error += f"; cleanup failed: {cleanup_error}"
+                    _mark_restart_required(state, state.error)
+                try:
+                    _remove_editor_contribution_owner(
+                        contribution_owner,
+                        runtime=self.runtime,
+                    )
+                except Exception as cleanup_exc:
+                    state.error += f"; contribution cleanup failed: {cleanup_exc}"
+                    _mark_restart_required(state, state.error)
+                if not state.cleanup_callbacks:
+                    from infernux.engine.project_context import release_preload_python_libraries
+                    release_preload_python_libraries(f"{self.project_root}:{identity}")
+                Debug.log_error(
+                    f"InxPreload.preload failed [{path}:{preload_type.__qualname__}]: {exc}"
+                )
+            self.states[identity] = state
+            states.append(state)
+        imported_project_modules = _new_project_modules(
+            self.project_root, modules_before
+        )
+        native_modules = _new_native_modules(modules_before)
+        for state in states:
+            state.module_names = imported_project_modules
+            if native_modules and not state.restart_required:
+                _mark_restart_required(
+                    state,
+                    "Loaded native extension modules: " + ", ".join(native_modules),
+                )
+        if not classes:
+            # An abstract candidate may also be an authored parent package.
+            # Keep its import identity until explicit retirement; descendants
+            # must reuse it, and module-level contributions still need an owner.
+            key = path_key(path)
+            previous = self._module_only_imports.get(key)
+            module_names = set(imported_project_modules) | {module_name}
+            if previous is not None:
+                module_names.update(previous.module_names)
+            self._module_only_imports[key] = _ModuleOnlyImport(
+                path, package_reference, contribution_owner, tuple(sorted(module_names)),
+            )
+        return states
+
+    def _unload_module_only_imports(
+        self, reference: str = "", *, paths: set[str] | None = None,
+    ) -> None:
+        for key, record in reversed(tuple(self._module_only_imports.items())):
+            if reference:
+                if record.package_reference.casefold() != reference.casefold():
+                    continue
+            elif paths is not None and key not in paths:
+                continue
+            if not _remove_editor_contribution_owner(record.contribution_owner, runtime=self.runtime):
+                raise RuntimeError(
+                    f"Cannot unload preload module '{record.source_path}': contributed editor panel refused to close"
+                )
+            for name in reversed(record.module_names):
+                _unpublish_module(name)
+            self._module_only_imports.pop(key)
+
+    @staticmethod
+    def _translation_owner(reference: str) -> str:
+        return f"package:{str(reference or '').strip().casefold()}"
+
+    def _package_translation_path(self, reference: str) -> str:
+        return os.path.join(
+            self.project_root,
+            "Packages",
+            *str(reference).split("/"),
+            "editor",
+            "translations.json",
+        )
+
+    def _translation_document(self, reference: str) -> dict[str, object] | None:
+        catalog_path = self._package_translation_path(reference)
+        if not os.path.isfile(catalog_path):
+            return None
+        with open(catalog_path, "r", encoding="utf-8") as stream:
+            document = json.load(stream)
+        if not isinstance(document, dict):
+            raise ValueError("editor/translations.json must contain a JSON object")
+        return document
+
+    def _validate_package_translations(self, reference: str) -> None:
+        if self.runtime or not reference:
+            return
+        document = self._translation_document(reference)
+        if document is None:
+            return
+        from infernux.engine.i18n import validate_translation_catalog
+
+        validate_translation_catalog(self._translation_owner(reference), document)
+
+    def _register_package_translations(self, reference: str) -> None:
+        if self.runtime or not reference:
+            return
+        key = reference.casefold()
+        if key in self._translation_packages:
+            return
+        document = self._translation_document(reference)
+        if document is not None:
+            from infernux.engine.i18n import register_translation_catalog
+
+            register_translation_catalog(self._translation_owner(reference), document)
+        self._translation_packages.add(key)
+
+    def _unregister_package_translations(self, reference: str) -> None:
+        key = str(reference or "").casefold()
+        if not key or key not in self._translation_packages:
+            return
+        if not self.runtime:
+            from infernux.engine.i18n import unregister_translation_catalog
+
+            unregister_translation_catalog(self._translation_owner(reference))
+        self._translation_packages.discard(key)
+
+    @staticmethod
+    def _run_cleanup_callbacks(state: PreloadState) -> str:
+        failures: list[str] = []
+        pending: list[Any] = []
+        try:
+            while state.cleanup_callbacks:
+                callback = state.cleanup_callbacks.pop()
+                try:
+                    callback()
+                except BaseException as exc:
+                    # Failure never relinquishes ownership. Keep unfinished
+                    # callbacks for an explicit later unload, including when
+                    # this attempt is interrupted rather than returning errors.
+                    pending.append(callback)
+                    if not isinstance(exc, Exception):
+                        raise
+                    failures.append(f"{type(exc).__name__}: {exc}")
+        finally:
+            state.cleanup_callbacks.extend(reversed(pending))
+        return "; ".join(failures)
+
+    def _unload_state(self, state: PreloadState) -> bool:
+        if state.instance is not None and not state.unload_completed:
+            started = time.perf_counter()
+            try:
+                with _temporary_import_paths(
+                    state.source_path,
+                    self.project_root,
+                    state.package_reference,
+                ):
+                    state.instance.unload()
+                self._assert_public_namespace_stable()
+            except Exception as exc:
+                state.error = f"unload failed: {type(exc).__name__}: {exc}"
+                _mark_restart_required(state, state.error)
+                Debug.log_error(
+                    f"InxPreload.unload failed [{state.identity}]: {exc}"
+                )
+                state.unload_ms = (time.perf_counter() - started) * 1000.0
+                return False
+            state.unload_ms = (time.perf_counter() - started) * 1000.0
+            state.unload_completed = True
+        cleanup_error = self._run_cleanup_callbacks(state)
+        if cleanup_error:
+            state.error = f"unload cleanup failed: {cleanup_error}"
+            _mark_restart_required(state, state.error)
+            Debug.log_error(f"InxPreload cleanup failed [{state.identity}]: {cleanup_error}")
+            return False
+        if state.contribution_owner:
+            if not _remove_editor_contribution_owner(
+                state.contribution_owner,
+                runtime=self.runtime,
+            ):
+                state.error = "unload failed: contributed editor panel refused to close"
+                _mark_restart_required(state, state.error)
+                return False
+        state.instance = None
+        state.loaded = False
+        from infernux.engine.project_context import release_preload_python_libraries
+        release_preload_python_libraries(f"{self.project_root}:{state.identity}")
+        if state.module_name:
+            _unpublish_module(state.module_name)
+        module_names = set(state.module_names)
+        if state.package_reference:
+            module_names.update(
+                _package_module_names(
+                    self.project_root, state.package_reference
+                )
+            )
+        for name in reversed(sorted(module_names)):
+            _unpublish_module(name)
+        return True
+
+
+def _file_stamp(path: str) -> tuple[int, int]:
+    stat = os.stat(path)
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _read_declarations(path: str, project_root: str) -> tuple[_ClassDeclaration, ...]:
+    with open(path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=path)
+    module = _module_name(path, project_root)
+    aliases: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname or alias.name.split(".", 1)[0]
+                aliases[local_name] = alias.name if alias.asname else local_name
+        elif isinstance(node, ast.ImportFrom):
+            imported_module = _resolve_import_module(module, node.module or "", node.level)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                target = f"{imported_module}.{alias.name}" if imported_module else alias.name
+                aliases[alias.asname or alias.name] = target
+    result = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = tuple(
+            value
+            for base in node.bases
+            if (value := _expression_name(base, aliases))
+        )
+        result.append(_ClassDeclaration(path, module, node.name, bases))
+    return tuple(result)
+
+
+def _expression_name(node: ast.AST, aliases: Mapping[str, str]) -> str:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        prefix = _expression_name(node.value, aliases)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    if isinstance(node, ast.Subscript):
+        return _expression_name(node.value, aliases)
+    return ""
+
+
+def _module_name(path: str, project_root: str) -> str:
+    from infernux.engine.project_context import get_script_module_name
+
+    module_name = get_script_module_name(path, project_root)
+    if module_name:
+        return module_name
+    return f"infernux_project_script_{_ensure_script_guid(path, project_root)}"
+
+
+def _resolve_import_module(current: str, target: str, level: int) -> str:
+    if level <= 0:
+        return target
+    parts = current.split(".")[:-1]
+    trim = max(0, level - 1)
+    if trim:
+        parts = parts[:-trim]
+    if target:
+        parts.extend(target.split("."))
+    return ".".join(parts)
+
+
+def _ensure_script_guid(path: str, project_root: str) -> str:
+    meta_path = path + ".meta"
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as stream:
+                document = json.load(stream)
+            entry = document["metadata"]["guid"]
+            if entry.get("type") != "string":
+                raise ValueError("metadata.guid.type must be 'string'")
+            guid = str(entry["value"]).strip().casefold()
+            if len(guid) != 32 or any(char not in "0123456789abcdef" for char in guid):
+                raise ValueError("metadata.guid.value must be 32 hexadecimal characters")
+            return guid
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid script identity metadata '{meta_path}': {exc}") from exc
+    relative = portable_path(relative_path(path, project_root))
+    guid = uuid.uuid5(_SCRIPT_NAMESPACE, relative.casefold()).hex
+    document = {"metadata": {"guid": {"type": "string", "value": guid}}}
+    with open(meta_path, "w", encoding="utf-8", newline="\n") as stream:
+        json.dump(document, stream, ensure_ascii=False, indent=4)
+        stream.write("\n")
+    return guid
+
+
+def _is_editor_source(
+    path: str, project_root: str, owner: Mapping[str, object] | None
+) -> bool:
+    relative = portable_path(relative_path(path, project_root))
+    folded_relative = relative.casefold()
+    from infernux.engine.project_context import is_editor_asset_path
+
+    if is_editor_asset_path(relative):
+        return True
+
+    if folded_relative.startswith("packages/"):
+        from infernux.engine.project_context import package_script_role
+
+        role = package_script_role(path, project_root)
+        if role:
+            return role == "editor"
+        if owner is None:
+            return False
+        for item in owner.get("files", []):
+            if not isinstance(item, Mapping):
+                continue
+            hints = (
+                item.get("path_hint", ""),
+                item.get("compiled_path_hint", ""),
+            )
+            if any(
+                hint
+                and path_key(
+                    os.path.join(
+                        project_root,
+                        *portable_path(str(hint)).split("/"),
+                    )
+                )
+                == path_key(path)
+                for hint in hints
+            ):
+                return str(item.get("role", "")).casefold() == "editor"
+    return False
+
+
+def _load_module(
+    module_name: str, path: str, project_root: str, package_reference: str
+) -> types.ModuleType:
+    existing = sys.modules.get(module_name)
+    existing_path = str(getattr(existing, "__file__", "") or "")
+    if (
+        existing is not None
+        and module_name.startswith("_infernux_preload_")
+        and existing_path
+        and not is_path_within(existing_path, project_root, allow_root=False)
+    ):
+        # Only one project is active in an Editor process. A manager created
+        # for a new project must not inherit a loose-script module from the
+        # preceding project merely because the copied asset kept its GUID.
+        _unpublish_module(module_name)
+        existing = None
+        existing_path = ""
+    if existing is not None and (
+        not existing_path or path_key(existing_path) != path_key(path)
+    ):
+        raise ImportError(
+            f"InxPreload module identity '{module_name}' is already owned by "
+            f"{existing_path or type(existing).__name__}"
+        )
+
+    if existing is not None:
+        return existing
+    modules_before = set(sys.modules)
+    try:
+        with _temporary_import_paths(path, project_root, package_reference):
+            _ensure_module_parents(module_name, path, package_reference)
+            # An authored parent may import its child as part of __init__.
+            # Reuse that completed import instead of executing the child twice.
+            existing = sys.modules.get(module_name)
+            if existing is not None:
+                if path_key(str(getattr(existing, "__file__", "") or "")) != path_key(path):
+                    raise ImportError(f"InxPreload module identity '{module_name}' changed during parent import")
+                return existing
+            return _execute_module_file(module_name, path)
+    except BaseException:
+        for name in reversed(_new_project_modules(project_root, modules_before)):
+            _unpublish_module(name)
+        raise
+
+
+def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
+    """Execute one selected source/bytecode module without stale source bytecode."""
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load InxPreload candidate: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    if path.casefold().endswith(".pyc"):
+        spec.loader.exec_module(module)
+    else:
+        with open(path, "rb") as stream:
+            code = compile(stream.read(), path, "exec")
+        exec(code, module.__dict__)
+    parent_name, _, child_name = module_name.rpartition(".")
+    if parent_name:
+        setattr(sys.modules[parent_name], child_name, module)
+    return module
+
+
+def _unpublish_module(name: str) -> None:
+    module = sys.modules.pop(name, None)
+    parent_name, _, child_name = name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if module is not None and parent is not None and getattr(parent, child_name, None) is module:
+        delattr(parent, child_name)
+
+
+def _ensure_module_parents(module_name: str, path: str, package_reference: str) -> None:
+    """Bind isolated namespace prefixes and execute authored package parents."""
+
+    parts = module_name.split(".")
+    parent_names = [".".join(parts[:index]) for index in range(1, len(parts))]
+    directory = os.path.dirname(path)
+    if os.path.basename(path) in {"__init__.py", "__init__.pyc"}:
+        directory = os.path.dirname(directory)
+    directories: dict[str, str] = {}
+    for name in reversed(parent_names):
+        directories[name] = resolved_path(directory)
+        directory = os.path.dirname(directory)
+
+    synthetic_count = 1 + len(package_reference.split("/")) if package_reference else 0
+    for index, name in enumerate(parent_names):
+        expected = directories[name]
+        existing = sys.modules.get(name)
+        if existing is not None:
+            search_path = getattr(existing, "__path__", None)
+            search_locations = tuple(str(item) for item in (search_path or ()))
+            if any(path_key(item) == path_key(expected) for item in search_locations):
+                continue
+            spec = getattr(existing, "__spec__", None)
+            if search_path is not None and getattr(spec, "loader", object()) is None:
+                search_path.append(expected)
+                continue
+            existing_path = str(getattr(existing, "__file__", "") or "")
+            if existing_path and is_path_within(existing_path, expected):
+                continue
+            raise ImportError(
+                f"InxPreload package identity '{name}' is already owned by "
+                f"{existing_path or type(existing).__name__}"
+            )
+        if index >= synthetic_count:
+            source = os.path.join(expected, "__init__.py")
+            bytecode = source + "c"
+            if os.path.isfile(source):
+                _execute_module_file(name, source)
+                continue
+            if os.path.isfile(bytecode):
+                _execute_module_file(name, bytecode)
+                continue
+        package = types.ModuleType(name)
+        package.__package__ = name
+        package.__path__ = [expected]
+        package.__file__ = os.path.join(expected, "__init__.py")
+        package.__spec__ = importlib.util.spec_from_loader(
+            name,
+            loader=None,
+            is_package=True,
+        )
+        sys.modules[name] = package
+        parent_name, _, child_name = name.rpartition(".")
+        if parent_name:
+            setattr(sys.modules[parent_name], child_name, package)
+
+
+def _new_project_modules(
+    project_root: str, modules_before: set[str]
+) -> tuple[str, ...]:
+    result: list[str] = []
+    project_key = lexical_path_key(project_root)
+    for name in set(sys.modules) - modules_before:
+        module = sys.modules.get(name)
+        path = str(getattr(module, "__file__", "") or "")
+        if path and _lexically_below(path, project_key) and is_path_within(
+            path, project_root, allow_root=False
+        ):
+            result.append(name)
+    return tuple(sorted(result))
+
+
+def _package_module_names(
+    project_root: str, package_reference: str
+) -> tuple[str, ...]:
+    roots = (os.path.join(project_root, "Packages", *package_reference.split("/")),)
+    root_keys = tuple(lexical_path_key(root) for root in roots)
+    result: list[str] = []
+    for name, module in tuple(sys.modules.items()):
+        path = str(getattr(module, "__file__", "") or "")
+        if path and any(
+            _lexically_below(path, root_key)
+            and is_path_within(path, root, allow_root=False)
+            for root, root_key in zip(roots, root_keys)
+        ):
+            result.append(name)
+    return tuple(sorted(result))
+
+
+def _lexically_below(path: str, root_key: str) -> bool:
+    if not path or not root_key:
+        return False
+    try:
+        relative_path(path, root_key, resolve=False, allow_root=False)
+    except ValueError:
+        return False
+    return True
+
+
+def _new_native_modules(modules_before: set[str]) -> tuple[str, ...]:
+    suffixes = (".pyd", ".so", ".dylib")
+    result = []
+    for name in set(sys.modules) - modules_before:
+        module = sys.modules.get(name)
+        path = str(getattr(module, "__file__", "") or "").casefold()
+        if path.endswith(suffixes):
+            result.append(name)
+    return tuple(sorted(result))
+
+
+def _mark_restart_required(state: PreloadState, reason: str) -> None:
+    state.restart_required = True
+    state.restart_reason = str(reason)
+
+
+@contextmanager
+def _editor_contribution_scope(owner: str, *, runtime: bool) -> Iterator[None]:
+    if runtime:
+        yield
+        return
+    from infernux.engine.interaction._contributions import contribution_scope
+
+    with contribution_scope(owner):
+        yield
+
+
+def _remove_editor_contribution_owner(owner: str, *, runtime: bool) -> bool:
+    if runtime:
+        return True
+    from infernux.engine.ui.panel_registry import PanelRegistry
+
+    if not PanelRegistry.remove_owner(owner):
+        return False
+    from infernux.engine.interaction.commands import EditorCommandRegistry
+    from infernux.engine.interaction.handles import EditorHandleRegistry
+    from infernux.engine.interaction.shortcuts import ShortcutRouter
+    # Do not instantiate editor services solely to tear a preload down.
+    if EditorHandleRegistry._instance is not None:
+        EditorHandleRegistry._instance.unregister_owner(owner)
+    if ShortcutRouter._instance is not None:
+        ShortcutRouter._instance.unregister_owner(owner)
+    if EditorCommandRegistry._instance is not None:
+        EditorCommandRegistry._instance.unregister_owner(owner)
+    return True
+
+
+@contextmanager
+def _temporary_import_paths(
+    path: str, project_root: str, package_reference: str
+) -> Iterator[None]:
+    candidates = [
+        os.path.dirname(path),
+        os.path.join(project_root, "Assets"),
+        os.path.join(project_root, "Packages"),
+    ]
+    if package_reference:
+        from infernux.engine.project_context import _package_role_root
+
+        package_root = os.path.join(
+            project_root, "Packages", *package_reference.split("/")
+        )
+        candidates.extend(
+            [
+                package_root,
+                _package_role_root(package_root, "runtime"),
+                _package_role_root(package_root, "editor"),
+            ]
+        )
+    before = sys.path
+    temporary = before.copy()
+    try:
+        for candidate in reversed(candidates):
+            candidate = resolved_path(candidate)
+            if candidate and os.path.isdir(candidate) and candidate not in temporary:
+                temporary.insert(0, candidate)
+        # PathFinder may be iterating this list on a plugin's background
+        # thread. Publish a separate list and never shorten its live iterator.
+        sys.path = temporary
+        yield
+    finally:
+        sys.path = before
+
+
+__all__ = ["PreloadManager", "PreloadState"]

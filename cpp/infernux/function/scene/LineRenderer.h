@@ -8,6 +8,8 @@
 namespace infernux
 {
 
+class Camera;
+
 enum class LineAlignment : uint8_t
 {
     View = 0,
@@ -174,7 +176,7 @@ class LineRenderer final : public MeshRenderer
     void SetGenerateLightingData(bool generate);
 
     /// Snapshot the expanded ribbon into another renderer's inline mesh.
-    void BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPosition, bool useTransform) const;
+    void BakeMesh(MeshRenderer &target, const Camera *camera, bool useTransform) const;
 
     void Simplify(float tolerance);
 
@@ -193,7 +195,6 @@ class LineRenderer final : public MeshRenderer
     {
         return false;
     }
-    void UpdateMaximumWidth();
     void RebuildMesh();
 
     std::vector<glm::vec3> m_positions{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}};
@@ -219,7 +220,7 @@ class LineRenderer final : public MeshRenderer
     uint32_t m_numCapVertices = 0;
     float m_shadowBias = 0.5f;
     bool m_generateLightingData = false;
-    float m_maximumWidth = 0.1f;
+    float m_maximumHalfWidth = 0.0f;
     glm::mat3 m_geometryMetric{1.0f};
 };
 

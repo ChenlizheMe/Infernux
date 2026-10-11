@@ -12,9 +12,10 @@ namespace infernux
 {
 
 static constexpr uint32_t kGPUInstanceAuxFlagValidHistory = 1u;
+static constexpr uint32_t kGPUInstanceAuxFlagNoReceiveShadows = 2u;
 
-/// Optional per-instance data consumed by picking and motion passes. Ordinary
-/// forward/shadow draws keep using the compact model-matrix-only stream.
+/// Per-instance identity, transform history and geometry lighting controls.
+/// Shadow draws keep using the compact model-matrix-only stream.
 struct alignas(16) GPUInstanceAuxData
 {
     glm::mat4 previousModel{1.0f};

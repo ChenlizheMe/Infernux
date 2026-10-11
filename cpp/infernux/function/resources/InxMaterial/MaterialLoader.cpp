@@ -5,6 +5,7 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
+#include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <filesystem>
@@ -23,7 +24,8 @@ bool IsBuiltinTextureToken(const std::string &value)
     return value == "white" || value == "black" || value == "normal";
 }
 
-ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, AssetDatabase *database)
+ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, AssetDatabase *database,
+                                           const char *expectedStage)
 {
     if (!database)
         return reference;
@@ -37,27 +39,42 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
     if (!resolvedPath.empty()) {
         reference.pathHint = resolvedPath;
 
-        if (const auto meta = database->GetMetaByPath(resolvedPath)) {
-            if (meta->HasKey("shader_id")) {
-                const std::string authoredId = meta->GetDataAs<std::string>("shader_id");
-                if (authoredId.empty() || authoredId != reference.shaderId)
-                    throw std::runtime_error("Material shader reference disagrees with its GUID: " + resolvedPath);
-            }
-        }
+        const auto meta = database->GetMetaByPath(resolvedPath);
+        if (!meta || meta->GetResourceType() != ResourceType::Shader)
+            throw std::runtime_error("Material shader GUID resolves to a non-shader asset: " + resolvedPath);
+        if (!meta->HasKey("type") || meta->GetDataAs<std::string>("type") != expectedStage)
+            throw std::runtime_error("Material shader GUID does not identify the required " +
+                                     std::string(expectedStage) + " stage: " + resolvedPath);
+        if (!meta->HasKey("shader_id") || meta->GetDataAs<std::string>("shader_id").empty())
+            throw std::runtime_error("Material shader GUID resolves to metadata without ShaderInfo Name: " +
+                                     resolvedPath);
+        // A saved shader_id is a derived label and can predate a source rename.
+        // Never reject or rebind that durable reference because its label changed.
+        reference.shaderId = meta->GetDataAs<std::string>("shader_id");
     }
     return reference;
 }
 
-void EnrichShaderReferences(InxMaterial &material, AssetDatabase *database)
-{
-    material.SetVertShaderReference(EnrichShaderReference(material.GetVertShaderReference(), database));
-    material.SetFragShaderReference(EnrichShaderReference(material.GetFragShaderReference(), database));
-}
-
 } // namespace
 
+bool MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &filePath, AssetDatabase *adb)
+{
+    try {
+        if (!staged.ApplyDocument(ReadAssetDocument(filePath)))
+            return false;
+        // Resolve on the unpublished candidate. Public shader setters would
+        // notify routing and reset authorship before the complete edit is valid.
+        staged.m_vertexShader = EnrichShaderReference(staged.m_vertexShader, adb, "vertex");
+        staged.m_fragmentShader = EnrichShaderReference(staged.m_fragmentShader, adb, "fragment");
+        return true;
+    } catch (const std::exception &error) {
+        INXLOG_ERROR("MaterialLoader: invalid document '", filePath, "': ", error.what());
+        return false;
+    }
+}
+
 // =============================================================================
-// Load — create a brand-new InxMaterial from a .mat file
+// Load — create a brand-new InxMaterial from an authored or cooked document
 // =============================================================================
 
 RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
@@ -67,27 +84,18 @@ RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std:
         return nullptr;
     }
 
-    // Read file
-    std::ifstream file(ToFsPath(filePath));
-    if (!file.is_open()) {
-        INXLOG_WARN("MaterialLoader::Load: cannot open '", filePath, "'");
+    InxMaterial staged;
+    if (!PrepareDocument(staged, filePath, adb))
         return nullptr;
-    }
-    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-
-    // Deserialize
     auto material = std::make_shared<InxMaterial>();
-    if (!material->Deserialize(jsonStr)) {
-        INXLOG_ERROR("MaterialLoader::Load: deserialization failed for '", filePath, "'");
-        return nullptr;
-    }
+    // Disk identity is known before publication, including on a worker. It must
+    // never be enrolled in the owner-thread-only runtime material registry.
+    material->SetGuid(guid);
+    material->PublishDocument(std::move(staged));
 
     // Identity — authoritative source is .meta / AssetDatabase, NOT JSON
     material->SetFilePath(filePath);
     material->SetName(FromFsPath(ToFsPath(filePath).stem()));
-    material->SetGuid(guid);
-    EnrichShaderReferences(*material, adb);
 
     // Dependency graph edges (textures, shaders)
     RegisterDependencies(guid, *material, adb);
@@ -109,34 +117,15 @@ bool MaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::stri
         return false;
     }
 
-    // Read file
-    std::ifstream file(ToFsPath(filePath));
-    if (!file.is_open()) {
-        INXLOG_WARN("MaterialLoader::Reload: cannot open '", filePath, "'");
+    InxMaterial staged(*mat);
+    if (!PrepareDocument(staged, filePath, adb))
         return false;
-    }
-    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-
-    // Save authoritative name and GUID (Deserialize may clobber m_name)
-    const std::string savedName = mat->GetName();
-    const std::string savedGuid = mat->GetGuid();
-
-    // Deserialize *into the same instance* — shared_ptr identity preserved
-    if (!mat->Deserialize(jsonStr)) {
-        INXLOG_ERROR("MaterialLoader::Reload: deserialization failed for '", filePath, "'");
-        return false;
-    }
-
-    // Restore authoritative identity
-    mat->SetName(savedName);
-    mat->SetGuid(savedGuid);
-    EnrichShaderReferences(*mat, adb);
+    staged.m_name = mat->GetName();
+    mat->PublishDocument(std::move(staged));
 
     // Re-wire dependency graph (texture/shader deps may have changed)
-    RegisterDependencies(savedGuid, *mat, adb);
+    RegisterDependencies(mat->GetGuid(), *mat, adb);
 
-    // INXLOG_INFO("MaterialLoader: reloaded '", savedName, "' in-place");
     return true;
 }
 
@@ -156,16 +145,9 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
 {
     std::set<std::string> deps;
 
-    std::ifstream file = OpenInputFile(filePath);
-    if (!file.is_open())
-        return deps;
-
-    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-
     // Temporary material just for parsing — lightweight, no GPU resources
     InxMaterial tmp;
-    if (!tmp.Deserialize(jsonStr))
+    if (!PrepareDocument(tmp, filePath, nullptr))
         return deps;
 
     // Texture GUIDs

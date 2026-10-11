@@ -1,7 +1,7 @@
 # add_component_menu
 
 <div class="class-info">
-函数位于 <b>Infernux.components</b>
+函数位于 <b>infernux.components</b>
 </div>
 
 ```python

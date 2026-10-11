@@ -6,16 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Place effects on one queue route, one layer, a whole stage, the scene composite, Camera UI, or final Screen UI.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/renderstack-mount-points.html">
     <title>RenderStack mount points and effect scope · Infernux Learn</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=8">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -23,9 +23,9 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.1</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
-            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
-            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
@@ -42,7 +42,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="real Infernux render of a voxel continent with depth of field and color treatment" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene, RenderStack, mounted Effect assets, and MSAA setup used by this chapter.</figcaption>
+  <figcaption>An Infernux demo frame used as a visual reference for scene-wide effects.</figcaption>
 </figure>
 
 <h2 id="stack-workflow">Start in the Editor</h2>
@@ -168,7 +168,7 @@
 </tbody>
 </table>
 <p>The scope belongs to the <code>EffectStage</code>; it is absent from the <code>.effect</code> asset and from the slot. This lets one reusable asset work at several scopes when their resource contracts and route policies are compatible.</p>
-<p>The built-in stages follow the same accumulation. <code>after_opaque</code> receives the opaque domain only: scene color plus depth, before sky and transparency. <code>after_sky</code> adds the skybox. <code>after_transparent</code> receives the complete scene composite, still in linear HDR. <code>after_camera_ui</code> adds the Camera Overlay UI on top. <code>final</code> runs before display encoding and is the intended home for post-processing chains. <code>after_screen_ui</code> receives the display-encoded image plus Screen Overlay UI. Chapter 1 of this course introduced the distinction: Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default.</p>
+<p>The built-in stages follow the same accumulation. <code>after_opaque</code> receives the opaque domain only: scene color plus depth, before sky and transparency. <code>after_sky</code> adds the skybox. <code>after_transparent</code> receives the complete scene composite, still in linear HDR. <code>after_camera_ui</code> adds the Camera Overlay UI on top. <code>final</code> runs before display encoding and is the intended home for post-processing chains. <code>after_screen_ui</code> receives the display-encoded image plus Screen Overlay UI. Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default. <a href="gameplay-ui-scenes.html">UI actions and scene flow</a> explains how to select these Canvas modes.</p>
 <p>The stage contract supplies a local semantic resource bus. Its <code>inputs</code> decide whether <code>color</code>, <code>depth</code>, <code>normal</code>, <code>motion</code>, <code>light_list</code>, or another handle reaches the effect. <code>light_list</code> is a read-only, camera-local storage buffer: it is published once per Vulkan frame slot from the canonical light snapshot and never allocates or aliases an author-owned buffer. The renderer also gathers <code>requires ∪ modifies</code> from enabled assets early enough to request optional geometry buffers. Both sides must agree: requesting <code>motion</code> or <code>light_list</code> can make the pipeline produce it, while mounting at a stage that does not expose the requested handle still fails the local contract.</p>
 <p>Stable IDs are asset-facing API. A pipeline author can refactor internal pass names and temporary textures while keeping <code>after_opaque</code> or <code>final</code> stable. Renaming a stage changes the scene contract and leaves old slots orphaned until they are remapped.</p>
 <p>Here is one minimal high-level pipeline that exposes all four scopes through current public calls:</p>
@@ -193,7 +193,8 @@
         <span class="n">pipeline</span><span class="o">.</span><span class="n">screen_ui</span><span class="p">()</span>
 </code></pre></div>
 
-<p>Save this Python file under <code>Assets</code>, select <strong>Scope Probe</strong>, and place test objects in Material Queues <code>1000</code>, <code>1100</code>, and <code>1200</code>. Mount the Edge Fade asset from the previous chapter in one probe list at a time:</p>
+<p>Save this Python file under <code>Assets</code>, select <strong>Scope Probe</strong>, and place test objects in Material Queues <code>1000</code>, <code>1100</code>, and <code>1200</code>. The Inspector also includes <code>after_camera_ui</code> and <code>after_screen_ui</code>, which the standard frame tail declares automatically; the four named probes below are the scope experiment. Mount the Edge Fade asset from the previous chapter in one probe list at a time:</p>
+<p>Set each queue through the Material Inspector's <strong>Render Queue</strong> control, which records an explicit override of the shader's default. If you author the <code>.mat</code> JSON directly, set the Render Queue bit (<code>64</code>) in <code>renderStateOverrides</code> as well as <code>renderState.renderQueue</code>. Place the objects near the edges of the Game view, keep them visible, and set Edge Fade's intensity to <code>1.0</code> for this comparison. The shader barely changes pixels near the center, so a centered object is a poor visibility check.</p>
 <table>
 <thead>
 <tr>
@@ -229,13 +230,14 @@
 <li><code>ISOLATE_AND_COMPOSITE</code> suits an isolated contribution that may grow and must return through depth/alpha composition.</li>
 <li><code>ADDITIVE_EXTRACT</code> suits light-like energy added to the parent image.</li>
 <li><code>INLINE</code> uses the current contribution directly.</li>
+<li>Mixing additive and replacement effects uses <code>ORDERED_COMPOSITE</code>: the complete chain executes in Slot/Group order, then geometry-bound color and pixels outside the original coverage are composed separately. Premultiplied alpha preserves both additive light and opaque outlines.</li>
 <li>A layer-scoped stage lets several routes become one image before processing.</li>
 </ul>
 <p>Two overlapping isolated effects still require a pipeline decision. They can run and composite in route order, join a layer first, or move to a later stage. The active pipeline topology records that choice; slot order only settles effects that already share one stage.</p>
-<p>Reproduce overflow and policy conflict with the Scope Probe pipeline:</p>
+<p>Reproduce overflow and ordered effect composition with the Scope Probe pipeline:</p>
 <ol>
 <li>Create the built-in Bloom asset from <strong>Create &gt; Render Effect &gt; Bloom</strong>, mount it at <code>route_probe</code>, and use a bright Queue <code>1000</code> object whose silhouette overlaps a nearer Queue <code>1200</code> object. Bloom uses <code>ADDITIVE_EXTRACT</code>; its light can extend beyond the isolated silhouette and returns through the route's composition policy. Check both the halo outside the source mask and the nearer object's occlusion.</li>
-<li>Mount Edge Fade beside Bloom in the same <code>route_probe</code>. Edge Fade uses <code>MASK_AND_MODIFY</code>, a color-replacement policy. The route-policy merge rejects additive extraction mixed with color replacement and reports the affected Stage in the graph-build diagnostic. Move one asset to <code>layer_probe</code> or a later Composite stage, or remove it, then confirm the graph rebuilds.</li>
+<li>Mount Edge Fade beside Bloom in the same <code>route_probe</code>. Both effects must compile and execute. Set both intensities to zero first: the scene must match the version without effects, including the nearer object's occlusion. Then enable the effects and reverse their Slot order; Bloom followed by Edge Fade processes the glow with Edge Fade, while Edge Fade followed by Bloom extracts light from the modified image. The same ordered-chain rule supports custom Edge Detection and other color-replacement effects. Keep both effects at this route; moving one to a later Stage changes the intended scope.</li>
 <li>For a custom <code>creates</code> resource, mount two effects that both call <code>bus.set()</code> with the same semantic. Current ResourceBus behavior is ordered replacement: the later Slot/Group entry wins, with no duplicate-name diagnostic. Rename one semantic when both results must remain available.</li>
 </ol>
 <h2 id="repeat-mounts">Mounting one asset more than once</h2>
@@ -247,8 +249,8 @@
 <ol>
 <li><strong>Orphan:</strong> Mount Edge Fade at <code>route_probe</code>, save the scene, rename the declaration to <code>route_probe_v2</code>, and save the Python file. <strong>Missing Effect Stages</strong> should list <code>route_probe</code> and its asset reference. The old Slot remains serialized and does not execute. Call <code>stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")</code>, expect <code>1</code>, then save the scene and confirm the warning clears.</li>
 <li><strong>Per-effect failure:</strong> Add <code>requires = {"color", "missing_probe"}</code> to a copy of Edge Fade and put <code>if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")</code> at the start of its <code>setup_passes()</code>. Mount it at <code>route_probe</code>. <strong>Effect Compile Errors</strong> should include <code>&lt;stage&gt;/&lt;slot&gt;</code> and <code>missing_probe</code>. Passes and bus publications made by that failing effect are removed; other Slots can remain visible. The explicit check matters because declarations describe the contract and custom implementations still own their bus validation.</li>
-<li><strong>Last valid topology:</strong> Begin with a visible valid graph, then temporarily declare a duplicate <code>scene_probe</code> stable ID and save. The Editor logs <code>Pipeline topology is invalid</code> and continues showing the last valid Inspector topology/render graph. Remove the duplicate and save again; invalidation allows a fresh build. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.</li>
-<li><strong>Save/reload:</strong> Put two differently named assets in <code>scene_probe</code>, record their top-to-bottom order and enabled states, save the scene, close it, and reopen it. The Inspector must restore the same order and state. For source-control evidence, the scene's serialized <code>effect_slots</code> records each <code>slot_id</code>, <code>stage_id</code>, GUID/path reference, and enabled value. Asset parameter values remain in their separate <code>.effect</code> or <code>.effectgroup</code> documents.</li>
+<li><strong>Last valid topology:</strong> Begin with a visible valid graph, then temporarily declare a duplicate <code>scene_probe</code> stable ID and save. The Inspector shows <code>Pipeline topology is invalid</code>; Console reports one source-owned graph-build diagnostic, and the last valid Inspector topology/render graph remains active. The rejected effect generation is not retried every frame. Remove the duplicate and save again; invalidation allows a fresh build, and successful runtime publication clears its diagnostic. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.</li>
+<li><strong>Save/reload:</strong> Put two differently named assets in <code>scene_probe</code>, record their top-to-bottom order and enabled states, save the scene, close it, and reopen it. The Inspector must restore the same order and state. For source-control evidence, the scene's serialized <code>effect_slots</code> records each <code>slot_id</code>, <code>stage_id</code>, GUID reference, and enabled value. Asset parameter values remain in their separate <code>.effect</code> or <code>.effectgroup</code> documents.</li>
 </ol>
 <h2 id="frame-tail">The built-in frame tail</h2>
 <p>The built-in pipelines use this exact order:</p>
@@ -293,7 +295,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="带景深与色彩处理的 Infernux 体素大陆真实画面" loading="lazy" decoding="async">
-  <figcaption>截图来自本章对应的 Infernux 场景、RenderStack、已挂载 Effect 资产与 MSAA 配置。</figcaption>
+  <figcaption>来自 Infernux 演示项目的画面，用于参考场景级效果。</figcaption>
 </figure>
 
 <h2 id="stack-workflow_1">先在 Editor 中挂载</h2>
@@ -419,8 +421,8 @@
 </tbody>
 </table>
 <p>Scope 属于 <code>EffectStage</code>，不会写进 <code>.effect</code> 资产或 Slot。同一份可复用资产只要满足资源契约和 Route Policy，就可以用于多个 Scope。</p>
-<p>内置 Stage 遵循同样的累加顺序。<code>after_opaque</code> 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。<code>after_sky</code> 加上天空盒。<code>after_transparent</code> 收到完整场景合成，仍在线性 HDR 空间。<code>after_camera_ui</code> 在其上叠加 Camera Overlay UI。<code>final</code> 位于显示编码之前，是后处理链的默认归宿。<code>after_screen_ui</code> 收到显示编码后的图像与 Screen Overlay UI。本课程第一章介绍了这个区别：Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。</p>
-<p>Stage 契约会建立局部语义 Resource Bus。它的 <code>inputs</code> 决定 <code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code> 等 Handle 能否到达 Effect。渲染器也会提前汇总启用资产的 <code>requires ∪ modifies</code>，以便请求可选几何 Buffer。两边必须一致：请求 <code>motion</code> 可以促使管线生成它；挂到没有暴露 <code>motion</code> 的 Stage 时，局部契约仍会失败。</p>
+<p>内置 Stage 遵循同样的累加顺序。<code>after_opaque</code> 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。<code>after_sky</code> 加上天空盒。<code>after_transparent</code> 收到完整场景合成，仍在线性 HDR 空间。<code>after_camera_ui</code> 在其上叠加 Camera Overlay UI。<code>final</code> 位于显示编码之前，是后处理链的默认归宿。<code>after_screen_ui</code> 收到显示编码后的图像与 Screen Overlay UI。Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。<a href="gameplay-ui-scenes.html">UI 操作与场景流程</a>介绍了这两种 Canvas 模式的设置方法。</p>
+<p>Stage 契约会建立局部语义 Resource Bus。它的 <code>inputs</code> 决定 <code>color</code>、<code>depth</code>、<code>normal</code>、<code>motion</code>、<code>light_list</code> 等 Handle 能否到达 Effect。<code>light_list</code> 是只读、每相机的 Storage Buffer：每个 Vulkan Frame Slot 从统一光源快照发布一次，不会分配或别名引用作者自己的 Buffer。渲染器也会提前汇总启用资产的 <code>requires ∪ modifies</code>，以便请求可选几何 Buffer。两边必须一致：请求 <code>motion</code> 或 <code>light_list</code> 可以促使管线准备它；挂到没有暴露对应 Handle 的 Stage 时，局部契约仍会失败。</p>
 <p>稳定 ID 属于面向资产的 API。管线作者可以重构内部 Pass 名称与临时纹理，同时保持 <code>after_opaque</code> 或 <code>final</code> 不变。重命名 Stage 会改变场景契约，旧 Slot 将保持 Orphan 状态，直到完成 Remap。</p>
 <p>下面这条最小高层管线通过当前公开调用暴露四种 Scope：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
@@ -444,7 +446,8 @@
         <span class="n">pipeline</span><span class="o">.</span><span class="n">screen_ui</span><span class="p">()</span>
 </code></pre></div>
 
-<p>把这份 Python 文件保存到 <code>Assets</code>，选择 <strong>Scope Probe</strong>，再让测试物体分别使用 Material Queue <code>1000</code>、<code>1100</code>、<code>1200</code>。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：</p>
+<p>把这份 Python 文件保存到 <code>Assets</code>，选择 <strong>Scope Probe</strong>，再让测试物体分别使用 Material Queue <code>1000</code>、<code>1100</code>、<code>1200</code>。Inspector 还会显示标准帧尾自动声明的 <code>after_camera_ui</code> 和 <code>after_screen_ui</code>；这里比较的是下表中的四个自定义 Probe。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：</p>
+<p>通过 Material Inspector 的 <strong>Render Queue</strong> 控件设置各个队列，这会显式覆盖 Shader 默认值。如果直接编写 <code>.mat</code> JSON，除了 <code>renderState.renderQueue</code>，还要在 <code>renderStateOverrides</code> 中设置 Render Queue 位（<code>64</code>）。比较时把物体放到 Game 视图边缘附近，保持完整可见，并将 Edge Fade 的 intensity 设为 <code>1.0</code>。这个 Shader 对画面中心的像素几乎没有影响，居中的物体不适合用来判断效果是否执行。</p>
 <table>
 <thead>
 <tr>
@@ -480,13 +483,14 @@
 <li><code>ISOLATE_AND_COMPOSITE</code> 适合可能向外扩张、需要通过深度与 Alpha 合回去的隔离贡献。</li>
 <li><code>ADDITIVE_EXTRACT</code> 适合加到父图像上的光能。</li>
 <li><code>INLINE</code> 直接使用当前贡献。</li>
+<li>发光与颜色替换混用时采用 <code>ORDERED_COMPOSITE</code>：完整效果链按 Slot/Group 顺序执行，再分别合成物体覆盖区域内的颜色和区域外的效果像素。预乘 Alpha 同时保留叠加发光与不透明轮廓。</li>
 <li>Layer Scope 可以先把多条 Route 合成一张图，再统一处理。</li>
 </ul>
 <p>两个互相遮挡的隔离效果仍需要管线做出选择：按 Route 顺序处理并合成，先并入 Layer，或移动到更后的 Stage。活动管线拓扑记录这项选择；Slot 顺序只处理已经位于同一 Stage 的 Effect。</p>
-<p>可以用 Scope Probe 管线复现外溢与 Policy 冲突：</p>
+<p>可以用 Scope Probe 管线复现外溢与有序效果组合：</p>
 <ol>
 <li>通过 <strong>Create &gt; Render Effect &gt; Bloom</strong> 创建内置 Bloom，把它挂到 <code>route_probe</code>。让一个明亮的 Queue <code>1000</code> 物体轮廓与更近的 Queue <code>1200</code> 物体重叠。Bloom 使用 <code>ADDITIVE_EXTRACT</code>；光晕可以超出隔离轮廓，再通过 Route 的合成 Policy 返回父图。检查 Source Mask 外的光晕，也要检查近处物体的遮挡。</li>
-<li>在同一 <code>route_probe</code> 中把 Edge Fade 放到 Bloom 旁边。Edge Fade 使用颜色替换型 <code>MASK_AND_MODIFY</code>。Route Policy 合并会拒绝 Additive Extract 与颜色替换混用，并在图构建诊断中列出相关 Stage。把其中一个资产移到 <code>layer_probe</code> 或更后的 Composite Stage，或将其移除，然后确认图可以重建。</li>
+<li>在同一 <code>route_probe</code> 中把 Edge Fade 放到 Bloom 旁边，两者应正常编译和执行。先把两个强度都设为零，画面应与未挂效果时一致，包括前方物体的遮挡。再启用效果并交换 Slot 顺序：Bloom 在前会让 Edge Fade 继续处理光晕，Edge Fade 在前则让 Bloom 从修改后的图像提取发光。这项有序效果链规则也支持自定义 Edge Detection 与其他颜色替换效果。两者应保持在这条 Route；移到其他 Stage 会改变处理范围。</li>
 <li>对于自定义 <code>creates</code> 资源，可以挂入两个都会用同一语义调用 <code>bus.set()</code> 的 Effect。当前 ResourceBus 按顺序替换，后面的 Slot/Group 条目生效，也不会出现同名诊断。两份结果都需要保留时，请重命名其中一个语义。</li>
 </ol>
 <h2 id="repeat-mounts_1">同一资产多次挂载</h2>
@@ -498,8 +502,8 @@
 <ol>
 <li><strong>Orphan：</strong> 在 <code>route_probe</code> 挂入 Edge Fade，保存场景，把声明改名为 <code>route_probe_v2</code>，再保存 Python 文件。<strong>Missing Effect Stages</strong> 应列出 <code>route_probe</code> 及其资产引用。旧 Slot 继续序列化，但不会执行。调用 <code>stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")</code>，预期返回 <code>1</code>；保存场景并确认警告消失。</li>
 <li><strong>单 Effect 失败：</strong> 复制一份 Edge Fade，添加 <code>requires = {"color", "missing_probe"}</code>，并在 <code>setup_passes()</code> 开头加入 <code>if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")</code>。把它挂到 <code>route_probe</code>。<strong>Effect Compile Errors</strong> 应包含 <code>&lt;stage&gt;/&lt;slot&gt;</code> 与 <code>missing_probe</code>。该 Effect 生成的 Pass 与 Bus 发布都会移除，其它 Slot 可以继续显示结果。这里需要显式检查，因为声明负责描述契约，自定义实现仍要负责 Bus 校验。</li>
-<li><strong>上一份有效拓扑：</strong> 先让有效图显示在画面中，再临时重复声明一个 <code>scene_probe</code> 稳定 ID 并保存。Editor 会记录 <code>Pipeline topology is invalid</code>，继续显示上一份有效 Inspector 拓扑与渲染图。删除重复声明并再次保存后，失效机制允许重新构建。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。</li>
-<li><strong>保存与重载：</strong> 在 <code>scene_probe</code> 放入两个名称不同的资产，记下从上到下的顺序与启用状态，保存场景，关闭后重新打开。Inspector 应恢复相同顺序与状态。需要源码管理证据时，可以检查场景序列化字段 <code>effect_slots</code>：每项记录 <code>slot_id</code>、<code>stage_id</code>、GUID/路径引用与启用值。资产参数仍保存在各自的 <code>.effect</code> 或 <code>.effectgroup</code> 文档中。</li>
+<li><strong>上一份有效拓扑：</strong> 先让有效图显示在画面中，再临时重复声明一个 <code>scene_probe</code> 稳定 ID 并保存。Inspector 显示 <code>Pipeline topology is invalid</code>，Console 记录一条指向管线源码的构图诊断，上一份有效 Inspector 拓扑与渲染图继续工作。被拒绝的效果版本不会每帧重试。删除重复声明并再次保存后，失效机制允许重新构建；运行时成功发布新图后会清理这条诊断。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。</li>
+<li><strong>保存与重载：</strong> 在 <code>scene_probe</code> 放入两个名称不同的资产，记下从上到下的顺序与启用状态，保存场景，关闭后重新打开。Inspector 应恢复相同顺序与状态。需要源码管理证据时，可以检查场景序列化字段 <code>effect_slots</code>：每项记录 <code>slot_id</code>、<code>stage_id</code>、GUID 引用与启用值。资产参数仍保存在各自的 <code>.effect</code> 或 <code>.effectgroup</code> 文档中。</li>
 </ol>
 <h2 id="frame-tail_1">内置管线的帧尾</h2>
 <p>内置管线采用以下准确顺序：</p>
@@ -541,10 +545,13 @@
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+<script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
+<script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+<script src="../js/main.js?v=16"></script>
+<script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

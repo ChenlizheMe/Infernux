@@ -284,6 +284,7 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             {".ttf", "font"},
             {".otf", "font"},
             {".txt", "text"},
+            {".json", "json"},
             {".md", "readme"},
             {".mat", "material"},
             {".physicmaterial", "physic_material"},
@@ -1524,50 +1525,32 @@ uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
     return textureId;
 }
 
-uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t cachedMtimeNs)
+uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath)
 {
     if (filePath.empty() || !m_engine)
         return 0;
 
-    double now = m_frameTimeNow;
-
-    uint64_t mtimeNs = cachedMtimeNs;
-    const bool modelChild = filePath.find(infernux::ModelMeshToken) != std::string::npos;
-    if (modelChild && m_assetDatabase) {
-        const auto guid = m_assetDatabase->GetGuidFromPath(infernux::SplitModelMeshReference(filePath).first);
-        const auto mesh = infernux::AssetRegistry::Instance().GetAsset<infernux::InxMesh>(guid);
-        mtimeNs = mesh ? mesh->GetGeneration() : 1;
-    }
-    if (mtimeNs == 0) {
-        auto it = m_modelMtimeCache.find(filePath);
-        if (it != m_modelMtimeCache.end() && (now - it->second.second) < 1.0) {
-            mtimeNs = it->second.first;
-        } else {
-            std::error_code ec;
-            if (!fs::exists(fs::u8path(filePath), ec))
-                return 0;
-            mtimeNs = GetMtimeNs(filePath);
-            m_modelMtimeCache[filePath] = {mtimeNs, now};
-        }
-    }
-    if (mtimeNs == 0)
+    // Project and Inspector read one native publication revision. Material
+    // and texture edits invalidate both consumers even when geometry is fixed.
+    const auto revision = m_engine->GetMeshPreviewDependencyRevision(filePath);
+    if (revision == 0)
         return 0;
 
     const std::string resourceKey = std::string("mesh|") + filePath;
     const uint64_t readyTexture = m_engine->GetMeshPreviewTextureId(resourceKey);
     auto &request = m_modelPreviewRequests[resourceKey];
-    if (readyTexture != 0 && (!modelChild || request.fingerprint == mtimeNs))
+    if (readyTexture != 0 && request.fingerprint == revision)
         return readyTexture;
     if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
         return readyTexture;
 
-    if (request.fingerprint == mtimeNs && m_previewFrameSerial - request.lastRequestFrame < 30)
+    if (request.fingerprint == revision && m_previewFrameSerial - request.lastRequestFrame < 30)
         return 0;
-    request.fingerprint = mtimeNs;
+    request.fingerprint = revision;
     request.lastRequestFrame = m_previewFrameSerial;
     ++m_previewScheduleAttempts;
     ++m_modelPreviewRequestsThisFrame;
-    return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath, mtimeNs);
+    return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath);
 }
 
 uint64_t ProjectPanel::GetModel3dIconId() const
@@ -3043,7 +3026,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             bool isUiPrefab = false;
             if (item.type == FileItem::SubMesh) {
                 if (item.path.find(infernux::ModelMeshToken) != std::string::npos)
-                    displayTexId = GetModelThumbnail(item.path, item.mtimeNs);
+                    displayTexId = GetModelThumbnail(item.path);
                 if (displayTexId == 0)
                     displayTexId = GetTypeIconId(item);
             } else if (item.type == FileItem::SubTexture) {
@@ -3060,13 +3043,13 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 else if (IsMaterialExt(item.ext))
                     displayTexId = GetMaterialThumbnail(item.path, item.mtimeNs);
                 else if (IsModelExt(item.ext))
-                    displayTexId = GetModelThumbnail(item.path, item.mtimeNs);
+                    displayTexId = GetModelThumbnail(item.path);
                 else if (item.ext == ".prefab") {
                     isUiPrefab = IsUiPrefabFile(item.path, item.mtimeNs);
                     if (isUiPrefab)
                         displayTexId = GetModel3dIconId();
                     else
-                        displayTexId = GetModelThumbnail(item.path, item.mtimeNs);
+                        displayTexId = GetModelThumbnail(item.path);
                 }
                 if (displayTexId == 0) {
                     // Scene prefabs waiting for GPU preview → model_3d icon, not file.png.

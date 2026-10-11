@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Build worlds with Python, C++, Vulkan and WebGPU. Infernux is an open-source game engine advancing toward a Neural Network-Native Engine (3N).">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
     <meta property="og:title" content="Infernux · Neural Network-Native Engine">
     <meta property="og:description" content="Build worlds with Python, C++, Vulkan and WebGPU. Infernux is an open-source game engine advancing toward a Neural Network-Native Engine (3N).">
     <meta property="og:url" content="https://infernux-engine.com/">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,17 +22,17 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · Neural Network-Native Engine">
     <meta name="twitter:description" content="Build worlds with Python, C++, Vulkan and WebGPU. Infernux is an open-source game engine advancing toward a Neural Network-Native Engine (3N).">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <title>Infernux · Neural Network-Native Engine</title>
-    <link rel="icon" type="image/png" href="assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
-    <link rel="stylesheet" href="css/fonts.css?v=1">
-    <link rel="stylesheet" href="css/style.css?v=20">
-    <link rel="stylesheet" href="css/home.css?v=1">
+    <link rel="stylesheet" href="css/fonts.css?v=3">
+    <link rel="stylesheet" href="css/style.css?v=27">
+    <link rel="stylesheet" href="css/home.css?v=7">
     <link rel="stylesheet" href="css/docs-search.css?v=3">
-    <link rel="stylesheet" href="css/mission.css?v=2">
+    <link rel="stylesheet" href="css/mission.css?v=3">
     <link rel="stylesheet" href="css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -48,14 +48,13 @@
         <nav class="navbar" aria-label="Primary navigation">
             <div class="nav-container">
                 <a href="#home" class="nav-logo" aria-current="page">
-                    <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                    <span class="logo-icon"><img src="assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                     <span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span>
                 </a>
                 <div class="nav-links" id="primary-navigation">
-                    <a href="start.html" class="nav-priority" data-i18n="nav.start">Start</a>
-                    <a href="learn.html" data-i18n="nav.learn">Learn</a>
+                    <a href="tutorials.html" class="nav-priority" data-i18n="nav.tutorials">Tutorials</a>
                     <a href="wiki/site/en/api/index.html" data-href-en="wiki/site/en/api/index.html" data-href-zh="wiki/site/zh/api/index.html" data-i18n="nav.api">API</a>
-                    <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="changelog.html" data-i18n="nav.changelog">Changelog</a>
+                    <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
                     <a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a>
                     <a href="download.html" data-i18n="nav.download">Download</a>
                     <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
@@ -63,9 +62,6 @@
                     </a>
                 </div>
                 <div class="nav-right">
-                    <button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false">
-                        <i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i>
-                    </button>
                     <button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language">
                         <span id="lang-text">中文</span>
                     </button>
@@ -80,17 +76,28 @@
     <main class="page-shell home-shell" id="main-content">
         <div class="container">
             <section id="home" class="hero-slab">
+                <div class="hero-world" data-fx-world>
+                    <canvas class="hero-world-canvas" role="img" aria-label="A live pixel-art space battle: white INX ships, each flown by a small neural network, trade pulse fire, flak, rail beams and missiles with a drone swarm near a ringed planet and an orbital dock." data-i18n-aria-label="home.world.label"></canvas>
+                    <svg class="world-overlay" aria-hidden="true" preserveAspectRatio="none"></svg>
+                </div>
                 <div class="hero-grid">
+                    <aside class="hero-index-rail" aria-label="Infernux transmission index">
+                        <span class="hero-index-number">041</span>
+                        <span class="hero-index-rule" aria-hidden="true"></span>
+                        <span class="hero-index-label">3N / SIGNAL</span>
+                        <span class="hero-index-label">A-SIDE</span>
+                        <span class="hero-index-counter" aria-hidden="true" data-fx-timecode>00:00:00:00</span>
+                    </aside>
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">NEURAL NETWORK-NATIVE ENGINE · 0.4.1</span>
-                            <span data-i18n="home.hero.kicker">MIT · open source · built around Python</span>
+                            <span class="badge" data-i18n="home.hero.badge">3N · NEURAL NETWORK-NATIVE ENGINE · 0.4.1</span>
+                            <span data-i18n="home.hero.kicker">MIT licensed · open source · written in Python</span>
                         </div>
                         <h1 class="hero-title" data-i18n="home.hero.title">The <span class="accent">forge</span> is lit. Come feed the fire.</h1>
-                        <p class="hero-subtitle" data-i18n="hero.subtitle">Python for gameplay, tools and computation. C++ for the runtime. Vulkan and WebGPU for your worlds.</p>
-                        <p class="hero-description" data-i18n="home.hero.description">Create games with Python, a C++ runtime and Vulkan / WebGPU rendering. Infernux connects scenes, simulation, compute and extensible tools today, with a roadmap toward worlds that neural networks can observe, learn from and act within.</p>
+                        <p class="hero-subtitle" data-i18n="hero.subtitle">Python writes the game. C++ runs it. Vulkan and WebGPU draw it. Neural networks are next to join it.</p>
+                        <p class="hero-description" data-i18n="home.hero.description">Infernux is an open-source game engine you write in Python. Scenes, rendering, physics, compute and editor tools are ready today. Next, it becomes a 3N engine (Neural Network-Native): neural networks that observe, learn and act inside the worlds you build.</p>
                         <div class="hero-actions">
-                            <a href="start.html" class="btn btn-primary">
+                            <a href="tutorials.html" class="btn btn-primary">
                                 <i class="fas fa-rocket" aria-hidden="true"></i>
                                 <span data-i18n="home.hero.start">Start your first project</span>
                             </a>
@@ -101,29 +108,83 @@
                         </div>
                         <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Editors: Windows / Linux · Players: Windows / Linux / Android / Web · 0.4.1</p>
                         <div class="hero-text-links" aria-label="More ways to explore Infernux" data-i18n-aria-label="home.hero.moreActions">
-                            <a href="#runtime-capture" data-i18n="home.hero.browseDemo">See what it renders</a>
+                            <a href="#demo-reel" data-i18n="home.hero.browseDemo">Watch the demo reel</a>
                             <span aria-hidden="true">/</span>
                             <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
                                 <i class="fab fa-github" aria-hidden="true"></i>
                                 <span data-i18n="hero.viewGithub">Read the source</span>
                             </a>
                         </div>
-                        <div class="hero-meta">
-                            <div class="metric-card">
-                        <strong>Vulkan / WebGPU</strong>
-                                <span data-i18n="home.hero.metric.render">Native and browser rendering</span>
-                            </div>
-                            <div class="metric-card">
-                                <strong>Python 3.13</strong>
-                                <span data-i18n="home.hero.metric.python">Gameplay, tools, rendering</span>
-                            </div>
-                            <div class="metric-card">
-                                <strong>MIT</strong>
-                                <span data-i18n="home.hero.metric.license">Free forever, no royalties</span>
-                            </div>
-                        </div>
                     </div>
                     <div class="hero-panel">
+                        <div class="hero-panel-rail" aria-hidden="true">
+                            <span>SIM / ORBIT-041</span>
+                            <i class="hero-panel-rail-line"></i>
+                            <span class="hero-panel-rec">LIVE POLICY</span>
+                        </div>
+                        <section class="nn-inspector" data-nn-panel aria-label="Live browser simulation. Every INX ship reads seven sensor rays and flies with a 16-8-4 policy network: turn, thrust, turn, fire. The panel traces the focused ship." data-i18n-aria-label="home.world.caption">
+                            <header class="nn-head" aria-hidden="true">
+                                <span>POLICY NET · MLP 16-8-4</span>
+                                <b data-nn-agent>INX-00</b>
+                            </header>
+                            <svg class="nn-graph" viewBox="0 0 360 214" aria-hidden="true" data-nn-graph></svg>
+                            <div class="nn-actions" aria-hidden="true">
+                                <div class="nn-action"><span>TURN L</span><svg viewBox="0 0 100 6" preserveAspectRatio="none"><rect class="nn-bar-track" width="100" height="6"/><rect class="nn-bar" data-nn-bar="0" width="0" height="6"/></svg><b data-nn-value="0">0.00</b></div>
+                                <div class="nn-action"><span>THRUST</span><svg viewBox="0 0 100 6" preserveAspectRatio="none"><rect class="nn-bar-track" width="100" height="6"/><rect class="nn-bar" data-nn-bar="1" width="0" height="6"/></svg><b data-nn-value="1">0.00</b></div>
+                                <div class="nn-action"><span>TURN R</span><svg viewBox="0 0 100 6" preserveAspectRatio="none"><rect class="nn-bar-track" width="100" height="6"/><rect class="nn-bar" data-nn-bar="2" width="0" height="6"/></svg><b data-nn-value="2">0.00</b></div>
+                                <div class="nn-action"><span>FIRE</span><svg viewBox="0 0 100 6" preserveAspectRatio="none"><rect class="nn-bar-track" width="100" height="6"/><rect class="nn-bar" data-nn-bar="3" width="0" height="6"/></svg><b data-nn-value="3">0.00</b></div>
+                            </div>
+                            <div class="nn-telemetry" aria-hidden="true">
+                                <span>STEP <b data-nn-step>000000</b></span>
+                                <span>KILLS <b data-nn-reward>0</b></span>
+                                <span>LOSSES <b data-nn-resets>0</b></span>
+                                <svg class="nn-spark" viewBox="0 0 120 24" preserveAspectRatio="none"><polyline data-nn-spark points="0,24 120,24"/></svg>
+                            </div>
+                        </section>
+                    </div>
+                        <div class="engineering-board">
+                            <div class="engineering-board-head">
+                                <span>ENGINEERING / RUNTIME</span>
+                                <span>3N READY LINE</span>
+                            </div>
+                            <div class="hero-meta">
+                                <div class="metric-card">
+                                    <strong>Vulkan / WebGPU</strong>
+                                    <span data-i18n="home.hero.metric.render">Native and browser rendering</span>
+                                </div>
+                                <div class="metric-card">
+                                    <strong>Python 3.13</strong>
+                                    <span data-i18n="home.hero.metric.python">Gameplay, tools, rendering</span>
+                                </div>
+                                <div class="metric-card">
+                                    <strong>MIT</strong>
+                                    <span data-i18n="home.hero.metric.license">Free forever, no royalties</span>
+                                </div>
+                                <article class="github-star-deck" data-github-stars aria-live="polite">
+                                    <div class="github-star-heading">
+                                        <span class="github-live-dot" aria-hidden="true"></span>
+                                        <span class="github-star-kicker">GITHUB SIGNAL</span>
+                                        <i class="fas fa-star" aria-hidden="true"></i>
+                                    </div>
+                                    <strong class="github-star-value" data-github-stars-value>—</strong>
+                                    <span class="github-star-caption" data-github-stars-caption>stars in orbit</span>
+                                    <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener" class="github-star-link">
+                                        <span data-github-stars-link>View repository</span>
+                                        <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                    </a>
+                                </article>
+                            </div>
+                        </div>
+                </div>
+                <div class="hero-signal-band" aria-hidden="true">
+                    <span>WORLD DATA / PYTHON / C++ / GPU</span>
+                    <i></i>
+                    <span>PLAYBACK 041</span>
+                    <b>LIVE</b>
+                </div>
+            </section>
+
+            <section class="starter-console" aria-label="Python starter component">
                         <div class="code-preview">
                             <div class="code-header">
                                 <span class="dot red"></span>
@@ -135,74 +196,185 @@
                                     <span>Copy starter component</span>
                                 </button>
                             </div>
-                            <pre><code id="home-starter-code"><span class="keyword">from</span> Infernux <span class="keyword">import</span> InxComponent, Vector3, serialized_field
+                            <pre><code id="home-starter-code"><span class="keyword">import</span> infernux <span class="keyword">as</span> inx
 
 
-<span class="keyword">class</span> <span class="class-name">Spin</span>(InxComponent):
-    speed: float = serialized_field(default=<span class="number">90.0</span>, range=(<span class="number">0.0</span>, <span class="number">360.0</span>))
+<span class="keyword">class</span> <span class="class-name">Spin</span>(inx.InxComponent):
+    speed: float = inx.serialized_field(default=<span class="number">90.0</span>, range=(<span class="number">0.0</span>, <span class="number">360.0</span>))
 
     <span class="keyword">def</span> <span class="function">update</span>(<span class="param">self</span>, delta_time: float) -&gt; <span class="type">None</span>:
-        <span class="param">self</span>.transform.rotate(Vector3(<span class="number">0.0</span>, <span class="param">self</span>.speed * delta_time, <span class="number">0.0</span>))</code></pre>
+        <span class="param">self</span>.transform.rotate(inx.Vector3(<span class="number">0.0</span>, <span class="param">self</span>.speed * delta_time, <span class="number">0.0</span>))</code></pre>
                             <p class="visually-hidden" id="home-code-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
                         </div>
-                    </div>
-                </div>
             </section>
 
-            <section class="manifesto-strip">
-                <span class="manifesto-tag" data-i18n="home.manifesto.tag">NEURAL NETWORK-NATIVE ENGINE · 3N</span>
-                <p data-i18n="home.manifesto">Neural Network-Native Engine (3N) is our destination: models should work with world data and simulation as part of the engine. Python, batch APIs and CPU/GPU compute form the foundation; portable inference, replay and the full tensor data plane are next.</p>
+            <section class="section n3" id="three-n" aria-labelledby="n3-title">
+                <div class="section-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="home.n3.kicker">WHAT IS 3N</div>
+                        <h2 class="section-title" id="n3-title" data-i18n="home.n3.title">3N is a game engine where neural networks are native.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="home.n3.intro">Most engines treat AI as a plugin, bolted on after the game is finished. A 3N engine is built for models from the first line: the world is data they can read, the simulation is a place where they can act, and the shipped game is somewhere they can run.</p>
+                </div>
+                <div class="n3-board">
+                    <div class="n3-type" aria-hidden="true">
+                        <span class="n3-line"><b>N</b><span>EURAL</span></span>
+                        <span class="n3-line"><b>N</b><span>ETWORK</span></span>
+                        <span class="n3-line"><b>N</b><span>ATIVE</span></span>
+                        <span class="n3-sum"><i></i>3N</span>
+                    </div>
+                    <ol class="n3-list">
+                        <li class="n3-item">
+                            <span class="n3-index" aria-hidden="true">01</span>
+                            <span class="n3-word">NEURAL</span>
+                            <h3 data-i18n="home.n3.neural.title">Models are part of the cast</h3>
+                            <p data-i18n="home.n3.neural.body">A neural network lives in the scene like any component. It observes state, chooses actions, and is debugged in the same editor as your gameplay code.</p>
+                        </li>
+                        <li class="n3-item">
+                            <span class="n3-index" aria-hidden="true">02</span>
+                            <span class="n3-word">NETWORK</span>
+                            <h3 data-i18n="home.n3.network.title">The world speaks in tensors</h3>
+                            <p data-i18n="home.n3.network.body">World data moves between simulation and models in batches, without per-object glue code. Many environments step side by side for training and evaluation.</p>
+                        </li>
+                        <li class="n3-item">
+                            <span class="n3-index" aria-hidden="true">03</span>
+                            <span class="n3-word">NATIVE</span>
+                            <h3 data-i18n="home.n3.native.title">Built in, not bolted on</h3>
+                            <p data-i18n="home.n3.native.body">Inference, replay and deterministic stepping belong to the runtime itself, and ship with the Player on every target platform.</p>
+                        </li>
+                    </ol>
+                </div>
+                <div class="n3-loop">
+                    <div class="n3-loop-head">
+                        <span id="n3-loop-title" data-i18n="home.n3.loop.title">THE 3N LOOP · ONE STEP OF A WORLD WITH A MODEL IN IT</span>
+                        <a href="roadmap.html#tree-neural" data-i18n="home.n3.roadmap">Read the flight plan →</a>
+                    </div>
+                    <ol class="n3-stages" aria-labelledby="n3-loop-title">
+                        <li class="n3-stage is-live">
+                            <span class="n3-stage-code" aria-hidden="true">01</span>
+                            <strong data-i18n="home.n3.loop.observe.name">Observe</strong>
+                            <p data-i18n="home.n3.loop.observe.body">World state leaves the simulation as batched NumPy arrays.</p>
+                            <span class="n3-state" data-i18n="home.n3.state.live">AVAILABLE NOW</span>
+                        </li>
+                        <li class="n3-stage is-planned">
+                            <span class="n3-stage-code" aria-hidden="true">02</span>
+                            <strong data-i18n="home.n3.loop.decide.name">Decide</strong>
+                            <p data-i18n="home.n3.loop.decide.body">A model runs inference on those arrays, inside the shipped Player.</p>
+                            <span class="n3-state" data-i18n="home.n3.state.planned">ON THE ROADMAP</span>
+                        </li>
+                        <li class="n3-stage is-live">
+                            <span class="n3-stage-code" aria-hidden="true">03</span>
+                            <strong data-i18n="home.n3.loop.act.name">Act</strong>
+                            <p data-i18n="home.n3.loop.act.body">Actions write back to the world through the same batch API.</p>
+                            <span class="n3-state" data-i18n="home.n3.state.live">AVAILABLE NOW</span>
+                        </li>
+                        <li class="n3-stage is-planned">
+                            <span class="n3-stage-code" aria-hidden="true">04</span>
+                            <strong data-i18n="home.n3.loop.step.name">Step</strong>
+                            <p data-i18n="home.n3.loop.step.body">The simulation advances deterministically, so any run can be replayed.</p>
+                            <span class="n3-state" data-i18n="home.n3.state.planned">ON THE ROADMAP</span>
+                        </li>
+                    </ol>
+                </div>
             </section>
 
             <section id="thesis" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.thesis.kicker">WHY 3N</div>
+                        <div class="section-kicker" data-i18n="home.thesis.kicker">ROUTE TO 3N</div>
                         <h2 class="section-title" data-i18n="home.thesis.title">A playable world. A learning environment. One engine.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.thesis.intro">A neural-native engine connects the game you build to the data a model needs. Infernux is developing that connection from world representation through simulation and tools to deployment.</p>
+                    <p class="section-intro" data-i18n="home.thesis.intro">Each stage keeps the game playable while the model side grows. Infernux is building the link from world representation through simulation and tools to deployment.</p>
                 </div>
                 <div class="grid-3">
                     <article class="pillar-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.thesis.card1.era">CREATE</div>
+                        <div class="mini-tag" data-i18n="home.thesis.card1.era">STAGE 01 · CREATE</div>
                         <h3 data-i18n="home.thesis.card1.title">Start with a world worth playing</h3>
-                        <p data-i18n="home.thesis.card1.body">Scenes, materials, animation, physics, audio and UI turn an idea into an interactive world. Python lets gameplay and custom tools grow together as your project takes shape.</p>
+                        <p data-i18n="home.thesis.card1.body">Scenes, materials, animation, physics, audio and UI turn an idea into a world people want to play. Python lets gameplay and custom tools grow together as the project takes shape.</p>
                     </article>
                     <article class="pillar-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.thesis.card2.era">CONNECT</div>
+                        <div class="mini-tag" data-i18n="home.thesis.card2.era">STAGE 02 · CONNECT</div>
                         <h3 data-i18n="home.thesis.card2.title">Bring computation into the simulation</h3>
-                        <p data-i18n="home.thesis.card2.body">Batch APIs expose world state to Python. CPU/GPU JIT and Taichi integration support computational gameplay. These are foundations for richer model interaction with the world.</p>
+                        <p data-i18n="home.thesis.card2.body">Batch APIs expose world state to Python, and CPU/GPU JIT with Taichi powers computational gameplay. This is the data path models will use.</p>
                     </article>
                     <article class="pillar-card pillar-card-accent" data-reveal>
-                        <div class="mini-tag" data-i18n="home.thesis.card3.era">ROADMAP</div>
+                        <div class="mini-tag" data-i18n="home.thesis.card3.era">STAGE 03 · NATIVE</div>
                         <h3 data-i18n="home.thesis.card3.title">Make neural systems part of the game</h3>
-                        <p data-i18n="home.thesis.card3.body">The next stages connect model workflows, portable inference, replay and batch environments. The destination is a repeatable route from experimentation to a model-powered game on the target device.</p>
+                        <p data-i18n="home.thesis.card3.body">Next: model workflows, portable inference, deterministic replay and batched environments, ending in a model-powered game that ships on the target device.</p>
                     </article>
                 </div>
             </section>
 
-            <section class="section" id="runtime-capture">
+            <section class="section reel" id="demo-reel">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.demo.kicker">Technology showcase · 0.3.4</div>
-                        <h2 class="section-title" data-i18n="home.demo.title">A voxel continent of 65,536 objects, built in the editor and rendered in the editor.</h2>
+                        <div class="section-kicker" data-i18n="home.reel.kicker">FLIGHT RECORDER · 0.3.4 DEMO REEL</div>
+                        <h2 class="section-title" data-i18n="home.reel.title">Real engine footage. No concept art.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.demo.intro">Not an offline render and not a concept image. Those blocks are ordinary GameObjects going through the ordinary Scene and Hierarchy, with no dedicated batching path. The tilt-shift, fog and colour on top are a RenderStack written in Python.</p>
+                    <p class="section-intro"><span data-i18n="home.reel.intro">Clips from the Infernux 0.3.4 demo reel. Every frame was rendered live by the engine.</span> <a class="reel-source" href="https://www.bilibili.com/video/BV1538P6jELT/?p=2" target="_blank" rel="noopener" data-i18n="home.reel.source">Watch the full reel on Bilibili ↗</a></p>
                 </div>
-                <div class="stack-layout demo-layout">
-                    <div class="demo-frame" data-reveal>
-                        <picture>
-                            <source srcset="assets/demo-0.3.4.avif" type="image/avif">
-                            <img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
-                        </picture>
+                <div class="reel-rack">
+                    <div class="reel-rack-head" aria-hidden="true">
+                        <span>MONITOR WALL · 6 CH</span>
+                        <i></i>
+                        <span>SRC · INFERNUX 0.3.4 DEMO REEL</span>
+                        <b>PLAYBACK</b>
                     </div>
-                    <div class="stack-board" data-reveal>
-                            <h3 data-i18n="home.demo.panel.title">What is in this frame</h3>
-                            <ul class="list-clean">
-                            <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects sharing one mesh and one material. You can still select them in the Hierarchy and edit them. They are no different from a cube you dropped in by hand.</li>
-                            <li data-i18n="home.demo.panel.item2">Tilt-shift focus, distance fog, height fog, colour controls and MSAA all come from one custom RenderStack. Change it in the editor and you see the result immediately.</li>
-                            <li data-i18n="home.demo.panel.item3">The raw 1920 × 1032 capture from the 0.3.4 showcase. Nothing retouched.</li>
-                        </ul>
+                    <div class="reel-grid" data-reel>
+                        <figure class="reel-tape reel-feature">
+                            <div class="reel-screen">
+                                <video muted loop playsinline preload="none" width="852" height="388" poster="assets/reel/space-battle.webp" data-src="assets/reel/space-battle.mp4" aria-hidden="true"></video>
+                                <span class="viewport-hud" aria-hidden="true"><span class="hud-corner hud-tl"></span><span class="hud-corner hud-tr"></span><span class="hud-corner hud-bl"></span><span class="hud-corner hud-br"></span><span class="hud-tag hud-rec"><i></i>PLAY</span><span class="hud-tag hud-cam">TAPE 01 · T+01:24</span></span>
+                                <span class="reel-channel" aria-hidden="true">01</span>
+                                <button class="reel-toggle" type="button" aria-pressed="false" aria-label="Play or pause this clip" data-i18n-aria-label="home.reel.toggle"><span aria-hidden="true"></span></button>
+                            </div>
+                            <figcaption><span class="reel-index" aria-hidden="true">01</span><span data-i18n="home.reel.battle">Large-scale gameplay logic driving high-frequency particle bursts</span></figcaption>
+                        </figure>
+                        <figure class="reel-tape">
+                            <div class="reel-screen">
+                                <video muted loop playsinline preload="none" width="640" height="292" poster="assets/reel/fft-ocean.webp" data-src="assets/reel/fft-ocean.mp4" aria-hidden="true"></video>
+                                <span class="viewport-hud" aria-hidden="true"><span class="hud-corner hud-tl"></span><span class="hud-corner hud-tr"></span><span class="hud-corner hud-bl"></span><span class="hud-corner hud-br"></span><span class="hud-tag hud-rec"><i></i>PLAY</span><span class="hud-tag hud-cam">TAPE 02 · T+00:03</span></span>
+                                <span class="reel-channel" aria-hidden="true">02</span>
+                                <button class="reel-toggle" type="button" aria-pressed="false" aria-label="Play or pause this clip" data-i18n-aria-label="home.reel.toggle"><span aria-hidden="true"></span></button>
+                            </div>
+                            <figcaption><span class="reel-index" aria-hidden="true">02</span><span data-i18n="home.reel.ocean">FFT ocean simulation with a light post-process</span></figcaption>
+                        </figure>
+                        <figure class="reel-tape">
+                            <div class="reel-screen">
+                                <video muted loop playsinline preload="none" width="640" height="292" poster="assets/reel/npr-pipeline.webp" data-src="assets/reel/npr-pipeline.mp4" aria-hidden="true"></video>
+                                <span class="viewport-hud" aria-hidden="true"><span class="hud-corner hud-tl"></span><span class="hud-corner hud-tr"></span><span class="hud-corner hud-bl"></span><span class="hud-corner hud-br"></span><span class="hud-tag hud-rec"><i></i>PLAY</span><span class="hud-tag hud-cam">TAPE 03 · T+00:19</span></span>
+                                <span class="reel-channel" aria-hidden="true">03</span>
+                                <button class="reel-toggle" type="button" aria-pressed="false" aria-label="Play or pause this clip" data-i18n-aria-label="home.reel.toggle"><span aria-hidden="true"></span></button>
+                            </div>
+                            <figcaption><span class="reel-index" aria-hidden="true">03</span><span data-i18n="home.reel.pipeline">A programmable render pipeline rebuilt at runtime</span></figcaption>
+                        </figure>
+                        <figure class="reel-tape">
+                            <div class="reel-screen">
+                                <video muted loop playsinline preload="none" width="640" height="292" poster="assets/reel/rigid-coins.webp" data-src="assets/reel/rigid-coins.mp4" aria-hidden="true"></video>
+                                <span class="viewport-hud" aria-hidden="true"><span class="hud-corner hud-tl"></span><span class="hud-corner hud-tr"></span><span class="hud-corner hud-bl"></span><span class="hud-corner hud-br"></span><span class="hud-tag hud-rec"><i></i>PLAY</span><span class="hud-tag hud-cam">TAPE 04 · T+00:33</span></span>
+                                <span class="reel-channel" aria-hidden="true">04</span>
+                                <button class="reel-toggle" type="button" aria-pressed="false" aria-label="Play or pause this clip" data-i18n-aria-label="home.reel.toggle"><span aria-hidden="true"></span></button>
+                            </div>
+                            <figcaption><span class="reel-index" aria-hidden="true">04</span><span data-i18n="home.reel.coins">1,000 interacting rigid bodies with a custom cross-star bloom</span></figcaption>
+                        </figure>
+                        <figure class="reel-tape">
+                            <div class="reel-screen">
+                                <video muted loop playsinline preload="none" width="640" height="292" poster="assets/reel/animated-cats.webp" data-src="assets/reel/animated-cats.mp4" aria-hidden="true"></video>
+                                <span class="viewport-hud" aria-hidden="true"><span class="hud-corner hud-tl"></span><span class="hud-corner hud-tr"></span><span class="hud-corner hud-bl"></span><span class="hud-corner hud-br"></span><span class="hud-tag hud-rec"><i></i>PLAY</span><span class="hud-tag hud-cam">TAPE 05 · T+00:58</span></span>
+                                <span class="reel-channel" aria-hidden="true">05</span>
+                                <button class="reel-toggle" type="button" aria-pressed="false" aria-label="Play or pause this clip" data-i18n-aria-label="home.reel.toggle"><span aria-hidden="true"></span></button>
+                            </div>
+                            <figcaption><span class="reel-index" aria-hidden="true">05</span><span data-i18n="home.reel.cats">A pack of cats driven by animation state machines and Timeline</span></figcaption>
+                        </figure>
+                        <figure class="reel-tape">
+                            <div class="reel-screen">
+                                <video muted loop playsinline preload="none" width="640" height="292" poster="assets/reel/rendergraph-grid.webp" data-src="assets/reel/rendergraph-grid.mp4" aria-hidden="true"></video>
+                                <span class="viewport-hud" aria-hidden="true"><span class="hud-corner hud-tl"></span><span class="hud-corner hud-tr"></span><span class="hud-corner hud-bl"></span><span class="hud-corner hud-br"></span><span class="hud-tag hud-rec"><i></i>PLAY</span><span class="hud-tag hud-cam">TAPE 06 · T+01:12</span></span>
+                                <span class="reel-channel" aria-hidden="true">06</span>
+                                <button class="reel-toggle" type="button" aria-pressed="false" aria-label="Play or pause this clip" data-i18n-aria-label="home.reel.toggle"><span aria-hidden="true"></span></button>
+                            </div>
+                            <figcaption><span class="reel-index" aria-hidden="true">06</span><span data-i18n="home.reel.rendergraph">RenderGraph sorts passes automatically; split screens compose different effects</span></figcaption>
+                        </figure>
                     </div>
                 </div>
             </section>
@@ -228,7 +400,7 @@
                     </article>
                     <article class="pillar-card" data-reveal>
                         <div class="card-mark"><i class="fas fa-unlock"></i></div>
-                        <h3 data-i18n="home.system.card3.title">3 · Explicit, observable operations</h3>
+                        <h3 data-i18n="home.system.card3.title">3 · Every operation is visible</h3>
                         <p data-i18n="home.system.card3.body">GUID asset identities, editor commands and transactional reload make changes traceable. The optional MCP plugin lets agents use the editor command and undo paths, with inspectable results.</p>
                     </article>
                 </div>
@@ -240,7 +412,7 @@
                         <div class="section-kicker" data-i18n="home.capabilities.kicker">ENGINE FOUNDATIONS · 0.4.1</div>
                         <h2 class="section-title" data-i18n="home.capabilities.title">From an idea to an interactive world.</h2>
                     </div>
-                    <p class="section-intro" data-i18n="home.capabilities.intro">Build on Python gameplay, native rendering and physics, imported content and extensible tools. The 041 development line deepens multi-scene editing, compute, world UI and live plugin authoring.</p>
+                    <p class="section-intro" data-i18n="home.capabilities.intro">Python gameplay, native rendering and physics, imported content and tools you can extend. The 041 line deepens multi-scene editing, compute, world-space UI and live plugin authoring.</p>
                 </div>
                 <div class="capability-grid">
                     <article class="capability-card" data-reveal>
@@ -251,12 +423,12 @@
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.vfx.tag">SUBSYSTEM · GPU VFX</div>
                         <h3 data-i18n="home.capabilities.vfx.title">Particle Graph on the GPU</h3>
-                        <p data-i18n="home.capabilities.vfx.body">GPU Particle Graph: an emitter plus Init, Update and Rendering stages. The typed graph compiles to runtime IR ahead of time, outputs sprites or meshes, and previews in the editor with parameters you can drag while it runs.</p>
+                        <p data-i18n="home.capabilities.vfx.body">GPU Particle Graph: an emitter plus Init, Update and Rendering stages. The typed graph compiles to runtime IR ahead of time, outputs sprites or meshes, and previews live in the editor while you drag its parameters.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.physics.tag">SUBSYSTEM · PHYSICS</div>
                         <h3 data-i18n="home.capabilities.physics.title">Jolt physics</h3>
-                        <p data-i18n="home.capabilities.physics.body">Jolt. Rigid bodies, colliders, scene queries, collision callbacks, layer filtering, transforms kept in sync with the scene. Its job system runs on the engine's own thread pool rather than spawning threads of its own.</p>
+                        <p data-i18n="home.capabilities.physics.body">Jolt: rigid bodies, colliders, scene queries, collision callbacks and layer filtering, with transforms kept in sync with the scene. Its jobs run on the engine's own thread pool instead of spawning threads of their own.</p>
                     </article>
                     <article class="capability-card" data-reveal>
                         <div class="mini-tag" data-i18n="home.capabilities.animation.tag">PREVIEW · ANIMATION</div>
@@ -279,7 +451,7 @@
                         <p data-i18n="home.capabilities.asset.body">Project and package assets share GUID identities and live refresh. Player content stays in Content.inxpkg instead of exposing the authoring directory tree. Engine asset APIs resolve paths through the cooked index, with filesystem access for payloads that need it.</p>
                     </article>
                     <article class="capability-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.capabilities.data.tag">SUBSYSTEM · DATA PLANE</div>
+                        <div class="mini-tag" data-i18n="home.capabilities.data.tag">SUBSYSTEM · DATA PLANE · 3N</div>
                         <h3 data-i18n="home.capabilities.data.title">World data meets computation</h3>
                         <p data-i18n="home.capabilities.data.body">Read and write world properties in batches through NumPy arrays. CPU/GPU JIT and Taichi integration let project scripts run numerical workloads, with target preparation and reusable warmup results.</p>
                     </article>
@@ -291,34 +463,11 @@
                 </div>
             </section>
 
-            <section class="section">
-                <div class="section-head">
-                    <div>
-                        <div class="section-kicker" data-i18n="home.status.kicker">RELEASE AND DEVELOPMENT</div>
-                        <h2 class="section-title" data-i18n="home.status.title">Build today. Follow what comes next.</h2>
-                    </div>
-                    <p class="section-intro" data-i18n="home.status.intro">Published downloads and the active development line are tracked separately. The roadmap describes the further work toward a complete 3N workflow.</p>
-                </div>
-                <div class="status-grid">
-                    <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card1.tag">0.4.1 · PUBLISHED FOUNDATION</div>
-                        <h3 data-i18n="home.status.card1.title">Four platforms, packed assets, plugins</h3>
-                        <div class="status-value">v0.4.1</div>
-                        <p data-i18n="home.status.card1.body">Start with Windows and Linux Editors, Windows/Linux/Android/Web Players, InxPackage assets and Hub-managed environments. Check the download page for available release artifacts.</p>
-                    </article>
-                    <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card2.tag">041 · DEVELOPMENT LINE</div>
-                        <h3 data-i18n="home.status.card2.title">Worlds, compute and live tools</h3>
-                        <div class="status-value" data-i18n="home.status.card2.value">041</div>
-                        <p data-i18n="home.status.card2.body">Multi-scene editing, model import, CPU/GPU JIT, physics queries and world UI grow alongside plugin hot reload, Player type registration and platform-specific build settings. Read the branch changelog for the full scope.</p>
-                    </article>
-                </div>
-            </section>
 
             <section class="cta-panel">
                 <div>
-                    <h2 data-i18n="cta.title">Bring your world to Infernux.</h2>
-                    <p class="copy-body" data-i18n="cta.desc">Create a game, build a tool or explore neural simulation. Infernux is open source under MIT, with a public roadmap and a community shaping its next steps.</p>
+                    <h2 data-i18n="cta.title">Bring your world into the forge.</h2>
+                    <p class="copy-body" data-i18n="cta.desc">Make a game, build a tool or explore neural simulation. Infernux is MIT-licensed, with a public roadmap and a community shaping what comes next.</p>
                 </div>
                 <div class="cta-buttons">
                     <a href="download.html" class="btn btn-primary">
@@ -329,7 +478,7 @@
                         <i class="fab fa-github"></i>
                         <span data-i18n="cta.star">Star on GitHub</span>
                     </a>
-                    <a href="start.html" class="btn btn-secondary" data-i18n="home.hero.docs">Get started</a>
+                    <a href="tutorials.html" class="btn btn-secondary" data-i18n="home.hero.docs">Get started</a>
                 </div>
             </section>
         </div>
@@ -340,17 +489,16 @@
             <div class="footer-content">
                 <div class="footer-brand">
                     <div class="nav-logo">
-                        <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                        <span class="logo-icon"><img src="assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                         <span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span>
                     </div>
-                    <p data-i18n="footer.tagline">A Python-first game engine on the road to a Neural Network-Native Engine. Open source under MIT.</p>
+                    <p data-i18n="footer.tagline">A game engine you write in Python, built toward a Neural Network-Native future. Open source under MIT.</p>
                 </div>
                 <div class="footer-links">
                     <div class="footer-column">
                         <h4 data-i18n="footer.resources">Resources</h4>
-                        <a href="start.html" data-i18n="nav.start">Start</a>
-                        <a href="learn.html" data-i18n="nav.learn">Learn</a>
-                        <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="changelog.html" data-i18n="nav.changelog">Changelog</a>
+                        <a href="tutorials.html" class="nav-priority" data-i18n="nav.tutorials">Tutorials</a>
+                        <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
                         <a href="https://github.com/ChenlizheMe/Infernux#readme" target="_blank" rel="noopener">README</a>
                         <a href="code-signing-policy.html">Code signing policy</a>
                     </div>
@@ -366,11 +514,11 @@
         </div>
     </footer>
 
-    <script src="js/i18n-index.js?v=2"></script>
-    <script src="js/i18n.js?v=19"></script>
-    <script src="js/main.js?v=15"></script>
+    <script src="js/i18n-index.js?v=6"></script>
+    <script src="js/i18n.js?v=21"></script>
+    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=16"></script><script src="js/motion.js?v=5"></script>
     <script src="js/docs-search.js?v=6"></script>
-    <script src="js/home.js?v=1"></script>
+    <script src="js/home.js?v=2"></script>
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -395,7 +543,7 @@
           "url": "https://infernux-engine.com/",
           "downloadUrl": "https://github.com/ChenlizheMe/Infernux/releases/latest",
           "codeRepository": "https://github.com/ChenlizheMe/Infernux",
-          "screenshot": "https://infernux-engine.com/assets/demo-0.3.4.webp",
+          "screenshot": "https://infernux-engine.com/assets/reel/space-battle.webp",
           "sameAs": "https://github.com/ChenlizheMe/Infernux",
           "isAccessibleForFree": true
         }

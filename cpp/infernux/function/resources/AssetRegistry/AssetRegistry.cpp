@@ -6,6 +6,7 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 
 #include <platform/filesystem/InxPath.h>
 
@@ -61,6 +62,7 @@ void AssetRegistry::Shutdown()
     m_cpuEvictionCount = 0;
     m_runtimeMeshSerial = 0;
     m_assetMutationGenerations.clear();
+    m_assetContentGenerations.clear();
     m_assetRuntimeVersions.clear();
     m_meshGpuViewResidency.clear();
     m_assetRuntimeTypes.clear();
@@ -68,6 +70,7 @@ void AssetRegistry::Shutdown()
     m_pendingTextureStagingLoads.clear();
     m_loaders.clear();
     m_builtinMaterials.clear();
+    m_runtimeMaterials.clear();
     m_assetDb.reset();
     m_ownerThread = {};
     m_initialized = false;
@@ -173,6 +176,8 @@ void AssetRegistry::RemoveEntry(AssetEntryMap::iterator entry)
 
 bool AssetRegistry::ReloadAsset(const std::string &guid)
 {
+    ++m_assetContentGenerations[guid];
+    ++m_assetMutationGenerations[guid];
     auto it = m_loadedAssets.find(guid);
     if (it == m_loadedAssets.end())
         return false;
@@ -204,9 +209,47 @@ bool AssetRegistry::ReloadAsset(const std::string &guid)
     it->second.cpuBytes = updatedBytes;
     it->second.lastAccessSerial = ++m_accessSerial;
     it->second.version = NextRuntimeVersion(guid);
-    ++m_assetMutationGenerations[guid];
     (void)TrimCpuBudget();
     return true;
+}
+
+void AssetRegistry::PublishShader(const std::string &guid, std::shared_ptr<ShaderAsset> candidate)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Shader publication requires the initialized registry owner thread");
+    if (guid.empty() || !candidate || !candidate->HasVariant(ShaderCompileTarget::Forward) ||
+        (candidate->shaderType != "vertex" && candidate->shaderType != "fragment"))
+        throw std::invalid_argument("Shader publication requires a compiled imported stage");
+    const auto path = m_assetDb->GetPathFromGuid(guid);
+    if (path.empty() || FoldFilesystemPathCase(ResolveFilesystemPath(path)) !=
+                            FoldFilesystemPathCase(ResolveFilesystemPath(candidate->filePath)))
+        throw std::invalid_argument("Shader candidate does not belong to its imported GUID");
+    auto entry = m_loadedAssets.find(guid);
+    if (entry != m_loadedAssets.end() && entry->second.type != ResourceType::Shader)
+        throw std::invalid_argument("Shader publication conflicts with the resident resource type");
+    const size_t previousBytes = entry == m_loadedAssets.end() ? 0 : entry->second.cpuBytes;
+    const size_t remainingBytes = m_totalCpuBytes - previousBytes;
+    const size_t bytes = candidate->GetRuntimeMemoryBytes();
+    if (bytes > std::numeric_limits<size_t>::max() - remainingBytes)
+        throw std::overflow_error("Shader publication CPU residency byte total overflow");
+    const auto version = NextRuntimeVersion(guid);
+    if (entry == m_loadedAssets.end()) {
+        m_loadedAssets.emplace(guid, AssetEntry{RuntimeAssetPayload(candidate), ResourceType::Shader, version, bytes,
+                                                ++m_accessSerial, 0});
+    } else {
+        auto resident = entry->second.payload.Get<ShaderAsset>();
+        static_assert(std::is_nothrow_move_assignable_v<ShaderAsset>);
+        if (resident != candidate)
+            *resident = std::move(*candidate);
+        entry->second.cpuBytes = bytes;
+        entry->second.version = version;
+        entry->second.lastAccessSerial = ++m_accessSerial;
+    }
+    m_assetRuntimeTypes[guid] = ResourceType::Shader;
+    m_totalCpuBytes = remainingBytes + bytes;
+    ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
+    (void)TrimCpuBudget();
 }
 
 void AssetRegistry::UpdateMeshPositions(const std::string &guid, size_t first, const std::vector<glm::vec3> &positions,
@@ -299,6 +342,7 @@ void AssetRegistry::DestroyRuntimeMesh(const std::string &guid)
         graph.RemoveRuntimeDependency(dependentGuid, guid);
     RemoveEntry(entry);
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     graph.RemoveAsset(guid);
 }
 
@@ -324,6 +368,7 @@ void AssetRegistry::PublishMesh(const std::string &guid, InxMesh replacement)
     entry->second.lastAccessSerial = ++m_accessSerial;
     m_totalCpuBytes = remainingBytes + bytes;
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Mesh, AssetEvent::RuntimeModified);
     (void)TrimCpuBudget();
 }
@@ -331,6 +376,7 @@ void AssetRegistry::PublishMesh(const std::string &guid, InxMesh replacement)
 void AssetRegistry::InvalidateAsset(const std::string &guid)
 {
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     auto it = m_loadedAssets.find(guid);
     if (it != m_loadedAssets.end()) {
         RemoveEntry(it);
@@ -340,6 +386,7 @@ void AssetRegistry::InvalidateAsset(const std::string &guid)
 void AssetRegistry::RemoveAsset(const std::string &guid)
 {
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     const auto entry = m_loadedAssets.find(guid);
     if (entry != m_loadedAssets.end())
         RemoveEntry(entry);
@@ -358,6 +405,7 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginLoadAsset(const std::string
     ticket->m_resourceType = type;
     ticket->m_ownerThread = m_ownerThread;
     ticket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
+    ticket->m_expectedContentGeneration = m_assetContentGenerations[guid];
 
     const auto cached = m_loadedAssets.find(guid);
     if (cached != m_loadedAssets.end()) {
@@ -420,7 +468,8 @@ bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &t
     }
     const bool staleAfterMutation = m_assetMutationGenerations[ticket->m_guid] != ticket->m_expectedMutationGeneration;
     const bool canUseStaleUnloadedPayload =
-        allowStaleIfUnloaded && m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end();
+        allowStaleIfUnloaded && m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end() &&
+        m_assetContentGenerations[ticket->m_guid] == ticket->m_expectedContentGeneration;
     if (staleAfterMutation && !canUseStaleUnloadedPayload) {
         ticket->m_rejected = true;
         throw std::logic_error("Asset load ticket is stale after a newer registry mutation");
@@ -571,6 +620,7 @@ void AssetRegistry::UpdateLoadedAssetPath(const std::string &guid, const std::st
         throw std::invalid_argument("AssetRegistry::UpdateLoadedAssetPath requires GUID and destination path");
 
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     auto it = m_loadedAssets.find(guid);
     if (it == m_loadedAssets.end())
         return;
@@ -674,8 +724,17 @@ void AssetRegistry::InitializeBuiltinMaterials()
 }
 
 // =============================================================================
-// GetAllMaterials — builtin + loaded from disk
+// GetAllMaterials — builtin + loaded assets + live runtime instances
 // =============================================================================
+
+void AssetRegistry::RegisterRuntimeMaterial(const std::shared_ptr<InxMaterial> &material)
+{
+    if (std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Runtime material registration requires the AssetRegistry owner thread");
+    if (!material)
+        throw std::invalid_argument("Runtime material registration requires a material");
+    m_runtimeMaterials[material.get()] = material;
+}
 
 std::vector<std::shared_ptr<InxMaterial>> AssetRegistry::GetAllMaterials() const
 {
@@ -701,6 +760,16 @@ std::vector<std::shared_ptr<InxMaterial>> AssetRegistry::GetAllMaterials() const
         }
     }
 
+    for (auto it = m_runtimeMaterials.begin(); it != m_runtimeMaterials.end();) {
+        auto material = it->second.lock();
+        if (!material) {
+            it = m_runtimeMaterials.erase(it);
+            continue;
+        }
+        if (seen.insert(material.get()).second)
+            result.push_back(std::move(material));
+        ++it;
+    }
     return result;
 }
 

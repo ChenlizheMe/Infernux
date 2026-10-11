@@ -1,0 +1,745 @@
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/resources/InxResource/InxResourceMeta.h>
+#include <function/resources/ShaderAsset/ShaderInfoSchema.h>
+
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <string_view>
+#include "ShaderParserRecoveryTests.h"
+
+namespace
+{
+infernux::InxShaderLoader MakeCompiler()
+{
+    return infernux::InxShaderLoader(true, false, false, false, false, true, false, false, false, false);
+}
+
+std::string ReadText(const std::string &path)
+{
+    std::ifstream stream(std::filesystem::u8path(path), std::ios::binary);
+    assert(stream && "shader test resource must exist");
+    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
+void RequireCompiles(infernux::InxShaderLoader &compiler, const std::string &source, const std::string &path)
+{
+    infernux::InxResourceMeta metadata;
+    // Virtual sources share the declared shader root. Resolving a bare test
+    // filename against CTest's working directory would recursively index the
+    // entire build tree, including unrelated caches and junctions.
+    const auto sourcePath =
+        (std::filesystem::u8path(INFERNUX_TEST_SHADER_ROOT) / std::filesystem::u8path(path)).generic_u8string();
+    compiler.CreateMeta(source.data(), source.size(), sourcePath, metadata);
+    const auto compiled = compiler.Compile(source.c_str(), source.size(), metadata);
+    if (!compiled || compiled->empty()) {
+        std::cerr << "Structured shader compilation failed for " << path << '\n';
+        assert(false && "structured shader failed to compile");
+    }
+}
+
+void RequireLinkedProgramCompiles(infernux::InxShaderLoader &compiler, const std::string &vertexPath,
+                                  const std::string &fragmentPath)
+{
+    const auto compiled =
+        compiler.CompileLinkedForward(ReadText(vertexPath), vertexPath, ReadText(fragmentPath), fragmentPath);
+    if (!compiled.IsValid()) {
+        std::cerr << "Structured shader program compilation failed for " << vertexPath << " + " << fragmentPath << '\n';
+        for (const auto &error : compiled.errors)
+            std::cerr << "  " << error << '\n';
+        assert(false && "structured shader program failed to compile");
+    }
+}
+
+void TestProjectDeferredRegistry(infernux::InxShaderLoader &compiler)
+{
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("infernux-project-shading-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup
+    {
+        std::filesystem::path root;
+        ~Cleanup()
+        {
+            infernux::InxShaderLoader::SetProjectShaderSearchPaths({});
+            std::error_code error;
+            std::filesystem::remove_all(root, error);
+        }
+    } cleanup{root};
+    const auto project = root / "Assets";
+    const auto modelPath = project / "Models" / "band.shadingmodel";
+    const auto mathPath = project / "Libraries" / "band.glsl";
+    std::filesystem::create_directories(modelPath.parent_path());
+    std::filesystem::create_directories(mathPath.parent_path());
+    const auto write = [](const auto &path, const std::string &source) {
+        std::ofstream stream(path);
+        stream << source;
+        assert(stream.good());
+    };
+    const std::string model = R"(
+ShadingModelInfo { Name "Tests/ProjectBand" Imports ["Tests/BandMath"] }
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(tutorialBand(s.albedo), s.alpha);
+}
+)";
+    write(modelPath, model);
+    write(mathPath, R"(
+ShaderInfo { Name "Tests/BandMath" }
+vec3 tutorialBand(vec3 value) { return value * 0.25; }
+)");
+    const auto deferredPath =
+        (std::filesystem::u8path(INFERNUX_TEST_SHADER_ROOT) / "deferred_lighting.frag").generic_u8string();
+    const auto deferredSource = ReadText(deferredPath);
+    const auto before = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
+    assert(before.find("Deferred shading model: Tests/ProjectBand") == std::string::npos);
+
+    // The root program lives in built-ins, while its model and helper are in
+    // two sibling project folders. Registering a project must clear warm maps.
+    infernux::InxShaderLoader::SetProjectShaderSearchPaths({project.generic_u8string()});
+    const auto generated = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
+    assert(generated.find("Deferred shading model: Tests/ProjectBand") != std::string::npos);
+    assert(generated.find("case 2131356723u: _inx_shading_2131356723(") != std::string::npos);
+    assert(generated.find("value * 0.25") != std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+
+    // Invalidate the helper's nested folder, not the built-in shader folder.
+    write(mathPath, R"(
+ShaderInfo { Name "Tests/BandMath" }
+vec3 tutorialBand(vec3 value) { return value * 0.75; }
+)");
+    infernux::InxShaderLoader::InvalidateDirectoryCache(mathPath.parent_path().generic_u8string());
+    const auto updated = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
+    assert(updated.find("value * 0.75") != std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+
+    // The actual builtin Deferred stage must use the same project-first model
+    // resolution as linked material variants, even for a builtin model Name.
+    const auto unlitOverride = project / "Models" / "unlit.shadingmodel";
+    write(unlitOverride, R"(
+ShadingModelInfo { Name "Unlit" }
+vec3 inxProjectUnlitMarker(vec3 value) { return value * 0.375; }
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(inxProjectUnlitMarker(s.albedo), s.alpha);
+}
+)");
+    infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
+    const auto overridden = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
+    const std::string unlitHeader = "Deferred shading model: Unlit";
+    const auto unlitBegin = overridden.find(unlitHeader);
+    assert(unlitBegin != std::string::npos);
+    assert(overridden.find(unlitHeader, unlitBegin + unlitHeader.size()) == std::string::npos);
+    const auto nextModel = overridden.find("Deferred shading model:", unlitBegin + unlitHeader.size());
+    const auto unlitBody = overridden.substr(unlitBegin, nextModel - unlitBegin);
+    assert(unlitBody.find("inxProjectUnlitMarker(s.albedo)") != std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+    const bool removedOverride = std::filesystem::remove(unlitOverride);
+    assert(removedOverride);
+    infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
+    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
+               .find("inxProjectUnlitMarker") == std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+
+    const auto packages = root / "Packages";
+    std::filesystem::create_directories(packages);
+    write(packages / "duplicate.shadingmodel", model);
+    infernux::InxShaderLoader::SetProjectShaderSearchPaths({project.generic_u8string(), packages.generic_u8string()});
+    bool rejectedDuplicate = false;
+    try {
+        compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
+    } catch (const std::runtime_error &error) {
+        const std::string message = error.what();
+        rejectedDuplicate = message.find("Duplicate project shader declaration 'shadingmodel/Tests/ProjectBand'") !=
+                                std::string::npos &&
+                            message.find("duplicate.shadingmodel") != std::string::npos &&
+                            message.find("band.shadingmodel") != std::string::npos;
+    }
+    assert(rejectedDuplicate);
+
+    // Cooked Player inputs retain the same names under GUID artifact paths.
+    const auto artifacts = root / "Library" / "Artifacts" / "Blob";
+    std::filesystem::create_directories(artifacts);
+    write(artifacts / "11111111111111111111111111111111.shadingmodel", model);
+    write(artifacts / "22222222222222222222222222222222.glsl", ReadText(mathPath.generic_u8string()));
+    infernux::InxShaderLoader::SetProjectShaderSearchPaths({(root / "Library" / "Artifacts").generic_u8string()});
+    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
+               .find("Deferred shading model: Tests/ProjectBand") != std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+
+    // A new project must not inherit the previous project's dispatch table.
+    infernux::InxShaderLoader::SetProjectShaderSearchPaths({});
+    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
+               .find("Deferred shading model: Tests/ProjectBand") == std::string::npos);
+
+    // Local model descriptors are keyed by resolved source, not just Name.
+    const auto localA = root / "LocalA";
+    const auto localB = root / "LocalB";
+    std::filesystem::create_directories(localA);
+    std::filesystem::create_directories(localB);
+    const std::string localHeader = "ShadingModelInfo { Name \"Tests/LocalModel\" }\n";
+    write(localA / "local.shadingmodel",
+          localHeader + "void shading(in SurfaceData s, out vec4 color) { color = vec4(0.25); }\n");
+    write(localB / "local.shadingmodel",
+          localHeader + "void shading(in SurfaceData s, out vec4 color) { color = vec4(0.75); }\n");
+    const std::string surface = R"(
+ShaderInfo { Name "Tests/LocalSurface" ShadingModel "Tests/LocalModel" }
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)";
+    assert(compiler.PrepareAuthoredStageGlsl(surface, (localA / "surface.frag").generic_u8string())
+               .find("color = vec4(0.25)") != std::string::npos);
+    assert(compiler.PrepareAuthoredStageGlsl(surface, (localB / "surface.frag").generic_u8string())
+               .find("color = vec4(0.75)") != std::string::npos);
+}
+} // namespace
+
+int main(int argc, char **argv)
+try {
+#ifdef _WIN32
+    // Keep failed assertions in the CI log instead of a desktop CRT dialog.
+    _set_error_mode(_OUT_TO_STDERR);
+#endif
+    if (argc == 2 && std::string_view(argv[1]) == "--parser-case-count") {
+        std::cout << std::size(shader_parser_tests::Cases) << '\n';
+        return 0;
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "--parser-case") {
+        std::cout << "PARSER_READY" << std::endl;
+        shader_parser_tests::CheckCase(std::stoul(argv[2]));
+        return 0;
+    }
+    for (size_t index = 0; index < std::size(shader_parser_tests::Cases); ++index)
+        shader_parser_tests::CheckCase(index);
+    const std::string richSource = R"(
+// ShaderInfo { Name "Ignored/InComment" }
+ShaderInfo
+{
+    Name "Tests/WaveSurface"
+    ShadingModel "PBR"
+    Surface Opaque
+    Queue 2050
+    Cull Back
+    DepthWrite On
+    CastShadows On
+    ReceiveShadows Off
+    Imports ["Lib Common", "Lib Color"]
+    Capabilities [ForwardPlus, Deferred, Shadow]
+
+    Properties
+    {
+        Float amplitude = 0.35 Range(0.0, 4.0)
+        Color crestColor = [0.2, 0.75, 0.9, 1.0] HDR
+        Texture2D normalMap = Normal Internal
+    }
+
+    Inputs
+    {
+        Smooth Float2 waveUV Semantic(TexCoord0)
+        Flat Float waveBand Space(World)
+    }
+}
+
+// void main() must not count.
+void surface (out SurfaceData surface) { }
+)";
+
+    const infernux::ShaderInfoDocument info = infernux::ParseShaderInfo(richSource);
+    assert(info.IsValid());
+    assert(info.kind == infernux::ShaderInfoKind::Shader);
+    assert(info.name == "Tests/WaveSurface");
+    assert(info.shadingModel == "PBR");
+    assert(info.renderQueue == 2050);
+    assert(info.castShadows == true);
+    assert(info.receiveShadows == false);
+    assert(info.imports.size() == 2);
+    assert(info.capabilities.size() == 3);
+    assert(info.properties.size() == 3);
+    assert(info.properties[0].range.has_value());
+    assert(info.properties[0].range->minimum == 0.0);
+    assert(info.properties[1].hdr);
+    assert(info.properties[2].internal);
+    assert(info.properties[1].defaultValue == "[0.2, 0.75, 0.9, 1.0]");
+    assert(info.inputs.size() == 2);
+    assert(info.inputs[0].semantic == "TexCoord0");
+    assert(info.inputs[1].interpolation == "Flat");
+    assert(info.inputs[1].space == "World");
+
+    const std::string stripped = infernux::StripShaderInfoDeclaration(richSource, info);
+    assert(stripped.size() == richSource.size());
+    assert(std::count(stripped.begin(), stripped.end(), '\n') ==
+           std::count(richSource.begin(), richSource.end(), '\n'));
+    assert(stripped.find("Tests/WaveSurface") == std::string::npos);
+    assert(stripped.find("void surface") != std::string::npos);
+
+    const infernux::ShaderEntryPointSet entries = infernux::DetectShaderEntryPoints(richSource);
+    assert(entries.surface);
+    assert(!entries.main);
+    assert(!entries.vertex);
+    assert(!entries.shading);
+
+    auto compiler = MakeCompiler();
+    infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
+
+    const std::string shadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/SingleContract"
+    Imports ["Lighting"]
+    Requires [Lighting]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo + s.emission, s.alpha);
+}
+)";
+    const auto shadingInfo = infernux::ParseShaderInfo(shadingModelSource);
+    assert(shadingInfo.IsValid());
+    assert(shadingInfo.kind == infernux::ShaderInfoKind::ShadingModel);
+    assert(shadingInfo.imports == std::vector<std::string>{"Lighting"});
+    assert(shadingInfo.requirements == std::vector<std::string>{"Lighting"});
+    const auto shadingDescriptor = compiler.ParseShaderSource(shadingModelSource, "SingleContract.shadingmodel");
+    assert(shadingDescriptor.errors.empty());
+    assert(shadingDescriptor.hasShadingFunc);
+    assert(shadingDescriptor.NeedsLightingUBO());
+    assert(shadingDescriptor.unsupported.empty());
+    assert(shadingDescriptor.FindTarget("shading") != nullptr);
+
+    const auto defaultModelInfo = infernux::ParseShaderInfo(shadingModelSource);
+    assert(defaultModelInfo.IsValid());
+    assert(defaultModelInfo.capabilities.empty());
+    assert(defaultModelInfo.unsupported.empty());
+
+    const std::string forwardOnlyShadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/ForwardOnly"
+    Unsupported [Deferred]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto forwardOnlyDescriptor =
+        compiler.ParseShaderSource(forwardOnlyShadingModelSource, "ForwardOnly.shadingmodel");
+    assert(forwardOnlyDescriptor.errors.empty());
+    assert(forwardOnlyDescriptor.unsupported == std::vector<std::string>{"Deferred"});
+    assert(infernux::ParseShaderInfo(forwardOnlyShadingModelSource).IsValid());
+
+    const std::string unknownUnsupportedSource = R"(
+ShadingModelInfo {
+    Name "Tests/UnknownUnsupported"
+    Unsupported [Forward]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto unknownUnsupportedDescriptor =
+        compiler.ParseShaderSource(unknownUnsupportedSource, "UnknownUnsupported.shadingmodel");
+    assert(std::any_of(unknownUnsupportedDescriptor.errors.begin(), unknownUnsupportedDescriptor.errors.end(),
+                       [](const std::string &error) {
+                           return error.find("Unsupported currently accepts only Deferred") != std::string::npos;
+                       }));
+
+    const std::string misplacedUnsupportedSource = R"(
+ShaderInfo {
+    Name "Tests/MisplacedUnsupported"
+    Unsupported [Deferred]
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+}
+)";
+    const auto misplacedUnsupportedDescriptor =
+        compiler.ParseShaderSource(misplacedUnsupportedSource, "MisplacedUnsupported.frag");
+    assert(std::any_of(
+        misplacedUnsupportedDescriptor.errors.begin(), misplacedUnsupportedDescriptor.errors.end(),
+        [](const std::string &error) { return error.find("only valid in ShadingModelInfo") != std::string::npos; }));
+
+    const std::string invalidCapabilityShadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/InvalidCapability"
+    Capabilities [Deferred]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto invalidCapabilityDescriptor =
+        compiler.ParseShaderSource(invalidCapabilityShadingModelSource, "InvalidCapability.shadingmodel");
+    assert(!invalidCapabilityDescriptor.errors.empty());
+    assert(std::any_of(
+        invalidCapabilityDescriptor.errors.begin(), invalidCapabilityDescriptor.errors.end(),
+        [](const std::string &error) { return error.find("does not accept Capabilities") != std::string::npos; }));
+
+    const std::string invalidEntryShadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/InvalidEntries"
+    Entry Forward evaluateForward
+}
+void evaluateForward(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto invalidEntryDescriptor =
+        compiler.ParseShaderSource(invalidEntryShadingModelSource, "InvalidEntries.shadingmodel");
+    assert(!invalidEntryDescriptor.errors.empty());
+    assert(
+        std::any_of(invalidEntryDescriptor.errors.begin(), invalidEntryDescriptor.errors.end(),
+                    [](const std::string &error) { return error.find("does not accept Entry") != std::string::npos; }));
+
+    const std::string standalonePassSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/StandalonePass"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D sourceTexture
+        Texture2DUInt objectMetadata
+    }
+    PushConstants settings {
+        Float intensity
+        Float4 tint
+    }
+    Inputs {
+        Float2 inputUv
+    }
+    Outputs {
+        Float4 outputColor
+    }
+}
+void main() {
+    outputColor = texture(sourceTexture, inputUv) * settings.tint * settings.intensity;
+}
+)";
+    const auto standaloneInfo = infernux::ParseShaderInfo(standalonePassSource);
+    assert(standaloneInfo.IsValid());
+    assert(standaloneInfo.resources.size() == 2);
+    assert(standaloneInfo.resources[1].type == "Texture2DUInt");
+    assert(standaloneInfo.pushConstants.has_value());
+    assert(standaloneInfo.pushConstants->fields.size() == 2);
+    assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());
+    RequireCompiles(compiler, standalonePassSource, "StandalonePass.frag");
+    const auto crossPlatformGlsl = compiler.PrepareAuthoredStageGlsl(standalonePassSource, "StandalonePass.frag");
+    assert(!crossPlatformGlsl.empty());
+    assert(crossPlatformGlsl.find("ShaderInfo") == std::string::npos);
+    assert(crossPlatformGlsl.find("layout(location = 0) in vec2 inputUv") != std::string::npos);
+    assert(crossPlatformGlsl.find("layout(location = 0) out vec4 outputColor") != std::string::npos);
+
+    const std::string linkedSurfaceStandalone = R"(
+#version 450
+ShaderInfo {
+        Name "Tests/RuntimeStandaloneSurface"
+    ShadingModel "Unlit"
+    Inputs {
+        Smooth Float crestFactor
+        Smooth Float normalizedHeight
+    }
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    s.albedo = vec3(fragmentInput.crestFactor, fragmentInput.normalizedHeight, 0.0);
+}
+)";
+    RequireCompiles(compiler, linkedSurfaceStandalone, "RuntimeStandaloneSurface.frag");
+
+    const std::string linkedVertexStandalone = R"(
+#version 450
+ShaderInfo {
+        Name "Tests/RuntimeStandaloneVertex"
+    Outputs {
+        Smooth Float crestFactor
+        Smooth Float normalizedHeight
+    }
+}
+VertexOutput vertex(inout VertexInput v) {
+    VertexOutput result;
+    result.crestFactor = v.position.y;
+    result.normalizedHeight = v.position.y;
+    return result;
+}
+)";
+    RequireCompiles(compiler, linkedVertexStandalone, "RuntimeStandaloneVertex.vert");
+
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(INFERNUX_TEST_SHADER_ROOT)) {
+        if (!entry.is_regular_file() || entry.path().string().find("_templates") != std::string::npos)
+            continue;
+        const std::string extension = entry.path().extension().string();
+        if (extension != ".vert" && extension != ".frag" && extension != ".glsl" && extension != ".shadingmodel")
+            continue;
+        const std::string path = entry.path().string();
+        const std::string source = ReadText(path);
+        const auto builtinInfo = infernux::ParseShaderInfo(source);
+        if (!builtinInfo.IsValid()) {
+            std::cerr << "Invalid built-in ShaderInfo: " << path << '\n';
+            for (const auto &diagnostic : builtinInfo.diagnostics)
+                std::cerr << "  " << diagnostic.location.line << ':' << diagnostic.location.column << ' '
+                          << diagnostic.message << '\n';
+        }
+        assert(builtinInfo.IsValid());
+        assert(!infernux::FindShaderLayoutDeclaration(source).has_value());
+        const auto builtinEntries =
+            infernux::DetectShaderEntryPoints(infernux::StripShaderInfoDeclaration(source, builtinInfo));
+        if ((extension == ".vert" || extension == ".frag") && builtinEntries.main) {
+            const auto hasCapability = [&](std::string_view capability) {
+                return std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), capability) !=
+                       builtinInfo.capabilities.end();
+            };
+            assert((hasCapability("Fullscreen") || hasCapability("Standalone")) &&
+                   "explicit main() stages must declare their direct compilation domain");
+        }
+        const bool directStage = std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(),
+                                           "Fullscreen") != builtinInfo.capabilities.end() ||
+                                 std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(),
+                                           "Standalone") != builtinInfo.capabilities.end();
+        const bool linkedMaterialStage = !directStage && (!builtinInfo.inputs.empty() || !builtinInfo.outputs.empty());
+        if ((extension == ".vert" || extension == ".frag") && !linkedMaterialStage)
+            RequireCompiles(compiler, source, path);
+    }
+
+    const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert", shaderRoot + "/particle_unlit.frag");
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert",
+                                 shaderRoot + "/particle_six_way_smoke.frag");
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert", shaderRoot + "/spectral_ocean.frag");
+
+    const infernux::ShaderDescriptor gridDescriptor =
+        compiler.ParseShaderSource(ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/grid.frag"), "grid.frag");
+    assert(gridDescriptor.surfaceOptions.surfaceType == "transparent");
+    assert(gridDescriptor.surfaceOptions.blendMode == "alpha");
+    assert(gridDescriptor.depthWrite == "off");
+
+    const infernux::ShaderDescriptor gizmoIconDescriptor = compiler.ParseShaderSource(
+        ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/gizmo_icon.frag"), "gizmo_icon.frag");
+    assert(gizmoIconDescriptor.surfaceOptions.surfaceType == "transparent");
+    assert(gizmoIconDescriptor.surfaceOptions.blendMode == "alpha");
+    assert(gizmoIconDescriptor.surfaceOptions.alphaClip == "0.01");
+    assert(gizmoIconDescriptor.depthWrite == "off");
+
+    const std::string vertexEntrySource = R"(
+// VertexOutput vertex(inout VertexInput ignored)
+VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
+)";
+    const std::string rewrittenVertex =
+        infernux::RewriteShaderEntryPoint(vertexEntrySource, "VertexOutput", "vertex", "inxVertexEntry");
+    assert(rewrittenVertex.find("// VertexOutput vertex(inout VertexInput ignored)") != std::string::npos);
+    assert(rewrittenVertex.find("VertexOutput inxVertexEntry(inout VertexInput value)") != std::string::npos);
+
+    const infernux::ShaderDescriptor descriptor = compiler.ParseShaderSource(richSource, "WaveSurface.frag");
+    assert(descriptor.shaderId == "Tests/WaveSurface");
+    assert(descriptor.shadingModel == "PBR");
+    assert(descriptor.hasSurfaceFunc);
+    assert(!descriptor.hasMainFunc);
+    assert(descriptor.properties.size() == 2);
+    assert(descriptor.textureProperties.size() == 1);
+    assert(descriptor.inputs.size() == 2);
+
+    // The linked-program publication path consumes the parsed descriptor,
+    // while imported ShaderAssets consume CreateMeta. Both must observe the
+    // same surface defaults, before either publishes render-state metadata.
+    const std::string transparentSource = R"(
+#version 450
+ShaderInfo { Name "Tests/TransparentDefaults" Surface Transparent }
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)";
+    const auto transparent = compiler.ParseShaderSource(transparentSource, "TransparentDefaults.frag");
+    assert(transparent.renderQueue == 3000);
+    assert(transparent.depthWrite == "off");
+    assert(transparent.surfaceOptions.blendMode == "alpha");
+    assert(transparent.passTag == "transparent");
+    infernux::InxResourceMeta transparentMetadata;
+    compiler.CreateMeta(transparentSource.data(), transparentSource.size(), "TransparentDefaults.frag",
+                        transparentMetadata);
+    assert(transparentMetadata.GetDataAs<int>("shader_queue") == transparent.renderQueue);
+    assert(transparentMetadata.GetDataAs<std::string>("shader_depth_write") == transparent.depthWrite);
+    assert(transparentMetadata.GetDataAs<std::string>("shader_blend") == transparent.surfaceOptions.blendMode);
+    assert(transparentMetadata.GetDataAs<std::string>("shader_pass_tag") == transparent.passTag);
+
+    const auto explicitTransparent = compiler.ParseShaderSource(R"(
+ShaderInfo {
+    Name "Tests/TransparentOverrides" Surface Transparent
+    Queue 3100 DepthWrite On Blend Additive PassTag "custom-transparent"
+}
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)", "TransparentOverrides.frag");
+    assert(explicitTransparent.renderQueue == 3100);
+    assert(explicitTransparent.depthWrite == "on");
+    assert(explicitTransparent.surfaceOptions.blendMode == "additive");
+    assert(explicitTransparent.passTag == "custom-transparent");
+
+    const auto opaque = compiler.ParseShaderSource(R"(
+ShaderInfo { Name "Tests/OpaqueDefaults" }
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)", "OpaqueDefaults.frag");
+    assert(opaque.renderQueue == 2000);
+    assert(opaque.depthWrite.empty());
+    assert(opaque.surfaceOptions.blendMode == "off");
+    assert(opaque.passTag == "opaque");
+
+    infernux::InxResourceMeta richMetadata;
+    compiler.CreateMeta(richSource.data(), richSource.size(), "WaveSurface.frag", richMetadata);
+    assert(richMetadata.GetDataAs<std::string>("shader_schema_format") == "ShaderInfo");
+    const nlohmann::json propertySchema = nlohmann::json::parse(richMetadata.GetDataAs<std::string>("properties"));
+    assert(propertySchema.size() == 3);
+    assert(propertySchema[0]["default"] == 0.35);
+    assert(propertySchema[0]["range"] == nlohmann::json::array({0.0, 4.0}));
+    assert(propertySchema[1]["hdr"] == true);
+    assert(propertySchema[2]["internal"] == true);
+
+    const std::string vertexSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/StructuredWave"
+    Properties {
+        Float amplitude = 0.05 Range(0.0, 1.0)
+    }
+}
+void vertex(inout VertexInput v) {
+    v.position.y += sin(v.position.x) * material.amplitude;
+}
+)";
+    RequireCompiles(compiler, vertexSource, "StructuredWave.vert");
+
+    const std::string fragmentSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/StructuredUnlit"
+    ShadingModel "Unlit"
+    Surface Opaque
+    Queue 2000
+    Properties {
+        Color baseColor = [1.0, 0.5, 0.25, 1.0] HDR
+        Texture2D texSampler = white
+    }
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    vec4 sampled = texture(texSampler, v_TexCoord);
+    s.albedo = sampled.rgb * material.baseColor.rgb;
+    s.alpha = sampled.a * material.baseColor.a;
+}
+)";
+    RequireCompiles(compiler, fragmentSource, "StructuredUnlit.frag");
+
+    const std::string multisampledSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/MultisampledInputs"
+    Capabilities [Fullscreen]
+    Resources { Texture2DMS colorSamples Texture2DMSUInt ownerSamples Texture2D regularColor }
+    Outputs { Float4 outColor }
+}
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    uint owner = texelFetch(ownerSamples, pixel, gl_SampleID).r;
+    outColor = texelFetch(colorSamples, pixel, gl_SampleID) +
+        texture(regularColor, gl_SamplePosition) * float(owner);
+}
+)";
+    const auto multisampledSchema = infernux::ParseShaderInfo(multisampledSource);
+    assert(multisampledSchema.IsValid());
+    assert(multisampledSchema.resources[0].type == "Texture2DMS");
+    assert(multisampledSchema.resources[1].type == "Texture2DMSUInt");
+    RequireCompiles(compiler, multisampledSource, "MultisampledInputs.frag");
+
+    const std::string storageInputSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/StorageInput"
+    Capabilities [Fullscreen]
+    Resources { BufferUInt values Texture2D sourceTexture }
+    Outputs { Float4 outColor }
+}
+void main() {
+    outColor = vec4(float(values.data[0]) / 255.0) * texture(sourceTexture, vec2(0.5));
+}
+)";
+    const auto storageSchema = infernux::ParseShaderInfo(storageInputSource);
+    assert(storageSchema.IsValid() && storageSchema.resources.size() == 2);
+    assert(storageSchema.resources[0].type == "BufferUInt");
+    const auto storageGlsl = compiler.PrepareAuthoredStageGlsl(storageInputSource, "StorageInput.frag");
+    assert(storageGlsl.find("readonly buffer InxBuffer0") != std::string::npos);
+    assert(storageGlsl.find("uniform sampler2D sourceTexture") != std::string::npos);
+    RequireCompiles(compiler, storageInputSource, "StorageInput.frag");
+
+    const std::string volumeInputSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/VolumeInput"
+    Capabilities [Fullscreen]
+    Resources { Texture3D density }
+    Outputs { Float4 outColor }
+}
+void main() {
+    outColor = texture(density, vec3(0.5, 0.5, 0.5));
+}
+)";
+    const auto volumeSchema = infernux::ParseShaderInfo(volumeInputSource);
+    assert(volumeSchema.IsValid() && volumeSchema.resources.size() == 1);
+    assert(volumeSchema.resources[0].type == "Texture3D");
+    const auto volumeGlsl = compiler.PrepareAuthoredStageGlsl(volumeInputSource, "VolumeInput.frag");
+    assert(volumeGlsl.find("uniform sampler3D density") != std::string::npos);
+    RequireCompiles(compiler, volumeInputSource, "VolumeInput.frag");
+
+    const std::string fullscreenLightingSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/FullscreenLighting"
+    Capabilities [Fullscreen]
+    Imports ["Lighting"]
+    Requires [Lighting]
+    Outputs { Float4 outColor }
+}
+void main() {
+    Light mainLight = getMainLight(vec3(0.0), vec3(0.0, 1.0, 0.0), 0.0);
+    outColor = vec4(lighting.ambientColor.rgb +
+                    mainLight.color * mainLight.attenuation * mainLight.shadow, 1.0);
+}
+)";
+    const auto fullscreenLightingSchema = infernux::ParseShaderInfo(fullscreenLightingSource);
+    assert(fullscreenLightingSchema.IsValid());
+    const auto fullscreenLightingGlsl =
+        compiler.PrepareAuthoredStageGlsl(fullscreenLightingSource, "FullscreenLighting.frag");
+    assert(fullscreenLightingGlsl.find("set = 1, binding = 0") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("set = 1, binding = 4") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("CanonicalLightBuffer") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("ForwardPlusTileMaskBuffer") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz") != std::string::npos);
+    RequireCompiles(compiler, fullscreenLightingSource, "FullscreenLighting.frag");
+
+    const auto invalid =
+        infernux::ParseShaderInfo("ShaderInfo { UnexpectedField 2 Properties { Float x = 1.0 Float x = 2.0 } }");
+    assert(!invalid.IsValid());
+    assert(invalid.diagnostics.size() >= 2);
+
+    const auto duplicate = infernux::ParseShaderInfo("ShaderInfo { Name \"First\" }\nShaderInfo { Name \"Second\" }\n");
+    assert(!duplicate.IsValid());
+
+    const auto reversedRange =
+        infernux::ParseShaderInfo("ShaderInfo { Properties { Float amount = 1.0 Range(2.0, 1.0) } }");
+    assert(!reversedRange.IsValid());
+    const auto vectorRange =
+        infernux::ParseShaderInfo("ShaderInfo { Properties { Float3 direction = [0, 1, 0] Range(0, 1) } }");
+    assert(!vectorRange.IsValid());
+
+    const std::string forbiddenLayout = R"(
+ShaderInfo { Name "Tests/NoLayout" }
+// layout(location = 3) in vec2 ignoredComment;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(1.0); }
+)";
+    const auto layoutLocation = infernux::FindShaderLayoutDeclaration(forbiddenLayout);
+    assert(layoutLocation.has_value());
+    assert(layoutLocation->line == 4);
+    const auto layoutDescriptor = compiler.ParseShaderSource(forbiddenLayout, "NoLayout.frag");
+    assert(!layoutDescriptor.errors.empty());
+
+    TestProjectDeferredRegistry(compiler);
+    std::cout << "ShaderInfo schema tests passed\n";
+    return 0;
+} catch (const std::exception &error) {
+    std::cerr << "ShaderInfo schema regression failed: " << error.what() << '\n';
+    return 1;
+}

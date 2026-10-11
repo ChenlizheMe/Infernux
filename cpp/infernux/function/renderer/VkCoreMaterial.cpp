@@ -3,7 +3,7 @@
  * @brief InxVkCoreModular — Material system, lighting, and buffer accessors
  *
  * Split from InxVkCoreModular.cpp for maintainability.
- * Contains: UpdateMaterialUBO, EnsureMaterialUBO, CreateBuffer,
+ * Contains: UpdateMaterialUBO, CreateBuffer,
  *           InitializeMaterialSystem, RefreshMaterialPipeline,
  *           SetAmbientColor, UpdateLightingUBO,
  *           GetObjectBuffer, GetUniformBuffer, GetShaderModule.
@@ -24,7 +24,6 @@
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 
-#include <core/types/ColorSpace.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -399,47 +398,6 @@ InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid)
 // Material UBO Management
 // ============================================================================
 
-namespace
-{
-
-/// Copy a typed material property into the UBO at a reflection-determined offset.
-template <typename T>
-void CopyPropertyToUBO(const MaterialProperty &prop, uint8_t *uboData, uint32_t offset, size_t uboSize)
-{
-    if (offset + sizeof(T) <= uboSize) {
-        T value = std::get<T>(prop.value);
-        // Authored Color properties are sRGB; shading runs in linear space.
-        if constexpr (std::is_same_v<T, glm::vec4>) {
-            if (prop.type == MaterialPropertyType::Color)
-                value = inx::color::SrgbToLinear(value);
-        }
-        std::memcpy(uboData + offset, &value, sizeof(T));
-    }
-}
-
-/// Pack all properties of a given type sequentially with manual alignment (fallback path).
-/// @param stride — bytes to advance after each copy (usually sizeof(T), except vec3 which uses 16).
-template <typename T>
-void PackPropertiesByType(const std::unordered_map<std::string, MaterialProperty> &properties,
-                          MaterialPropertyType type, uint8_t *uboData, size_t &offset, size_t uboSize, size_t alignment,
-                          size_t stride = 0)
-{
-    if (stride == 0)
-        stride = sizeof(T);
-    for (const auto &[name, prop] : properties) {
-        if (prop.type != type)
-            continue;
-        offset = (offset + (alignment - 1)) & ~(alignment - 1);
-        if (offset + sizeof(T) <= uboSize) {
-            T value = std::get<T>(prop.value);
-            std::memcpy(uboData + offset, &value, sizeof(T));
-            offset += stride;
-        }
-    }
-}
-
-} // anonymous namespace
-
 void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
 {
     const bool hasPendingTextures = m_materialPipelineManagerInitialized &&
@@ -453,131 +411,18 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
         if (renderData && renderData->isValid && renderData->shaderProgram &&
             renderData->descriptorSet != VK_NULL_HANDLE &&
             m_materialPipelineManager.IsDescriptorSetLive(renderData->descriptorSet)) {
-            m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
-            if (!m_materialPipelineManager.HasPendingTextureProperties(material.GetMaterialKey())) {
+            const bool published =
+                m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
+            if (published && !m_materialPipelineManager.HasPendingTextureProperties(material.GetMaterialKey())) {
                 material.ClearPropertiesDirty();
             }
             return;
         }
     }
 
-    const ShaderProgram *shaderProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
-    const MaterialUBOLayout *uboLayout = shaderProgram ? shaderProgram->GetMaterialUBOLayout() : nullptr;
-
-    if (!uboLayout || uboLayout->size == 0) {
-        INXLOG_WARN("VkCoreMaterial: material '", material.GetName(),
-                    "' has no UBO reflection layout — skipping UBO update");
-        material.ClearPropertiesDirty();
-        return;
-    }
-    size_t uboSize = uboLayout->size;
-
-    const auto &properties = material.GetAllProperties();
-
-    std::vector<uint8_t> uboData(uboSize, 0);
-
-    if (uboLayout && !uboLayout->members.empty()) {
-        for (const auto &[name, prop] : properties) {
-            uint32_t memberOffset = 0;
-            uint32_t memberSize = 0;
-
-            if (!uboLayout->GetMemberInfo(name, memberOffset, memberSize)) {
-                continue;
-            }
-
-            switch (prop.type) {
-            case MaterialPropertyType::Float4:
-            case MaterialPropertyType::Color:
-                CopyPropertyToUBO<glm::vec4>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Float3:
-                CopyPropertyToUBO<glm::vec3>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Float2:
-                CopyPropertyToUBO<glm::vec2>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Float:
-                CopyPropertyToUBO<float>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Int:
-                CopyPropertyToUBO<int>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Mat4:
-                CopyPropertyToUBO<glm::mat4>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::FloatArray: {
-                const auto &values = std::get<std::vector<float>>(prop.value);
-                if (memberOffset + values.size() * 16u <= uboSize) {
-                    for (size_t index = 0; index < values.size(); ++index)
-                        std::memcpy(uboData.data() + memberOffset + index * 16u, &values[index], sizeof(float));
-                }
-                break;
-            }
-            case MaterialPropertyType::Float4Array: {
-                const auto &values = std::get<std::vector<glm::vec4>>(prop.value);
-                if (memberOffset + values.size() * sizeof(glm::vec4) <= uboSize && !values.empty())
-                    std::memcpy(uboData.data() + memberOffset, values.data(), values.size() * sizeof(glm::vec4));
-                break;
-            }
-            default:
-                break;
-            }
-        }
-    } else {
-        size_t offset = 0;
-        PackPropertiesByType<glm::vec4>(properties, MaterialPropertyType::Float4, uboData.data(), offset, uboSize, 16);
-        PackPropertiesByType<glm::vec3>(properties, MaterialPropertyType::Float3, uboData.data(), offset, uboSize, 16,
-                                        16);
-        PackPropertiesByType<glm::vec2>(properties, MaterialPropertyType::Float2, uboData.data(), offset, uboSize, 8);
-        PackPropertiesByType<float>(properties, MaterialPropertyType::Float, uboData.data(), offset, uboSize, 4);
-        PackPropertiesByType<int>(properties, MaterialPropertyType::Int, uboData.data(), offset, uboSize, 4);
-    }
-
-    if (material.HasUBO()) {
-        void *matMappedData = material.GetUBOMappedData();
-        if (matMappedData) {
-            std::memcpy(matMappedData, uboData.data(), uboSize);
-        }
-    } else if (m_materialUboMapped) {
-        std::memcpy(m_materialUboMapped, uboData.data(), uboSize);
-    }
-
-    material.ClearPropertiesDirty();
-}
-
-void InxVkCoreModular::EnsureMaterialUBO(std::shared_ptr<InxMaterial> material)
-{
-    if (!material) {
-        return;
-    }
-
-    if (material->HasUBO()) {
-        return;
-    }
-
-    VkBuffer uboBuffer = VK_NULL_HANDLE;
-    VmaAllocation uboAllocation = VK_NULL_HANDLE;
-    void *uboMappedData = nullptr;
-
-    // Require reflection layout for UBO creation
-    const ShaderProgram *shaderProgram = material->GetPassShaderProgram(ShaderCompileTarget::Forward);
-    const MaterialUBOLayout *uboLayout = shaderProgram ? shaderProgram->GetMaterialUBOLayout() : nullptr;
-    if (!uboLayout || uboLayout->size == 0) {
-        INXLOG_WARN("VkCoreMaterial: material '", material->GetName(),
-                    "' has no UBO reflection layout — skipping UBO creation");
-        return;
-    }
-    size_t uboSize = uboLayout->size;
-    CreateBuffer(uboSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uboBuffer, uboAllocation);
-
-    VmaAllocator allocator = m_backend.Device().GetVmaAllocator();
-    vmaMapMemory(allocator, uboAllocation, &uboMappedData);
-    if (uboMappedData) {
-        std::memset(uboMappedData, 0, uboSize);
-    }
-
-    material->SetUBOBuffer(allocator, uboBuffer, uboAllocation, uboMappedData);
+    // Material GPU data is owned exclusively by the descriptor manager. A
+    // material that has not acquired valid render data must keep its dirty
+    // state until its first complete publication; no shared scratch-UBO writes.
 }
 
 // ============================================================================
@@ -664,7 +509,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
             m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
             m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
             m_backend.Device().IsDescriptorIndexingEnabled(), &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
-            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState()));
+            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetCapabilities().portable,
+                                                m_backend.Device().GetCapabilities().BackendName()));
         m_materialPipelineManagerInitialized = true;
 
         auto &materialDescriptors = m_materialPipelineManager.GetDescriptorManager();
@@ -699,6 +545,14 @@ void InxVkCoreModular::InitializeMaterialSystem()
             auto &rhiDevice = m_backend.Device().GetRhiDevice();
             m_materialPipelineManager.SetDefaultNormalTexture(rhiDevice.Resolve(normalTex->GetView()),
                                                               rhiDevice.Resolve(normalTex->GetSampler()), normalTex);
+        }
+
+        auto blackSlot = m_textureCache.Find("_default_black", m_ensureFrameCounter);
+        auto blackTex = blackSlot ? blackSlot->Acquire() : nullptr;
+        if (blackTex) {
+            auto &rhiDevice = m_backend.Device().GetRhiDevice();
+            m_materialPipelineManager.SetDefaultBlackTexture(rhiDevice.Resolve(blackTex->GetView()),
+                                                             rhiDevice.Resolve(blackTex->GetSampler()), blackTex);
         }
 
         // Set up texture resolver for material Texture2D properties
@@ -757,9 +611,9 @@ void InxVkCoreModular::InitializeMaterialSystem()
                 INXLOG_WARN("InitializeMaterialSystem: error material pipeline deferred to lazy build");
             }
         } else {
-            INXLOG_WARN("InitializeMaterialSystem: error shader SPIR-V not yet in cache "
-                        "(vert='",
-                        errVertId, "', frag='", errFragId, "'), will be built lazily on first use");
+            INXLOG_DEBUG("InitializeMaterialSystem: error shader SPIR-V not yet in cache "
+                         "(vert='",
+                         errVertId, "', frag='", errFragId, "'), will be built lazily on first use");
         }
     }
 
@@ -795,6 +649,29 @@ bool InxVkCoreModular::CommitMaterialPipelineGeneration(VkSampleCountFlagBits ne
     return true;
 }
 
+void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return;
+    const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+    const std::string rejectionKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
+    if (m_rejectedGeometryMaterialPrograms.count(rejectionKey))
+        return;
+    try {
+        // Queue classification is part of geometry publication. A rejected
+        // shader must not change blending, depth or routing on the retained
+        // valid pipeline before ResolveMeshMaterial reports the bad selection.
+        (void)ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+    } catch (const ShaderProgramDomainMismatch &) {
+        return;
+    }
+    const std::string &fragment = stages.fragmentShaderId;
+    if (const auto *meta = m_shaderCache.GetRenderMeta(fragment)) {
+        material->ApplyShaderRenderMeta(meta->cullMode, meta->depthWrite, meta->depthTest, meta->blend, meta->queue,
+                                        meta->passTag, meta->stencil, meta->alphaClip);
+    }
+}
+
 bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                                const std::string &fragShaderName)
 {
@@ -809,6 +686,49 @@ void InxVkCoreModular::ReleaseGpuPreviews()
     m_gpuMaterialPreview.reset();
 }
 
+MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return nullptr;
+    const std::string materialKey = material->GetMaterialKey();
+    auto *forward = m_materialPipelineManager.GetRenderData(materialKey);
+    if (forward && forward->descriptorSet != VK_NULL_HANDLE &&
+        !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet)) {
+        m_materialPipelineManager.RemoveRenderData(materialKey);
+        forward = nullptr;
+    }
+
+    const ShaderStagePair requestedStages{material->GetVertShaderName(), material->GetFragShaderName()};
+    const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
+    const auto *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
+    bool domainRejected =
+        m_rejectedGeometryMaterialPrograms.find(rejectionKey) != m_rejectedGeometryMaterialPrograms.end();
+    if (!domainRejected && !requestedArtifact && m_shaderProgramArtifactResolver) {
+        try {
+            m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+            requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
+        } catch (const ShaderProgramDomainMismatch &) {
+            domainRejected = true;
+        }
+        forward = m_materialPipelineManager.GetRenderData(materialKey);
+    }
+    if (domainRejected || (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh)) {
+        if (m_rejectedGeometryMaterialPrograms.insert(rejectionKey).second)
+            RefreshMaterialPipeline(material, requestedStages.vertexShaderId, requestedStages.fragmentShaderId);
+        // A rejected edit cannot replace an already committed geometry ABI.
+        material->ClearPipelineDirty();
+    } else if (!forward || material->IsPipelineDirty()) {
+        if (requestedStages.fragmentShaderId.empty() ||
+            !RefreshMaterialPipeline(material, requestedStages.vertexShaderId, requestedStages.fragmentShaderId))
+            return nullptr;
+        forward = m_materialPipelineManager.GetRenderData(materialKey);
+    }
+    if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
+        !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
+        return nullptr;
+    return forward;
+}
+
 bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material,
                                                       const std::string &vertShaderName,
                                                       const std::string &fragShaderName, bool reportDomainMismatch)
@@ -819,8 +739,17 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     PrepareMaterialTextureAssets(material);
 
     const ShaderStagePair stages{vertShaderName, fragShaderName};
-    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
-    if (artifact && artifact->domain != ShaderProgramDomain::Mesh) {
+    const ShaderProgramArtifact *artifact = nullptr;
+    try {
+        // Direct Fullscreen stages have no linked artifact. Resolve the declared
+        // domain before constructing a geometry layout, including on first use.
+        // A hot edit can also change domain while an older Mesh artifact exists.
+        if (m_shaderCache.FindProgramArtifact(stages) && m_shaderProgramArtifactResolver)
+            m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+        artifact = ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+    } catch (const ShaderProgramDomainMismatch &error) {
+        if (reportDomainMismatch)
+            m_rejectedGeometryMaterialPrograms.insert(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
         MaterialRenderData *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
         const bool hasLastKnownGood = previous && previous->isValid && previous->pipeline != VK_NULL_HANDLE &&
                                       previous->pipelineLayout != VK_NULL_HANDLE &&
@@ -833,10 +762,10 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                 material->GetName().empty() ? material->GetMaterialKey() : material->GetName();
             const std::string failureKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
             if (reportedDomainMismatches.insert(failureKey).second) {
-                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses shader program '",
-                             stages.ToString(), "' with domain '", ShaderProgramDomainName(artifact->domain),
+                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses domain '",
+                             ShaderProgramDomainName(error.actual),
                              "', but MeshRenderer geometry requires domain 'Mesh'. Use a Mesh-domain vertex/fragment "
-                             "shader pair, or use this material through ParticleSystem. ",
+                             "shader pair. ",
                              hasLastKnownGood ? "The rejected rebuild did not replace the previous valid GPU pipeline."
                                               : "This material cannot be rendered by MeshRenderer.");
             }
@@ -878,6 +807,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             m_materialPipelineManager.GetOrCreateRenderDataWithReflection(material, *vertCode, *fragCode, programKey);
 
         bool forwardOk = renderData && renderData->isValid;
+        if (forwardOk)
+            m_rejectedGeometryMaterialPrograms.erase(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
 
         if (forwardOk && artifact) {
             // Optional programs are materialized by their first real pass.
@@ -1270,8 +1201,14 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
                     material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
-    if (hasVertexMaterialUBO &&
-        (!forwardMaterialDesc->vertexMaterialUBO || !forwardMaterialDesc->vertexMaterialUBO->IsValid())) {
+    // Forward merges an identical vertex/fragment MaterialProperties layout
+    // into its canonical material UBO. Shadow remaps those stages to separate
+    // bindings, but both bindings still consume that same authored buffer.
+    const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? (forwardProgram && forwardProgram->HasVertexMaterialUBO()
+                                                               ? forwardMaterialDesc->vertexMaterialUBO.get()
+                                                               : forwardMaterialDesc->materialUBO.get())
+                                                        : nullptr;
+    if (hasVertexMaterialUBO && (!vertexUbo || !vertexUbo->IsValid())) {
         INXLOG_WARN("EnsureShadowMaterialBinding: missing vertex material UBO for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
@@ -1380,7 +1317,6 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     }
 
     const MaterialUBO *fragmentUbo = hasFragmentMaterialUBO ? forwardMaterialDesc->materialUBO.get() : nullptr;
-    const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? forwardMaterialDesc->vertexMaterialUBO.get() : nullptr;
     VkDescriptorBufferInfo fragmentBuffer{};
     fragmentBuffer.buffer =
         fragmentUbo ? fragmentUbo->GetBuffer() : (vertexUbo ? vertexUbo->GetBuffer() : m_materialUbo->GetBuffer());
@@ -1480,30 +1416,48 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
         materialKey = material->GetName();
     }
 
-    MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
+    MaterialRenderData *forwardRenderData = ResolveMeshMaterial(material);
+    if (!forwardRenderData)
+        return VK_NULL_HANDLE;
+    const ShaderStagePair stagePair = forwardRenderData->programKey.stages;
+    const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
+    // A shadow pass can be the first consumer of a material after a fresh
+    // scene is opened.  The Forward pipeline may already be valid while the
+    // linked program publication is still absent, so resolve the authoritative
+    // artifact here instead of reporting an initialization error.  The
+    // resolver is cached and deterministic; this does not introduce a
+    // fallback shader or a second publication path.
+    if (stagePair == ShaderStagePair{vertShaderName, fragShaderName} &&
+        (!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) &&
+        m_shaderProgramArtifactResolver) {
+        m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+        linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
+    }
+    if (!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
+        // An unsupported or not-yet-imported material simply has no shadow
+        // caster.  The renderer must not turn this expected absence into a
+        // release-visible error during first-frame scene bootstrap.
+        INXLOG_DEBUG_INTERNAL("EnsureMaterialShadowPipeline: linked Shadow variant is unavailable for material '",
+                              material->GetName(), "'");
+        return VK_NULL_HANDLE;
+    }
+    // Resolve the linked artifact before preparing its reflected material
+    // resources. A newly selected stage pair has no cached Forward code until
+    // that publication; preparing descriptors earlier skips its first shadow
+    // draw even though the Shadow variant itself is subsequently available.
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
     if ((!forwardRenderData || !forwardRenderData->isValid || !forwardMaterialDesc || !forwardMaterialDesc->isValid) &&
-        RefreshMaterialPipeline(material, vertShaderName, fragShaderName)) {
-        // Shadow passes can execute before the first Forward draw after a
-        // scene switch. Publish the authoritative Forward material resources
-        // here so the linked Shadow variant never depends on draw order.
+        RefreshMaterialPipeline(material, stagePair.vertexShaderId, stagePair.fragmentShaderId)) {
         forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
         forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
     }
     const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
-    const ShaderStagePair stagePair{vertShaderName, fragShaderName};
-    const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
-    if (!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
-        INXLOG_ERROR("EnsureMaterialShadowPipeline: linked Shadow variant is unavailable for material '",
-                     material->GetName(), "'");
-        return VK_NULL_HANDLE;
-    }
     ShaderProgramPublication linkedShadowPublication =
         m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
     const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
     if (!linkedShadowProgram) {
         INXLOG_ERROR("EnsureMaterialShadowPipeline: failed to materialize linked Shadow variant '",
-                     linkedArtifact->key.ToString(), "'");
+                     linkedArtifact->key.stages.ToString(), "'");
         return VK_NULL_HANDLE;
     }
     material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
@@ -1616,7 +1570,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     VkPipelineCache pipelineCache = m_materialPipelineManager.GetVkPipelineCache();
     if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
         INXLOG_WARN("Failed to create linked shadow pipeline for '", material->GetName(), "' (program='",
-                    linkedArtifact->key.ToString(), "')");
+                    linkedArtifact->key.stages.ToString(), "')");
         return VK_NULL_HANDLE;
     }
 

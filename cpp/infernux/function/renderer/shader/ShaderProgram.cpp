@@ -142,13 +142,13 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     // Create shader modules
     m_vertModule = CreateShaderModule(vertSpirv);
     if (m_vertModule == VK_NULL_HANDLE) {
-        INXLOG_ERROR("Failed to create vertex shader module for program: ", m_shaderId);
+        INXLOG_ERROR("Failed to create vertex shader module for program: ", variantKey.program.stages.ToString());
         return false;
     }
 
     m_fragModule = CreateShaderModule(fragSpirv);
     if (m_fragModule == VK_NULL_HANDLE) {
-        INXLOG_ERROR("Failed to create fragment shader module for program: ", m_shaderId);
+        INXLOG_ERROR("Failed to create fragment shader module for program: ", variantKey.program.stages.ToString());
         vkDestroyShaderModule(m_device, m_vertModule, nullptr);
         m_vertModule = VK_NULL_HANDLE;
         return false;
@@ -156,13 +156,13 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
 
     // Reflect shader resources
     if (!m_vertReflection.Reflect(vertSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
-        INXLOG_ERROR("Failed to reflect vertex shader: ", m_shaderId);
+        INXLOG_ERROR("Failed to reflect vertex shader: ", variantKey.program.stages.ToString());
         Destroy();
         return false;
     }
 
     if (!m_fragReflection.Reflect(fragSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
-        INXLOG_ERROR("Failed to reflect fragment shader: ", m_shaderId);
+        INXLOG_ERROR("Failed to reflect fragment shader: ", variantKey.program.stages.ToString());
         Destroy();
         return false;
     }
@@ -176,7 +176,7 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
         });
     if (hasReflectedBindlessTextureABI &&
         (!IsBindlessTextureEnabled() || GetBindlessTextureDescSetLayout() == VK_NULL_HANDLE)) {
-        INXLOG_ERROR("Shader program '", m_shaderId,
+        INXLOG_ERROR("Shader program '", variantKey.program.stages.ToString(),
                      "' contains the bindless material texture ABI, but the active device does not provide the "
                      "required descriptor-indexing table; use the bounded sampler compilation");
         Destroy();
@@ -186,7 +186,7 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
 
     // Validate vertex→fragment stage interface
     if (!ValidateStageInterface()) {
-        INXLOG_ERROR("Shader interface validation failed for program: ", m_shaderId,
+        INXLOG_ERROR("Shader interface validation failed for program: ", variantKey.program.stages.ToString(),
                      ". Vertex outputs and fragment inputs are incompatible.");
         Destroy();
         return false;
@@ -197,14 +197,14 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
 
     // Create descriptor set layouts
     if (!CreateDescriptorSetLayouts()) {
-        INXLOG_ERROR("Failed to create descriptor set layouts for program: ", m_shaderId);
+        INXLOG_ERROR("Failed to create descriptor set layouts for program: ", variantKey.program.stages.ToString());
         Destroy();
         return false;
     }
 
     // Create pipeline layout
     if (!CreatePipelineLayout()) {
-        INXLOG_ERROR("Failed to create pipeline layout for program: ", m_shaderId);
+        INXLOG_ERROR("Failed to create pipeline layout for program: ", variantKey.program.stages.ToString());
         Destroy();
         return false;
     }
@@ -385,8 +385,9 @@ bool ShaderProgram::ValidateStageInterface() const
         }
 
         if (!matchedOutput) {
-            INXLOG_ERROR("Shader interface mismatch in '", m_shaderId, "': fragment input '", fragIn.name,
-                         "' (location ", fragIn.location, ", type ", VkFormatName(fragIn.format),
+            INXLOG_ERROR("Shader interface mismatch in '", m_variantKey.program.stages.ToString(),
+                         "': fragment input '", fragIn.name, "' (location ", fragIn.location, ", type ",
+                         VkFormatName(fragIn.format),
                          ") has no matching vertex output. "
                          "The fragment shader will receive undefined values.");
             valid = false;
@@ -394,9 +395,9 @@ bool ShaderProgram::ValidateStageInterface() const
         }
 
         if (matchedOutput->format != fragIn.format) {
-            INXLOG_ERROR("Shader interface mismatch in '", m_shaderId, "': vertex output '", matchedOutput->name,
-                         "' is ", VkFormatName(matchedOutput->format), " but fragment input '", fragIn.name,
-                         "' expects ", VkFormatName(fragIn.format), " at location ", fragIn.location,
+            INXLOG_ERROR("Shader interface mismatch in '", m_variantKey.program.stages.ToString(), "': vertex output '",
+                         matchedOutput->name, "' is ", VkFormatName(matchedOutput->format), " but fragment input '",
+                         fragIn.name, "' expects ", VkFormatName(fragIn.format), " at location ", fragIn.location,
                          ". This will cause a Vulkan validation error and potential GPU crash.");
             valid = false;
         }
@@ -503,7 +504,8 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
             materialBindings.push_back(indexBinding);
         } else if (existing->descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || existing->descriptorCount != 1) {
             INXLOG_ERROR("Bindless material ABI reserves set ", textureIndexSet, " binding ", textureIndexBinding,
-                         " for a uniform buffer, but shader ", m_shaderId, " declares another descriptor type");
+                         " for a uniform buffer, but shader ", m_variantKey.program.stages.ToString(),
+                         " declares another descriptor type");
             return false;
         }
     }
@@ -729,7 +731,8 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
     // Create new program
     auto program = std::make_shared<ShaderProgram>();
     if (!program->Create(m_device, vertSpirv, fragSpirv, canonicalKey)) {
-        INXLOG_ERROR("Failed to create shader program: ", canonicalKey.ToString());
+        INXLOG_ERROR("Failed to create shader program: ", canonicalKey.program.stages.ToString(), " (",
+                     ShaderCompileTargetName(canonicalKey.target), ")");
         m_failedPrograms.insert(canonicalKey);
         return nullptr;
     }

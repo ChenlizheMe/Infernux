@@ -1,5 +1,6 @@
 #include "SkinnedModelImporter.h"
 #include <function/resources/InxMesh/MeshImportSettings.h>
+#include <function/resources/InxMesh/ModelSourceIO.h>
 
 #include "InxSkinnedMesh.h"
 
@@ -15,7 +16,6 @@
 #include <cctype>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -899,16 +899,25 @@ std::vector<std::pair<double, T>> SliceKeys(const std::vector<std::pair<double, 
     return sliced;
 }
 
-SkinnedNodePose LocalBindPose(const SkinnedRuntimeNode &node)
+SkinnedNodePose LocalBindPose(const SkinnedRuntimeNode &node, const glm::vec3 &scaleSigns)
 {
     SkinnedNodePose pose;
     pose.translation = glm::vec3(node.bindLocal[3]);
     pose.scale = {glm::length(glm::vec3(node.bindLocal[0])), glm::length(glm::vec3(node.bindLocal[1])),
                   glm::length(glm::vec3(node.bindLocal[2]))};
     glm::mat3 rotation(1.0f);
-    for (glm::length_t axis = 0; axis < 3; ++axis)
-        if (pose.scale[axis] > 1e-8f)
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        // Match the track's rotation/scale representation when selecting its
+        // reference rotation; equivalent TRS decompositions can use other signs.
+        if (scaleSigns[axis] < 0.0f)
+            pose.scale[axis] = -pose.scale[axis];
+        if (std::abs(pose.scale[axis]) > 1e-8f)
             rotation[axis] = glm::vec3(node.bindLocal[axis]) / pose.scale[axis];
+    }
+    if (glm::determinant(rotation) < 0.0f) {
+        rotation[0] = -rotation[0];
+        pose.scale.x = -pose.scale.x;
+    }
     pose.rotation = NormalizeOrIdentity(glm::quat_cast(rotation));
     return pose;
 }
@@ -1293,7 +1302,8 @@ void SkinnedModelImporter::ApplyAnimationSettings(InxSkinnedMesh &model, const M
         animation.rootMotionNodeIndex = rootTrack.nodeIndex;
         animation.rootMotionPositions = rootTrack.positions;
         animation.rootMotionRotations = rootTrack.rotations;
-        const auto bind = LocalBindPose(model.skeleton.nodes[static_cast<size_t>(rootTrack.nodeIndex)]);
+        const auto bind = LocalBindPose(model.skeleton.nodes[static_cast<size_t>(rootTrack.nodeIndex)],
+                                        rootTrack.scales.empty() ? glm::vec3(1.0f) : rootTrack.scales.front().second);
         const glm::vec3 referenceTranslation =
             settings.animationReferencePose == "first_frame" && !rootTrack.positions.empty()
                 ? SampleKeys(rootTrack.positions, 0.0, linear)
@@ -1316,25 +1326,8 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ImportSource(const std::st
     const auto filePath = ToFsPath(sourcePath);
     if (!std::filesystem::is_regular_file(filePath))
         throw std::runtime_error("Skinned model source file not found: " + sourcePath);
-    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw std::runtime_error("Skinned model source file cannot be opened: " + sourcePath);
-    const auto size = file.tellg();
-    if (size <= 0)
-        throw std::runtime_error("Skinned model source file is empty: " + sourcePath);
-    std::vector<char> bytes(static_cast<size_t>(size));
-    file.seekg(0);
-    if (!file.read(bytes.data(), size))
-        throw std::runtime_error("Skinned model source file cannot be read: " + sourcePath);
-
-    std::string extension = FromFsPath(filePath.extension());
-    if (!extension.empty() && extension.front() == '.')
-        extension.erase(extension.begin());
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
     Assimp::Importer importer;
-    const aiScene *scene =
-        importer.ReadFileFromMemory(bytes.data(), bytes.size(), BuildAssimpFlags(), extension.c_str());
+    const aiScene *scene = ReadModelSource(importer, sourcePath, BuildAssimpFlags());
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
         throw std::runtime_error("Skinned model Assimp import failed for '" + sourcePath +
                                  "': " + importer.GetErrorString());

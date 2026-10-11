@@ -21,7 +21,7 @@ namespace infernux
 {
 namespace
 {
-constexpr std::string_view JournalMagic = "INXDTX2\n";
+constexpr std::string_view JournalMagic = "INXDTX3\n";
 constexpr uint64_t MaximumEntryCount = 1'000'000;
 constexpr uint64_t MaximumJournalBytes = 2ULL << 30;
 
@@ -198,7 +198,8 @@ std::string SerializeJournal(const std::filesystem::path &root, std::vector<Docu
             throw std::overflow_error("document transaction exceeds the journal size limit");
         AccumulateJournalSize(estimatedBytes, entry.path.size());
         AccumulateJournalSize(estimatedBytes, entry.content.size());
-        AccumulateJournalSize(estimatedBytes, sizeof(uint64_t) * 2);
+        AccumulateJournalSize(estimatedBytes,
+                              sizeof(uint64_t) * (entry.expectedFileState && entry.expectedFileState->exists ? 6 : 3));
     }
     for (const auto &path : invalidatedPaths) {
         if (!uniquePaths.insert(path).second)
@@ -216,6 +217,13 @@ std::string SerializeJournal(const std::filesystem::path &root, std::vector<Docu
     for (const auto &entry : entries) {
         AppendField(payload, entry.path);
         AppendField(payload, entry.content);
+        const auto &state = entry.expectedFileState;
+        AppendUint64(payload, !state ? 0 : (state->exists ? 2 : 1));
+        if (state && state->exists) {
+            AppendUint64(payload, state->size);
+            AppendUint64(payload, static_cast<uint64_t>(state->modifiedNs));
+            AppendUint64(payload, state->contentHash);
+        }
     }
     for (const auto &path : invalidatedPaths)
         AppendField(payload, path);
@@ -263,7 +271,22 @@ Journal DeserializeJournal(const std::filesystem::path &root, std::string_view b
         const std::string path = ResolveRelativePath(root, relativePath, &parentCache);
         if (!uniquePaths.insert(path).second)
             throw std::invalid_argument("document transaction journal contains a duplicate target");
-        journal.entries.push_back({path, content});
+        const uint64_t guard = ReadUint64(payload, cursor);
+        std::optional<AtomicFileState> expected;
+        if (guard == 1) {
+            expected = AtomicFileState{};
+        } else if (guard == 2) {
+            AtomicFileState state;
+            state.exists = true;
+            state.size = ReadUint64(payload, cursor);
+            const uint64_t modifiedBits = ReadUint64(payload, cursor);
+            std::memcpy(&state.modifiedNs, &modifiedBits, sizeof(modifiedBits));
+            state.contentHash = ReadUint64(payload, cursor);
+            expected = state;
+        } else if (guard != 0) {
+            throw std::invalid_argument("document transaction journal has an invalid baseline kind");
+        }
+        journal.entries.push_back({path, content, expected});
     }
     for (uint64_t index = 0; index < invalidationCount; ++index) {
         const std::string path = ResolveRelativePath(root, ReadField(payload, cursor), &parentCache);
@@ -291,19 +314,58 @@ std::string ReadJournal(const std::string &journalPath)
     return bytes;
 }
 
-std::vector<DocumentTransactionFileState> ApplyJournal(const std::string &journalPath, Journal journal)
+std::vector<std::optional<AtomicFileState>> PreflightEntries(const std::vector<DocumentTransactionEntry> &entries,
+                                                             bool recovery)
 {
+    std::vector<std::optional<AtomicFileState>> completed(entries.size());
+    for (size_t index = 0; index < entries.size(); ++index) {
+        const auto &entry = entries[index];
+        if (!entry.expectedFileState)
+            continue;
+        const auto current = CaptureAtomicFileState(entry.path);
+        if (current == *entry.expectedFileState)
+            continue;
+        // Recovery can encounter our already-published payload. Preserve that
+        // file verbatim; a different author's later edit must never be replayed
+        // over merely because an older journal still exists.
+        if (recovery && current.exists) {
+            const auto snapshot = ReadTextFileSnapshot(entry.path);
+            if (snapshot.content == entry.content) {
+                completed[index] = snapshot.state;
+                continue;
+            }
+        }
+        throw std::runtime_error("document transaction target changed since input capture: " + entry.path);
+    }
+    return completed;
+}
+
+std::vector<DocumentTransactionFileState> ApplyJournal(const std::string &journalPath, Journal journal, bool recovery)
+{
+    // Validate the whole write set before submitting any target (including
+    // derived artifacts), then retain per-document CAS at actual replacement.
+    const auto completed = PreflightEntries(journal.entries, recovery);
+    std::vector<DocumentTransactionFileState> committedFiles;
+    committedFiles.reserve(journal.entries.size());
     std::vector<std::shared_ptr<DocumentWriteTicket>> tickets;
     tickets.reserve(journal.entries.size());
     std::exception_ptr failure;
-    for (auto &entry : journal.entries) {
+    for (size_t index = 0; index < journal.entries.size(); ++index) {
+        auto &entry = journal.entries[index];
         try {
             if (PathsEqual(ToFsPath(entry.path), ToFsPath(journalPath)))
                 throw std::invalid_argument("document transaction journal targets itself");
+            if (completed[index]) {
+                const auto &state = *completed[index];
+                committedFiles.push_back({entry.path, state.size, state.modifiedNs});
+                continue;
+            }
             const auto parent = ToFsPath(entry.path).parent_path();
             if (!parent.empty())
                 std::filesystem::create_directories(parent);
-            tickets.push_back(DocumentStore::Instance().Submit(entry.path, std::move(entry.content)));
+            DocumentWriteOptions options;
+            options.expectedFileState = entry.expectedFileState;
+            tickets.push_back(DocumentStore::Instance().Submit(entry.path, std::move(entry.content), options));
         } catch (...) {
             failure = std::current_exception();
             break;
@@ -321,8 +383,6 @@ std::vector<DocumentTransactionFileState> ApplyJournal(const std::string &journa
     if (failure)
         std::rethrow_exception(failure);
 
-    std::vector<DocumentTransactionFileState> committedFiles;
-    committedFiles.reserve(tickets.size());
     for (const auto &ticket : tickets) {
         const auto fileState = ticket->GetCommittedFileState();
         if (!fileState)
@@ -372,6 +432,8 @@ DocumentTransactionStats DocumentTransaction::Commit(const std::string &projectR
     const auto serializeStarted = std::chrono::steady_clock::now();
     const std::string bytes =
         SerializeJournal(root, std::move(entries), std::move(invalidatedPaths), stats.uncompressedBytes);
+    auto journal = DeserializeJournal(root, bytes);
+    (void)PreflightEntries(journal.entries, false);
     stats.journalBytes = bytes.size();
     stats.serializeMilliseconds =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - serializeStarted).count();
@@ -382,7 +444,7 @@ DocumentTransactionStats DocumentTransaction::Commit(const std::string &projectR
     stats.journalWriteMilliseconds =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - journalWriteStarted).count();
     const auto applyStarted = std::chrono::steady_clock::now();
-    stats.committedFileStates = ApplyJournal(normalizedJournal, DeserializeJournal(root, bytes));
+    stats.committedFileStates = ApplyJournal(normalizedJournal, std::move(journal), false);
     stats.applyMilliseconds =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - applyStarted).count();
     return stats;
@@ -394,7 +456,7 @@ bool DocumentTransaction::Recover(const std::string &projectRoot, const std::str
     const std::string normalizedJournal = FromFsPath(RequireInsideRoot(root, journalPath));
     if (!std::filesystem::exists(ToFsPath(normalizedJournal)))
         return false;
-    (void)ApplyJournal(normalizedJournal, DeserializeJournal(root, ReadJournal(normalizedJournal)));
+    (void)ApplyJournal(normalizedJournal, DeserializeJournal(root, ReadJournal(normalizedJournal)), true);
     return true;
 }
 

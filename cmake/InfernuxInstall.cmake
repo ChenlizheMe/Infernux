@@ -4,7 +4,7 @@
 
 # Create a custom script to copy all DLL dependencies
 configure_file(
-    "${CMAKE_SOURCE_DIR}/copy_dependencies.cmake.in"
+    "${CMAKE_SOURCE_DIR}/cmake/copy_dependencies.cmake.in"
     "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
     @ONLY
 )
@@ -144,7 +144,7 @@ add_custom_target(prebuild_player_runtime
         "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
         # Fingerprint and compile the exact installed wheel payload, not a
         # source tree whose native layout differs from the installed package.
-        "-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/lib"
+        "-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/infernux/lib"
         "-DPLAYER_HOST_PATH=${INFERNUX_PLAYER_HOST_BUILD_PATH}"
         "-DOUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_DIR}"
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
@@ -184,14 +184,18 @@ add_custom_command(TARGET _InfernuxBootstrap POST_BUILD
 # ------------------------------------------------------------------------------
 set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")
 
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/licenses/svg/"
+    DESTINATION "python/infernux/resources/licenses/svg"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+
 if(NOT INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR)
     message(FATAL_ERROR
         "INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR must be defined before install rules are declared")
 endif()
 
 install(
-    DIRECTORY "${CMAKE_SOURCE_DIR}/python/Infernux/"
-    DESTINATION "python/Infernux"
+    DIRECTORY "${CMAKE_SOURCE_DIR}/python/infernux/"
+    DESTINATION "python/infernux"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
     PATTERN "__pycache__" EXCLUDE
     PATTERN "*.pyc" EXCLUDE
@@ -201,6 +205,7 @@ install(
     PATTERN "*.so" EXCLUDE
     PATTERN "*.dylib" EXCLUDE
     PATTERN "*.meta" EXCLUDE
+    PATTERN "*.inxpkg" EXCLUDE
     PATTERN "_runtime_packs" EXCLUDE
     PATTERN "_runtime_modules" EXCLUDE
     PATTERN "official_packages" EXCLUDE
@@ -209,8 +214,7 @@ install(
 
 install(
     FILES
-        "${CMAKE_SOURCE_DIR}/python/infernux.py"
-        "${CMAKE_SOURCE_DIR}/python/infernux.pyi"
+        "${CMAKE_SOURCE_DIR}/python/infernux_project_lock.py"
     DESTINATION "python"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
@@ -219,7 +223,6 @@ install(
     FILES
         "${CMAKE_SOURCE_DIR}/pyproject.toml"
         "${CMAKE_SOURCE_DIR}/setup.py"
-        "${CMAKE_SOURCE_DIR}/setup.cfg"
         "${CMAKE_SOURCE_DIR}/MANIFEST.in"
         "${CMAKE_SOURCE_DIR}/README.md"
         "${CMAKE_SOURCE_DIR}/README-zh.md"
@@ -230,37 +233,37 @@ install(
 
 install(
     TARGETS _Infernux _InfernuxBootstrap ${INFERNUX_RUNTIME_DLL_TARGETS}
-    RUNTIME DESTINATION "python/Infernux/lib"
+    RUNTIME DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    LIBRARY DESTINATION "python/Infernux/lib"
+    LIBRARY DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 if(INFERNUX_RUNTIME_STATIC)
     install(
         FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
-        DESTINATION "python/Infernux/lib"
+        DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
     )
 endif()
 
 install(
     TARGETS assimp SDL3-shared Jolt
-    RUNTIME DESTINATION "python/Infernux/lib"
+    RUNTIME DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    LIBRARY DESTINATION "python/Infernux/lib"
+    LIBRARY DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
         NAMELINK_COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 install(
     FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
-    DESTINATION "python/Infernux/lib"
+    DESTINATION "python/infernux/lib"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 
 if(TARGET infernux_gpu_jit_compiler)
     install(
-        DIRECTORY "${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/"
-        DESTINATION "python/Infernux/_compiler"
+        DIRECTORY "${INFERNUX_GPU_JIT_INSTALL_ROOT}/infernux/_compiler/"
+        DESTINATION "python/infernux/_compiler"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
         # The compiler stage may be imported by build-time contract tests,
         # which can create Python bytecode beside the source modules.  Those
@@ -276,13 +279,13 @@ install(
     FILES
         "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
         "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
-    DESTINATION "python/Infernux/resources/official_packages"
+    DESTINATION "python/infernux/resources/official_packages"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 
 install(
     FILES
         "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-    DESTINATION "python/Infernux/resources"
+    DESTINATION "python/infernux/resources"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )

@@ -50,7 +50,7 @@ DOCS_ROOT = WIKI_ROOT / "docs"
 PROJECT_ROOT = WIKI_ROOT.parent.parent               # Infernux repo root
 WEB_ROOT = PROJECT_ROOT / "docs"
 PYTHON_ROOT = PROJECT_ROOT / "python"
-STUB_ROOT = PYTHON_ROOT / "Infernux"
+STUB_ROOT = PYTHON_ROOT / "infernux"
 DOCUMENTED_RELEASE = json.loads(
     (WEB_ROOT / "docs-manifest.json").read_text(encoding="utf-8")
 )["documented_release"]
@@ -815,7 +815,7 @@ class EnumValue:
 @dataclass
 class ClassInfo:
     name: str
-    module: str                         # e.g. "Infernux" or "Infernux.core"
+    module: str                         # e.g. "Infernux" or "infernux.core"
     doc: str = ""
     bases: List[str] = field(default_factory=list)
     properties: List[MethodInfo] = field(default_factory=list)
@@ -840,7 +840,7 @@ class FunctionInfo:
 
 @dataclass
 class ModuleInfo:
-    name: str                           # e.g. "Infernux.core"
+    name: str                           # e.g. "infernux.core"
     classes: List[ClassInfo] = field(default_factory=list)
     functions: List[FunctionInfo] = field(default_factory=list)
     doc: str = ""
@@ -1456,7 +1456,7 @@ def generate_index_page(modules: Dict[str, ModuleInfo], lang: str, existing: str
     lines.append(f'{t("version", lang)}')
     lang_other = "zh" if lang == "en" else "en"
     lang_labels = {"en": "English", "zh": "中文"}
-    lines.append(f' &nbsp;|&nbsp; <a href="../../{lang_other}/api/index.html">{lang_labels[lang_other]}</a>')
+    lines.append(f' | <a href="../../{lang_other}/api/index.html">{lang_labels[lang_other]}</a>')
     lines.append(f'</div>\n')
 
     lines.append(f"## {t('description', lang)}\n")
@@ -1627,12 +1627,12 @@ def _path_to_module(rel_path: Path) -> str:
 
     Examples
     --------
-    core/material.py      → Infernux.core
-    input/__init__.py     → Infernux.input
+    core/material.py      → infernux.core
+    input/__init__.py     → infernux.input
     lib/_Infernux.pyi    → Infernux
-    debug.py              → Infernux.debug
-    gizmos/gizmos.py      → Infernux.gizmos
-    math/vector.py        → Infernux.math
+    debug.py              → infernux.debug
+    gizmos/gizmos.py      → infernux.gizmos
+    math/vector.py        → infernux.math
     __init__.py           → Infernux
     """
     parts = list(rel_path.parts)
@@ -1661,7 +1661,7 @@ def _path_to_module(rel_path: Path) -> str:
 
 
 def auto_discover_sources() -> List[Tuple[str, Path]]:
-    """Walk *python/Infernux/* and collect every parseable .pyi / .py file.
+    """Walk *python/infernux/* and collect every parseable .pyi / .py file.
 
     When both ``foo.pyi`` and ``foo.py`` exist in the same directory the
     ``.pyi`` stub is preferred (it has cleaner type information).

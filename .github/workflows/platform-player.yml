@@ -13,7 +13,7 @@ on:
       - "external/plugins/infernux_windows/**"
       - "python/**"
       - "resources/**"
-      - "scripts/acceptance/**"
+      - "tests/acceptance/**"
       - "scripts/setup/**"
       - "tests/fixtures/multiplatform_player/**"
   push:
@@ -29,18 +29,19 @@ on:
       - "external/plugins/infernux_windows/**"
       - "python/**"
       - "resources/**"
-      - "scripts/acceptance/**"
+      - "tests/acceptance/**"
       - "scripts/setup/**"
       - "tests/fixtures/multiplatform_player/**"
   schedule:
     - cron: "17 18 * * 2,5"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: platform-player-${{ github.event_name }}-${{ github.ref }}
+  group: platform-player-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -87,10 +88,10 @@ jobs:
 
       - name: Cache pinned Windows software Vulkan driver
         id: cache-windows-swiftshader
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: out\toolchains\windows-swiftshader
-          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-runtime-only-v1
+          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-infernux-8sets-256push-v2
 
       - name: Build pinned Windows software Vulkan driver
         if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
@@ -98,6 +99,13 @@ jobs:
         run: |
           conda activate infernux
           scripts\setup\build_windows_swiftshader.ps1 out\toolchains\windows-swiftshader
+
+      - name: Save built Windows software Vulkan driver
+        if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: out\toolchains\windows-swiftshader
+          key: ${{ steps.cache-windows-swiftshader.outputs.cache-primary-key }}
 
       - name: Install Python dependencies
         shell: pwsh
@@ -109,7 +117,7 @@ jobs:
         shell: pwsh
         run: |
           $softwareVulkan = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader.dll"
-          Copy-Item -LiteralPath $softwareVulkan -Destination "python\Infernux\lib\vulkan-1.dll" -Force
+          Copy-Item -LiteralPath $softwareVulkan -Destination "python\infernux\lib\vulkan-1.dll" -Force
           New-Item -ItemType Directory -Path "out\build\windows-msvc-release\Release" -Force | Out-Null
           Copy-Item -LiteralPath $softwareVulkan -Destination "out\build\windows-msvc-release\Release\vulkan-1.dll" -Force
           $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader_icd.json"
@@ -125,8 +133,8 @@ jobs:
           conda activate infernux
           $env:VK_DRIVER_FILES = "${{ github.workspace }}\out\toolchains\windows-swiftshader\runtime\vk_swiftshader_icd.json"
           $env:VK_ICD_FILENAMES = $env:VK_DRIVER_FILES
-          python scripts\acceptance\validate_vulkan_extensions.py `
-            --loader python\Infernux\lib\vulkan-1.dll `
+          python tests\acceptance\validate_vulkan_extensions.py `
+            --loader python\infernux\lib\vulkan-1.dll `
             --require VK_KHR_surface `
             --require VK_KHR_win32_surface
 
@@ -135,19 +143,27 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake"
+          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/tests/acceptance/windows_software_vulkan.cmake"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset windows-msvc-release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset windows-msvc-player
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-msvc-install-wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows Player fixture
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          New-Item -ItemType Directory -Path out\ci-projects\windows,out\test-results -Force | Out-Null
-          Copy-Item tests\fixtures\multiplatform_player\* out\ci-projects\windows -Recurse -Force
-          python scripts\acceptance\build_player.py `
+          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
+          python tests\acceptance\prepare_installed_player.py tests\fixtures\multiplatform_player `
+            out\ci-projects\windows external\plugins\infernux_windows\package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests\acceptance\build_player.py `
             out\ci-projects\windows windows-x64 out\acceptance\windows `
+            --installed `
             --report out\test-results\windows-player-build.json
 
       - name: Validate Windows Player input, physics, and LineRenderer
@@ -156,8 +172,9 @@ jobs:
           conda activate infernux
           $probe = '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}'
           $packageProbe = '{"object_name":"Platform Fixture Package Resource","component_type":"UIText","fields":["text"],"assertions":[{"field":"text","operator":"equal","value":"Package resource reached UIText on every Player target."}]}'
-          python scripts\acceptance\windows_player_smoke.py `
+          python tests\acceptance\windows_player_smoke.py `
             out\acceptance\windows\InfernuxPlatformFixture.exe `
+            --installed `
             --report out\test-results\windows-player-smoke.json `
             --artifact-root out\test-results\windows-player-artifacts `
             --object "Render Probe" `
@@ -166,6 +183,19 @@ jobs:
             --minimum-final-y 0.0 `
             --component-probe $probe `
             --component-probe $packageProbe
+
+      - name: Build and validate Windows Release Player in a long Unicode path
+        shell: pwsh
+        run: |
+          conda activate infernux
+          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
+          $longRoot = Join-Path $env:RUNNER_TEMP 'Infernux Player 中文 & spaces'
+          while ($longRoot.Length -lt 210) { $longRoot = Join-Path $longRoot 'LongPathValidation' }
+          python tests\acceptance\build_player.py out\ci-projects\windows windows-x64 $longRoot `
+            --installed --configuration release --report out\test-results\windows-release-build.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests\acceptance\release_player_smoke.py (Join-Path $longRoot 'InfernuxPlatformFixture.exe') `
+            --artifacts out\test-results\windows-release-artifacts
 
       - name: Upload Windows Player evidence
         if: always()
@@ -219,21 +249,25 @@ jobs:
           cmake --preset linux-clang-release
           cmake --build --preset linux-clang-release
           cmake --build --preset linux-clang-player
+          cmake --build --preset linux-clang-install-wheel
 
       - name: Build Linux Player fixture
         run: |
           conda activate infernux
-          mkdir -p out/ci-projects/linux out/test-results
-          cp -a tests/fixtures/multiplatform_player/. out/ci-projects/linux/
-          python scripts/acceptance/build_player.py \
+          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
+          python tests/acceptance/prepare_installed_player.py tests/fixtures/multiplatform_player \
+            out/ci-projects/linux external/plugins/infernux_linux/package
+          python tests/acceptance/build_player.py \
             out/ci-projects/linux linux-x64 "out/acceptance/桌面/linux" \
+            --installed \
             --report out/test-results/linux-player-build.json
 
       - name: Validate Linux Player input, physics, and LineRenderer
         run: |
           conda activate infernux
-          python scripts/acceptance/linux_player_smoke.py \
+          python tests/acceptance/linux_player_smoke.py \
             "out/acceptance/桌面/linux/InfernuxPlatformFixture" \
+            --installed \
             --report out/test-results/linux-player-smoke.json \
             --artifact-root out/test-results/linux-player-artifacts \
             --xvfb always \
@@ -246,6 +280,17 @@ jobs:
             --minimum-final-y 0.0 \
             --component-probe '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}' \
             --component-probe '{"object_name":"Platform Fixture Package Resource","component_type":"UIText","fields":["text"],"assertions":[{"field":"text","operator":"equal","value":"Package resource reached UIText on every Player target."}]}'
+
+      - name: Build and validate installed Linux Release Player
+        run: |
+          conda activate infernux
+          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
+          python tests/acceptance/build_player.py out/ci-projects/linux linux-x64 "out/acceptance/桌面/linux-release" \
+            --installed --configuration release --report out/test-results/linux-release-build.json
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+            VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
+            xvfb-run --auto-servernum python tests/acceptance/release_player_smoke.py \
+            "out/acceptance/桌面/linux-release/InfernuxPlatformFixture" --artifacts out/test-results/linux-release-artifacts
 
       - name: Upload Linux Player evidence
         if: always()
@@ -368,26 +413,53 @@ jobs:
       - name: Build Web Player fixture
         run: |
           conda activate infernux
-          python -m pytest python/test/test_web_exporter_plugin.py python/test/test_web_jit_fixture.py \
+          python -m pytest external/plugins/infernux_web/tests/test_physics_clock.py --noconftest -q
+          python -m pytest tests/python/test_web_exporter_plugin.py tests/python/test_web_jit_fixture.py \
             -q -k 'web_dependency_gate or web_jit_fixture_verifier or web_fixture_public_jit_cooks' --noconftest
           rm -rf out/ci-projects/web out/acceptance/web
           mkdir -p out/ci-projects/web out/test-results
           cp -a tests/fixtures/multiplatform_player/. out/ci-projects/web/
-          python scripts/acceptance/build_player.py \
+          python tests/acceptance/build_player.py \
             out/ci-projects/web web-wasm32 out/acceptance/web \
             --report out/test-results/web-player-build.json \
             --plugin-editor-root "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor" \
             --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
-          python scripts/acceptance/verify_web_jit_fixture.py \
+          python tests/acceptance/verify_web_jit_fixture.py \
             out/acceptance/web \
             --build-report out/test-results/web-player-build.json \
             --report out/test-results/web-jit-cook.json
+
+      - name: Build and inspect sealed Web Release fixture
+        run: |
+          conda activate infernux
+          python tests/acceptance/build_player.py \
+            out/ci-projects/web web-wasm32 out/acceptance/web-release \
+            --configuration release \
+            --report out/test-results/web-release-build.json \
+            --plugin-editor-root "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor" \
+            --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
+          python tests/acceptance/verify_web_jit_fixture.py \
+            out/acceptance/web-release \
+            --build-report out/test-results/web-release-build.json \
+            --report out/test-results/web-release-jit-cook.json
+          packages=(out/acceptance/web-release/infernux-player.*.inxpkg)
+          [[ ${#packages[@]} -eq 1 ]]
+          python tests/acceptance/verify_release_player_package.py "${packages[0]}" \
+            --target web --report out/test-results/web-release-package.json
 
       - name: Upload Web Player for visual acceptance
         uses: actions/upload-artifact@v4
         with:
           name: web-player-build-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/acceptance/web
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Web Release Player for visual acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-release-player-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/acceptance/web-release
           if-no-files-found: error
           retention-days: 1
 
@@ -406,6 +478,14 @@ jobs:
     needs: web-player
     runs-on: windows-2022
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: development
+            artifact: web-player-build
+          - configuration: release
+            artifact: web-release-player-build
     steps:
       - uses: actions/checkout@v4
 
@@ -420,14 +500,14 @@ jobs:
       - name: Download Linux-built Web Player
         uses: actions/download-artifact@v4
         with:
-          name: web-player-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ matrix.artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/acceptance/web
 
       - name: Install browser acceptance runtime
         shell: pwsh
         run: |
-          npm ci --prefix scripts/acceptance
-          & .\scripts\acceptance\node_modules\.bin\playwright.cmd install chromium
+          npm ci --prefix tests/acceptance
+          & .\tests\acceptance\node_modules\.bin\playwright.cmd install chromium
 
       - name: Validate Web Player pixels and input in Chromium
         shell: pwsh
@@ -455,11 +535,13 @@ jobs:
             if (-not $ready) {
               throw "Web Player HTTP server did not become ready"
             }
-            node scripts/acceptance/web_mobile_input_smoke.cjs `
+            node tests/acceptance/web_mobile_input_smoke.cjs `
               "http://127.0.0.1:8765/infernux-player.html?infernuxWebGpuAdapter=fallback" `
               --startup-timeout-ms 360000 `
               --verify-native-multitouch `
               --verify-fixture-ui-click `
+              --verify-camera-clear `
+              --verify-render-settings `
               --track-object "Render Probe" `
               --movement-key w `
               --min-displacement 0.02 `
@@ -477,7 +559,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: web-browser-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: web-browser-${{ matrix.configuration }}-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/test-results/web-browser-*
           if-no-files-found: warn
 
@@ -556,7 +638,7 @@ jobs:
             out/build/linux-clang-headless
             out/cache/gradle/caches
             out/cache/gradle/wrapper
-          key: android-player-${{ runner.os }}-${{ hashFiles('scripts/acceptance/android_emulator_ci.sh', 'scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**', 'cmake/**', 'CMakeLists.txt', 'cpp/**') }}
+          key: android-player-${{ runner.os }}-${{ hashFiles('tests/acceptance/android_emulator_ci.sh', 'scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**', 'cmake/**', 'CMakeLists.txt', 'cpp/**') }}
           restore-keys: |
             android-player-${{ runner.os }}-
 
@@ -609,7 +691,7 @@ jobs:
       - name: Build Android Player and input instrumentation
         run: |
           conda activate infernux
-          bash scripts/acceptance/android_emulator_ci.sh \
+          bash tests/acceptance/android_emulator_ci.sh \
             "$CONDA/envs/infernux/bin/python" build
 
       - name: Save Android Python runtime and build intermediates
@@ -637,7 +719,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu lavapipe -no-boot-anim -camera-back none
           script: |
-            bash scripts/acceptance/android_emulator_ci.sh "$CONDA/envs/infernux/bin/python" smoke
+            bash tests/acceptance/android_emulator_ci.sh "$CONDA/envs/infernux/bin/python" smoke
 
       - name: Upload Android Player evidence
         if: always()

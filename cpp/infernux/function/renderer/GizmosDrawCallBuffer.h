@@ -30,8 +30,8 @@ class ComputeBuffer;
  * ScriptableRenderContext::SubmitCulling().
  * Queue range: 10000-20000 (_ComponentGizmos pass, depth-tested).
  *
- * Object IDs use prefix 0xEDED_GIZM_xxxx_xxxx to avoid collision with
- * scene objects and editor tools.
+ * Geometry owns process-local renderer IDs. Author/source IDs are lookup
+ * keys only; icon picking retains the complete GameObject identity.
  */
 class GizmosDrawCallBuffer
 {
@@ -171,7 +171,7 @@ class GizmosDrawCallBuffer
      *
      * Each DrawDescriptor becomes one DrawCall with:
      *   - material = gizmoMaterial (unlit vertex-color)
-     *   - objectId = OBJECT_ID_PREFIX | descriptorIndex
+     *   - objectId = stable renderer-private identity for this geometry
      *   - meshRuntimeVersion advances only when immediate geometry changes
      *
      * @param gizmoMaterial  Material for gizmo rendering (vertex-color, unlit)
@@ -242,6 +242,7 @@ class GizmosDrawCallBuffer
     std::vector<Vertex> m_vertices;
     std::vector<uint32_t> m_indices;
     std::vector<DrawDescriptor> m_descriptors;
+    std::vector<uint64_t> m_cpuObjectIds;
 
     // Per-descriptor vertex/index slices cached for stable pointers
     // (DrawCall requires const pointers that remain valid until next SetData)
@@ -252,6 +253,7 @@ class GizmosDrawCallBuffer
 
     struct ResidentDraw
     {
+        uint64_t objectId = 0;
         std::shared_ptr<rhi::ComputeBuffer> vertexBuffer;
         std::vector<Vertex> topologyVertices;
         std::vector<uint32_t> indices;
@@ -266,6 +268,7 @@ class GizmosDrawCallBuffer
     // ---- Icon billboard data ----
     struct IconGeometryState
     {
+        uint64_t objectId = 0;
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
         uint64_t revision = 0;

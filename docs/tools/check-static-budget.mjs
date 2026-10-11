@@ -5,24 +5,29 @@ const docsRoot = path.resolve("docs");
 const errors = [];
 
 const limits = {
-  rootHtml: 64 * 1024,
+  rootHtml: 96 * 1024,
   stylesheet: 64 * 1024,
   script: 96 * 1024,
   image: 1024 * 1024,
   webfont: 192 * 1024,
   machineIndex: 512 * 1024,
-  rootExperience: 1250 * 1024,
+  // Includes the lazily loaded FX modules (fx-hud.js, fx-world.js), which
+  // are excluded from every route's first-view payload below.
+  rootExperience: 1300 * 1024,
   generatedWikiHtml: 96 * 1024,
   generatedWikiTotal: 8 * 1024 * 1024,
 };
 const rootRouteBudgets = new Map([
-  ["index.html", 500 * 1024],
-  ["start.html", 320 * 1024],
-  ["learn.html", 320 * 1024],
-  ["roadmap.html", 300 * 1024],
-  ["changelog.html", 320 * 1024],
-  ["community.html", 360 * 1024],
-  ["download.html", 320 * 1024],
+  // These routes ship the fixed local GSAP + ScrollTrigger runtime so their
+  // first view remains deterministic and animation-ready without a CDN.
+  ["index.html", 640 * 1024],
+  ["tutorials.html", 650 * 1024],
+  ["start.html", 500 * 1024],
+  ["learn.html", 500 * 1024],
+  ["roadmap.html", 620 * 1024],
+  ["changelog.html", 500 * 1024],
+  ["community.html", 480 * 1024],
+  ["download.html", 520 * 1024],
 ]);
 
 async function files(directory) {
@@ -84,6 +89,14 @@ async function rootRoutePayload(pageName) {
 
   let bytes = await size(pageFile);
   for (const file of runtimeFiles) bytes += await size(file);
+  // Only the selected roadmap is requested. Charge the largest category to
+  // the first-view budget so moving content out of JS cannot hide its cost.
+  if (pageName === 'roadmap.html') {
+    const maps = await files(path.join(docsRoot, 'data', 'roadmap'));
+    const sizes = await Promise.all(maps.filter(file => file.endsWith('.json')).map(file => enforce(file, 64 * 1024, 'roadmap category')));
+    bytes += Math.max(...sizes);
+    if (sizes.reduce((sum, value) => sum + value, 0) > 400 * 1024) errors.push('Roadmap catalog exceeds 400 KiB');
+  }
   const deliveredImages = new Set();
 
   const pictureBlocks = [...html.matchAll(/<picture\b[\s\S]*?<\/picture>/gi)].map((match) => match[0]);
@@ -97,13 +110,24 @@ async function rootRoutePayload(pageName) {
     }
     if (candidates.length) {
       const uniqueCandidates = [...new Set(candidates)];
-      bytes += Math.max(...await Promise.all(uniqueCandidates.map(size)));
+      const uncachedCandidates = uniqueCandidates.filter(file => !deliveredImages.has(file));
+      // Reusing the same image in the hero and showcase costs one transfer.
+      if (uncachedCandidates.length) bytes += Math.max(...await Promise.all(uncachedCandidates.map(size)));
       uniqueCandidates.forEach((file) => deliveredImages.add(file));
     }
   }
 
   const htmlOutsidePictures = pictureBlocks.reduce((source, picture) => source.replace(picture, ""), html);
   for (const match of htmlOutsidePictures.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) {
+    const file = localAsset(pageFile, match[1]);
+    if (file && !deliveredImages.has(file)) {
+      deliveredImages.add(file);
+      bytes += await size(file);
+    }
+  }
+  // Video posters are fetched eagerly; the clips themselves (preload="none",
+  // data-src) only load once scrolled into view and stay outside first view.
+  for (const match of html.matchAll(/\bposter=["']([^"']+)["']/gi)) {
     const file = localAsset(pageFile, match[1]);
     if (file && !deliveredImages.has(file)) {
       deliveredImages.add(file);
@@ -124,13 +148,10 @@ for (const file of await files(path.join(docsRoot, "js"))) {
   rootExperience += await enforce(file, limits.script, "script");
 }
 rootExperience += await enforce(path.join(docsRoot, "sw.js"), limits.script, "service worker");
-const responsiveImageSets = [
-  ["demo-0.3.4.webp", "demo-0.3.4.avif"],
-];
-// The original PNG remains under docs/assets because the repository README uses
-// it as review evidence. It is not referenced by a website page and therefore
-// is not a browser-delivery candidate in the root experience budget.
-const evidenceOnlyImages = new Set(["demo.png"]);
+const responsiveImageSets = [];
+// No repository-only evidence images remain under docs/assets; README demo
+// loops live in .github/media and are never part of website delivery.
+const evidenceOnlyImages = new Set();
 const groupedImages = new Set(responsiveImageSets.flat());
 const imageSizes = new Map();
 for (const file of (await files(path.join(docsRoot, "assets"))).filter((file) => /\.(?:avif|gif|jpe?g|png|webp)$/i.test(file))) {

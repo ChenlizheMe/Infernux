@@ -19,13 +19,13 @@ This course follows the **authored rendering path**: the files and settings you 
 
 ## Get one material on screen first {#first-result}
 
-**Prerequisites.** Open an Infernux project with a writable `Assets` folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, `Standard` vertex stage, and `Lit` fragment stage; it needs no imported asset, custom shader, or RenderStack. Use a clean project, or first rename any project shader whose `ShaderInfo Name` is `Standard` or `Lit`: project shaders are scanned before built-ins and the current selector does not label their origin. A newly created scene already contains **Main Camera** and **Directional Light**. The camera/light steps below also cover a scene whose Hierarchy was cleared.
+**Prerequisites.** Open an Infernux project with a writable `Assets` folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, `Standard` vertex stage, and `Lit` fragment stage; it needs no imported asset, custom shader, or RenderStack. Keep project shader names distinct from those built-in stage identifiers, because linked programs currently use stage names for their program namespace. A newly created scene already contains **Main Camera** and **Directional Light**. The camera/light steps below also cover a scene whose Hierarchy was cleared.
 
 Reproduce the complete baseline from an otherwise empty scene:
 
 1. Right-click empty space in **Hierarchy**, choose **Create 3D Object > Cube**, and leave the Cube Transform at position `(0, 0, 0)`. Its MeshRenderer should show one mesh and one material slot.
 2. If no enabled Camera exists, right-click Hierarchy and choose **Camera**. Set its position to `(0, 1, -10)` and rotation to `(0, 0, 0)` so the Cube is inside the Game view. If no enabled light exists, choose **Light > Directional Light**; the creation command supplies a useful initial rotation.
-3. In **Project**, open `Assets` or a child folder, right-click empty space, and choose **Material (.mat)**. Name it `FirstCube`. The current template creates a Material whose **Vertex** selector is `Standard` and **Fragment** selector is `Unlit`. For this lighting baseline, change **Fragment** to the built-in `Lit` in its Inspector.
+3. In **Project**, open `Assets` or a child folder, right-click empty space, and choose **Material (.mat)**. Name it `FirstCube`. The current template creates a Material whose **Vertex** selector is `Standard` and **Fragment** selector is `Lit`; keep those built-in stages for this lighting baseline.
 4. Select the Cube. Under **MeshRenderer > Materials**, drag `FirstCube.mat` onto **Element 0**, or use that slot's asset picker.
 5. Keep the scene free of a RenderStack for this first check. The renderer uses **Default Forward** when no RenderStack is present.
 6. Open **Scene** and **Game**. Select `FirstCube.mat` and change **Base Color** to a saturated color that is easy to distinguish from white.
@@ -34,7 +34,7 @@ The baseline passes when the same Cube is visible in both views, its lit faces s
 
 For a second, explicit pipeline check, create **Post Processing > RenderStack** from the Hierarchy context menu and select **Default Forward** in its Inspector. With an empty effect list, the Cube should remain visually unchanged. This comparison checks that the explicit baseline is usable; pixels alone do not prove which route produced them.
 
-<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (Standard vertex + Unlit fragment; this chapter switches the fragment to the built-in Lit), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
+<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (Standard vertex + Lit fragment), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
 
 ### Verify the asset, not just its preview
 
@@ -48,7 +48,7 @@ If the preview changes but the mesh stays white, do not compensate by editing th
 
 Start with one object in a scene:
 
-1. Its **Material** chooses one `.vert` and one `.frag` by their case-sensitive `ShaderInfo Name`, then stores the property values declared by those stages.
+1. Its **Material** binds one vertex stage and one fragment stage, then stores the property values declared by those stages. Project `.vert` and `.frag` assets are referenced by GUID and display their current, case-sensitive `ShaderInfo Name`; built-in stages use symbolic identifiers such as `Standard` and `Lit`.
 2. The **vertex stage** decides where the mesh vertices end up. If it contains no `vertex()` hook, Infernux uses the standard object-to-clip transform.
 3. The **fragment stage** samples textures and turns the material inputs into `SurfaceData`: albedo, normal, metallic, smoothness, emission, alpha, and related surface facts.
 4. The **ShadingModel** decides how that surface interacts with the current camera's lights. PBR, unlit, toon, and project-specific lighting belong here.
@@ -60,7 +60,7 @@ The useful boundary is between *what a surface is* and *when it is drawn*. A too
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="visual evidence from an Infernux capture showing two characters with contrasting appearances" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux demo scene, materials, shading models, pipeline, and RenderStack configuration used by this chapter.</figcaption>
+  <figcaption>An Infernux demo capture showing contrasting material styles; follow the baseline above to verify the current authoring path.</figcaption>
 </figure>
 
 <div class="learn-note"><strong>Evidence scope.</strong><p>This capture is visual evidence that the displayed frame existed in that project and session. It does not identify the scene asset, Material or ShadingModel names, active RenderPipeline, RenderStack contents, engine commit, or capture settings. Reproduce architecture claims with the baseline workflow and current source contracts above, not by inferring hidden configuration from the pixels.</p></div>
@@ -127,13 +127,13 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 ## 先让一个材质正确出现在画面里 {#first-result_1}
 
-**准备条件。** 打开一个 `Assets` 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、`Standard` 顶点阶段和 `Lit` 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。请使用干净项目，或先给 `ShaderInfo Name` 为 `Standard`、`Lit` 的项目 Shader 改名：选择器会先扫描项目 Shader，再扫描内置 Shader，当前菜单也不显示来源。新建场景已经带有 **Main Camera** 与 **Directional Light**；下面也包含 Hierarchy 被清空后的补建步骤。
+**准备条件。** 打开一个 `Assets` 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、`Standard` 顶点阶段和 `Lit` 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。项目 Shader 名称应与这些内置阶段标识符保持区别，因为当前链接程序仍以阶段名作为程序命名空间。新建场景已经带有 **Main Camera** 与 **Directional Light**；下面也包含 Hierarchy 被清空后的补建步骤。
 
 从其余内容为空的场景复现完整基线：
 
 1. 在 **Hierarchy** 空白处右键，选择 **Create 3D Object > Cube**，保持 Cube 的 Transform 位置为 `(0, 0, 0)`。它的 MeshRenderer 应显示一个 Mesh 和一个 Material Slot。
 2. 场景里没有启用的 Camera 时，在 Hierarchy 空白处右键选择 **Camera**，把位置设为 `(0, 1, -10)`、旋转设为 `(0, 0, 0)`，让 Cube 进入 Game 画面。没有启用的灯光时，选择 **Light > Directional Light**；该创建命令会提供可用的初始旋转。
-3. 在 **Project** 中打开 `Assets` 或其子目录，在空白处右键选择 **Material (.mat)**，命名为 `FirstCube`。当前模板会创建 **Vertex** 为 `Standard`、**Fragment** 为 `Unlit` 的 Material。本章要观察受光面的明暗变化，请在 Inspector 中把 **Fragment** 换成内置的 `Lit`。
+3. 在 **Project** 中打开 `Assets` 或其子目录，在空白处右键选择 **Material (.mat)**，命名为 `FirstCube`。当前模板会创建 **Vertex** 为 `Standard`、**Fragment** 为 `Lit` 的 Material；本章的光照基线保持这两个内置阶段即可。
 4. 选中 Cube，在 **MeshRenderer > Materials** 中把 `FirstCube.mat` 拖到 **Element 0**，也可以使用该 Slot 的资产选择器。
 5. 第一次检查先不创建 RenderStack。场景缺少 RenderStack 时，渲染器使用 **Default Forward**。
 6. 打开 **Scene** 与 **Game**。选中 `FirstCube.mat`，把 **Base Color** 改成容易与白色区分的高饱和颜色。
@@ -142,7 +142,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 再做一次显式 Pipeline 检查：从 Hierarchy 右键菜单创建 **Post Processing > RenderStack**，在 Inspector 中选择 **Default Forward**。Effect 列表为空时，Cube 画面应保持一致。这个对照可以确认显式基线可用；仅凭像素无法证明背后的实际路由。
 
-<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（Standard 顶点 + Unlit 片元，本章再把片元切换为内置 Lit）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
+<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（Standard 顶点 + Lit 片元）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
 
 ### 检查资产同步，而不只是预览图
 
@@ -156,7 +156,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 从场景里的一个物体开始：
 
-1. **Material** 按区分大小写的 `ShaderInfo Name` 选择一份 `.vert` 和一份 `.frag`，并保存这些阶段声明的材质参数。
+1. **Material** 绑定一个顶点阶段和一个片元阶段，并保存这些阶段声明的材质参数。项目 `.vert`、`.frag` 资产通过 GUID 引用，显示其当前且区分大小写的 `ShaderInfo Name`；内置阶段使用 `Standard`、`Lit` 等符号化标识符。
 2. **顶点阶段**决定网格顶点最终在哪里。没有提供 `vertex()` Hook 时，Infernux 使用标准的物体空间到裁剪空间变换。
 3. **片元阶段**采样贴图，把材质输入整理成 `SurfaceData`：基础色、法线、金属度、平滑度、自发光、透明度等表面事实。
 4. **ShadingModel** 决定表面怎样和当前相机的光源交互。PBR、无光照、卡通渲染和项目独有的光照风格都属于这一层。
@@ -171,7 +171,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
   <figcaption>来自 Infernux 演示项目的真实画面，用于观察两种材质风格的差异，不用于推断画面背后的管线配置。</figcaption>
 </figure>
 
-<div class="learn-note"><strong>配套工程。</strong><p>这份截图来自本章对应的 Scene、Material、ShadingModel、活动 RenderPipeline 与 RenderStack 配置。上面的基线流程使用同一套资源，便于在当前版本中复现画面并检查渲染契约。</p></div>
+<div class="learn-note"><strong>证据范围。</strong><p>这份截图证明演示项目在对应会话中出现过该画面，但没有标明 Scene 资产、Material 或 ShadingModel 名称、活动 RenderPipeline、RenderStack 内容、引擎提交或捕获设置。请用上面的基线流程和当前源码契约复现架构行为，不要从像素推断画面背后的配置。</p></div>
 
 ## 四个定制层级 {#four-levels_1}
 

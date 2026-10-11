@@ -144,9 +144,10 @@ class UITransformDependencies
                 const glm::mat3 basis = WorldUIBasis(pose, view, (policy & WorldUIBillboard) != 0);
                 const glm::dvec3 right(basis[0]), up(basis[1]);
                 const glm::dvec3 normal = glm::cross(right, up);
+                const double areaSquared = glm::dot(normal, normal);
                 const glm::dvec3 delta = glm::dvec3(entry.position) - glm::dvec3(origin);
                 const double denominator = glm::dot(normal, glm::dvec3(direction));
-                if (std::abs(denominator) > 1e-7) {
+                if (areaSquared > 0.0 && std::abs(denominator) > 1e-7 * std::sqrt(areaSquared)) {
                     const double distance = glm::dot(normal, delta) / denominator;
                     if (distance > 0.0) {
                         double scale = 1.0;
@@ -157,7 +158,12 @@ class UITransformDependencies
                         if (scale > 1e-7) {
                             const glm::dvec3 offset =
                                 glm::dvec3(origin) + glm::dvec3(direction) * distance - glm::dvec3(entry.position);
-                            hit = {glm::dot(offset, right) / scale, glm::dot(offset, up) / scale, distance};
+                            // Rendering retains scale/shear from an affine camera.
+                            // Recover coordinates in that actual basis, rather
+                            // than treating its axes as unit orthogonal vectors.
+                            const double divisor = areaSquared * scale;
+                            hit = {glm::dot(glm::cross(offset, up), normal) / divisor,
+                                   glm::dot(glm::cross(right, offset), normal) / divisor, distance};
                         }
                     }
                 }

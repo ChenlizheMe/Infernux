@@ -1,0 +1,236 @@
+{
+  "key": "foundation",
+  "titleKey": "roadmap.galaxy.foundation.title",
+  "branches": [
+    {
+      "en": "DETERMINISTIC CORE",
+      "zh": "确定性核心",
+      "leaves": [
+        ["Scene ownership","场景所有权","live"],
+        ["Fixed-step clock","定步时钟","live"],
+        ["Simulation phases","模拟阶段划分","live"],
+        ["Seeded randomness","随机种子管理","planned"],
+        ["Tick ordering","Tick 执行顺序","live"]
+      ]
+    },
+    {
+      "en": "WORLD & SCENE",
+      "zh": "世界与场景",
+      "leaves": [
+        ["Scene graph","场景图","live"],
+        ["Prefab authoring","Prefab 创作","live"],
+        ["World snapshots","世界快照","planned"],
+        ["Streaming worlds","流式世界","future"],
+        ["World partitioning","世界分区","planned"],
+        ["Scene transition transactions","场景切换事务","live"],
+        ["Prefab override diffs","Prefab 覆写差异","live"],
+        ["Large-world coordinates","大世界坐标","future"]
+      ]
+    },
+    {
+      "en": "PLATFORM LAYER",
+      "zh": "平台层",
+      "leaves": [
+        ["Windows player","Windows Player","live"],
+        ["Linux player","Linux Player","live"],
+        ["Android player","Android Player","live"],
+        ["Capability matrix","能力矩阵","live"],
+        ["Platform service interface","平台服务接口","planned"],
+        ["Window lifecycle","窗口生命周期","live"],
+        ["Device loss recovery contract","设备丢失处理契约","planned"],
+        ["Headless simulation target","无窗口模拟目标","live"]
+      ]
+    },
+    {
+      "en": "MEMORY & JOBS",
+      "zh": "内存与任务",
+      "leaves": [
+        ["Thread pool","线程池","live"],
+        ["Resource lifetime","资源生命周期","live"],
+        ["Arena allocator","Arena 分配器","planned"],
+        ["Deterministic scheduling","确定性调度","future"],
+        ["Job dependency graph","任务依赖图","planned"],
+        ["Work stealing","工作窃取调度","planned"],
+        ["Memory budget telemetry","内存预算观测","live"]
+      ]
+    },
+    {
+      "en": "Serialization",
+      "zh": "序列化与版本",
+      "leaves": [
+        ["Versioned schemas","版本化数据结构","planned"],
+        ["Schema migrations","数据结构迁移","planned"],
+        ["Binary scene format","二进制场景格式","planned"],
+        ["Stable object references","稳定对象引用","live"],
+        ["Incremental save","增量保存","planned"],
+        ["Save-game compatibility","存档兼容性","planned"],
+        ["Reference repair diagnostics","引用修复诊断","planned"]
+      ]
+    },
+    {
+      "en": "Runtime boundaries",
+      "zh": "运行时边界",
+      "leaves": [
+        ["Explicit initialization order","显式初始化顺序","planned"],
+        ["Shutdown dependency order","关闭依赖顺序","planned"],
+        ["Thread affinity rules","线程归属规则","planned"],
+        ["Python / native error boundary","Python 与原生错误边界","live"],
+        ["Reentrant-call policy","重入调用规则","planned"],
+        ["Process isolation","进程隔离","future"]
+      ]
+    },
+    {
+      "en": "Resource lifecycle",
+      "zh": "资源生命周期",
+      "leaves": [
+        ["Dependency tracking","资源依赖追踪","live"],
+        ["Asynchronous load handles","异步加载句柄","live"],
+        ["Cancellation propagation","取消信号传播","planned"],
+        ["Budgeted residency","驻留预算","live"],
+        ["Deferred destruction","延迟销毁","live"],
+        ["Reload transactions","重载事务","live"],
+        ["Resource leak reports","资源泄漏报告","planned"],
+        ["Streaming priorities","流式加载优先级","planned"]
+      ]
+    },
+    {
+      "en": "Observability",
+      "zh": "可观测性",
+      "leaves": [
+        ["Structured diagnostics","结构化诊断","planned"],
+        ["CPU timeline traces","CPU 时间线追踪","planned"],
+        ["Allocation attribution","分配来源追踪","planned"],
+        ["Frame capture markers","帧捕获标记","planned"],
+        ["Crash context bundles","崩溃上下文包","planned"],
+        ["Runtime counters","运行时计数器","live"]
+      ]
+    },
+    {
+      "en": "World reproduction",
+      "zh": "世界重现",
+      "leaves": [
+        ["Input event journals","输入事件日志","planned"],
+        ["Snapshot checkpoints","快照检查点","planned"],
+        ["Delta state recording","增量状态记录","planned"],
+        ["Simulation replay runner","模拟回放执行器","planned"],
+        ["Replay divergence locator","回放分歧定位","planned"],
+        ["External event capture","外部事件捕获","planned"],
+        ["Cross-platform reproducibility","跨平台可复现性","future"],
+        ["Branching simulation histories","分支模拟历史","future"]
+      ]
+    },
+    {
+      "en": "Runtime delivery",
+      "zh": "运行时交付",
+      "leaves": [
+        ["Engine / project compatibility","引擎与项目兼容性","live"],
+        ["Platform contract tests","平台契约测试","live"],
+        ["Cold-start profiling","冷启动分析","live"],
+        ["Long-session soak tests","长时间运行测试","planned"],
+        ["Memory-pressure behavior","内存压力行为","planned"],
+        ["Suspend / resume contracts","挂起与恢复契约","live"]
+      ]
+    },
+    {
+      "en": "Clock semantics",
+      "zh": "时钟语义",
+      "leaves": [
+        ["Simulation accumulator limits","模拟累积器上限","live"],
+        ["Paused-clock ownership","暂停时钟归属","planned"],
+        ["Time-scale transition rules","时间缩放切换规则","planned"],
+        ["Clock source injection","时钟源注入","live"],
+        ["Frame-to-tick input mapping","帧到 Tick 输入映射","planned"],
+        ["Subtick event timestamps","子 Tick 事件时间戳","planned"],
+        ["Deterministic timer queues","确定性定时队列","planned"],
+        ["Clock discontinuity reports","时钟不连续报告","planned"]
+      ]
+    },
+    {
+      "en": "Numeric contracts",
+      "zh": "数值契约",
+      "leaves": [
+        ["Floating-point mode ownership","浮点模式归属","planned"],
+        ["NaN propagation boundaries","NaN 传播边界","planned"],
+        ["Infinity input rejection","无穷输入拒绝","live"],
+        ["World unit conventions","世界单位约定","planned"],
+        ["Deterministic transcendental functions","确定性超越函数","planned"],
+        ["Numeric drift benchmarks","数值漂移基准","planned"],
+        ["Cross-ISA arithmetic comparison","跨指令集算术对比","planned"]
+      ]
+    },
+    {
+      "en": "Job execution mechanics",
+      "zh": "任务执行机制",
+      "leaves": [
+        ["Ready-queue priority aging","就绪队列优先级老化","live"],
+        ["Task group close semantics","任务组关闭语义","live"],
+        ["Nested wait deadlock detection","嵌套等待死锁检测","planned"],
+        ["Cooperative cancellation checkpoints","协作取消检查点","live"],
+        ["Worker exception aggregation","工作线程异常聚合","live"],
+        ["Job affinity masks","任务亲和性遮罩","planned"],
+        ["Parallel range partitioning","并行区间划分","live"]
+      ]
+    },
+    {
+      "en": "Scene ownership details",
+      "zh": "场景归属细节",
+      "leaves": [
+        ["Cross-scene reference policy","跨场景引用策略","live"],
+        ["Parent-cycle rejection","父级环拒绝","live"],
+        ["Additive scene visibility rules","叠加场景可见性规则","planned"],
+        ["Persistent promotion ordering","持久对象提升顺序","planned"],
+        ["Scene unload callback ordering","场景卸载回调顺序","planned"],
+        ["Scene-scoped service teardown","场景服务关闭","planned"],
+        ["Object destruction batching","对象销毁批次","live"]
+      ]
+    },
+    {
+      "en": "Archive schemas",
+      "zh": "归档数据结构",
+      "leaves": [
+        ["Unknown field preservation","未知字段保留","planned"],
+        ["Archive chunk indexing","归档分块索引","live"],
+        ["Archive compression boundaries","归档压缩边界","live"],
+        ["Atomic archive publication","归档原子发布","live"],
+        ["Partial archive reads","局部归档读取","live"]
+      ]
+    },
+    {
+      "en": "Native scripting boundary",
+      "zh": "原生脚本边界",
+      "leaves": [
+        ["Borrowed pointer lifetimes","借用指针生命周期","live"],
+        ["Python GIL handoff points","Python GIL 交接点","live"],
+        ["Native callback pinning","原生回调固定","planned"],
+        ["Extension unload restrictions","扩展卸载限制","planned"],
+        ["Script domain reset contracts","脚本域重置契约","planned"],
+        ["Foreign thread entry gates","外部线程入口约束","planned"],
+        ["Native ABI version negotiation","原生 ABI 版本协商","planned"]
+      ]
+    },
+    {
+      "en": "Streaming ownership",
+      "zh": "流式资源归属",
+      "leaves": [
+        ["Resource request deduplication","资源请求去重","planned"],
+        ["Load priority inheritance","加载优先级继承","planned"],
+        ["Residency pin tokens","驻留固定令牌","live"],
+        ["Eviction eligibility rules","淘汰资格规则","live"]
+      ]
+    },
+    {
+      "en": "Platform lifecycle details",
+      "zh": "平台生命周期细节",
+      "leaves": [
+        ["DPI coordinate conversion","DPI 坐标转换","live"],
+        ["Focus-loss input reset","失焦输入重置","live"],
+        ["User-data path contracts","用户数据路径契约","live"],
+        ["Platform locale changes","平台语言变化","planned"],
+        ["IME composition lifecycle","输入法组合生命周期","planned"],
+        ["Power-state notifications","电源状态通知","planned"],
+        ["Low-memory notifications","低内存通知","planned"],
+        ["Window close veto semantics","窗口关闭阻止语义","live"]
+      ]
+    }
+  ]
+}

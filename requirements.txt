@@ -1,7 +1,8 @@
 # Infernux Engine - Python Dependencies
 
 # Build dependencies
-pybind11>=2.11.0
+# Native borrower retirement uses the audited smart-holder instance contract.
+pybind11==3.1.0
 cmake>=3.25
 build>=1.0.0
 wheel>=0.41.0

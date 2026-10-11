@@ -42,7 +42,7 @@ def wheel_build_number() -> str:
 
 def pypi_wheel_urls(version: str) -> dict[str, str]:
     request = urllib.request.Request(
-        f"https://pypi.org/pypi/Infernux/{version}/json",
+        f"https://pypi.org/pypi/infernux/{version}/json",
         headers={"Accept": "application/json", "User-Agent": "Infernux-Release-Publisher"},
     )
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -151,7 +151,7 @@ def build_catalog(
             primary = (
                 f"{object_base}/{name}"
                 if kind == "hub-installer"
-                else (wheel_urls[name] if resolve_pypi else f"https://pypi.org/project/Infernux/{version}/")
+                else (wheel_urls[name] if resolve_pypi else f"https://pypi.org/project/infernux/{version}/")
             )
             assets.append({
                 "kind": kind,

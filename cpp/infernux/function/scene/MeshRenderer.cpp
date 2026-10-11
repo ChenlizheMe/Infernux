@@ -12,6 +12,7 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
+#include <function/resources/InxMesh/ModelMeshIdentity.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -125,23 +126,7 @@ std::vector<std::string> ResolveModelNodePathBySubresourceId(const std::string &
         throw std::invalid_argument("Model mesh identity manifest is unavailable");
 
     const auto manifest = nlohmann::json::parse(meta->GetDataAs<std::string>("model_meshes"));
-    if (!manifest.is_array())
-        throw std::invalid_argument("Model mesh identity manifest must be an array");
-
-    std::vector<std::string> resolvedPath;
-    size_t matches = 0;
-    for (const auto &entry : manifest) {
-        if (!entry.is_object() || entry.value("subresource_id", std::string{}) != subresourceId)
-            continue;
-        if (!entry.contains("path") || !entry["path"].is_array())
-            throw std::invalid_argument("Model mesh identity has no node path");
-        resolvedPath = entry["path"].get<std::vector<std::string>>();
-        ++matches;
-    }
-    if (matches != 1 || resolvedPath.empty())
-        throw std::invalid_argument(matches == 0 ? "Model mesh identity no longer exists"
-                                                 : "Model mesh identity is ambiguous");
-    return resolvedPath;
+    return ResolveModelMeshIdentityPath(manifest, subresourceId);
 }
 
 std::string FindMatchingMeshAssetGuid(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
@@ -872,8 +857,28 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
     NotifyRenderableStateChanged(this);
 }
 
+void MeshRenderer::SetCastShadows(bool cast)
+{
+    if (m_castShadows == cast)
+        return;
+    m_castShadows = cast;
+    SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+}
+
+void MeshRenderer::SetReceivesShadows(bool receive)
+{
+    if (m_receiveShadows == receive)
+        return;
+    m_receiveShadows = receive;
+    SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+}
+
 void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
 {
+    if (guid.empty()) {
+        SetMaterial(slot, std::shared_ptr<InxMaterial>{});
+        return;
+    }
     if (slot >= m_materials.size())
         m_materials.resize(slot + 1);
     EnsureParameterSlot(slot);
@@ -897,24 +902,43 @@ void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
 
 void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
 {
-    // Clear old dependency edges
+    std::vector<MaterialSlotValue> materials(guids.begin(), guids.end());
+    SetMaterialSlots(materials);
+}
+
+void MeshRenderer::SetMaterialSlots(const std::vector<MaterialSlotValue> &materials)
+{
+    // Resolve the complete replacement before changing the renderer. The
+    // binding likewise converts every input before entering this function.
+    std::vector<AssetRef<InxMaterial>> candidate;
+    candidate.reserve(materials.size());
+    auto &registry = AssetRegistry::Instance();
+    for (const auto &value : materials) {
+        if (const auto *assetGuid = std::get_if<std::string>(&value)) {
+            candidate.emplace_back(*assetGuid);
+            registry.Resolve(candidate.back(), ResourceType::Material);
+        } else {
+            const auto &material = std::get<std::shared_ptr<InxMaterial>>(value);
+            const std::string guid = material ? material->GetGuid() : "";
+            const uint64_t version = guid.empty() ? 0 : registry.GetAssetVersion(guid);
+            candidate.emplace_back(guid, material, version);
+        }
+    }
+
     auto &graph = AssetDependencyGraph::Instance();
     for (auto &ref : m_materials) {
         if (ref.HasGuid())
             graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
     }
 
-    m_materials.resize(guids.size());
-    m_embeddedMaterialVersions.assign(guids.size(), std::nullopt);
-    m_persistentParameters.resize(guids.size());
-    m_runtimeParameters.resize(guids.size());
-    m_parameterBlocks.resize(guids.size());
-    for (uint32_t i = 0; i < guids.size(); ++i) {
-        m_materials[i].SetGuid(guids[i]);
-        AssetRegistry::Instance().Resolve(m_materials[i], ResourceType::Material);
-
-        if (!guids[i].empty())
-            graph.AddRuntimeDependency(GetInstanceGuid(), guids[i]);
+    m_materials = std::move(candidate);
+    m_embeddedMaterialVersions.assign(materials.size(), std::nullopt);
+    m_persistentParameters.resize(materials.size());
+    m_runtimeParameters.resize(materials.size());
+    m_parameterBlocks.resize(materials.size());
+    for (const auto &ref : m_materials) {
+        if (ref.HasGuid())
+            graph.AddRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
     }
 
     RefreshParameterTextureDependencies();
@@ -1060,40 +1084,48 @@ void MeshRenderer::SetParameter(uint32_t slot, const std::string &name, Material
     if (declaration->type == MaterialPropertyType::Texture2D)
         value = InxMaterial::RequireTextureGuid(std::get<std::string>(value));
 
-    EnsureParameterSlot(slot);
     MaterialProperty property{name, declaration->type, std::move(value), declaration->hdr, declaration->range};
     if (persistent) {
+        EnsureParameterSlot(slot);
         const auto existing = m_persistentParameters[slot].find(name);
         if (existing != m_persistentParameters[slot].end() && RendererParameterEquals(existing->second, property))
             return;
         m_persistentParameters[slot][name] = std::move(property);
     } else {
-        if (owner.empty())
-            throw std::invalid_argument("runtime renderer parameter owner cannot be empty");
-        auto &owners = m_runtimeParameters[slot];
-        auto ownerLayer = owners.find(owner);
-        if (ownerLayer != owners.end()) {
-            const auto existing = ownerLayer->second.find(name);
-            if (existing != ownerLayer->second.end() && RendererParameterEquals(existing->second.property, property)) {
-                // A repeated write is a true no-op only while this owner still
-                // supplies the effective value. If a later owner wrote the
-                // field, writing the same value again must regain precedence.
-                const RuntimeParameterEntry *newest = nullptr;
-                for (const auto &[layerOwner, layer] : owners) {
-                    (void)layerOwner;
-                    const auto candidate = layer.find(name);
-                    if (candidate != layer.end() &&
-                        (!newest || newest->writeRevision < candidate->second.writeRevision))
-                        newest = &candidate->second;
-                }
-                if (newest == &existing->second)
-                    return;
-            }
-        }
-        if (m_runtimeParameterWriteRevision == std::numeric_limits<uint64_t>::max())
-            throw std::overflow_error("runtime renderer parameter write revision overflow");
-        owners[owner][name] = RuntimeParameterEntry{std::move(property), ++m_runtimeParameterWriteRevision};
+        SetRuntimeParameterProperty(slot, std::move(property), owner);
+        return;
     }
+    PublishParameterSlot(slot);
+}
+
+void MeshRenderer::SetRuntimeParameterProperty(uint32_t slot, MaterialProperty property, const std::string &owner)
+{
+    if (owner.empty())
+        throw std::invalid_argument("runtime renderer parameter owner cannot be empty");
+    EnsureParameterSlot(slot);
+    const std::string name = property.name;
+    auto &owners = m_runtimeParameters[slot];
+    auto ownerLayer = owners.find(owner);
+    if (ownerLayer != owners.end()) {
+        const auto existing = ownerLayer->second.find(name);
+        if (existing != ownerLayer->second.end() && RendererParameterEquals(existing->second.property, property)) {
+            // A repeated write is a true no-op only while this owner still
+            // supplies the effective value. If a later owner wrote the
+            // field, writing the same value again must regain precedence.
+            const RuntimeParameterEntry *newest = nullptr;
+            for (const auto &[layerOwner, layer] : owners) {
+                (void)layerOwner;
+                const auto candidate = layer.find(name);
+                if (candidate != layer.end() && (!newest || newest->writeRevision < candidate->second.writeRevision))
+                    newest = &candidate->second;
+            }
+            if (newest == &existing->second)
+                return;
+        }
+    }
+    if (m_runtimeParameterWriteRevision == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("runtime renderer parameter write revision overflow");
+    owners[owner][name] = RuntimeParameterEntry{std::move(property), ++m_runtimeParameterWriteRevision};
     PublishParameterSlot(slot);
 }
 

@@ -120,7 +120,7 @@ class ParticleGpuSurfaceBinding
         std::string name;
         std::string defaultGuid;
         std::string requestedGuid;
-        uint64_t requestedVersion = 0;
+        uint64_t requestedTextureAssetRevision = 0;
         rhi::TextureViewHandle texture;
         rhi::SamplerHandle sampler;
         std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
@@ -138,13 +138,16 @@ class ParticleGpuSurfaceBinding
     };
 
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures,
+                                                       rhi::BufferHandle materialBuffer,
+                                                       rhi::BufferHandle textureIndexBuffer,
                                                        rhi::TextureViewHandle sceneDepth = {},
                                                        bool sceneDepthIsDepth = true) const;
     [[nodiscard]] std::string ResolveMaterialTextureGuid(const TextureBindingState &binding) const;
     [[nodiscard]] bool RebuildBindGroup();
-    [[nodiscard]] bool RefreshTextureIndexBuffer(const std::vector<TextureBindingState> &textures);
+    [[nodiscard]] rhi::BufferHandle CreateTextureIndexBuffer(const std::vector<TextureBindingState> &textures) const;
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
+    void RetireBuffer(rhi::BufferHandle buffer);
     void RetireTexture(std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     rhi::Device *m_device = nullptr;
@@ -158,6 +161,7 @@ class ParticleGpuSurfaceBinding
     rhi::BindGroupHandle m_group;
     std::vector<ViewBindGroup> m_viewGroups;
     rhi::BufferHandle m_materialBuffer;
+    std::vector<uint8_t> m_materialBytes;
     rhi::BufferHandle m_textureIndexBuffer;
     std::vector<TextureBindingState> m_textures;
     GpuBillboardTextureLease m_sceneDepthFallback;

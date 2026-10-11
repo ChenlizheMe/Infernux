@@ -24,7 +24,7 @@ inline bool IsBuiltinSceneIcon(const std::string &path, bool readOnly)
     const auto resources = icons.parent_path();
     const auto owner = resources.parent_path();
     const bool packagedSource =
-        icons.filename() == "icons" && resources.filename() == "resources" && owner.filename() == "Infernux";
+        icons.filename() == "icons" && resources.filename() == "resources" && owner.filename() == "infernux";
     const bool projectLibraryMirror =
         icons.filename() == "icons" && resources.filename() == "Resources" && owner.filename() == "Library";
     return (packagedSource || projectLibraryMirror) &&

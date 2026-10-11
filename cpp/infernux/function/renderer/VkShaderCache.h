@@ -88,6 +88,10 @@ class VkShaderCache
 
     /// Get render-state annotations (nullptr if none stored).
     [[nodiscard]] const ShaderRenderMeta *GetRenderMeta(const std::string &shaderId) const;
+    [[nodiscard]] uint64_t GetRenderMetaRevision() const noexcept
+    {
+        return m_renderMetaRevision;
+    }
 
     // ── SPIR-V Code Lookup ─────────────────────────────────────────────────
 
@@ -101,11 +105,15 @@ class VkShaderCache
     [[nodiscard]] uint64_t GetCodeFingerprint(const std::string &name, const std::string &type) const;
 
     [[nodiscard]] ShaderProgramArtifactPublishResult PublishProgramArtifact(const ShaderProgramArtifact &artifact);
+    /// Materialize the mandatory program without changing the active artifact.
+    [[nodiscard]] bool PrepareProgramArtifact(const ShaderProgramArtifact &artifact);
+    void DiscardPreparedProgramArtifact(const ShaderProgramKey &key);
     [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     ShareProgramArtifact(const ShaderStagePair &stages) const;
     /// Removes only the exact UI-domain revision. Mesh/particle publications are never owned by UI.
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeUIProgramArtifact(const ShaderProgramKey &key);
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeProgramArtifact(const ShaderProgramKey &key);
     /// Materialize one semantic pass on first use. Publishing an artifact only
     /// creates its mandatory Forward program.
     [[nodiscard]] ShaderProgramPublication MaterializeProgramVariant(const ShaderStagePair &stages,
@@ -145,6 +153,7 @@ class VkShaderCache
     std::unordered_map<std::string, std::vector<char>> m_vertCodes;
     std::unordered_map<std::string, std::vector<char>> m_fragCodes;
     std::unordered_map<std::string, ShaderRenderMeta> m_renderMetas;
+    uint64_t m_renderMetaRevision = 0;
     std::unordered_map<ShaderStagePair, std::shared_ptr<const ShaderProgramArtifact>, ShaderStagePairHash>
         m_programArtifacts;
     ShaderProgramCache m_programCache;

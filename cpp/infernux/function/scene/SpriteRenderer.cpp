@@ -1,6 +1,7 @@
 #include "SpriteRenderer.h"
 #include "ComponentFactory.h"
 #include <algorithm>
+#include <cmath>
 #include <core/log/InxLog.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/scene/PrimitiveMeshes.h>
@@ -32,6 +33,38 @@ void SpriteRenderer::SetFrameId(const std::string &frameId)
                 "SpriteRenderer.frameId must be empty or a 32-character lowercase UUID hex string");
     }
     m_frameId = frameId;
+}
+
+namespace
+{
+void RequireFiniteSpriteVector(const glm::vec4 &value)
+{
+    for (int index = 0; index < 4; ++index) {
+        if (!std::isfinite(value[index]))
+            throw std::invalid_argument("Sprite visual parameters must contain only finite values");
+    }
+}
+} // namespace
+
+void SpriteRenderer::PublishSpriteTexture()
+{
+    SetRuntimeParameterProperty(
+        0, {"texSampler", MaterialPropertyType::Texture2D, InxMaterial::RequireTextureGuid(m_spriteGuid)},
+        "sprite-renderer");
+}
+
+void SpriteRenderer::PublishSpriteColor()
+{
+    RequireFiniteSpriteVector(m_color);
+    SetRuntimeParameterProperty(0, {"baseColor", MaterialPropertyType::Color, m_color}, "sprite-renderer");
+}
+
+void SpriteRenderer::PublishSpriteUV(const glm::vec4 &uvRect, const glm::vec4 &displayScale)
+{
+    RequireFiniteSpriteVector(uvRect);
+    RequireFiniteSpriteVector(displayScale);
+    SetRuntimeParameterProperty(0, {"uvRect", MaterialPropertyType::Float4, uvRect}, "sprite-renderer");
+    SetRuntimeParameterProperty(0, {"displayScale", MaterialPropertyType::Float4, displayScale}, "sprite-renderer");
 }
 
 std::shared_ptr<InxMaterial> SpriteRenderer::GetEffectiveMaterial(uint32_t slot) const
@@ -82,8 +115,7 @@ bool SpriteRenderer::DeserializeDocument(const nlohmann::json &j)
         return false;
 
     try {
-        if (j.contains("spriteGuid") && j["spriteGuid"].is_string())
-            m_spriteGuid = j["spriteGuid"].get<std::string>();
+        m_spriteGuid = j.value("spriteGuid", std::string{});
 
         SetFrameId(j["frameId"].get<std::string>());
 
@@ -113,12 +145,11 @@ bool SpriteRenderer::DeserializeDocument(const nlohmann::json &j)
 
 std::unique_ptr<Component> SpriteRenderer::Clone() const
 {
-    // Clone the MeshRenderer base via its Clone, then cast and copy sprite fields.
-    auto baseClone = MeshRenderer::Clone();
-    // MeshRenderer::Clone returns a MeshRenderer — we need a SpriteRenderer.
     auto clone = std::make_unique<SpriteRenderer>();
-    // Copy base MeshRenderer state by re-deserializing
-    clone->DeserializeDocument(SerializeDocument());
+    auto document = SerializeDocument();
+    document.erase("component_id");
+    if (!clone->DeserializeDocument(document))
+        throw std::runtime_error("SpriteRenderer clone could not restore its authored state");
     return clone;
 }
 

@@ -44,11 +44,20 @@ size_t AudioBusSlot(const std::string &busName)
     return static_cast<size_t>(AudioBusIndex(busName) + 1);
 }
 
+bool IsEligibleListener(const AudioListener *listener)
+{
+    if (!listener || listener->IsDestroyed() || !listener->IsEnabled())
+        return false;
+    const auto *owner = listener->GetGameObject();
+    return owner && owner->IsActiveInHierarchy();
+}
+
 } // namespace
 
 struct AudioEngine::AudioVoiceState
 {
     AudioEngine *engine = nullptr;
+    AudioSource *source = nullptr; // Owner thread only; never read by the device callback.
     std::atomic<size_t> busSlot{0};
     std::shared_ptr<const AudioPlaybackPcm> pcm;
     std::unique_ptr<AudioStreamBuffer> streaming;
@@ -143,20 +152,17 @@ bool AudioEngine::Initialize()
 
     // Browser audio devices cannot be opened until a trusted user gesture.
     // Sources may therefore have completed Start() before the device exists.
-    // Replay only the play-on-awake request that could not create a voice;
-    // already-playing sources and inactive components remain untouched.
+    // Consume only an outstanding Start request, in component order. A new
+    // device session must not replay sources the author has already stopped.
     std::vector<AudioSource *> deferredSources;
     {
         std::lock_guard<std::mutex> lock(m_sourcesMutex);
         deferredSources.assign(m_registeredSources.begin(), m_registeredSources.end());
     }
-    for (AudioSource *source : deferredSources) {
-        if (!source || !source->GetPlayOnAwake() || source->IsPlaying() || !source->IsEnabled())
-            continue;
-        GameObject *owner = source->GetGameObject();
-        if (owner && owner->IsActiveInHierarchy())
-            source->Play(0);
-    }
+    std::sort(deferredSources.begin(), deferredSources.end(),
+              [](const auto *left, const auto *right) { return left->GetComponentID() < right->GetComponentID(); });
+    for (AudioSource *source : deferredSources)
+        source->NotifyAudioEngineInitialized();
 
     return true;
 }
@@ -169,16 +175,10 @@ void AudioEngine::Shutdown()
 
     StopPreview();
 
-    std::vector<AudioSource *> sources;
+    std::unordered_set<AudioSource *> sources;
     {
         std::lock_guard<std::mutex> lock(m_sourcesMutex);
-        sources.assign(m_registeredSources.begin(), m_registeredSources.end());
-        m_registeredSources.clear();
-    }
-    for (AudioSource *source : sources) {
-        if (source) {
-            source->NotifyAudioEngineShutdown();
-        }
+        sources = m_registeredSources;
     }
 
     decltype(m_voiceStates) retiringVoices;
@@ -188,6 +188,16 @@ void AudioEngine::Shutdown()
         // stream callback, including voices not owned by an AudioSource.
         retiringVoices.swap(m_voiceStates);
     }
+
+    // Disabled sources are absent from the spatial-update set but still own
+    // paused voices. Invalidate every voice owner before destroying SDL streams.
+    // Scene registrations outlive the device and are retired by components.
+    for (const auto &[stream, state] : retiringVoices) {
+        if (state->source)
+            sources.insert(state->source);
+    }
+    for (AudioSource *source : sources)
+        source->NotifyAudioEngineShutdown();
 
     for (const auto &[stream, state] : retiringVoices) {
         if (!stream) {
@@ -208,12 +218,6 @@ void AudioEngine::Shutdown()
 
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
-    {
-        std::lock_guard<std::mutex> lock(m_listenersMutex);
-        m_registeredListeners.clear();
-    }
-
-    m_activeListener = nullptr;
     m_globalPaused = false;
     m_initialized = false;
     m_realVoiceCount = 0;
@@ -389,12 +393,7 @@ AudioListener *AudioEngine::FindBestListenerLocked(AudioListener *exclude) const
     AudioListener *best = nullptr;
     uint64_t bestId = (std::numeric_limits<uint64_t>::max)();
     for (AudioListener *candidate : m_registeredListeners) {
-        if (!candidate || candidate == exclude || candidate->IsDestroyed() || !candidate->IsEnabled()) {
-            continue;
-        }
-
-        auto *gameObject = candidate->GetGameObject();
-        if (!gameObject || !gameObject->IsActiveInHierarchy()) {
+        if (candidate == exclude || !IsEligibleListener(candidate)) {
             continue;
         }
 
@@ -472,7 +471,7 @@ void AudioEngine::Update(float deltaTime)
     RebalanceVoices();
 }
 
-SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *clip, double startSeconds)
+SDL_AudioStream *AudioEngine::CreateVoice(AudioSource *source, AudioClip *clip, double startSeconds)
 {
     if (!m_initialized || !clip || !clip->IsLoaded()) {
         return nullptr;
@@ -510,6 +509,7 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *c
     }
 
     voiceState->engine = this;
+    voiceState->source = source;
     voiceState->stream = stream;
     voiceState->order = m_nextVoiceOrder++;
     voiceState->pcm = std::move(pcm);
@@ -546,11 +546,11 @@ void AudioEngine::DestroyVoice(SDL_AudioStream *stream)
         }
     }
 
-    if (state) {
-        state->destroyed.store(true, std::memory_order_release);
-        if (state->bound)
-            --m_realVoiceCount;
-    }
+    if (!state)
+        return;
+    state->destroyed.store(true, std::memory_order_release);
+    if (state->bound)
+        --m_realVoiceCount;
 
     SDL_LockAudioStream(stream);
     SDL_SetAudioStreamGetCallback(stream, nullptr, nullptr);
@@ -830,16 +830,14 @@ void AudioEngine::UnregisterSource(AudioSource *source)
 
 void AudioEngine::RegisterListener(AudioListener *listener)
 {
-    if (!listener) {
+    if (!IsEligibleListener(listener)) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(m_listenersMutex);
     const bool inserted = m_registeredListeners.insert(listener).second;
 
-    if (!m_activeListener || m_activeListener == listener || m_activeListener->IsDestroyed() ||
-        !m_activeListener->IsEnabled() || !m_activeListener->GetGameObject() ||
-        !m_activeListener->GetGameObject()->IsActiveInHierarchy()) {
+    if (m_activeListener == listener || !IsEligibleListener(m_activeListener)) {
         m_activeListener = listener;
         return;
     }
@@ -890,6 +888,9 @@ void AudioEngine::SetActiveListener(AudioListener *listener)
         m_activeListener = FindBestListenerLocked();
         return;
     }
+
+    if (!IsEligibleListener(listener))
+        return;
 
     std::lock_guard<std::mutex> lock(m_listenersMutex);
     m_registeredListeners.insert(listener);

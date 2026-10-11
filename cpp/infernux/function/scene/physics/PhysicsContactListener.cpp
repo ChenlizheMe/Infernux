@@ -253,6 +253,9 @@ JPH::ValidateResult InxContactListener::OnContactValidate(const JPH::Body &inBod
             m_ignoredColliderPairs.find(MakeColliderPairKey(
                 collider1->GetComponentID(), collider2->GetComponentID())) != m_ignoredColliderPairs.end())
             return JPH::ValidateResult::RejectContact;
+        // Another manifold for these same bodies may belong to a different,
+        // ignored compound member. Accept only the validated contact.
+        return JPH::ValidateResult::AcceptContact;
     }
     return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
 }

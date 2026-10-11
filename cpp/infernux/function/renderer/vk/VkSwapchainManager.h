@@ -65,7 +65,22 @@ enum class SwapchainResult
 class VkSwapchainManager
 {
   public:
-    using BeforeGenerationCommit = std::function<void()>;
+    using BeforeGenerationRetire = std::function<void()>;
+
+    /// Device-call boundary owned by this presentation instance. Supplying it
+    /// explicitly also permits controlled driver failures without submitting
+    /// invalid work to Vulkan.
+    struct Dispatch
+    {
+        PFN_vkCreateSwapchainKHR createSwapchain;
+        PFN_vkGetSwapchainImagesKHR getSwapchainImages;
+        PFN_vkCreateImageView createImageView;
+        PFN_vkCreateSemaphore createSemaphore;
+        PFN_vkAcquireNextImageKHR acquireNextImage;
+        PFN_vkDestroySwapchainKHR destroySwapchain;
+        PFN_vkDestroyImageView destroyImageView;
+        PFN_vkDestroySemaphore destroySemaphore;
+    };
 
     /// @brief Maximum number of frames that can be processed concurrently
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
@@ -92,6 +107,7 @@ class VkSwapchainManager
      * @return true if creation succeeded
      */
     bool Create(const VkDeviceContext &context, uint32_t width = 0, uint32_t height = 0);
+    bool Create(const VkDeviceContext &context, uint32_t width, uint32_t height, const Dispatch &dispatch);
 
     /**
      * @brief Recreate the swapchain (e.g., after window resize)
@@ -102,7 +118,7 @@ class VkSwapchainManager
      * @return true if recreation succeeded
      */
     bool Recreate(const VkDeviceContext &context, VulkanQueueManager &queues, uint32_t width, uint32_t height,
-                  const BeforeGenerationCommit &beforeCommit);
+                  const BeforeGenerationRetire &beforeRetire);
 
     /**
      * @brief Cleanup all swapchain resources
@@ -155,10 +171,10 @@ class VkSwapchainManager
     // Accessors
     // ========================================================================
 
-    /// @brief Check if swapchain is valid
+    /// @brief Whether the published generation can acquire new images.
     [[nodiscard]] bool IsValid() const
     {
-        return m_generation.swapchain != VK_NULL_HANDLE;
+        return m_generation.swapchain != VK_NULL_HANDLE && !m_generation.retired;
     }
 
     [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept
@@ -232,6 +248,7 @@ class VkSwapchainManager
         VkFormat imageFormat = VK_FORMAT_UNDEFINED;
         VkExtent2D extent{};
         VkImageUsageFlags imageUsage = 0;
+        bool retired = false;
     };
 
     // ========================================================================
@@ -260,8 +277,8 @@ class VkSwapchainManager
     /// @brief Destroy per-image render-finished semaphores
     void DestroyGeneration(SwapchainGeneration &generation) noexcept;
 
-    /// @brief Build a complete unpublished swapchain generation. The currently
-    /// published generation is never mutated by this operation.
+    /// @brief Build an unpublished generation. Passing the published handle to
+    /// vkCreateSwapchainKHR retires it, even when that call or a later step fails.
     bool BuildGeneration(const VkDeviceContext &context, uint32_t width, uint32_t height, VkSwapchainKHR oldSwapchain,
                          SwapchainGeneration &generation);
 
@@ -278,6 +295,7 @@ class VkSwapchainManager
     VkPresentModeKHR m_preferredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 #endif
     VkDevice m_device = VK_NULL_HANDLE;
+    Dispatch m_dispatch{};
     SwapchainGeneration m_generation;
 
     // Presentation synchronization. GPU completion fences are owned by

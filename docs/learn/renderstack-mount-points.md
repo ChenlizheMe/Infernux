@@ -14,7 +14,7 @@ This chapter starts with the Editor workflow available today. Pipeline authoring
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="real Infernux render of a voxel continent with depth of field and color treatment" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene, RenderStack, mounted Effect assets, and MSAA setup used by this chapter.</figcaption>
+  <figcaption>An Infernux demo frame used as a visual reference for scene-wide effects.</figcaption>
 </figure>
 
 ## Start in the Editor {#stack-workflow}
@@ -77,7 +77,7 @@ RenderStack rejects a new slot for an undeclared stage. If a pipeline change rem
 
 The scope belongs to the `EffectStage`; it is absent from the `.effect` asset and from the slot. This lets one reusable asset work at several scopes when their resource contracts and route policies are compatible.
 
-The built-in stages follow the same accumulation. `after_opaque` receives the opaque domain only: scene color plus depth, before sky and transparency. `after_sky` adds the skybox. `after_transparent` receives the complete scene composite, still in linear HDR. `after_camera_ui` adds the Camera Overlay UI on top. `final` runs before display encoding and is the intended home for post-processing chains. `after_screen_ui` receives the display-encoded image plus Screen Overlay UI. Chapter 1 of this course introduced the distinction: Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default.
+The built-in stages follow the same accumulation. `after_opaque` receives the opaque domain only: scene color plus depth, before sky and transparency. `after_sky` adds the skybox. `after_transparent` receives the complete scene composite, still in linear HDR. `after_camera_ui` adds the Camera Overlay UI on top. `final` runs before display encoding and is the intended home for post-processing chains. `after_screen_ui` receives the display-encoded image plus Screen Overlay UI. Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default. [UI actions and scene flow](gameplay-ui-scenes.html) explains how to select these Canvas modes.
 
 The stage contract supplies a local semantic resource bus. Its `inputs` decide whether `color`, `depth`, `normal`, `motion`, `light_list`, or another handle reaches the effect. `light_list` is a read-only, camera-local storage buffer: it is published once per Vulkan frame slot from the canonical light snapshot and never allocates or aliases an author-owned buffer. The renderer also gathers `requires ∪ modifies` from enabled assets early enough to request optional geometry buffers. Both sides must agree: requesting `motion` or `light_list` can make the pipeline produce it, while mounting at a stage that does not expose the requested handle still fails the local contract.
 
@@ -107,7 +107,9 @@ class ScopeProbePipeline(inx.renderstack.RenderPipeline):
         pipeline.screen_ui()
 ```
 
-Save this Python file under `Assets`, select **Scope Probe**, and place test objects in Material Queues `1000`, `1100`, and `1200`. Mount the Edge Fade asset from the previous chapter in one probe list at a time:
+Save this Python file under `Assets`, select **Scope Probe**, and place test objects in Material Queues `1000`, `1100`, and `1200`. The Inspector also includes `after_camera_ui` and `after_screen_ui`, which the standard frame tail declares automatically; the four named probes below are the scope experiment. Mount the Edge Fade asset from the previous chapter in one probe list at a time:
+
+Set each queue through the Material Inspector's **Render Queue** control, which records an explicit override of the shader's default. If you author the `.mat` JSON directly, set the Render Queue bit (`64`) in `renderStateOverrides` as well as `renderState.renderQueue`. Place the objects near the edges of the Game view, keep them visible, and set Edge Fade's intensity to `1.0` for this comparison. The shader barely changes pixels near the center, so a centered object is a poor visibility check.
 
 | Mount | Observable input and result |
 | --- | --- |
@@ -128,14 +130,15 @@ The mount scope and route policy handle this together:
 - `ISOLATE_AND_COMPOSITE` suits an isolated contribution that may grow and must return through depth/alpha composition.
 - `ADDITIVE_EXTRACT` suits light-like energy added to the parent image.
 - `INLINE` uses the current contribution directly.
+- Mixing additive and replacement effects uses `ORDERED_COMPOSITE`: the complete chain executes in Slot/Group order, then geometry-bound color and pixels outside the original coverage are composed separately. Premultiplied alpha preserves both additive light and opaque outlines.
 - A layer-scoped stage lets several routes become one image before processing.
 
 Two overlapping isolated effects still require a pipeline decision. They can run and composite in route order, join a layer first, or move to a later stage. The active pipeline topology records that choice; slot order only settles effects that already share one stage.
 
-Reproduce overflow and policy conflict with the Scope Probe pipeline:
+Reproduce overflow and ordered effect composition with the Scope Probe pipeline:
 
 1. Create the built-in Bloom asset from **Create > Render Effect > Bloom**, mount it at `route_probe`, and use a bright Queue `1000` object whose silhouette overlaps a nearer Queue `1200` object. Bloom uses `ADDITIVE_EXTRACT`; its light can extend beyond the isolated silhouette and returns through the route's composition policy. Check both the halo outside the source mask and the nearer object's occlusion.
-2. Mount Edge Fade beside Bloom in the same `route_probe`. Edge Fade uses `MASK_AND_MODIFY`, a color-replacement policy. The route-policy merge rejects additive extraction mixed with color replacement and reports the affected Stage in the graph-build diagnostic. Move one asset to `layer_probe` or a later Composite stage, or remove it, then confirm the graph rebuilds.
+2. Mount Edge Fade beside Bloom in the same `route_probe`. Both effects must compile and execute. Set both intensities to zero first: the scene must match the version without effects, including the nearer object's occlusion. Then enable the effects and reverse their Slot order; Bloom followed by Edge Fade processes the glow with Edge Fade, while Edge Fade followed by Bloom extracts light from the modified image. The same ordered-chain rule supports custom Edge Detection and other color-replacement effects. Keep both effects at this route; moving one to a later Stage changes the intended scope.
 3. For a custom `creates` resource, mount two effects that both call `bus.set()` with the same semantic. Current ResourceBus behavior is ordered replacement: the later Slot/Group entry wins, with no duplicate-name diagnostic. Rename one semantic when both results must remain available.
 
 ## Mounting one asset more than once {#repeat-mounts}
@@ -152,8 +155,8 @@ Use these checks after editing a RenderStack:
 
 1. **Orphan:** Mount Edge Fade at `route_probe`, save the scene, rename the declaration to `route_probe_v2`, and save the Python file. **Missing Effect Stages** should list `route_probe` and its asset reference. The old Slot remains serialized and does not execute. Call `stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")`, expect `1`, then save the scene and confirm the warning clears.
 2. **Per-effect failure:** Add `requires = {"color", "missing_probe"}` to a copy of Edge Fade and put `if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")` at the start of its `setup_passes()`. Mount it at `route_probe`. **Effect Compile Errors** should include `<stage>/<slot>` and `missing_probe`. Passes and bus publications made by that failing effect are removed; other Slots can remain visible. The explicit check matters because declarations describe the contract and custom implementations still own their bus validation.
-3. **Last valid topology:** Begin with a visible valid graph, then temporarily declare a duplicate `scene_probe` stable ID and save. The Editor logs `Pipeline topology is invalid` and continues showing the last valid Inspector topology/render graph. Remove the duplicate and save again; invalidation allows a fresh build. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.
-4. **Save/reload:** Put two differently named assets in `scene_probe`, record their top-to-bottom order and enabled states, save the scene, close it, and reopen it. The Inspector must restore the same order and state. For source-control evidence, the scene's serialized `effect_slots` records each `slot_id`, `stage_id`, GUID/path reference, and enabled value. Asset parameter values remain in their separate `.effect` or `.effectgroup` documents.
+3. **Last valid topology:** Begin with a visible valid graph, then temporarily declare a duplicate `scene_probe` stable ID and save. The Inspector shows `Pipeline topology is invalid`; Console reports one source-owned graph-build diagnostic, and the last valid Inspector topology/render graph remains active. The rejected effect generation is not retried every frame. Remove the duplicate and save again; invalidation allows a fresh build, and successful runtime publication clears its diagnostic. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.
+4. **Save/reload:** Put two differently named assets in `scene_probe`, record their top-to-bottom order and enabled states, save the scene, close it, and reopen it. The Inspector must restore the same order and state. For source-control evidence, the scene's serialized `effect_slots` records each `slot_id`, `stage_id`, GUID reference, and enabled value. Asset parameter values remain in their separate `.effect` or `.effectgroup` documents.
 
 ## The built-in frame tail {#frame-tail}
 
@@ -212,7 +215,7 @@ This distinction also explains why `before_post_process` and `after_post_process
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="带景深与色彩处理的 Infernux 体素大陆真实画面" loading="lazy" decoding="async">
-  <figcaption>截图来自本章对应的 Infernux 场景、RenderStack、已挂载 Effect 资产与 MSAA 配置。</figcaption>
+  <figcaption>来自 Infernux 演示项目的画面，用于参考场景级效果。</figcaption>
 </figure>
 
 ## 先在 Editor 中挂载 {#stack-workflow_1}
@@ -275,9 +278,9 @@ RenderStack 会拒绝向未声明 Stage 新增 Slot。管线变化导致旧 Stag
 
 Scope 属于 `EffectStage`，不会写进 `.effect` 资产或 Slot。同一份可复用资产只要满足资源契约和 Route Policy，就可以用于多个 Scope。
 
-内置 Stage 遵循同样的累加顺序。`after_opaque` 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。`after_sky` 加上天空盒。`after_transparent` 收到完整场景合成，仍在线性 HDR 空间。`after_camera_ui` 在其上叠加 Camera Overlay UI。`final` 位于显示编码之前，是后处理链的默认归宿。`after_screen_ui` 收到显示编码后的图像与 Screen Overlay UI。本课程第一章介绍了这个区别：Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。
+内置 Stage 遵循同样的累加顺序。`after_opaque` 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。`after_sky` 加上天空盒。`after_transparent` 收到完整场景合成，仍在线性 HDR 空间。`after_camera_ui` 在其上叠加 Camera Overlay UI。`final` 位于显示编码之前，是后处理链的默认归宿。`after_screen_ui` 收到显示编码后的图像与 Screen Overlay UI。Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。[UI 操作与场景流程](gameplay-ui-scenes.html)介绍了这两种 Canvas 模式的设置方法。
 
-Stage 契约会建立局部语义 Resource Bus。它的 `inputs` 决定 `color`、`depth`、`normal`、`motion` 等 Handle 能否到达 Effect。渲染器也会提前汇总启用资产的 `requires ∪ modifies`，以便请求可选几何 Buffer。两边必须一致：请求 `motion` 可以促使管线生成它；挂到没有暴露 `motion` 的 Stage 时，局部契约仍会失败。
+Stage 契约会建立局部语义 Resource Bus。它的 `inputs` 决定 `color`、`depth`、`normal`、`motion`、`light_list` 等 Handle 能否到达 Effect。`light_list` 是只读、每相机的 Storage Buffer：每个 Vulkan Frame Slot 从统一光源快照发布一次，不会分配或别名引用作者自己的 Buffer。渲染器也会提前汇总启用资产的 `requires ∪ modifies`，以便请求可选几何 Buffer。两边必须一致：请求 `motion` 或 `light_list` 可以促使管线准备它；挂到没有暴露对应 Handle 的 Stage 时，局部契约仍会失败。
 
 稳定 ID 属于面向资产的 API。管线作者可以重构内部 Pass 名称与临时纹理，同时保持 `after_opaque` 或 `final` 不变。重命名 Stage 会改变场景契约，旧 Slot 将保持 Orphan 状态，直到完成 Remap。
 
@@ -305,7 +308,9 @@ class ScopeProbePipeline(inx.renderstack.RenderPipeline):
         pipeline.screen_ui()
 ```
 
-把这份 Python 文件保存到 `Assets`，选择 **Scope Probe**，再让测试物体分别使用 Material Queue `1000`、`1100`、`1200`。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：
+把这份 Python 文件保存到 `Assets`，选择 **Scope Probe**，再让测试物体分别使用 Material Queue `1000`、`1100`、`1200`。Inspector 还会显示标准帧尾自动声明的 `after_camera_ui` 和 `after_screen_ui`；这里比较的是下表中的四个自定义 Probe。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：
+
+通过 Material Inspector 的 **Render Queue** 控件设置各个队列，这会显式覆盖 Shader 默认值。如果直接编写 `.mat` JSON，除了 `renderState.renderQueue`，还要在 `renderStateOverrides` 中设置 Render Queue 位（`64`）。比较时把物体放到 Game 视图边缘附近，保持完整可见，并将 Edge Fade 的 intensity 设为 `1.0`。这个 Shader 对画面中心的像素几乎没有影响，居中的物体不适合用来判断效果是否执行。
 
 | 挂载位置 | 可观察的输入与结果 |
 | --- | --- |
@@ -326,14 +331,15 @@ class ScopeProbePipeline(inx.renderstack.RenderPipeline):
 - `ISOLATE_AND_COMPOSITE` 适合可能向外扩张、需要通过深度与 Alpha 合回去的隔离贡献。
 - `ADDITIVE_EXTRACT` 适合加到父图像上的光能。
 - `INLINE` 直接使用当前贡献。
+- 发光与颜色替换混用时采用 `ORDERED_COMPOSITE`：完整效果链按 Slot/Group 顺序执行，再分别合成物体覆盖区域内的颜色和区域外的效果像素。预乘 Alpha 同时保留叠加发光与不透明轮廓。
 - Layer Scope 可以先把多条 Route 合成一张图，再统一处理。
 
 两个互相遮挡的隔离效果仍需要管线做出选择：按 Route 顺序处理并合成，先并入 Layer，或移动到更后的 Stage。活动管线拓扑记录这项选择；Slot 顺序只处理已经位于同一 Stage 的 Effect。
 
-可以用 Scope Probe 管线复现外溢与 Policy 冲突：
+可以用 Scope Probe 管线复现外溢与有序效果组合：
 
 1. 通过 **Create > Render Effect > Bloom** 创建内置 Bloom，把它挂到 `route_probe`。让一个明亮的 Queue `1000` 物体轮廓与更近的 Queue `1200` 物体重叠。Bloom 使用 `ADDITIVE_EXTRACT`；光晕可以超出隔离轮廓，再通过 Route 的合成 Policy 返回父图。检查 Source Mask 外的光晕，也要检查近处物体的遮挡。
-2. 在同一 `route_probe` 中把 Edge Fade 放到 Bloom 旁边。Edge Fade 使用颜色替换型 `MASK_AND_MODIFY`。Route Policy 合并会拒绝 Additive Extract 与颜色替换混用，并在图构建诊断中列出相关 Stage。把其中一个资产移到 `layer_probe` 或更后的 Composite Stage，或将其移除，然后确认图可以重建。
+2. 在同一 `route_probe` 中把 Edge Fade 放到 Bloom 旁边，两者应正常编译和执行。先把两个强度都设为零，画面应与未挂效果时一致，包括前方物体的遮挡。再启用效果并交换 Slot 顺序：Bloom 在前会让 Edge Fade 继续处理光晕，Edge Fade 在前则让 Bloom 从修改后的图像提取发光。这项有序效果链规则也支持自定义 Edge Detection 与其他颜色替换效果。两者应保持在这条 Route；移到其他 Stage 会改变处理范围。
 3. 对于自定义 `creates` 资源，可以挂入两个都会用同一语义调用 `bus.set()` 的 Effect。当前 ResourceBus 按顺序替换，后面的 Slot/Group 条目生效，也不会出现同名诊断。两份结果都需要保留时，请重命名其中一个语义。
 
 ## 同一资产多次挂载 {#repeat-mounts_1}
@@ -350,8 +356,8 @@ Group 条目的 Override 属于 `.effectgroup` 文档。同一 Group 挂载两�
 
 1. **Orphan：** 在 `route_probe` 挂入 Edge Fade，保存场景，把声明改名为 `route_probe_v2`，再保存 Python 文件。**Missing Effect Stages** 应列出 `route_probe` 及其资产引用。旧 Slot 继续序列化，但不会执行。调用 `stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")`，预期返回 `1`；保存场景并确认警告消失。
 2. **单 Effect 失败：** 复制一份 Edge Fade，添加 `requires = {"color", "missing_probe"}`，并在 `setup_passes()` 开头加入 `if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")`。把它挂到 `route_probe`。**Effect Compile Errors** 应包含 `<stage>/<slot>` 与 `missing_probe`。该 Effect 生成的 Pass 与 Bus 发布都会移除，其它 Slot 可以继续显示结果。这里需要显式检查，因为声明负责描述契约，自定义实现仍要负责 Bus 校验。
-3. **上一份有效拓扑：** 先让有效图显示在画面中，再临时重复声明一个 `scene_probe` 稳定 ID 并保存。Editor 会记录 `Pipeline topology is invalid`，继续显示上一份有效 Inspector 拓扑与渲染图。删除重复声明并再次保存后，失效机制允许重新构建。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。
-4. **保存与重载：** 在 `scene_probe` 放入两个名称不同的资产，记下从上到下的顺序与启用状态，保存场景，关闭后重新打开。Inspector 应恢复相同顺序与状态。需要源码管理证据时，可以检查场景序列化字段 `effect_slots`：每项记录 `slot_id`、`stage_id`、GUID/路径引用与启用值。资产参数仍保存在各自的 `.effect` 或 `.effectgroup` 文档中。
+3. **上一份有效拓扑：** 先让有效图显示在画面中，再临时重复声明一个 `scene_probe` 稳定 ID 并保存。Inspector 显示 `Pipeline topology is invalid`，Console 记录一条指向管线源码的构图诊断，上一份有效 Inspector 拓扑与渲染图继续工作。被拒绝的效果版本不会每帧重试。删除重复声明并再次保存后，失效机制允许重新构建；运行时成功发布新图后会清理这条诊断。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。
+4. **保存与重载：** 在 `scene_probe` 放入两个名称不同的资产，记下从上到下的顺序与启用状态，保存场景，关闭后重新打开。Inspector 应恢复相同顺序与状态。需要源码管理证据时，可以检查场景序列化字段 `effect_slots`：每项记录 `slot_id`、`stage_id`、GUID 引用与启用值。资产参数仍保存在各自的 `.effect` 或 `.effectgroup` 文档中。
 
 ## 内置管线的帧尾 {#frame-tail_1}
 

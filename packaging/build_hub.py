@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,7 +14,11 @@ import zipfile
 from pathlib import Path
 from typing import Mapping
 
-from installer.payload import HUB_PAYLOAD_ARCHIVE, create_payload_archive
+from installer.payload import (
+    BUNDLED_ENGINES_DIR,
+    HUB_PAYLOAD_ARCHIVE,
+    create_payload_archive,
+)
 from hub_release import host_platform_id, project_hub_version as _project_version
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
@@ -26,6 +31,117 @@ _FORBIDDEN_WINDOWS_RUNTIME_IMPORTS = (
     "libwinpthread",
     "msys-",
 )
+_QT_PLUGIN_DIR = "PySide6/qt-plugins"
+# Qt pieces the Hub and installer never load. Nuitka matches these against the
+# distribution-relative destination path (case-insensitively on Windows).
+# - PDF: only the qpdf image-format plugin pulls in Qt6Pdf (~4.6 MB).
+# - Image formats: Qt GUIs here load PNG only (built into QtGui); icons are
+#   painted with QPainter. qico is kept for platform .ico handling.
+# - qdirect2d: alternative experimental Windows platform; qwindows is used.
+_QT_EXCLUDED_DLL_PATTERNS = (
+    f"{_QT_PLUGIN_DIR}/imageformats/*qpdf.*",
+    "*Qt6Pdf.*",
+    *(
+        f"{_QT_PLUGIN_DIR}/imageformats/*{name}.*"
+        for name in ("qjpeg", "qwebp", "qtiff", "qgif", "qicns", "qtga", "qwbmp")
+    ),
+    f"{_QT_PLUGIN_DIR}/platforms/*qdirect2d.*",
+)
+# SVG is only dropped on Windows, where file dialogs are native. Linux Qt file
+# dialogs can resolve SVG icon themes through the svg icon engine.
+_QT_EXCLUDED_WINDOWS_DLL_PATTERNS = (
+    f"{_QT_PLUGIN_DIR}/imageformats/*qsvg.*",
+    f"{_QT_PLUGIN_DIR}/iconengines/*qsvgicon.*",
+    "*Qt6Svg.*",
+)
+
+
+def _qt_excluded_dll_patterns() -> tuple[str, ...]:
+    if os.name == "nt":
+        return _QT_EXCLUDED_DLL_PATTERNS + _QT_EXCLUDED_WINDOWS_DLL_PATTERNS
+    return _QT_EXCLUDED_DLL_PATTERNS
+
+
+def _qt_trim_options() -> list[str]:
+    return [
+        # Nuitka only adds Qt translations for QtWebEngine; the Hub translates
+        # itself through i18n.py, so keep them out even if WebEngine appears.
+        "--noinclude-qt-translations",
+        *(f"--noinclude-dlls={pattern}" for pattern in _qt_excluded_dll_patterns()),
+    ]
+
+
+def _untrimmed_qt_files(distribution: Path) -> list[Path]:
+    import fnmatch
+
+    patterns = [os.path.normcase(pattern) for pattern in _qt_excluded_dll_patterns()]
+    leftovers = []
+    for path in distribution.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = os.path.normcase(path.relative_to(distribution).as_posix())
+        if any(fnmatch.fnmatch(relative, pattern) for pattern in patterns):
+            leftovers.append(path)
+    return sorted(leftovers)
+
+
+def _font_data_option(packaging_dir: Path) -> str:
+    """Ship the Hub/installer UI fonts and their OFL licenses together."""
+    return (
+        f"--include-data-dir={packaging_dir / 'resources' / 'fonts'}="
+        "resources/fonts"
+    )
+
+
+def _engine_release_for_hub_version(hub_version: str) -> str:
+    """Map ``0.4.1-3`` (Hub spelling) to ``0.4.1-v3`` (engine wheel spelling)."""
+    from packaging.version import Version
+
+    match = re.fullmatch(r"(.+)-([1-9]\d*)", hub_version)
+    base, build = (match.group(1), int(match.group(2))) if match else (hub_version, 1)
+    base = str(Version(base))
+    return base if build == 1 else f"{base}-v{build}"
+
+
+def _bundled_engine_wheel(release_dir: Path, hub_version: str) -> Path | None:
+    """Return the host engine wheel of this exact release, or ``None``.
+
+    The installer embeds it so a fresh install can create its first project
+    offline. More than one candidate is ambiguous and fails the build.
+    """
+    from version_manager import (
+        wheel_platform_compatible,
+        wheel_python_version,
+        wheel_release,
+    )
+    from wheel_identity import validate_wheel_identity
+
+    expected = _engine_release_for_hub_version(hub_version)
+    candidates = sorted(
+        path
+        for path in (release_dir.glob("infernux-*.whl") if release_dir.is_dir() else ())
+        if path.is_file()
+        and wheel_release(path.name) == expected
+        and wheel_platform_compatible(path.name)
+    )
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        raise RuntimeError(
+            f"Found {len(candidates)} Infernux {expected} engine wheels for this "
+            f"platform in {release_dir}; the installer can embed exactly one: "
+            + ", ".join(path.name for path in candidates)
+        )
+    wheel = candidates[0]
+    if wheel_python_version(wheel.name) != DEFAULT_PYTHON_RUNTIME.series:
+        raise RuntimeError(
+            f"The engine wheel {wheel.name} does not target the installer's default "
+            f"Python {DEFAULT_PYTHON_RUNTIME.series} runtime."
+        )
+    validate_wheel_identity(str(wheel))
+    return wheel
+
+
 def _validate_runtime_bundle(bundle_path: Path) -> None:
     archive = runtime_archive_for_machine()
     runtime_prefix = f"{DEFAULT_PYTHON_RUNTIME.directory_name}/"
@@ -47,6 +163,9 @@ def _validate_runtime_bundle(bundle_path: Path) -> None:
                     "prepare_bundled_python_runtime."
                 )
             marker = json.loads(bundle.read(marker_name))
+            compressions = {
+                info.compress_type for info in bundle.infolist() if not info.is_dir()
+            }
     except RuntimeError:
         raise
     except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
@@ -65,6 +184,12 @@ def _validate_runtime_bundle(bundle_path: Path) -> None:
         raise RuntimeError(
             "The private Python runtime bundle is stale or does not match the pinned "
             f"Python {PYTHON_VERSION} archive. Rebuild prepare_bundled_python_runtime."
+        )
+    if compressions != {zipfile.ZIP_LZMA}:
+        raise RuntimeError(
+            "The private Python runtime bundle is not LZMA-compressed (stale bundle "
+            "format). Clear the preset staging runtime directory and rebuild "
+            "prepare_bundled_python_runtime."
         )
 
 
@@ -247,7 +372,7 @@ def _windows_metadata_options(
     original_filename: str,
 ) -> list[str]:
     file_version = _windows_file_version(_project_version(source_root))
-    icon = source_root / "python" / "Infernux" / "resources" / "icons" / "icon.ico"
+    icon = source_root / "python" / "infernux" / "resources" / "icons" / "icon.ico"
     if not icon.is_file():
         raise RuntimeError(f"Windows application icon is missing: {icon}")
     return [
@@ -294,6 +419,7 @@ def _common_nuitka_command(
         )
     else:
         command.append(f"--output-filename={original_filename}")
+    command.extend(_qt_trim_options())
     if sys.platform.startswith("linux"):
         for package in (
             "libxcb-cursor0", "libxcb-icccm4", "libxcb-image0", "libxcb-keysyms1",
@@ -440,10 +566,15 @@ def _build_hub(
         original_filename="Infernux Hub.exe" if os.name == "nt" else "Infernux Hub",
     ) + [
         "--standalone",
+        # notification_dialog/discussion_view fetch HTTPS through QtNetwork,
+        # which needs a TLS backend plugin (schannel on Windows, OpenSSL on
+        # Linux). Nuitka includes this family by default; keep it explicit.
+        "--include-qt-plugins=tls",
         (
             f"--include-data-file={packaging_dir / 'resources' / 'icon.png'}="
             "resources/icon.png"
         ),
+        _font_data_option(packaging_dir),
         (
             f"--include-data-file={runtime_bundle}="
             "InfernuxHubData/runtime/runtime_bundle.zip"
@@ -456,12 +587,15 @@ def _build_hub(
             f"--include-data-file={packaging_dir / 'hub_uninstall.ps1'}="
             "InfernuxHubData/uninstaller/hub_uninstall.ps1"
         ),
-        "--nofollow-import-to=Infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
+        "--nofollow-import-to=infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
     ]
     if sys.platform == "darwin":
         command.append("--macos-create-app-bundle")
     command.append(str(packaging_dir / "launcher.py"))
     process_env = _nuitka_build_environment(build_env, build_dir)
+    process_env = dict(os.environ if process_env is None else process_env)
+    # Nuitka needs the shared source module, not arbitrary operator import roots.
+    process_env["PYTHONPATH"] = str(source_root / "python")
     _run(command, cwd=packaging_dir, env=process_env)
     reports = _validate_msvc_reports(output_dir) if os.name == "nt" else []
 
@@ -476,6 +610,13 @@ def _build_hub(
     shutil.rmtree(destination, ignore_errors=True)
     if produced.is_dir():
         shutil.copytree(produced, destination)
+        leftovers = _untrimmed_qt_files(destination)
+        if leftovers:
+            print(
+                "WARNING: Nuitka kept Qt files the Hub excludes: "
+                + ", ".join(path.relative_to(destination).as_posix() for path in leftovers),
+                file=sys.stderr,
+            )
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(produced, destination)
@@ -512,8 +653,20 @@ def _build_installer(
     output_dir = build_dir / "nuitka"
     shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+    extra_payload: dict[str, Path] = {}
+    engine_wheel = _bundled_engine_wheel(release_dir, _project_version(source_root))
+    if engine_wheel is None:
+        print(
+            "WARNING: no engine wheel for this release and platform was found in "
+            f"{release_dir}; the installer will not support creating a first "
+            "project offline. Build the wheel preset before the installer.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Embedding engine wheel for offline first project: {engine_wheel.name}")
+        extra_payload[(BUNDLED_ENGINES_DIR / engine_wheel.name).as_posix()] = engine_wheel
     payload_archive = create_payload_archive(
-        hub_payload, build_dir / HUB_PAYLOAD_ARCHIVE
+        hub_payload, build_dir / HUB_PAYLOAD_ARCHIVE, extra_payload
     )
     command = _common_nuitka_command(
         output_dir,
@@ -531,12 +684,15 @@ def _build_installer(
             f"--include-data-file={packaging_dir / 'resources' / 'icon.png'}="
             "resources/icon.png"
         ),
+        _font_data_option(packaging_dir),
         f"--include-data-file={payload_archive}=payload/{HUB_PAYLOAD_ARCHIVE}",
     ]
     if os.name == "nt":
         command.append("--windows-uac-admin")
     command.append(str(packaging_dir / "installer_gui.py"))
     process_env = _nuitka_build_environment(build_env, build_dir)
+    process_env = dict(os.environ if process_env is None else process_env)
+    process_env["PYTHONPATH"] = str(source_root / "python")
     _run(command, cwd=packaging_dir, env=process_env)
     if os.name == "nt":
         _validate_msvc_reports(output_dir)

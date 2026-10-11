@@ -1,16 +1,17 @@
 # Repository automation
 
-All repository-level maintenance entry points live under `scripts/`. Product
-runtime code stays in `cpp/` and `python/`; Hub application code stays in
-`packaging/`; website-specific generators and contract tests stay in
-`docs/tools/`.
+Repository maintenance entry points live under `scripts/`. Product code stays
+in `cpp/` and `python/`; Hub application code stays in `packaging/`. Engine,
+Hub, native, GPU and acceptance tests live under the root `tests/` directory;
+website-specific generators and browser tests stay in `docs/tools/`.
 
 | Directory | Purpose | Primary entry point |
 |:----------|:--------|:--------------------|
-| `acceptance/` | Reusable project-level runtime acceptance, cross-host trajectory comparison, and release evidence manifests | `headless_project_smoke.py` / `compare_headless_trajectories.py` / `build_evidence_manifest.py` |
+| `../tests/acceptance/` | Reusable project-level acceptance and release evidence | `headless_project_smoke.py` / `compare_headless_trajectories.py` / `build_evidence_manifest.py` |
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
+| `maintenance/` | Shared-project and asset synchronization audits | `audit_project_sync.py` |
 | `release/` | Local Hub, installer, and wheel builds; official publication runs in GitHub Actions | `release_hub.bat` |
 | `setup/` | Clone bootstrap and the supported Python 3.13 Conda environment | `configure_development.ps1` / `configure_development.sh` |
 
@@ -43,8 +44,8 @@ the two JSON files to `compare_headless_trajectories.py`. The comparison ignores
 host-specific project paths and checks the sampled state with an explicit
 numeric tolerance.
 
-Browser acceptance dependencies are isolated under `scripts/acceptance/`.
-Run `npm ci --prefix scripts/acceptance` after cloning, then invoke
+Browser acceptance dependencies are isolated under `tests/acceptance/`.
+Run `npm ci --prefix tests/acceptance` after cloning, then invoke
 `web_mobile_input_smoke.cjs` against a locally served Web Player. On Windows it
 uses the installed Microsoft Edge binary; CI hosts may install the pinned
 Playwright Chromium build explicitly.
@@ -59,7 +60,7 @@ For example:
 
 ```powershell
 conda activate infernux
-python scripts/acceptance/build_player.py C:\Projects\Balance android-arm64 C:\Builds\Balance `
+python tests/acceptance/build_player.py C:\Projects\Balance android-arm64 C:\Builds\Balance `
   --option android_artifact='"apk"' `
   --option android_python_prefix='"E:\toolchains\infernux-python-3.13.15-android\arm64-v8a"'
 ```

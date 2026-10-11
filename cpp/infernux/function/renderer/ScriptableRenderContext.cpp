@@ -5,8 +5,8 @@
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
 #include "SceneRenderGraph.h"
-#include "TransientResourcePool.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/TransientResourcePool.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
@@ -111,7 +111,10 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     Camera *editorCam = bridge.GetEditorCamera();
 
-    const bool needsShadowDrawCalls = m_graph && m_graph->HasCameraShadows();
+    // Lighting is staged after RenderPipeline::Render, so the graph's shadow
+    // views here belong to the previous frame. Collect the scene-owned caster
+    // list independently; the current light views filter it during recording.
+    const bool needsShadowDrawCalls = m_graph != nullptr;
     CameraDrawCallResult ownedResult;
     CullingResults results;
 
@@ -177,11 +180,10 @@ void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
     using Clock = std::chrono::high_resolution_clock;
     const auto t0 = Clock::now();
 #endif
-    if (m_graph) {
-        m_graph->ApplyPythonGraph(desc);
-    } else {
-        INXLOG_WARN("ScriptableRenderContext::ApplyGraph: No SceneRenderGraph available");
-    }
+    if (!m_graph)
+        throw std::runtime_error("Render graph publication requires an available render context graph");
+    if (!m_graph->ApplyPythonGraph(desc))
+        throw std::runtime_error("Render graph '" + desc.name + "' publication rejected by native validation");
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.applyGraphMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
@@ -258,8 +260,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         m_vkCore->SetShadowDrawCalls(m_graph->HasCachedShadowDrawCalls() ? &m_graph->GetCachedShadowDrawCalls()
                                                                          : nullptr);
         m_vkCore->ReuseObjectBufferBindingsThisFrame();
-        if (m_transientPool)
-            m_transientPool->EndFrame();
         m_submitted = true;
 #if INFERNUX_FRAME_PROFILE
         g_srcProfileSnapshot.cachedSubmissionReuses += 1.0;
@@ -564,11 +564,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     // all pipeline renders, using the union of all graphs' draw calls.
     // This prevents one graph's cleanup from removing buffers another graph needs.
 
-    // Release transient resources
-    if (m_transientPool) {
-        m_transientPool->EndFrame();
-    }
-
     m_submitted = true;
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.submitMs += std::chrono::duration<double, std::milli>(Clock::now() - submitStart).count();
@@ -610,46 +605,6 @@ void ScriptableRenderContext::ExecuteCommandBuffer(CommandBuffer &cmd)
     const auto &commands = cmd.GetCommands();
     m_pendingCommands.insert(m_pendingCommands.end(), commands.begin(), commands.end());
 }
-
-// Names for the unsupported command types so the once-per-process warning is
-// readable. Keep in lockstep with RenderCommandType (CommandBuffer.h).
-namespace
-{
-const char *RenderCommandTypeName(RenderCommandType type)
-{
-    switch (type) {
-    case RenderCommandType::GetTemporaryRT:
-        return "GetTemporaryRT";
-    case RenderCommandType::ReleaseTemporaryRT:
-        return "ReleaseTemporaryRT";
-    case RenderCommandType::SetRenderTarget:
-        return "SetRenderTarget";
-    case RenderCommandType::ClearRenderTarget:
-        return "ClearRenderTarget";
-    case RenderCommandType::DrawMesh:
-        return "DrawMesh";
-    }
-    return "Unknown";
-}
-
-void WarnUnimplementedCommand(RenderCommandType type)
-{
-    // Per-type latch so each unsupported command logs exactly once per process,
-    // instead of either spamming or silently swallowing after a global cap.
-    constexpr size_t kCommandCount = 16; // bounded by RenderCommandType (uint8_t enum); plenty of slack
-    static std::array<std::atomic<bool>, kCommandCount> warned{};
-    const auto idx = static_cast<size_t>(type);
-    if (idx >= warned.size())
-        return;
-    bool expected = false;
-    if (warned[idx].compare_exchange_strong(expected, true)) {
-        INXLOG_WARN("[SRP] CommandBuffer command '", RenderCommandTypeName(type),
-                    "' is not yet implemented in the Vulkan backend — ignoring all "
-                    "subsequent invocations of this command type for the rest of the process. "
-                    "Subsequent rendering may behave unexpectedly until the backend lands.");
-    }
-}
-} // namespace
 
 RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
 {
@@ -712,13 +667,12 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
             break;
         }
 
-        // Commands that still need the Vulkan command-buffer integration.
-        // See ScriptableRenderContext::IsCommandImplemented for the
-        // canonical "is this safe to call" predicate exposed to bindings.
+        // Public recording rejects these commands. Treat their presence in
+        // a stream as a contract violation, never as successful execution.
         case RenderCommandType::ClearRenderTarget:
         case RenderCommandType::SetRenderTarget:
-            WarnUnimplementedCommand(command.type);
-            break;
+            throw std::logic_error("Unsupported CommandBuffer target command reached execution; "
+                                   "use RenderGraph pass write_color/write_depth and set_clear");
         }
     }
     m_pendingCommands.clear();

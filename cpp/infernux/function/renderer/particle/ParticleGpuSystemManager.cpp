@@ -12,6 +12,7 @@
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
 #include <algorithm>
@@ -25,6 +26,7 @@
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -360,18 +362,46 @@ struct ParticleGpuSystemManager::Impl
         return true;
     }
 
-    [[nodiscard]] bool RecordCollisionUpload(VkCommandBuffer commandBuffer)
+    [[nodiscard]] bool RecordPendingUploads(VkCommandBuffer commandBuffer)
     {
-        if (!requiresCollisionScene || !collisionScene || !collisionScene->HasPendingUpload())
+        const bool collisionPending = requiresCollisionScene && collisionScene && collisionScene->HasPendingUpload();
+        const bool runtimePending = std::any_of(emitters.begin(), emitters.end(), [](const auto &entry) {
+            return entry.second->runtime->HasPendingUploads();
+        });
+        const bool domainPending =
+            graphState && std::any_of(graphState->spawnDomains.begin(), graphState->spawnDomains.end(),
+                                      [](const auto &entry) { return entry.second->HasPendingUploads(); });
+        if (!collisionPending && !runtimePending && !domainPending)
             return true;
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = context->GetRhiDevice().MakeTransferCommandEncoder(transferContext, commandBuffer);
-        if (!collisionScene->RecordPendingUpload(transfer))
+        // Parameters and playback requests also have GPU writers. Include
+        // diagnostic transfers and earlier substeps before targeted overwrites.
+        VkMemoryBarrier before{};
+        before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT |
+                               VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+        if (collisionPending && !collisionScene->RecordPendingUpload(transfer))
             return false;
+        for (const auto &[id, emitter] : emitters) {
+            (void)id;
+            if (emitter->runtime->HasPendingUploads() && !emitter->runtime->RecordPendingUploads(transfer))
+                return false;
+        }
+        if (graphState) {
+            for (const auto &[id, domain] : graphState->spawnDomains) {
+                (void)id;
+                if (domain->HasPendingUploads() && !domain->RecordPendingUploads(transfer))
+                    return false;
+            }
+        }
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                              &barrier, 0, nullptr, 0, nullptr);
         return true;
@@ -792,17 +822,22 @@ struct ParticleGpuSystemManager::Impl
             upload.owner = mesh;
             upload.contentHash = contentHash;
             try {
-                upload.vertexTicket = resources->BeginBufferUpload(
-                    {vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex), rhi::BufferUsage::Storage});
-                upload.indexTicket = resources->BeginBufferUpload(
-                    {sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t), rhi::BufferUsage::Storage});
+                // Inline simulation runs on Graphics; large systems can run on
+                // an independent Compute family. Declare both before allocation.
+                constexpr auto meshQueueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+                upload.vertexTicket =
+                    resources->BeginBufferUpload({vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex),
+                                                  rhi::BufferUsage::Storage, meshQueueAccess});
+                upload.indexTicket =
+                    resources->BeginBufferUpload({sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t),
+                                                  rhi::BufferUsage::Storage, meshQueueAccess});
                 upload.samplingTriangleTicket = resources->BeginBufferUpload(
                     {samplingPrimitives.data(), samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive),
-                     rhi::BufferUsage::Storage});
+                     rhi::BufferUsage::Storage, meshQueueAccess});
                 if (!skinInfluences.empty()) {
                     upload.skinInfluenceTicket = resources->BeginBufferUpload(
                         {skinInfluences.data(), skinInfluences.size() * sizeof(PackedParticleSkinInfluence),
-                         rhi::BufferUsage::Storage});
+                         rhi::BufferUsage::Storage, meshQueueAccess});
                 }
             } catch (const std::exception &exception) {
                 upload.failed = true;
@@ -936,12 +971,14 @@ struct ParticleGpuSystemManager::Impl
             runtimeMesh.edgeCount = meshResources->samplingEdgeCount;
             runtimeMesh.vertices = meshResources->vertices->GetBuffer();
             runtimeMesh.triangles = meshResources->samplingTriangles->GetBuffer();
-            if (mesh.skinnedRenderer.IsValid()) {
+            runtimeMesh.vertexBufferBytes = meshResources->vertices->GetByteSize();
+            runtimeMesh.triangleBufferBytes = meshResources->samplingTriangles->GetByteSize();
+            if (mesh.skinnedRendererHandle) {
                 if (!skinnedMeshResolver) {
                     SetError(error, "GPU particle SkinnedMeshRenderer resolver is unavailable");
                     return false;
                 }
-                const auto snapshot = skinnedMeshResolver(mesh.skinnedRenderer);
+                const auto snapshot = skinnedMeshResolver(mesh.skinnedRendererHandle());
                 if (!snapshot || !snapshot->mesh || snapshot->mesh.get() != mesh.mesh.get() || !snapshot->model ||
                     !snapshot->currentPalette || snapshot->currentPalette->empty() ||
                     snapshot->currentPalette->size() != snapshot->model->skeleton.bones.size() ||
@@ -954,6 +991,7 @@ struct ParticleGpuSystemManager::Impl
                 runtimeMesh.boneCount = static_cast<uint32_t>(snapshot->currentPalette->size());
                 runtimeMesh.poseRevision = snapshot->revision;
                 runtimeMesh.influences = meshResources->skinInfluences->GetBuffer();
+                runtimeMesh.influenceBufferBytes = meshResources->skinInfluences->GetByteSize();
                 runtimeMesh.initialPalette.assign(snapshot->currentPalette->begin(), snapshot->currentPalette->end());
             }
             runtimeMesh.keepAlive = meshResources;
@@ -1627,6 +1665,8 @@ struct ParticleGpuSystemManager::Impl
         state->graph->Initialize(context, deletionQueue);
         auto *graph = state->graph.get();
         std::map<uint64_t, std::vector<std::shared_ptr<Emitter>>> emittersByGraph;
+        std::unordered_map<uint64_t, ParticleGpuGraphSpawnDomain::GraphResources> spawnResources;
+        std::unordered_set<uint64_t> retainedDomains;
         for (const auto &[id, emitter] : candidateEmitters) {
             (void)id;
             if (!emitter || emitter->graphInstanceId == 0) {
@@ -1645,7 +1685,7 @@ struct ParticleGpuSystemManager::Impl
                     return {};
                 }
             }
-            auto domain = std::make_shared<ParticleGpuGraphSpawnDomain>();
+            std::shared_ptr<ParticleGpuGraphSpawnDomain> domain;
             const auto &parameterWords = graphEmitters.front()->sourceProgram.parameterWords;
             if (std::any_of(graphEmitters.begin(), graphEmitters.end(), [&](const auto &emitter) {
                     return emitter->sourceProgram.parameterWords != parameterWords;
@@ -1653,20 +1693,36 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle graph emitters disagree on the shared parameter block");
                 return {};
             }
-            if (!spawnProgram || !spawnProgram->IsValid() ||
-                !domain->Create(context->GetRhiDevice(), graphInstanceId, static_cast<uint32_t>(graphEmitters.size()),
-                                spawnProgram->View(), parameterWords)) {
-                SetError(error, "failed to create the GPU particle graph spawn domain");
-                return {};
+            if (graphState) {
+                const auto resident = graphState->spawnDomains.find(graphInstanceId);
+                if (resident != graphState->spawnDomains.end() &&
+                    resident->second->SlotCount() == graphEmitters.size() &&
+                    std::all_of(graphEmitters.begin(), graphEmitters.end(), [&](const auto &emitter) {
+                        const auto previous = emitters.find(emitter->id);
+                        return previous != emitters.end() && previous->second == emitter;
+                    })) {
+                    domain = resident->second;
+                    retainedDomains.insert(graphInstanceId);
+                }
             }
-            for (const auto &emitter : graphEmitters) {
-                if (!domain->RegisterEmitter(emitter->sourceProgram.graphEmitterIndex, *emitter->runtime)) {
-                    SetError(error, "failed to bind an emitter to the GPU particle graph spawn domain");
+            if (!domain) {
+                domain = std::make_shared<ParticleGpuGraphSpawnDomain>();
+                if (!spawnProgram || !spawnProgram->IsValid() ||
+                    !domain->Create(context->GetRhiDevice(), graphInstanceId,
+                                    static_cast<uint32_t>(graphEmitters.size()), spawnProgram->View(),
+                                    parameterWords)) {
+                    SetError(error, "failed to create the GPU particle graph spawn domain");
                     return {};
+                }
+                for (const auto &emitter : graphEmitters) {
+                    if (!domain->RegisterEmitter(emitter->sourceProgram.graphEmitterIndex, *emitter->runtime)) {
+                        SetError(error, "failed to bind an emitter to the GPU particle graph spawn domain");
+                        return {};
+                    }
                 }
             }
             const std::string prefix = "GpuParticleGraph/" + std::to_string(graphInstanceId);
-            if (!domain->Attach(*graph, prefix)) {
+            if (!domain->Attach(*graph, prefix, spawnResources[graphInstanceId])) {
                 SetError(error, "failed to attach the GPU particle graph spawn prepass");
                 return {};
             }
@@ -1691,10 +1747,19 @@ struct ParticleGpuSystemManager::Impl
             const auto domain = state->spawnDomains.find(emitter->graphInstanceId);
             if (domain == state->spawnDomains.end() ||
                 !scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, *domain->second,
+                                   spawnResources.at(emitter->graphInstanceId),
                                    emitter->sourceProgram.graphEmitterIndex, prefix, emitter->migration.get(),
                                    emitter->ribbonTopology.get())) {
                 SetError(error, "failed to attach GPU particle emitter to the simulation graph");
                 return {};
+            }
+            if (retainedDomains.count(emitter->graphInstanceId) != 0) {
+                const auto previous = graphState->schedulerById.find(id);
+                if (previous == graphState->schedulerById.end() ||
+                    !scheduler->PreserveSchedulingFrom(*previous->second)) {
+                    SetError(error, "failed to preserve scheduling for an unchanged GPU particle emitter");
+                    return {};
+                }
             }
             state->schedulerById.emplace(id, scheduler.get());
             state->schedulers.push_back(std::move(scheduler));
@@ -1867,17 +1932,15 @@ bool ParticleGpuSystemManager::Initialize(
     GpuParticleSkinnedMeshResolver skinnedMeshResolver, const GpuParticleSortProgram &sortProgram,
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
     const GpuParticleMigrationProgram &migrationProgram, const GpuParticleSpawnProgram &spawnProgram,
-    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
-    uint32_t framesInFlight)
+    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
-        !spawnProgram.IsValid() || framesInFlight == 0 ||
-        ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
+        !spawnProgram.IsValid() || ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
         INXLOG_ERROR("ParticleGpuSystemManager initialization contract rejected: impl=", m_impl != nullptr,
                      " already_initialized=", m_impl && m_impl->context != nullptr, " context=", context.IsValid(),
                      " bounds=", boundsProgram.IsValid(), " migration=", migrationProgram.IsValid(),
                      " spawn=", spawnProgram.IsValid(), " ribbon_topology=", ribbonTopologyProgram.IsValid(),
-                     " ribbon_render=", ribbonRenderProgram.IsValid(), " frames=", framesInFlight);
+                     " ribbon_render=", ribbonRenderProgram.IsValid());
         return false;
     }
     m_impl->context = &context;
@@ -1889,8 +1952,7 @@ bool ParticleGpuSystemManager::Initialize(
     m_impl->vectorFieldTextureResolver = std::move(vectorFieldTextureResolver);
     m_impl->skinnedMeshResolver = std::move(skinnedMeshResolver);
     m_impl->collisionScene = std::make_unique<ParticleGpuCollisionScene>();
-    if (!m_impl->collisionScene->Create(context.GetRhiDevice(), ParticleGpuCollisionScene::DefaultCapacity,
-                                        framesInFlight)) {
+    if (!m_impl->collisionScene->Create(context.GetRhiDevice(), ParticleGpuCollisionScene::DefaultCapacity)) {
         INXLOG_ERROR("ParticleGpuSystemManager failed to create the collision scene");
         Shutdown();
         return false;
@@ -2090,12 +2152,12 @@ bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphPro
 }
 
 bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
-                                                     const std::vector<uint32_t> &parameterWords, std::string *error)
+                                                     const std::vector<GpuParticleParameterUpdate> &updates,
+                                                     std::string *error)
 {
     if (error)
         error->clear();
-    if (!m_impl || !m_impl->context || graphInstanceId == 0 || parameterWords.empty() ||
-        parameterWords.size() % 4 != 0) {
+    if (!m_impl || !m_impl->context || graphInstanceId == 0 || updates.empty()) {
         SetError(error, "GPU particle parameter update is invalid");
         return false;
     }
@@ -2109,8 +2171,13 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
         SetError(error, "GPU particle graph instance is not active");
         return false;
     }
-    if (std::any_of(targets.begin(), targets.end(), [&](const auto &emitter) {
-            return !emitter->runtime || emitter->sourceProgram.parameterWords.size() != parameterWords.size();
+    const size_t wordCount = targets.front()->sourceProgram.parameterWords.size();
+    if (std::any_of(targets.begin(), targets.end(),
+                    [&](const auto &emitter) {
+                        return !emitter->runtime || emitter->sourceProgram.parameterWords.size() != wordCount;
+                    }) ||
+        std::any_of(updates.begin(), updates.end(), [&](const auto &update) {
+            return uint64_t(update.wordOffset) + update.words.size() > wordCount;
         })) {
         SetError(error, "GPU particle parameter layout does not match the active graph");
         return false;
@@ -2120,13 +2187,33 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
         return false;
     }
     const auto domain = m_impl->graphState->spawnDomains.find(graphInstanceId);
-    if (domain == m_impl->graphState->spawnDomains.end() || !domain->second->UpdateParameters(parameterWords)) {
+    if (domain == m_impl->graphState->spawnDomains.end() || !domain->second->UpdateParameters(updates)) {
         SetError(error, "GPU particle shared parameter upload failed");
         return false;
     }
     for (const auto &emitter : targets)
-        emitter->sourceProgram.parameterWords = parameterWords;
+        for (const auto &update : updates)
+            std::copy(update.words.begin(), update.words.end(),
+                      emitter->sourceProgram.parameterWords.begin() + update.wordOffset);
     return true;
+}
+
+void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
+{
+    if (!m_impl)
+        return;
+    if (m_impl->collisionScene)
+        m_impl->collisionScene->NotifySubmission(submitted);
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)id;
+        emitter->runtime->NotifySubmission(submitted);
+    }
+    if (m_impl->graphState) {
+        for (const auto &[id, domain] : m_impl->graphState->spawnDomains) {
+            (void)id;
+            domain->NotifySubmission(submitted);
+        }
+    }
 }
 
 bool ParticleGpuSystemManager::PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
@@ -2152,6 +2239,28 @@ uint32_t ParticleGpuSystemManager::CollisionSceneColliderCount() const noexcept
 bool ParticleGpuSystemManager::RequiresCollisionScene() const noexcept
 {
     return m_impl && m_impl->requiresCollisionScene;
+}
+
+void ParticleGpuSystemManager::InvalidateTextureAssets(const std::string &textureGuid)
+{
+    if (!m_impl || textureGuid.empty())
+        return;
+    std::unordered_set<InxMaterial *> invalidated;
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        for (const auto &output : emitter->outputs) {
+            const auto &material = output.material;
+            if (!material || material->IsDeleted() || invalidated.count(material.get()))
+                continue;
+            for (const auto &[name, property] : material->GetAllProperties()) {
+                if (property.type == MaterialPropertyType::Texture2D &&
+                    std::get<std::string>(property.value) == textureGuid) {
+                    material->InvalidateTextureAssets(textureGuid, false);
+                    invalidated.insert(material.get());
+                    break;
+                }
+            }
+        }
+    }
 }
 
 bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
@@ -2281,7 +2390,8 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
     const auto emitter = m_impl->emitters.find(id);
     if (emitter == m_impl->emitters.end())
         return false;
-    return BeginFrameBatch(emitter->second->graphInstanceId, {{id, {}, request, transforms}});
+    return BeginFrameBatch(emitter->second->graphInstanceId,
+                           {{id, {}, request, transforms, emitter->second->sourceProgram.ownerLayerMask}});
 }
 
 bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
@@ -2368,11 +2478,11 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     for (const auto &entry : prepared) {
         std::vector<GpuSkinnedMeshFrameData> skinnedSources;
         for (const auto &mesh : entry.emitter->sourceProgram.meshInterfaces) {
-            if (!mesh.skinnedRenderer.IsValid())
+            if (!mesh.skinnedRendererHandle)
                 continue;
             if (!m_impl->skinnedMeshResolver)
                 return false;
-            const auto snapshot = m_impl->skinnedMeshResolver(mesh.skinnedRenderer);
+            const auto snapshot = m_impl->skinnedMeshResolver(mesh.skinnedRendererHandle());
             // A scene object may be destroyed between authoring and this frame.
             // Retain the last valid pose until the graph parameter is changed;
             // never invalidate a resident bind group mid-frame.
@@ -2410,6 +2520,7 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         }
     }
     spawnDomain->second->MarkFramePending();
+    bool ownerLayersChanged = false;
     for (const auto &entry : prepared) {
         entry.emitter->queuedFrameRequests.assign(entry.sequence.begin() + 1, entry.sequence.end());
         entry.emitter->hasFrameRequest = true;
@@ -2419,7 +2530,16 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         entry.emitter->lastRender = entry.item->request.render;
         entry.emitter->lastOffscreenPolicy = entry.item->request.offscreenPolicy;
         entry.emitter->lastBoundsMode = entry.item->request.boundsMode;
+        auto &ownerLayerMask = entry.emitter->sourceProgram.ownerLayerMask;
+        if (ownerLayerMask != entry.item->ownerLayerMask) {
+            ownerLayerMask = entry.item->ownerLayerMask;
+            ownerLayersChanged = true;
+        }
     }
+    // Layer edits publish only draw metadata. The resident simulation, state
+    // buffers, scheduler and emitter identities remain unchanged.
+    if (ownerLayersChanged && !m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(m_impl->emitters)))
+        throw std::logic_error("Resident particle layer update produced invalid draw entries");
     if (resetCollisionDiagnostics) {
         for (auto &request : m_impl->pendingDiagnostics) {
             if (request.graphInstanceId == graphInstanceId && request.resetPending)
@@ -2483,8 +2603,8 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
 {
     if (!m_impl || !m_impl->graphState || !m_impl->graphState->graph || commandBuffer == VK_NULL_HANDLE)
         return;
-    if (!m_impl->RecordCollisionUpload(commandBuffer))
-        INXLOG_ERROR("GPU particle collision scene upload failed");
+    if (!m_impl->RecordPendingUploads(commandBuffer))
+        throw std::runtime_error("GPU particle input upload failed");
     bool hasPendingEmitter = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                                          [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
     uint32_t recordedSteps = 0;
@@ -2500,6 +2620,8 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
             break;
         }
         hasPendingEmitter = true;
+        if (recordedSteps < Impl::MaxQueuedSimulationStepsPerSubmission && !m_impl->RecordPendingUploads(commandBuffer))
+            throw std::runtime_error("GPU particle substep input upload failed");
     }
     m_impl->RecordDiagnostics(commandBuffer);
 }
@@ -2541,6 +2663,12 @@ bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
         return true;
     if (!m_impl->pendingDiagnostics.empty() || m_impl->HasQueuedFrameRequests())
         return true;
+    if (std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
+                    [](const auto &entry) { return entry.second->runtime->HasPendingUploads(); }))
+        return true;
+    if (std::any_of(m_impl->graphState->spawnDomains.begin(), m_impl->graphState->spawnDomains.end(),
+                    [](const auto &entry) { return entry.second->HasPendingUploads(); }))
+        return true;
 
     return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                        [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); });
@@ -2557,8 +2685,8 @@ bool ParticleGpuSystemManager::RecordAsyncSimulation(VkCommandBuffer commandBuff
         return false;
     if (m_impl->graphState->asyncRecordingActive)
         m_impl->AbortAsyncRecording();
-    if (!m_impl->RecordCollisionUpload(commandBuffer)) {
-        INXLOG_ERROR("GPU particle collision scene upload failed during async simulation");
+    if (!m_impl->RecordPendingUploads(commandBuffer)) {
+        INXLOG_ERROR("GPU particle input upload failed during async simulation");
         return false;
     }
     auto &state = *m_impl->graphState;

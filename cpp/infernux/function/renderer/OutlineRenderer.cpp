@@ -36,8 +36,6 @@ namespace infernux
 namespace
 {
 
-constexpr uint32_t kOutlineVertexMaterialUBOBinding = 14;
-
 using infernux::vkrender::MakeMultisampleState;
 using infernux::vkrender::MakeShaderStageInfo;
 using infernux::vkrender::MakeTriangleListInputAssembly;
@@ -183,10 +181,9 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
         m_outlineMaskDescSetLayout != VK_NULL_HANDLE || m_outlineCompositePipeline != VK_NULL_HANDLE ||
         m_outlineCompositePipelineLayout != VK_NULL_HANDLE || m_outlineCompositeDescSetLayout != VK_NULL_HANDLE ||
         m_outlineCompositeDescSet != VK_NULL_HANDLE || m_outlineCompositeDescLease.IsValid() ||
-        m_outlineMtlPipelineLayout != VK_NULL_HANDLE || m_outlineMtlSet0Layout != VK_NULL_HANDLE ||
         !m_outlineInstanceBufs.empty() || !m_outlineSkinInstanceBufs.empty() || !m_outlineSkinPaletteBufs.empty() ||
         !m_outlineInstanceAuxBufs.empty() || !m_outlineGlobalsDescSets.empty() || !m_outlineGlobalsDescLeases.empty() ||
-        !m_perMtlOutlinePipelines.empty() || !m_perMtlOutlineDescSets.empty() || !m_perMtlOutlineDescLeases.empty();
+        !m_perMtlOutlinePipelines.empty();
     if (!hasOwnedResources)
         return;
 
@@ -202,13 +199,8 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     descriptorManager.Retire(m_outlineCompositeDescLease);
     for (const auto &lease : m_outlineGlobalsDescLeases)
         descriptorManager.Retire(lease);
-    for (const auto &[key, lease] : m_perMtlOutlineDescLeases) {
-        (void)key;
-        descriptorManager.Retire(lease);
-    }
     m_outlineCompositeDescLease = {};
     m_outlineGlobalsDescLeases.clear();
-    m_perMtlOutlineDescLeases.clear();
 
     DestroyOutlinePipelines();
     vkrender::SafeDestroy(device, m_outlineMaskPipelineLayout);
@@ -216,7 +208,6 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     vkrender::SafeDestroy(device, m_outlineMaskDescSetLayout);
     vkrender::SafeDestroy(device, m_outlineCompositeDescSetLayout);
 
-    m_perMtlOutlineDescSets.clear();
     m_outlineGlobalsDescSets.clear();
 
     VmaAllocator allocator = m_core->GetDeviceContext().GetVmaAllocator();
@@ -241,8 +232,6 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     }
     m_outlineInstanceAuxBufs.clear();
 
-    vkrender::SafeDestroy(device, m_outlineMtlPipelineLayout);
-    vkrender::SafeDestroy(device, m_outlineMtlSet0Layout);
     m_outlineCompositeDescSet = VK_NULL_HANDLE;
     m_outlineMaskRenderingSignature = {};
     m_outlineCompositeRenderingSignature = {};
@@ -437,6 +426,7 @@ void OutlineRenderer::DestroyOutlinePipelines()
     m_outlineMaskPipeline = VK_NULL_HANDLE;
     m_outlineCompositePipeline = VK_NULL_HANDLE;
     m_perMtlOutlinePipelines.clear();
+    m_perMtlOutlineProgramIds.clear();
 
     if (pipelines.empty())
         return;
@@ -457,77 +447,13 @@ void OutlineRenderer::DestroyOutlinePipelines()
 void OutlineRenderer::CreateOutlineMaterialResources()
 {
     VkDevice device = m_core->GetDevice();
-    VmaAllocator allocator = m_core->GetDeviceContext().GetVmaAllocator();
-    uint32_t framesInFlight = m_core->GetMaxFramesInFlight();
-
-    // --- Set 0 layout: vertex material properties only. ---
-    {
-        const VkDescriptorSetLayoutBinding binding = vkrender::MakeDescriptorSetLayoutBinding(
-            kOutlineVertexMaterialUBOBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
-
-        vkrender::CreateDescriptorSetLayout(device, &binding, 1, m_outlineMtlSet0Layout);
-    }
-
-    // --- Pipeline layout: [set0, active camera view, globalsSet2] + push constants ---
-    {
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushRange.offset = 0;
-        pushRange.size = 128; // 2 x mat4
-
-        VkDescriptorSetLayout setLayouts[3] = {m_outlineMtlSet0Layout, m_core->GetPerViewDescSetLayout(),
-                                               m_core->GetGlobalsDescSetLayout()};
-
-        VkPipelineLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layoutInfo.setLayoutCount = 3;
-        layoutInfo.pSetLayouts = setLayouts;
-        layoutInfo.pushConstantRangeCount = 1;
-        layoutInfo.pPushConstantRanges = &pushRange;
-
-        vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_outlineMtlPipelineLayout);
-    }
-
-    // --- Per-frame outline instance buffers (1 mat4 each, host-visible) ---
+    const uint32_t framesInFlight = m_core->GetMaxFramesInFlight();
     m_outlineInstanceBufs.resize(framesInFlight);
     m_outlineSkinInstanceBufs.resize(framesInFlight);
     m_outlineSkinPaletteBufs.resize(framesInFlight);
     m_outlineInstanceAuxBufs.resize(framesInFlight);
-    for (uint32_t i = 0; i < framesInFlight; ++i) {
-        VkBufferCreateInfo bufInfo{};
-        bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufInfo.size = sizeof(glm::mat4);
-        bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VmaAllocationCreateInfo allocCreateInfo{};
-        allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        allocCreateInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-        VmaAllocationInfo vmaAllocInfo{};
-        vmaCreateBuffer(allocator, &bufInfo, &allocCreateInfo, &m_outlineInstanceBufs[i].buffer,
-                        &m_outlineInstanceBufs[i].allocation, &vmaAllocInfo);
-        m_outlineInstanceBufs[i].mapped = vmaAllocInfo.pMappedData;
-
-        // Write identity as initial value
-        glm::mat4 identity(1.0f);
-        std::memcpy(m_outlineInstanceBufs[i].mapped, &identity, sizeof(glm::mat4));
-
-        bufInfo.size = sizeof(GPUInstanceAuxData);
-        VmaAllocationInfo auxAllocationInfo{};
-        vmaCreateBuffer(allocator, &bufInfo, &allocCreateInfo, &m_outlineInstanceAuxBufs[i].buffer,
-                        &m_outlineInstanceAuxBufs[i].allocation, &auxAllocationInfo);
-        m_outlineInstanceAuxBufs[i].mapped = auxAllocationInfo.pMappedData;
-        if (m_outlineInstanceAuxBufs[i].mapped) {
-            GPUInstanceAuxData aux{};
-            aux.previousModel = identity;
-            aux.layerMask = ~0u;
-            std::memcpy(m_outlineInstanceAuxBufs[i].mapped, &aux, sizeof(aux));
-        }
-
-        EnsureOutlineSkinBufferCapacity(i, 1);
-    }
+    for (uint32_t i = 0; i < framesInFlight; ++i)
+        EnsureOutlineBufferCapacity(i, 1, 1);
 
     // --- Per-frame outline globals descriptor sets ---
     {
@@ -553,11 +479,11 @@ void OutlineRenderer::CreateOutlineMaterialResources()
             vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], 0,
                                                     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, uboBufInfo);
 
-            // Binding 1: outline instance buffer (1 mat4)
+            // Binding 1: transforms for selected draws
             VkDescriptorBufferInfo ssboBufInfo{};
             ssboBufInfo.buffer = m_outlineInstanceBufs[i].buffer;
             ssboBufInfo.offset = 0;
-            ssboBufInfo.range = sizeof(glm::mat4);
+            ssboBufInfo.range = VK_WHOLE_SIZE;
             vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], 1,
                                                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ssboBufInfo);
 
@@ -593,7 +519,7 @@ void OutlineRenderer::CreateOutlineMaterialResources()
     }
 }
 
-void OutlineRenderer::EnsureOutlineSkinBufferCapacity(uint32_t frameIndex, size_t boneMatrixCount)
+void OutlineRenderer::EnsureOutlineBufferCapacity(uint32_t frameIndex, size_t instanceCount, size_t boneMatrixCount)
 {
     if (!m_core || frameIndex >= m_outlineSkinInstanceBufs.size() || frameIndex >= m_outlineSkinPaletteBufs.size())
         return;
@@ -603,7 +529,7 @@ void OutlineRenderer::EnsureOutlineSkinBufferCapacity(uint32_t frameIndex, size_
     if (device == VK_NULL_HANDLE || allocator == VK_NULL_HANDLE)
         return;
 
-    auto createStorageBuffer = [&](OutlineSkinBuf &buf, size_t elementCount, size_t elementSize) {
+    auto createStorageBuffer = [&](OutlineStorageBuffer &buf, size_t elementCount, size_t elementSize) {
         const VkDeviceSize byteSize = static_cast<VkDeviceSize>(std::max<size_t>(1, elementCount) * elementSize);
         VkBufferCreateInfo bufInfo{};
         bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -624,25 +550,34 @@ void OutlineRenderer::EnsureOutlineSkinBufferCapacity(uint32_t frameIndex, size_
         }
     };
 
-    auto &skinInstance = m_outlineSkinInstanceBufs[frameIndex];
-    if (skinInstance.buffer == VK_NULL_HANDLE)
-        createStorageBuffer(skinInstance, 1, sizeof(GPUSkinInstanceData));
-
-    auto &skinPalette = m_outlineSkinPaletteBufs[frameIndex];
-    const size_t requiredBones = std::max<size_t>(1, boneMatrixCount);
-    if (skinPalette.buffer == VK_NULL_HANDLE || skinPalette.capacity < requiredBones) {
-        if (skinPalette.buffer != VK_NULL_HANDLE) {
-            const VkBuffer retiredBuffer = skinPalette.buffer;
-            const VmaAllocation retiredAllocation = skinPalette.allocation;
+    auto ensureCapacity = [&](OutlineStorageBuffer &buffer, size_t count, size_t stride) {
+        const size_t required = std::max<size_t>(1, count);
+        if (buffer.buffer != VK_NULL_HANDLE && buffer.capacity >= required)
+            return;
+        if (buffer.buffer != VK_NULL_HANDLE) {
+            const VkBuffer retiredBuffer = buffer.buffer;
+            const VmaAllocation retiredAllocation = buffer.allocation;
             m_core->RetireGpuResource([allocator, retiredBuffer, retiredAllocation] {
                 vmaDestroyBuffer(allocator, retiredBuffer, retiredAllocation);
             });
         }
-        skinPalette = OutlineSkinBuf{};
-        createStorageBuffer(skinPalette, std::max<size_t>(requiredBones, 64), sizeof(glm::mat4));
-    }
+        buffer = OutlineStorageBuffer{};
+        createStorageBuffer(buffer, std::max<size_t>(required, 64), stride);
+    };
+    ensureCapacity(m_outlineInstanceBufs[frameIndex], instanceCount, sizeof(glm::mat4));
+    ensureCapacity(m_outlineInstanceAuxBufs[frameIndex], instanceCount, sizeof(GPUInstanceAuxData));
+    ensureCapacity(m_outlineSkinInstanceBufs[frameIndex], instanceCount, sizeof(GPUSkinInstanceData));
+    ensureCapacity(m_outlineSkinPaletteBufs[frameIndex], boneMatrixCount, sizeof(glm::mat4));
+    auto &skinInstance = m_outlineSkinInstanceBufs[frameIndex];
+    auto &skinPalette = m_outlineSkinPaletteBufs[frameIndex];
 
     if (frameIndex < m_outlineGlobalsDescSets.size() && m_outlineGlobalsDescSets[frameIndex] != VK_NULL_HANDLE) {
+        for (const auto &[binding, buffer] : std::array<std::pair<uint32_t, VkBuffer>, 2>{
+                 {{1, m_outlineInstanceBufs[frameIndex].buffer}, {4, m_outlineInstanceAuxBufs[frameIndex].buffer}}}) {
+            VkDescriptorBufferInfo info{buffer, 0, VK_WHOLE_SIZE};
+            vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[frameIndex], binding,
+                                                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, info);
+        }
         if (skinInstance.buffer != VK_NULL_HANDLE) {
             VkDescriptorBufferInfo skinInstInfo{};
             skinInstInfo.buffer = skinInstance.buffer;
@@ -703,17 +638,24 @@ VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreate
 
 VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
 {
+    const ShaderProgram *program = material->GetPassShaderProgram(ShaderCompileTarget::Forward);
+    if (!program)
+        return VK_NULL_HANDLE;
+    const std::string programId = program->GetShaderId();
     std::string key = material->GetMaterialKey();
     if (key.empty())
         key = material->GetName();
 
     auto it = m_perMtlOutlinePipelines.find(key);
-    if (it != m_perMtlOutlinePipelines.end())
-        return it->second;
-
-    const ShaderProgram *program = material->GetPassShaderProgram(ShaderCompileTarget::Forward);
-    if (!program)
-        return VK_NULL_HANDLE;
+    if (it != m_perMtlOutlinePipelines.end()) {
+        if (m_perMtlOutlineProgramIds.at(key) == programId)
+            return it->second;
+        const VkDevice device = m_core->GetDevice();
+        const VkPipeline retired = it->second;
+        m_core->RetireGpuResource([device, retired] { vkDestroyPipeline(device, retired, nullptr); });
+        m_perMtlOutlinePipelines.erase(it);
+        m_perMtlOutlineProgramIds.erase(key);
+    }
 
     VkShaderModule vertModule = program->GetVertexModule();
     VkShaderModule fragModule = m_core->GetShaderModule("Outline Mask", "fragment");
@@ -727,62 +669,16 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
         MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule),
     };
 
-    VkPipeline pipeline = CreateMaskPipeline(stages.data(), m_outlineMtlPipelineLayout, program->GetVertexReflection());
+    VkPipeline pipeline =
+        CreateMaskPipeline(stages.data(), program->GetPipelineLayout(), program->GetVertexReflection());
     if (pipeline == VK_NULL_HANDLE) {
         INXLOG_WARN("OutlineRenderer: Failed to create per-material outline pipeline for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
 
     m_perMtlOutlinePipelines[key] = pipeline;
+    m_perMtlOutlineProgramIds[key] = programId;
     return pipeline;
-}
-
-VkDescriptorSet OutlineRenderer::GetOrCreateMtlOutlineDescSet(InxMaterial *material)
-{
-    std::string key = material->GetMaterialKey();
-    if (key.empty())
-        key = material->GetName();
-
-    auto it = m_perMtlOutlineDescSets.find(key);
-    if (it != m_perMtlOutlineDescSets.end())
-        return it->second;
-
-    // Get forward render data to access the vertex material UBO buffer when the shader uses one.
-    // Skin-only materials still need a valid set 0 so they can use the real vertex shader with set 2 skin data.
-    MaterialRenderData *renderData = m_core->GetMaterialPipelineManager().GetRenderData(key);
-
-    VkDevice device = m_core->GetDevice();
-
-    auto lease = m_core->GetDeviceContext().GetRhiDevice().GetDescriptorManager().Allocate(
-        m_outlineMtlSet0Layout, vk::DescriptorArena::ViewPersistent);
-    if (!lease.IsValid()) {
-        INXLOG_WARN("OutlineRenderer: Failed to allocate per-material outline descriptor set");
-        return VK_NULL_HANDLE;
-    }
-    VkDescriptorSet descSet = lease.set;
-
-    // Vertex material UBO. Bind a harmless fallback buffer for shaders that do not declare/use this binding;
-    // the set layout still requires a valid descriptor, and skinned outlines must not fall back to the fixed path.
-    VkDescriptorBufferInfo vertMatBufInfo{};
-    if (renderData && renderData->materialDescSet && renderData->materialDescSet->vertexMaterialUBO &&
-        renderData->materialDescSet->vertexMaterialUBO->IsValid()) {
-        vertMatBufInfo.buffer = renderData->materialDescSet->vertexMaterialUBO->GetBuffer();
-        vertMatBufInfo.offset = 0;
-        vertMatBufInfo.range = renderData->materialDescSet->vertexMaterialUBO->GetSize();
-    } else {
-        vertMatBufInfo.buffer = m_core->GetFallbackMaterialUbo();
-        vertMatBufInfo.offset = 0;
-        // The fallback is the renderer's fixed-size material UBO, not a
-        // camera UniformBufferObject. VK_WHOLE_SIZE keeps this descriptor
-        // coupled to the buffer that is actually bound.
-        vertMatBufInfo.range = VK_WHOLE_SIZE;
-    }
-    vkrender::UpdateDescriptorSetWithBuffer(device, descSet, kOutlineVertexMaterialUBOBinding,
-                                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, vertMatBufInfo);
-
-    m_perMtlOutlineDescSets[key] = descSet;
-    m_perMtlOutlineDescLeases[key] = lease;
-    return descSet;
 }
 
 // ============================================================================
@@ -803,12 +699,16 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
     }
 
     uint32_t frameIdx = m_core->GetCurrentFrameSlot() % static_cast<uint32_t>(m_outlineInstanceBufs.size());
-    size_t maxSelectedBones = 1;
+    size_t selectedDrawCount = 0, selectedBoneCount = 0;
     for (const auto &dc : drawCalls) {
-        if (IsOutlinedObject(dc.objectId) && dc.skinBoneMatrices)
-            maxSelectedBones = std::max(maxSelectedBones, dc.skinBoneMatrices->size());
+        if (!IsOutlinedObject(dc.objectId))
+            continue;
+        ++selectedDrawCount;
+        if (dc.skinBoneMatrices)
+            selectedBoneCount += dc.skinBoneMatrices->size();
     }
-    EnsureOutlineSkinBufferCapacity(frameIdx, maxSelectedBones);
+    EnsureOutlineBufferCapacity(frameIdx, selectedDrawCount, selectedBoneCount);
+    uint32_t instanceIndex = 0, boneOffset = 0;
 
     // Render the selected object
     for (const auto &dc : drawCalls) {
@@ -841,92 +741,107 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
         glm::mat3 normalMat3 = glm::transpose(glm::inverse(glm::mat3(dc.worldMatrix)));
         pushData.normalMat = glm::mat4(normalMat3);
 
-        // Check if the material has a custom vertex shader with vertex deformation
+        // Every published material vertex stage defines its silhouette. Deformation
+        // may use time, textures or constants without a vertex material UBO.
         bool usePerMaterialPipeline = false;
         if (dc.material) {
             const ShaderProgram *fwdProgram = dc.material->GetPassShaderProgram(ShaderCompileTarget::Forward);
-            if (fwdProgram && (fwdProgram->HasVertexMaterialUBO() || dc.skinBoneMatrices)) {
+            if (fwdProgram) {
                 VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material.get());
-                VkDescriptorSet mtlDescSet = GetOrCreateMtlOutlineDescSet(dc.material.get());
+                MaterialRenderData *renderData =
+                    m_core->GetMaterialPipelineManager().GetRenderData(dc.material->GetMaterialKey());
+                VkDescriptorSet mtlDescSet =
+                    renderData && renderData->isValid ? renderData->descriptorSet : VK_NULL_HANDLE;
+                if (dc.parameterBlock) {
+                    const auto *descriptor =
+                        m_core->GetMaterialPipelineManager().GetDescriptorManager().GetOrCreateRendererDescriptorSet(
+                            *dc.material, *fwdProgram, dc.parameterBlock);
+                    mtlDescSet = descriptor && descriptor->isValid ? descriptor->descriptorSet : VK_NULL_HANDLE;
+                }
+                const VkPipelineLayout layout = fwdProgram->GetPipelineLayout();
 
                 if (mtlPipeline != VK_NULL_HANDLE && mtlDescSet != VK_NULL_HANDLE) {
-                    const uint64_t descRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(mtlDescSet));
-                    const uint32_t lo = static_cast<uint32_t>(descRaw & 0xffffffffull);
-                    const uint32_t hi = static_cast<uint32_t>((descRaw >> 32) & 0xffffffffull);
-                    const bool suspiciousDesc = (hi == lo && lo != 0u && lo <= 0x000fffffu);
-                    if (suspiciousDesc) {
-                        static int badOutlineDescWarnCount = 0;
-                        if (badOutlineDescWarnCount++ < 24) {
-                            INXLOG_WARN("[OutlineRenderer] suspicious per-material set0 desc=0x", descRaw,
-                                        " material='", dc.material->GetMaterialKey(), "' name='",
-                                        dc.material->GetName(), "' -- fallback to fixed outline path");
-                        }
-                    } else {
-                        // Write the selected object's transform and skin palette as instance 0 for this isolated pass.
-                        std::memcpy(m_outlineInstanceBufs[frameIdx].mapped, &dc.worldMatrix, sizeof(glm::mat4));
-                        if (frameIdx < m_outlineInstanceAuxBufs.size() && m_outlineInstanceAuxBufs[frameIdx].mapped) {
-                            GPUInstanceAuxData aux{};
-                            aux.previousModel = dc.worldMatrix;
-                            aux.objectId = PackGPUObjectId(dc.pickingObjectId != 0 ? dc.pickingObjectId : dc.objectId);
-                            aux.layerMask = dc.layerMask;
-                            std::memcpy(m_outlineInstanceAuxBufs[frameIdx].mapped, &aux, sizeof(aux));
-                        }
-                        GPUSkinInstanceData skinData{};
-                        if (dc.skinBoneMatrices && !dc.skinBoneMatrices->empty() &&
-                            frameIdx < m_outlineSkinInstanceBufs.size() && frameIdx < m_outlineSkinPaletteBufs.size()) {
-                            auto &skinInstance = m_outlineSkinInstanceBufs[frameIdx];
-                            auto &skinPalette = m_outlineSkinPaletteBufs[frameIdx];
-                            if (skinInstance.mapped && skinPalette.mapped &&
-                                skinPalette.capacity >= dc.skinBoneMatrices->size()) {
-                                skinData.boneOffset = 0;
-                                skinData.boneCount = static_cast<uint32_t>(dc.skinBoneMatrices->size());
-                                skinData.flags = kGPUSkinFlagEnabled;
-                                std::memcpy(skinPalette.mapped, dc.skinBoneMatrices->data(),
-                                            dc.skinBoneMatrices->size() * sizeof(glm::mat4));
-                            }
-                        }
-                        if (frameIdx < m_outlineSkinInstanceBufs.size() && m_outlineSkinInstanceBufs[frameIdx].mapped)
-                            std::memcpy(m_outlineSkinInstanceBufs[frameIdx].mapped, &skinData,
-                                        sizeof(GPUSkinInstanceData));
-
-                        // Bind per-material pipeline
-                        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mtlPipeline);
-
-                        // Set 0: scene UBO + vertex material UBO
-                        vkdebug::CmdBindDescriptorSetsTracked(
-                            "OutlineRenderer.RenderOutlineMask.Set0", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_outlineMtlPipelineLayout, 0, 1, &mtlDescSet, 0, nullptr);
-
-                        vkdebug::CmdBindDescriptorSetsTracked(
-                            "OutlineRenderer.RenderOutlineMask.Set1", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_outlineMtlPipelineLayout, 1, 1, &perViewDescSet, 0, nullptr);
-
-                        // Set 2: outline globals (globals UBO + outline instance buffer)
-                        VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];
-                        vkdebug::CmdBindDescriptorSetsTracked(
-                            "OutlineRenderer.RenderOutlineMask.Set2", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_outlineMtlPipelineLayout, 2, 1, &globalsDescSet, 0, nullptr);
-
-                        vkCmdPushConstants(cmdBuf, m_outlineMtlPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                           sizeof(PushConstants), &pushData);
-
-                        // Draw with firstInstance=0 so gl_InstanceIndex=0 reads instanceModels[0]
-                        vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, 0, 0);
-                        usePerMaterialPipeline = true;
+                    // Write the selected object's transform and skin palette in distinct storage for each recorded
+                    // draw.
+                    std::memcpy(static_cast<glm::mat4 *>(m_outlineInstanceBufs[frameIdx].mapped) + instanceIndex,
+                                &dc.worldMatrix, sizeof(glm::mat4));
+                    if (frameIdx < m_outlineInstanceAuxBufs.size() && m_outlineInstanceAuxBufs[frameIdx].mapped) {
+                        GPUInstanceAuxData aux{};
+                        aux.previousModel = dc.worldMatrix;
+                        aux.objectId = PackGPUObjectId(dc.pickingObjectId != 0 ? dc.pickingObjectId : dc.objectId);
+                        aux.layerMask = dc.layerMask;
+                        std::memcpy(static_cast<GPUInstanceAuxData *>(m_outlineInstanceAuxBufs[frameIdx].mapped) +
+                                        instanceIndex,
+                                    &aux, sizeof(aux));
                     }
+                    GPUSkinInstanceData skinData{};
+                    if (dc.skinBoneMatrices && !dc.skinBoneMatrices->empty() &&
+                        frameIdx < m_outlineSkinInstanceBufs.size() && frameIdx < m_outlineSkinPaletteBufs.size()) {
+                        auto &skinInstance = m_outlineSkinInstanceBufs[frameIdx];
+                        auto &skinPalette = m_outlineSkinPaletteBufs[frameIdx];
+                        if (skinInstance.mapped && skinPalette.mapped &&
+                            skinPalette.capacity >= boneOffset + dc.skinBoneMatrices->size()) {
+                            skinData.boneOffset = boneOffset;
+                            skinData.boneCount = static_cast<uint32_t>(dc.skinBoneMatrices->size());
+                            skinData.flags = kGPUSkinFlagEnabled;
+                            std::memcpy(static_cast<glm::mat4 *>(skinPalette.mapped) + boneOffset,
+                                        dc.skinBoneMatrices->data(), dc.skinBoneMatrices->size() * sizeof(glm::mat4));
+                        }
+                    }
+                    if (frameIdx < m_outlineSkinInstanceBufs.size() && m_outlineSkinInstanceBufs[frameIdx].mapped)
+                        std::memcpy(static_cast<GPUSkinInstanceData *>(m_outlineSkinInstanceBufs[frameIdx].mapped) +
+                                        instanceIndex,
+                                    &skinData, sizeof(GPUSkinInstanceData));
+
+                    // Bind per-material pipeline
+                    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mtlPipeline);
+
+                    // Set 0: the published material resources, including vertex properties and textures
+                    vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set0", cmdBuf,
+                                                          VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &mtlDescSet, 0,
+                                                          nullptr);
+
+                    vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set1", cmdBuf,
+                                                          VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1,
+                                                          &perViewDescSet, 0, nullptr);
+
+                    // Set 2: outline globals (globals UBO + outline instance buffer)
+                    VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];
+                    vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set2", cmdBuf,
+                                                          VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
+                                                          &globalsDescSet, 0, nullptr);
+
+                    if (fwdProgram->UsesBindlessTextureABI()) {
+                        auto &device = m_core->GetDeviceContext().GetRhiDevice();
+                        const VkDescriptorSet textures = device.Resolve(device.GetBindlessTextureTableBinding().group);
+                        vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set3", cmdBuf,
+                                                              VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 3, 1, &textures,
+                                                              0, nullptr);
+                        const auto *indices =
+                            m_core->GetMaterialPipelineManager().GetDescriptorManager().GetBindlessTextureIndices(
+                                mtlDescSet);
+                        device.MarkBindlessTexturesUsed(indices && !indices->empty() ? indices->data() : nullptr,
+                                                        indices ? indices->size() : 0);
+                    }
+
+                    vkCmdPushConstants(cmdBuf, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
+
+                    vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, dc.vertexStart, instanceIndex++);
+                    boneOffset += skinData.boneCount;
+                    usePerMaterialPipeline = true;
                 }
             }
         }
 
-        // Fallback: original fixed outline mask pipeline (no vertex deformation)
-        if (!usePerMaterialPipeline) {
+        // Geometry without a published material uses the built-in vertex stage.
+        if (!usePerMaterialPipeline && !dc.material) {
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipeline);
             vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.FallbackSet1", cmdBuf,
                                                   VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineMaskPipelineLayout, 1, 1,
                                                   &perViewDescSet, 0, nullptr);
             vkCmdPushConstants(cmdBuf, m_outlineMaskPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(PushConstants), &pushData);
-            vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, 0, 0);
+            vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, dc.vertexStart, 0);
         }
     }
 }

@@ -97,10 +97,9 @@ void CapsuleCollider::AutoFitToMesh()
         m_radius = std::max(std::max(extent.x, extent.y) * 0.5f, 0.001f);
     }
 
-    // Capsule constraint: height >= 2 * radius
-    if (m_height < m_radius * 2.0f) {
-        m_height = m_radius * 2.0f + 0.001f;
-    }
+    // Auto-fit is an authoring operation and must satisfy the same minimum
+    // cylinder height as the setters and document validator, including ties.
+    m_height = std::max(m_height, m_radius * 2.0f + 0.001f);
 }
 
 void *CapsuleCollider::CreateJoltShapeRaw() const

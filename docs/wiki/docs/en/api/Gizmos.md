@@ -1,7 +1,7 @@
 # Gizmos
 
 <div class="class-info">
-class in <b>Infernux.gizmos</b>
+class in <b>infernux.gizmos</b>
 </div>
 
 ## Description

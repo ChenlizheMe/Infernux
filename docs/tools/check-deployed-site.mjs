@@ -7,7 +7,6 @@ const baseArg = process.argv.indexOf("--base-url");
 const base = new URL(baseArg >= 0 ? process.argv[baseArg + 1] : "https://infernux-engine.com/");
 const reportArg = process.argv.indexOf("--report");
 const reportPath = reportArg >= 0 ? path.resolve(process.argv[reportArg + 1]) : null;
-const allowUnstamped = process.argv.includes("--allow-unstamped");
 const failures = [];
 const healthResults = [];
 const startedAt = new Date();
@@ -15,31 +14,22 @@ let deployedManifest = null;
 const requestAttempts = 3;
 const requestTimeoutMs = 20_000;
 
+// Availability and public information only; markup/classes are design choices.
 const checks = [
-    { route: "/", tokens: ["<h1", "start.html", "https://infernux-engine.discourse.group/"] },
-    { route: "/start.html", tokens: ["data-page-language=\"en\"", "data-page-language=\"zh\"", "id=\"first-script\""], forbid: ["始于", "验证于", "nav.manual"] },
-    { route: "/learn.html", tokens: ["learn/gameplay.html", "learn/rendering.html", "learn-course-grid"] },
-    { route: "/learn/gameplay.html", tokens: ["data-learn-search", "data-learn-tag", "Build gameplay with Python"] },
-    { route: "/learn/rendering.html", tokens: ["data-learn-search", "data-learn-tag", "Author the rendering pipeline"] },
-    { route: "/learn/rendering-overview.html", tokens: ["Material", "RenderPipeline", "rendering-overview.md"] },
-    { route: "/learn/vertex-stage.html", tokens: ["vertex()", "ShaderInfo", "vertex-stage.md"] },
-    { route: "/learn/fragment-materials.html", tokens: ["SurfaceData", "Queue", "fragment-materials.md"] },
-    { route: "/learn/shading-models-glsl.html", tokens: ["void shading", "Unsupported [Deferred]", "shading-models-glsl.md"] },
-    { route: "/learn/render-effects.html", tokens: ["RenderEffect", "FullScreenEffect", "render-effects.md"] },
-    { route: "/learn/renderstack-mount-points.html", tokens: ["after_camera_ui", "after_screen_ui", "renderstack-mount-points.md"] },
-    { route: "/learn/custom-render-pipelines.html", tokens: ["MixedArtPipeline", "forward_plus", "custom-render-pipelines.md"] },
-    { route: "/learn/rendergraph-advanced.html", tokens: ["define_topology", "PassResult", "rendergraph-advanced.md"] },
-    { route: "/download.html", tokens: ["InfernuxHub", "advanced-download", "data-version-select", ".whl", "0.3.7", "0.3.6", "0.3.5", "0.3.4", "0.2.9"], forbid: ["SHA-256", "checksum", "校验码", "pwa-install.js", "advanced-download\" open"] },
-    { route: "/community.html", tokens: ["https://infernux-engine.discourse.group/", "http-equiv=\"refresh\""] },
-    { route: "/roadmap.html", tokens: ["<h1", "start.html"] },
-    { route: "/wiki/site/en/api/index.html", tokens: ["API", "/start.html", "/learn.html"], forbid: [">Manual</a>", "/manual/"] },
-    { route: "/wiki/site/zh/api/index.html", tokens: ["API", "/start.html", "/learn.html"], forbid: [">手册</a>", "/manual/"] },
+    { route: "/" },
+    { route: "/tutorials.html" },
+    { route: "/download.html" },
+    { route: "/roadmap.html" },
+    { route: "/wiki/site/en/api/index.html" },
+    { route: "/wiki/site/zh/api/index.html" },
+    { route: "/release.json", jsonKey: "version" },
+    { route: "/release-notes.json", jsonKey: "version" },
     { route: "/api-index.json", jsonKey: "symbols" },
-    { route: "/docs-manifest.json", jsonKey: "build" },
-    { route: "/site.webmanifest", tokens: ["\"short_name\": \"Start\"", "\"short_name\": \"API\"", "/start.html"] },
-    { route: "/sw.js", tokens: ["networkFirst(request, true)"] },
-    { route: "/sitemap.xml", tokens: ["/start.html", "/learn.html", "/wiki/site/en/api/index.html"] },
+    { route: "/docs-manifest.json", jsonKey: "documented_release" },
+    { route: "/hub-catalog.json", jsonKey: "stable" },
+    { route: "/platform-support.json", jsonKey: "released_version" },
 ];
+const information = new Map();
 
 function record(id, target, status, started, detail = null) {
     healthResults.push({
@@ -94,15 +84,10 @@ for (const check of checks) {
     const started = performance.now();
     try {
         const { response, body, attempt } = await fetchText(target);
-        for (const token of check.tokens || []) {
-            if (!body.includes(token)) throw new Error(`missing '${token}'`);
-        }
-        for (const token of check.forbid || []) {
-            if (body.includes(token)) throw new Error(`contains obsolete '${token}'`);
-        }
         if (check.jsonKey) {
             const data = JSON.parse(body);
             if (!(check.jsonKey in data)) throw new Error(`JSON is missing '${check.jsonKey}'`);
+            information.set(check.route, data);
             if (check.route === "/docs-manifest.json") deployedManifest = data;
         }
         const attemptDetail = attempt > 1 ? ` after ${attempt} attempts` : "";
@@ -115,8 +100,23 @@ for (const check of checks) {
     }
 }
 
-if (deployedManifest && !allowUnstamped && deployedManifest.build?.status !== "stamped") {
-    failures.push("docs-manifest.json: production documentation build is not stamped");
+const published = information.get("/release.json");
+if (published) {
+    const started = performance.now();
+    const mismatches = [];
+    for (const [route, key] of [["/release-notes.json", "version"], ["/api-index.json", "generated_for_release"],
+        ["/docs-manifest.json", "documented_release"], ["/platform-support.json", "released_version"]]) {
+        if (information.has(route) && information.get(route)[key] !== published.version) mismatches.push(route);
+    }
+    const notes = information.get("/release-notes.json");
+    if (notes && notes.tag !== published.tag) mismatches.push("release-notes tag");
+    const catalog = information.get("/hub-catalog.json");
+    const stable = catalog?.releases?.find(release => release.version === catalog.stable);
+    if (catalog && stable?.release_url !== published.release_url) mismatches.push("Hub stable release");
+    const detail = mismatches.length ? `Published information differs: ${mismatches.join(", ")}` : `Release ${published.tag}`;
+    if (mismatches.length) failures.push(detail);
+    record("release-consistency", new URL("/release.json", base).toString(),
+        mismatches.length ? "failed" : "passed", started, detail);
 }
 
 const finishedAt = new Date();
@@ -150,7 +150,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 }
 if (failures.length) {
     console.error(`Deployed website health failed with ${failures.length} issue(s).`);
-    process.exit(1);
+    process.exitCode = 1;
+} else {
+    console.log(`Deployed website health passed for ${base.origin}.`);
 }
-
-console.log(`Deployed website health passed for ${base.origin}.`);

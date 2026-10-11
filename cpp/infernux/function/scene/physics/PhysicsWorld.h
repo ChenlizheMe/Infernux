@@ -8,6 +8,9 @@
  * and raycast queries. Integrated with SceneManager::FixedUpdate.
  */
 
+#include "PhysicsConstraintOwner.h"
+#include "PhysicsTargetReference.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -100,6 +103,7 @@ struct RaycastHit
     uint32_t triangleIndex = 0xFFFFFFFF; ///< Cooked triangle index for non-convex mesh hits
     GameObject *gameObject = nullptr;    ///< Hit GameObject
     Collider *collider = nullptr;        ///< Hit Collider component
+    PhysicsTargetReference target;       ///< Safe identity for retained query values
     // Stable numeric identities captured while the published query epoch
     // is held.  Batch bindings must use these rather than dereferencing the
     // raw convenience pointers after the native query boundary has ended.
@@ -230,12 +234,12 @@ class PhysicsWorld
     /// produces fresh Enter events.  Call after changing sensor flag at runtime.
     void InvalidateContactPairsForBody(uint32_t bodyId);
 
-    /// Add an existing body to the broadphase (visible to raycasts/queries).
-    void AddBodyToBroadphase(uint32_t bodyId, bool isStatic);
-
     /// Batch-add bodies to the broadphase using Jolt's AddBodiesPrepare/Finalize.
-    /// Much faster than individual AddBodyToBroadphase for large batches (10k+).
-    void AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies);
+    /// Publish final motion state and queued forces once for each resident body.
+    void AddBodiesBatch(const std::vector<uint32_t> &bodies);
+
+    /// True only after publication to Jolt, not merely after an add was queued.
+    [[nodiscard]] bool IsBodyInBroadphase(uint32_t bodyId) const;
 
     /// Remove a body from the broadphase (body stays alive for re-adding later).
     void RemoveBodyFromBroadphase(uint32_t bodyId);
@@ -250,9 +254,6 @@ class PhysicsWorld
 
     /// Update a body's user layer while preserving whether it is moving/static.
     void SetBodyGameLayer(uint32_t bodyId, int gameLayer);
-
-    /// Set mass override via the body's MassProperties.
-    void SetBodyMassProperties(uint32_t bodyId, float mass);
 
     /// Set linear / angular damping (drag).
     void SetBodyDamping(uint32_t bodyId, float linearDamping, float angularDamping);
@@ -303,15 +304,21 @@ class PhysicsWorld
 
     /// Create a world-space hinge between body A and body B, or body A and
     /// the fixed world when body B is invalid. Limits are radians.
-    uint64_t CreateHingeConstraint(uint32_t bodyIdA, uint32_t bodyIdB, const glm::vec3 &worldAnchor,
-                                   const glm::vec3 &worldAxis, bool useLimits, float minimumAngle, float maximumAngle,
+    uint64_t CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                   const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                   const glm::vec3 &localAnchor, bool useLimits, float minimumAngle, float maximumAngle,
                                    bool enableCollision);
     /// Create a prismatic constraint that permits only translation along one
     /// world-space axis. Limits are metres relative to the creation pose.
-    uint64_t CreateSliderConstraint(uint32_t bodyIdA, uint32_t bodyIdB, const glm::vec3 &worldAnchor,
-                                    const glm::vec3 &worldAxis, bool useLimits, float minimumDistance,
+    uint64_t CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                    const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                    const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
                                     float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
+    void UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                       bool enableCollision);
+    void UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                        bool enableCollision);
     [[nodiscard]] float GetHingeConstraintAngle(uint64_t constraintId) const;
     [[nodiscard]] float GetSliderConstraintPosition(uint64_t constraintId) const;
 
@@ -337,6 +344,10 @@ class PhysicsWorld
     /// (Rigidbody::MovePosition) pass 0 — uncapped, like Unity.
     void MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot, float deltaTime,
                            float maxSpeed = 0.0f);
+
+    /// Compose partial script targets against the pose already queued for this step.
+    void MoveBodyKinematicPosition(uint32_t bodyId, const glm::vec3 &targetPos, float deltaTime);
+    void MoveBodyKinematicRotation(uint32_t bodyId, const glm::quat &targetRot, float deltaTime);
 
     /// Move a collider-only (static) body to a new pose with real velocity so
     /// overlapping dynamic bodies receive momentum (Unity-like drag push).
@@ -382,9 +393,12 @@ class PhysicsWorld
     // Raycast API (Unity: Physics.Raycast)
     // ========================================================================
 
+    /// Resolve omitted query masks at the call boundary, after project configuration.
+    [[nodiscard]] static uint32_t GetDefaultQueryLayerMask();
+
     /// Cast a ray and return the closest hit.  Returns true if hit.
     bool Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
-                 uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
+                 uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Cast a contiguous batch of XYZ float rays against one stable world epoch.
     /// The owner thread first publishes pending authoring state; worker callers
@@ -394,7 +408,7 @@ class PhysicsWorld
     /// Every input row produces one mask entry and one initialized result row;
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
-                      RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                      RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = GetDefaultQueryLayerMask(),
                       bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr,
                       RaycastBatchProfile *outProfile = nullptr) const;
 
@@ -409,7 +423,7 @@ class PhysicsWorld
     /// background workers call this method directly.
     void RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                                RaycastHit *outHits, uint8_t *outHitMask,
-                               uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true,
+                               uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true,
                                uint64_t *outQueryGeneration = nullptr, RaycastBatchProfile *outProfile = nullptr,
                                bool directionsNormalized = false) const;
 
@@ -433,7 +447,7 @@ class PhysicsWorld
 
     /// Cast a ray and return all hits.
     std::vector<RaycastHit> RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
-                                       uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                       uint32_t layerMask = GetDefaultQueryLayerMask(),
                                        bool queryTriggers = true) const;
 
     // ========================================================================
@@ -442,25 +456,25 @@ class PhysicsWorld
 
     /// Find all Colliders within a sphere. Returns list of Collider*.
     std::vector<Collider *> OverlapSphere(const glm::vec3 &center, float radius,
-                                          uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                          uint32_t layerMask = GetDefaultQueryLayerMask(),
                                           bool queryTriggers = true) const;
 
     /// Find all Colliders within an oriented box.
     std::vector<Collider *> OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
                                        const glm::quat &orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-                                       uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                       uint32_t layerMask = GetDefaultQueryLayerMask(),
                                        bool queryTriggers = true) const;
 
     /// Find all Colliders within a capsule defined by world-space segment endpoints.
     std::vector<Collider *> OverlapCapsule(const glm::vec3 &point0, const glm::vec3 &point1, float radius,
-                                           uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                           uint32_t layerMask = GetDefaultQueryLayerMask(),
                                            bool queryTriggers = true) const;
 
     /// Return Rigidbody components whose resident Jolt body bounds intersect
     /// the supplied world-space AABB. This is a broad-phase candidate query:
     /// callers perform their own exact contact test against the body shape.
     std::vector<Rigidbody *> QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
-                                                      uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                                      uint32_t layerMask = GetDefaultQueryLayerMask(),
                                                       bool queryTriggers = false) const;
 
     // ========================================================================
@@ -469,17 +483,17 @@ class PhysicsWorld
 
     /// Cast a sphere along a direction. Returns closest RaycastHit or empty.
     bool SphereCast(const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
-                    RaycastHit &outHit, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                    RaycastHit &outHit, uint32_t layerMask = GetDefaultQueryLayerMask(),
                     bool queryTriggers = true) const;
 
     /// Cast a box along a direction. Returns closest RaycastHit or empty.
     bool BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
                  const glm::quat &orientation, float maxDistance, RaycastHit &outHit,
-                 uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
+                 uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Cast a capsule defined by world-space segment endpoints.
     bool CapsuleCast(const glm::vec3 &point0, const glm::vec3 &point1, float radius, const glm::vec3 &direction,
-                     float maxDistance, RaycastHit &outHit, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                     float maxDistance, RaycastHit &outHit, uint32_t layerMask = GetDefaultQueryLayerMask(),
                      bool queryTriggers = true) const;
 
     // ========================================================================
@@ -533,6 +547,7 @@ class PhysicsWorld
         GameObject *gameObject = nullptr;
         uint64_t colliderId = 0;
         uint64_t gameObjectId = 0;
+        PhysicsTargetReference target;
         bool isTrigger = false;
     };
 
@@ -605,12 +620,23 @@ class PhysicsWorld
     };
     struct ConstraintRecord
     {
+        PhysicsConstraintOwner &owner;
         JPH::Constraint *constraint = nullptr;
         uint32_t bodyIdA = 0xFFFFFFFF;
         uint32_t bodyIdB = 0xFFFFFFFF;
         bool ignoresCollision = false;
         ConstraintKind kind = ConstraintKind::Hinge;
+        glm::vec3 anchorA{0.0f};
+        glm::vec3 anchorB{0.0f};
+        glm::vec3 collapsedOffsetA{0.0f};
+        glm::vec3 collapsedOffsetB{0.0f};
+        glm::vec3 scaleA{1.0f};
+        glm::vec3 scaleB{1.0f};
     };
+    void CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor);
+    void UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale);
+    void ActivateConstraintBodies(const ConstraintRecord &record);
+    void UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision);
     std::unordered_map<uint64_t, ConstraintRecord> m_constraints;
     uint64_t m_nextConstraintId = 1;
 
@@ -628,6 +654,8 @@ class PhysicsWorld
     /// move. See MoveBodyKinematic / MoveStaticBodyWithVelocity.
     struct KinematicMoveState
     {
+        glm::vec3 targetPosition{0.0f};
+        glm::quat targetRotation{1.0f, 0.0f, 0.0f, 0.0f};
         bool movedThisStep = true;  ///< Received a target since the last Step().
         bool restoreStatic = false; ///< Body is a collider-only static, temporarily kinematic.
         int idleSteps = 0;          ///< Steps elapsed without a new target.

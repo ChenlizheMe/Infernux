@@ -22,6 +22,7 @@ class MaterialLoader final : public IAssetLoader
                     InxResourceMeta &metaData) const override;
 
   private:
+    static bool PrepareDocument(class InxMaterial &staged, const std::string &filePath, AssetDatabase *adb);
     static void RegisterDependencies(const std::string &materialGuid, const class InxMaterial &mat, AssetDatabase *adb);
 };
 

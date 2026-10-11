@@ -1,4 +1,5 @@
 #include "MenuBarPanel.h"
+#include <function/renderer/gui/EditorMenuItem.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 
 #include <algorithm>
@@ -23,7 +24,7 @@ bool SemanticMenuItem(InxGUIContext *ctx, const std::string &label, const std::s
                       bool enabled, const std::string &semanticId)
 {
     const bool clicked =
-        ImGui::MenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
+        EditorMenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
     if (ctx && InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("menu_item", label, enabled, semanticId);
     return clicked;
@@ -333,6 +334,7 @@ void MenuBarPanel::RenderMenuContents(InxGUIContext *ctx, const std::string &top
     {
         std::string typeId;
         std::string displayName;
+        std::string titleKey;
     };
 
     struct MenuNode
@@ -365,13 +367,14 @@ void MenuBarPanel::RenderMenuContents(InxGUIContext *ctx, const std::string &top
                     node->translationKey = key;
             }
         }
-        node->entries.push_back(Entry{info.typeId, info.displayName});
+        node->entries.push_back(Entry{info.typeId, info.displayName, info.titleKey});
     }
 
     const auto renderEntry = [&](const Entry &entry) {
         const bool canOpen = CanExecuteCommand("window.open", entry.typeId);
         const bool isOpen = IsCommandChecked("window.open", entry.typeId);
-        if (SemanticMenuItem(ctx, entry.displayName, "", isOpen, canOpen, "window." + entry.typeId))
+        const std::string label = ResolveMenuLabel(entry.titleKey, entry.displayName);
+        if (SemanticMenuItem(ctx, label, "", isOpen, canOpen, "window." + entry.typeId))
             ExecuteCommand("window.open", "menu", entry.typeId);
     };
 

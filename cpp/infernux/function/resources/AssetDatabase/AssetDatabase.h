@@ -11,7 +11,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -195,11 +194,14 @@ class AssetDatabase
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Deleted).
     [[nodiscard]] AssetMutationResult DeleteAsset(const std::string &path);
 
-    /// @brief Move/rename asset preserving GUID.
+    /// @brief Publish an already completed filesystem relocation, preserving GUID.
+    /// The caller moves the asset first; a missing destination is rejected
+    /// before metadata or directory mappings change.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Moved).
     [[nodiscard]] AssetMutationResult MoveAsset(const std::string &oldPath, const std::string &newPath);
 
-    /// Commit a preflighted relocation batch with one catalog publication.
+    /// Commit completed filesystem relocations with one catalog publication.
+    /// All destinations must exist before any metadata is changed.
     [[nodiscard]] std::vector<AssetMutationResult>
     MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves);
 
@@ -481,7 +483,6 @@ class AssetDatabase
         }
 
         std::mutex mutex;
-        std::condition_variable completedCv;
         std::optional<AssetScanArtifact> artifact;
         std::exception_ptr failure;
         uint64_t expectedQueryGeneration = 0;
@@ -521,6 +522,7 @@ class AssetDatabase
         AssetFileFingerprint meta;
         bool readOnly = false;
         bool persistMetadata = true;
+        std::optional<AtomicFileState> expectedMetadata;
     };
 
     struct WorkerImport
@@ -532,6 +534,12 @@ class AssetDatabase
         std::optional<ImportArtifact> artifact;
         std::string error;
         std::thread::id producerThread;
+        std::optional<size_t> skeletonDependency;
+        std::function<std::shared_ptr<const SkeletonDefinitionSnapshot>()> captureSkeletonDefinition;
+        std::shared_ptr<const SkeletonDefinitionSnapshot> producedSkeletonDefinition;
+        bool providesSkeletonDefinition = false;
+        bool scheduled = false;
+        bool complete = false;
     };
 
     struct WorkerMetadataPrepare
@@ -547,7 +555,10 @@ class AssetDatabase
         ResourceType resourceType = ResourceType::DefaultText;
         const IAssetLoader *loader = nullptr;
         std::string fallbackGuid;
+        std::string createdGuid;
+        bool inheritedGuid = false;
         std::optional<InxResourceMeta> metadata;
+        std::optional<AtomicFileState> expectedMetadata;
         std::string error;
         std::thread::id producerThread;
         Mode mode = Mode::CreateOrLoad;
@@ -600,6 +611,7 @@ class AssetDatabase
         std::vector<DocumentTransactionEntry> metadataWrites;
         JobHandle metadataJobs;
         JobHandle importJobs;
+        std::vector<size_t> importWave;
         JobHandle metadataWriteJob;
         JobHandle indexBuildJob;
         std::exception_ptr metadataWriteFailure;
@@ -625,6 +637,8 @@ class AssetDatabase
         std::chrono::steady_clock::time_point commitStarted;
         std::chrono::steady_clock::time_point importStarted;
         std::chrono::steady_clock::time_point metadataWriteStarted;
+        size_t metadataIdentityCursor = 0;
+        std::unordered_map<std::string, std::string> authoredGuidPaths;
         size_t metadataMergeCursor = 0;
         size_t importRequestCursor = 0;
         size_t importResultMergeCursor = 0;
@@ -645,6 +659,7 @@ class AssetDatabase
     void InstallWorkingSet(WorkingSet workingSet);
     void PublishQuerySnapshot(bool includeCatalog = true);
     void PublishModelSubAssetEvents(const std::shared_ptr<const QuerySnapshot> &previous);
+    void PublishRefreshAssetEvents(const WorkingSet &previous);
     void PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
@@ -663,6 +678,7 @@ class AssetDatabase
                                bool includeCatalog = true);
     [[nodiscard]] bool CommitScanArtifact(AssetScanArtifact artifact, uint64_t expectedQueryGeneration);
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
+    [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
@@ -678,19 +694,24 @@ class AssetDatabase
     /// Run the matching importer for this asset (dependency scanning etc.)
     bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
                      const InxResourceMeta *candidateMetadata = nullptr,
-                     const AssetFileFingerprint *expectedSource = nullptr);
+                     const AssetFileFingerprint *expectedSource = nullptr,
+                     const AtomicFileState *expectedMetadata = nullptr);
     bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
     static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
                                         AssetMutationResult &result);
     ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                     const InxResourceMeta &metadata) const;
+    ImportRequest MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
+                                        const InxResourceMeta &metadata) const;
     void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
-                               double *prepareMilliseconds = nullptr, double *persistenceMilliseconds = nullptr,
+                               const AtomicFileState *expectedMetadata, double *prepareMilliseconds = nullptr,
+                               double *persistenceMilliseconds = nullptr,
                                double *livePublicationMilliseconds = nullptr);
     void FinishReimport(AssetMutationResult &result);
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
-                                     bool persistMetadata, const std::string &identityKey);
+                                     bool persistMetadata, const std::string &identityKey,
+                                     std::optional<AtomicFileState> *expectedMetadata = nullptr);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath);
     void RebuildDerivedIndex();

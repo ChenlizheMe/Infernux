@@ -9,15 +9,15 @@
     "changed": 21
   },
   "added": [
-    "Infernux.jit.compile",
-    "Infernux.jit.statistics"
+    "infernux.jit.compile",
+    "infernux.jit.statistics"
   ],
   "removed": [
-    "Infernux.jit.njit"
+    "infernux.jit.njit"
   ],
   "changed": [
     {
-      "symbol_key": "Infernux.Component",
+      "symbol_key": "infernux.Component",
       "changed_fields": [
         "signatures"
       ],
@@ -51,7 +51,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Component.html"
     },
     {
-      "symbol_key": "Infernux.Scene",
+      "symbol_key": "infernux.Scene",
       "changed_fields": [
         "signatures"
       ],
@@ -135,7 +135,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Scene.html"
     },
     {
-      "symbol_key": "Infernux.components.InxComponent",
+      "symbol_key": "infernux.components.InxComponent",
       "changed_fields": [
         "signatures"
       ],
@@ -225,7 +225,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/InxComponent.html"
     },
     {
-      "symbol_key": "Infernux.components.builtin.AudioSource",
+      "symbol_key": "infernux.components.builtin.AudioSource",
       "changed_fields": [
         "signatures"
       ],
@@ -285,7 +285,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/AudioSource.html"
     },
     {
-      "symbol_key": "Infernux.components.builtin.Camera",
+      "symbol_key": "infernux.components.builtin.Camera",
       "changed_fields": [
         "signatures"
       ],
@@ -330,7 +330,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Camera.html"
     },
     {
-      "symbol_key": "Infernux.components.builtin.Collider",
+      "symbol_key": "infernux.components.builtin.Collider",
       "changed_fields": [
         "signatures"
       ],
@@ -353,7 +353,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Collider.html"
     },
     {
-      "symbol_key": "Infernux.components.builtin.MeshCollider",
+      "symbol_key": "infernux.components.builtin.MeshCollider",
       "changed_fields": [
         "signatures"
       ],
@@ -373,7 +373,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/MeshCollider.html"
     },
     {
-      "symbol_key": "Infernux.components.builtin.MeshRenderer",
+      "symbol_key": "infernux.components.builtin.MeshRenderer",
       "changed_fields": [
         "signatures"
       ],
@@ -443,7 +443,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/MeshRenderer.html"
     },
     {
-      "symbol_key": "Infernux.components.builtin.Rigidbody",
+      "symbol_key": "infernux.components.builtin.Rigidbody",
       "changed_fields": [
         "signatures"
       ],
@@ -498,7 +498,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Rigidbody.html"
     },
     {
-      "symbol_key": "Infernux.core.Material",
+      "symbol_key": "infernux.core.Material",
       "changed_fields": [
         "signatures"
       ],
@@ -602,7 +602,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Material.html"
     },
     {
-      "symbol_key": "Infernux.gizmos.Gizmos",
+      "symbol_key": "infernux.gizmos.Gizmos",
       "changed_fields": [
         "signatures"
       ],
@@ -637,7 +637,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Gizmos.html"
     },
     {
-      "symbol_key": "Infernux.input.Input",
+      "symbol_key": "infernux.input.Input",
       "changed_fields": [
         "signatures"
       ],
@@ -714,7 +714,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Input.html"
     },
     {
-      "symbol_key": "Infernux.physics.Physics",
+      "symbol_key": "infernux.physics.Physics",
       "changed_fields": [
         "signatures"
       ],
@@ -773,7 +773,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Physics.html"
     },
     {
-      "symbol_key": "Infernux.rendergraph.RenderGraph",
+      "symbol_key": "infernux.rendergraph.RenderGraph",
       "changed_fields": [
         "signatures"
       ],
@@ -879,7 +879,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/RenderGraph.html"
     },
     {
-      "symbol_key": "Infernux.rendergraph.RenderPassBuilder",
+      "symbol_key": "infernux.rendergraph.RenderPassBuilder",
       "changed_fields": [
         "signatures"
       ],
@@ -940,7 +940,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/RenderPassBuilder.html"
     },
     {
-      "symbol_key": "Infernux.renderstack.RenderStack",
+      "symbol_key": "infernux.renderstack.RenderStack",
       "changed_fields": [
         "signatures"
       ],
@@ -1001,7 +1001,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/RenderStack.html"
     },
     {
-      "symbol_key": "Infernux.scene.SceneManager",
+      "symbol_key": "infernux.scene.SceneManager",
       "changed_fields": [
         "signatures"
       ],
@@ -1057,7 +1057,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/SceneManager.html"
     },
     {
-      "symbol_key": "Infernux.ui.UIButton",
+      "symbol_key": "infernux.ui.UIButton",
       "changed_fields": [
         "signatures"
       ],
@@ -1094,7 +1094,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/UIButton.html"
     },
     {
-      "symbol_key": "Infernux.ui.UICanvas",
+      "symbol_key": "infernux.ui.UICanvas",
       "changed_fields": [
         "signatures"
       ],
@@ -1135,7 +1135,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/UICanvas.html"
     },
     {
-      "symbol_key": "Infernux.ui.UIImage",
+      "symbol_key": "infernux.ui.UIImage",
       "changed_fields": [
         "signatures"
       ],
@@ -1154,7 +1154,7 @@
       "canonical_url": "https://infernux-engine.com/wiki/site/en/api/UIImage.html"
     },
     {
-      "symbol_key": "Infernux.ui.UIText",
+      "symbol_key": "infernux.ui.UIText",
       "changed_fields": [
         "signatures"
       ],

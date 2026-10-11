@@ -1,7 +1,7 @@
 # Mathf
 
 <div class="class-info">
-class in <b>Infernux.mathf</b>
+class in <b>infernux.mathf</b>
 </div>
 
 ## Description

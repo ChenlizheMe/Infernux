@@ -1,0 +1,25 @@
+.tutorials-page { padding: 42px 0 88px; }
+.tutorial-hub { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 32px; align-items: end; margin: 0 auto 36px; padding: 12px 0 30px; border-bottom: 1px solid var(--border-strong); }
+.tutorial-hub-copy { max-width: 700px; }
+.tutorial-hub h1 { margin: 10px 0; font-family: var(--font-display); font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1; }
+.tutorial-hub p { margin: 0; color: var(--text-soft); font-size: 1rem; line-height: 1.7; }
+.tutorial-tabs { display: flex; gap: 8px; align-items: stretch; }
+.tutorial-tab { min-height: 48px; padding: 0 16px; border: 1px solid var(--border-strong); background: var(--bg-elevated); color: var(--text-muted); font: 700 12px var(--font-mono); letter-spacing: 0.08em; cursor: pointer; }
+.tutorial-tab:hover, .tutorial-tab:focus-visible { color: var(--text); border-color: var(--signal); }
+.tutorial-tab.is-active { border-color: var(--accent); background: var(--accent-fill); color: var(--on-accent); }
+.tutorial-panel[hidden] { display: none !important; }
+.tutorial-panel { animation: tutorialPanelIn 0.42s ease both; }
+.tutorial-panel > .tutorial-start-content, .tutorial-panel > .tutorial-learn-content { padding-top: 0; }
+.tutorial-start-content > article, .tutorial-learn-content .learn-shell { max-width: 980px; }
+@keyframes tutorialPanelIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@media (max-width: 820px) {
+    .tutorial-hub { grid-template-columns: 1fr; gap: 22px; padding: 12px 0 24px; }
+    .tutorial-tabs { width: 100%; }
+    .tutorial-tab { flex: 1; }
+}
+@media (max-width: 520px) {
+    .tutorials-page { padding-top: 26px; }
+    .tutorial-hub { padding: 12px 0 24px; }
+    .tutorial-tab { padding-inline: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { .tutorial-panel { animation: none; } }

@@ -14,7 +14,7 @@ def service_contract():
     # Never stub Infernux in sys.modules: native tests can share this process.
     name = "_infernux_service_contract_tests"
     package = types.ModuleType(name)
-    package.__path__ = [str(Path(__file__).resolve().parents[2] / "python/Infernux/engine")]
+    package.__path__ = [str(Path(__file__).resolve().parents[2] / "python/infernux/engine")]
     sys.modules[name] = package
     try:
         yield importlib.import_module(f"{name}.player_service_graph")

@@ -27,8 +27,8 @@
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Official Infernux documentation for Writing Editor tools.">
     
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <title>Writing Editor tools - Infernux Documentation</title>
     
     <link rel="canonical" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
@@ -126,14 +126,14 @@
     
     <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="icon" type="image/png" href="/assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="/assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
-    <link rel="stylesheet" href="/css/fonts.css?v=1">
-    <link rel="stylesheet" href="/css/style.css?v=20">
+    <link rel="stylesheet" href="/css/fonts.css?v=3">
+    <link rel="stylesheet" href="/css/style.css?v=27">
     <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
     <link rel="stylesheet" href="/css/docs-search.css?v=3">
-    <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
-    <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
+    <link rel="stylesheet" href="/css/wiki-generated.css?v=10">
+    <link rel="stylesheet" href="/css/wiki-template.c72a3a6cb96fee1d.css">
 </head>
 <body class="guide-page">
     
@@ -145,15 +145,13 @@
     <nav class="navbar" aria-label="Primary navigation">
         <div class="nav-container">
             <a href="/index.html" class="nav-logo">
-                <span class="logo-icon"><img src="/assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                <span class="logo-icon"><img src="/assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                 <span class="logo-text">Infernux</span>
             </a>
             <div class="nav-links" id="primary-navigation">
-                <a href="/start.html" class="nav-priority">Start</a>
-                <a href="/learn.html">Learn</a>
+                <a href="/tutorials.html" class="nav-priority">Tutorials</a>
                 <a href="/wiki/site/en/api/index.html">API</a>
                 <a href="/roadmap.html">Roadmap</a>
-                <a href="/changelog.html">Changelog</a>
                 <a href="https://infernux-engine.discourse.group/" class="nav-priority">Community</a>
                 <a href="/download.html">Download</a>
                 <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
@@ -166,9 +164,6 @@
                 </button>
                 <button type="button" class="docs-search-trigger" data-docs-search-trigger aria-haspopup="dialog" aria-controls="docs-search-dialog" aria-expanded="false">
                     <i class="fas fa-magnifying-glass" aria-hidden="true"></i><span data-docs-search-trigger-label>Search docs</span><kbd aria-hidden="true">/</kbd>
-                </button>
-                <button type="button" class="theme-toggle" data-site-action="theme" title="Toggle theme" aria-label="Toggle theme" aria-pressed="false">
-                    <i class="fas fa-moon" id="theme-icon"></i>
                 </button>
                 <button type="button" class="mobile-menu-btn" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false">
                     <i class="fas fa-bars"></i>
@@ -184,7 +179,7 @@
             <div class="api-main article-page-content">
                 
     <nav class="doc-breadcrumb" aria-label="Breadcrumb">
-        <a href="/start.html">Start</a>
+        <a href="/tutorials.html">Tutorials</a>
         <span aria-hidden="true">/</span>
         
         <span aria-current="page">Writing Editor tools</span>
@@ -247,15 +242,11 @@ reload, unload or project close. Do not register them each frame.</p>
 <p>When an enabled component is the authoring authority for part of its owner's
 Transform, declare that ownership once. The Inspector and Scene tools then obey
 the same rule:</p>
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">DrivenTransformProperties</span><span class="p">,</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">InxComponent</span><span class="p">,</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">drives_transform</span><span class="p">,</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nd">@drives_transform</span><span class="p">(</span><span class="n">DrivenTransformProperties</span><span class="o">.</span><span class="n">SCALE</span><span class="p">)</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">ProceduralSurface</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="k">pass</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nd">@inx</span><span class="o">.</span><span class="n">drives_transform</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">DrivenTransformProperties</span><span class="o">.</span><span class="n">SCALE</span><span class="p">)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">ProceduralSurface</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="k">pass</span>
 </code></pre></div>
 <p>The Scale and Rect tools cannot overwrite the driven scale. Combine
 <code>POSITION</code>, <code>ROTATION</code>, and <code>SCALE</code>, or use <code>ALL</code>. A component whose ownership
@@ -606,8 +597,11 @@ complete authoring tools remains a separate acceptance task.</p>
         </div>
     </dialog>
 
-    <script src="/js/main.js?v=15"></script>
+    <script src="/js/vendor/gsap.min.js?v=3.13.0"></script>
+    <script src="/js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+    <script src="/js/main.js?v=16"></script>
+    <script src="/js/motion.js?v=5"></script>
     <script src="/js/docs-search.js?v=6"></script>
-    <script src="/js/wiki-generated.js?v=14"></script>
+    <script src="/js/wiki-generated.js?v=15"></script>
 </body>
 </html>

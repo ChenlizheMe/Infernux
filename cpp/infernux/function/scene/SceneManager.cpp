@@ -188,6 +188,7 @@ void SceneManager::ClosePreviewScene(Scene *scene)
                                  [scene](const auto &item) { return item.get() == scene; });
     if (it == m_previewScenes.end())
         throw std::invalid_argument("Scene is not an open preview Scene");
+    auto retiring = std::move(*it);
     m_previewScenes.erase(it);
 }
 
@@ -252,6 +253,7 @@ void SceneManager::UnloadScene(Scene *scene)
                            [scene](const std::unique_ptr<Scene> &s) { return s.get() == scene; });
 
     if (it != m_scenes.end()) {
+        auto retiring = std::move(*it);
         m_scenes.erase(it);
     }
 }
@@ -297,7 +299,10 @@ void SceneManager::Shutdown()
 
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
-    m_previewScenes.clear();
+    std::vector<std::unique_ptr<Scene>> retiringPreviews;
+    retiringPreviews.swap(m_previewScenes);
+    retiringPreviews.clear();
+    PhysicsECSStore::Instance().ClearPendingQueues();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Destroy the editor camera object (its Camera component must leave the
@@ -326,8 +331,10 @@ void SceneManager::UnloadAllScenes()
         }
     }
 
-    m_scenes.clear();
+    std::vector<std::unique_ptr<Scene>> retiring;
+    retiring.swap(m_scenes);
     m_loadedSceneSet.clear();
+    retiring.clear();
 }
 
 Scene *SceneManager::GetScene(const std::string &name) const
@@ -983,9 +990,8 @@ void SceneManager::PrepareActiveSceneReplacement()
     m_resetDeltaTimeOnNextFrame = true;
     if (m_isPlaying) {
         FlushPersistentPromotions();
-        // Scene commit clears pending physics queues belonging to the dying
-        // active graph. Publish persistent bodies first so no queued creation
-        // or broadphase add is accidentally discarded with that graph.
+        // Publish promoted bodies at this explicit Single-replacement boundary.
+        // Scene commits retain other Worlds' pending physics work.
         FlushPendingBroadphase();
     }
 }
@@ -1027,15 +1033,6 @@ void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
             for (Light *light : object->GetComponents<Light>()) {
                 if (light && light->IsEnabled())
                     RegisterLight(light);
-            }
-            auto colliders = object->GetComponents<Collider>();
-            if (!colliders.empty()) {
-                Collider *primary = colliders.front();
-                if (primary && primary->IsEnabled()) {
-                    if (primary->GetBodyId() == 0xFFFFFFFF)
-                        primary->RegisterBody();
-                    primary->RestoreSceneResidency();
-                }
             }
         }
     };
@@ -1215,18 +1212,6 @@ void SceneManager::FlushPendingBroadphase()
     // which is significantly faster than individual AddBody calls.
     pw.AddBodiesBatch(pending);
 
-    // Start() runs before this first physics flush, so force commands may
-    // already be queued on Rigidbodies whose deferred body did not exist yet.
-    // Jolt requires force submission after the body enters the system.
-    for (const auto handle : pendingBodies) {
-        if (!store.IsValid(handle))
-            continue;
-        auto *collider = store.GetCollider(handle).owner;
-        auto *rigidbody = collider ? collider->GetCachedRigidbody() : nullptr;
-        if (rigidbody && rigidbody->IsEnabled() && collider->GetBodyId() != 0xFFFFFFFF)
-            rigidbody->FlushPendingForceCommands();
-    }
-
     double addBodiesMs = ProfileMsSince(t1);
 
     // Jolt incrementally maintains its broad phase when bodies are added.
@@ -1377,15 +1362,14 @@ void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
     // a Scene::DeserializeDocument() commit (see the Scene Rebuild Contract).
     m_activeMeshRenderers.clear();
     m_activeMeshRendererSet.clear();
+    m_pendingSkinPoseHistoryCommits.clear();
     m_activeLights.clear();
     ++m_meshRendererVersion;
 
-    // Physics pending queues: edit-mode Collider::Awake() may have queued
-    // body creations whose handle.index entries are about to be reused for
-    // freshly-allocated colliders. If we leave the dedup set populated, the
-    // new QueueBodyCreation() silently fails its insert and the body is never
-    // created, leading to invisible collisions/missing rigidbodies post-load.
-    PhysicsECSStore::Instance().ClearPendingQueues();
+    // Physics queues belong to individual actors across all resident Worlds.
+    // Collider/actor handles include their generation, and body destruction
+    // cancels its own pending broadphase commands. Clearing those queues here
+    // would discard live Worlds' creation, enabled-state and transform edits.
     m_posePresentationBodyIds.clear();
 
     // Scene document replacement clears process-wide registries. Re-publish
@@ -1437,6 +1421,8 @@ void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
         return;
     if (m_activeMeshRendererSet.insert(renderer).second) {
         m_activeMeshRenderers.push_back(renderer);
+        if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer))
+            QueueSkinPoseHistoryCommit(skinned);
         MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
                                     m_meshRendererVersion);
     }
@@ -1444,6 +1430,7 @@ void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
 
 void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
 {
+    m_pendingSkinPoseHistoryCommits.erase(renderer);
     if (!m_activeMeshRendererSet.erase(renderer))
         return;
     MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
@@ -1474,6 +1461,21 @@ void SceneManager::NotifyMeshRendererContentChanged(MeshRenderer *renderer)
     ++m_renderContentRevision;
     if (m_renderContentRevision == 0)
         m_renderContentRevision = 1;
+}
+
+void SceneManager::QueueSkinPoseHistoryCommit(SkinnedMeshRenderer *renderer)
+{
+    if (renderer && m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
+        m_pendingSkinPoseHistoryCommits.emplace(renderer, renderer);
+}
+
+void SceneManager::CommitSkinPoseHistories()
+{
+    // Unregistration removes queued entries before component destruction.
+    // Static scenes take the empty path without scanning all mesh renderers.
+    for (const auto &[identity, renderer] : m_pendingSkinPoseHistoryCommits)
+        renderer->CommitRuntimeSkinPoseHistory();
+    m_pendingSkinPoseHistoryCommits.clear();
 }
 
 void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)

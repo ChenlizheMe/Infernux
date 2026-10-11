@@ -23,6 +23,7 @@ assert.ok(redirect.includes(`href="${communityUrl}"`), "legacy community route m
 
 for (const relative of [
     "index.html",
+    "tutorials.html",
     "start.html",
     "learn.html",
     "roadmap.html",

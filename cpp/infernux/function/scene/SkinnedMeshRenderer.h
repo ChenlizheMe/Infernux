@@ -141,6 +141,7 @@ class SkinnedMeshRenderer : public MeshRenderer
     {
         return m_skinPoseHistory.Acquire();
     }
+    void CommitRuntimeSkinPoseHistory();
 
     /// Animated geometry can leave the imported bind-pose AABB even when the
     /// GameObject Transform is unchanged. Culling therefore uses the current

@@ -6,12 +6,19 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "prefer_related_applications": false,
-  "background_color": "#0a0c11",
-  "theme_color": "#0a0c11",
+  "background_color": "#100d12",
+  "theme_color": "#100d12",
   "lang": "en",
-  "categories": ["developer", "education", "games"],
+  "categories": [
+    "developer",
+    "education",
+    "games"
+  ],
   "icons": [
     {
       "src": "/assets/infernux-icon-192.png",
@@ -34,32 +41,56 @@
   ],
   "shortcuts": [
     {
-      "name": "Get started with Infernux",
-      "short_name": "Start",
-      "description": "Open the short, hand-maintained getting-started guide.",
-      "url": "/start.html",
-      "icons": [{ "src": "/assets/infernux-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+      "name": "Tutorials for Infernux",
+      "short_name": "Tutorials",
+      "description": "Open the quick start and complete learning courses.",
+      "url": "/tutorials.html",
+      "icons": [
+        {
+          "src": "/assets/infernux-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     },
     {
       "name": "Infernux API",
       "short_name": "API",
       "description": "Browse the generated Infernux Python API reference.",
       "url": "/wiki/site/en/api/index.html",
-      "icons": [{ "src": "/assets/infernux-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+      "icons": [
+        {
+          "src": "/assets/infernux-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     },
     {
       "name": "Infernux Community",
       "short_name": "Community",
       "description": "Open the official Infernux community on Discourse.",
       "url": "/community.html",
-      "icons": [{ "src": "/assets/infernux-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+      "icons": [
+        {
+          "src": "/assets/infernux-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     },
     {
       "name": "Download Infernux",
       "short_name": "Download",
       "description": "Download InfernuxHub or choose an Infernux version.",
       "url": "/download.html",
-      "icons": [{ "src": "/assets/infernux-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+      "icons": [
+        {
+          "src": "/assets/infernux-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }

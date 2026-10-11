@@ -101,15 +101,22 @@ class InxLog
         LogImpl(level, file, int(line), true, std::forward<Args>(args)...);
     }
 
+    // Small, explicit startup/recovery records needed to diagnose installed
+    // builds. Keep these file-only without enabling ordinary release logging.
+    template <typename... Args> void LogDiagnostic(const char *file, int line, Args &&...args)
+    {
+        LogImpl<true>(LOG_INFO, file, line, true, std::forward<Args>(args)...);
+    }
+
   private:
-    template <typename... Args>
+    template <bool RetainInRelease = false, typename... Args>
     void LogImpl(LogLevel level, const char *file, int line, bool internalOnly, Args &&...args)
     {
 #if INFERNUX_COMPILE_OUT_DEBUG_LOGS
         // Shipping builds expose only actionable native failures. Python
         // diagnostics use ConsolePanel::LogFromPython and deliberately remain
         // unaffected by this native logger policy.
-        if (level < LOG_ERROR)
+        if (!RetainInRelease && level < LOG_ERROR)
             return;
 #endif
         if (logLevel.load(std::memory_order_relaxed) > level)
@@ -314,6 +321,11 @@ class InxLog
 #define INXLOG_WARN_INTERNAL(...) INXLOG_FILE_ONLY(LOG_WARN, __VA_ARGS__)
 #endif
 #define INXLOG_ERROR(...) INXLOG_INTERNAL(LOG_ERROR, __VA_ARGS__)
+#define INXLOG_DIAGNOSTIC(...)                                                                                         \
+    do {                                                                                                               \
+        if (LOG_INFO >= InxLog::GetInstance().GetLogLevel())                                                           \
+            InxLog::GetInstance().LogDiagnostic(__FILE__, __LINE__, __VA_ARGS__);                                      \
+    } while (false)
 #define INXLOG_ERROR_INTERNAL(...) INXLOG_FILE_ONLY(LOG_ERROR, __VA_ARGS__)
 #define INXLOG_FATAL(...)                                                                                              \
     do {                                                                                                               \

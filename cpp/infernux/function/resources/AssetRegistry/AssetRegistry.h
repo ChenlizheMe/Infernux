@@ -28,6 +28,7 @@ class InxMesh;
 class InxTexture;
 class AssetRegistry;
 struct TextureCpuData;
+struct ShaderAsset;
 enum class MeshGeometryView : uint8_t;
 
 struct AssetResidencyRecord
@@ -90,6 +91,7 @@ class AssetLoadTicket final
     std::thread::id m_ownerThread;
     std::thread::id m_producerThread;
     uint64_t m_expectedMutationGeneration = 0;
+    uint64_t m_expectedContentGeneration = 0;
     bool m_committed = false;
     bool m_rejected = false;
 };
@@ -213,6 +215,10 @@ class AssetRegistry
     /// Reload an already-loaded asset in-place from disk.
     bool ReloadAsset(const std::string &guid);
 
+    /// Publish an already compiled candidate without compiling it again.
+    /// Keeps any resident ShaderAsset instance and advances its runtime version.
+    void PublishShader(const std::string &guid, std::shared_ptr<ShaderAsset> candidate);
+
     /// Publish position edits to a loaded mesh without importing or recooking.
     /// Preserves its shared instance and topology; optional normals publish atomically.
     void UpdateMeshPositions(const std::string &guid, size_t first, const std::vector<glm::vec3> &positions,
@@ -239,9 +245,8 @@ class AssetRegistry
 
     [[nodiscard]] std::shared_ptr<AssetLoadTicket> BeginLoadAsset(const std::string &guid, ResourceType type);
     /// Commit a completed worker load on the owner thread.  The optional
-    /// stale-if-unloaded mode is reserved for non-authoritative previews: if
-    /// no live cache entry exists, metadata/index churn during a first import
-    /// must not discard an otherwise valid decoded payload.
+    /// stale-if-unloaded mode permits cache residency changes for previews,
+    /// but never a content change, invalidation, deletion or relocation.
     bool TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded = false);
     [[nodiscard]] std::shared_ptr<TextureUploadStagingTicket> BeginTextureUploadStaging(const std::string &guid);
     [[nodiscard]] std::shared_ptr<const TextureCpuData>
@@ -258,6 +263,8 @@ class AssetRegistry
     void InitializeBuiltinMaterials();
 
     void RegisterBuiltinMaterial(const std::string &key, std::shared_ptr<InxMaterial> mat);
+    /// Weakly track project-shader references on runtime-only material instances.
+    void RegisterRuntimeMaterial(const std::shared_ptr<InxMaterial> &material);
     [[nodiscard]] std::shared_ptr<InxMaterial> GetBuiltinMaterial(const std::string &key) const;
 
     /// @brief Load a builtin material from a .mat file, replacing the existing
@@ -337,6 +344,7 @@ class AssetRegistry
     std::unique_ptr<AssetDatabase> m_assetDb;
     AssetEntryMap m_loadedAssets; // GUID → live instance
     std::unordered_map<std::string, uint64_t> m_assetMutationGenerations;
+    std::unordered_map<std::string, uint64_t> m_assetContentGenerations;
     std::unordered_map<std::string, uint64_t> m_assetRuntimeVersions;
     struct MeshGpuViewResidency
     {
@@ -349,6 +357,7 @@ class AssetRegistry
     std::vector<std::weak_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
     std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders;        // type → loader
     std::unordered_map<std::string, std::shared_ptr<InxMaterial>> m_builtinMaterials; // name → builtin mat
+    mutable std::unordered_map<InxMaterial *, std::weak_ptr<InxMaterial>> m_runtimeMaterials;
     mutable uint64_t m_accessSerial = 0;
     size_t m_totalCpuBytes = 0;
     size_t m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;

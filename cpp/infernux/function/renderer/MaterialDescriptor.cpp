@@ -358,10 +358,13 @@ void MaterialDescriptorManager::Shutdown()
     // TextureResource alive until after InxVkCoreModular destroys its device.
     m_defaultGpuView.reset();
     m_defaultNormalGpuView.reset();
+    m_defaultBlackGpuView.reset();
     m_defaultImageView = VK_NULL_HANDLE;
     m_defaultSampler = VK_NULL_HANDLE;
     m_defaultNormalImageView = VK_NULL_HANDLE;
     m_defaultNormalSampler = VK_NULL_HANDLE;
+    m_defaultBlackImageView = VK_NULL_HANDLE;
+    m_defaultBlackSampler = VK_NULL_HANDLE;
 
     if (m_descriptorManager)
         (void)m_descriptorManager->Collect((std::numeric_limits<rhi::SubmissionSerial>::max)());
@@ -378,27 +381,25 @@ bool MaterialDescriptorManager::IsPlaceholderTexturePath(std::string_view textur
     return texturePath == "white" || texturePath == "black" || texturePath == "normal";
 }
 
-bool MaterialDescriptorManager::IsNormalBindingName(std::string_view bindingName) const
-{
-    return bindingName.find("normal") != std::string_view::npos || bindingName.find("Normal") != std::string_view::npos;
-}
-
-bool MaterialDescriptorManager::TryGetDefaultTextureBinding(std::string_view bindingName,
+bool MaterialDescriptorManager::TryGetDefaultTextureBinding(std::string_view textureDefault,
                                                             MaterialDescriptorSet::TextureBinding &outBinding) const
 {
-    if (IsNormalBindingName(bindingName) && m_defaultNormalImageView != VK_NULL_HANDLE &&
-        m_defaultNormalSampler != VK_NULL_HANDLE) {
+    if (textureDefault == "normal" || textureDefault == "Normal") {
         outBinding = {m_defaultNormalImageView, m_defaultNormalSampler, {}, m_defaultNormalGpuView};
-        return ResolveBindlessIndex(outBinding);
-    }
-
-    if (m_defaultImageView != VK_NULL_HANDLE && m_defaultSampler != VK_NULL_HANDLE) {
+    } else if (textureDefault == "black" || textureDefault == "Black") {
+        outBinding = {m_defaultBlackImageView, m_defaultBlackSampler, {}, m_defaultBlackGpuView};
+    } else if (textureDefault == "white" || textureDefault == "White") {
         outBinding = {m_defaultImageView, m_defaultSampler, {}, m_defaultGpuView};
-        return ResolveBindlessIndex(outBinding);
+    } else {
+        outBinding = {};
+        INXLOG_ERROR("Unsupported ShaderInfo Texture2D default '", textureDefault, "'");
+        return false;
     }
-
-    outBinding = {};
-    return false;
+    if (outBinding.imageView == VK_NULL_HANDLE || outBinding.sampler == VK_NULL_HANDLE) {
+        outBinding = {};
+        return false;
+    }
+    return ResolveBindlessIndex(outBinding);
 }
 
 bool MaterialDescriptorManager::ResolveBindlessIndex(MaterialDescriptorSet::TextureBinding &binding) const
@@ -594,6 +595,21 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         if (auto buffer = material.GetBuffer(binding.name))
             matDescSet->storageBufferBindings[binding.binding] = std::move(buffer);
     }
+    // Publish complete declared defaults before the first descriptor write.
+    // Property names have no role in choosing a default texture.
+    if (!matDescSet->usesBindlessTextureABI) {
+        for (const auto &binding : matDescSet->bindings) {
+            if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                continue;
+            MaterialDescriptorSet::TextureBinding defaultBinding{};
+            if (!TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), defaultBinding)) {
+                m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+                RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+                return nullptr;
+            }
+            matDescSet->textureBindings[binding.binding] = std::move(defaultBinding);
+        }
+    }
     if (!UpdateDescriptorBindings(*matDescSet, program)) {
         m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
@@ -653,7 +669,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                 }
 
                 const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
-                if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
+                if (!resolvedExplicit &&
+                    !TryGetDefaultTextureBinding(material.GetTextureDefault(propName), resolvedBinding)) {
                     INXLOG_ERROR("Failed to initialize required bindless texture property '", propName,
                                  "' for material '", materialName, "'");
                     m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
@@ -703,7 +720,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                             matDescSet->hasPendingTextures = true;
                     }
 
-                    if (!resolvedExplicit && !TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
+                    if (!resolvedExplicit &&
+                        !TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding)) {
                         matDescSet->textureBindings.erase(binding.binding);
                         break;
                     }
@@ -727,6 +745,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         }
     }
 
+    matDescSet->materialUBOVersion = material.GetVersion();
     matDescSet->isValid = true;
 
     MaterialDescriptorSet *result = matDescSet.get();
@@ -764,7 +783,13 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         // expired block's address. Confirm ownership before accepting a hit so
         // a later draw can never inherit the retired payload.
         const auto owner = cached->second.parameters.lock();
-        if (owner && owner.get() == parameters.get())
+        const bool texturePublicationChanged =
+            std::any_of(cached->second.descriptor->textureBindings.begin(),
+                        cached->second.descriptor->textureBindings.end(), [](const auto &entry) {
+                            const auto &binding = entry.second;
+                            return binding.gpuSlot && binding.gpuSlot->Acquire() != binding.gpuView;
+                        });
+        if (owner && owner.get() == parameters.get() && !texturePublicationChanged)
             return cached->second.descriptor.get();
     }
 
@@ -822,6 +847,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
 
     const auto resolveTexture = [&](const std::string &name, const std::string &guid,
                                     MaterialDescriptorSet::TextureBinding &binding) {
+        if (IsPlaceholderTexturePath(guid))
+            return TryGetDefaultTextureBinding(guid, binding);
         if (!guid.empty() && !IsPlaceholderTexturePath(guid)) {
             const TextureResolveStatus status =
                 ResolveExplicitTextureBinding(guid, name, binding, material.GetTextureSampler(name));
@@ -829,10 +856,11 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
                 return true;
             if (status == TextureResolveStatus::Pending) {
                 descriptor->hasPendingTextures = true;
-                return false;
             }
+            descriptor->hasUnresolvedExplicitTextures = true;
+            return false;
         }
-        return TryGetDefaultTextureBinding(name, binding);
+        return TryGetDefaultTextureBinding(material.GetTextureDefault(name), binding);
     };
 
     for (const auto &[name, property] : parameters->properties) {
@@ -907,6 +935,13 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         descriptor->textureIndexUBO->UpdateTextureIndices(indices);
     }
 
+    // A captured draw owns its explicit texture references. Publish its
+    // descriptor only after those references resolve, rather than caching
+    // the base material's defaults during the first asynchronous upload.
+    if (descriptor->hasPendingTextures || descriptor->hasUnresolvedExplicitTextures) {
+        RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
+        return nullptr;
+    }
     if (!UpdateDescriptorBindings(*descriptor, *baseProgram)) {
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
         return nullptr;
@@ -1010,8 +1045,9 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
             MaterialDescriptorSet::TextureBinding textureBinding{};
             if (texIt != matDescSet.textureBindings.end()) {
                 textureBinding = texIt->second;
-            } else if (!TryGetDefaultTextureBinding(binding.name, textureBinding)) {
-                continue; // Skip if no valid image
+            } else {
+                INXLOG_ERROR("Material descriptor has no initialized texture binding '", binding.name, "'");
+                return false;
             }
 
             AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding, textureBinding.imageView,
@@ -1038,10 +1074,37 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
 
 bool MaterialDescriptorManager::PublishDescriptorReplacement(
     MaterialDescriptorSet &descriptorSet,
-    const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings)
+    const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings,
+    const InxMaterial *material)
 {
     if (!m_descriptorManager || descriptorSet.layout == VK_NULL_HANDLE)
         return false;
+    if (!m_deletionQueue || !m_deletionQueue->HasSerialSource()) {
+        INXLOG_ERROR("Cannot publish material descriptor replacement without a GPU retirement serial source");
+        return false;
+    }
+
+    // Numeric data belongs to the same immutable publication as the set that
+    // references it. Waiting for the current frame slot cannot protect buffers
+    // shared by other in-flight frames or earlier draws in this command buffer.
+    std::unique_ptr<MaterialUBO> replacementMaterialUBO;
+    std::unique_ptr<MaterialUBO> replacementVertexMaterialUBO;
+    const auto prepare = [&](const std::unique_ptr<MaterialUBO> &current, std::unique_ptr<MaterialUBO> &replacement) {
+        if (!material || !current)
+            return true;
+        replacement = std::make_unique<MaterialUBO>();
+        if (!replacement->Create(m_vmaAllocator, m_device, current->GetLayout()))
+            return false;
+        replacement->Update(*material);
+        return true;
+    };
+    if (!prepare(descriptorSet.materialUBO, replacementMaterialUBO) ||
+        !prepare(descriptorSet.vertexMaterialUBO, replacementVertexMaterialUBO))
+        return false;
+
+    // Callers may pass descriptorSet.textureBindings itself. Own the candidate
+    // before moving the old publication into retirement.
+    auto candidateTextureBindings = textureBindings;
 
     const auto arena =
         m_updateAfterBindEnabled ? vk::DescriptorArena::UpdateAfterBind : vk::DescriptorArena::Persistent;
@@ -1084,6 +1147,11 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
                 bufferInfo.buffer = replacementTextureIndexUBO->GetBuffer();
                 bufferInfo.offset = 0;
                 bufferInfo.range = replacementTextureIndexUBO->GetSize();
+            } else if (replacementMaterialUBO && binding.binding == replacementMaterialUBO->GetLayout().binding) {
+                bufferInfo = {replacementMaterialUBO->GetBuffer(), 0, replacementMaterialUBO->GetSize()};
+            } else if (replacementVertexMaterialUBO &&
+                       binding.binding == replacementVertexMaterialUBO->GetLayout().binding) {
+                bufferInfo = {replacementVertexMaterialUBO->GetBuffer(), 0, replacementVertexMaterialUBO->GetSize()};
             } else {
                 const auto buffer = descriptorSet.bufferBindings.find(binding.binding);
                 if (buffer == descriptorSet.bufferBindings.end()) {
@@ -1129,7 +1197,7 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
         const auto texture = textureBindings.find(binding.binding);
         if (texture != textureBindings.end()) {
             textureBinding = texture->second;
-        } else if (!TryGetDefaultTextureBinding(binding.name, textureBinding)) {
+        } else {
             INXLOG_ERROR("Cannot publish material descriptor replacement: image binding ", binding.binding, " ('",
                          binding.name, "') has neither an explicit texture nor a default");
             m_descriptorManager->Retire(replacement);
@@ -1159,25 +1227,19 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     if (!writes.empty())
         vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    if (!m_deletionQueue && (!descriptorSet.textureBindings.empty() || descriptorSet.textureIndexUBO != nullptr)) {
-        INXLOG_ERROR("Cannot publish material descriptor replacement without a GPU retirement queue");
-        m_descriptorManager->Retire(replacement);
-        return false;
-    }
-
     const vk::DescriptorLease retiredLease = descriptorSet.descriptorLease;
     const VkDescriptorSet retiredSet = descriptorSet.descriptorSet;
     auto retiredTextureBindings = std::move(descriptorSet.textureBindings);
     auto retiredTextureIndexUBO = std::move(descriptorSet.textureIndexUBO);
     descriptorSet.descriptorLease = replacement;
     descriptorSet.descriptorSet = replacement.set;
-    descriptorSet.textureBindings = textureBindings;
+    descriptorSet.textureBindings = std::move(candidateTextureBindings);
     descriptorSet.textureIndexUBO = std::move(replacementTextureIndexUBO);
     descriptorSet.bindlessTextureIndices.clear();
     if (descriptorSet.usesBindlessTextureABI) {
-        descriptorSet.bindlessTextureIndices.reserve(textureBindings.size());
+        descriptorSet.bindlessTextureIndices.reserve(descriptorSet.textureBindings.size());
         std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> indices{};
-        for (const auto &[binding, textureBinding] : textureBindings) {
+        for (const auto &[binding, textureBinding] : descriptorSet.textureBindings) {
             if (binding >= indices.size())
                 continue;
             const uint32_t shaderIndex = textureBinding.resourceIndex.IsValid() ? textureBinding.resourceIndex.index
@@ -1197,6 +1259,18 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(retiredSet));
     m_liveDescriptorHandles.emplace(reinterpret_cast<uint64_t>(replacement.set), &descriptorSet);
     m_descriptorManager->Retire(retiredLease);
+    const auto publishBuffer = [&](std::unique_ptr<MaterialUBO> &current, std::unique_ptr<MaterialUBO> &next) {
+        if (!next)
+            return;
+        auto retired = std::shared_ptr<MaterialUBO>(std::move(current));
+        current = std::move(next);
+        descriptorSet.bufferBindings[current->GetLayout().binding] = {current->GetBuffer(), 0, current->GetSize()};
+        m_deletionQueue->Retire([ubo = std::move(retired)]() mutable { ubo.reset(); });
+    };
+    publishBuffer(descriptorSet.materialUBO, replacementMaterialUBO);
+    publishBuffer(descriptorSet.vertexMaterialUBO, replacementVertexMaterialUBO);
+    if (material)
+        descriptorSet.materialUBOVersion = material->GetVersion();
     if (m_deletionQueue && !retiredTextureBindings.empty()) {
         m_deletionQueue->Retire([bindings = std::move(retiredTextureBindings)]() mutable { bindings.clear(); });
     }
@@ -1207,17 +1281,19 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     return true;
 }
 
-void MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material)
+bool MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material)
 {
     auto it = m_descriptorSets.find(materialName);
-    if (it != m_descriptorSets.end()) {
-        if (it->second->materialUBO) {
-            it->second->materialUBO->Update(material);
-        }
-        if (it->second->vertexMaterialUBO) {
-            it->second->vertexMaterialUBO->Update(material);
-        }
+    if (it == m_descriptorSets.end())
+        return false;
+    auto &descriptor = *it->second;
+    if (descriptor.materialUBOVersion == material.GetVersion())
+        return true;
+    if (!descriptor.materialUBO && !descriptor.vertexMaterialUBO) {
+        descriptor.materialUBOVersion = material.GetVersion();
+        return true;
     }
+    return PublishDescriptorReplacement(descriptor, descriptor.textureBindings, &material);
 }
 
 void MaterialDescriptorManager::ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
@@ -1260,7 +1336,7 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
             const auto renderTexture = material.GetRenderTexture(propName);
             if (!renderTexture && (!texturePath || texturePath->empty())) {
                 MaterialDescriptorSet::TextureBinding defaultBinding{};
-                if (TryGetDefaultTextureBinding(propName, defaultBinding)) {
+                if (TryGetDefaultTextureBinding(material.GetTextureDefault(propName), defaultBinding)) {
                     const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
                     bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
                                       !HasSameGpuBinding(previous->second, defaultBinding);
@@ -1292,7 +1368,8 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 candidateHasUnresolvedExplicitTextures = true;
             }
 
-            if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
+            if (!resolvedExplicit &&
+                !TryGetDefaultTextureBinding(material.GetTextureDefault(propName), resolvedBinding)) {
                 continue;
             }
             const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
@@ -1332,7 +1409,7 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 MaterialDescriptorSet::TextureBinding resolvedBinding{};
 
                 if (!renderTexture && (!texturePath || texturePath->empty())) {
-                    if (TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
+                    if (TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding)) {
                         const auto previous = candidateBindings.find(binding.binding);
                         bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
                                           !HasSameGpuBinding(previous->second, resolvedBinding);
@@ -1360,7 +1437,9 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                     candidateHasUnresolvedExplicitTextures = true;
                 }
 
-                const bool hasBinding = resolvedExplicit || TryGetDefaultTextureBinding(binding.name, resolvedBinding);
+                const bool hasBinding =
+                    resolvedExplicit ||
+                    TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding);
 
                 if (hasBinding) {
                     const auto previous = candidateBindings.find(binding.binding);
@@ -1578,6 +1657,14 @@ void MaterialDescriptorManager::SetDefaultNormalTexture(VkImageView imageView, V
     m_defaultNormalImageView = imageView;
     m_defaultNormalSampler = sampler;
     m_defaultNormalGpuView = std::move(gpuView);
+}
+
+void MaterialDescriptorManager::SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
+                                                       std::shared_ptr<const rhi::TextureGpuView> gpuView)
+{
+    m_defaultBlackImageView = imageView;
+    m_defaultBlackSampler = sampler;
+    m_defaultBlackGpuView = std::move(gpuView);
 }
 
 } // namespace infernux

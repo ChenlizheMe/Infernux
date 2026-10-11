@@ -5,20 +5,23 @@ import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+# runtime_bundle.zip members are LZMA-compressed; keep the decoder an explicit
+# dependency so frozen builds can never drop it.
+import lzma  # noqa: F401
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
 from hub_utils import (
     get_bundle_dir,
-    get_hub_data_dir,
     get_hub_shared_data_dir,
     is_frozen,
     merge_child_env_utf8,
 )
+from hub_utils import remove_directory_tree as _remove_tree
 from hub_network import create_download_ssl_context
 from private_python_runtime import (
     extract_runtime_archive,
@@ -26,6 +29,7 @@ from private_python_runtime import (
     is_current_private_runtime_root,
     runtime_archive_for_machine,
     runtime_prefix,
+    runtime_publication,
 )
 from python_runtime_catalog import (
     DEFAULT_PYTHON_RUNTIME,
@@ -33,8 +37,9 @@ from python_runtime_catalog import (
     SUPPORTED_PYTHON_RUNTIMES,
     runtime_release,
 )
-from runtime_requirements import runtime_modules, runtime_packages
-import logging
+from runtime_requirements import runtime_modules, runtime_packages, runtime_probe_code
+from runtime_script_relocation import RELOCATE_RUNTIME_SCRIPTS
+from python_execution import prepare_private_runtime_paths, python_executable_path
 
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -75,6 +80,7 @@ def _run_command(args: list[str], *, timeout: int, raise_on_error: bool = False)
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = _NO_WINDOW
+        kwargs["executable"] = python_executable_path(args[0])
 
     try:
         return subprocess.run(args, timeout=timeout, check=raise_on_error, **kwargs)
@@ -129,7 +135,7 @@ def _is_python_version(
 
     runtime_id = PythonRuntimeId.parse(runtime)
     completed = _run_command(
-        [python_exe, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+        [python_exe, "-I", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
         timeout=20,
         raise_on_error=False,
     )
@@ -139,44 +145,12 @@ def _is_python_version(
     )
 
 
-def _site_packages_root(
-    runtime_root: str, runtime: str | PythonRuntimeId
-) -> str:
-    runtime_id = PythonRuntimeId.parse(runtime)
-    if sys.platform != "win32":
-        path = os.path.join(
-            runtime_root, "lib", runtime_id.unix_library_stem, "site-packages"
-        )
-    else:
-        path = os.path.join(runtime_root, "Lib", "site-packages")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-
-
 def _fast_copy_threads() -> int:
     raw_value = os.environ.get("INFERNUX_FAST_COPY_THREADS", "16")
     try:
         return max(1, min(128, int(raw_value)))
     except ValueError:
         return 16
-
-
-def _remove_tree(path: str) -> None:
-    if not path or not os.path.exists(path):
-        return
-    if sys.platform == "win32":
-        completed = subprocess.run(
-            ["cmd", "/c", "rd", "/s", "/q", path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=_NO_WINDOW,
-            env=merge_child_env_utf8(),
-        )
-        if completed.returncode == 0 and not os.path.exists(path):
-            return
-    shutil.rmtree(path, ignore_errors=True)
 
 
 def _runtime_artifact_ignore(_directory: str, names: list[str]) -> set[str]:
@@ -217,15 +191,10 @@ def _copy_tree_fast(src: str, dest: str, *, exclude_runtime_artifacts: bool = Fa
     if completed.returncode < 8:
         return True
 
-    logging.getLogger(__name__).warning(
-        "robocopy failed while copying Python runtime (%s -> %s, exit %s): %s",
-        src,
-        dest,
-        completed.returncode,
-        (completed.stderr or "").strip(),
+    raise PythonRuntimeError(
+        f"Failed to copy Python runtime ({src} -> {dest}, exit {completed.returncode}).\n"
+        f"{(completed.stderr or '').strip()}"
     )
-    _remove_tree(dest)
-    return False
 
 
 def _copy_tree(src: str, dest: str) -> None:
@@ -239,34 +208,7 @@ def _copy_project_runtime_tree(src: str, dest: str) -> None:
         shutil.copytree(src, dest, ignore=_runtime_artifact_ignore)
 
 
-def _copy_runtime_payload(src_root: str, dest_root: str, *, overwrite: bool) -> None:
-    os.makedirs(dest_root, exist_ok=True)
-    for name in os.listdir(src_root):
-        source_path = os.path.join(src_root, name)
-        target_path = os.path.join(dest_root, name)
-        if os.path.isdir(source_path):
-            if overwrite:
-                _remove_tree(target_path)
-            if os.path.exists(target_path):
-                continue
-            if not _copy_tree_fast(source_path, target_path):
-                shutil.copytree(source_path, target_path)
-        else:
-            if not overwrite and os.path.exists(target_path):
-                continue
-            shutil.copy2(source_path, target_path)
-
-
-
-
-def _download_file(
-    url: str,
-    dest: str,
-    *,
-    user_agent: str,
-    timeout: int = 120,
-    ca_bundle: str = "",
-) -> None:
+def _download_file(url: str, dest: str, *, user_agent: str, timeout: int = 120, ca_bundle: str = "") -> None:
     req = urllib.request.Request(url)
     req.add_header("User-Agent", user_agent)
     context = create_download_ssl_context(ca_bundle) if ca_bundle else None
@@ -394,52 +336,52 @@ class PythonRuntimeManager:
         download_ca_bundle: str = "",
     ) -> str:
         runtime_id = self._runtime_id(version)
-        python_exe = self.get_runtime_path(runtime_id)
-        if not python_exe:
-            python_exe = self._provision_managed_runtime(
-                runtime_id,
-                on_status=on_status,
+        with self._runtime_lock(runtime_id):
+            return self._ensure_runtime(
+                runtime_id, on_status=on_status, allow_frozen_repair=allow_frozen_repair,
                 download_ca_bundle=download_ca_bundle,
             )
-        else:
+
+    @contextmanager
+    def _runtime_lock(self, runtime_id: PythonRuntimeId):
+        """One writer/copy per ABI; the OS releases ownership if a Hub exits."""
+        path = Path(self._runtime_dir) / f".{runtime_id.directory_name}.lock"
+        with path.open("a+b") as stream:
+            stream.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+                acquire = lambda: msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                release = lambda: msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                acquire = lambda: fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                release = lambda: fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            try:
+                acquire()
+            except OSError as exc:
+                raise PythonRuntimeError(f"Python {runtime_id.series} runtime is busy in another Hub operation.") from exc
+            try:
+                yield
+            finally:
+                release()
+
+    def _ensure_runtime(self, runtime_id: PythonRuntimeId, *, on_status=None, allow_frozen_repair=False,
+                        download_ca_bundle: str = "") -> str:
+        python_exe = self.get_runtime_path(runtime_id)
+        if python_exe:
             runtime_root = runtime_prefix(python_exe)
             has_build_support = _has_build_support(runtime_root, runtime_id)
             has_required_modules = self._has_modules(python_exe, *_REQUIRED_RUNTIME_MODULES)
-            if is_frozen() and not allow_frozen_repair:
-                if not has_build_support:
-                    raise PythonRuntimeError(
-                        f"The installed managed Python {runtime_id.series} runtime is missing CPython build support files.\n"
-                        "Please reinstall Infernux Hub so the runtime can be prepared during installation."
-                    )
-                if not has_required_modules:
-                    raise PythonRuntimeError(
-                        f"The installed managed Python {runtime_id.series} runtime is missing required engine/build packages.\n"
-                        "Please reinstall Infernux Hub so the runtime can be prepared during installation."
-                    )
+            if has_build_support and has_required_modules:
                 return python_exe
-
-            if allow_frozen_repair and is_frozen() and (not has_build_support or not has_required_modules):
-                repaired_python = self._seed_runtime_from_bundle(
-                    version=runtime_id,
-                    overwrite=True,
-                    on_status=on_status,
+            if is_frozen() and not allow_frozen_repair:
+                raise PythonRuntimeError(
+                    f"The installed managed Python {runtime_id.series} runtime is missing build support or compatible required packages.\n"
+                    "Please reinstall Infernux Hub so the runtime can be prepared during installation."
                 )
-                if not repaired_python:
-                    repaired_python = self._extract_runtime_to_root(
-                        self.private_runtime_root(runtime_id),
-                        version=runtime_id,
-                        overwrite=True,
-                        on_status=on_status,
-                        download_ca_bundle=download_ca_bundle,
-                    )
-                if repaired_python:
-                    python_exe = repaired_python
-
-            self._prepare_managed_runtime(
-                python_exe, runtime_id, on_status=on_status
-            )
-
-        return python_exe
+        return self._provision_managed_runtime(
+            runtime_id, on_status=on_status, download_ca_bundle=download_ca_bundle,
+        )
 
     def create_project_runtime(
         self,
@@ -454,6 +396,11 @@ class PythonRuntimeManager:
         for virtual-environment indirection.
         """
         runtime_id = self._runtime_id(version)
+        dest_path = os.path.abspath(dest_path)
+        with self._runtime_lock(runtime_id):
+            return self._create_project_runtime(dest_path, runtime_id, on_status=on_status)
+
+    def _create_project_runtime(self, dest_path: str, runtime_id: PythonRuntimeId, *, on_status=None) -> str:
         _emit_status(
             on_status, f"Checking managed Python {runtime_id.series} runtime..."
         )
@@ -462,8 +409,8 @@ class PythonRuntimeManager:
                 f"Python {runtime_id.series} is not installed in Infernux Hub.\n"
                 f"Install Python {runtime_id.series} from the Installs page first."
             )
-        self.ensure_runtime(
-            version=runtime_id,
+        self._ensure_runtime(
+            runtime_id,
             allow_frozen_repair=is_frozen(),
             on_status=on_status,
         )
@@ -479,7 +426,14 @@ class PythonRuntimeManager:
             if os.path.exists(dest_path):
                 raise FileExistsError(dest_path)
             _emit_status(on_status, "Copying Python runtime into the project...")
-            _copy_project_runtime_tree(source, dest_path)
+            with runtime_publication(dest_path, replace_existing=False) as candidate:
+                _copy_project_runtime_tree(source, str(candidate))
+                prepare_private_runtime_paths(candidate)
+                python = _find_python_in_root(str(candidate))
+                if not python or not _is_python_version(python, runtime_id):
+                    raise PythonRuntimeError("The copied project Python could not be started.")
+                final_python = os.path.join(dest_path, "python.exe" if sys.platform == "win32" else "bin/python")
+                self._relocate_runtime_scripts(python, final_python)
         except OSError as exc:
             raise PythonRuntimeError(
                 f"Failed to copy the managed Python runtime to {dest_path}.\n{exc}"
@@ -508,106 +462,92 @@ class PythonRuntimeManager:
             version=runtime_id, on_status=on_status
         )
         if bundled_python:
-            self._prepare_managed_runtime(
-                bundled_python, runtime_id, on_status=on_status
-            )
             return bundled_python
-
-        python_exe = self._extract_runtime_to_root(
-            self.private_runtime_root(runtime_id),
-            version=runtime_id,
-            overwrite=True,
-            on_status=on_status,
+        return self._extract_runtime_to_root(
+            self.private_runtime_root(runtime_id), version=runtime_id, on_status=on_status,
             download_ca_bundle=download_ca_bundle,
         )
-        self._prepare_managed_runtime(python_exe, runtime_id, on_status=on_status)
-        return python_exe
+
+    def _prepare_candidate(self, candidate: Path, runtime_id: PythonRuntimeId,
+                           *, on_status=None) -> None:
+        prepare_private_runtime_paths(candidate)
+        python = _find_python_in_root(str(candidate))
+        if not python or not _is_python_version(python, runtime_id) or _is_embedded_root(str(candidate)):
+            raise PythonRuntimeError(
+                f"Private Python {runtime_id.series} extraction completed, but a valid full runtime was not found afterwards."
+            )
+        self._prepare_managed_runtime(python, runtime_id, on_status=on_status)
+        self._relocate_runtime_scripts(python, self.private_runtime_python(runtime_id))
+
+    @staticmethod
+    def _relocate_runtime_scripts(python_exe: str, final_python: str) -> None:
+        _run_command([python_exe, "-I", "-c", RELOCATE_RUNTIME_SCRIPTS, python_executable_path(final_python)],
+                     timeout=120, raise_on_error=True)
 
     def _seed_runtime_from_bundle(
-        self,
-        *,
-        version: str | PythonRuntimeId | None = None,
-        overwrite: bool = False,
+        self, *, version: str | PythonRuntimeId | None = None,
         on_status: Optional[Callable[[str], None]] = None,
     ) -> Optional[str]:
         runtime_id = self._runtime_id(version)
-        target_root = self.installed_runtime_dir()
-        target_python = self.private_runtime_python(runtime_id)
+        target = self.private_runtime_root(runtime_id)
+
+        def prepare(candidate: Path) -> None:
+            if not is_current_private_runtime_root(candidate, runtime=runtime_id):
+                raise PythonRuntimeError(f"The bundled Python {runtime_id.series} runtime has an invalid release marker.")
+            self._prepare_candidate(candidate, runtime_id, on_status=on_status)
 
         for source_root in self.bundled_runtime_dirs():
-            bundled_root = os.path.join(source_root, runtime_id.directory_name)
-            if not is_current_private_runtime_root(
-                bundled_root, runtime=runtime_id
-            ):
+            source = Path(source_root) / runtime_id.directory_name
+            if not source.exists():
                 continue
-            bundled_python = _find_python_in_root(bundled_root)
-            if not bundled_python or not _is_python_version(
-                bundled_python, runtime_id
-            ):
-                continue
-            if _is_embedded_root(os.path.dirname(bundled_python)):
-                continue
-            if os.path.normcase(os.path.abspath(source_root)) == os.path.normcase(os.path.abspath(target_root)):
-                return bundled_python
-
-            _emit_status(
-                on_status,
-                f"Copying bundled Python {runtime_id.series} runtime...",
-            )
-            _copy_runtime_payload(bundled_root, self.private_runtime_root(runtime_id), overwrite=overwrite)
-            if (
-                os.path.isfile(target_python)
-                and _is_python_version(target_python, runtime_id)
-                and not _is_embedded_root(os.path.dirname(target_python))
-                and is_current_private_runtime_root(
-                    self.private_runtime_root(runtime_id), runtime=runtime_id
-                )
-            ):
-                return target_python
+            _emit_status(on_status, f"Copying bundled Python {runtime_id.series} runtime...")
+            with runtime_publication(target) as candidate:
+                _copy_tree(str(source), str(candidate))
+                prepare(candidate)
+            return self.private_runtime_python(runtime_id)
 
         for bundle_path in self.bundled_runtime_bundle_paths():
             if not os.path.isfile(bundle_path):
                 continue
-            runtime_prefix = runtime_id.directory_name + "/"
+            prefix = runtime_id.directory_name + "/"
             try:
-                with zipfile.ZipFile(bundle_path, "r") as zf:
-                    runtime_members = [
-                        member
-                        for member in zf.infolist()
-                        if member.filename.replace("\\", "/").startswith(
-                            runtime_prefix
-                        )
-                    ]
-                    if not runtime_members:
+                with zipfile.ZipFile(bundle_path, "r") as bundle:
+                    members = [m for m in bundle.infolist() if m.filename.replace("\\", "/").startswith(prefix)]
+                    if not members:
                         continue
-                    _emit_status(
-                        on_status,
-                        f"Extracting bundled Python {runtime_id.series} runtime...",
-                    )
-                    _remove_tree(self.private_runtime_root(runtime_id))
-                    os.makedirs(target_root, exist_ok=True)
-                    for member in runtime_members:
-                        extracted = zf.extract(member, target_root)
-                        if sys.platform != "win32" and member.create_system == 3:
-                            os.chmod(extracted, (member.external_attr >> 16) & 0o777)
+                    paths = []
+                    seen = set()
+                    # Reject ambiguous ZIP identities before writing any member.
+                    for member in members:
+                        name = member.filename[len(prefix):].removesuffix("/")
+                        if not name and member.is_dir():
+                            continue
+                        parts = name.split("/")
+                        if ("\\" in member.filename or ":" in name or not name
+                                or any(part in {"", ".", ".."} or part.rstrip(". ") != part for part in parts)):
+                            raise PythonRuntimeError(f"Invalid bundled runtime path: {member.filename!r}")
+                        key = os.path.normcase(name)
+                        if key in seen:
+                            raise PythonRuntimeError(f"Duplicate bundled runtime path: {member.filename!r}")
+                        seen.add(key)
+                        paths.append((member, Path(*parts)))
+                    _emit_status(on_status, f"Extracting bundled Python {runtime_id.series} runtime...")
+                    with runtime_publication(target) as candidate:
+                        candidate.mkdir()
+                        for member, relative in paths:
+                            path = candidate / relative
+                            if member.is_dir():
+                                path.mkdir(parents=True, exist_ok=True)
+                                continue
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            with bundle.open(member) as reader, path.open("wb") as writer:
+                                shutil.copyfileobj(reader, writer)
+                            if sys.platform != "win32" and member.create_system == 3:
+                                os.chmod(path, (member.external_attr >> 16) & 0o777)
+                        prepare(candidate)
             except (OSError, zipfile.BadZipFile) as exc:
-                raise PythonRuntimeError(
-                    f"The bundled Python {runtime_id.series} runtime is invalid.\n"
-                    f"{exc}"
-                ) from exc
-            if (
-                os.path.isfile(target_python)
-                and _is_python_version(target_python, runtime_id)
-                and not _is_embedded_root(os.path.dirname(target_python))
-                and is_current_private_runtime_root(
-                    self.private_runtime_root(runtime_id), runtime=runtime_id
-                )
-            ):
-                return target_python
-            raise PythonRuntimeError(
-                f"The bundled Python {runtime_id.series} runtime could not be started. "
-                "Reinstall Infernux Hub with a valid runtime bundle."
-            )
+                raise PythonRuntimeError(f"The bundled Python {runtime_id.series} runtime is invalid.\n{exc}") from exc
+            return self.private_runtime_python(runtime_id)
         return None
 
     def _prepare_managed_runtime(
@@ -686,7 +626,6 @@ class PythonRuntimeManager:
         runtime_root: str,
         *,
         version: str | PythonRuntimeId | None = None,
-        overwrite: bool = False,
         on_status: Optional[Callable[[str], None]] = None,
         download_ca_bundle: str = "",
     ) -> str:
@@ -700,9 +639,6 @@ class PythonRuntimeManager:
                 "Refusing to deploy the private Python runtime outside the Hub-owned "
                 f"{runtime_id.directory_name} directory."
             )
-        if overwrite:
-            shutil.rmtree(runtime_root, ignore_errors=True)
-
         archive_path = self._ensure_runtime_archive(
             runtime_id,
             on_status=on_status,
@@ -713,25 +649,18 @@ class PythonRuntimeManager:
             on_status,
             f"Extracting private Python {runtime_id.series} runtime...",
         )
+
         try:
             extract_runtime_archive(
                 archive_path,
                 runtime_root,
                 runtime=runtime_id,
+                validate=lambda candidate: self._prepare_candidate(candidate, runtime_id, on_status=on_status),
             )
         except RuntimeError as exc:
             raise PythonRuntimeError(str(exc)) from exc
 
-        python_exe = _find_python_in_root(runtime_root)
-        if (
-            not python_exe
-            or not _is_python_version(python_exe, runtime_id)
-            or _is_embedded_root(runtime_root)
-        ):
-            raise PythonRuntimeError(
-                f"Private Python {runtime_id.series} extraction completed, but a valid full runtime was not found afterwards."
-            )
-        return python_exe
+        return self.private_runtime_python(runtime_id)
 
     def reinstall_runtime(
         self,
@@ -742,21 +671,10 @@ class PythonRuntimeManager:
     ) -> str:
         """Replace the Hub-owned runtime from a verified bundled/downloaded archive."""
         runtime_id = self._runtime_id(version)
-        python_exe = self._seed_runtime_from_bundle(
-            version=runtime_id, overwrite=True, on_status=on_status
-        )
-        if not python_exe:
-            python_exe = self._extract_runtime_to_root(
-                self.private_runtime_root(runtime_id),
-                version=runtime_id,
-                overwrite=True,
-                on_status=on_status,
-                download_ca_bundle=download_ca_bundle,
+        with self._runtime_lock(runtime_id):
+            return self._provision_managed_runtime(
+                runtime_id, on_status=on_status, download_ca_bundle=download_ca_bundle,
             )
-        self._prepare_managed_runtime(python_exe, runtime_id, on_status=on_status)
-        return python_exe
-
-
 
     def _ensure_runtime_build_support(
         self,
@@ -776,13 +694,13 @@ class PythonRuntimeManager:
         )
 
     def _ensure_pip(self, python_exe: str, *, on_status: Optional[Callable[[str], None]] = None) -> None:
-        completed = _run_command([python_exe, "-m", "pip", "--version"], timeout=60, raise_on_error=False)
+        completed = _run_command([python_exe, "-I", "-m", "pip", "--version"], timeout=60, raise_on_error=False)
         if completed.returncode == 0:
             return
 
         _emit_status(on_status, "Installing pip into the managed Python runtime...")
         completed = _run_command(
-            [python_exe, "-m", "ensurepip", "--upgrade"],
+            [python_exe, "-I", "-m", "ensurepip", "--upgrade"],
             timeout=600,
             raise_on_error=False,
         )
@@ -799,13 +717,14 @@ class PythonRuntimeManager:
         *,
         on_status: Optional[Callable[[str], None]] = None,
     ) -> None:
-        runtime_id = self._runtime_id(version)
+        self._runtime_id(version)
         if self._has_modules(python_exe, *_REQUIRED_RUNTIME_MODULES):
             return
 
         _emit_status(on_status, "Installing managed runtime support packages...")
         args = [
             python_exe,
+            "-I",
             "-m",
             "pip",
             "install",
@@ -814,8 +733,6 @@ class PythonRuntimeManager:
             "--prefer-binary",
             "--no-compile",
             "--upgrade",
-            "--target",
-            _site_packages_root(runtime_prefix(python_exe), runtime_id),
         ]
         args.extend(_RUNTIME_PACKAGES)
         completed = _run_command(args, timeout=1800, raise_on_error=False)
@@ -827,15 +744,12 @@ class PythonRuntimeManager:
 
         if not self._has_modules(python_exe, *_REQUIRED_RUNTIME_MODULES):
             raise PythonRuntimeError(
-                "Managed Python runtime is still missing required support packages after installation."
+                "Managed Python runtime is still missing compatible required support packages after installation."
             )
 
     def _has_modules(self, python_exe: str, *module_names: str) -> bool:
-        checks = " and ".join(
-            [f"importlib.util.find_spec('{module_name}') is not None" for module_name in module_names]
-        )
         completed = _run_command(
-            [python_exe, "-c", f"import importlib.util; print(int({checks}))"],
+            [python_exe, "-I", "-c", runtime_probe_code(module_names)],
             timeout=30,
             raise_on_error=False,
         )

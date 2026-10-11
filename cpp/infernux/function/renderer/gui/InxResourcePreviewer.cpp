@@ -246,7 +246,14 @@ bool ImagePreviewer::Load(const std::string &filePath)
         return true; // Already loaded
     }
 
+    // Unload resets settings; preserve the manager's requested display budget.
+    const auto mode = m_displayMode;
+    const int maxSize = m_maxSize;
+    const bool srgb = m_srgb;
     Unload();
+    m_displayMode = mode;
+    m_maxSize = maxSize;
+    m_srgb = srgb;
 
     // Get file size
     try {
@@ -256,7 +263,7 @@ bool ImagePreviewer::Load(const std::string &filePath)
     }
 
     // Load texture using InxTextureLoader
-    InxTextureData texData = InxTextureLoader::LoadFromFile(filePath);
+    InxTextureData texData = InxTextureLoader::LoadFromFile(filePath, "", m_maxSize);
     if (!texData.IsValid()) {
         INXLOG_ERROR("Failed to load image: ", filePath);
         return false;
@@ -265,7 +272,7 @@ bool ImagePreviewer::Load(const std::string &filePath)
     m_width = texData.width;
     m_height = texData.height;
     m_channels = texData.channels;
-    m_originalPixels = texData.pixels; // keep a copy for display-mode re-processing
+    m_originalPixels = std::move(texData.pixels);
 
     m_loadedPath = filePath;
     ApplyPreviewSettings();
@@ -328,9 +335,21 @@ void ImagePreviewer::SetPreviewSettings(PreviewDisplayMode mode, int maxSize, bo
 {
     if (m_displayMode == mode && m_maxSize == maxSize && m_srgb == srgb)
         return;
+    const bool sizeChanged = m_maxSize != maxSize;
     m_displayMode = mode;
     m_maxSize = maxSize;
     m_srgb = srgb;
+    std::string extension = FromFsPath(ToFsPath(m_loadedPath).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+    if (sizeChanged && extension == ".svg") {
+        // Re-rasterize vectors at the new resolution, never scale cached pixels.
+        auto pixels = InxTextureLoader::LoadFromFile(m_loadedPath, "", m_maxSize);
+        if (!pixels.IsValid())
+            return;
+        m_width = pixels.width;
+        m_height = pixels.height;
+        m_originalPixels = std::move(pixels.pixels);
+    }
     if (!m_originalPixels.empty() && m_width > 0 && m_height > 0) {
         ApplyPreviewSettings();
     }

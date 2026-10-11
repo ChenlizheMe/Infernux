@@ -1,12 +1,16 @@
 {
-  "metadata": {
-    "guid": {
-      "type": "string",
-      "value": "8b7148eba8303c90b0589315c16f7cba"
-    },
-    "content_hash": {
-      "type": "string",
-      "value": "dc7630ba962527dc"
+    "metadata": {
+        "file_path": {
+            "type": "string",
+            "value": "Assets/Data/preload_message.txt"
+        },
+        "guid": {
+            "type": "string",
+            "value": "8b7148eba8303c90b0589315c16f7cba"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
     }
-  }
 }

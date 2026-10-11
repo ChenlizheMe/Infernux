@@ -82,8 +82,14 @@ class InxResourceMeta
 
     // Serialization methods (JSON only)
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API nlohmann::json SerializeDocument() const;
+    /// Serialize metadata for a project sidecar without embedding the local
+    /// checkout's absolute path.  Runtime/editor memory keeps the resolved
+    /// path; only the durable document uses a project-relative path hint.
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API nlohmann::json
+    SerializeDocumentPortable(const std::string &projectRoot) const;
     INFERNUX_ASSET_RUNTIME_API void DeserializeDocument(const nlohmann::json &document);
-    INFERNUX_ASSET_RUNTIME_API bool SaveToFile(const std::string &metaFilePath) const;
+    /// Sidecar persistence always uses the portable schema and an explicit root.
+    INFERNUX_ASSET_RUNTIME_API bool SaveToFile(const std::string &metaFilePath, const std::string &projectRoot) const;
     INFERNUX_ASSET_RUNTIME_API bool LoadFromFile(const std::string &metaFilePath);
 
     // Generate metadata file path from resource file path

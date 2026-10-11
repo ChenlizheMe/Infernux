@@ -47,7 +47,7 @@ def _loaded_windows_package_modules(roots: tuple[Path, ...]) -> list[tuple[int, 
     package_roots = tuple(
         candidate.resolve()
         for root in roots
-        for candidate in (root / "Infernux",)
+        for candidate in (root / "infernux",)
         if candidate.is_dir()
     )
     if not package_roots:
@@ -211,7 +211,7 @@ def verify(roots: tuple[Path, ...]) -> None:
     if residues:
         raise RuntimeError("stale pip directories remain: " + ", ".join(str(path) for path in residues))
 
-    packages = [root / "Infernux" for root in roots if (root / "Infernux").is_dir()]
+    packages = [root / "infernux" for root in roots if (root / "infernux").is_dir()]
     if len(packages) != 1:
         raise RuntimeError(f"expected exactly one installed Infernux package, found {len(packages)}")
     metadata = tuple(packages[0].rglob("*.meta"))

@@ -103,6 +103,9 @@ struct GpuMeshInterfaceDesc
     rhi::BufferHandle triangles;
     rhi::BufferHandle influences;
     rhi::BufferHandle palette;
+    uint64_t vertexBufferBytes = 0;
+    uint64_t triangleBufferBytes = 0;
+    uint64_t influenceBufferBytes = 0;
     std::vector<glm::mat4> initialPalette;
     std::shared_ptr<const void> keepAlive;
 };
@@ -238,6 +241,11 @@ class ParticleGpuRuntime
     /// Refresh scene-owned skinned Mesh parameters without rebuilding the
     /// particle graph or re-uploading immutable geometry.
     [[nodiscard]] bool UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
+    /// Capture prepared CPU inputs before simulation; acknowledge the actual
+    /// submission result separately so rejected recordings retain their data.
+    [[nodiscard]] bool HasPendingUploads() const noexcept;
+    [[nodiscard]] bool RecordPendingUploads(const rhi::TransferCommandEncoder &encoder);
+    void NotifySubmission(bool submitted) noexcept;
 
     [[nodiscard]] bool RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                                        rhi::BindGroupHandle graphSpawnGroup);
@@ -318,6 +326,9 @@ class ParticleGpuRuntime
         const uint64_t totalWords = BaseCounterWordCount + eventCounterWords;
         return ((totalWords + 3u) / 4u) * 16u;
     }
+    /// The exact Mesh storage bindings consumed by particle kernels. Their
+    /// byte ranges are shared by descriptor creation and RenderGraph imports.
+    [[nodiscard]] const std::vector<rhi::BufferBinding> &MeshBufferBindings() const noexcept;
     [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle CounterBuffer() const noexcept;
@@ -350,6 +361,7 @@ class ParticleGpuRuntime
                                       const ParticleGpuContactRuntime *previousContacts);
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     [[nodiscard]] bool UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms);
+    void PrepareUpload(rhi::BufferHandle buffer, const void *data, size_t byteSize);
     bool Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
                 rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments = {},
@@ -380,6 +392,15 @@ class ParticleGpuRuntime
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
     GpuParticleTransforms m_cachedTransforms{};
     bool m_hasCachedTransforms = false;
+    struct PendingUpload
+    {
+        rhi::BufferHandle buffer;
+        std::vector<uint8_t> bytes;
+        uint64_t revision = 0;
+        uint64_t recordedRevision = 0;
+        uint64_t submittedRevision = 0;
+    };
+    std::vector<PendingUpload> m_pendingUploads;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);

@@ -28,8 +28,8 @@ enum class DescriptorArena : uint8_t
     Count,
 };
 
-/// Stable ownership record for a descriptor set. Vulkan handles are never
-/// treated as identity: pool/set generations and DeviceId survive handle reuse.
+/// Stable ownership record for a descriptor set. Allocation IDs are never
+/// reused across managers or Reset; Vulkan handles are not ownership identity.
 struct DescriptorLease
 {
     uint64_t id = 0;
@@ -112,7 +112,6 @@ class VkDescriptorManager
     mutable std::mutex m_mutex;
     VkDevice m_device = VK_NULL_HANDLE;
     rhi::DeviceId m_deviceId = rhi::InvalidDeviceId;
-    uint64_t m_nextLeaseId = 1;
     uint32_t m_nextPoolGeneration = 1;
     uint32_t m_nextSetGeneration = 1;
     std::array<std::vector<PoolPage>, static_cast<size_t>(DescriptorArena::Count)> m_pools;

@@ -125,21 +125,21 @@ Each yielded value selects the phase that will check the coroutine next.
 | `yield None` or bare `yield` | Wait one update frame. | `update` |
 | `inx.WaitForFrames(n)` | Resume after exactly `n` update-phase checks. `n` must be an integer of at least 1; `bool` is rejected. | `update` |
 | `inx.WaitForSeconds(seconds)` | Accumulate the update-phase frame delta until it reaches `seconds`. | `update` |
-| `inx.WaitForSecondsRealtime(seconds)` | Resume on the first update check at or after its wall-clock target. | `update` |
+| `inx.WaitForSecondsRealtime(seconds)` | Resume on the first update check at or after its monotonic-clock target. | `update` |
 | `inx.WaitForFixedUpdate()` | Resume on the next fixed-update scheduler pass. | `fixed_update` |
 | `inx.WaitForEndOfFrame(n)` | Resume after `n` late-update scheduler passes. `n` has the same integer validation as `WaitForFrames`. | `late_update` |
 | `inx.WaitUntil(predicate)` | Call `predicate()` on update checks and resume when its result is truthy. | `update` |
 | `inx.WaitWhile(predicate)` | Call `predicate()` on update checks and resume when its result becomes falsy. | `update` |
 | a `Coroutine` handle | Resume after that handle is finished, including when it was stopped. | `update` |
-| any unsupported value | Current runtime treats it like a one-update-frame wait. | `update` |
+| any unsupported value | Raises `TypeError` at the next update check, stops the coroutine, and closes its generator. | `update` |
 
-`WaitForSeconds` accumulates the frame delta handed to the coroutine scheduler. The scheduler currently forwards the same raw, unscaled delta that `update()` receives, so `Time.time_scale` does not slow this wait today; the instruction's docstring still describes scaled time, which the current call path does not deliver. `WaitForSecondsRealtime` uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.
+`WaitForSeconds` accumulates the scaled game delta handed to the coroutine scheduler, the same delta that `update()` receives. `Time.time_scale` changes its speed, and zero pauses this wait. `WaitForSecondsRealtime` uses monotonic elapsed time, unaffected by the game time scale or system-clock corrections, though it can only resume when an update check occurs. Its duration starts when the instruction is yielded, so constructing it earlier does not consume the wait.
 
 `WaitForEndOfFrame` means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.
 
 Zero or negative values are accepted by the two seconds-based instructions and become ready at the next update check. Frame-based instructions reject values below 1. For clear intent, use `yield None` when you want one frame.
 
-Wait instructions carry mutable elapsed, target, or remaining state. Create a fresh `WaitForSeconds`, `WaitForSecondsRealtime`, `WaitForFrames`, or `WaitForEndOfFrame` for each wait instead of caching one instance across coroutines.
+Timed and frame-count instructions describe a wait; each coroutine owns its progress. You can cache or share a `WaitForSeconds`, `WaitForSecondsRealtime`, `WaitForFrames`, or `WaitForEndOfFrame` instance. Every `yield` starts a fresh, independent wait using the instruction's duration or frame count at that moment. Changing the instruction affects future yields and leaves active waits unchanged.
 
 ## Handles, children, and cancellation {#handles-cancellation}
 
@@ -158,7 +158,9 @@ child = self.start_coroutine(self.child_sequence())
 yield child
 ```
 
-Yielding `self.child_sequence()` directly produces an unsupported generator value. The current fallback waits one update frame and never schedules that generator. Always use `start_coroutine()` when the child needs independent scheduling and a handle.
+Yielding `self.child_sequence()` directly produces an unsupported generator value. The next update check raises `TypeError`, stops the parent, and never schedules that generator. Always use `start_coroutine()` when the child needs independent scheduling and a handle.
+
+Errors from wait predicates or unsupported yielded values stop and close the affected coroutine. The runtime reports the error in Console while other coroutines and components continue. If both the wait and its cleanup fail, both errors are retained.
 
 Stopping a generator marks its handle finished and calls `close()`. Put essential generator-local cleanup in `finally`:
 
@@ -171,7 +173,7 @@ def temporary_state(self):
         self._busy = False
 ```
 
-The public handle also exposes `creation_epoch`, `creation_epoch_id`, and `is_legacy` for runtime-reload diagnostics. Gameplay flow normally needs only `is_finished`.
+The public handle also exposes `creation_epoch`, `creation_epoch_id`, and `is_stale_epoch` for runtime-reload diagnostics. Gameplay flow normally needs only `is_finished`.
 
 Stopping only the parent does not automatically stop helper coroutines that were started separately. Use `stop_all_coroutines()` when the whole component-owned sequence should end together, or retain and stop each helper handle explicitly.
 
@@ -188,7 +190,7 @@ These rules make cancellation explicit at the component boundary and prevent a d
 ## Verify the result {#verify}
 
 1. Enter Play mode and watch Console. Message 1 should appear immediately during `start()`; messages 2–10 should remain in numeric order.
-2. Confirm that messages 2 and 3 are separated by update frames, then observe the scaled-time and real-time delays.
+2. Confirm that messages 2 and 3 are separated by update frames, then observe the scaled game-time and real-time delays.
 3. Message 6 should follow a fixed-update pass. Message 7 should appear after two late-update passes.
 4. The gate and busy helpers should allow messages 8 and 9 to appear without input.
 5. `child started immediately` should appear before its delay, followed by `child completed`, then parent message 10 on a later update check.
@@ -198,12 +200,12 @@ To inspect a handle during development, log `self._sequence_handle.is_finished`.
 
 ## Common errors {#common-errors}
 
-- **Passing the method instead of its generator**: call `self.start_coroutine(self.run_sequence())`, including the final parentheses.
+- **Passing the method instead of its generator**: call `self.start_coroutine(self.run_sequence())`, including the final parentheses. Invalid inputs raise `TypeError` before scheduling; objects implementing Python's standard Generator protocol are supported.
 - **Using `time.sleep()`**: it blocks the thread and freezes other engine work. Yield `inx.WaitForSecondsRealtime()` for a wall-clock delay.
 - **Expecting an exact timestamp**: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.
-- **Expecting `WaitForSeconds` to respect pause**: the current scheduler feeds the raw update delta, so `time_scale` does not change this wait. Use realtime waiting for wall-clock delays, and accumulate `Time.delta_time` manually when a sequence must follow the game clock.
+- **Expecting `WaitForSeconds` to continue during a game-clock pause**: `time_scale = 0` pauses this wait. Use `WaitForSecondsRealtime` when a sequence must continue independently of the game clock. Pausing the Editor itself suspends update checks for both waits.
 - **Treating `WaitForEndOfFrame` as post-render capture**: it maps to late update in the current scheduler.
-- **Reusing one wait instance**: elapsed and remaining fields belong to that object. Construct a new instruction at each `yield`.
+- **Expecting construction to start a realtime wait**: its clock starts at `yield`. Each reuse waits for the full duration again.
 - **Yielding a generator directly**: start it first and yield its `Coroutine` handle.
 - **Cancelling the parent and leaving helpers active**: retain helper handles or stop all component-owned coroutines.
 - **Assuming component disable cancels work**: add explicit `on_disable()` cleanup when that is the intended lifetime.
@@ -340,21 +342,21 @@ class CoroutineTour(inx.InxComponent):
 | `yield None` 或单独 `yield` | 等待一个更新帧。 | `update` |
 | `inx.WaitForFrames(n)` | 经过恰好 `n` 次更新阶段检查后恢复。`n` 必须是至少为 1 的整数，`bool` 会被拒绝。 | `update` |
 | `inx.WaitForSeconds(seconds)` | 累加更新阶段的帧间隔，达到 `seconds` 后恢复。 | `update` |
-| `inx.WaitForSecondsRealtime(seconds)` | 墙钟时间达到目标后，在首次更新检查时恢复。 | `update` |
+| `inx.WaitForSecondsRealtime(seconds)` | 单调时钟达到目标后，在首次更新检查时恢复。 | `update` |
 | `inx.WaitForFixedUpdate()` | 在下一次固定更新调度中恢复。 | `fixed_update` |
 | `inx.WaitForEndOfFrame(n)` | 经过 `n` 次后期更新调度后恢复。`n` 与 `WaitForFrames` 使用相同的整数校验。 | `late_update` |
 | `inx.WaitUntil(predicate)` | 每次更新检查都调用 `predicate()`，结果为真时恢复。 | `update` |
 | `inx.WaitWhile(predicate)` | 每次更新检查都调用 `predicate()`，结果变为假时恢复。 | `update` |
 | `Coroutine` 句柄 | 句柄结束后恢复，被停止的句柄也算结束。 | `update` |
-| 任意不支持的值 | 当前运行时把它当作等待一个更新帧。 | `update` |
+| 任意不支持的值 | 下一次更新检查时报 `TypeError`，停止协程并关闭它的生成器。 | `update` |
 
-`WaitForSeconds` 累加协程调度器收到的帧间隔。调度器目前把 `update()` 收到的同一份原始未缩放 delta 转给协程，因此 `Time.time_scale` 今天不会减慢这个等待；该指令的 docstring 仍描述为缩放时间，当前调用路径并没有提供缩放值。`WaitForSecondsRealtime` 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 `yield` 前即时创建。
+`WaitForSeconds` 累加协程调度器收到的缩放后游戏 delta，与 `update()` 收到的 delta 相同。`Time.time_scale` 会改变等待速度，设为零时暂停该等待。`WaitForSecondsRealtime` 使用单调时钟计算实际经过的时间，不受游戏时间缩放或系统校时影响，但仍需等到更新检查才能恢复。等待从 `yield` 指令时开始，提前创建指令不会消耗等待时长。
 
 `WaitForEndOfFrame` 对应当前协程调度器的 `late_update` 阶段，不承诺渲染、画面呈现或截图已经完成。
 
 两种秒数等待允许 0 和负数，并会在下一次更新检查时就绪。帧数等待会拒绝小于 1 的值。需要明确等待一帧时，使用 `yield None`。
 
-等待指令会保存累计时间、目标时间或剩余次数。每次等待都应创建新的 `WaitForSeconds`、`WaitForSecondsRealtime`、`WaitForFrames` 或 `WaitForEndOfFrame`，避免跨协程缓存同一实例。
+时间和帧数等待指令描述等待条件，进度由各自的协程保存。可以缓存或共享 `WaitForSeconds`、`WaitForSecondsRealtime`、`WaitForFrames` 或 `WaitForEndOfFrame` 实例。每次 `yield` 都按当时的时长或帧数开始一次独立、完整的等待。修改指令只影响之后的 `yield`，已经开始的等待保持不变。
 
 ## 句柄、子流程与取消 {#zh-handles-cancellation}
 
@@ -373,7 +375,9 @@ child = self.start_coroutine(self.child_sequence())
 yield child
 ```
 
-直接 `yield self.child_sequence()` 会产生调度器不支持的生成器值。当前回退行为只等待一个更新帧，该生成器不会被调度。需要独立调度和句柄时，必须调用 `start_coroutine()`。
+直接 `yield self.child_sequence()` 会产生调度器不支持的生成器值。下一次更新检查会报 `TypeError` 并停止父流程，该生成器不会被调度。需要独立调度和句柄时，必须调用 `start_coroutine()`。
+
+等待条件抛错或产生不支持的 `yield` 值时，会停止并关闭出错的协程。运行时在 Console 报告错误，其它协程和组件继续运行。若等待与清理都出错，会保留两项错误。
 
 停止操作会把句柄标记为完成，并调用生成器的 `close()`。生成器内部的重要清理可放在 `finally` 中：
 
@@ -386,7 +390,7 @@ def temporary_state(self):
         self._busy = False
 ```
 
-公开句柄还提供 `creation_epoch`、`creation_epoch_id` 与 `is_legacy`，供运行时重载诊断使用。一般游戏流程只需检查 `is_finished`。
+公开句柄还提供 `creation_epoch`、`creation_epoch_id` 与 `is_stale_epoch`，供运行时重载诊断使用。一般游戏流程只需检查 `is_finished`。
 
 只停止父流程不会自动停止那些单独启动的辅助协程。整个组件流程需要一起结束时，可调用 `stop_all_coroutines()`；也可以保存每个辅助句柄并逐一停止。
 
@@ -403,7 +407,7 @@ def temporary_state(self):
 ## 验证结果 {#zh-verify}
 
 1. 进入 Play 模式并观察 Console。消息 1 应在 `start()` 内立即出现，消息 2 到 10 应保持数字顺序。
-2. 确认消息 2 与消息 3 之间隔着更新帧，再观察缩放时间和真实时间延时。
+2. 确认消息 2 与消息 3 之间隔着更新帧，再观察缩放后的游戏时间与真实时间延时。
 3. 消息 6 应出现在一次固定更新之后。消息 7 应在两次后期更新之后出现。
 4. gate 与 busy 辅助流程应在没有输入的情况下让消息 8 和 9 出现。
 5. `child started immediately` 应先出现，延时后出现 `child completed`，父流程消息 10 再于后续更新检查中出现。
@@ -413,12 +417,12 @@ def temporary_state(self):
 
 ## 常见错误 {#zh-common-errors}
 
-- **传入方法本身**：应写成 `self.start_coroutine(self.run_sequence())`，末尾括号不能省略。
+- **传入方法本身**：应写成 `self.start_coroutine(self.run_sequence())`，末尾括号不能省略。非法参数会在调度前抛出 `TypeError`；支持实现 Python 标准 Generator 协议的对象。
 - **使用 `time.sleep()`**：它会阻塞线程并冻结其他引擎工作。墙钟延时请 `yield inx.WaitForSecondsRealtime()`。
 - **期待精确时间点**：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。
-- **期待 `WaitForSeconds` 响应暂停**：当前调度器传入的是原始更新 delta，`time_scale` 不会改变这个等待。墙钟延时用实时等待；流程必须跟随游戏时钟时，请自行累计 `Time.delta_time`。
+- **期待 `WaitForSeconds` 在游戏时钟暂停时继续**：`time_scale = 0` 会暂停该等待。需要独立于游戏时钟继续时，请用 `WaitForSecondsRealtime`。编辑器自身暂停时，两种等待的更新检查都会停止。
 - **把 `WaitForEndOfFrame` 当成渲染后截图点**：当前调度器把它映射到后期更新。
-- **复用同一个等待实例**：累计值和剩余次数保存在对象中。每个 `yield` 都应构造新指令。
+- **以为构造指令就开始实时等待**：计时从 `yield` 时开始，每次复用都会重新等待完整时长。
 - **直接 `yield` 生成器**：先启动生成器，再 `yield` 它的 `Coroutine` 句柄。
 - **取消父流程后留下辅助流程**：保存辅助句柄，或停止此组件的全部协程。
 - **认为禁用组件会自动取消**：需要这种生命周期时，在 `on_disable()` 中明确清理。

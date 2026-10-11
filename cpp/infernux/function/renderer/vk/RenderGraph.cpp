@@ -432,7 +432,9 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
     access.stages = rhi::PipelineStage::ColorOutput;
-    access.access = rhi::Access::ColorWrite;
+    // LOAD and blending read the attachment even though this pass publishes
+    // a new resource version. Include both sides of that attachment access.
+    access.access = rhi::Access::ColorRead | rhi::Access::ColorWrite;
     access.layout = rhi::TextureLayout::ColorAttachment;
 
     pass.writes.push_back(access);
@@ -465,7 +467,8 @@ ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::DepthOutput;
     access.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
-    access.access = rhi::Access::DepthWrite;
+    // Depth testing and LOAD read the existing depth value before writing.
+    access.access = rhi::Access::DepthRead | rhi::Access::DepthWrite;
     access.layout = rhi::TextureLayout::DepthStencilAttachment;
 
     pass.writes.push_back(access);
@@ -519,24 +522,35 @@ ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, rhi::PipelineStage 
 
 ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle, rhi::PipelineStage stages)
 {
-    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
-        return handle;
-
-    auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead,
-                          rhi::TextureLayout::Undefined});
-    return handle;
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead);
 }
 
-ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
+ResourceHandle PassBuilder::AddBufferRead(ResourceHandle handle, ResourceUsage usage, rhi::PipelineStage stages,
+                                          rhi::Access access)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
         return handle;
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
-                          rhi::Access::UniformRead, rhi::TextureLayout::Undefined});
+    // One buffer may be both indirect arguments and shader input in this pass.
+    // Keep the union in one access so barriers and retained states cover every
+    // consumer, independent of which binding was declared first.
+    for (auto &read : pass.reads) {
+        if (read.handle == handle && read.layout == rhi::TextureLayout::Undefined) {
+            read.usage = read.usage | usage;
+            read.stages = read.stages | stages;
+            read.access = read.access | access;
+            return handle;
+        }
+    }
+    pass.reads.push_back({handle, usage, stages, access, rhi::TextureLayout::Undefined});
     return handle;
+}
+
+ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
+{
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
+                         rhi::Access::UniformRead);
 }
 
 ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
@@ -575,13 +589,8 @@ ResourceHandle PassBuilder::WriteStorageTexture(ResourceHandle handle)
 
 ResourceHandle PassBuilder::ReadIndirectBuffer(ResourceHandle handle)
 {
-    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
-        return handle;
-
-    auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::IndirectArgument,
-                          rhi::PipelineStage::DrawIndirect, rhi::Access::IndirectRead, rhi::TextureLayout::Undefined});
-    return handle;
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::IndirectArgument,
+                         rhi::PipelineStage::DrawIndirect, rhi::Access::IndirectRead);
 }
 
 ResourceHandle PassBuilder::ReadRendererList(ResourceHandle handle)
@@ -866,7 +875,7 @@ void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *delet
     m_cmdBeginRendering = nullptr;
     m_cmdEndRendering = nullptr;
     if (context && m_rhiDevice) {
-        if (!m_rhiDevice->GetCapabilityState().synchronization2.IsEnabled())
+        if (!m_rhiDevice->GetVulkanFeatures().synchronization2.IsEnabled())
             throw std::runtime_error("RenderGraph requires Vulkan Synchronization2");
         m_cmdPipelineBarrier2 = rhi::ResolveSynchronization2Commands(context->GetDevice()).barrier;
         if (!m_cmdPipelineBarrier2)
@@ -874,7 +883,7 @@ void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *delet
     }
     if (context && m_rhiDevice) {
         const rhi::DynamicRenderingCommands commands = rhi::ResolveDynamicRenderingCommands(context->GetDevice());
-        if (!m_rhiDevice->GetCapabilityState().dynamicRendering.IsEnabled() || !commands.IsValid())
+        if (!m_rhiDevice->GetVulkanFeatures().dynamicRendering.IsEnabled() || !commands.IsValid())
             throw std::runtime_error("RenderGraph requires Vulkan Dynamic Rendering");
         m_cmdBeginRendering = commands.begin;
         m_cmdEndRendering = commands.end;
@@ -945,6 +954,7 @@ void RenderGraph::Reset()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
+    m_importedBufferAccessStages.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
@@ -972,6 +982,7 @@ void RenderGraph::Destroy()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
+    m_importedBufferAccessStages.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
@@ -1576,8 +1587,7 @@ bool RenderGraph::Compile()
             return false;
         }
 
-        // Step 3: Compute lifetimes in final execution order so transient
-        // aliasing does not depend on declaration order.
+        // Step 3: Compute resource lifetimes in the final execution order.
         ComputeResourceLifetimes();
         StoreStructuralCompilation(structuralSignature);
     }
@@ -1928,6 +1938,13 @@ std::vector<PassCompileInfo> RenderGraph::GetPassCompileInfos() const
                          pass.submissionDomain, pass.view});
     }
     return infos;
+}
+
+rhi::PipelineStage RenderGraph::GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept
+{
+    const auto nativeBuffer = m_rhiDevice ? m_rhiDevice->Resolve(buffer) : VK_NULL_HANDLE;
+    const auto found = m_importedBufferAccessStages.find(nativeBuffer);
+    return found == m_importedBufferAccessStages.end() ? rhi::PipelineStage::None : found->second;
 }
 
 std::string RenderGraph::GetDebugString() const

@@ -49,7 +49,7 @@ class HelloComponent(inx.InxComponent):
         inx.Debug.log("OnDestroy", self)
 ```
 
-Private names beginning with `_` stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an `__init__` method: `InxComponent` owns construction and raises `TypeError` when a subclass overrides it. Use `awake` or `start` for setup.
+Ordinary private attributes beginning with `_` stay out of serialization and the Inspector. They are useful for runtime bookkeeping. To save private data explicitly, declare it with `serialized_field(..., hidden=True)`, as described in the next chapter. Do not add an `__init__` method: `InxComponent` owns construction and raises `TypeError` when a subclass overrides it. Use `awake` or `start` for setup.
 
 ## Attach and run {#attach-and-run}
 
@@ -61,6 +61,10 @@ Private names beginning with `_` stay out of serialization and the Inspector. Th
 6. Stop Play mode. Teardown can add `OnDisable` and `OnDestroy` entries.
 
 The exercise passes when there are no import or lifecycle exceptions, the one-second message appears only once per component instance, and enable-state changes produce the matching callbacks.
+
+Entering Play replaces the Edit-mode component instance. If that instance has already received `awake`, its teardown can log `OnDestroy` before the fresh Play instance logs `Awake: HelloObject`. These messages belong to different instance lifetimes.
+
+During cleanup, `self.game_object` and the retiring component's fields remain available until its callback returns. If entering Play fails, the original Edit instance remains in place without running its destroy callback.
 
 ## GameObject and component {#component-model}
 
@@ -74,6 +78,14 @@ Inside a live `InxComponent`:
 - `self.game_object.get_component(SomeType)` returns the first matching component or `None`.
 
 These owner properties are available during normal bound lifecycle use. Accessing them on a detached or destroyed component raises a runtime error, so cleanup should retain only the data it needs.
+
+## Imports and script reload {#imports-reload}
+
+`infernux` is the engine's Python package. Import it once as `import infernux as inx` and reach everything through `inx`: `inx.InxComponent`, `inx.Vector3`, `inx.RenderStack`, `inx.renderstack`, `inx.jit`. It is an ordinary Python import backed by the same component registry. Installed Python libraries can be imported on first use without an engine import whitelist, and their ordinary factories, decorators, and field metadata are allowed. Older scripts that import `Infernux` should switch to `import infernux as inx`.
+
+Ordinary standard-library declarations are allowed too: for example, `threading.Lock()`, `asyncio.iscoroutine(value)`, and `subprocess.list2cmdline(arguments)`. Reload checks diagnose explicit import-time operations such as starting processes, opening network connections, writing files, or changing interpreter-wide state. Put those operations in the appropriate lifecycle method and release resources when the component stops. The static check is not a sandbox and does not prove arbitrary library code has no side effects.
+
+Saving a script compiles its source and stages its project dependencies before publishing the new revision to existing components. Syntax or import failure keeps the previously published revision running and reports the rejected source. Correcting the source allows the next save to publish; restarting the editor is unnecessary. The transaction protects script publication, not arbitrary external library side effects. Keep scene changes, file writes, and process or thread startup in lifecycle callbacks rather than module declarations.
 
 ## Lifecycle at a glance {#lifecycle}
 
@@ -91,9 +103,11 @@ When a scene starts, Infernux first runs `awake` and `on_enable` across active o
 
 An inactive GameObject defers `awake` until it first becomes active. `start` runs once, immediately before that component's first simulation update. Regular `update`, `fixed_update`, and `late_update` callbacks run in Play mode.
 
-Edit-mode execution is a separate opt-in. The native component proxy reads the class attribute set by `@execute_in_edit_mode` and mirrors it onto the instance as `_execute_in_edit_mode`; both the native proxy (`PyComponentProxy`) and the Python scheduler check that instance attribute before running edit-mode callbacks. In a pure Python test context without a native proxy, the mirror step does not happen, so set the instance attribute directly when such a context needs edit-mode updates.
+Edit-mode execution is a separate opt-in with `@inx.execute_in_edit_mode`. You can add or remove this decorator while the component is attached: a successful script reload updates its edit-mode execution setting without replacing the component or losing serialized values. If the candidate fails to publish, the previous setting remains active. Play-mode callbacks continue to run regardless of this decorator.
 
 For opted-in Python components, the editor runs all `update` callbacks before all `late_update` callbacks in the same frame. This supports camera-follow and reflection previews without entering Play. It does not start fixed-step physics; ordinary gameplay components remain inactive.
+
+Edit-mode preview callbacks receive the editor frame duration. Use their `delta_time` argument for preview animation: `Time.delta_time` and `Time.frame_count` belong to the Play clock, which does not advance in Edit mode.
 
 ## Common errors {#troubleshooting}
 
@@ -159,7 +173,7 @@ class HelloComponent(inx.InxComponent):
         inx.Debug.log("OnDestroy", self)
 ```
 
-以 `_` 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 `__init__`：组件构造由 `InxComponent` 管理，子类覆写它时会抛出 `TypeError`。初始化工作放进 `awake` 或 `start`。
+以 `_` 开头的普通私有属性不会进入序列化和 Inspector，适合保存运行时状态。需要明确保存私有数据时，使用下一章介绍的 `serialized_field(..., hidden=True)`。请勿添加 `__init__`：组件构造由 `InxComponent` 管理，子类覆写它时会抛出 `TypeError`。初始化工作放进 `awake` 或 `start`。
 
 ## 挂载并运行 {#attach-and-run_1}
 
@@ -171,6 +185,10 @@ class HelloComponent(inx.InxComponent):
 6. 停止 Play。销毁流程可能继续输出 `OnDisable` 与 `OnDestroy`。
 
 没有导入或生命周期异常、一秒提示对每个组件实例只出现一次、切换启用状态能得到对应回调，就算验证通过。
+
+进入 Play 时，引擎会替换编辑态组件实例。如果旧实例已经执行过 `awake`，销毁它时可能先输出 `OnDestroy`，随后新的 Play 实例才输出 `Awake: HelloObject`。这些日志属于不同实例的生命周期。
+
+清理回调返回前，`self.game_object` 与旧组件自己的字段仍然可用。如果进入 Play 失败，原编辑态实例会保留，不会执行它的销毁回调。
 
 ## GameObject 与组件 {#component-model_1}
 
@@ -184,6 +202,14 @@ class HelloComponent(inx.InxComponent):
 - `self.game_object.get_component(SomeType)` 返回第一个匹配组件；找不到时返回 `None`。
 
 组件脱离物体或已经销毁后，所属物体属性将不可用。清理逻辑只应使用自己确实需要的数据。
+
+## 导入与脚本热重载 {#imports-reload_1}
+
+`infernux` 是引擎的 Python 包。只需 `import infernux as inx` 导入一次，之后都通过 `inx` 访问：`inx.InxComponent`、`inx.Vector3`、`inx.RenderStack`、`inx.renderstack`、`inx.jit`。这是普通的 Python 导入，背后是同一套组件注册表。已安装的 Python 库可以在首次使用时导入，不需要引擎导入白名单；普通工厂、装饰器和字段元数据也可以使用。旧脚本中的 `Infernux` 导入请改为 `import infernux as inx`。
+
+普通标准库声明也允许使用，例如 `threading.Lock()`、`asyncio.iscoroutine(value)` 和 `subprocess.list2cmdline(arguments)`。重载检查会诊断导入期间明确发生的启动进程、建立网络连接、写文件或修改解释器全局状态等操作。应把这些操作放到合适的生命周期方法里，并在组件停止时释放资源。静态检查不是沙箱，不能证明任意第三方库都没有副作用。
+
+保存脚本后，引擎会先编译源码并准备项目依赖，再把新修订发布给已有组件。语法或导入失败时，上一份已发布修订继续运行，并报告被拒绝的源码；修正后再次保存即可发布，无需重启编辑器。事务保护的是脚本发布，不能回滚任意外部库的副作用。场景修改、文件写入、进程或线程启动应放在生命周期回调中，而不是模块声明阶段。
 
 ## 生命周期速览 {#lifecycle_1}
 
@@ -201,9 +227,11 @@ class HelloComponent(inx.InxComponent):
 
 非活动 GameObject 会把 `awake` 推迟到第一次激活。`start` 只运行一次，位置在该组件第一次模拟更新之前。普通的 `update`、`fixed_update` 与 `late_update` 只在 Play 模式运行。
 
-编辑模式执行需要单独选择加入。原生组件代理读取 `@execute_in_edit_mode` 装饰器设置的类属性，并把它镜像到实例的 `_execute_in_edit_mode` 上；原生代理（`PyComponentProxy`）与 Python 调度器在运行编辑模式回调前都会检查这个实例属性。没有原生代理的纯 Python 测试环境不会发生镜像，如果这类环境需要编辑模式更新，请直接设置实例属性。
+编辑模式执行需要通过 `@inx.execute_in_edit_mode` 单独选择加入。组件挂载后仍可以添加或移除这个装饰器：脚本成功热重载时会更新编辑模式执行设置，不替换组件，也不丢失序列化值。如果候选脚本发布失败，之前的设置仍然生效。Play 模式下的回调不受这个装饰器限制。
 
 对选择加入的 Python 组件，编辑器在同一帧先执行所有 `update`，再执行所有 `late_update`。跟随相机和反射预览因此不必进入 Play 才能更新。这不会启动固定步物理，普通游戏逻辑也不会跟着执行。
+
+编辑模式预览回调收到的是编辑器帧时长。预览动画应使用回调的 `delta_time` 参数；`Time.delta_time` 和 `Time.frame_count` 属于 Play 时钟，在编辑模式下不会推进。
 
 ## 常见错误 {#troubleshooting_1}
 

@@ -67,6 +67,15 @@ ObjectHandle GameObject::GetHandle() const
     return ObjectHandle{m_id, m_lifetimeGeneration, m_scene ? m_scene->GetWorldId() : 0};
 }
 
+void GameObject::SetName(const std::string &name)
+{
+    if (m_name == name)
+        return;
+    m_name = name;
+    if (m_scene)
+        ++m_scene->m_objectNameRevision;
+}
+
 void GameObject::SetLayer(int layer)
 {
     if (layer < 0 || layer >= 32) {
@@ -104,15 +113,17 @@ GameObject::~GameObject()
 {
     m_isDestroying = true;
 
-    // Unregister self from Scene lookup
-    if (m_scene) {
-        m_scene->UnregisterGameObject(m_id);
-    }
-
     // Run lifecycle callbacks while all components are still alive.
     // This lets OnDisable/OnDestroy safely call GetComponents<>() on siblings.
     for (auto &comp : m_components) {
         comp->CallOnDestroy();
+    }
+
+    // Cleanup can resolve its owner and sibling components through scene
+    // handles. Retire lookup only after those callbacks have finished, and
+    // before component storage is released.
+    if (m_scene) {
+        m_scene->UnregisterGameObject(m_id);
     }
 
     // Move components out of the vector before destructors run.
@@ -123,7 +134,15 @@ GameObject::~GameObject()
     // accidental GetComponents<>() call from a destructor returns [].
     auto dying = std::move(m_components);
     // m_components is now empty — safe for any destructor that reads it.
+    m_executionOrderCache.clear();
+    m_executionOrderCacheDirty = true;
     dying.clear(); // Destroy unique_ptrs; destructors see empty m_components.
+
+    // Child callbacks can query their parent and siblings. Detach the list
+    // before deleting children, while all of this parent's members still live.
+    std::vector<std::unique_ptr<GameObject>> dyingChildren;
+    dyingChildren.swap(m_children);
+    dyingChildren.clear();
 }
 
 bool GameObject::IsActiveInHierarchy() const
@@ -281,8 +300,19 @@ GameObject *GameObject::GetChild(size_t index) const
     return nullptr;
 }
 
+void GameObject::RequireWritableStructure() const
+{
+    if (m_isDestroying)
+        throw std::logic_error("Cannot modify GameObject structure during destruction or replacement");
+    if (m_scene)
+        m_scene->RequireWritableWorld();
+}
+
 void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
 {
+    RequireWritableStructure();
+    if (newParent)
+        newParent->RequireWritableStructure();
     if (newParent == m_parent)
         return;
 
@@ -322,18 +352,19 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         savedWorldScale = m_transform.GetWorldScale();
     }
 
+    const bool crossesScenes = newParent && previousScene && newParent->m_scene && newParent->m_scene != previousScene;
     std::unique_ptr<GameObject> selfPtr;
-
-    // 1. Detach from current owner
-    if (m_parent) {
-        selfPtr = m_parent->DetachChild(this);
-    } else if (m_scene) {
-        selfPtr = m_scene->DetachRootObject(this);
-    }
-
-    if (!selfPtr) {
-        // Should not happen unless object is in limbo state
-        return;
+    if (crossesScenes) {
+        if (!previousScene->TransferObjectTo(this, *newParent->m_scene, newParent))
+            throw std::invalid_argument(
+                "Cannot reparent hierarchy across Scenes: ownership or pending destruction conflict");
+    } else {
+        if (m_parent)
+            selfPtr = m_parent->DetachChild(this);
+        else if (m_scene)
+            selfPtr = m_scene->DetachRootObject(this);
+        if (!selfPtr)
+            return;
     }
 
     if (changesPrefabScope) {
@@ -360,14 +391,11 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     }
 
     // 2. Attach to new owner
-    if (newParent) {
+    if (!crossesScenes && newParent) {
         m_parent = newParent;
         // Ensure scene matches new parent
-        if (newParent->m_scene != m_scene) {
-            m_scene = newParent->m_scene;
-        }
         newParent->AttachChild(std::move(selfPtr));
-    } else {
+    } else if (!crossesScenes) {
         m_parent = nullptr;
         // Attached to root
         if (m_scene) {
@@ -385,14 +413,12 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         m_transform.InvalidateWorldMatrix(true);
     }
 
+    // Child-to-child moves do not pass through Scene's root attach/detach
+    // methods. Publish ancestry before callbacks can unload either Scene.
+    if (!crossesScenes && m_scene)
+        m_scene->BumpStructureVersion();
     bool isActiveInHierarchy = IsActiveInHierarchy();
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
-    // Child-to-child moves do not pass through Scene's root attach/detach
-    // methods. Publish the new ancestry/order for every hierarchy consumer.
-    if (m_scene)
-        m_scene->BumpStructureVersion();
-    if (previousScene && previousScene != m_scene)
-        previousScene->BumpStructureVersion();
 }
 
 std::vector<std::string> GameObject::GetAttachmentBlockers(const std::string &constraintTypeId,
@@ -545,6 +571,7 @@ std::vector<std::string> GameObject::GetComponentSetBlockers() const
 
 Component *GameObject::AttachComponent(std::unique_ptr<Component> component, bool enforceUserAddable)
 {
+    RequireWritableStructure();
     if (!component)
         return nullptr;
     if (dynamic_cast<PyComponentProxy *>(component.get()) != nullptr &&
@@ -601,6 +628,7 @@ std::vector<uint64_t> GameObject::GetComponentOrder() const
 
 bool GameObject::SetComponentOrder(const std::vector<uint64_t> &componentIds)
 {
+    RequireWritableStructure();
     if (componentIds.size() != m_components.size())
         return false;
 
@@ -659,6 +687,7 @@ nlohmann::json GameObject::GetDefaultComponentDocument(Component *component) con
 
 Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> component, size_t componentIndex)
 {
+    RequireWritableStructure();
     if (!component || dynamic_cast<PyComponentProxy *>(component.get()) == nullptr)
         throw std::invalid_argument("prepared component must be a PyComponentProxy");
     if (!m_scene || !m_scene->UsesRuntimeLifecycleScheduler())
@@ -689,8 +718,10 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
     }
     m_components.insert(m_components.begin() + static_cast<std::ptrdiff_t>(componentIndex), std::move(component));
     m_preparedPythonComponents.insert(ptr);
-    if (m_scene)
+    if (m_scene) {
+        m_scene->RegisterAuthoringComponent(ptr->GetComponentID());
         m_scene->BumpStructureVersion();
+    }
     InvalidateComponentExecutionCache();
     RefreshLifecycleDispatchFlags();
     return ptr;
@@ -717,9 +748,9 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     component->m_enabled = authoredEnabled;
     proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
     component->CallAwake();
-    // Awake/binding hooks must not replace the authored activation state.
-    component->m_enabled = authoredEnabled;
-    proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
+    // Lifecycle callbacks may deliberately change enabled or owner activity.
+    // Keep their result, just as normal attachment does; restoring the saved
+    // bit here would resurrect a component that disabled itself in Awake.
     // Async Player scene publication can finish just before the scene's
     // playing flag is raised.  HasStarted is the lifecycle safe-point that
     // matters here; gate on it so the newly attached component cannot miss
@@ -770,6 +801,7 @@ void GameObject::PostAddComponent(Component *component)
         return;
     }
 
+    m_scene->RegisterAuthoringComponent(component->GetComponentID());
     m_scene->BumpStructureVersion();
     InvalidateComponentExecutionCache();
     RefreshLifecycleDispatchFlags();
@@ -795,7 +827,7 @@ void GameObject::PostAddComponent(Component *component)
 
 bool GameObject::RemoveComponent(Component *component)
 {
-    if (!component) {
+    if (!component || m_isDestroying || component->IsBeingDestroyed()) {
         return false;
     }
 
@@ -821,6 +853,9 @@ bool GameObject::RemoveComponent(Component *component)
 
     for (auto it = m_components.begin(); it != m_components.end(); ++it) {
         if (it->get() == component) {
+            if (m_scene)
+                m_scene->m_nextDocumentComponentId =
+                    std::max(m_scene->m_nextDocumentComponentId, component->GetComponentID() + 1);
             (*it)->CallOnDestroy();
             m_components.erase(it);
             if (m_scene) {
@@ -837,6 +872,7 @@ bool GameObject::RemoveComponent(Component *component)
 
 Component *GameObject::ReplacePythonComponent(Component *current, std::unique_ptr<Component> replacement)
 {
+    RequireWritableStructure();
     if (!current || !replacement || dynamic_cast<PyComponentProxy *>(current) == nullptr ||
         dynamic_cast<PyComponentProxy *>(replacement.get()) == nullptr) {
         return nullptr;
@@ -943,6 +979,7 @@ std::vector<std::string> GameObject::GetRemovalBlockingComponentTypes(Component 
 
 void GameObject::AttachChild(std::unique_ptr<GameObject> child)
 {
+    RequireWritableStructure();
     if (!child)
         return;
     child->m_parent = this;
@@ -1182,6 +1219,7 @@ std::string GameObject::Serialize() const
 
 bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocumentIds)
 {
+    RequireWritableStructure();
     try {
         Scene stagingScene("GameObject document staging");
         auto stagedRoot = stagingScene.BuildGameObjectFromJsonImpl(j, /*preserveIds=*/false);
@@ -1366,11 +1404,17 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             }
         }
 
+        m_isDestroying = true;
         for (auto &component : m_components)
             component->CallOnDestroy();
         auto oldComponents = std::move(m_components);
-        m_children.clear();
+        m_executionOrderCache.clear();
+        m_executionOrderCacheDirty = true;
+        std::vector<std::unique_ptr<GameObject>> oldChildren;
+        oldChildren.swap(m_children);
+        oldChildren.clear();
         oldComponents.clear();
+        m_isDestroying = false;
 
         m_name = std::move(stagedRoot->m_name);
         m_id = rootObjectId;
@@ -1500,6 +1544,9 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
         }
     }
 
+    // Native clones bypass AddComponent. Publish the completed receiver set
+    // before Scene registration/Awake, including joints awaiting their body.
+    obj->RefreshLifecycleDispatchFlags();
     return obj;
 }
 

@@ -1,5 +1,8 @@
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [ValidateSet('All', 'TestArtifacts')]
+    [string]$Scope = 'All'
+)
 
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
@@ -47,7 +50,7 @@ function Remove-GeneratedPath([string]$Repository, [string]$RelativePath) {
         $Size = if ($Item.PSIsContainer) {
             ($Children | Where-Object { -not $_.PSIsContainer } | Measure-Object Length -Sum).Sum
         } else { $Item.Length }
-        Remove-Item -LiteralPath $Target -Recurse
+        Remove-Item -LiteralPath $Target -Recurse -Force
         $script:RemovedCount += 1
         $script:RemovedBytes += $Size
     }
@@ -75,16 +78,24 @@ for ($Index = 0; $Index -lt $Repositories.Count; $Index++) {
 }
 
 # Current and old local releases are disposable, just like assembly trees.
-# dev/ is local scratch work, not a source or archive directory.
 $GeneratedRoots = @(
-    'out', 'build', 'dist', 'dev', 'Library', 'mcp_captures',
+    'out', 'build', 'dist', 'Library', 'mcp_captures',
     'packaging/runtime', 'packaging/Nuitka', 'packaging/_vendor',
     'packaging/InfernuxHubData', 'packaging/nuitka-crash-report.xml',
-    'python/Infernux.egg-info', 'python/Infernux/_runtime_packs',
-    'python/Infernux/_runtime_modules', 'python/Infernux/resources/player_runtime'
+    'python/infernux.egg-info', 'python/infernux/_runtime_packs',
+    'python/infernux/_runtime_modules', 'python/infernux/resources/player_runtime'
 )
 foreach ($Relative in $GeneratedRoots) {
-    Remove-GeneratedPath $Root $Relative
+    if ($Scope -eq 'All') {
+        Remove-GeneratedPath $Root $Relative
+    }
+}
+
+if ($Scope -eq 'TestArtifacts') {
+    # These are test state, not native build trees or acceptance evidence.
+    foreach ($Relative in @('.pytest_cache', '.pytest_cache-installed-wheel', 'out/cache/pytest')) {
+        Remove-GeneratedPath $Root $Relative
+    }
 }
 
 foreach ($Repository in $Repositories) {
@@ -93,6 +104,19 @@ foreach ($Repository in $Repositories) {
     $Ignored = @(Get-GitPaths $Repository @('ls-files', '--others', '--ignored', '--exclude-standard', '--directory'))
     foreach ($Relative in $Ignored) {
         $Path = $Relative.Replace('\', '/')
+        if ($Repository -eq $Root -and ($Path -eq 'dev' -or $Path.StartsWith('dev/'))) {
+            continue
+        }
+        if ($Scope -eq 'TestArtifacts') {
+            $TestPath = $Repository -eq $Root -and $Path -match '^tests/'
+            $TestCache = $TestPath -and $Path -match '(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)'
+            $TestBytecode = $TestPath -and $Path -match '\.(pyc|pyo)$'
+            $FixtureOutput = $Repository -eq $Root -and $Path -match '^tests/fixtures/[^/]+/(Cache|Library|Logs|\.runtime)(/|$)'
+            if ($TestCache -or $TestBytecode -or $FixtureOutput) {
+                Remove-GeneratedPath $Repository $Relative
+            }
+            continue
+        }
         $GeneratedDirectory = $Path -match '(^|/)(out|build|dist|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.gradle|node_modules|\.wrangler|CMakeFiles)(/|$)'
         $GeneratedDirectory = $GeneratedDirectory -or $Path -match '(^|/)[^/]+\.(egg-info|build|dist|onefile-build)(/|$)'
         $GeneratedDirectory = $GeneratedDirectory -or $Path -match '(^|/)(cmake-build-[^/]+|[^/]*_InxBuild|[^/]*_InfBuild)(/|$)'
@@ -109,5 +133,9 @@ foreach ($Repository in $Repositories) {
 if ($WhatIfPreference) {
     Write-Host 'Cleanup preview complete. No files were deleted.'
 } else {
-    Write-Host ("Deleted {0} generated paths ({1:N1} MiB). No local release archives were retained." -f $RemovedCount, ($RemovedBytes / 1MB))
+    if ($Scope -eq 'TestArtifacts') {
+        Write-Host ("Deleted {0} test-generated paths ({1:N1} MiB). Build outputs and acceptance evidence were retained." -f $RemovedCount, ($RemovedBytes / 1MB))
+    } else {
+        Write-Host ("Deleted {0} generated paths ({1:N1} MiB). No local release archives were retained." -f $RemovedCount, ($RemovedBytes / 1MB))
+    }
 }

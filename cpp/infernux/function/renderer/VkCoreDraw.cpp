@@ -78,32 +78,15 @@ bool IsPackagedPlayerRuntime()
 // ============================================================================
 
 void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, const float *viewUp)
-{
+try {
+    if (m_frameFailure)
+        std::rethrow_exception(m_frameFailure);
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     auto _t0 = Clock::now();
     auto _tPrev = _t0;
     auto _tNow = _t0;
 #endif
-
-    // The published SDL pixel size can reach zero before the old swapchain
-    // extent does. Keep the resize request pending until the window restores.
-    if (m_windowWidth == 0 || m_windowHeight == 0) {
-        SDL_Delay(16);
-        return;
-    }
-
-    // Do not rely on OUT_OF_DATE: a resized surface may remain SUBOPTIMAL,
-    // which presentation deliberately accepts for Android rotation support.
-    // Rebuild before acquire so GUI draw data uses the current pixel extent.
-    if (m_framebufferResized) {
-        SDL_Log("INFERNUX_SWAPCHAIN_RECREATE stage=resize requested=%ux%u", m_windowWidth, m_windowHeight);
-        RecreateSwapchain();
-        if (m_framebufferResized) {
-            SDL_Delay(16);
-            return;
-        }
-    }
 
     // Skip rendering when the window is minimized (zero extent).
     // Without this guard, vkAcquireNextImageKHR blocks indefinitely
@@ -140,8 +123,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     }
 
     if (result == vk::SwapchainResult::Error) {
-        INXLOG_ERROR("Failed to acquire swapchain image");
-        return;
+        throw std::runtime_error("Failed to acquire swapchain image");
     }
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
@@ -182,14 +164,13 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     m_frameComputeReadStages = 0;
     if (composedFrame) {
         if (!EnsureGuiRenderGraph(imageIndex))
-            return;
+            throw std::runtime_error("Failed to prepare the presentation render graph");
 
         m_frameSubmission.Reset();
         const rhi::DeviceId device = m_backend.Device().GetDeviceId();
         std::vector<uint32_t> setupDependencies;
         if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, setupDependencies)) {
-            INXLOG_ERROR("Failed to publish pre-setup queue ownership releases");
-            return;
+            throw std::runtime_error("Failed to publish pre-setup queue ownership releases");
         }
 
         uint32_t particleComputeWork = 0;
@@ -259,8 +240,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             "Frame/Setup");
 
         if (!m_frameSubmissionBuilder(m_frameSubmission, setupWork, particleComputeWork)) {
-            INXLOG_ERROR("Failed to compose frame RenderGraph submissions");
-            return;
+            throw std::runtime_error("Failed to compose frame RenderGraph submissions");
         }
 
         uint32_t simulationWork = 0;
@@ -287,8 +267,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
                 return RecordPresentationReadback(commandBuffer, imageIndex);
             });
         if (guiRange.Empty()) {
-            INXLOG_ERROR("Swapchain GUI RenderGraph produced no submission work");
-            return;
+            throw std::runtime_error("Swapchain GUI RenderGraph produced no submission work");
         }
 
         if (asyncCompute && !primeAsyncCompute) {
@@ -304,8 +283,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         }
 
         if (!m_frameSubmission.Build(submissionPlan, submissionPlanError)) {
-            INXLOG_ERROR("Failed to build composed frame submission plan: ", submissionPlanError);
-            return;
+            throw std::runtime_error("Failed to build composed frame submission plan: " + submissionPlanError);
         }
     } else {
         std::vector<rhi::SubmissionWorkItem> frameWork;
@@ -378,13 +356,11 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
                                  {}});
         }
         if (!rhi::BuildSubmissionPlan(frameWork, submissionPlan, submissionPlanError)) {
-            INXLOG_ERROR("Failed to build frame submission plan: ", submissionPlanError);
-            return;
+            throw std::runtime_error("Failed to build frame submission plan: " + submissionPlanError);
         }
     }
     if (submissionPlan.batches.empty()) {
-        INXLOG_ERROR("Failed to build frame submission plan: ", submissionPlanError);
-        return;
+        throw std::runtime_error("Frame submission plan is empty");
     }
     {
         const rhi::SubmissionPlanStatistics statistics = rhi::AnalyzeSubmissionPlan(submissionPlan);
@@ -407,8 +383,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         telemetry.parallelComputeGraphics = independentCompute && statistics.unorderedComputeGraphicsPairCount != 0;
     }
     if (!m_backend.Queues().ResetGraphicsFrameFence(frameSlot)) {
-        INXLOG_ERROR("Failed to reset graphics frame fence for slot ", frameSlot);
-        return;
+        throw std::runtime_error("Failed to reset graphics frame fence for slot " + std::to_string(frameSlot));
     }
 
     vk::VulkanSubmissionExecutor::ExternalSync externalSync{};
@@ -494,10 +469,14 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             },
             externalSync);
     } catch (...) {
+        if (m_frameComputeSubmissionCallback)
+            m_frameComputeSubmissionCallback(false);
         if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
             INXLOG_ERROR("Failed to restore graphics frame slot after command recording exception");
         throw;
     }
+    if (m_frameComputeSubmissionCallback)
+        m_frameComputeSubmissionCallback(executeResult.Succeeded());
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[1] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
@@ -505,20 +484,19 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
 #endif
 
     const VkResult submitResult = executeResult.result;
-    if (submitResult != VK_SUCCESS) {
+    if (!executeResult.Succeeded()) {
         if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
             INXLOG_ERROR("Failed to restore graphics frame fence after submission failure");
-        // DEVICE_LOST cascades produce one failure per frame; throttle so the
-        // Console does not flood and hide the first useful diagnostic.
-        static int s_submitFailLogs = 0;
-        if (s_submitFailLogs < 3) {
-            INXLOG_ERROR("Failed to submit draw command buffer: ", vk::VkResultToString(submitResult));
-        } else if (s_submitFailLogs == 3) {
-            INXLOG_ERROR("Further draw-command submit failures suppressed (device likely lost)");
-        }
-        ++s_submitFailLogs;
-        return;
+        // Earlier queue batches may already have executed. A failed terminal
+        // submit is not permission to reset or replay their simulation state.
+        throw std::runtime_error(
+            std::string("Frame GPU submission failed: ") + vk::VkResultToString(submitResult) +
+            (executeResult.submittedAny ? " (work was already submitted)" : " (no work was submitted)"));
     } else {
+        // The frame slot epoch was reserved immediately before recording and
+        // is completed only by the terminal frame fence. Publish it now so
+        // transient resource pools can retire exactly against this submission.
+        m_lastSubmittedCompletionEpoch = externalSync.completionEpoch;
         (void)m_backend.Queues().AssociateFrameSlot(frameSlot, executeResult.completionTicket);
         if (asyncCompute)
             m_frameAsyncComputePrimed = true;
@@ -558,6 +536,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         SDL_Log("INFERNUX_SWAPCHAIN_RECREATE stage=present result=%d framebuffer_resized=%d", static_cast<int>(result),
                 m_framebufferResized ? 1 : 0);
         RecreateSwapchain();
+    } else if (result == vk::SwapchainResult::Error) {
+        throw std::runtime_error("Failed to present the submitted frame");
     }
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
@@ -568,12 +548,18 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
 
     // Advance frame
     m_currentFrame = (m_currentFrame + 1) % m_maxFramesInFlight;
+} catch (...) {
+    if (!m_frameFailure)
+        m_frameFailure = std::current_exception();
+    throw;
 }
 
 void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh)
 {
     if (!forceRefresh && m_drawCallsPtr == drawCalls && m_drawListMetadataSource == drawCalls &&
         m_drawListBufferRevision == m_objectBufferRevision &&
+        m_drawListRenderMetaRevision == m_shaderCache.GetRenderMetaRevision() &&
+        m_drawListMaterialRoutingRevision == InxMaterial::GetRoutingPublicationRevision() &&
         (!drawCalls || m_drawListMetadata.size() == drawCalls->size()))
         return;
 
@@ -584,7 +570,9 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     m_drawCallsPtr = drawCalls;
     m_drawListMetadataSource = drawCalls;
     m_drawListBufferRevision = 0;
+    m_drawListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
     m_drawListMetadata.clear();
+    m_drawListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
     m_skyboxDrawListSource = drawCalls;
     m_skyboxDrawCallIndices.clear();
 
@@ -604,9 +592,15 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     m_drawListMetadata.reserve(drawCalls->size());
     m_skyboxDrawCallIndices.reserve(1);
     m_drawQueueValues.reserve(kTrackedQueueLimit);
+    std::unordered_set<InxMaterial *> preparedMaterials;
     for (size_t drawCallIndex = 0; drawCallIndex < drawCalls->size(); ++drawCallIndex) {
         const DrawCall &drawCall = (*drawCalls)[drawCallIndex];
-        InxMaterial *material = drawCall.material ? drawCall.material.get() : m_cachedDefaultLit.get();
+        const auto &owner = drawCall.material ? drawCall.material : m_cachedDefaultLit;
+        InxMaterial *material = owner.get();
+        // Queue and pass-tag filtering must see the shader's complete defaults
+        // before any pass can initialize its GPU pipeline lazily.
+        if (material && preparedMaterials.insert(material).second)
+            PrepareMaterialRenderState(owner);
         const int queue = material ? material->GetRenderQueue() : 2000;
         if (drawCall.identity.domain == RenderDomain::Skybox)
             m_skyboxDrawCallIndices.push_back(drawCallIndex);
@@ -636,12 +630,16 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
         m_drawQueueValues.push_back(queue);
     }
     m_drawListBufferRevision = m_objectBufferRevision;
+    m_drawListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
+    m_drawListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
 }
 
 void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh)
 {
     if (!forceRefresh && m_shadowDrawCallsPtr == drawCalls && m_shadowListMetadataSource == drawCalls &&
         m_shadowListBufferRevision == m_objectBufferRevision &&
+        m_shadowListRenderMetaRevision == m_shaderCache.GetRenderMetaRevision() &&
+        m_shadowListMaterialRoutingRevision == InxMaterial::GetRoutingPublicationRevision() &&
         (!drawCalls || m_shadowListMetadata.size() == drawCalls->size()))
         return;
 
@@ -649,13 +647,19 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
     m_shadowScratchValid = false;
     m_shadowListMetadataSource = drawCalls;
     m_shadowListBufferRevision = 0;
+    m_shadowListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
     m_shadowListMetadata.clear();
+    m_shadowListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
     if (!drawCalls)
         return;
 
     m_shadowListMetadata.reserve(drawCalls->size());
+    std::unordered_set<InxMaterial *> preparedMaterials;
     for (const DrawCall &drawCall : *drawCalls) {
-        InxMaterial *material = drawCall.material ? drawCall.material.get() : m_cachedDefaultLit.get();
+        const auto &owner = drawCall.material ? drawCall.material : m_cachedDefaultLit;
+        InxMaterial *material = owner.get();
+        if (material && preparedMaterials.insert(material).second)
+            PrepareMaterialRenderState(owner);
         const auto bufferIt = m_perObjectBuffers.find(drawCall.objectId);
         if (bufferIt != m_perObjectBuffers.end()) {
             m_shadowListMetadata.push_back({drawCall.objectId, material, material ? material->GetRenderQueue() : 2000,
@@ -668,6 +672,8 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
         }
     }
     m_shadowListBufferRevision = m_objectBufferRevision;
+    m_shadowListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
+    m_shadowListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
 }
 
 void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
@@ -882,12 +888,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
 
         if (materialFilter != GraphMaterialFilter::All) {
-            ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-            if (const MaterialRenderData *committed =
-                    m_materialPipelineManager.GetRenderData(material->GetMaterialKey()))
-                stages = committed->programKey.stages;
-            const ShaderProgramArtifact *artifact =
-                ResolveShaderProgramArtifact(*materialOwner, stages, ShaderProgramDomain::Mesh);
+            const auto *committed = ResolveMeshMaterial(*materialOwner);
+            const auto *artifact =
+                committed ? m_shaderCache.FindProgramArtifact(committed->programKey.stages) : nullptr;
             const bool deferredCompatible = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
             if ((materialFilter == GraphMaterialFilter::DeferredCompatible && !deferredCompatible) ||
                 (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible))
@@ -1207,7 +1210,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
                 instanceAuxiliaryWritten &=
                     WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
-                                           draw.worldMatrix, pickingId, draw.layerMask);
+                                           draw.worldMatrix, pickingId, draw.layerMask, draw.receivesShadows);
             }
         }
 
@@ -1344,43 +1347,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (!owner)
             return {};
 
-        const std::string materialKey = owner->GetMaterialKey();
-        MaterialRenderData *forward = m_materialPipelineManager.GetRenderData(materialKey);
-        if (forward && forward->descriptorSet != VK_NULL_HANDLE &&
-            !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet)) {
-            m_materialPipelineManager.RemoveRenderData(materialKey);
-            forward = nullptr;
-        }
-
-        const ShaderStagePair requestedStages{owner->GetVertShaderName(), owner->GetFragShaderName()};
-        const ShaderProgramArtifact *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
-        if (!requestedArtifact && m_shaderProgramArtifactResolver) {
-            m_shaderProgramArtifactResolver(owner, ShaderProgramDomain::Mesh);
-            requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
-        }
-        if (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh) {
-            const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
-            if (m_rejectedGeometryMaterialPrograms.insert(rejectionKey).second) {
-                // The refresh performs the single user-facing domain report.
-                // It deliberately leaves a complete previous generation live.
-                RefreshMaterialPipeline(owner, requestedStages.vertexShaderId, requestedStages.fragmentShaderId);
-            }
-            if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
-                !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
-                return {};
-            owner->ClearPipelineDirty();
-        }
-
-        if (!forward || owner->IsPipelineDirty()) {
-            const std::string &vertName = owner->GetVertShaderName();
-            const std::string &fragName = owner->GetFragShaderName();
-            if (fragName.empty() || !RefreshMaterialPipeline(owner, vertName, fragName))
-                return {};
-            forward = m_materialPipelineManager.GetRenderData(materialKey);
-        }
-        if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
-            !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
+        MaterialRenderData *forward = ResolveMeshMaterial(owner);
+        if (!forward)
             return {};
+        const ShaderStagePair requestedStages{owner->GetVertShaderName(), owner->GetFragShaderName()};
 
         const MaterialPassPipelineDescriptor defaultForward =
             m_materialPipelineManager.GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
@@ -1922,16 +1892,19 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         ResolvedShadowMaterial lastResolvedShadowResources{};
         for (size_t drawCallIndex = 0; drawCallIndex < activeShadowDrawCalls.size(); ++drawCallIndex) {
             const DrawCall &dc = activeShadowDrawCalls[drawCallIndex];
+            // Empty renderer slots use DefaultLit in both color and shadow
+            // draws, including the first primitive in a fresh project.
+            const auto &material = dc.material ? dc.material : m_cachedDefaultLit;
             const DrawListMetadata *metadata =
                 hasShadowListMetadata ? &m_shadowListMetadata[drawCallIndex]
                                       : (usesMainDrawListMetadata ? &m_drawListMetadata[drawCallIndex] : nullptr);
             const uint64_t requiredIndexEnd = static_cast<uint64_t>(dc.indexStart) + dc.indexCount;
-            if (metadata && (metadata->objectId != dc.objectId || metadata->material != dc.material.get() ||
+            if (metadata && (metadata->objectId != dc.objectId || metadata->material != material.get() ||
                              requiredIndexEnd > metadata->indexCapacity))
                 metadata = nullptr;
-            if (!dc.castsShadows || !dc.material)
+            if (!dc.castsShadows || !material)
                 continue;
-            const int renderQueue = metadata ? metadata->renderQueue : dc.material->GetRenderQueue();
+            const int renderQueue = metadata ? metadata->renderQueue : material->GetRenderQueue();
             if (renderQueue < queueMin || renderQueue > queueMax)
                 continue;
             const DrawListMetadata *bufferLease =
@@ -1940,7 +1913,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 const auto bufferIt = m_perObjectBuffers.find(dc.objectId);
                 if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.HasVertexBuffer() &&
                     bufferIt->second.indexBuffer && requiredIndexEnd <= bufferIt->second.indexCount) {
-                    fallbackBufferLeases.push_back({dc.objectId, dc.material.get(), renderQueue,
+                    fallbackBufferLeases.push_back({dc.objectId, material.get(), renderQueue,
                                                     bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
                                                     bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
                                                     bufferIt->second.residentVertexHandle,
@@ -1952,20 +1925,20 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 continue;
 
             ResolvedShadowMaterial resources{};
-            if (dc.material.get() == lastResolvedShadowMaterial) {
+            if (material.get() == lastResolvedShadowMaterial) {
                 resources = lastResolvedShadowResources;
             } else {
-                auto resolved = m_resolvedShadowMaterialsScratch.find(dc.material.get());
+                auto resolved = m_resolvedShadowMaterialsScratch.find(material.get());
                 if (resolved == m_resolvedShadowMaterialsScratch.end()) {
                     const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(
-                        dc.material, dc.material->GetVertShaderName(), dc.material->GetFragShaderName(), depthFormat);
-                    resources.pipeline = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+                        material, material->GetVertShaderName(), material->GetFragShaderName(), depthFormat);
+                    resources.pipeline = material->GetPassPipeline(ShaderCompileTarget::Shadow);
                     resources.descriptorSet = descriptorSet;
-                    resolved = m_resolvedShadowMaterialsScratch.emplace(dc.material.get(), resources).first;
+                    resolved = m_resolvedShadowMaterialsScratch.emplace(material.get(), resources).first;
                 } else {
                     resources = resolved->second;
                 }
-                lastResolvedShadowMaterial = dc.material.get();
+                lastResolvedShadowMaterial = material.get();
                 lastResolvedShadowResources = resources;
             }
             const VkPipeline pip = resources.pipeline;

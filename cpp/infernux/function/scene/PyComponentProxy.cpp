@@ -3,10 +3,10 @@
 #include "GameObject.h"
 #include "physics/PhysicsContactListener.h"
 #include <algorithm>
+#include <bindings/python/JsonPyBridge.h>
 #include <core/log/InxLog.h>
 #include <cstdio>
 #include <nlohmann/json.hpp>
-#include <tools/pybinding/JsonPyBridge.h>
 
 using json = nlohmann::json;
 
@@ -80,7 +80,9 @@ void CallPythonLifecycleFloatArg(const py::object &pyComponent, const std::strin
     }
 }
 
-void CallPythonLifecycleOneArg(const py::object &pyComponent, const std::string &typeName, const char *entryPoint,
+// A contact callback may remove its own proxy, including before raising an
+// exception. Keep the Python receiver and diagnostic name alive through return.
+void CallPythonLifecycleOneArg(py::object pyComponent, std::string typeName, const char *entryPoint,
                                const char *displayName, py::object arg)
 {
     try {
@@ -161,7 +163,7 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
             } else {
                 try {
                     const py::object constraints =
-                        py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
+                        py::module_::import("infernux.components.registry").attr("get_component_constraints")(pyType);
                     m_typeConstraints.allowMultiple = constraints.attr("allow_multiple").cast<bool>();
                     m_typeConstraints.userAddable = constraints.attr("user_addable").cast<bool>();
                     m_typeConstraints.removable = constraints.attr("removable").cast<bool>();
@@ -202,6 +204,19 @@ void CallCachedLifecycleNoArg(const py::object &callable, const std::string &typ
 {
     try {
         callable();
+    } catch (const py::error_already_set &e) {
+        INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
+    }
+}
+
+void CallCachedLifecycleCleanup(const py::object &pyComponent, const py::object &callable, Component *nativeComponent,
+                                const std::string &typeName, const char *displayName)
+{
+    try {
+        pyComponent.attr("_invoke_native_cleanup")(
+            callable, py::cast(nativeComponent, py::return_value_policy::reference),
+            py::cast(nativeComponent->GetGameObject(), py::return_value_policy::reference),
+            nativeComponent->IsBeingDestroyed());
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
     }
@@ -302,6 +317,23 @@ void PyComponentProxy::SyncPythonMirror() const
     SyncPythonMirrorState(m_pyComponent, this);
 }
 
+void PyComponentProxy::RebindBuiltinComponentMirrors(const std::vector<Component *> &components)
+{
+    if (!Py_IsInitialized())
+        return;
+    PythonLifecyclePhaseScope acquire;
+    const auto modules = py::reinterpret_borrow<py::dict>(PyImport_GetModuleDict());
+    const py::str moduleName("infernux.components.builtin_component");
+    // A native-only host has no Python builtin mirrors to update. Do not load
+    // the gameplay package merely because a native hierarchy changed Scenes.
+    if (!modules.contains(moduleName))
+        return;
+    py::list moved;
+    for (Component *component : components)
+        moved.append(py::cast(component, py::return_value_policy::reference));
+    modules[moduleName].attr("BuiltinComponent").attr("_rebind_moved_components")(moved);
+}
+
 void PyComponentProxy::RebindPythonMirror()
 {
     py::gil_scoped_acquire acquire;
@@ -324,6 +356,23 @@ void PyComponentProxy::ResetLifecycleForPlay()
 void PyComponentProxy::RefreshPythonLifecycleDispatch()
 {
     py::gil_scoped_acquire acquire;
+    if (!m_pyComponent.is_none()) {
+        // A body reload retains this proxy and its component/script identity. Authored
+        // declaration names must still follow the published Python class so
+        // fields and ComponentRecord identity describe the same revision.
+        const py::object pyType = m_pyComponent.attr("__class__");
+        m_typeName = pyType.attr("__name__").cast<std::string>();
+        m_moduleName = pyType.attr("__module__").cast<std::string>();
+        m_qualifiedName = pyType.attr("__qualname__").cast<std::string>();
+        m_typeGuid = pyType.attr("_get_type_guid")().cast<std::string>();
+        m_pyComponent.attr("_component_name") = py::str(m_typeName);
+        // Edit-mode execution is editable script metadata. Refresh both the
+        // native lifecycle gate and the scheduler's mirror at the reload
+        // publication boundary; rollback calls this with the restored class.
+        m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
+        m_pyComponent.attr("_execute_in_edit_mode") = py::bool_(m_executeInEditMode);
+        RefreshConstraintTypeId();
+    }
     RefreshPythonLifecycleDispatchPlan();
     RefreshPythonLifecycleOverrideMask();
 }
@@ -341,7 +390,7 @@ void PyComponentProxy::RefreshPythonLifecycleOverrideMask()
     }
 
     const py::object pyType = m_pyComponent.attr("__class__");
-    const py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
+    const py::object inxComponentType = py::module_::import("infernux.components").attr("InxComponent");
     m_overridesCollisionEnter = !pyType.attr("on_collision_enter").is(inxComponentType.attr("on_collision_enter"));
     m_overridesCollisionStay = !pyType.attr("on_collision_stay").is(inxComponentType.attr("on_collision_stay"));
     m_overridesCollisionExit = !pyType.attr("on_collision_exit").is(inxComponentType.attr("on_collision_exit"));
@@ -429,7 +478,7 @@ void PyComponentProxy::OnDisable()
         return;
 
     SyncPythonMirror();
-    CallCachedLifecycleNoArg(m_callOnDisable, m_typeName, "on_disable");
+    CallCachedLifecycleCleanup(m_pyComponent, m_callOnDisable, this, m_typeName, "on_disable");
 }
 
 void PyComponentProxy::OnGameObjectDeactivated()
@@ -448,7 +497,7 @@ void PyComponentProxy::OnDestroy()
     if (m_pyComponent.is_none())
         return;
 
-    CallCachedLifecycleNoArg(m_callOnDestroy, m_typeName, "on_destroy");
+    CallCachedLifecycleCleanup(m_pyComponent, m_callOnDestroy, this, m_typeName, "on_destroy");
 }
 
 void PyComponentProxy::OnValidate()

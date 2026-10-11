@@ -36,9 +36,11 @@ constexpr std::pair<std::string_view, PixelFormat> Formats[] = {
     {"rgb10a2_unorm", PixelFormat::RGB10A2UNorm},
     {"d32_sfloat", PixelFormat::D32SFloat},
     {"d24_unorm_s8_uint", PixelFormat::D24UNormS8UInt},
+    {"d32_sfloat_s8_uint", PixelFormat::D32SFloatS8UInt},
     {"rgba16_sfloat", PixelFormat::RGBA16SFloat},
     {"rgba16_unorm", PixelFormat::RGBA16UNorm},
     {"rg32_uint", PixelFormat::RG32UInt},
+    {"rgba32_uint", PixelFormat::RGBA32UInt},
     {"rgba32_sfloat", PixelFormat::RGBA32SFloat},
 };
 

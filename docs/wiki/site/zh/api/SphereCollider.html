@@ -27,8 +27,8 @@
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Official Infernux scripting API reference for SphereCollider.">
     
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <title>SphereCollider - Infernux Documentation</title>
     
     <link rel="canonical" href="https://infernux-engine.com/wiki/site/zh/api/SphereCollider.html">
@@ -132,14 +132,14 @@
     
     <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="icon" type="image/png" href="/assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="/assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
-    <link rel="stylesheet" href="/css/fonts.css?v=1">
-    <link rel="stylesheet" href="/css/style.css?v=20">
+    <link rel="stylesheet" href="/css/fonts.css?v=3">
+    <link rel="stylesheet" href="/css/style.css?v=27">
     <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
     <link rel="stylesheet" href="/css/docs-search.css?v=3">
-    <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
-    <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
+    <link rel="stylesheet" href="/css/wiki-generated.css?v=10">
+    <link rel="stylesheet" href="/css/wiki-template.c72a3a6cb96fee1d.css">
 </head>
 <body class="api-reference-page">
     
@@ -151,15 +151,13 @@
     <nav class="navbar" aria-label="主导航">
         <div class="nav-container">
             <a href="/index.html" class="nav-logo">
-                <span class="logo-icon"><img src="/assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                <span class="logo-icon"><img src="/assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                 <span class="logo-text">Infernux</span>
             </a>
             <div class="nav-links" id="primary-navigation">
-                <a href="/start.html" class="nav-priority">开始使用</a>
-                <a href="/learn.html">学习</a>
+                <a href="/tutorials.html" class="nav-priority">教程</a>
                 <a href="/wiki/site/zh/api/index.html" class="active" aria-current="page">API</a>
                 <a href="/roadmap.html">路线图</a>
-                <a href="/changelog.html">更新日志</a>
                 <a href="https://infernux-engine.discourse.group/" class="nav-priority">社区</a>
                 <a href="/download.html">下载</a>
                 <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
@@ -172,9 +170,6 @@
                 </button>
                 <button type="button" class="docs-search-trigger" data-docs-search-trigger aria-haspopup="dialog" aria-controls="docs-search-dialog" aria-expanded="false">
                     <i class="fas fa-magnifying-glass" aria-hidden="true"></i><span data-docs-search-trigger-label>搜索文档</span><kbd aria-hidden="true">/</kbd>
-                </button>
-                <button type="button" class="theme-toggle" data-site-action="theme" title="Toggle theme" aria-label="Toggle theme" aria-pressed="false">
-                    <i class="fas fa-moon" id="theme-icon"></i>
                 </button>
                 <button type="button" class="mobile-menu-btn" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false">
                     <i class="fas fa-bars"></i>
@@ -213,43 +208,43 @@
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.components</span>
+                            <span class="ns-nm">infernux.components</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/InxComponent.html" class="">InxComponent</a><a href="/wiki/site/zh/api/Space.html" class="">Space</a><a href="/wiki/site/zh/api/add_component_menu.html" class="">add_component_menu</a><a href="/wiki/site/zh/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/wiki/site/zh/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/wiki/site/zh/api/require_component.html" class="">require_component</a><a href="/wiki/site/zh/api/serialized_field.html" class="">serialized_field</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd open hi" aria-expanded="true">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.components.builtin</span>
+                            <span class="ns-nm">infernux.components.builtin</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/AudioListener.html" class="">AudioListener</a><a href="/wiki/site/zh/api/AudioSource.html" class="">AudioSource</a><a href="/wiki/site/zh/api/BoxCollider.html" class="">BoxCollider</a><a href="/wiki/site/zh/api/Camera.html" class="">Camera</a><a href="/wiki/site/zh/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/wiki/site/zh/api/Collider.html" class="">Collider</a><a href="/wiki/site/zh/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/wiki/site/zh/api/Light.html" class="">Light</a><a href="/wiki/site/zh/api/MeshCollider.html" class="">MeshCollider</a><a href="/wiki/site/zh/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/wiki/site/zh/api/Rigidbody.html" class="">Rigidbody</a><a href="/wiki/site/zh/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/wiki/site/zh/api/SphereCollider.html" class="cur">SphereCollider</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.core</span>
+                            <span class="ns-nm">infernux.core</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/AudioClip.html" class="">AudioClip</a><a href="/wiki/site/zh/api/Material.html" class="">Material</a><a href="/wiki/site/zh/api/Shader.html" class="">Shader</a><a href="/wiki/site/zh/api/Texture.html" class="">Texture</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.coroutine</span>
+                            <span class="ns-nm">infernux.coroutine</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Coroutine.html" class="">Coroutine</a><a href="/wiki/site/zh/api/WaitForEndOfFrame.html" class="">WaitForEndOfFrame</a><a href="/wiki/site/zh/api/WaitForFixedUpdate.html" class="">WaitForFixedUpdate</a><a href="/wiki/site/zh/api/WaitForSeconds.html" class="">WaitForSeconds</a><a href="/wiki/site/zh/api/WaitForSecondsRealtime.html" class="">WaitForSecondsRealtime</a><a href="/wiki/site/zh/api/WaitUntil.html" class="">WaitUntil</a><a href="/wiki/site/zh/api/WaitWhile.html" class="">WaitWhile</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.debug</span>
+                            <span class="ns-nm">infernux.debug</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Debug.html" class="">Debug</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.gizmos</span>
+                            <span class="ns-nm">infernux.gizmos</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Gizmos.html" class="">Gizmos</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.input</span>
+                            <span class="ns-nm">infernux.input</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Input.html" class="">Input</a><a href="/wiki/site/zh/api/KeyCode.html" class="">KeyCode</a></div>
                     </div><div class="ns-group">
@@ -261,49 +256,49 @@
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.math</span>
+                            <span class="ns-nm">infernux.math</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/quaternion.html" class="">quaternion</a><a href="/wiki/site/zh/api/vector2.html" class="">vector2</a><a href="/wiki/site/zh/api/vector3.html" class="">vector3</a><a href="/wiki/site/zh/api/vector4.html" class="">vector4</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.mathf</span>
+                            <span class="ns-nm">infernux.mathf</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Mathf.html" class="">Mathf</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.physics</span>
+                            <span class="ns-nm">infernux.physics</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Physics.html" class="">Physics</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.rendergraph</span>
+                            <span class="ns-nm">infernux.rendergraph</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Format.html" class="">Format</a><a href="/wiki/site/zh/api/RenderGraph.html" class="">RenderGraph</a><a href="/wiki/site/zh/api/RenderPassBuilder.html" class="">RenderPassBuilder</a><a href="/wiki/site/zh/api/TextureHandle.html" class="">TextureHandle</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.renderstack</span>
+                            <span class="ns-nm">infernux.renderstack</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/BloomEffect.html" class="">BloomEffect</a><a href="/wiki/site/zh/api/ChromaticAberrationEffect.html" class="">ChromaticAberrationEffect</a><a href="/wiki/site/zh/api/ColorAdjustmentsEffect.html" class="">ColorAdjustmentsEffect</a><a href="/wiki/site/zh/api/FilmGrainEffect.html" class="">FilmGrainEffect</a><a href="/wiki/site/zh/api/FullScreenEffect.html" class="">FullScreenEffect</a><a href="/wiki/site/zh/api/RenderPass.html" class="">RenderPass</a><a href="/wiki/site/zh/api/RenderPipeline.html" class="">RenderPipeline</a><a href="/wiki/site/zh/api/RenderStack.html" class="">RenderStack</a><a href="/wiki/site/zh/api/SharpenEffect.html" class="">SharpenEffect</a><a href="/wiki/site/zh/api/ToneMappingEffect.html" class="">ToneMappingEffect</a><a href="/wiki/site/zh/api/VignetteEffect.html" class="">VignetteEffect</a><a href="/wiki/site/zh/api/WhiteBalanceEffect.html" class="">WhiteBalanceEffect</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.scene</span>
+                            <span class="ns-nm">infernux.scene</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/SceneManager.html" class="">SceneManager</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.timing</span>
+                            <span class="ns-nm">infernux.timing</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/Time.html" class="">Time</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
-                            <span class="ns-nm">Infernux.ui</span>
+                            <span class="ns-nm">infernux.ui</span>
                         </button>
                         <div class="ns-ch"><a href="/wiki/site/zh/api/InxUIComponent.html" class="">InxUIComponent</a><a href="/wiki/site/zh/api/PointerEventData.html" class="">PointerEventData</a><a href="/wiki/site/zh/api/UIButton.html" class="">UIButton</a><a href="/wiki/site/zh/api/UICanvas.html" class="">UICanvas</a><a href="/wiki/site/zh/api/UIImage.html" class="">UIImage</a><a href="/wiki/site/zh/api/UISelectable.html" class="">UISelectable</a><a href="/wiki/site/zh/api/UIText.html" class="">UIText</a></div>
                     </div></div>
@@ -313,7 +308,7 @@
         <main class="api-main" id="main-content">
             
     <nav class="doc-breadcrumb" aria-label="面包屑">
-        <a href="/start.html">开始使用</a>
+        <a href="/tutorials.html">教程</a>
         <span aria-hidden="true">/</span>
         
         <a href="/wiki/site/zh/api/index.html">API</a>
@@ -336,7 +331,7 @@
     
             <h1 id="spherecollider">SphereCollider<a class="headerlink" href="#spherecollider" title="Permanent link">&para;</a></h1>
 <div class="class-info">
-类位于 <b>Infernux.components.builtin</b>
+类位于 <b>infernux.components.builtin</b>
 </div>
 
 <p><strong>继承自:</strong> <a href="Collider.html">Collider</a></p>
@@ -444,8 +439,11 @@
         </div>
     </dialog>
 
-    <script src="/js/main.js?v=15"></script>
+    <script src="/js/vendor/gsap.min.js?v=3.13.0"></script>
+    <script src="/js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
+    <script src="/js/main.js?v=16"></script>
+    <script src="/js/motion.js?v=5"></script>
     <script src="/js/docs-search.js?v=6"></script>
-    <script src="/js/wiki-generated.js?v=14"></script>
+    <script src="/js/wiki-generated.js?v=15"></script>
 </body>
 </html>

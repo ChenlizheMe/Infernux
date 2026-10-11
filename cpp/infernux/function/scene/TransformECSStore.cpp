@@ -2,6 +2,7 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include "Transform.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <glm/gtc/constants.hpp>
@@ -376,8 +377,7 @@ void TransformECSStore::SyncObjectWorldMatrices(GameObject *obj)
 void TransformECSStore::GatherLocalPositions(Transform *const *transforms, float *out, size_t count) const
 {
     for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = transforms[i]->GetECSHandle().index;
-        const auto &v = m_localPositions[idx];
+        const auto v = transforms[i]->GetLocalPosition();
         out[i * 3 + 0] = v.x;
         out[i * 3 + 1] = v.y;
         out[i * 3 + 2] = v.z;
@@ -390,6 +390,7 @@ void TransformECSStore::ScatterLocalPositions(Transform *const *transforms, cons
         auto h = transforms[i]->GetECSHandle();
         uint32_t idx = h.index;
         m_localPositions[idx] = glm::vec3(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
+        RecordLocalPoseWrite(h, true, false);
         m_dirty[idx] = 1;
         MarkWorldMatrixDirty(idx);
     }
@@ -432,8 +433,7 @@ void TransformECSStore::ScatterLocalScales(Transform *const *transforms, const f
 void TransformECSStore::GatherLocalRotations(Transform *const *transforms, float *out, size_t count) const
 {
     for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = transforms[i]->GetECSHandle().index;
-        const auto &q = m_localRotations[idx];
+        const auto q = transforms[i]->GetLocalRotation();
         out[i * 4 + 0] = q.x;
         out[i * 4 + 1] = q.y;
         out[i * 4 + 2] = q.z;
@@ -449,6 +449,7 @@ void TransformECSStore::ScatterLocalRotations(Transform *const *transforms, cons
         glm::quat q(in[i * 4 + 3], in[i * 4], in[i * 4 + 1], in[i * 4 + 2]); // glm: (w,x,y,z)
         m_localRotations[idx] = q;
         m_localEulerAngles[idx] = QuatToEulerYXZ(q);
+        RecordLocalPoseWrite(h, false, true);
         m_hasCachedWorldEulerAngles[idx] = 0;
         m_fcRotationValid[idx] = 0;
         m_dirty[idx] = 1;
@@ -465,8 +466,7 @@ void TransformECSStore::ScatterLocalRotations(Transform *const *transforms, cons
 void TransformECSStore::GatherLocalEulerAngles(Transform *const *transforms, float *out, size_t count) const
 {
     for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = transforms[i]->GetECSHandle().index;
-        const auto &v = m_localEulerAngles[idx];
+        const auto v = transforms[i]->GetLocalEulerAngles();
         out[i * 3 + 0] = v.x;
         out[i * 3 + 1] = v.y;
         out[i * 3 + 2] = v.z;
@@ -481,6 +481,7 @@ void TransformECSStore::ScatterLocalEulerAngles(Transform *const *transforms, co
         glm::vec3 euler(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
         m_localEulerAngles[idx] = euler;
         m_localRotations[idx] = EulerYXZToQuat(euler);
+        RecordLocalPoseWrite(h, false, true);
         m_hasCachedWorldEulerAngles[idx] = 0;
         m_fcRotationValid[idx] = 0;
         m_dirty[idx] = 1;
@@ -515,6 +516,11 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
         Transform *parent = t->GetParent();
         glm::vec3 wp(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
         uint32_t idx = t->GetECSHandle().index;
+
+        if (m_frameCacheActive) {
+            SetCachedWorldPosition(idx, wp);
+            continue;
+        }
 
         GameObject *gameObject = t->GetGameObject();
         const bool hasChildren = gameObject && gameObject->GetChildCount() > 0;
@@ -619,16 +625,16 @@ bool TransformECSStore::EndFrameCache()
     m_frameCacheActive = false;
     bool requiresFullSync = false;
 
-    for (uint32_t i : m_fcDirtyIndices) {
+    const auto commitSlot = [&](uint32_t i) {
         const uint8_t d = m_fcDirty[i];
         m_fcDirty[i] = 0;
         if (d == 0 || i >= m_alive.size() || !m_alive[i]) {
-            continue;
+            return;
         }
 
         Transform *owner = m_owners[i];
         if (!owner) {
-            continue;
+            return;
         }
 
         Transform *parent = owner->GetParent();
@@ -676,7 +682,7 @@ bool TransformECSStore::EndFrameCache()
             m_worldMatrixDirty[i] = 0;
             if (notifyOwner && m_invalidationObserver)
                 m_invalidationObserver(owner);
-            continue;
+            return;
         }
 
         requiresFullSync = true;
@@ -687,7 +693,27 @@ bool TransformECSStore::EndFrameCache()
         } else if (notifyOwner && m_invalidationObserver) {
             m_invalidationObserver(owner);
         }
+    };
+
+    // A world-space target must be converted against the committed parent,
+    // including dirty ancestors above unchanged intermediary transforms.
+    // Body allocation / write order is not hierarchy order. Keep independent
+    // roots on the existing linear fast path; sort only nested dirty entries.
+    m_fcChildCommits.clear();
+    for (const uint32_t i : m_fcDirtyIndices) {
+        if (i >= m_alive.size() || !m_alive[i] || !m_owners[i])
+            continue;
+        uint32_t depth = 0;
+        for (auto *parent = m_owners[i]->GetParent(); parent; parent = parent->GetParent())
+            ++depth;
+        if (depth == 0)
+            commitSlot(i);
+        else
+            m_fcChildCommits.emplace_back(depth, i);
     }
+    std::sort(m_fcChildCommits.begin(), m_fcChildCommits.end());
+    for (const auto &[depth, i] : m_fcChildCommits)
+        commitSlot(i);
 
     m_fcDirtyIndices.clear();
 
@@ -745,10 +771,26 @@ const glm::mat4 &TransformECSStore::ComposeFrameCacheWorldMatrix(Handle h, const
 {
     EnsureFrameCacheSlot(h.index);
     const glm::vec3 scale = owner ? owner->GetWorldScale() : m_localScales[h.index];
-    m_cachedWorldMatrices[h.index] = glm::translate(glm::mat4(1.0f), m_fcWorldPositions[h.index]) *
-                                     glm::mat4_cast(glm::normalize(m_fcWorldRotations[h.index])) *
-                                     glm::scale(glm::mat4(1.0f), scale);
+    glm::vec3 position = m_fcWorldPositions[h.index];
+    if (!HasFrameCacheWorldPositionOverride(h)) {
+        const Transform *parent = owner ? owner->GetParent() : nullptr;
+        position = parent ? glm::vec3(parent->GetWorldMatrix() * glm::vec4(m_localPositions[h.index], 1.0f))
+                          : m_localPositions[h.index];
+    }
+    const glm::quat rotation = owner ? owner->GetWorldRotation() : m_localRotations[h.index];
+    m_cachedWorldMatrices[h.index] = glm::translate(glm::mat4(1.0f), position) *
+                                     glm::mat4_cast(glm::normalize(rotation)) * glm::scale(glm::mat4(1.0f), scale);
     return m_cachedWorldMatrices[h.index];
+}
+
+void TransformECSStore::RecordLocalPoseWrite(Handle h, bool position, bool rotation)
+{
+    if (!IsFrameCacheActiveFor(h))
+        return;
+    // Keep the slot on the sparse commit list, including when both world bits
+    // are removed. The local SoA values are already authoritative.
+    MarkFrameCacheDirty(h.index, static_cast<uint8_t>(0x40 | (position ? 0x04 : 0) | (rotation ? 0x10 : 0)));
+    m_fcDirty[h.index] &= static_cast<uint8_t>(~((position ? 0x01 : 0) | (rotation ? 0x02 : 0)));
 }
 
 void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v)
@@ -784,6 +826,7 @@ void TransformECSStore::SetCachedLocalPosition(uint32_t slotIndex, const glm::ve
 {
     m_localPositions[slotIndex] = v;
     MarkFrameCacheDirty(slotIndex, 0x44);
+    m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x01);
     MarkWorldMatrixDirty(slotIndex);
 }
 
@@ -801,6 +844,7 @@ void TransformECSStore::SetCachedLocalRotation(uint32_t slotIndex, const glm::qu
     m_hasCachedWorldEulerAngles[slotIndex] = 0;
     m_fcRotationValid[slotIndex] = 0;
     MarkFrameCacheDirty(slotIndex, 0x50);
+    m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x02);
     MarkWorldMatrixDirty(slotIndex);
 }
 
@@ -811,6 +855,7 @@ void TransformECSStore::SetCachedLocalEulerAngles(uint32_t slotIndex, const glm:
     m_hasCachedWorldEulerAngles[slotIndex] = 0;
     m_fcRotationValid[slotIndex] = 0;
     MarkFrameCacheDirty(slotIndex, 0x60);
+    m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x02);
     MarkWorldMatrixDirty(slotIndex);
 }
 

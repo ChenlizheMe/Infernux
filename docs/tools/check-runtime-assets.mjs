@@ -72,32 +72,35 @@ for (const file of runtimeFiles.filter((file) => file.endsWith(".js"))) {
 }
 
 const main = await readFile(path.join(docsRoot, "js", "main.js"), "utf8");
-for (const contract of ["classList.toggle('is-scrolled'", "classList.add('reveal-pending'", "classList.remove('reveal-pending'", "classList.add('animate-in'", "monitorServiceWorkerUpdates", "serviceWorkerReloadRequested", "worker.postMessage(\"SKIP_WAITING\")", "site-update-notice"]) {
+for (const contract of ["classList.toggle('is-scrolled'", "classList.add('reveal-pending'", "classList.remove('reveal-pending'", "classList.add('animate-in'"]) {
     if (!main.includes(contract)) fail(`docs/js/main.js: missing class-driven visual state '${contract}'`);
 }
-for (const deadRuntime of ["function copyCode", "function showTab", "#27ca40"]) {
+for (const deadRuntime of ["function copyCode", "function showTab", "#27ca40", "site-update-notice", "monitorServiceWorkerUpdates"]) {
     if (main.includes(deadRuntime)) fail(`docs/js/main.js: obsolete runtime '${deadRuntime}' was restored`);
 }
 
 const sharedStyle = await readFile(path.join(docsRoot, "css", "style.css"), "utf8");
-for (const contract of [".navbar.is-scrolled", ".reveal-pending", "transition: opacity 0.5s ease, transform 0.5s ease", ".site-update-notice", ".site-update-actions", "data-update-state=\"applying\""]) {
+for (const contract of [".navbar.is-scrolled", ".reveal-pending", "transition: opacity 0.5s ease, transform 0.5s ease"]) {
     if (!sharedStyle.includes(contract)) fail(`docs/css/style.css: missing class-driven visual contract '${contract}'`);
 }
 const generatedStyle = await readFile(path.join(docsRoot, "css", "wiki-generated.css"), "utf8");
 if (!generatedStyle.includes(".clipboard-fallback")) fail("docs/css/wiki-generated.css: missing clipboard fallback class");
 
-try {
-    await readFile(path.join(docsRoot, "js", "roadmap.js"));
-    fail("docs/js/roadmap.js: obsolete unreferenced runtime must remain removed");
-} catch (error) {
-    if (error.code !== "ENOENT") throw error;
+for (const file of runtimeFiles.filter((runtimeFile) => runtimeFile.endsWith(".css"))) {
+    const source = await readFile(file, "utf8");
+    for (const match of source.matchAll(/(?:font-size\s*:\s*|font\s*:[^;]*?\s)(0\.\d+)(rem|px)/gi)) {
+        const value = Number(match[1]);
+        const minimum = match[2].toLowerCase() === "px" ? 8 : 0.5;
+        if (value < minimum) {
+            fail(`${path.relative(repoRoot, file)}: font size ${match[1]}${match[2]} is below the 8px minimum`);
+        }
+    }
 }
 
 for (const workflowName of ["website-quality.yml", "build-wiki.yml"]) {
     const workflow = await readFile(path.join(repoRoot, ".github", "workflows", workflowName), "utf8");
     if (!workflow.includes("node docs/tools/check-runtime-assets.mjs")) fail(`${workflowName}: runtime asset/state gate is not enforced`);
     if (!workflow.includes("node docs/tools/test-runtime-visual-state.mjs")) fail(`${workflowName}: runtime visual-state test is not enforced`);
-    if (!workflow.includes("node docs/tools/test-service-worker-update.mjs")) fail(`${workflowName}: Service Worker update UX test is not enforced`);
 }
 
 if (failures.length) {

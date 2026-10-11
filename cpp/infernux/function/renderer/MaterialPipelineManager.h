@@ -177,7 +177,7 @@ class MaterialPipelineManager
     /**
      * @brief Update material UBO with current property values
      */
-    void UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material);
+    bool UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material);
 
     [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const
     {
@@ -206,6 +206,8 @@ class MaterialPipelineManager
      */
     void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
                                  std::shared_ptr<const rhi::TextureGpuView> gpuView);
+    void SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
+                                std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     /**
      * @brief Set texture resolver for material Texture2D properties

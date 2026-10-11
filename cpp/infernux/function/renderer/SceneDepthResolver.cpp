@@ -1,9 +1,28 @@
 #include "SceneDepthResolver.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace infernux
 {
+
+// Immutable device program; descriptor groups below remain view-local.
+struct SceneDepthResolveProgram
+{
+    explicit SceneDepthResolveProgram(rhi::Device &owner) : device(owner)
+    {
+    }
+    ~SceneDepthResolveProgram()
+    {
+        device.Release(pipeline);
+        device.Release(layout);
+        device.Release(nearestSampler);
+    }
+    rhi::Device &device;
+    rhi::SamplerHandle nearestSampler;
+    rhi::BindingLayoutHandle layout;
+    rhi::ComputePipelineHandle pipeline;
+};
 
 namespace
 {
@@ -25,13 +44,13 @@ SceneDepthResolver::~SceneDepthResolver()
     Destroy();
 }
 
-bool SceneDepthResolver::Initialize(rhi::Device &device, const uint32_t *spirv, size_t wordCount)
+std::shared_ptr<const SceneDepthResolveProgram>
+SceneDepthResolver::CreateProgram(rhi::Device &device, const uint32_t *spirv, size_t wordCount)
 {
-    Destroy();
     if (!spirv || wordCount < 5 || spirv[0] != 0x07230203u)
-        return false;
+        return {};
 
-    m_device = &device;
+    auto program = std::make_shared<SceneDepthResolveProgram>(device);
 
     rhi::SamplerDesc samplerDesc;
     samplerDesc.minFilter = rhi::FilterMode::Nearest;
@@ -40,29 +59,42 @@ bool SceneDepthResolver::Initialize(rhi::Device &device, const uint32_t *spirv, 
     samplerDesc.addressU = rhi::AddressMode::ClampToEdge;
     samplerDesc.addressV = rhi::AddressMode::ClampToEdge;
     samplerDesc.addressW = rhi::AddressMode::ClampToEdge;
-    m_nearestSampler = device.CreateSampler(samplerDesc);
+    program->nearestSampler = device.CreateSampler(samplerDesc);
 
     rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, rhi::BindingType::CombinedTextureSampler, rhi::ShaderStage::Compute, 1};
     layoutDesc.entries[1] = {1, rhi::BindingType::StorageTexture, rhi::ShaderStage::Compute, 1};
     layoutDesc.entryCount = 2;
-    m_layout = device.CreateBindingLayout(layoutDesc);
+    program->layout = device.CreateBindingLayout(layoutDesc);
 
     const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(spirv, wordCount));
-    if (shader.IsValid() && m_layout.IsValid()) {
+    if (shader.IsValid() && program->layout.IsValid()) {
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
-        pipelineDesc.bindingLayouts[0] = m_layout;
+        pipelineDesc.bindingLayouts[0] = program->layout;
         pipelineDesc.bindingLayoutCount = 1;
         pipelineDesc.pushConstantBytes = sizeof(ResolveConstants);
-        m_pipeline = device.CreateComputePipeline(pipelineDesc);
+        program->pipeline = device.CreateComputePipeline(pipelineDesc);
     }
     device.Release(shader);
 
-    if (!IsValid()) {
-        Destroy();
+    if (!program->nearestSampler.IsValid() || !program->layout.IsValid() || !program->pipeline.IsValid())
+        return {};
+    return program;
+}
+
+bool SceneDepthResolver::Initialize(rhi::Device &device, const uint32_t *spirv, size_t wordCount)
+{
+    return Initialize(CreateProgram(device, spirv, wordCount));
+}
+
+bool SceneDepthResolver::Initialize(std::shared_ptr<const SceneDepthResolveProgram> program)
+{
+    Destroy();
+    if (!program)
         return false;
-    }
+    m_program = std::move(program);
+    m_device = &m_program->device;
     return true;
 }
 
@@ -71,20 +103,15 @@ void SceneDepthResolver::Destroy() noexcept
     if (m_device) {
         for (const auto &binding : m_bindings)
             m_device->Release(binding.group);
-        m_device->Release(m_pipeline);
-        m_device->Release(m_layout);
-        m_device->Release(m_nearestSampler);
     }
+    m_program.reset();
     m_device = nullptr;
-    m_nearestSampler = {};
-    m_layout = {};
-    m_pipeline = {};
     m_bindings.clear();
 }
 
 bool SceneDepthResolver::IsValid() const noexcept
 {
-    return m_device && m_nearestSampler.IsValid() && m_layout.IsValid() && m_pipeline.IsValid();
+    return m_device && m_program;
 }
 
 bool SceneDepthResolver::Record(const rhi::ComputeCommandEncoder &encoder, rhi::TextureViewHandle sourceDepth,
@@ -104,9 +131,9 @@ bool SceneDepthResolver::Record(const rhi::ComputeCommandEncoder &encoder, rhi::
     constants.width = width;
     constants.height = height;
     constants.sampleCount = sampleCount;
-    encoder.BindPipeline(m_pipeline);
-    encoder.BindGroup(m_pipeline, 0, group);
-    encoder.PushConstants(m_pipeline, sizeof(constants), &constants);
+    encoder.BindPipeline(m_program->pipeline);
+    encoder.BindGroup(m_program->pipeline, 0, group);
+    encoder.PushConstants(m_program->pipeline, sizeof(constants), &constants);
     encoder.Dispatch((width + 7u) / 8u, (height + 7u) / 8u, 1);
     return true;
 }
@@ -160,8 +187,8 @@ rhi::BindGroupHandle SceneDepthResolver::ResolveBindGroup(rhi::TextureViewHandle
         return existing->group;
 
     rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = m_layout;
-    groupDesc.textures[0] = {0, rhi::BindingType::CombinedTextureSampler, sourceDepth, m_nearestSampler, true};
+    groupDesc.layout = m_program->layout;
+    groupDesc.textures[0] = {0, rhi::BindingType::CombinedTextureSampler, sourceDepth, m_program->nearestSampler, true};
     groupDesc.textures[1] = {1, rhi::BindingType::StorageTexture, resolvedDepth, {}, false};
     groupDesc.textureCount = 2;
     const auto group = m_device->CreateBindGroup(groupDesc);

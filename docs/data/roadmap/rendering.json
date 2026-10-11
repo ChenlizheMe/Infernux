@@ -1,0 +1,429 @@
+{
+  "key": "rendering",
+  "titleKey": "roadmap.galaxy.rendering.title",
+  "branches": [
+    {
+      "en": "VULKAN PLAYER",
+      "zh": "Vulkan Player",
+      "leaves": [
+        ["Forward routes","Forward 路径","live"],
+        ["Deferred buffers","Deferred 缓冲","live"],
+        ["Shadows & lights","阴影与光照","live"],
+        ["GPU captures","GPU 捕获","planned"],
+        ["Bindless resource access","无绑定资源访问","live"],
+        ["Multi-queue submission","多队列提交","live"],
+        ["Pipeline cache management","管线缓存管理","live"],
+        ["GPU crash diagnostics","GPU 崩溃诊断","planned"]
+      ]
+    },
+    {
+      "en": "WEBGPU PLAYER",
+      "zh": "WebGPU Player",
+      "leaves": [
+        ["Browser scene path","浏览器场景路径","live"],
+        ["Descriptor contracts","描述符契约","live"],
+        ["Visual parity","视觉一致性","planned"],
+        ["Portable compute","可移植计算","planned"],
+        ["Browser capability tiers","浏览器能力分级","planned"],
+        ["WGSL shader validation","WGSL 着色器验证","live"],
+        ["Browser performance captures","浏览器性能捕获","planned"]
+      ]
+    },
+    {
+      "en": "MATERIALS",
+      "zh": "材质系统",
+      "leaves": [
+        ["Typed materials","类型化材质","live"],
+        ["Shader stages","Shader 阶段","live"],
+        ["Material instances","材质实例","live"],
+        ["Runtime variants","运行时变体","planned"],
+        ["Material parameter blocks","材质参数块","live"],
+        ["Shader variant stripping","Shader 变体裁剪","planned"],
+        ["Shader reflection","Shader 反射","live"],
+        ["Material graph editor","材质节点编辑器","future"]
+      ]
+    },
+    {
+      "en": "FRAME GRAPH",
+      "zh": "帧图",
+      "leaves": [
+        ["Pass scheduling","Pass 调度","live"],
+        ["Transient resources","瞬态资源","live"],
+        ["Frame budget","帧预算","planned"],
+        ["Render inspection","渲染检查","planned"],
+        ["Barrier synthesis","屏障生成","live"],
+        ["Resource alias analysis","资源别名分析","planned"],
+        ["Async compute scheduling","异步计算调度","live"]
+      ]
+    },
+    {
+      "en": "Visibility",
+      "zh": "可见性与剔除",
+      "leaves": [
+        ["Frustum culling","视锥剔除","live"],
+        ["Hierarchical Z culling","层次 Z 剔除","planned"],
+        ["GPU-driven draw lists","GPU 驱动绘制列表","planned"],
+        ["Mesh LOD selection","网格 LOD 选择","planned"],
+        ["Portal visibility","门户可见性","future"],
+        ["Virtual geometry","虚拟几何","future"]
+      ]
+    },
+    {
+      "en": "Lighting",
+      "zh": "光照系统",
+      "leaves": [
+        ["Clustered light assignment","集群光源分配","planned"],
+        ["Area light approximation","面光源近似","live"],
+        ["Reflection probes","反射探针","planned"],
+        ["Image-based lighting","基于图像的照明","planned"],
+        ["Light baking workflow","光照烘焙流程","planned"],
+        ["Probe volumes","体积光照探针","planned"],
+        ["Dynamic global illumination","动态全局光照","future"],
+        ["Ray-traced lighting","光追照明","future"]
+      ]
+    },
+    {
+      "en": "Shadows",
+      "zh": "阴影系统",
+      "leaves": [
+        ["Cascade stabilization","级联阴影稳定化","live"],
+        ["Shadow atlas allocation","阴影图集分配","live"],
+        ["Contact shadows","接触阴影","planned"],
+        ["Soft shadow filtering","软阴影过滤","live"],
+        ["Point-light shadows","点光源阴影","live"],
+        ["Shadow caching","阴影缓存","planned"],
+        ["Virtual shadow maps","虚拟阴影贴图","future"],
+        ["Ray-traced shadows","光追阴影","future"]
+      ]
+    },
+    {
+      "en": "Image reconstruction",
+      "zh": "图像重建",
+      "leaves": [
+        ["Motion vectors","运动矢量","live"],
+        ["Temporal anti-aliasing","时间抗锯齿","live"],
+        ["Temporal upscaling","时间超分辨率","planned"],
+        ["Dynamic resolution","动态分辨率","planned"],
+        ["History rejection","历史样本剔除","live"],
+        ["Exposure adaptation","曝光适应","planned"],
+        ["HDR display output","HDR 显示输出","planned"],
+        ["Neural reconstruction","神经图像重建","future"]
+      ]
+    },
+    {
+      "en": "Texture systems",
+      "zh": "纹理系统",
+      "leaves": [
+        ["Texture streaming","纹理流式加载","planned"],
+        ["Mip residency budgets","Mip 驻留预算","planned"],
+        ["Texture compression pipeline","纹理压缩管线","live"],
+        ["Sparse texture residency","稀疏纹理驻留","future"],
+        ["Virtual texture pages","虚拟纹理分页","future"],
+        ["Texture inspection","纹理检查工具","planned"]
+      ]
+    },
+    {
+      "en": "World rendering",
+      "zh": "世界渲染",
+      "leaves": [
+        ["Terrain patches","地形分块","planned"],
+        ["Terrain LOD transitions","地形 LOD 过渡","planned"],
+        ["Vegetation instancing","植被实例化","planned"],
+        ["Sky atmosphere","天空大气","planned"],
+        ["Volumetric fog","体积雾","planned"],
+        ["Water surfaces","水面渲染","planned"],
+        ["Cloud rendering","云层渲染","future"],
+        ["World streaming integration","世界流式加载接入","planned"]
+      ]
+    },
+    {
+      "en": "Transparency & effects",
+      "zh": "透明与特效",
+      "leaves": [
+        ["Transparent sorting","透明排序","live"],
+        ["Order-independent transparency","顺序无关透明","future"],
+        ["Decal projection","贴花投影","planned"],
+        ["Screen-space reflections","屏幕空间反射","planned"],
+        ["Ambient occlusion","环境光遮蔽","planned"],
+        ["Depth of field","景深","planned"],
+        ["Motion blur","运动模糊","live"],
+        ["Lens effect pipeline","镜头效果管线","live"]
+      ]
+    },
+    {
+      "en": "GPU compute bridge",
+      "zh": "GPU 计算桥接",
+      "leaves": [
+        ["Compute / graphics synchronization","计算与图形同步","live"],
+        ["Shared buffer ownership","共享缓冲区所有权","live"],
+        ["Asynchronous readback","异步回读","live"],
+        ["GPU timestamp queries","GPU 时间戳查询","live"],
+        ["Compute-driven mesh updates","计算驱动网格更新","live"],
+        ["GPU inference interop","GPU 推理互操作","future"],
+        ["Zero-copy render observations","零拷贝渲染观测","future"],
+        ["Compute validation scenes","计算验证场景","live"]
+      ]
+    },
+    {
+      "en": "Volumetric clouds",
+      "zh": "体积云",
+      "leaves": [
+        ["Cloud density fields","云密度场","future"],
+        ["Weather coverage maps","天气覆盖图","future"],
+        ["Cloud altitude layers","云高度分层","future"],
+        ["Cloud ray marching","体积云光线步进","future"],
+        ["Cloud self-shadowing","云自阴影","future"],
+        ["Cloud multiple scattering","云多重散射","future"],
+        ["Cloud temporal reconstruction","云时域重建","future"],
+        ["Cloud ground shadows","云地面投影","future"]
+      ]
+    },
+    {
+      "en": "Atmospheric transport",
+      "zh": "大气光传输",
+      "leaves": [
+        ["Atmosphere transmittance LUT","大气透射率查找表","planned"],
+        ["Sky-view LUT","天空视图查找表","planned"],
+        ["Atmosphere multiple-scattering LUT","大气多重散射查找表","planned"],
+        ["Aerial-perspective volumes","空气透视体积","planned"],
+        ["Planet curvature handling","行星曲率处理","planned"],
+        ["Night-sky radiance","夜空辐亮度","planned"],
+        ["Atmosphere parameter authoring","大气参数编辑","planned"]
+      ]
+    },
+    {
+      "en": "Ray tracing backend",
+      "zh": "光线追踪后端",
+      "leaves": [
+        ["Ray tracing capability negotiation","光追能力协商","future"],
+        ["Any-hit opacity evaluation","任意命中透明度求值","future"],
+        ["Procedural intersection shaders","程序化求交着色器","future"],
+        ["Shader binding tables","着色器绑定表","future"],
+        ["Inline ray queries","内联光线查询","future"],
+        ["Ray pipeline hot reload","光追管线热重载","future"]
+      ]
+    },
+    {
+      "en": "Acceleration structures",
+      "zh": "光追加速结构",
+      "leaves": [
+        ["BLAS construction","底层加速结构构建","future"],
+        ["TLAS construction","顶层加速结构构建","future"],
+        ["BLAS compaction","底层结构压缩","future"],
+        ["TLAS instance updates","顶层实例更新","future"],
+        ["Skinned-geometry BLAS updates","蒙皮几何底层结构更新","future"],
+        ["Asynchronous BLAS builds","异步底层结构构建","future"],
+        ["Acceleration memory budgets","加速结构内存预算","future"]
+      ]
+    },
+    {
+      "en": "Monte Carlo sampling",
+      "zh": "蒙特卡洛采样",
+      "leaves": [
+        ["Sobol sequence generation","Sobol 序列生成","future"],
+        ["Blue-noise sample tiles","蓝噪声采样块","planned"],
+        ["Solid-angle light sampling","立体角光源采样","future"],
+        ["Environment alias tables","环境光别名表","future"],
+        ["Light power distributions","光源功率分布","future"],
+        ["Adaptive sample allocation","自适应采样分配","future"],
+        ["Multiple importance sampling","多重重要性采样","future"]
+      ]
+    },
+    {
+      "en": "MIS estimators",
+      "zh": "MIS 估计器",
+      "leaves": [
+        ["MIS balance heuristic","MIS 平衡启发式","future"],
+        ["MIS power heuristic","MIS 幂启发式","future"],
+        ["One-sample MIS selection","单样本 MIS 策略选择","future"],
+        ["MIS estimator convergence scenes","MIS 估计器收敛场景","future"]
+      ]
+    },
+    {
+      "en": "Path integration",
+      "zh": "路径积分",
+      "leaves": [
+        ["Next-event estimation","下一事件估计","future"],
+        ["Russian roulette termination","俄罗斯轮盘终止","future"],
+        ["Wavefront path queues","波前路径队列","future"],
+        ["Transmission path tracking","透射路径追踪","future"],
+        ["Nested medium stacks","嵌套介质栈","future"],
+        ["Path differential propagation","路径微分传播","future"],
+        ["Caustic path strategies","焦散路径策略","future"],
+        ["Bidirectional path connections","双向路径连接","future"],
+        ["Path guiding distributions","路径引导分布","future"]
+      ]
+    },
+    {
+      "en": "Scattering models",
+      "zh": "散射材质模型",
+      "leaves": [
+        ["GGX visible-normal sampling","GGX 可见法线采样","future"],
+        ["Anisotropic microfacets","各向异性微表面","planned"],
+        ["Rough transmission lobes","粗糙透射波瓣","planned"],
+        ["Thin-sheet transmission","薄片透射","planned"],
+        ["Clear-coat energy layering","清漆能量分层","planned"],
+        ["Sheen cloth lobes","织物光泽波瓣","planned"],
+        ["Multiple-scattering compensation","多重散射能量补偿","live"],
+        ["Subsurface diffusion profiles","次表面扩散轮廓","planned"],
+        ["Random-walk subsurface transport","随机游走次表面传输","future"],
+        ["Normal-map variance filtering","法线贴图方差过滤","planned"],
+        ["White-furnace energy tests","白炉能量测试","planned"]
+      ]
+    },
+    {
+      "en": "Ray denoising",
+      "zh": "光追降噪",
+      "leaves": [
+        ["Radiance demodulation","辐亮度解调","future"],
+        ["Diffuse-specular separation","漫反射与镜面分离","future"],
+        ["Variance-guided filtering","方差引导过滤","future"],
+        ["Checkerboard ray reconstruction","棋盘光线重建","future"],
+        ["Denoiser quality comparisons","降噪质量对比","future"]
+      ]
+    },
+    {
+      "en": "Reservoir resampling",
+      "zh": "蓄水池重采样",
+      "leaves": [
+        ["Temporal reservoir reuse","时域蓄水池复用","future"],
+        ["Spatial reservoir reuse","空间蓄水池复用","future"],
+        ["Reservoir bias correction","蓄水池偏差修正","future"],
+        ["Emissive triangle reservoirs","发光三角形蓄水池","future"],
+        ["Indirect-light reservoirs","间接光蓄水池","future"]
+      ]
+    },
+    {
+      "en": "Probe illumination",
+      "zh": "探针间接光照",
+      "leaves": [
+        ["Irradiance probe placement","辐照度探针放置","planned"],
+        ["Probe relocation","探针重定位","future"],
+        ["Octahedral probe maps","八面体探针贴图","planned"],
+        ["Probe scrolling volumes","探针滚动体积","future"],
+        ["Probe leak suppression","探针漏光抑制","planned"],
+        ["Probe update prioritization","探针更新优先级","future"],
+        ["Static-dynamic probe composition","静动态探针合成","future"],
+        ["Probe placement visualization","探针布局可视化","planned"]
+      ]
+    },
+    {
+      "en": "Participating media",
+      "zh": "参与介质",
+      "leaves": [
+        ["Froxel grid allocation","视锥体素网格分配","planned"],
+        ["Volumetric light injection","体积光注入","planned"],
+        ["Volumetric shadow sampling","体积阴影采样","planned"],
+        ["Fog height profiles","雾高度分布","planned"],
+        ["Local fog volumes","局部雾体积","planned"],
+        ["Froxel temporal reprojection","视锥体素时域重投影","planned"],
+        ["Delta tracking estimators","Delta 跟踪估计器","future"],
+        ["Ratio tracking transmittance","比率跟踪透射率","future"]
+      ]
+    },
+    {
+      "en": "Water optics",
+      "zh": "水体光学",
+      "leaves": [
+        ["FFT ocean spectra","FFT 海洋频谱","planned"],
+        ["Choppy wave displacement","尖峰波位移","planned"],
+        ["Ocean cascade blending","海面级联混合","planned"],
+        ["Shallow-water heightfields","浅水高度场","planned"],
+        ["Underwater light attenuation","水下光衰减","planned"],
+        ["Shoreline foam generation","岸线泡沫生成","planned"],
+        ["Water caustic projection","水体焦散投射","planned"],
+        ["Underwater camera transitions","水下相机过渡","planned"],
+        ["River flow fields","河流流场","planned"],
+        ["Water obstacle interaction","水体障碍交互","planned"],
+        ["Water spectrum authoring","水波频谱编辑","planned"]
+      ]
+    },
+    {
+      "en": "Hair and fibers",
+      "zh": "毛发与纤维",
+      "leaves": [
+        ["Strand curve primitives","发丝曲线图元","future"],
+        ["Fiber scattering lobes","纤维散射波瓣","future"],
+        ["Hair card transitions","毛发卡片过渡","future"],
+        ["Groom asset cooking","毛发资产烘焙","future"]
+      ]
+    },
+    {
+      "en": "Mesh processing",
+      "zh": "网格处理流水线",
+      "leaves": [
+        ["Meshlet partitioning","网格簇划分","planned"],
+        ["Meshlet cone bounds","网格簇锥体边界","planned"],
+        ["Vertex-cache optimization","顶点缓存优化","planned"],
+        ["Quantized vertex formats","量化顶点格式","planned"],
+        ["Mesh shader dispatch","网格着色器分派","planned"],
+        ["Task shader amplification","任务着色器放大","planned"],
+        ["Meshlet LOD hierarchy","网格簇 LOD 层级","future"],
+        ["Cluster page streaming","几何簇分页流送","future"],
+        ["Displacement microgeometry","位移微几何","future"]
+      ]
+    },
+    {
+      "en": "Visibility buffers",
+      "zh": "可见性缓冲",
+      "leaves": [
+        ["Primitive-ID attachments","图元标识附件","future"],
+        ["Barycentric reconstruction","重心坐标重建","future"],
+        ["Material resolve classification","材质解析分类","future"],
+        ["Deferred attribute fetch","延后属性读取","future"],
+        ["Two-phase occlusion passes","两阶段遮挡 Pass","planned"],
+        ["Occluder proxy generation","遮挡代理生成","planned"],
+        ["Culling effectiveness counters","剔除效果计数","planned"]
+      ]
+    },
+    {
+      "en": "Virtual texture cache",
+      "zh": "虚拟纹理缓存",
+      "leaves": [
+        ["Texture feedback buffers","纹理反馈缓冲","future"],
+        ["Page request prioritization","分页请求优先级","future"],
+        ["Physical tile pools","物理纹理块池","future"],
+        ["Page eviction policy","纹理页淘汰策略","future"],
+        ["Terrain material page baking","地形材质分页烘焙","future"]
+      ]
+    },
+    {
+      "en": "Color and display",
+      "zh": "色彩与显示",
+      "leaves": [
+        ["Scene-linear working spaces","场景线性工作空间","live"],
+        ["Transfer-function selection","传递函数选择","planned"],
+        ["Tone-curve authoring","色调曲线编辑","planned"],
+        ["Gamut compression","色域压缩","planned"],
+        ["HDR peak-luminance mapping","HDR 峰值亮度映射","planned"],
+        ["Output dithering","输出抖动","live"],
+        ["Color-grading LUT blending","调色 LUT 混合","planned"],
+        ["Color pipeline inspection","色彩管线检查","planned"]
+      ]
+    },
+    {
+      "en": "Ray tracing inspection",
+      "zh": "光追检查工具",
+      "leaves": [
+        ["Ray count heatmaps","光线数量热图","future"],
+        ["Ray path visualization","光线路径可视化","future"],
+        ["BVH node visualization","BVH 节点可视化","future"],
+        ["Per-bounce radiance views","逐反弹辐亮度视图","future"],
+        ["Reference path renders","参考路径渲染","future"]
+      ]
+    },
+    {
+      "en": "Render scheduling details",
+      "zh": "渲染调度细节",
+      "leaves": [
+        ["Queue-family ownership transfers","队列族归属转移","live"],
+        ["Timeline semaphore milestones","时间线信号量里程碑","live"],
+        ["Attachment load-store inference","附件加载存储推导","planned"],
+        ["Render-pass fusion criteria","渲染 Pass 合并准则","planned"],
+        ["Frame pacing prediction","帧节奏预测","planned"],
+        ["Pipeline compilation queues","管线编译队列","planned"],
+        ["GPU marker hierarchy","GPU 标记层级","planned"]
+      ]
+    }
+  ]
+}

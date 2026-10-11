@@ -404,7 +404,7 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBi
     case ShaderCompileTarget::GBuffer:
         pipeline.colorFormats = {
             rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA8UNorm,
-            rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RG32UInt,
+            rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA32UInt,
         };
         pipeline.samples = rhi::SampleCount::One;
         break;
@@ -732,13 +732,14 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     }
     if (pipelineDesc.depthReadOnly)
         effectiveState.depthWriteEnable = false;
-    if (pipelineDesc.target == ShaderCompileTarget::Normal || pipelineDesc.target == ShaderCompileTarget::BaseColor) {
-        // The normal pass replays the visible opaque geometry against the
+    if (pipelineDesc.target == ShaderCompileTarget::Motion || pipelineDesc.target == ShaderCompileTarget::Normal ||
+        pipelineDesc.target == ShaderCompileTarget::BaseColor) {
+        // Geometry buffer passes replay the visible opaque geometry against the
         // camera depth attachment.  Exact equality is unnecessarily brittle:
         // a semantic shader variant can produce a sub-ULP clip-depth change
         // even though it covers the same surface.  LESS_OR_EQUAL preserves
         // hidden-surface rejection while allowing that visible surface to
-        // publish its normal.
+        // publish its motion, normal or base color.
         effectiveState.depthCompareOp = MaterialCompareOp::LessOrEqual;
     }
     if (!rhi::IsStencilFormat(pipelineDesc.depthFormat))
@@ -857,9 +858,10 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     return pipeline;
 }
 
-void MaterialPipelineManager::UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material)
+bool MaterialPipelineManager::UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material)
 {
-    m_descriptorManager.UpdateMaterialUBO(materialName, material);
+    if (!m_descriptorManager.UpdateMaterialUBO(materialName, material))
+        return false;
 
     // Re-resolve Texture2D properties in case set_texture was called
     auto it = m_renderDataMap.find(materialName);
@@ -867,6 +869,7 @@ void MaterialPipelineManager::UpdateMaterialProperties(const std::string &materi
         m_descriptorManager.ResolveTextureProperties(materialName, material, *it->second->shaderProgram);
         RefreshPublishedDescriptorHandle(materialName);
     }
+    return true;
 }
 
 void MaterialPipelineManager::BindMaterialTexture(const std::string &materialName, uint32_t binding,
@@ -906,6 +909,12 @@ void MaterialPipelineManager::SetDefaultNormalTexture(VkImageView imageView, VkS
                                                       std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_descriptorManager.SetDefaultNormalTexture(imageView, sampler, std::move(gpuView));
+}
+
+void MaterialPipelineManager::SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
+                                                     std::shared_ptr<const rhi::TextureGpuView> gpuView)
+{
+    m_descriptorManager.SetDefaultBlackTexture(imageView, sampler, std::move(gpuView));
 }
 
 void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &shaderId)

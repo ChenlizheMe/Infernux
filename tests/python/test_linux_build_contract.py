@@ -1,0 +1,267 @@
+import json
+from pathlib import Path
+import shlex
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_linux_clang_companion_tools_are_resolved_before_project() -> None:
+    root_cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    tool_module = (ROOT / "cmake/InfernuxCompilerTools.cmake").read_text(
+        encoding="utf-8"
+    )
+
+    include = 'include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxCompilerTools.cmake")'
+    assert root_cmake.index(include) < root_cmake.index("project(Infernux")
+    assert "llvm-ar-18" in tool_module
+    assert "llvm-ranlib-18" in tool_module
+    assert "${CMAKE_BINARY_DIR}/toolchain-bin" in tool_module
+    assert 'set(ENV{PATH} "${_infernux_llvm_tool_dir}:$ENV{PATH}")' in tool_module
+    assert 'set(CMAKE_C_COMPILER_AR "${INFERNUX_LLVM_AR_EXECUTABLE}"' in tool_module
+    assert 'set(CMAKE_CXX_COMPILER_RANLIB "${INFERNUX_LLVM_RANLIB_EXECUTABLE}"' in tool_module
+
+
+def test_linux_presets_use_the_system_pkg_config() -> None:
+    presets = json.loads(
+        (ROOT / "cmake/presets/Linux.json").read_text(encoding="utf-8")
+    )
+    base = next(
+        preset
+        for preset in presets["configurePresets"]
+        if preset["name"] == "linux-base"
+    )
+
+    assert base["cacheVariables"]["PKG_CONFIG_EXECUTABLE"] == "/usr/bin/pkg-config"
+
+
+def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
+    installer = (ROOT / "scripts/setup/install_linux_dependencies.sh").read_text(
+        encoding="utf-8"
+    )
+    configurator = (ROOT / "scripts/setup/configure_development.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for dependency in (
+        "clang-format",
+        "glslang-tools",
+        "libegl-dev",
+        "libegl1",
+        "libgl1",
+        "libxcb-cursor0",
+        "libx11-xcb1",
+        "libxcb1",
+        "libxcb-icccm4",
+        "libxcb-image0",
+        "libxcb-keysyms1",
+        "libxcb-randr0",
+        "libxcb-render0",
+        "libxcb-render-util0",
+        "libxcb-shape0",
+        "libxcb-shm0",
+        "libxcb-sync1",
+        "libxcb-util1",
+        "libxcb-xfixes0",
+        "libxcb-xkb1",
+        "libxkbcommon-x11-0",
+        "lld",
+        "llvm",
+        "mesa-vulkan-drivers",
+        "pkg-config",
+        "vulkan-validationlayers",
+        "xauth",
+        "xvfb",
+    ):
+        assert dependency in installer
+    for executable in ("clang", "clang++", "ld.lld", "ninja", "glslangValidator"):
+        assert executable in configurator
+    assert "find_llvm_tool llvm-ar" in configurator
+    assert "find_llvm_tool llvm-ranlib" in configurator
+    assert "install_linux_dependencies.sh" in configurator
+
+
+def test_linux_sdl_build_requires_x11_and_wayland() -> None:
+    external_cmake = (ROOT / "external/CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert 'pkg_check_modules(INFERNUX_SDL_WAYLAND REQUIRED' in external_cmake
+    for dependency in (
+        "egl",
+        "wayland-client>=1.18",
+        "wayland-egl",
+        "wayland-cursor",
+        "xkbcommon>=0.5.0",
+        "libdecor-0",
+    ):
+        assert dependency in external_cmake
+    assert 'set(SDL_X11 ON CACHE BOOL "" FORCE)' in external_cmake
+    assert 'set(SDL_WAYLAND ON CACHE BOOL "" FORCE)' in external_cmake
+
+
+def test_linux_build_does_not_promote_assimp_warnings_to_errors() -> None:
+    external_cmake = (ROOT / "external/CMakeLists.txt").read_text(encoding="utf-8")
+
+    warning_policy = 'set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)'
+    assert warning_policy in external_cmake
+    assert external_cmake.index(warning_policy) < external_cmake.index(
+        "add_subdirectory(assimp)"
+    )
+
+
+def test_linux_vulkan_surface_uses_the_active_sdl_video_backend() -> None:
+    view = (ROOT / "cpp/infernux/platform/window/InxView.cpp").read_text(
+        encoding="utf-8"
+    )
+    renderer = (ROOT / "cpp/infernux/function/renderer/InxRenderer.cpp").read_text(
+        encoding="utf-8"
+    )
+    core = (ROOT / "cpp/infernux/function/renderer/InxVkCoreModular.cpp").read_text(
+        encoding="utf-8"
+    )
+    device = (ROOT / "cpp/infernux/function/renderer/vk/VkDeviceContext.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    # SDL resolves this list from the video driver selected by SDL_Init
+    # (Wayland, X11, or XWayland). The same list must reach vkCreateInstance;
+    # asking another subsystem later or naming a Linux WSI extension here can
+    # create an instance/surface backend mismatch.
+    assert view.index("SDL_Init(SDL_INIT_VIDEO") < view.index("SDL_CreateWindow(")
+    assert renderer.index("m_view->Init(width, height)") < renderer.index(
+        "m_view->GetVkExtensions(&extCount)"
+    )
+    assert renderer.index("m_view->GetVkExtensions(&extCount)") < renderer.index(
+        "m_vkCore->Init("
+    )
+    assert "m_deviceConfig.windowInstanceExtensions.emplace_back(vkWindowExts[index])" in core
+    assert "GetRequiredExtensions(config, m_validationEnabled)" in device
+    assert "for (const std::string &extension : config.windowInstanceExtensions)" in device
+    assert "SDL_Vulkan_CreateSurface(m_window, vkInstance" in view
+
+    surface_contract = view + renderer + core + device
+    for forbidden in (
+        "VK_KHR_XLIB_SURFACE_EXTENSION_NAME",
+        "VK_KHR_XCB_SURFACE_EXTENSION_NAME",
+        "VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME",
+        "vkCreateXlibSurfaceKHR",
+        "vkCreateXcbSurfaceKHR",
+        "vkCreateWaylandSurfaceKHR",
+    ):
+        assert forbidden not in surface_contract
+
+
+def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    linux_job = workflow.split("  linux-desktop:", 1)[1]
+
+    assert "run: scripts/setup/install_linux_dependencies.sh" in linux_job
+    assert "sudo apt-get install" not in linux_job
+    assert "QT_QPA_PLATFORM: offscreen" in linux_job
+    assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in linux_job
+    python_step = linux_job.split("name: Run Python and platform contract tests", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    command, = [line.strip() for line in python_step.splitlines() if line.strip().startswith("xvfb-run ")]
+    arguments = shlex.split(command)
+    assert arguments[:5] == ["xvfb-run", "--auto-servernum", "python", "-m", "pytest"]
+    assert arguments[arguments.index("-o") + 1] == "pythonpath="
+    assert {"tests/python", "tests/contracts"}.issubset(arguments)
+    assert "unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR" in python_step
+    assert linux_job.index("cmake --build --preset linux-clang-install-wheel") < linux_job.index(
+        "name: Run Python and platform contract tests"
+    )
+    assert (
+        "xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging "
+        "python -m pytest tests/hub"
+    ) in linux_job
+    assert linux_job.index("name: Run Hub tests") < linux_job.index("name: Configure Linux release preset")
+    assert "pytest tests/hub -q -s --junitxml" in linux_job
+    assert 'conda install --yes --channel conda-forge "libpython-static=3.13.15"' in linux_job
+
+
+def test_clang_format_is_an_explicit_developer_target_dependency() -> None:
+    module = (ROOT / "cmake/InfernuxDeveloperTools.cmake").read_text(encoding="utf-8")
+
+    assert "clang-format-18" in module
+    assert "find_program(INFERNUX_CLANG_FORMAT_EXECUTABLE" in module
+    find_block = module.split("find_program(INFERNUX_CLANG_FORMAT_EXECUTABLE", 1)[1].split(
+        ")", 1
+    )[0]
+    assert "REQUIRED" not in find_block
+    assert 'COMMAND "${CMAKE_COMMAND}" -E false' in module
+
+
+def test_linux_wheel_native_modules_are_relocatable_across_virtual_environments() -> None:
+    native_targets = (ROOT / "cmake/InfernuxNativeTargets.cmake").read_text(
+        encoding="utf-8"
+    )
+    installer = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+    verifier = (ROOT / "cmake/verify_python_wheel.cmake").read_text(
+        encoding="utf-8"
+    )
+    linux_block = installer.split("    # Linux: copy shared libraries (.so) and set RPATH", 1)[1]
+    linux_block = linux_block.split("# ------------------------------------------------------------------------------", 1)[0]
+
+    assert "pybind11::headers Python3::Module" in native_targets
+    assert (
+        "target_link_libraries(InfernuxRuntime PRIVATE pybind11::embed)"
+        not in native_targets
+    )
+    assert 'set(_infernux_linux_rpath "$ORIGIN")' in linux_block
+    assert "$ORIGIN/../../../.." not in linux_block
+    for target in ("_Infernux", "_InfernuxBootstrap"):
+        block = linux_block.split(f"set_target_properties({target} PROPERTIES", 1)[1]
+        block = block.split(")", 1)[0]
+        assert 'INSTALL_RPATH "${_infernux_linux_rpath}"' in block
+    assert "readelf" in verifier
+    assert "direct libpython dependency" in verifier
+
+
+def test_wheel_build_requires_cmake_staging_and_a_native_extension() -> None:
+    setup_script = (ROOT / "setup.py").read_text(encoding="utf-8")
+    packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(encoding="utf-8")
+    installer = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert 'os.environ.get("INFERNUX_STAGED_WHEEL_BUILD") != "1"' in setup_script
+    assert 'native_source = Path.cwd() / "python" / "infernux" / "lib"' in setup_script
+    assert 'native_source.glob("_Infernux*.pyd")' in setup_script
+    assert 'native_source.glob("_Infernux*.so")' in setup_script
+    assert '"INFERNUX_STAGED_WHEEL_BUILD=1"' in packaging
+    assert 'DIRECTORY "${CMAKE_SOURCE_DIR}/python/infernux/"' in installer
+    assert "recursive-include python/infernux *" in manifest
+    assert "generate_public_namespace_stubs" not in setup_script
+    assert "python/infernux.pyi" not in installer
+
+
+def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs() -> None:
+    plugins = (ROOT / "external/plugins/CMakeLists.txt").read_text(encoding="utf-8")
+    installer = (ROOT / "cmake/InfernuxInstall.cmake").read_text(encoding="utf-8")
+    packaging = (ROOT / "cmake/InfernuxPackaging.cmake").read_text(
+        encoding="utf-8"
+    )
+
+    assert "add_custom_target(infernux_official_plugins ALL" in plugins
+    assert "BYPRODUCTS ${INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS}" in plugins
+    assert "file(GLOB_RECURSE INFERNUX_OFFICIAL_PLUGIN_SOURCES" not in plugins
+    assert '"${CMAKE_BINARY_DIR}/official-plugins"' in plugins
+    assert (
+        '"${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages"'
+        in plugins
+    )
+    assert "copy_if_different" in plugins
+    assert "python/infernux/resources/infernux.mcp.inxpkg" in plugins
+    stage = packaging.split("add_custom_target(stage_python_package", 1)[1].split(
+        "add_custom_target(package_python", 1
+    )[0]
+    assert "prebuild_player_runtime" in stage
+    assert "infernux_official_plugins" in stage
+    wheel_package_install = installer.split(
+        '"${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"', 1
+    )[1].split("if(TARGET InfernuxPlayerHost)", 1)[0]
+    assert "infernux.mcp.inxpkg" in wheel_package_install
+    assert "infernux.platform-" not in wheel_package_install
+    assert "INFERNUX_HOST_PLATFORM_PACKAGE" not in installer
+    assert "Wheel must contain exactly the default MCP plugin" in (
+        ROOT / "cmake/verify_python_wheel.cmake"
+    ).read_text(encoding="utf-8")

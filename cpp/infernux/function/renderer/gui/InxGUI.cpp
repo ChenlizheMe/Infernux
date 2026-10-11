@@ -1,5 +1,8 @@
 #include "InxGUI.h"
 #include "../ProfileConfig.h"
+#include "EditorWindowBounds.h"
+#include "EditorWindowPresentation.h"
+#include "GuiPresentationGeometry.h"
 #include "ImGuiVulkanExtensions.h"
 #include "InxGUIContext.h"
 #include "InxGUISemantics.h"
@@ -79,24 +82,6 @@ class ImGuiBuildFrameGuard
     bool m_active = true;
 };
 
-void BringDockTreeToDisplayFront(ImGuiWindow *window)
-{
-    if (window == nullptr)
-        return;
-
-    ImGuiWindow *root = window->RootWindowDockTree != nullptr ? window->RootWindowDockTree : window;
-    ImGuiContext &imgui = *ImGui::GetCurrentContext();
-
-    // Dear ImGui's BringWindowToDisplayFront() moves only the supplied root
-    // pointer. A dock tree is represented by several entries in g.Windows;
-    // moving only its root destroys their established relative order and can
-    // leave a DockNode host above a sibling such as the editor toolbar. Move
-    // the complete presentation group instead, preserving its internal order.
-    std::stable_partition(imgui.Windows.begin(), imgui.Windows.end(), [root](ImGuiWindow *candidate) {
-        return candidate == nullptr || candidate->RootWindowDockTree != root;
-    });
-}
-
 void ConfigureEditorStyleDimensions(ImGuiStyle &style)
 {
     style.WindowPadding = ImVec2(10.0f, 10.0f);
@@ -137,6 +122,8 @@ InxGUI::~InxGUI()
 {
     Shutdown();
 
+    textlayout::ClearFontCache();
+    textlayout::SetDefaultFont(nullptr);
     ImGui::DestroyContext(m_imguiContext_ptr);
     m_imguiContext_ptr = nullptr;
 }
@@ -222,7 +209,7 @@ void InxGUI::Init(SDL_Window *window)
 
     VkDevice device = m_vkCore_ptr->GetDevice();
     const auto &deviceContext = m_vkCore_ptr->GetDeviceContext();
-    if (!deviceContext.GetRhiDevice().GetCapabilityState().dynamicRendering.IsEnabled() ||
+    if (!deviceContext.GetRhiDevice().GetVulkanFeatures().dynamicRendering.IsEnabled() ||
         !rhi::ResolveDynamicRenderingCommands(device).IsValid()) {
         throw std::runtime_error("ImGui requires Vulkan Dynamic Rendering");
     }
@@ -277,6 +264,12 @@ void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
     dpiState.fontPath = fontPath;
     dpiState.fontSize = fontSize;
     ReloadGUIFont();
+}
+
+void InxGUI::InvalidateFontAsset(const std::string &path)
+{
+    textlayout::InvalidateFontPath(path);
+    RequestFrame();
 }
 
 void InxGUI::ReloadGUIFont()
@@ -346,7 +339,7 @@ void InxGUI::RefreshDisplayScale()
     style.ScaleAllSizes(nextScale);
     ReloadGUIFont();
     m_editorFrameScheduler.Request();
-    INXLOG_INFO("Display scale changed from ", previousScale, " to ", nextScale);
+    INXLOG_DIAGNOSTIC("Display scale changed from ", previousScale, " to ", nextScale);
 }
 
 void InxGUI::ReleaseTextureResource(ImGuiTextureResource &resource)
@@ -464,6 +457,8 @@ void InxGUI::PumpTextureUploads()
         resource.lastUsedFrame = m_guiFrameCounter;
         resource.uploadGeneration = pending.generation;
         resource.pinned = pending.pinned;
+        resource.requiresDisplayEncoding = pending.requiresDisplayEncoding;
+        ImGui_ImplVulkan_SetTextureLinearColor(descriptor, resource.requiresDisplayEncoding);
         m_textures_umap.emplace(pending.name, std::move(resource));
         m_textureNamesByDescriptor[descriptor] = pending.name;
     }
@@ -478,6 +473,16 @@ void InxGUI::BuildFrame()
 
 bool InxGUI::BuildFrameIfDue(bool force)
 {
+    // Geometry invalidation is level-triggered, unlike the scheduler's input
+    // force edge. Consecutive resize/DPI events must not reuse an old layout
+    // simply because the editor's 60 Hz UI budget has not elapsed yet.
+    int width = 0, height = 0, pixelWidth = 0, pixelHeight = 0;
+    if (SDL_GetWindowSize(m_window_ptr, &width, &height) &&
+        SDL_GetWindowSizeInPixels(m_window_ptr, &pixelWidth, &pixelHeight) &&
+        (!GuiDrawDataMatchesWindow(ImGui::GetDrawData(), width, height, pixelWidth, pixelHeight) ||
+         std::abs(RequireDisplayScale(m_window_ptr) - m_dpiScale) >= 0.01f))
+        m_editorFrameScheduler.Request();
+
     const auto now = EditorGuiFrameScheduler::Clock::now();
     if (m_playerMode) {
         (void)m_editorFrameScheduler.ConsumeUnthrottled(now, true);
@@ -509,6 +514,14 @@ void InxGUI::BuildFrameInternal()
     // Do not let a render-graph submission reuse the stale publication while
     // this frame is being rebuilt (notably after a throttled editor refresh).
     m_hasDrawData = false;
+
+    if (!textlayout::GetRetiredFonts().empty()) {
+        // Asset publication never frees fonts referenced by recorded UI. A
+        // rare font edit drains GPU consumers here before returning glyph
+        // rectangles to the dynamic atlas. Ordinary frames perform no wait.
+        m_vkCore_ptr->GetDeviceContext().WaitIdle();
+        textlayout::CollectRetiredFonts();
+    }
 
     // SDL reports per-monitor scale changes as the window crosses displays.
     // Poll here as well as processing the event so a throttled editor frame or
@@ -549,6 +562,13 @@ void InxGUI::BuildFrameInternal()
     }
 
     ImGui_ImplSDL3_NewFrame();
+    // The SDL backend zeroes DisplaySize when minimized for presentation.
+    // Agent-only GUI frames still use the window's authoritative logical
+    // dimensions; zero-sized docking would destroy the saved split ratios.
+    int logicalWidth = 0, logicalHeight = 0;
+    if (!SDL_GetWindowSize(m_window_ptr, &logicalWidth, &logicalHeight) || logicalWidth <= 0 || logicalHeight <= 0)
+        throw std::runtime_error("GUI requires a valid logical SDL window size");
+    ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(logicalWidth), static_cast<float>(logicalHeight));
     ImGui_ImplVulkan_NewFrame();
 
     // ImGui's SDL backend may append a physical-cursor fallback position while
@@ -614,6 +634,7 @@ void InxGUI::BuildFrameInternal()
         // need to build the default Unity-style layout.
         ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
         bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
+        RescaleDockspaceForViewport(dockspaceId, ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
 
         // The dedicated, non-resizable toolbar must fit the same font and
         // authored padding used by ToolbarPanel. Update before DockSpace so
@@ -832,7 +853,7 @@ void InxGUI::ApplyPendingDockTabSelections()
                 ImGuiWindow *rootWindow = window->RootWindow != nullptr ? window->RootWindow : window;
                 ImGui::FocusWindow(window);
                 ImGui::BringWindowToFocusFront(rootWindow);
-                ImGui::BringWindowToDisplayFront(rootWindow);
+                BringDockTreeToDisplayFront(window);
                 continue;
             }
             // A title-bar close removes the window from its dock node for the
@@ -869,8 +890,8 @@ void InxGUI::ApplyPendingDockTabSelections()
         // editor window can overlap the main dock host, and DockSpaceWindow
         // deliberately carries NoBringToFrontOnFocus. FocusWindow() therefore
         // updates navigation focus without necessarily changing the visible
-        // Z order. Raise the dock tree explicitly so logical focus and the
-        // pixels presented to the user cannot disagree.
+        // Z order. Present floating dock trees explicitly, while the main
+        // workspace retains its background layer below floating panels.
         //
         // A close-confirmation source only needs its dock tab restored. The
         // modal is promoted immediately after this pass and remains the final
@@ -899,11 +920,42 @@ void InxGUI::PromoteActiveModal()
     ImGui::BringWindowToDisplayFront(modal);
 }
 
+void InxGUI::PrepareRuntimeFontTextures()
+{
+    // Runtime extraction follows ImGui::Render(), so its newly requested
+    // glyphs/atlas pages may not yet appear in that frame's PlatformIO list.
+    // Consume the context-owned font atlases; texture destruction remains
+    // owned by the normal backend frame/retirement path.
+    for (ImFontAtlas *atlas : ImGui::GetCurrentContext()->FontAtlases) {
+        for (ImTextureData *texture : atlas->TexList) {
+            if (texture->Status == ImTextureStatus_WantCreate || texture->Status == ImTextureStatus_WantUpdates)
+                ImGui_ImplVulkan_UpdateTexture(texture);
+        }
+    }
+}
+
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 {
     ImDrawData *drawData = ImGui::GetDrawData();
-    if (m_hasDrawData && drawData != nullptr && drawData->Valid)
+    if (!m_hasDrawData || drawData == nullptr || !drawData->Valid)
+        return;
+
+    const VkExtent2D extent = m_vkCore_ptr->GetSwapchainExtent();
+    if (extent.width == 0 || extent.height == 0 || drawData->DisplaySize.x <= 0 || drawData->DisplaySize.y <= 0)
+        return;
+    const bool matches = GuiDrawDataMatchesFramebuffer(*drawData, extent.width, extent.height);
+    if (!matches) {
+        if (!m_presentationGeometryMismatch)
+            INXLOG_DIAGNOSTIC("GUI presentation resized after layout: display=", drawData->DisplaySize.x, "x",
+                              drawData->DisplaySize.y, " framebufferScale=", drawData->FramebufferScale.x, ",",
+                              drawData->FramebufferScale.y, " swapchain=", extent.width, "x", extent.height);
+        m_editorFrameScheduler.Request();
+        ScopedGuiPresentationScale presentationScale(*drawData, extent.width, extent.height);
         ImGui_ImplVulkan_RenderDrawData(drawData, cmdBuf);
+    } else {
+        ImGui_ImplVulkan_RenderDrawData(drawData, cmdBuf);
+    }
+    m_presentationGeometryMismatch = !matches;
 }
 
 void InxGUI::Shutdown()
@@ -988,10 +1040,23 @@ void InxGUI::Unregister(const std::string &name)
 uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount,
                                        int width, int height, VkFilter filter, bool pinned)
 {
-    if (name.empty())
-        throw std::invalid_argument("ImGui texture name cannot be empty");
     if (width <= 0 || height <= 0)
         throw std::invalid_argument("ImGui texture dimensions must be positive");
+    const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
+                                                     static_cast<uint32_t>(height), false);
+    return SubmitCpuTextureForImGui(name, *cpuData, filter, pinned, false);
+}
+
+uint64_t InxGUI::SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels)
+{
+    return SubmitCpuTextureForImGui(name, pixels, VK_FILTER_LINEAR, false, true);
+}
+
+uint64_t InxGUI::SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels, VkFilter filter,
+                                          bool pinned, bool displayEncoding)
+{
+    if (name.empty())
+        throw std::invalid_argument("ImGui texture name cannot be empty");
     if (filter != VK_FILTER_LINEAR && filter != VK_FILTER_NEAREST)
         throw std::invalid_argument("ImGui texture filter must be linear or nearest");
     const auto generationIt = m_textureUploadGenerations.find(name);
@@ -1004,21 +1069,20 @@ uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned c
     // Keeping them single-mip makes the Inspector and the smaller Project-grid
     // thumbnail sample the exact same validated pixels. Runtime textures keep
     // their authored mip policy on the separate asset-texture upload path.
-    const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
-                                                     static_cast<uint32_t>(height), false);
     rhi::SamplerDesc sampler;
     sampler.minFilter = sampler.magFilter = sampler.mipFilter =
         filter == VK_FILTER_NEAREST ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
     sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
     sampler.maxLod = 0.0f;
-    TextureUploadBatch upload(*cpuData, sampler);
+    TextureUploadBatch upload(pixels, sampler);
     auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(upload.GetRequest());
     const uint64_t pendingBytes = ticket->GetResidentBytes();
     if (pendingBytes > std::numeric_limits<uint64_t>::max() - m_pendingTextureUploadBytes)
         throw std::overflow_error("pending ImGui texture byte counter overflow");
 
     m_textureUploadGenerations[name] = generation;
-    m_pendingTextureUploads.push_back(PendingTextureUpload{name, generation, pinned, std::move(ticket)});
+    m_pendingTextureUploads.push_back(
+        PendingTextureUpload{name, generation, pinned, std::move(ticket), displayEncoding});
     m_pendingTextureUploadBytes += pendingBytes;
     ++m_submittedTextureUploadCount;
     if (m_pendingTextureUploads.back().ticket->IsAsync())

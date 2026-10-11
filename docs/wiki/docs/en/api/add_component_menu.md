@@ -1,7 +1,7 @@
 # add_component_menu
 
 <div class="class-info">
-function in <b>Infernux.components</b>
+function in <b>infernux.components</b>
 </div>
 
 ```python

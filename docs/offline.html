@@ -6,15 +6,15 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="robots" content="noindex, nofollow">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <title>Infernux · Signal interrupted</title>
-    <link rel="icon" type="image/png" href="assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
     <style>
         :root {
-            --offline-bg: #0a0c11;
+            --offline-bg: #100d12;
             --offline-panel: #12151d;
             --offline-elevated: #191d27;
             --offline-text: #edf0f7;
@@ -56,7 +56,7 @@
 </head>
 <body>
     <main>
-        <div class="brand"><img src="assets/logo.png" width="256" height="256" alt=""><span>Infernux · 熔炉 · Offline relay</span></div>
+        <div class="brand"><img src="assets/logo-mark.webp" width="38" height="38" alt=""><span>Infernux · 熔炉 · Offline relay</span></div>
         <span class="code">SIGNAL-LOST · LOCAL FALLBACK</span>
         <h1>Connection lost.</h1>
         <p>This page is not in the local cache on this device. Get back online and it will load the current documentation.</p>
@@ -64,7 +64,7 @@
         <nav aria-label="Offline recovery actions">
             <a class="retry" href="">Retry · 重试</a>
             <a href="/index.html">Home · 首页</a>
-            <a href="/start.html">Start · 开始使用</a>
+            <a href="/tutorials.html">Start · 开始使用</a>
         </nav>
         <small>Pages you have already visited may still open offline. Documentation always tries the network first, so a stale cache never quietly stands in for the current version.</small>
     </main>

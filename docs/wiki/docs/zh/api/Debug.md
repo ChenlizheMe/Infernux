@@ -1,7 +1,7 @@
 # Debug
 
 <div class="class-info">
-类位于 <b>Infernux.debug</b>
+类位于 <b>infernux.debug</b>
 </div>
 
 ## 描述

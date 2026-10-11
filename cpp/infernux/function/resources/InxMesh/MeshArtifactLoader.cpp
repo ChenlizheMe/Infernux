@@ -12,6 +12,7 @@
 #include <platform/filesystem/InxPath.h>
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+#include "ModelSourceIO.h"
 #include <assimp/Importer.hpp>
 #include <assimp/material.h>
 #include <assimp/postprocess.h>
@@ -126,8 +127,8 @@ std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &fi
     // Model import is the authoring boundary where mutable paths may be
     // resolved to authoritative GUIDs.  Keep runtime loaders GUID-only.
     Assimp::Importer importer;
-    const aiScene *scene = importer.ReadFile(
-        FromFsPath(sourcePath), aiProcess_Triangulate | aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
+    const aiScene *scene = ReadModelSource(
+        importer, filePath, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
     if (!scene || !scene->mMaterials)
         return paths;
 

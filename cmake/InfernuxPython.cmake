@@ -60,10 +60,10 @@ if(_pybind11_result EQUAL 0 AND _pybind11_cmakedir)
     # toolchains commonly root CMAKE_PREFIX_PATH in the target sysroot, so an
     # appended host path can become invisible. Search the directory reported by
     # the host interpreter explicitly instead.
-    find_package(pybind11 CONFIG REQUIRED
+    find_package(pybind11 3.1.0 EXACT CONFIG REQUIRED
         PATHS "${_pybind11_cmakedir}"
         NO_DEFAULT_PATH
     )
 else()
-    find_package(pybind11 CONFIG REQUIRED)
+    find_package(pybind11 3.1.0 EXACT CONFIG REQUIRED)
 endif()

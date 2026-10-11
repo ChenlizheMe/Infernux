@@ -5,11 +5,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <vector>
 
 namespace infernux::lighting
 {
+
+struct ForwardPlusGridPipeline;
 
 struct ForwardPlusGridConfig
 {
@@ -82,6 +85,9 @@ class ForwardPlusLightGrid
     ForwardPlusLightGrid &operator=(const ForwardPlusLightGrid &) = delete;
 
     [[nodiscard]] bool Initialize(rhi::Device &device, uint32_t framesInFlight, const ForwardPlusGridProgram &program);
+    [[nodiscard]] static std::shared_ptr<const ForwardPlusGridPipeline>
+    CreateProgram(rhi::Device &device, const ForwardPlusGridProgram &program);
+    [[nodiscard]] bool Initialize(std::shared_ptr<const ForwardPlusGridPipeline> program, uint32_t framesInFlight);
     void Shutdown() noexcept;
 
     /// The caller must wait for the selected frame slot before preparing it.
@@ -93,10 +99,7 @@ class ForwardPlusLightGrid
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint32_t FrameCount() const noexcept;
     [[nodiscard]] const ForwardPlusGridFrame &Frame(uint32_t frameIndex) const;
-    [[nodiscard]] rhi::BindingLayoutHandle ConsumerLayout() const noexcept
-    {
-        return m_consumerLayout;
-    }
+    [[nodiscard]] rhi::BindingLayoutHandle ConsumerLayout() const noexcept;
     [[nodiscard]] std::vector<ForwardPlusRetiredResources> TakeRetiredResources();
 
     [[nodiscard]] static std::string_view ShaderSource() noexcept;
@@ -105,9 +108,7 @@ class ForwardPlusLightGrid
     [[nodiscard]] bool RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights);
 
     rhi::Device *m_device = nullptr;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindingLayoutHandle m_consumerLayout;
-    rhi::ComputePipelineHandle m_pipeline;
+    std::shared_ptr<const ForwardPlusGridPipeline> m_program;
     std::vector<ForwardPlusGridFrame> m_frames;
     std::vector<ForwardPlusRetiredResources> m_retired;
 };

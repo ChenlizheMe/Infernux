@@ -7,11 +7,14 @@
  */
 
 #include "InxVkCoreModular.h"
+#include "FullscreenRenderer.h"
 #include "InxError.h"
 #include "ProfileConfig.h"
+#include "SceneDepthResolver.h"
 #include "SceneRenderTarget.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
+#include "lighting/ForwardPlusLightGrid.h"
 #include "vk/RhiVulkanTypes.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
@@ -37,6 +40,17 @@ namespace infernux
 
 namespace
 {
+
+std::vector<uint32_t> CompileBuiltinComputeProgram(std::string_view source, const char *name)
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const auto bytes = compiler.CompileComputeGlsl(std::string(source), name);
+    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+        throw std::runtime_error(std::string("Failed to compile built-in compute program: ") + name);
+    std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
+    std::memcpy(spirv.data(), bytes.data(), bytes.size());
+    return spirv;
+}
 
 void DestroyLingeringMaterialPassPipelines(VkDevice device)
 {
@@ -94,6 +108,32 @@ InxVkCoreModular::InxVkCoreModular(int maxFrameInFlight) : m_maxFramesInFlight(s
     m_deletionQueue.BindSerialSource([this] { return m_backend.Queues().GetLastReservedCompletionEpoch(); });
 }
 
+std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthResolveProgram()
+{
+    if (!m_sceneDepthProgram) {
+        const auto spirv =
+            CompileBuiltinComputeProgram(SceneDepthResolver::ShaderSource(), "Infernux/SceneDepthResolve.comp");
+        m_sceneDepthProgram =
+            SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(), spirv.data(), spirv.size());
+        if (!m_sceneDepthProgram)
+            throw std::runtime_error("Failed to create the built-in scene-depth program");
+    }
+    return m_sceneDepthProgram;
+}
+
+std::shared_ptr<const lighting::ForwardPlusGridPipeline> InxVkCoreModular::GetForwardPlusGridProgram()
+{
+    if (!m_forwardPlusProgram) {
+        const auto spirv = CompileBuiltinComputeProgram(lighting::ForwardPlusLightGrid::ShaderSource(),
+                                                        "Infernux/ForwardPlusLightGrid.comp");
+        m_forwardPlusProgram = lighting::ForwardPlusLightGrid::CreateProgram(GetDeviceContext().GetRhiDevice(),
+                                                                             {spirv.data(), spirv.size()});
+        if (!m_forwardPlusProgram)
+            throw std::runtime_error("Failed to create the built-in Forward+ program");
+    }
+    return m_forwardPlusProgram;
+}
+
 InxVkCoreModular::~InxVkCoreModular()
 {
     // Renderer construction precedes SDL/Vulkan startup.  If window creation
@@ -122,6 +162,12 @@ InxVkCoreModular::~InxVkCoreModular()
     // program cache; otherwise their Vulkan layouts/modules can outlive the
     // device and be destroyed by member teardown with an invalid VkDevice.
     ReleaseMaterialPassResolutionCache();
+
+    // Immutable view programs outlive scenes, but never their Vulkan device
+    // or the canonical per-view/global descriptor layouts owned by this core.
+    m_fullscreenPipelines.reset();
+    m_sceneDepthProgram.reset();
+    m_forwardPlusProgram.reset();
 
     // Flush all deferred deletions before tearing down subsystems
     m_deletionQueue.FlushAll();
@@ -185,7 +231,10 @@ InxVkCoreModular::~InxVkCoreModular()
     ShaderProgram::SetBindlessTextureEnabled(false);
     ShaderProgram::SetBindlessTextureDescSetLayout(VK_NULL_HANDLE);
     InxShaderLoader::SetBindlessTextureABIEnabled(false);
-    m_backend.Device().GetRhiDevice().ClearBindlessTextureTable();
+    // Instance/surface creation and logical-device creation can fail before
+    // the RHI exists. All earlier stages still need their normal RAII cleanup.
+    if (m_backend.Device().HasRhiDevice())
+        m_backend.Device().GetRhiDevice().ClearBindlessTextureTable();
     m_bindlessTextureTable.DestroyAfterDeviceIdle();
     m_textureCache.Clear();
     m_shaderCache.Clear();
@@ -203,7 +252,6 @@ InxVkCoreModular::~InxVkCoreModular()
     DestroyGuiRenderGraphs();
     m_submissionExecutor.Destroy();
     m_resourceManager.Destroy();
-    m_asyncReadbackContext.Destroy();
     m_asyncTransferContext.Destroy();
 
     // RenderGraph::Destroy() and MaterialPipelineManager::Shutdown()
@@ -290,6 +338,12 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_ERROR("Failed to initialize Vulkan device");
         return false;
     }
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
+    const auto deviceContract = rhi::CheckDeviceContract(rhiDevice.GetApiVersion(), rhiDevice.GetCapabilities());
+    if (!deviceContract.IsValid()) {
+        INXLOG_ERROR("RHI device contract rejected: ", deviceContract.Message(), " api=", deviceContract.apiVersion);
+        return false;
+    }
     if (!m_backend.Queues().Initialize(m_backend.Device(), m_maxFramesInFlight)) {
         INXLOG_ERROR("Failed to initialize Vulkan queue manager");
         return false;
@@ -313,13 +367,12 @@ bool InxVkCoreModular::PrepareSurface()
     // This makes the first shader compilation bounded when table creation or
     // descriptor allocation fails, even on an otherwise capable device.
     m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
-    auto &rhiDevice = m_backend.Device().GetRhiDevice();
     if (auto fallbackSlot = m_textureCache.Find("white")) {
         const auto fallback = fallbackSlot->Acquire();
         if (fallback &&
             m_bindlessTextureTable.Initialize(
-                GetDevice(), rhiDevice.GetDescriptorManager(), rhiDevice.GetCapabilityState(),
-                rhiDevice.GetCapabilities().limits, rhiDevice.Resolve(fallback->GetView()),
+                GetDevice(), rhiDevice.GetDescriptorManager(), rhiDevice.GetVulkanFeatures(),
+                rhiDevice.GetVulkanFeatures().descriptorLimits, rhiDevice.Resolve(fallback->GetView()),
                 rhiDevice.Resolve(fallback->GetSampler()), std::static_pointer_cast<const void>(fallback))) {
             const auto stats = m_bindlessTextureTable.GetStats();
             INXLOG_INFO("Bindless texture table initialized: capacity=", stats.capacity);
@@ -330,7 +383,7 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_WARN("Bindless texture table unavailable: default white texture publication is missing");
     }
 
-    const bool bindlessTextureABI = vk::VulkanBindlessTextureTable::CanUseShaderABI(rhiDevice.GetCapabilityState(),
+    const bool bindlessTextureABI = vk::VulkanBindlessTextureTable::CanUseShaderABI(rhiDevice.GetVulkanFeatures(),
                                                                                     m_bindlessTextureTable.IsReady());
     if (bindlessTextureABI &&
         !rhiDevice.ConfigureBindlessTextureTable(
@@ -370,17 +423,9 @@ bool InxVkCoreModular::PrepareSurface()
         // texture uploads route through the dedicated DMA queue. Mipmap
         // generation still uses the graphics queue because
         // vkCmdBlitImage is not legal on transfer-only queues.
-        m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext, graphicsFamily);
+        m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext);
     } else {
         INXLOG_ERROR("Required GPU upload context initialization failed");
-        return false;
-    }
-
-    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily, false, false,
-                                          m_backend.Queues(), rhi::QueueRole::Graphics)) {
-        m_resourceManager.SetAsyncReadbackContext(&m_asyncReadbackContext);
-    } else {
-        INXLOG_ERROR("Required GPU readback context initialization failed");
         return false;
     }
 
@@ -421,8 +466,13 @@ bool InxVkCoreModular::PrepareSurface()
     m_presentationView.device = m_backend.Device().GetDeviceId();
     m_presentationView.kind = rhi::RenderViewKind::Presentation;
     m_presentationView.output = rhi::RenderOutputKind::PresentationImage;
-    m_presentationView.width = width;
-    m_presentationView.height = height;
+    // Create queries the surface again. Startup maximize/DPI changes can make
+    // the earlier capabilities stale; publish the generation actually created.
+    const VkExtent2D createdExtent = m_backend.Presentation().GetExtent();
+    INXLOG_DIAGNOSTIC("INFERNUX_PRESENTATION_GEOMETRY requested=", width, "x", height,
+                      " swapchain=", createdExtent.width, "x", createdExtent.height);
+    m_presentationView.width = createdExtent.width;
+    m_presentationView.height = createdExtent.height;
     m_presentationView.colorFormat = rhi::FromVkFormat(m_backend.Presentation().GetImageFormat());
     m_presentationView.samples = rhi::SampleCount::One;
     ++m_presentationView.revision;
@@ -434,6 +484,7 @@ bool InxVkCoreModular::PrepareSurface()
     // Create uniform buffers
     CreateUniformBuffers();
 
+    m_framebufferResized = false;
     return true;
 }
 
@@ -473,6 +524,7 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
     ++m_presentationView.revision;
     m_renderGraph.SetRenderView(m_presentationView);
     CreateDepthResources();
+    m_framebufferResized = false;
     INXLOG_INFO("Platform presentation surface recreated: ", extent.width, "x", extent.height);
     return true;
 }
@@ -492,8 +544,8 @@ void InxVkCoreModular::SuspendPresentationSurface()
         presentation.SetSkipWaitIdle(true);
         presentation.Destroy();
         presentation.SetSkipWaitIdle(false);
-        m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
     }
+    m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
     if (m_surface != VK_NULL_HANDLE) {
         SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
         m_surface = VK_NULL_HANDLE;
@@ -504,6 +556,7 @@ void InxVkCoreModular::PreparePipeline()
 {
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
     m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
+    m_textureCache.CreateSolidColorTexture("_default_black", 0, 0, 0, 255, m_resourceManager);
 
     // Register the canonical per-view ABI before any ShaderProgram creates a
     // pipeline layout. Descriptor sets are allocated later, after the default
@@ -593,6 +646,27 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     return true;
 }
 
+bool InxVkCoreModular::PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts)
+{
+    std::unordered_set<ShaderStagePair, ShaderStagePairHash> pairs;
+    for (const auto &artifact : artifacts)
+        if (!artifact.IsValid() || !pairs.insert(artifact.key.stages).second)
+            return false;
+    for (const auto &artifact : artifacts) {
+        if (m_shaderCache.PrepareProgramArtifact(artifact))
+            continue;
+        for (const auto &candidate : artifacts)
+            m_shaderCache.DiscardPreparedProgramArtifact(candidate.key);
+        return false;
+    }
+    // All Forward modules exist before an active program changes. The commit
+    // reuses those modules and performs the existing retirement protocol.
+    for (const auto &artifact : artifacts)
+        if (!PublishShaderProgramArtifact(artifact))
+            throw std::logic_error("Prepared shader program rejected during batch commit");
+    return true;
+}
+
 bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
 {
     const auto *artifact = m_shaderCache.FindProgramArtifact(programKey.stages);
@@ -635,6 +709,23 @@ bool InxVkCoreModular::ReleaseUIShaderProgramArtifact(const ShaderProgramKey &ke
     return true;
 }
 
+void InxVkCoreModular::RetireShaderProgramArtifact(const ShaderProgramKey &key)
+{
+    if (m_materialPipelineManagerInitialized)
+        m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(key.stages);
+    if (m_uiProgramOwners.count(key) ||
+        (m_materialPipelineManagerInitialized && m_materialPipelineManager.HasMaterialProgramOwner(key)))
+        throw std::logic_error("Cannot retire a shader program artifact with live material/UI owners");
+    auto artifact = m_shaderCache.TakeProgramArtifact(key);
+    auto programs = m_shaderCache.GetProgramCache().TakePrograms(key);
+    for (auto &program : programs) {
+        m_deletionQueue.Retire([retired = std::move(program)]() mutable { retired.reset(); });
+        ++m_shaderHotReloadRetirementCount;
+    }
+    if (artifact)
+        m_deletionQueue.Retire([retired = std::move(artifact)]() mutable { retired.reset(); });
+}
+
 void InxVkCoreModular::AcquireUIShaderProgramOwner(const ShaderProgramKey &key)
 {
     if (!key.IsValid())
@@ -673,7 +764,7 @@ InxVkCoreModular::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial
         artifact = m_shaderCache.FindProgramArtifact(stages);
     }
     if (artifact && artifact->domain != expectedDomain)
-        throw std::runtime_error("Material shader domain mismatch before non-UI resolution");
+        throw ShaderProgramDomainMismatch(expectedDomain, artifact->domain);
     return artifact;
 }
 
@@ -699,6 +790,11 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const 
 {
     if (shaderId.empty())
         throw std::invalid_argument("Shader cache invalidation requires a non-empty shader identifier");
+    if (m_fullscreenPipelines)
+        m_fullscreenPipelines->InvalidateShader(shaderId);
+    // A source edit can change its declared domain without changing stage IDs.
+    // Reconsider rejected geometry selections after the authoring publication.
+    m_rejectedGeometryMaterialPrograms.clear();
     // Clear every CPU-visible raw ShaderProgram/pipeline handle before moving
     // the owning Vulkan objects into the frame-safe retirement queue.
     if (m_materialPipelineManagerInitialized) {
@@ -834,6 +930,11 @@ void InxVkCoreModular::SetFrameComputeWorkPredicate(std::function<bool()> predic
     m_frameComputeWorkPredicate = std::move(predicate);
 }
 
+void InxVkCoreModular::SetFrameComputeSubmissionCallback(std::function<void(bool)> callback)
+{
+    m_frameComputeSubmissionCallback = std::move(callback);
+}
+
 void InxVkCoreModular::SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
                                                      std::function<bool(VkCommandBuffer)> exportPhase,
                                                      std::function<bool()> ready, std::function<uint64_t()> generation,
@@ -857,15 +958,31 @@ void InxVkCoreModular::SetGuiRenderCallback(std::function<void(vk::RenderContext
 // Internal Methods
 // ============================================================================
 
+bool InxVkCoreModular::RefreshPresentationSize()
+{
+    if (m_windowWidth == 0 || m_windowHeight == 0)
+        return false;
+    if (m_framebufferResized) {
+        // OUT_OF_DATE is not guaranteed on resize: some presentation paths
+        // keep accepting/scaling the old images (SUCCESS or SUBOPTIMAL).
+        // Recreate before acquire, so no signalled acquire semaphore is left
+        // unconsumed and no GUI frame is built against stale attachments.
+        RecreateSwapchain();
+    }
+    return !m_framebufferResized;
+}
+
 void InxVkCoreModular::RecreateSwapchain()
 {
+    // Keep the request pending on a zero extent or a pre-retirement failure.
+    // Only a successfully published generation may acknowledge the resize.
+    m_framebufferResized = true;
     // Get new extent from surface capabilities
     auto swapchainSupport = m_backend.Device().QuerySwapchainSupport();
     uint32_t width = swapchainSupport.capabilities.currentExtent.width;
     uint32_t height = swapchainSupport.capabilities.currentExtent.height;
 
-    if (width == std::numeric_limits<uint32_t>::max() || height == std::numeric_limits<uint32_t>::max() || width == 0 ||
-        height == 0) {
+    if (width == std::numeric_limits<uint32_t>::max() || height == std::numeric_limits<uint32_t>::max()) {
         width = (m_windowWidth > 0) ? m_windowWidth : swapchainSupport.capabilities.minImageExtent.width;
         height = (m_windowHeight > 0) ? m_windowHeight : swapchainSupport.capabilities.minImageExtent.height;
 
@@ -881,20 +998,21 @@ void InxVkCoreModular::RecreateSwapchain()
         return;
     }
 
-    // Presentation first builds a complete unpublished generation. Only at
-    // its commit point do we release aliases that reference
-    // the old image views; creation failure therefore leaves the active GUI
-    // and swapchain generation untouched.
+    // Build the new generation before releasing old GUI aliases on success.
+    // vkCreateSwapchainKHR itself retires the old chain, including on failure;
+    // retaining its image-view storage is not permission to acquire it again.
     const bool recreated =
         m_backend.Presentation().Recreate(m_backend.Device(), m_backend.Queues(), width, height, [this]() {
             // The old render-graph generation is about to retire. Release pass
-            // publications at the commit boundary while their device and
+            // publications at the retirement boundary while their device and
             // material manager are still valid.
             ReleaseMaterialPassResolutionCache();
             DestroyGuiRenderGraphs();
             m_depthImage.reset();
         });
     if (!recreated) {
+        if (!m_backend.Presentation().IsValid())
+            throw std::runtime_error("Swapchain recreation failed after retiring the previous generation");
         return;
     }
 
@@ -908,11 +1026,11 @@ void InxVkCoreModular::RecreateSwapchain()
 
     // Recreate depth resources
     CreateDepthResources();
-    // Surface capabilities can still report the previous extent immediately
-    // after an SDL resize. A successful commit only acknowledges the resize
-    // once its actual extent matches the latest published framebuffer size;
-    // otherwise DrawFrame must retry even if SetWindowSize sees no new change.
+    // Some surfaces publish their new extent after the SDL resize event.
+    // Keep the request pending until the actual swapchain catches up.
     m_framebufferResized = extent.width != m_windowWidth || extent.height != m_windowHeight;
+    INXLOG_DIAGNOSTIC("INFERNUX_PRESENTATION_RESIZED window=", m_windowWidth, "x", m_windowHeight,
+                      " swapchain=", extent.width, "x", extent.height);
 }
 
 void InxVkCoreModular::ReleaseMaterialPassResolutionCache() noexcept
@@ -974,6 +1092,12 @@ bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
     vk::ResourceHandle backbuffer =
         guiGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
                                VK_SAMPLE_COUNT_1_BIT, rhi::TextureLayout::Undefined);
+
+    // Discarding the previous pixels does not discard the WSI acquire
+    // dependency. Chain the first layout transition to imageAvailable's
+    // COLOR_ATTACHMENT_OUTPUT wait, instead of allowing it at TOP_OF_PIPE.
+    guiGraph.SetResourceInitialState(backbuffer, rhi::TextureLayout::Undefined, rhi::Access::None,
+                                     rhi::PipelineStage::ColorOutput);
 
     guiGraph.AddPass("GUI", [this, &backbuffer, extent](vk::PassBuilder &builder) {
         backbuffer = builder.WriteColor(backbuffer, 0);
@@ -1175,6 +1299,8 @@ bool InxVkCoreModular::RecordPresentationReadback(VkCommandBuffer commandBuffer,
 
 void InxVkCoreModular::WaitForCurrentFrame()
 {
+    if (m_frameFailure)
+        std::rethrow_exception(m_frameFailure);
     const uint32_t frameSlot = GetCurrentFrameSlot();
 #if INFERNUX_FRAME_PROFILE
     const auto waitStarted = std::chrono::high_resolution_clock::now();
@@ -1190,6 +1316,10 @@ void InxVkCoreModular::WaitForCurrentFrame()
     if (completed) {
         m_submissionExecutor.CompleteFrame(frameSlot);
         (void)m_backend.Queues().CompleteFrameSlot(frameSlot);
+    } else {
+        m_frameFailure = std::make_exception_ptr(
+            std::runtime_error("Failed to wait for graphics frame slot " + std::to_string(frameSlot)));
+        std::rethrow_exception(m_frameFailure);
     }
 }
 

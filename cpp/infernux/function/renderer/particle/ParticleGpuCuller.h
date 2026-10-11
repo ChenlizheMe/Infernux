@@ -63,7 +63,7 @@ struct alignas(16) GpuParticleCullConstants
     uint32_t capacity = 0;
     uint32_t vertexCount = 0;
     GpuParticleCullMode mode = GpuParticleCullMode::Instances;
-    uint32_t reserved2 = 0;
+    uint32_t viewEnabled = 1;
 };
 
 struct GpuParticleCullDispatchState
@@ -139,8 +139,8 @@ class ParticleGpuCuller
     {
         return m_sortDispatchArguments;
     }
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder,
-                     const std::array<float, PlaneCount * 4> &frustumPlanes) const;
+    void RecordReset(const rhi::ComputeCommandEncoder &encoder, const std::array<float, PlaneCount * 4> &frustumPlanes,
+                     bool viewEnabled = true) const;
     void RecordCull(const rhi::ComputeCommandEncoder &encoder,
                     const std::array<float, PlaneCount * 4> &frustumPlanes) const;
     void RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const;

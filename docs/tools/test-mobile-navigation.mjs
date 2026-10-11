@@ -73,9 +73,8 @@ function siteActionControl(action) {
         addEventListener(type, handler) { this.eventHandlers.set(type, handler); }
     };
 }
-const themeAction = siteActionControl("theme");
 const languageAction = siteActionControl("language");
-siteActionControls.push(themeAction, languageAction, button);
+siteActionControls.push(languageAction, button);
 const window = {
     innerWidth: 375,
     isSecureContext: false,
@@ -104,16 +103,13 @@ const navigation = sandbox.__infernuxNavigation;
 assert.ok(navigation, "mobile navigation test surface should be exported");
 
 navigation.bindSiteActions();
-assert.equal(themeAction.eventHandlers.has("click"), true, "theme action should use an external event listener");
 assert.equal(languageAction.eventHandlers.has("click"), true, "language action should use an external event listener");
 assert.equal(button.eventHandlers.has("click"), true, "menu action should use an external event listener");
-themeAction.eventHandlers.get("click")();
-assert.equal(documentElement.getAttribute("data-theme"), "light");
 button.eventHandlers.get("click")();
 assert.equal(navLinks.classList.contains("mobile-open"), true);
 navigation.setMobileMenuState(false);
 navigation.bindSiteActions();
-assert.equal(themeAction.dataset.siteActionBound, "true", "site actions should not be rebound");
+assert.equal(languageAction.dataset.siteActionBound, "true", "site actions should not be rebound");
 
 navigation.setMobileMenuState(true, { moveFocus: true });
 assert.equal(navLinks.classList.contains("mobile-open"), true);

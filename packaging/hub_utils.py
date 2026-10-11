@@ -1,9 +1,49 @@
 """Utility helpers shared across the Hub codebase."""
 
-import json
 import os
+import shutil
 import sys
+import time
 from enum import Enum
+
+
+def replace_path(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+    """Publish atomically, with the engine's bounded Windows sharing policy.
+
+    Indexers/readers may briefly deny FILE_SHARE_DELETE. Only those Windows
+    errors wait, at most 254 ms; ordinary success performs one rename. Never
+    replace this with copy/delete, which would expose a partial installation.
+    """
+    for attempt in range(8):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            if (sys.platform != "win32" or getattr(error, "winerror", None) not in (5, 32, 33)
+                    or attempt == 7):
+                raise
+            time.sleep(0.002 * (2 ** attempt))
+
+
+def remove_directory_tree(path: str | os.PathLike[str]) -> None:
+    """Remove one explicitly owned directory through literal filesystem paths.
+
+    The Hub ships without the engine package, so it owns this stdlib boundary.
+    Linked roots are rejected; shutil does not follow links inside the tree.
+    Missing targets are already clean. Other failures must reach the caller.
+    """
+    if not path:
+        raise ValueError("Directory cleanup requires an explicit path")
+    target = os.path.abspath(path)
+    if target == os.path.dirname(target):
+        raise ValueError("Directory cleanup cannot remove a filesystem root")
+    try:
+        os.lstat(target)
+    except FileNotFoundError:
+        return
+    if os.path.islink(target) or os.path.isjunction(target):
+        raise ValueError(f"Directory cleanup cannot remove a linked root: {target}")
+    shutil.rmtree(target)
 
 
 class HubLaunchContext(Enum):
@@ -32,6 +72,29 @@ def is_frozen() -> bool:
         return True
     main_module = sys.modules.get("__main__")
     return bool(main_module and "__compiled__" in vars(main_module))
+
+
+# Source Hub tools load only the shared stdlib protocol, without putting the
+# checkout's engine package ahead of the operator's installed environment.
+# Preserve normal module identity when another host already imported it.
+# Frozen apps bundle the canonical import below.
+if not is_frozen() and "infernux_project_lock" not in sys.modules:
+    import importlib.util
+
+    _protocol_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+        "python", "infernux_project_lock.py",
+    )
+    _protocol_spec = importlib.util.spec_from_file_location("infernux_project_lock", _protocol_path)
+    _protocol_module = importlib.util.module_from_spec(_protocol_spec)
+    sys.modules["infernux_project_lock"] = _protocol_module
+    try:
+        _protocol_spec.loader.exec_module(_protocol_module)
+    except BaseException:
+        del sys.modules["infernux_project_lock"]
+        raise
+
+import infernux_project_lock as project_lock
 
 
 def get_bundle_dir() -> str:
@@ -90,75 +153,17 @@ def get_hub_user_data_dir() -> str:
 
 def get_project_lock_path(project_path: str) -> str:
     """Return the lock-file path that marks a project as opened by the engine."""
-    return os.path.join(project_path, "ProjectSettings", ".infernux-engine-lock.json")
+    return project_lock.lock_path(project_path)
 
 
 def is_pid_running(pid: int) -> bool:
     """Return True if *pid* currently exists."""
-    if pid <= 0:
-        return False
-
-    if sys.platform == "win32":
-        import ctypes
-
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        ERROR_INVALID_PARAMETER = 87
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION,
-            False,
-            pid,
-        )
-        if not handle:
-            error_code = ctypes.windll.kernel32.GetLastError()
-            if error_code == ERROR_INVALID_PARAMETER:
-                return False
-            raise ctypes.WinError(error_code)
-        try:
-            exit_code = ctypes.c_ulong()
-            if not ctypes.windll.kernel32.GetExitCodeProcess(
-                handle,
-                ctypes.byref(exit_code),
-            ):
-                raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
-            return exit_code.value == STILL_ACTIVE
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return project_lock.is_pid_running(pid)
 
 
 def read_project_lock(project_path: str) -> dict | None:
     """Return active lock metadata for *project_path*, removing stale locks automatically."""
-    lock_path = get_project_lock_path(project_path)
-    if not os.path.isfile(lock_path):
-        return None
-
-    with open(lock_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"project lock must contain a JSON object: {lock_path}")
-    pid = data.get("pid")
-    token = data.get("token")
-    if (
-        isinstance(pid, bool)
-        or not isinstance(pid, int)
-        or pid <= 0
-        or not isinstance(token, str)
-        or not token
-    ):
-        raise ValueError(f"project lock has invalid process identity: {lock_path}")
-    if not is_pid_running(pid):
-        os.remove(lock_path)
-        return None
-
-    return data
+    return project_lock.read_lock(project_path, probe=is_pid_running)
 
 
 def is_project_open(project_path: str) -> bool:
@@ -167,19 +172,8 @@ def is_project_open(project_path: str) -> bool:
 
 
 def write_project_lock(project_path: str, pid: int, token: str, mode: str, state: str) -> str:
-    """Write/update the project lock file and return its path."""
-    lock_path = get_project_lock_path(project_path)
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-    payload = {
-        "pid": pid,
-        "token": token,
-        "mode": mode,
-        "state": state,
-        "project_path": os.path.abspath(project_path),
-    }
-    with open(lock_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    return lock_path
+    """Reserve project preparation or transfer that reservation to its child."""
+    return project_lock.reserve(project_path, pid, token, mode, state, probe=is_pid_running)
 
 
 def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -202,20 +196,6 @@ def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def remove_project_lock(project_path: str, token: str | None = None) -> None:
-    """Remove the project lock if it exists and the token matches when provided."""
-    lock_path = get_project_lock_path(project_path)
-    if not os.path.isfile(lock_path):
-        return
-
-    if token is not None:
-        with open(lock_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise ValueError(f"project lock must contain a JSON object: {lock_path}")
-        current_token = data.get("token")
-        if not isinstance(current_token, str) or not current_token:
-            raise ValueError(f"project lock has invalid process identity: {lock_path}")
-        if current_token != token:
-            return
-
-    os.remove(lock_path)
+    """Release only this launch's own reservation or its stopped child."""
+    if project_path:
+        project_lock.remove_lock(get_project_lock_path(project_path), token, probe=is_pid_running)

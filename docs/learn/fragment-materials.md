@@ -12,7 +12,7 @@ This split lets one `.frag` serve Forward, Forward+, and any Deferred or custom 
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="gold-coin material style reference" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene and Material setup. The image is the visual target used by this lesson.</figcaption>
+  <figcaption>An Infernux demo capture illustrating a material style. The walkthrough below builds an unlit Cube; it does not recreate this scene.</figcaption>
 </figure>
 
 ## A first surface {#first-surface}
@@ -52,19 +52,19 @@ This editor workflow closes the loop with the shader above:
 4. In the Hierarchy, choose **Create > 3D Object > Cube**. Select the Cube and assign `PaintedCube.mat` to **Materials > Element 0** on its `MeshRenderer`. Select `PaintedCube.mat` in Project and set `baseColor` to `(0.9, 0.1, 0.2, 1)` (normalized RGBA). The default `white` texture makes that color visible without another asset.
 5. Save the scene, move the camera or Cube, and confirm that the object remains visible in Scene and Game views. Reopen `PaintedCube.mat`: Vertex must still read `Standard`, Fragment must still identify `Painted Unlit`, and Queue must be `2000`. These three observations distinguish a saved mesh binding from a Material preview alone.
 
-If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that `ShaderInfo Name` still matches the imported ID. If changing `Name` during hot reload reports that an asset reimport is required, restore the old ID or reimport and reassign the Fragment asset. A Material property that does not appear usually means the fragment import failed or the assigned Material still points at another fragment ID.
+If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that the Fragment field refers to the intended project asset. A successful save/import of a changed `ShaderInfo Name` updates referencing Materials automatically through the shader GUID; you do not need to reassign the Fragment asset. A rejected compile leaves the live references unchanged: correct the reported source error and save again. A missing Material property usually means the fragment import failed or the assigned Material still points at another fragment asset.
 
 ## Who owns what: stages, properties, and bindings {#ownership}
 
-A Material is a small document plus two stage references. The **Vertex** and **Fragment** selectors store `ShaderInfo Name` values, and the fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.
+A Material is a small document plus two stage references. Project **Vertex** and **Fragment** assets are stored by GUID with a derived `ShaderInfo Name` label; built-in stages use symbolic identifiers. The fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. Resolving the selected pair links its interfaces and produces the shared property schema and compatible material-pass programs. The Material document stores the stage references and authored values; it does not redefine the stages' property declarations.
 
-Properties are declared in the fragment's `ShaderInfo` block and become typed Material fields serialized into the `.mat` document. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white` and `normal` as built-in defaults. The fragment reads them through the `material.*` members and the `sample*` helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
+Both the vertex and fragment stages can declare Properties in their `ShaderInfo` blocks. The linker combines them into one typed Material schema serialized into the `.mat` document. A property declared in both stages must have the same type, default, range, and other contract metadata; incompatible declarations are rejected. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white`, `black`, and `normal` as built-in defaults. Each stage reads the properties it declares through `material.*` members and the generated sampling helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
 
 ShaderInfo entries affect different things:
 
 | Entry | What it does |
 | --- | --- |
-| `Name` | The stable, case-sensitive selector ID |
+| `Name` | The case-sensitive stage identifier and displayed label |
 | `ShadingModel` | Which `.shadingmodel` provides `shading()` for the surface |
 | `Properties` | Typed Material fields and Inspector controls |
 | `Surface` | A defaults bundle (opaque or transparent) for fields left unspecified |
@@ -77,7 +77,7 @@ ShaderInfo entries affect different things:
 
 ## Material properties {#properties}
 
-Properties become typed Material fields and Inspector controls. This is the property block from the built-in `lit.frag`:
+Properties become typed Material fields and Inspector controls. This excerpt selects the basic fields from the built-in `lit.frag`; the complete shader also declares UV selectors, packed-channel controls, roughness conversion, occlusion strength, and an emission texture:
 
 ```glsl
 Properties {
@@ -98,7 +98,7 @@ Properties {
 
 `Range(min, max)` is optional UI metadata for a bounded float; the built-in Lit declaration leaves these floats unannotated. `HDR` allows a color above display white. `Internal` keeps an engine-managed property out of the ordinary Material UI.
 
-Texture defaults such as `white` and `normal` keep the material valid before users assign project assets. The renderer manages texture bindings; users do not declare descriptor sets.
+The declared texture default chooses the binding independently of the property name: `white`, `black`, or `normal`. An empty texture GUID in the `.mat` document means no project asset is assigned, so the renderer uses that ShaderInfo default. Clearing an assigned texture restores the declared default. A successful shader reload updates unassigned defaults while preserving assigned assets. The renderer manages texture bindings; users do not declare descriptor sets.
 
 Color space comes from the texture asset import settings and the property type. Select an image in the Project panel to edit **Import Settings**. Use **Texture Type: Default** with **sRGB** enabled for albedo and ordinary color. Use **Texture Type: Data** for metallic, smoothness, AO, height, masks, and packed channels. Use **Texture Type: Normal Map** for tangent-space normals. Selecting Data or Normal Map forces sRGB off and disables the checkbox. With **Compression: Auto**, Normal Map resolves to BC5 and Data resolves to no block compression.
 
@@ -143,13 +143,19 @@ These fields affect different problems:
 
 Do not use Queue as a disguised effect parameter. Queue is intentionally structural: a custom pipeline can route `1..100` through one path and `101..200` through another. Material authors choose the queue; pipeline authors decide what that queue means for a project.
 
-`Surface Transparent` supplies transparent defaults for fields left unspecified: queue `3000`, alpha blending, depth writes off, and the transparent pass tag. Explicit Queue, DepthWrite, PassTag, and non-off Blend modes override those defaults. `Off` is also the parser's initial blend value, so this Surface setting normalizes `Blend Off` to `Alpha`. `Blend Alpha` expects straight RGB and uses source alpha for color blending. `Blend Premultiplied` expects `shading()` to return RGB already multiplied by alpha. `Blend Additive` adds source RGB. Blending happens after shading and does not discard a fragment.
+Shadow controls combine the shader and renderer settings. A mesh casts shadows only when its shader enables `CastShadows` and its `MeshRenderer.casts_shadows` is enabled. It receives shadows only when both `ReceiveShadows` and `MeshRenderer.receives_shadows` are enabled. Renderer switches update live and can differ between objects sharing one Material. These rules apply to Forward, Forward+, and Deferred; disabling reception keeps the light's illumination and removes only its shadow attenuation.
+
+`Surface Transparent` supplies transparent defaults for fields left unspecified: queue `3000`, alpha blending, depth writes off, and the transparent pass tag. Explicit Queue, DepthWrite, PassTag, and non-off Blend modes override those defaults. `Off` is also the parser's initial blend value, so this Surface setting normalizes `Blend Off` to `Alpha`. These defaults are resolved before draw-list Queue filtering, including on first use and shader reload.
+
+`Blend Alpha` expects straight RGB and composites `src.rgb * src.a + dst.rgb * (1-src.a)`; its output alpha is `src.a + dst.a * (1-src.a)`. It updates coverage even when the background alpha is zero. `Blend Premultiplied` expects `shading()` to return RGB already multiplied by alpha and uses the same alpha equation. `Blend Additive` sums source and destination RGB and alpha; alpha can exceed one in a floating-point target. Blending happens after shading and does not discard a fragment. For two unlit, half-alpha quads over transparent black, red in front of green produces linear RGB `(0.5, 0.25, 0)` and alpha `0.75`; reversing their depth swaps the red and green values. Display encoding changes RGB but preserves that alpha in Game and RenderTexture outputs.
 
 Alpha clipping is an earlier, binary decision. `AlphaClip 0.5` stores the threshold in the engine-managed `_AlphaClipThreshold`; `AlphaClip On` uses the same `0.5` default. After `surface()` returns, generated adapters discard when `s.alpha` is below that threshold. The check is shared by Forward, GBuffer, and compatible depth, shadow, motion, normal, base-color, and picking variants. A cutout material normally stays in the opaque queue with depth writes enabled and blending off. A translucent material normally uses the transparent queue, depth writes off, and one of the blend modes.
 
 State has a concrete priority. `Surface Transparent` is normalized first. The resulting `ShaderInfo` metadata supplies defaults to a Material. Inspector edits set per-field override bits for surface type, culling, depth, blend, Queue, and alpha clip, so those values survive shader reloads. Pass construction has the final route-specific word: variants outside Forward and Forward+ disable blending and derive depth write/test from the pass attachment; a read-only depth pass disables depth writes. A pass whose depth format has no stencil component disables stencil testing.
 
 `Stencil` currently has no Material Inspector control or per-material override bit. Its value comes from `ShaderInfo`, for example `Stencil "less_equal,1,replace,keep,keep"`; it applies the same compare/reference/operations to front and back faces with `0xFF` masks. Invalid or underspecified stencil strings are not backed by a dedicated authoring diagnostic, so keep this field in reviewed shader source and verify it in a pipeline with a stencil-capable depth target.
+
+`Stencil "equal,1,keep,keep,keep"` draws only where the stored stencil value is `1`; `not_equal` draws outside that mask. For a custom attachment, declare a distinct depth texture such as `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)` and bind it to the participating passes. The conventional root texture named `depth` uses the Camera attachment and its format; declaring a stencil format on that name does not add stencil to a Camera whose depth attachment has none.
 
 ### Transparent sorting: a reproducible diagnosis
 
@@ -201,7 +207,7 @@ The zero `normalWS` has a specific job. Leave it untouched when the material has
 
 Surface code uses the following spaces: `v_WorldPos`, `v_Normal`, and `v_Tangent` are world-space values; `v_Tangent.w` carries the bitangent sign; `v_TexCoord` is the primary mesh UV; and `v_ViewDepth` is linear eye-space depth. `sampleNormal()` decodes a tangent-space normal map through the world-space TBN basis and returns a world-space normal. Assign world-space data to `s.normalWS`.
 
-The Lit fragment stage in Infernux follows the same shape:
+The Lit fragment stage in Infernux follows the same shape. This simplified example uses the primary UVs and basic channels; the complete built-in implementation also applies its UV selectors, packed-channel controls, roughness conversion, occlusion strength, and emission texture:
 
 ```glsl
 void surface(out SurfaceData s) {
@@ -238,7 +244,7 @@ This function only assembles the surface. The ShadingModel owns the surface-ligh
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="金币材质风格参考" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux 场景与 Material 配置，也是本章使用的视觉目标。</figcaption>
+  <figcaption>来自 Infernux 演示项目的材质风格参考。下面的练习会创建无光照 Cube，不会复现这份场景。</figcaption>
 </figure>
 
 ## 第一份 Surface {#first-surface_1}
@@ -278,19 +284,19 @@ Material 保存参数值，编译后的 Shader 状态由渲染系统管理。切
 4. 在 Hierarchy 选择 **创建 > 3D Object > Cube**。选中 Cube，把 `PaintedCube.mat` 分配给 `MeshRenderer` 的 **Materials > Element 0**，随后在 Project 中选择 `PaintedCube.mat`，将 `baseColor` 设为 `(0.9, 0.1, 0.2, 1)`（归一化 RGBA）。默认 `white` 贴图足以显示这个颜色。
 5. 保存场景，移动相机或 Cube，确认对象在 Scene 与 Game View 都保持可见。重新打开 `PaintedCube.mat`：Vertex 应保持 `Standard`，Fragment 应保持 `Painted Unlit`，Queue 应为 `2000`。这三项观察可以确认场景保存了 Mesh 绑定，验证范围超过单独的 Material 预览。
 
-Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并检查 `ShaderInfo Name` 是否仍与导入 ID 一致。热重载期间修改 `Name` 会提示必须重新导入资产；可以恢复旧 ID，也可以重新导入后再次分配 Fragment。Material 属性没有出现时，常见原因是 Frag 导入失败，或当前 Material 仍指向另一个 Fragment ID。
+Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并确认 Fragment 字段引用了预期的项目资产。修改 `ShaderInfo Name` 后，成功保存并导入会通过 Shader GUID 自动更新引用它的 Material，无需重新分配 Fragment 资产。编译被拒绝时，当前运行引用保持不变；修正报告的源码错误后再次保存即可。Material 属性没有出现时，常见原因是片元导入失败，或当前 Material 仍指向另一个片元资产。
 
 ## 谁拥有什么：阶段、属性与绑定 {#ownership_1}
 
-Material 是一份小文档加上两个阶段引用。**Vertex** 与 **Fragment** 选择器保存 `ShaderInfo Name` 值，片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。
+Material 是一份小文档加上两个阶段引用。项目中的 **Vertex** 与 **Fragment** 资产按 GUID 保存，并附带由 `ShaderInfo Name` 派生的显示名称；内置阶段使用符号标识。片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。解析选中的阶段组合时，引擎链接其接口，生成共享属性结构与兼容的材质 Pass 程序。Material 文档保存阶段引用和编辑后的参数值，不会重新定义阶段中的属性声明。
 
-属性在片元的 `ShaderInfo` 块里声明，会变成有类型的 Material 字段，序列化进 `.mat` 文档。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white` 与 `normal` 是内置默认值。片元通过 `material.*` 成员与 `sample*` 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
+顶点和片元阶段都可以在各自的 `ShaderInfo` 块里声明 Properties。链接器将它们合并成一份有类型的 Material 字段结构，序列化进 `.mat` 文档。同名属性同时出现在两个阶段时，类型、默认值、范围及其他契约元数据必须一致；不兼容的声明会被拒绝。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white`、`black` 与 `normal` 是内置默认值。各阶段通过 `material.*` 成员与生成的采样辅助函数读取自己声明的属性。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
 
 ShaderInfo 各条目影响不同环节：
 
 | 条目 | 作用 |
 | --- | --- |
-| `Name` | 稳定且区分大小写的选择器 ID |
+| `Name` | 区分大小写的阶段标识与显示名称 |
 | `ShadingModel` | 由哪个 `.shadingmodel` 提供表面的 `shading()` |
 | `Properties` | 有类型的 Material 字段与 Inspector 控件 |
 | `Surface` | 为未指定字段提供的 Opaque 或 Transparent 默认值包 |
@@ -303,7 +309,7 @@ ShaderInfo 各条目影响不同环节：
 
 ## 材质属性 {#properties_1}
 
-Properties 会成为有类型的 Material 字段和 Inspector 控件。下面就是内置 `lit.frag` 的属性块：
+Properties 会成为有类型的 Material 字段和 Inspector 控件。下面摘录内置 `lit.frag` 的基础字段；完整 Shader 还声明了 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：
 
 ```glsl
 Properties {
@@ -324,7 +330,7 @@ Properties {
 
 `Range(min, max)` 是可选的浮点数 UI 约束；内置 Lit 的这些 Float 没有添加该标记。`HDR` 允许颜色超过显示白，`Internal` 会隐藏由引擎管理的属性。
 
-`white`、`normal` 等贴图默认值，让材质在用户尚未分配项目资源时仍然有效。纹理由渲染器绑定，用户不需要声明描述符 Set。
+纹理绑定由声明的默认值决定，与属性名称无关：可以使用 `white`、`black` 或 `normal`。`.mat` 文档中的纹理 GUID 为空，表示尚未分配项目资产，渲染器会使用对应的 ShaderInfo 默认值。清空已分配的纹理会恢复声明默认值；成功热重载 Shader 后，未分配资产的字段采用新默认值，已分配的资产保持不变。纹理由渲染器绑定，用户不需要声明描述符 Set。
 
 颜色空间由贴图资产导入设置和属性类型决定。在 Project 面板选中图片即可编辑 **导入设置**。Albedo 与普通颜色使用 **贴图类型：默认**，并启用 **sRGB**。金属度、光滑度、AO、高度、Mask 和打包通道使用 **贴图类型：数据**。切线空间法线使用 **贴图类型：法线贴图**。选择数据或法线贴图会强制关闭 sRGB 并禁用该复选框。采用 **压缩：自动** 时，法线贴图会解析为 BC5，数据贴图会解析为无块压缩。
 
@@ -369,13 +375,19 @@ ShaderInfo {
 
 不要把 Queue 当成伪装的效果参数。Queue 是有意设计的结构信息：自定义管线可以让 `1..100` 走一条路径、`101..200` 走另一条。材质作者选择 Queue，管线作者决定这些 Queue 在项目里的含义。
 
-`Surface Transparent` 会为尚未显式填写的字段提供透明表面默认值：Queue `3000`、Alpha 混合、关闭深度写入，并使用 transparent Pass Tag。显式 Queue、DepthWrite、PassTag 及非 Off 的 Blend 模式可以覆盖对应默认值。`Off` 同时是解析器的初始 Blend 值，因此该 Surface 设置会把 `Blend Off` 归一为 `Alpha`。`Blend Alpha` 接收未预乘的 RGB，并用源 Alpha 混合颜色。`Blend Premultiplied` 要求 `shading()` 返回已经乘过 Alpha 的 RGB，`Blend Additive` 累加源 RGB。混合发生在着色之后，不会丢弃片元。
+阴影开关同时取决于 Shader 与 Renderer。只有 Shader 启用 `CastShadows` 且 `MeshRenderer.casts_shadows` 启用时，网格才投射阴影；只有 `ReceiveShadows` 与 `MeshRenderer.receives_shadows` 都启用时，它才接收阴影。Renderer 开关实时生效，共用同一个 Material 的物体可以有不同设置。这些规则适用于 Forward、Forward+ 和 Deferred；关闭接收阴影只移除阴影衰减，仍然保留灯光照明。
+
+`Surface Transparent` 会为尚未显式填写的字段提供透明表面默认值：Queue `3000`、Alpha 混合、关闭深度写入，并使用 transparent Pass Tag。显式 Queue、DepthWrite、PassTag 及非 Off 的 Blend 模式可以覆盖对应默认值。`Off` 同时是解析器的初始 Blend 值，因此该 Surface 设置会把 `Blend Off` 归一为 `Alpha`。这些默认值会在绘制列表按 Queue 筛选之前确定，首次使用和 Shader 热重载也遵循同一规则。
+
+`Blend Alpha` 接收未预乘的 RGB，颜色公式为 `src.rgb * src.a + dst.rgb * (1-src.a)`，输出 Alpha 为 `src.a + dst.a * (1-src.a)`；背景 Alpha 为零时也会更新覆盖率。`Blend Premultiplied` 要求 `shading()` 返回已经乘过 Alpha 的 RGB，Alpha 使用相同公式。`Blend Additive` 累加源与目标的 RGB 和 Alpha，因此浮点目标中的 Alpha 可以超过一。混合发生在着色之后，不会丢弃片元。将两个 Alpha 为 `0.5` 的 Unlit Quad 放在透明黑背景上，红色在绿色前方时，线性 RGB 应为 `(0.5, 0.25, 0)`，Alpha 为 `0.75`；交换深度后红绿数值对调。Display Encode 会改变 RGB，但在 Game 和 RenderTexture 输出中保留该 Alpha。
 
 Alpha Clip 是更早执行的二值判断。`AlphaClip 0.5` 会把阈值写入引擎管理的 `_AlphaClipThreshold`；`AlphaClip On` 同样使用默认值 `0.5`。`surface()` 返回后，生成的适配代码会丢弃 `s.alpha` 低于阈值的片元。Forward、GBuffer 以及兼容的 Depth、Shadow、Motion、Normal、Base Color、Picking 变体共用这项检查。Cutout 材质通常留在不透明 Queue，开启深度写入并关闭混合；半透明材质通常进入透明 Queue，关闭深度写入并选择一种 Blend 模式。
 
 状态优先级是具体的。系统先归一化 `Surface Transparent`，得到的 `ShaderInfo` 元数据为 Material 提供默认值。Inspector 对 Surface Type、Cull、Depth、Blend、Queue 和 Alpha Clip 的编辑会设置逐字段 Override Bit，因此这些值在 Shader 重载后仍会保留。Pass 构建拥有最终的路径级决定权：Forward 与 Forward+ 以外的变体会关闭混合，并根据 Pass Attachment 设置深度写入与测试；只读深度 Pass 会关闭深度写入。深度格式不含 Stencil 分量时，Pass 会关闭 Stencil Test。
 
 `Stencil` 目前没有 Material Inspector 控件，也没有逐 Material Override Bit。它来自 `ShaderInfo`，例如 `Stencil "less_equal,1,replace,keep,keep"`；正反面共用 Compare、Reference 和 Operation，Mask 固定为 `0xFF`。无效或字段不足的 Stencil 字符串缺少专用创作诊断，因此应把它留在经过审查的 Shader 源码中，并在使用 Stencil Depth Target 的管线里验收。
+
+`Stencil "equal,1,keep,keep,keep"` 只绘制 Stencil 存储值为 `1` 的区域；`not_equal` 则绘制遮罩外侧。自定义附件应使用独立的深度纹理名，例如 `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)`，并绑定到参与绘制的 Pass。约定的根纹理名 `depth` 使用 Camera 的附件及格式；仅在这个名字上声明 Stencil 格式，不会为本来不含 Stencil 的 Camera 深度附件添加 Stencil。
 
 ### 透明排序：可复现排查
 
@@ -427,7 +439,7 @@ struct SurfaceData {
 
 Surface 代码使用的空间如下：`v_WorldPos`、`v_Normal`、`v_Tangent` 都在世界空间，`v_Tangent.w` 保存副切线方向符号；`v_TexCoord` 是主 UV；`v_ViewDepth` 是线性眼空间深度。`sampleNormal()` 使用世界空间 TBN 基底解码切线空间法线贴图，返回世界空间法线。写入 `s.normalWS` 的自定义法线也必须处于世界空间。
 
-Infernux 的 Lit Frag 也遵循同样的形状：
+Infernux 的 Lit Frag 也遵循同样的形状。下面的简化示例使用主 UV 与基础通道；内置完整实现还会应用 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：
 
 ```glsl
 void surface(out SurfaceData s) {

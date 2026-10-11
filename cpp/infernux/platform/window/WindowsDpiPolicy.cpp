@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <cstdint>
+#include <sstream>
 #include <stdexcept>
 
 #if defined(_WIN32)
@@ -22,7 +23,7 @@ void ConfigureRequiredWindowsDpiPolicy()
 #endif
 }
 
-void VerifyRequiredWindowsDpiPolicy()
+void VerifyRequiredWindowsDpiPolicy(SDL_Window *window)
 {
 #if defined(_WIN32)
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -41,6 +42,40 @@ void VerifyRequiredWindowsDpiPolicy()
     const HANDLE perMonitorV2 = reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4));
     if (!contextsEqual(getThreadContext(), perMonitorV2))
         throw std::runtime_error("Windows rejected the required Per-Monitor V2 DPI policy");
+
+    if (window != nullptr) {
+        using GetWindowDpiAwarenessContextFn = HANDLE(WINAPI *)(HWND);
+        const auto getWindowContext =
+            reinterpret_cast<GetWindowDpiAwarenessContextFn>(GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
+        const auto hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        if (!hwnd || !getWindowContext || !contextsEqual(getWindowContext(hwnd), perMonitorV2))
+            throw std::runtime_error("The native window is not Per-Monitor V2 DPI aware; check Windows high-DPI "
+                                     "compatibility overrides on the Python/Player executable");
+    }
+#else
+    (void)window;
+#endif
+}
+
+std::string DescribeWindowsDpiPolicy(SDL_Window *window)
+{
+#if defined(_WIN32)
+    const auto hwnd = static_cast<HWND>(
+        SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    using GetDpiForWindowFn = UINT(WINAPI *)(HWND);
+    const auto getDpi =
+        reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    RECT client{};
+    if (!hwnd || !getDpi || !GetClientRect(hwnd, &client))
+        return "native_dpi=unavailable";
+    std::ostringstream details;
+    details << "native_dpi=" << getDpi(hwnd) << " native_client=" << client.right - client.left << 'x'
+            << client.bottom - client.top;
+    return details.str();
+#else
+    (void)window;
+    return {};
 #endif
 }
 

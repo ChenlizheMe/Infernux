@@ -13,6 +13,7 @@
 #include <core/types/ColorSpace.h>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -360,69 +361,16 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
 
     lighting::ShadowCamera shadowCamera;
     shadowCamera.position = cameraPos;
-    if (camera) {
-        shadowCamera.nearClip = std::max(camera->GetNearClip(), 0.01f);
-        shadowCamera.farClip = std::max(camera->GetFarClip(), shadowCamera.nearClip + 0.01f);
-        shadowCamera.verticalFovRadians = glm::radians(camera->GetFieldOfView());
-        shadowCamera.aspect = std::max(camera->GetAspectRatio(), 0.01f);
-        shadowCamera.orthographic = camera->GetProjectionMode() == CameraProjection::Orthographic;
-        shadowCamera.orthographicHalfHeight = std::max(camera->GetOrthographicSize(), 0.01f);
-        const auto cameraToWorld = camera->GetCameraToWorldMatrix();
-        shadowCamera.position = glm::vec3(cameraToWorld[3]);
-        shadowCamera.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
-        shadowCamera.right = glm::normalize(glm::vec3(cameraToWorld[0]));
-        shadowCamera.up = glm::normalize(glm::vec3(cameraToWorld[1]));
-    }
-
-    // Cascades must cover exactly what the camera renders. Unproject the real
-    // view-projection matrix instead of rebuilding the frustum from
-    // fov/aspect: any drift between the two (render-target aspect updates,
-    // orthographic or oblique projections) shows up as shadows clipped along
-    // a straight light-space edge, worst when the camera is close to objects.
-    bool haveFrustumCorners = false;
-    std::array<glm::vec3, 4> frustumNearCorners{};
-    std::array<glm::vec3, 4> frustumFarCorners{};
-    if (camera) {
-        const glm::mat4 inverseViewProjection = glm::inverse(camera->GetViewProjectionMatrix());
-        const std::array<glm::vec2, 4> ndcCorners = {glm::vec2(-1.0f, -1.0f), glm::vec2(1.0f, -1.0f),
-                                                     glm::vec2(1.0f, 1.0f), glm::vec2(-1.0f, 1.0f)};
-        haveFrustumCorners = true;
-        for (size_t index = 0; index < ndcCorners.size(); ++index) {
-            const glm::vec4 nearPoint = inverseViewProjection * glm::vec4(ndcCorners[index], 0.0f, 1.0f);
-            const glm::vec4 farPoint = inverseViewProjection * glm::vec4(ndcCorners[index], 1.0f, 1.0f);
-            if (std::abs(nearPoint.w) < 1e-9f || std::abs(farPoint.w) < 1e-9f) {
-                haveFrustumCorners = false;
-                break;
-            }
-            frustumNearCorners[index] = glm::vec3(nearPoint) / nearPoint.w;
-            frustumFarCorners[index] = glm::vec3(farPoint) / farPoint.w;
-            for (int component = 0; component < 3; ++component) {
-                if (!std::isfinite(frustumNearCorners[index][component]) ||
-                    !std::isfinite(frustumFarCorners[index][component])) {
-                    haveFrustumCorners = false;
-                }
-            }
-            if (!haveFrustumCorners)
-                break;
-        }
-    }
-    // Points along a frustum edge vary linearly in view depth, so a slice at
-    // view depth d sits at fraction (d - near) / (far - near) along each edge.
-    const float frustumDepthRange = std::max(shadowCamera.farClip - shadowCamera.nearClip, 0.001f);
-    const auto frustumSliceAt = [&](float viewDepth) {
-        const float t = glm::clamp((viewDepth - shadowCamera.nearClip) / frustumDepthRange, 0.0f, 1.0f);
-        std::array<glm::vec3, 4> corners{};
-        for (size_t index = 0; index < corners.size(); ++index)
-            corners[index] = glm::mix(frustumNearCorners[index], frustumFarCorners[index], t);
-        return corners;
-    };
 
     std::vector<Light *> shadowLights;
+    // Match CollectLights: resident and persistent scenes share one render
+    // world. The active scene is an authoring context, not a shadow filter.
+    // Preview scenes are excluded when Light registers with SceneManager.
     for (Light *light : SceneManager::Instance().GetActiveLights()) {
         if (!light || !light->IsEnabled() || light->GetShadows() == LightShadows::None)
             continue;
         GameObject *object = light->GetGameObject();
-        if (!object || object->GetScene() != scene || !object->IsActiveInHierarchy() || !object->GetTransform())
+        if (!object || !object->IsActiveInHierarchy() || !object->GetTransform())
             continue;
         shadowLights.push_back(light);
     }
@@ -443,6 +391,51 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             return leftImportance > rightImportance;
         return left->GetGameObject()->GetID() < right->GetGameObject()->GetID();
     });
+
+    std::array<glm::dvec3, 4> rayOrigins{};
+    std::array<glm::dvec3, 4> rayDepthSteps{};
+    if (camera && !shadowLights.empty() && shadowLights.front()->GetLightType() == LightType::Directional) {
+        const auto inverseProjection = glm::inverse(glm::dmat4(camera->GetProjectionMatrix()));
+        const glm::dmat4 cameraToWorld(camera->GetCameraToWorldMatrix());
+        const std::array<glm::dvec2, 4> ndcCorners = {glm::dvec2(-1, -1), glm::dvec2(1, -1), glm::dvec2(1, 1),
+                                                      glm::dvec2(-1, 1)};
+        double nearDepth = std::numeric_limits<double>::infinity();
+        double farDepth = 0.0;
+        bool unboundedFar = false;
+        for (size_t index = 0; index < ndcCorners.size(); ++index) {
+            const auto a = inverseProjection * glm::dvec4(ndcCorners[index], 0, 1);
+            const auto b = inverseProjection * glm::dvec4(ndcCorners[index], 1, 1);
+            // Intersect the homogeneous pixel ray with view.z = depth.
+            // Keeping its endpoints homogeneous handles infinite far planes
+            // and oblique planes without dividing a point at infinity by w.
+            const double denominator = a.w * b.z - b.w * a.z;
+            if (denominator == 0.0)
+                throw std::invalid_argument("Camera projection has an unbounded view-depth shadow slice");
+            const auto origin = (glm::dvec3(a) * b.z - glm::dvec3(b) * a.z) / denominator;
+            const auto depthStep = (glm::dvec3(b) * a.w - glm::dvec3(a) * b.w) / denominator;
+            rayOrigins[index] = glm::dvec3(cameraToWorld * glm::dvec4(origin, 1));
+            rayDepthSteps[index] = glm::dvec3(cameraToWorld * glm::dvec4(depthStep, 0));
+            for (const auto &point : {a, b}) {
+                if (point.w > 0.0) {
+                    const double depth = point.z / point.w;
+                    nearDepth = std::min(nearDepth, depth);
+                    farDepth = std::max(farDepth, depth);
+                } else {
+                    // The positive-w part of this edge reaches infinity.
+                    unboundedFar = true;
+                }
+            }
+        }
+        shadowCamera.nearClip = std::max(static_cast<float>(nearDepth), 0.001f);
+        shadowCamera.farClip = unboundedFar ? std::numeric_limits<float>::infinity()
+                                            : std::max(static_cast<float>(farDepth), shadowCamera.nearClip + 0.01f);
+    }
+    const auto frustumSliceAt = [&](float viewDepth) {
+        std::array<glm::vec3, 4> corners{};
+        for (size_t index = 0; index < corners.size(); ++index)
+            corners[index] = glm::vec3(rayOrigins[index] + rayDepthSteps[index] * double(viewDepth));
+        return corners;
+    };
 
     lighting::ShadowAtlasAllocator atlas(m_shadowFrame.atlasSize);
     bool mainDirectional = true;
@@ -480,7 +473,7 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             if (!tiles)
                 continue;
             for (uint32_t cascade = 0; cascade < lighting::DirectionalCascadeCount; ++cascade) {
-                if (haveFrustumCorners) {
+                if (camera) {
                     const auto nearSlice = frustumSliceAt(splits[cascade]);
                     const auto farSlice = frustumSliceAt(splits[cascade + 1]);
                     const std::array<glm::vec3, 8> sliceCorners = {nearSlice[0], nearSlice[1], nearSlice[2],

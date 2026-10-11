@@ -80,10 +80,7 @@ function contrast(foreground, background) {
 }
 
 const rootTokens = tokenBlock(style, ":root", "shared design");
-const themes = {
-    dark: rootTokens,
-    light: { ...rootTokens, ...tokenBlock(style, '[data-theme="light"]', "shared design") },
-};
+const themes = { dark: rootTokens };
 const surfaces = ["bg", "bg-deep", "bg-panel", "bg-elevated", "bg-tile", "bg-contrast", "code-bg"];
 const normalText = ["text", "text-muted", "text-soft", "text-mono", "accent", "accent-strong", "hazard", "signal", "info"];
 const syntaxText = [
@@ -178,7 +175,7 @@ for (const background of offlineSurfaces) {
     requireRatio("offline", offlineTokens, "offline-border", background, 3, "ui");
 }
 
-if (rootTokens["text-faint"] || themes.light["text-faint"]) fail("Low-contrast ornament must use --decorative-faint, not a misleading --text-faint token.");
+if (rootTokens["text-faint"]) fail("Low-contrast ornament must use --decorative-faint, not a misleading --text-faint token.");
 
 const foregroundSources = [
     "css/style.css",
@@ -210,7 +207,7 @@ if (failures.length) {
 }
 
 console.log(
-    `Color contrast passed ${checks} contracts across dark/light themes and the offline recovery page; `
+    `Color contrast passed ${checks} contracts across the dark theme and offline recovery page; `
     + `minimum text ${minimumText.ratio.toFixed(2)}:1 (${minimumText.label}); `
     + `minimum UI boundary ${minimumUi.ratio.toFixed(2)}:1 (${minimumUi.label}).`
 );

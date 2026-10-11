@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "GameObject.h"
 #include "ObjectHandle.h"
+#include "SceneAuthoringIdentity.h"
 #include "SceneEnvironment.h"
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -23,7 +24,7 @@ class InxMaterial;
  * The Scene is the root container for all GameObjects in the game world.
  * It manages object lifecycle, updates, and provides lookup functionality.
  */
-class Scene
+class Scene : public NativeLifetimeOwner
 {
   public:
     Scene() = default;
@@ -307,6 +308,13 @@ class Scene
         ++m_structureVersion;
     }
 
+    /// Object-name changes invalidate editor search without rebuilding runtime
+    /// object/component or lifecycle lists. This revision is not serialized.
+    [[nodiscard]] uint64_t GetObjectNameRevision() const
+    {
+        return m_objectNameRevision;
+    }
+
     // ========================================================================
     // Serialization
     // ========================================================================
@@ -317,6 +325,10 @@ class Scene
 
     /// @brief Build the structured current-schema document without text conversion.
     [[nodiscard]] nlohmann::json SerializeDocument() const;
+
+    /// Authoring asset boundary: persistent GUIDs, without runtime ID tables.
+    [[nodiscard]] nlohmann::json SerializeAuthoringDocument() const;
+    [[nodiscard]] std::string SerializeAuthoring() const;
 
     /// @brief Commit an already parsed and cross-language-preflighted scene document.
     ///
@@ -403,6 +415,9 @@ class Scene
     friend class GameObject;
     friend class SceneCommitToken;
 
+    void RequireWritableWorld() const;
+    void RetireRootObjects();
+
     void CollectAllObjects(GameObject *obj, std::vector<GameObject *> &result) const;
     void QueueStartObject(GameObject *obj);
     void StartObject(GameObject *obj);
@@ -437,6 +452,11 @@ class Scene
     /// @brief Recursively register all objects in a subtree with Scene's lookup map.
     void RegisterObjectSubtree(GameObject *root);
 
+    void RegisterAuthoringComponent(uint64_t componentId);
+    void CopySubtreeAuthoringIdentity(const GameObject &object, const Scene &source);
+    /// Shared ownership transfer for root moves and cross-Scene reparenting.
+    bool TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent);
+
     static uint64_t GenerateWorldId();
 
     std::string m_name = "Untitled Scene";
@@ -448,6 +468,14 @@ class Scene
 
     // Quick lookup by ID
     std::unordered_map<uint64_t, GameObject *> m_objectsById;
+
+    // Persistent author identities outlive deletion, so Undo and missing refs
+    // keep the same identity. Runtime lookups continue to use compact integers.
+    SceneAuthoringIdentity m_authoringIdentity;
+
+    // Persist allocation progress even after the highest authored IDs are deleted.
+    mutable uint64_t m_nextDocumentObjectId = 1;
+    mutable uint64_t m_nextDocumentComponentId = 1;
 
     // GameObjects pending destruction (IDs)
     std::vector<uint64_t> m_pendingDestroy;
@@ -467,6 +495,7 @@ class Scene
     bool m_isLoaded = false;
     bool m_isPlaying = false;
     bool m_hasStarted = false;
+    bool m_retiringObjects = false;
     bool m_runtimeLifecycleSchedulerEnabled = false;
 
     // Per-scene environment (skybox material + ambient) settings
@@ -474,6 +503,7 @@ class Scene
 
     // Structure version counter (bumped on add/remove/reparent)
     uint64_t m_structureVersion = 0;
+    uint64_t m_objectNameRevision = 0;
 
     // Runtime lifecycle dispatch is sparse in ordinary scenes: most objects
     // only contain Transform/render data. Rebuild these ordered receiver lists

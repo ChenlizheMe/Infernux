@@ -48,10 +48,26 @@ class SkinPoseHistory
         next->previous =
             resetHistory || !published || !published->current || published->current->size() != next->current->size()
                 ? next->current
-                : published->current;
+                : published->previous;
         next->revision = m_nextRevision.fetch_add(1, std::memory_order_relaxed);
         std::atomic_store_explicit(&m_snapshot, std::const_pointer_cast<const Snapshot>(next),
                                    std::memory_order_release);
+    }
+
+    /// Advance once after all views have consumed this frame's immutable pose.
+    /// Repeated pose submissions within a frame retain the last rendered pose.
+    bool CommitFrame()
+    {
+        const SnapshotPtr published = Acquire();
+        if (!published || !published->IsValid() || published->previous == published->current)
+            return false;
+        auto next = std::make_shared<Snapshot>();
+        next->current = published->current;
+        next->previous = published->current;
+        next->revision = m_nextRevision.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_store_explicit(&m_snapshot, std::const_pointer_cast<const Snapshot>(next),
+                                   std::memory_order_release);
+        return true;
     }
 
     void Reset() noexcept

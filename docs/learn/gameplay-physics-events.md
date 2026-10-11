@@ -29,11 +29,13 @@ A GameObject can participate in this exercise in three ways:
 
 `Rigidbody` adds mass, gravity, drag, constraints, velocity, forces, and kinematic movement. A dynamic body has `is_kinematic` disabled. A kinematic body is script-driven and can use `move_position(...)` or `move_rotation(...)` during fixed steps.
 
+You can call both movement methods in the same fixed step: their position and rotation targets compose in either call order. The physics step applies the combined pose; these methods do not immediately teleport the Transform while the callback is running.
+
 <div class="learn-note"><strong>Use the physics clock.</strong><p><code>fixed_update(self, fixed_delta_time)</code> runs on the fixed physics step, whose default is 50 Hz. Apply continuous forces and kinematic movement there. Frame-rate presentation and ordinary per-frame input polling can remain in <code>update</code>.</p></div>
 
 ## Build the test scene {#build-physics-scene}
 
-Start from a scene with a Camera that can see the origin, then create these objects:
+Start from a scene with a Camera that can see the origin. Move the Cubes and other colliders from earlier chapters away from the test area; they can block the Probe before it reaches the Sensor. Then create these objects:
 
 1. Create a **Cube** named `Ground`. Set Position to `(0, -0.5, 0)` and Scale to `(12, 1, 4)`. The primitive already has a `BoxCollider`; leave its **Is Trigger** disabled and do not add a Rigidbody.
 2. Create a **Sphere** named `Probe`. Set Position to `(-4, 2, 0)`. The primitive already has a `SphereCollider`; use **Add Component** to add only `Rigidbody`. Set **Mass** to `1` and **Drag** to `0`, keep **Use Gravity** enabled and **Is Kinematic** disabled. Enable the Rigidbody's **Freeze Position Z** and all three **Freeze Rotation** controls so the example stays on one line. Leave Position X and Y unfrozen and use the default physics material on both Probe and Ground.
@@ -144,7 +146,9 @@ Trigger overlaps receive the other `Collider` directly:
 | `on_trigger_stay(other)` | Each fixed step while the overlap remains |
 | `on_trigger_exit(other)` | The other collider leaves the Trigger |
 
-The two parameter types are intentionally different. Contact points and normals belong to `CollisionInfo`; Trigger callbacks use `other.game_object` when they need the overlapping object. The current public `CollisionInfo` has no `impulse` property.
+The two parameter types are intentionally different. Contact points and normals belong to `CollisionInfo`; Trigger callbacks use `other.game_object` when they need the overlapping object. The contact normal points from the other collider towards the object receiving the callback: on a horizontal floor, the Probe receives an upward normal. The current public `CollisionInfo` has no `impulse` property.
+
+Trigger arguments and `collision.collider` use the public Python Collider types. `isinstance(other, inx.Collider)` works, and the component is the same object returned by `get_component()` for that collider. Physics query hits and overlap results use the same component identities.
 
 `Stay` callbacks can run many times. The example counts them and logs only the first stay step for each interaction, keeping the Console readable while still proving that the phase occurred.
 
@@ -210,11 +214,13 @@ The Probe now turns low-level physics transitions into clean gameplay events. In
 
 `Rigidbody` 提供质量、重力、阻力、约束、速度、力和运动接口。关闭 `is_kinematic` 后，刚体由物理模拟驱动。启用运动学模式后，可以在固定步中调用 `move_position(...)` 或 `move_rotation(...)`。
 
+可以在同一个固定步中同时调用两个运动接口：位置与旋转目标会合并，调用顺序不影响结果。物理步会应用合并后的位姿；这些方法不会在回调执行期间立即瞬移 Transform。
+
 <div class="learn-note"><strong>使用物理时钟。</strong><p><code>fixed_update(self, fixed_delta_time)</code> 按固定物理步运行，默认频率为 50 Hz。连续施力与运动学移动适合放在这里。逐帧显示逻辑和普通输入轮询可以留在 <code>update</code>。</p></div>
 
 ## 搭建测试场景 {#build-physics-scene_1}
 
-先准备一个能看见原点的 Camera，再创建以下物体：
+先准备一个能看见原点的 Camera，把前几章的 Cube 和其他 Collider 移出测试区域，避免它们在 Probe 到达 Sensor 前挡住路径，再创建以下物体：
 
 1. 创建 **Cube**，命名为 `Ground`。把 Position 设为 `(0, -0.5, 0)`，Scale 设为 `(12, 1, 4)`。该基础几何体已经带有 `BoxCollider`；保持 **Is Trigger** 关闭，不添加 Rigidbody。
 2. 创建 **Sphere**，命名为 `Probe`。把 Position 设为 `(-4, 2, 0)`。该基础几何体已经带有 `SphereCollider`；通过 **Add Component** 只添加 `Rigidbody`。把 **Mass** 设为 `1`、**Drag** 设为 `0`，保持 **Use Gravity** 开启、**Is Kinematic** 关闭。开启 Rigidbody 的 **Freeze Position Z** 和三个 **Freeze Rotation**，让运动稳定在一条直线上。Position X、Y 不冻结，Probe 和 Ground 都使用默认物理材质。
@@ -325,7 +331,9 @@ Trigger 重叠会直接收到另一个 `Collider`：
 | `on_trigger_stay(other)` | 保持重叠期间的每个固定步 |
 | `on_trigger_exit(other)` | 另一个 Collider 离开 Trigger |
 
-这两组参数类型不同。接触点与法线位于 `CollisionInfo`；Trigger 回调可以通过 `other.game_object` 取得重叠物体。当前公开的 `CollisionInfo` 没有 `impulse` 属性。
+这两组参数类型不同。接触点与法线位于 `CollisionInfo`；Trigger 回调可以通过 `other.game_object` 取得重叠物体。接触法线从另一个 Collider 指向接收回调的物体：在水平地面上，Probe 收到的法线朝上。当前公开的 `CollisionInfo` 没有 `impulse` 属性。
+
+Trigger 参数与 `collision.collider` 使用公开的 Python Collider 类型。`isinstance(other, inx.Collider)` 可以正确判断类型，它与 `get_component()` 返回的对应 Collider 是同一个组件对象。物理查询命中结果和重叠查询也使用相同的组件身份。
 
 `Stay` 回调可能连续运行很多次。本例只记录每次交互的第一个 Stay 固定步，既能验证阶段，又能保持 Console 清晰。
 

@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -251,7 +252,7 @@ struct RenderState
  * - Material properties (uniforms, textures)
  * - Per-pass pipeline storage (Forward, GBuffer, Shadow)
  */
-class InxMaterial
+class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 {
   public:
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
@@ -356,6 +357,7 @@ class InxMaterial
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     /// @brief Set vertex shader name independently.
@@ -370,6 +372,7 @@ class InxMaterial
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     /// @brief Set fragment shader name independently.
@@ -384,6 +387,7 @@ class InxMaterial
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     void SetVertShaderReference(ShaderAssetReference reference)
@@ -392,10 +396,12 @@ class InxMaterial
             return;
         const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = std::move(reference);
+        TrackRuntimeShaderReferences();
         if (switched)
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     void SetFragShaderReference(ShaderAssetReference reference)
@@ -404,10 +410,12 @@ class InxMaterial
             return;
         const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = std::move(reference);
+        TrackRuntimeShaderReferences();
         if (switched)
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     /// @brief Get the fragment shader name (primary identity for render meta).
@@ -442,6 +450,11 @@ class InxMaterial
     // Render State
     // ========================================================================
 
+    /// Queue, pass-tag, shader and render-state edits invalidate retained draw
+    /// routing. Value/texture animation does not change this publication.
+    [[nodiscard]] static uint64_t GetRoutingPublicationRevision() noexcept;
+    static void NotifyRoutingChanged() noexcept;
+
     [[nodiscard]] const RenderState &GetRenderState() const
     {
         return m_renderState;
@@ -458,6 +471,7 @@ class InxMaterial
         m_renderStateOverrides |= kAllRenderStateOverrides;
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     [[nodiscard]] int32_t GetRenderQueue() const
@@ -466,10 +480,12 @@ class InxMaterial
     }
     void SetRenderQueue(int32_t queue)
     {
-        if (m_renderState.renderQueue == queue)
+        if (m_renderState.renderQueue == queue && HasOverride(RenderStateOverride::RenderQueue))
             return;
         m_renderState.renderQueue = queue;
+        m_renderStateOverrides |= static_cast<uint32_t>(RenderStateOverride::RenderQueue);
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     [[nodiscard]] const std::string &GetPassTag() const
@@ -478,8 +494,10 @@ class InxMaterial
     }
     void SetPassTag(const std::string &tag)
     {
-        if (m_passTag != tag)
+        if (m_passTag != tag) {
             ++m_version;
+            NotifyRoutingChanged();
+        }
         m_passTag = tag;
     }
 
@@ -507,8 +525,10 @@ class InxMaterial
     /// @brief Set the entire override bitmask.
     void SetRenderStateOverrides(uint32_t overrides)
     {
-        if (m_renderStateOverrides != overrides)
+        if (m_renderStateOverrides != overrides) {
             ++m_version;
+            NotifyRoutingChanged();
+        }
         m_renderStateOverrides = overrides;
     }
 
@@ -570,6 +590,12 @@ class InxMaterial
     {
         return m_textureAssetsPending;
     }
+    /// Transient notification revision; ordinary animated properties do not
+    /// request another resolution of a failed texture asset.
+    [[nodiscard]] uint64_t GetTextureAssetRevision() const noexcept
+    {
+        return m_textureAssetRevision;
+    }
     [[nodiscard]] bool HasRuntimeTextureOverride(const std::string &name) const
     {
         return m_runtimeTextureOverrides.count(name) != 0;
@@ -589,6 +615,7 @@ class InxMaterial
 
     [[nodiscard]] bool HasProperty(const std::string &name) const;
     [[nodiscard]] const MaterialProperty *GetProperty(const std::string &name) const;
+    [[nodiscard]] std::string_view GetTextureDefault(const std::string &name) const;
     [[nodiscard]] const std::unordered_map<std::string, MaterialProperty> &GetAllProperties() const
     {
         return m_properties;
@@ -792,7 +819,9 @@ class InxMaterial
 
   private:
     static uint64_t AllocateRuntimeId() noexcept;
+    void TrackRuntimeShaderReferences();
     bool ApplyDocument(const nlohmann::json &document);
+    void PublishDocument(InxMaterial &&staged);
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;
@@ -824,6 +853,7 @@ class InxMaterial
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
     std::unordered_set<std::string> m_runtimeTextureOverrides;
     bool m_textureAssetsPending = true;
+    uint64_t m_textureAssetRevision = 0;
     std::vector<std::string> m_shaderPropertyOrder;
 
     // Vulkan-only multi-pass pipeline storage.

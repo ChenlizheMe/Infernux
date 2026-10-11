@@ -1,0 +1,277 @@
+{
+  "key": "audio",
+  "titleKey": "roadmap.galaxy.audio.title",
+  "branches": [
+    {
+      "en": "SPATIAL AUDIO",
+      "zh": "空间音频",
+      "leaves": [
+        ["Listener graph","监听器图","live"],
+        ["3D emitters","3D 发射器","live"],
+        ["Distance curves","距离衰减曲线","planned"],
+        ["Directional cones","方向锥","planned"],
+        ["Listener blending","监听器混合","planned"],
+        ["HRTF spatialization","HRTF 空间化","future"]
+      ]
+    },
+    {
+      "en": "MIXER",
+      "zh": "混音器",
+      "leaves": [
+        ["Bus routing","总线路由","live"],
+        ["Snapshots","快照","planned"],
+        ["Effects chain","效果链","planned"],
+        ["Metering","电平监视","live"],
+        ["Bus gain automation","总线增益自动化","live"],
+        ["Sidechain routing","侧链路由","planned"],
+        ["Mute / solo controls","静音与独奏","planned"],
+        ["Bus graph inspector","总线图检查器","planned"]
+      ]
+    },
+    {
+      "en": "STREAMING",
+      "zh": "流式音频",
+      "leaves": [
+        ["Asset decode","资产解码","live"],
+        ["Music playlists","音乐播放列表","planned"],
+        ["Voice capture","语音捕获","future"],
+        ["Async loading","异步加载","planned"],
+        ["Decode buffer budgets","解码缓冲预算","live"],
+        ["Streaming seek contracts","流式定位契约","live"],
+        ["Audio asset prefetch","音频资产预取","planned"],
+        ["Device format negotiation","设备格式协商","live"]
+      ]
+    },
+    {
+      "en": "CAPTURE",
+      "zh": "捕获",
+      "leaves": [
+        ["Offline render","离线渲染","planned"],
+        ["Replay audio","回放音频","future"],
+        ["Wave export","波形导出","planned"],
+        ["Audio event journals","音频事件日志","planned"],
+        ["Per-bus capture","逐总线捕获","planned"],
+        ["Sample-clock timestamps","采样时钟时间戳","planned"],
+        ["Capture reproducibility","捕获可复现性","planned"]
+      ]
+    },
+    {
+      "en": "Voice management",
+      "zh": "声部管理",
+      "leaves": [
+        ["Voice priority policy","声部优先级策略","live"],
+        ["Voice virtualization","声部虚拟化","live"],
+        ["Polyphony budgets","复音预算","live"],
+        ["One-shot pooling","一次性音效池","live"],
+        ["Voice stealing rules","声部抢占规则","live"],
+        ["Playback completion events","播放完成事件","planned"],
+        ["Voice lifetime diagnostics","声部生命周期诊断","planned"],
+        ["Per-scene voice ownership","逐场景声部归属","planned"]
+      ]
+    },
+    {
+      "en": "Interactive music",
+      "zh": "交互音乐",
+      "leaves": [
+        ["Music state graph","音乐状态图","planned"],
+        ["Beat-aligned transitions","节拍对齐切换","planned"],
+        ["Layered stems","分层分轨","planned"],
+        ["Tempo maps","速度映射","planned"],
+        ["Crossfade envelopes","交叉淡化包络","planned"],
+        ["Gameplay music parameters","玩法音乐参数","planned"],
+        ["Music preview tools","音乐预览工具","planned"],
+        ["Procedural score generation","程序化配乐生成","future"]
+      ]
+    },
+    {
+      "en": "Acoustic environment",
+      "zh": "声学环境",
+      "leaves": [
+        ["Acoustic zones","声学区域","future"],
+        ["Portal propagation","声学门户传播","future"],
+        ["Geometry-based occlusion","几何遮挡","future"],
+        ["Early reflections","早期反射","future"],
+        ["Convolution reverb","卷积混响","future"],
+        ["Material absorption","材质吸声","future"],
+        ["Acoustic probe baking","声学探针烘焙","future"],
+        ["Dynamic room transitions","动态房间切换","future"]
+      ]
+    },
+    {
+      "en": "Audio authoring",
+      "zh": "音频编辑",
+      "leaves": [
+        ["Waveform preview","波形预览","planned"],
+        ["Loop region editor","循环区间编辑器","planned"],
+        ["Audio import presets","音频导入预设","planned"],
+        ["Loudness normalization","响度归一化","planned"],
+        ["Sound event assets","声音事件资产","planned"],
+        ["Randomized sample groups","随机采样组","planned"],
+        ["Audio dependency audit","音频依赖审计","planned"],
+        ["Audio profiling panel","音频分析面板","planned"]
+      ]
+    },
+    {
+      "en": "Device & transport",
+      "zh": "设备与传输",
+      "leaves": [
+        ["Device hot-plug","设备热插拔","planned"],
+        ["Output-device selection","输出设备选择","planned"],
+        ["Latency measurement","延迟测量","planned"],
+        ["Underrun diagnostics","欠载诊断","live"],
+        ["Sample-rate conversion","采样率转换","live"],
+        ["Channel layout mapping","声道布局映射","planned"],
+        ["Microphone permissions","麦克风权限","future"],
+        ["Network voice transport","网络语音传输","future"]
+      ]
+    },
+    {
+      "en": "Neural audio",
+      "zh": "神经音频",
+      "leaves": [
+        ["Audio observation buffers","音频观测缓冲","future"],
+        ["Speech activity events","语音活动事件","future"],
+        ["Streaming speech recognition","流式语音识别","future"],
+        ["Speech synthesis bridge","语音合成桥接","future"],
+        ["Phoneme / animation sync","音素与动画同步","future"],
+        ["Model-driven sound events","模型驱动声音事件","future"],
+        ["Inference audio latency","音频推理延迟","future"],
+        ["Audio dataset capture","音频数据集捕获","future"]
+      ]
+    },
+    {
+      "en": "Spatialization details",
+      "zh": "空间化细节",
+      "leaves": [
+        ["Doppler pitch factors","多普勒音高因子","planned"],
+        ["Equal-power stereo panning","等功率立体声声像","live"],
+        ["Speaker-layout panning","扬声器布局声像","planned"],
+        ["Near-field spatial correction","近场空间修正","planned"],
+        ["Spatial blend automation","空间混合自动化","planned"],
+        ["Emitter spread controls","发射器扩散控制","planned"],
+        ["Spatial audio debug rays","空间音频调试射线","planned"]
+      ]
+    },
+    {
+      "en": "Mixer graph details",
+      "zh": "混音图细节",
+      "leaves": [
+        ["Mixer node topology","混音节点拓扑","planned"],
+        ["Bus send levels","总线发送电平","planned"],
+        ["Parameter smoothing windows","参数平滑时间窗","live"],
+        ["Bus peak hold meters","总线峰值保持表","planned"],
+        ["Bus RMS meters","总线均方根电平表","planned"],
+        ["Loudness unit meters","响度单位电平表","planned"]
+      ]
+    },
+    {
+      "en": "DSP processing",
+      "zh": "数字信号处理",
+      "leaves": [
+        ["Biquad filter coefficients","双二阶滤波系数","planned"],
+        ["Parametric equalizer bands","参数均衡器频段","planned"],
+        ["Compressor envelope followers","压缩器包络跟随","planned"],
+        ["Look-ahead limiter buffers","前瞻限幅缓冲","planned"],
+        ["Noise gate hysteresis","噪声门滞后","planned"],
+        ["Delay-line interpolation","延迟线插值","planned"],
+        ["Feedback delay networks","反馈延迟网络","planned"],
+        ["DSP latency compensation","DSP 延迟补偿","planned"],
+        ["DSP CPU budget meters","DSP CPU 预算表","planned"]
+      ]
+    },
+    {
+      "en": "Voice scheduling details",
+      "zh": "声部调度细节",
+      "leaves": [
+        ["One-shot generation handles","一次性声部代际句柄","planned"],
+        ["Per-emitter concurrency groups","逐发射器并发组","planned"],
+        ["Per-bus voice quotas","逐总线声部配额","planned"],
+        ["Playback scheduled start times","播放预约开始时间","planned"]
+      ]
+    },
+    {
+      "en": "Stream transport details",
+      "zh": "音频流传输细节",
+      "leaves": [
+        ["Compressed-frame indexing","压缩帧索引","planned"],
+        ["Seamless loop decode","无缝循环解码","live"],
+        ["Gapless stream transitions","无间隙流切换","planned"],
+        ["Stream IO priority","音频流 IO 优先级","planned"],
+        ["Audio cache eviction","音频缓存淘汰","planned"],
+        ["Stream buffer occupancy","音频流缓冲占用","planned"]
+      ]
+    },
+    {
+      "en": "Music sequencing",
+      "zh": "音乐序列细节",
+      "leaves": [
+        ["Stinger scheduling","短句音效调度","planned"],
+        ["Music segment exit cues","音乐段落退出提示","planned"],
+        ["Music loop markers","音乐循环标记","planned"],
+        ["Music pre-roll buffering","音乐预卷缓冲","planned"],
+        ["Music event timeline view","音乐事件时间线视图","planned"]
+      ]
+    },
+    {
+      "en": "Acoustic propagation details",
+      "zh": "声学传播细节",
+      "leaves": [
+        ["Acoustic mesh simplification","声学网格简化","future"],
+        ["Transmission loss bands","传输损耗频段","future"],
+        ["Diffraction edge candidates","衍射边缘候选","future"],
+        ["Reverb decay estimation","混响衰减估计","future"],
+        ["Impulse response baking","脉冲响应烘焙","future"],
+        ["Moving occluder updates","移动遮挡体更新","future"],
+        ["Acoustic path visualization","声学路径可视化","future"]
+      ]
+    },
+    {
+      "en": "Audio asset details",
+      "zh": "音频资产细节",
+      "leaves": [
+        ["Spectrogram previews","频谱图预览","planned"],
+        ["Audio trim nondestructive edits","音频非破坏裁剪","planned"],
+        ["Audio import channel policies","音频导入声道策略","live"],
+        ["Sound-event parameter schemas","声音事件参数结构","planned"],
+        ["Audio localization variants","音频本地化变体","planned"],
+        ["Audio license metadata","音频许可元数据","planned"],
+        ["Audio package size reports","音频包体积报告","planned"]
+      ]
+    },
+    {
+      "en": "Device timing details",
+      "zh": "音频设备时序",
+      "leaves": [
+        ["Audio callback allocation ban","音频回调禁止分配","planned"],
+        ["Device clock drift estimates","设备时钟漂移估计","planned"],
+        ["Audio-video clock alignment","音视频时钟对齐","planned"],
+        ["Callback deadline telemetry","回调截止时间观测","planned"],
+        ["Exclusive-mode negotiation","独占模式协商","planned"],
+        ["Mobile audio focus handling","移动端音频焦点处理","planned"],
+        ["Background playback policy","后台播放策略","planned"]
+      ]
+    },
+    {
+      "en": "Speech model integration",
+      "zh": "语音模型接入",
+      "leaves": [
+        ["Log-mel feature extraction","对数梅尔特征提取","future"],
+        ["Incremental transcript revisions","增量转录修订","future"],
+        ["Speech language identification","语音语言识别","future"],
+        ["Speaker embedding ownership","说话人嵌入归属","future"],
+        ["Speech privacy storage policy","语音隐私存储策略","future"],
+        ["Speech quality evaluation clips","语音质量评估片段","future"]
+      ]
+    },
+    {
+      "en": "Audio capture details",
+      "zh": "音频捕获细节",
+      "leaves": [
+        ["Capture dropout annotations","捕获掉帧注释","planned"],
+        ["Audio capture disk backpressure","音频捕获磁盘背压","planned"],
+        ["Capture clip reference manifests","捕获片段引用清单","planned"],
+        ["Captured waveform comparisons","捕获波形对比","planned"]
+      ]
+    }
+  ]
+}

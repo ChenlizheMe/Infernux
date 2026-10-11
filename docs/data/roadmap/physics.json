@@ -1,0 +1,283 @@
+{
+  "key": "physics",
+  "titleKey": "roadmap.galaxy.physics.title",
+  "branches": [
+    {
+      "en": "RIGID BODIES",
+      "zh": "刚体",
+      "leaves": [
+        ["Jolt integration","Jolt 集成","live"],
+        ["Colliders","碰撞体","live"],
+        ["Constraints","约束","live"],
+        ["Vehicles","载具","future"],
+        ["Body activation policy","刚体激活策略","live"],
+        ["Mass-property authoring","质量属性编辑","live"],
+        ["Continuous collision detection","连续碰撞检测","live"],
+        ["Solver iteration budgets","求解迭代预算","live"]
+      ]
+    },
+    {
+      "en": "SCENE QUERIES",
+      "zh": "场景查询",
+      "leaves": [
+        ["Ray casts","射线检测","live"],
+        ["Shape casts","形状检测","live"],
+        ["Overlap queries","重叠查询","live"],
+        ["Query filters","查询过滤","live"],
+        ["Batch query API","批量查询 API","live"],
+        ["Query result ownership","查询结果所有权","live"],
+        ["Asynchronous queries","异步查询","planned"],
+        ["Query visualization","查询可视化","planned"]
+      ]
+    },
+    {
+      "en": "COLLISION",
+      "zh": "碰撞",
+      "leaves": [
+        ["Layer masks","层遮罩","live"],
+        ["Contact callbacks","接触回调","live"],
+        ["Trigger volumes","触发体积","live"],
+        ["Destruction","破坏系统","future"],
+        ["Collision matrix editing","碰撞矩阵编辑","live"],
+        ["Contact material rules","接触材质规则","live"],
+        ["Event ordering contracts","事件顺序契约","planned"],
+        ["Collision debugging","碰撞调试","planned"]
+      ]
+    },
+    {
+      "en": "FIXED STEP",
+      "zh": "定步循环",
+      "leaves": [
+        ["Stable tick","稳定 Tick","live"],
+        ["Interpolation","插值","live"],
+        ["Rollback hooks","回滚钩子","future"],
+        ["Deterministic replay","确定性回放","future"],
+        ["Substep scheduling","子步调度","live"],
+        ["Transform publication","变换发布","live"],
+        ["Simulation time budgets","模拟时间预算","planned"],
+        ["Fixed-step diagnostics","定步诊断","live"]
+      ]
+    },
+    {
+      "en": "Character simulation",
+      "zh": "角色模拟",
+      "leaves": [
+        ["Character controller","角色控制器","planned"],
+        ["Slope limits","斜坡限制","planned"],
+        ["Step traversal","台阶跨越","planned"],
+        ["Moving platforms","移动平台","planned"],
+        ["Grounding queries","着地查询","planned"],
+        ["Kinematic interaction","运动学交互","planned"],
+        ["Ragdoll transitions","布娃娃切换","planned"],
+        ["Networked character correction","联网角色纠正","future"]
+      ]
+    },
+    {
+      "en": "Constraints & joints",
+      "zh": "约束与关节",
+      "leaves": [
+        ["Fixed joints","固定关节","planned"],
+        ["Hinge joints","铰链关节","live"],
+        ["Slider joints","滑动关节","live"],
+        ["Distance constraints","距离约束","planned"],
+        ["Motor drives","马达驱动","planned"],
+        ["Joint limits","关节限制","live"],
+        ["Breakable joints","可破坏关节","planned"],
+        ["Constraint inspector","约束检查器","planned"]
+      ]
+    },
+    {
+      "en": "Collision assets",
+      "zh": "碰撞资产",
+      "leaves": [
+        ["Convex hull cooking","凸包烘焙","live"],
+        ["Compound shapes","复合形状","live"],
+        ["Triangle mesh acceleration","三角网格加速结构","live"],
+        ["Heightfield collision","高度场碰撞","planned"],
+        ["Collider simplification","碰撞体简化","planned"],
+        ["Cooked shape cache","烘焙形状缓存","live"],
+        ["Scale validation","缩放验证","planned"],
+        ["Collision import diagnostics","碰撞导入诊断","planned"]
+      ]
+    },
+    {
+      "en": "Advanced simulation",
+      "zh": "高级模拟",
+      "leaves": [
+        ["Soft bodies","软体","future"],
+        ["Cloth simulation","布料模拟","future"],
+        ["Fluid coupling","流体耦合","future"],
+        ["Articulated robotics","关节机器人","future"],
+        ["GPU physics workloads","GPU 物理计算","future"]
+      ]
+    },
+    {
+      "en": "Simulation tooling",
+      "zh": "模拟工具",
+      "leaves": [
+        ["Physics debug drawing","物理调试绘制","live"],
+        ["Broadphase visualization","宽相位可视化","planned"],
+        ["Contact history capture","接触历史捕获","planned"],
+        ["Physics scene benchmarks","物理场景基准","live"],
+        ["Island profiling","岛屿分析","planned"],
+        ["Sleep-state inspection","休眠状态检查","live"],
+        ["Physics state export","物理状态导出","live"],
+        ["Regression replay scenes","回归回放场景","planned"]
+      ]
+    },
+    {
+      "en": "Learning environments",
+      "zh": "学习环境",
+      "leaves": [
+        ["Actuator command schema","执行器命令结构","future"],
+        ["Environment reset contract","环境重置契约","future"],
+        ["Parallel physics worlds","并行物理世界","future"],
+        ["Domain randomization","域随机化","future"],
+        ["Reward signal hooks","奖励信号接口","future"],
+        ["Reproducible task seeds","可复现任务种子","future"],
+        ["Simulation-to-policy timing","模拟与策略时序","future"]
+      ]
+    },
+    {
+      "en": "Broadphase mechanics",
+      "zh": "宽相位细节",
+      "leaves": [
+        ["Static-dynamic tree separation","静动态树分离","live"],
+        ["Broadphase rebuild heuristics","宽相位重建启发式","live"],
+        ["Broadphase update publication","宽相位更新发布","live"],
+        ["Broadphase pair budgets","宽相位碰撞对预算","live"],
+        ["Broadphase occupancy views","宽相位占用视图","planned"]
+      ]
+    },
+    {
+      "en": "Contact manifolds",
+      "zh": "接触流形",
+      "leaves": [
+        ["Speculative contact margins","推测接触边界","live"],
+        ["Internal edge suppression","内部边缘抑制","planned"],
+        ["Restitution velocity thresholds","恢复速度阈值","live"],
+        ["Anisotropic friction directions","各向异性摩擦方向","planned"],
+        ["Contact impulse reporting","接触冲量报告","live"],
+        ["Contact manifold inspection","接触流形检查","planned"]
+      ]
+    },
+    {
+      "en": "Solver mechanics",
+      "zh": "求解器细节",
+      "leaves": [
+        ["Position correction limits","位置修正上限","live"],
+        ["Baumgarte stabilization","鲍姆加特稳定化","live"],
+        ["Solver deterministic ordering","求解器确定性排序","planned"],
+        ["Solver residual metrics","求解器残差指标","planned"],
+        ["Solver divergence detection","求解器发散检测","planned"]
+      ]
+    },
+    {
+      "en": "Continuous motion",
+      "zh": "连续运动细节",
+      "leaves": [
+        ["Time-of-impact brackets","碰撞时间区间","live"],
+        ["CCD motion thresholds","CCD 运动阈值","live"],
+        ["CCD substep limits","CCD 子步上限","live"],
+        ["Fast trigger crossing policy","高速触发穿越策略","planned"],
+        ["Teleport contact invalidation","瞬移接触失效","planned"],
+        ["Extrapolation error bounds","外推误差边界","planned"],
+        ["Continuous motion diagnostics","连续运动诊断","live"]
+      ]
+    },
+    {
+      "en": "Character contacts",
+      "zh": "角色接触细节",
+      "leaves": [
+        ["Capsule sweep iteration","胶囊扫掠迭代","planned"],
+        ["Character skin widths","角色接触皮肤宽度","planned"],
+        ["Step-down ground snapping","下台阶贴地","planned"],
+        ["Slope sliding response","斜坡滑落响应","planned"],
+        ["Crouch clearance checks","下蹲净空检查","planned"],
+        ["Character depenetration caps","角色去穿透上限","planned"],
+        ["Ground contact persistence","地面接触持续性","planned"],
+        ["One-way platform policy","单向平台策略","planned"],
+        ["Character gravity frames","角色重力坐标系","planned"],
+        ["Character contact debug views","角色接触调试视图","planned"]
+      ]
+    },
+    {
+      "en": "Joint drives",
+      "zh": "关节驱动细节",
+      "leaves": [
+        ["Joint local-frame authoring","关节局部坐标编辑","planned"],
+        ["Angular limit cones","角度限制锥","planned"],
+        ["Twist limit intervals","扭转限制区间","planned"],
+        ["Linear drive targets","线性驱动目标","planned"],
+        ["Angular drive targets","角驱动目标","planned"],
+        ["Drive damping ratios","驱动阻尼比","planned"],
+        ["Motor torque saturation","马达扭矩饱和","planned"],
+        ["Motor velocity clamping","马达速度钳制","planned"],
+        ["Joint break event publication","关节断裂事件发布","planned"],
+        ["Constraint disable transactions","约束禁用事务","planned"]
+      ]
+    },
+    {
+      "en": "Shape cooking details",
+      "zh": "形状烘焙细节",
+      "leaves": [
+        ["Convex decomposition limits","凸分解上限","planned"],
+        ["Convex hull vertex budgets","凸包顶点预算","live"],
+        ["Mesh triangle sanitation","网格三角形清理","live"],
+        ["Winding consistency checks","绕序一致性检查","live"],
+        ["Collision BVH serialization","碰撞 BVH 序列化","planned"],
+        ["Heightfield hole masks","高度场孔洞遮罩","planned"],
+        ["Compound child transform rules","复合子形状变换规则","planned"],
+        ["Negative-scale collision policy","负缩放碰撞策略","live"],
+        ["Collision cook cancellation","碰撞烘焙取消","planned"],
+        ["Shape complexity inspection","形状复杂度检查","planned"],
+        ["Collider authoring error overlays","碰撞体编辑错误叠层","planned"]
+      ]
+    },
+    {
+      "en": "Query snapshots",
+      "zh": "查询快照细节",
+      "leaves": [
+        ["Query world generation tokens","查询世界代际令牌","live"],
+        ["Batch hit output layouts","批量命中输出布局","live"],
+        ["Closest-hit tie ordering","最近命中并列顺序","live"],
+        ["All-hit result sorting","全部命中结果排序","live"],
+        ["Query truncation reporting","查询截断报告","planned"],
+        ["Query backface policy","查询背面策略","live"],
+        ["Query initial-overlap policy","查询初始重叠策略","live"],
+        ["Query snapshot pinning","查询快照固定","live"],
+        ["Query buffer capacity contracts","查询缓冲容量契约","live"],
+        ["Query profiling tags","查询分析标签","live"]
+      ]
+    },
+    {
+      "en": "Simulation observations",
+      "zh": "模拟观测细节",
+      "leaves": [
+        ["Rigid state tensor layouts","刚体状态张量布局","live"],
+        ["Joint state tensor layouts","关节状态张量布局","planned"],
+        ["Contact tensor packing","接触张量打包","live"],
+        ["Force command accumulation","力命令累积","live"],
+        ["Sensor noise injection","传感器噪声注入","planned"],
+        ["Physics rollout checkpoints","物理采样检查点","planned"],
+        ["Energy conservation metrics","能量守恒指标","planned"]
+      ]
+    },
+    {
+      "en": "Physical material details",
+      "zh": "物理材质细节",
+      "leaves": [
+        ["Static friction coefficients","静摩擦系数","planned"],
+        ["Dynamic friction coefficients","动摩擦系数","planned"],
+        ["Friction combine modes","摩擦组合模式","live"],
+        ["Restitution combine modes","恢复系数组合模式","live"],
+        ["Rolling resistance parameters","滚动阻力参数","planned"],
+        ["Torsional friction parameters","扭转摩擦参数","planned"],
+        ["Velocity-dependent friction curves","速度相关摩擦曲线","planned"],
+        ["Surface conveyor velocities","表面传送速度","planned"],
+        ["Material pair override tables","材质对覆盖表","planned"],
+        ["Material density mass inference","材质密度质量推导","planned"]
+      ]
+    }
+  ]
+}

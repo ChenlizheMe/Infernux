@@ -1,7 +1,7 @@
 # Time
 
 <div class="class-info">
-class in <b>Infernux.timing</b>
+class in <b>infernux.timing</b>
 </div>
 
 ## Description

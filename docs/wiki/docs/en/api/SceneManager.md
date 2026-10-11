@@ -1,7 +1,7 @@
 # SceneManager
 
 <div class="class-info">
-class in <b>Infernux.scene</b>
+class in <b>infernux.scene</b>
 </div>
 
 ## Description

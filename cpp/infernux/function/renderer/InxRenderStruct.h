@@ -177,6 +177,7 @@ struct DrawCall
     RenderDrawIdentity identity;  // Stable source identity across scene/component lifetimes
     bool frustumVisible = true;   // Whether object passed main-camera frustum culling
     bool castsShadows = true;     // Whether the source renderer participates in shadow passes
+    bool receivesShadows = true;  // Per-renderer light visibility, independent of the shared material
     bool isStatic = false;        // Standard GameObject static contract; skinned renderers remain dynamic
     AABB worldBounds;             // World-space bounding box for shadow cascade culling
 

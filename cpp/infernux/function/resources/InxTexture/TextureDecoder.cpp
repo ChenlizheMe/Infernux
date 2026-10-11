@@ -1,7 +1,9 @@
 #include "TextureDecoder.h"
 #include "SignedDistanceFieldSource.h"
+#include "SvgRasterizer.h"
 #include "TextureProcessor.h"
 #include "VectorFieldSource.h"
+#include <core/log/InxLog.h>
 
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -11,6 +13,7 @@
 #include <stb_image_resize2.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -28,9 +31,9 @@ constexpr uint64_t MaximumDecodedBytes = 1ULL << 30;
 uint32_t ReadMaxSize(const InxResourceMeta &metadata)
 {
     const int maxSize = metadata.HasKey("max_size") ? metadata.GetDataAs<int>("max_size") : 2048;
-    if (maxSize <= 0 || maxSize > static_cast<int>(MaximumDimension))
+    if (maxSize < 0 || maxSize > static_cast<int>(MaximumDimension))
         throw std::invalid_argument("texture max_size is outside the supported range");
-    return static_cast<uint32_t>(maxSize);
+    return maxSize == 0 ? MaximumDimension : static_cast<uint32_t>(maxSize);
 }
 
 bool ReadGenerateMipmaps(const InxResourceMeta &metadata)
@@ -164,15 +167,16 @@ void AppendLevel(TextureCpuData &texture, uint32_t width, uint32_t height, const
 } // namespace
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &sourcePath,
-                                                             const InxResourceMeta &metadata)
+                                                             const InxResourceMeta &metadata, bool preserveSvgViewport)
 {
     const auto source = ReadSourceBytes(sourcePath);
-    return DecodeMemory(source, metadata, sourcePath);
+    return DecodeMemory(source, metadata, sourcePath, preserveSvgViewport);
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::vector<unsigned char> &source,
                                                                    const InxResourceMeta &metadata,
-                                                                   const std::string &sourcePath)
+                                                                   const std::string &sourcePath,
+                                                                   bool preserveSvgViewport)
 {
     if (source.empty() || source.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         throw std::invalid_argument("texture source is empty or exceeds decoder limits");
@@ -212,13 +216,47 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
         throw std::invalid_argument("VectorField textures must use the .inxvfield source format");
     if (texture->semantic == TextureSemantic::SignedDistanceField)
         throw std::invalid_argument("SignedDistanceField textures must use the .inxsdf source format");
-    if (stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
+    if (extension == ".svg" || IsSvgSource(source.data(), source.size())) {
+        if (SvgUsesFilters(source.data(), source.size()))
+            INXLOG_WARN("SVG filters are not supported and will be omitted: ", sourcePath,
+                        ". Export filter effects as an embedded raster image for faithful rendering.");
+        auto svg = RasterizeSvg(source.data(), source.size(), static_cast<int>(maxSize), preserveSvgViewport);
+        return DecodeRgba8(svg.pixels, svg.width, svg.height, metadata);
+    }
+    const bool preserve16BitUi = texture->semantic == TextureSemantic::UserInterface &&
+                                 ReadCompression(metadata) == TextureCompression::None &&
+                                 ReadTargetFormat(metadata) == TextureTargetFormat::Automatic &&
+                                 stbi_is_16_bit_from_memory(source.data(), static_cast<int>(source.size())) != 0;
+    if (preserve16BitUi || stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
         texture->format = TextureFormat::Rgba32Float;
-        float *decoded = stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
-                                                &sourceHeight, &sourceChannels, STBI_rgb_alpha);
+        std::vector<float> precisePixels;
+        std::unique_ptr<float, decltype(&stbi_image_free)> decodedHdr(nullptr, &stbi_image_free);
+        if (preserve16BitUi) {
+            std::unique_ptr<stbi_us, decltype(&stbi_image_free)> pixels(
+                stbi_load_16_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
+                                         &sourceChannels, STBI_rgb_alpha),
+                &stbi_image_free);
+            if (!pixels)
+                throw std::runtime_error("failed to decode 16-bit UI texture: " + sourcePath);
+            precisePixels.resize(
+                static_cast<size_t>(LevelByteSize(sourceWidth, sourceHeight, texture->format) / sizeof(float)));
+            // Vulkan has no RGBA16 sRGB format. Preserve all source precision
+            // in linear floats instead of truncating to 8-bit or treating sRGB
+            // values as linear (which would brighten documentation images).
+            const bool srgb = ReadSrgb(metadata);
+            for (size_t index = 0; index < precisePixels.size(); ++index) {
+                float value = static_cast<float>(pixels.get()[index]) / 65535.0f;
+                if (srgb && index % 4 != 3)
+                    value = value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+                precisePixels[index] = value;
+            }
+        } else {
+            decodedHdr.reset(stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
+                                                    &sourceHeight, &sourceChannels, STBI_rgb_alpha));
+        }
+        const float *decoded = preserve16BitUi ? precisePixels.data() : decodedHdr.get();
         if (!decoded)
             throw std::runtime_error("failed to decode HDR texture: " + sourcePath);
-        auto release = std::unique_ptr<float, decltype(&stbi_image_free)>(decoded, &stbi_image_free);
         const float scale = static_cast<float>(maxSize) / static_cast<float>((std::max)(sourceWidth, sourceHeight));
         const uint32_t width = scale < 1.0f ? (std::max)(1U, static_cast<uint32_t>(sourceWidth * scale))
                                             : static_cast<uint32_t>(sourceWidth);
@@ -235,16 +273,20 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
         }
     } else {
         texture->format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
-        stbi_uc *decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
-                                                 &sourceHeight, &sourceChannels, STBI_rgb_alpha);
+        stbi_uc *decoded = nullptr;
         std::vector<unsigned char> pnmPixels;
-        if (!decoded) {
+        if (InxTextureLoader::IsPnmSource(source.data(), source.size())) {
             InxTextureData pnm = InxTextureLoader::LoadFromMemory(source.data(), source.size(), sourcePath);
             if (!pnm.IsValid())
                 throw std::runtime_error("failed to decode texture: " + sourcePath);
             sourceWidth = pnm.width;
             sourceHeight = pnm.height;
             pnmPixels = std::move(pnm.pixels);
+        } else {
+            decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
+                                            &sourceChannels, STBI_rgb_alpha);
+            if (!decoded)
+                throw std::runtime_error("failed to decode texture: " + sourcePath);
         }
         auto release = std::unique_ptr<stbi_uc, decltype(&stbi_image_free)>(decoded, &stbi_image_free);
         const unsigned char *base = decoded ? decoded : pnmPixels.data();

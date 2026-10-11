@@ -1,0 +1,239 @@
+import platform
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from infernux.engine.ui import project_utils
+from infernux.engine.ui.project_file_ops import copy_path_as_new_asset
+from infernux.particle import ParticleGraphAsset
+
+
+def test_project_panel_hides_particle_runtime_artifacts():
+    assert project_utils.should_show("Smoke.particlegraph") is True
+    assert project_utils.should_show("Smoke.inxparticle") is False
+    assert project_utils.should_show("SMOKE.INXPARTICLE") is False
+
+
+def test_code_file_open_refreshes_ides_and_uses_preference(tmp_path, monkeypatch):
+    script = tmp_path / "player.py"
+    script.write_text("pass\n", encoding="utf-8")
+
+    refreshes = []
+    launches = []
+    monkeypatch.setattr(project_utils, "get_ide", lambda: "vscode")
+    monkeypatch.setattr(
+        project_utils,
+        "detect_available_ides",
+        lambda force_refresh=False: refreshes.append(force_refresh) or ["vscode", "pycharm"],
+    )
+    monkeypatch.setattr(
+        project_utils,
+        "open_in_vscode",
+        lambda path, line=0, project_root="": launches.append(
+            ("vscode", path, project_root, line)
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        project_utils,
+        "open_in_pycharm",
+        lambda *args, **kwargs: launches.append(("pycharm", args, kwargs)) or True,
+    )
+
+    assert project_utils.open_file_with_system(str(script), project_root=str(tmp_path)) is True
+
+    assert refreshes == [True]
+    assert launches == [("vscode", str(script), str(tmp_path), 0)]
+
+
+def test_code_file_open_forwards_source_line_to_ide(tmp_path, monkeypatch):
+    script = tmp_path / "player.py"
+    script.write_text("pass\n", encoding="utf-8")
+    launches = []
+    monkeypatch.setattr(project_utils, "get_ide", lambda: "vscode")
+    monkeypatch.setattr(
+        project_utils,
+        "detect_available_ides",
+        lambda force_refresh=False: ["vscode"],
+    )
+    monkeypatch.setattr(
+        project_utils,
+        "open_in_vscode",
+        lambda path, line=0, project_root="": launches.append(
+            (path, project_root, line)
+        ) or True,
+    )
+
+    assert project_utils.open_file_with_system(
+        str(script), project_root=str(tmp_path), line=37
+    ) is True
+    assert launches == [(str(script), str(tmp_path), 37)]
+
+
+def test_vscode_launch_failure_is_not_hidden(tmp_path, monkeypatch):
+    script = tmp_path / "player.py"
+    script.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(
+        project_utils,
+        "_find_vscode_executable",
+        lambda: str(tmp_path / "code.exe"),
+    )
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    def reject_launch(*_args, **_kwargs):
+        raise OSError("launch failed")
+
+    monkeypatch.setattr("subprocess.Popen", reject_launch)
+
+    with pytest.raises(OSError, match="launch failed"):
+        project_utils.open_in_vscode(str(script))
+
+
+def test_vscode_open_repairs_stale_runtime_before_launch_and_keeps_preferences(tmp_path, monkeypatch):
+    script = tmp_path / "Assets" / "player.py"
+    script.parent.mkdir()
+    script.write_text("import infernux as inx\n", encoding="utf-8")
+    vscode = tmp_path / ".vscode"
+    vscode.mkdir()
+    (vscode / "settings.json").write_text(json.dumps({
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+        "python.analysis.extraPaths": [str(tmp_path / ".venv/Lib/site-packages"), "Libraries"],
+        "editor.fontSize": 18,
+    }))
+    (tmp_path / "pyrightconfig.json").write_text(json.dumps({
+        "venvPath": ".", "venv": ".venv", "extraPaths": [".venv/Lib/site-packages"],
+        "exclude": ["Assets/Generated"],
+    }))
+    monkeypatch.setattr(project_utils, "_find_vscode_executable", lambda: "code.exe")
+    launches = []
+
+    def launch(arguments, **_kwargs):
+        from infernux.engine.path_utils import resolved_path
+        settings = json.loads((vscode / "settings.json").read_text())
+        assert settings["python.defaultInterpreterPath"] == resolved_path(sys.executable).replace("\\", "/")
+        assert settings["editor.fontSize"] == 18
+        assert settings["python.analysis.extraPaths"][1:] == ["Libraries"]
+        import importlib.util
+        assert settings["python.analysis.extraPaths"][0] == str(
+            Path(importlib.util.find_spec("infernux").origin).resolve().parent.parent
+        ).replace("\\", "/")
+        assert settings["python.analysis.extraPaths"][0].rstrip("/").split("/")[-1] != "infernux"
+        pyright = json.loads((tmp_path / "pyrightconfig.json").read_text())
+        assert "venv" not in pyright and "venvPath" not in pyright
+        assert pyright["exclude"] == ["Assets/Generated"]
+        launches.append(arguments)
+
+    monkeypatch.setattr("subprocess.Popen", launch)
+    assert project_utils.open_in_vscode(str(script), line=12, project_root=str(tmp_path))
+    assert launches[0][-2:] == ["--goto", f"{script}:12"]
+
+
+def test_vscode_sync_does_not_rewrite_unchanged_settings(tmp_path):
+    from infernux.engine.ide_workspace import synchronize_vscode_workspace
+
+    synchronize_vscode_workspace(str(tmp_path))
+    paths = [tmp_path / ".vscode/settings.json", tmp_path / "pyrightconfig.json"]
+    timestamps = [path.stat().st_mtime_ns for path in paths]
+    synchronize_vscode_workspace(str(tmp_path))
+    assert [path.stat().st_mtime_ns for path in paths] == timestamps
+
+
+def test_vscode_sync_replaces_package_directory_with_its_import_root(tmp_path):
+    import importlib.util
+    from infernux.engine.ide_workspace import synchronize_vscode_workspace
+
+    package_root = Path(importlib.util.find_spec("infernux").origin).resolve().parent
+    vscode = tmp_path / ".vscode"
+    vscode.mkdir()
+    (vscode / "settings.json").write_text(json.dumps({
+        "python.analysis.extraPaths": [str(package_root)],
+    }))
+    synchronize_vscode_workspace(str(tmp_path))
+    settings = json.loads((vscode / "settings.json").read_text())
+    assert settings["python.analysis.extraPaths"] == [package_root.parent.as_posix()]
+
+
+def test_pycharm_project_files_require_project_runtime(tmp_path):
+    (tmp_path / "Assets").mkdir()
+
+    with pytest.raises(FileNotFoundError, match="project Python runtime not found"):
+        project_utils._ensure_pycharm_project_files(str(tmp_path))
+
+    assert not (tmp_path / ".idea").exists()
+
+
+def test_windows_missing_file_association_opens_native_app_picker(tmp_path, monkeypatch):
+    model = tmp_path / "model.obj"
+    model.write_text("o Model\n", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    def startfile(path, operation="open"):
+        calls.append((path, operation))
+        if operation == "open":
+            raise OSError(1155, "no associated application")
+
+    monkeypatch.setattr(project_utils.os, "startfile", startfile, raising=False)
+
+    assert project_utils.open_file_with_system(str(model)) is True
+    assert calls == [(str(model), "open"), (str(model), "openas")]
+
+
+def test_windows_app_picker_failure_does_not_escape_ui_render(tmp_path, monkeypatch):
+    model = tmp_path / "model.obj"
+    model.write_text("o Model\n", encoding="utf-8")
+    warnings = []
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        project_utils.os,
+        "startfile",
+        lambda _path, _operation="open": (_ for _ in ()).throw(
+            OSError(1155, "no associated application")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(project_utils.Debug, "log_warning", warnings.append)
+
+    assert project_utils.open_file_with_system(str(model)) is False
+    assert len(warnings) == 1
+    assert str(model) in warnings[0]
+
+
+def test_particle_graph_copy_regenerates_only_asset_identity(tmp_path):
+    source = tmp_path / "Source.particlegraph"
+    destination = tmp_path / "Copied.particlegraph"
+    original = ParticleGraphAsset(name="Source")
+    original.save(str(source))
+
+    copied_path = copy_path_as_new_asset(str(source), str(destination))
+    copied = ParticleGraphAsset.load(str(destination))
+
+    assert copied_path == str(destination.resolve())
+    assert copied.stable_id != original.stable_id
+    assert copied.name == "Copied"
+    assert tuple(emitter.stable_id for emitter in copied.emitters) == tuple(
+        emitter.stable_id for emitter in original.emitters
+    )
+    assert destination.with_suffix(".particlegraph.meta").exists() is False
+
+
+def test_folder_copy_excludes_meta_and_regenerates_nested_particle_graph(tmp_path):
+    source = tmp_path / "Source"
+    destination = tmp_path / "Copied"
+    source.mkdir()
+    graph_path = source / "Smoke.particlegraph"
+    graph = ParticleGraphAsset(name="Smoke")
+    graph.save(str(graph_path))
+    (source / "Smoke.particlegraph.meta").write_text("stale-guid", encoding="utf-8")
+    (source / "note.txt").write_text("hello", encoding="utf-8")
+
+    assert copy_path_as_new_asset(str(source), str(destination)) == str(
+        destination.resolve()
+    )
+    copied = ParticleGraphAsset.load(str(destination / "Smoke.particlegraph"))
+    assert copied.stable_id != graph.stable_id
+    assert (destination / "Smoke.particlegraph.meta").exists() is False
+    assert (destination / "note.txt").read_text(encoding="utf-8") == "hello"

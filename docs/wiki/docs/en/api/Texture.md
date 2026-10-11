@@ -1,7 +1,7 @@
 # Texture
 
 <div class="class-info">
-class in <b>Infernux.core</b>
+class in <b>infernux.core</b>
 </div>
 
 ## Description

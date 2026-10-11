@@ -118,10 +118,10 @@ Assets/
 Then complete the path in this order:
 
 1. Save `Assets/Rendering/edge_fade_effect.py` with the registered class above and save `Assets/Shaders/edge_fade.frag` with the fullscreen shader. The scan root is the current project's `Assets` directory. Hidden directories and `__pycache__`, `build`, `dist`, `.venv`, `venv`, and `.runtime` are skipped; Python source candidates must mention `render_effect_feature` or `register_render_effect_feature`.
-2. Save `Assets/Rendering/Edge Fade.effect` with the strict JSON below. Querying its `feature_type` triggers the candidate import and registry lookup. The Project panel's **Create > Render Effect** submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing `Edge Fade.effect` path instead of replacing it.
-3. Import compiles the document before publication: it validates the four-key schema, resolves the registered feature, rejects unknown parameters, records the passes emitted by `setup_passes()`, prepares declared shader dependencies, and writes the successful product under `Library/Artifacts/RenderEffect/<guid>.inxeffect`. The source receives a `.meta` GUID; references retain both that GUID and `path_hint`.
+2. After the shader is imported, read `metadata.guid.value` from `Assets/Shaders/edge_fade.frag.meta`. Replace `EDGE_FADE_SHADER_GUID` in the strict JSON below with that actual GUID, then save `Assets/Rendering/Edge Fade.effect`. An empty GUID is an unassigned reference; a path does not resolve it. Querying its `feature_type` triggers the candidate import and registry lookup. The Project panel's **Create > Render Effect** submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing `Edge Fade.effect` path instead of replacing it.
+3. Import validates the portable declaration before publication: it checks the four-key schema, resolves the registered feature, rejects unknown parameters and unresolved dependency GUIDs, records resource requirements and topology parameters, and writes the successful product under `Library/Artifacts/RenderEffect/<guid>.inxeffect`. Import does not execute `setup_passes()`, because no mount stage or View resources exist yet. Dependency and feature checks also run before reusing a cached product. Shader preparation and `setup_passes()` run when the renderer compiles the actual mounted graph. The source receives a `.meta` GUID; references store only that GUID. Paths select files while authoring and are not serialized reference identities.
 4. Add a RenderStack component, select its GameObject, and drag `Edge Fade.effect` into `final`. RenderStack resolves the enabled slot, instantiates a feature for that mount, and invokes `setup_passes()` when the graph reaches `final`.
-5. Verify the result in Game view: set `intensity` to `0` and then `1`. The center remains unchanged while the corners darken at `1`. Confirm that **Effect Compile Errors** is empty in the RenderStack Inspector. A missing project shader should instead report `failed to prepare effect shader dependency`; an unimportable feature ends as `unknown render effect feature` for the mounted stage and slot, while the original Python import exception is retained by discovery and logged during the failed import/reload path.
+5. Verify the result in Game view: set `intensity` to `0` and then `1`. The center remains unchanged while the corners darken at `1`. Confirm that **Effect Compile Errors** is empty in the RenderStack Inspector. An unresolved dependency GUID reports `effect dependency GUID is unavailable` during import. A Shader that fails renderer preparation reports `failed to prepare effect shader dependency` when the mounted graph is compiled. An unimportable feature ends as `unknown render effect feature` for the mounted stage and slot, while the original Python import exception is retained by discovery and logged during the failed import/reload path.
 
 Discovery, asset import, and graph compilation respond to data changes. They do not scan source every frame.
 
@@ -132,8 +132,7 @@ Discovery, asset import, and graph compilation respond to data changes. They do 
   "$schema": "infernux.render_effect",
   "dependencies": [
     {
-      "guid": "",
-      "path_hint": "Assets/Shaders/edge_fade.frag"
+      "guid": "EDGE_FADE_SHADER_GUID"
     }
   ],
   "feature_type": "game.post.edge_fade",
@@ -157,8 +156,8 @@ The current editing rules are authoritative:
 - A direct `.effect` mount has one shared loaded `RenderEffect` document. Asset Inspector and Slot Inspector send edits to that same document, so the most recently accepted edit is immediately visible in both views and in every direct mount of the asset. A direct slot has no private parameter override.
 - Every accepted Inspector edit enters the global Undo history as a document edit. Undo reverses the latest accepted edit regardless of which view made it, republishes the restored in-memory document, and schedules persistence again. An external file reload is a filesystem consequence and creates no Undo entry.
 - The `.effect` document autosaves through a 0.5-second debounced snapshot. Saving the scene persists Slot identity, stage, order, asset reference, and enabled state; it does not replace the separate asset autosave. Closing or changing scenes drains pending autosave work through the resource-document lifecycle.
-- Watcher notifications that exactly match an Editor write are acknowledged. A notification arriving while that local write is pending is deferred. Once a different durable revision is confirmed, this non-scene asset follows the disk revision automatically: queued local asset persistence is cancelled, the loaded resource is refreshed, and both views update.
-- External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID/path reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.
+- Watcher notifications that exactly match an Editor write are acknowledged. While an accepted local edit is waiting for its debounced save or disk write, the local edit has priority: notifications are deferred, and the pending save can replace an intervening external disk edit. After local persistence completes, a later external revision is imported automatically; the shared resource and its Inspector views follow that disk revision. To keep an external edit, make it after the local save has finished.
+- External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.
 
 ## Declare what the effect reads and writes {#resource-contract}
 
@@ -176,21 +175,25 @@ Keep the declaration in sync with `setup_passes()`. Declaring `modifies = {"colo
 
 `creates` is also declarative. The implementation must create the graph resource and call `bus.set("semantic_name", handle)`. A later effect can consume it in the same stage; a later stage receives it only when that pipeline stage includes the semantic in `inputs`. The current `ResourceBus.set()` replaces an existing handle with the same semantic name, so two successful effects that publish one name are resolved by Slot/Group order and the later publisher wins. There is no automatic duplicate-`creates` diagnostic. Use separate semantic names when both products must survive.
 
-Route-policy conflicts are rejected separately. For example, an `ADDITIVE_EXTRACT` effect cannot share one route with a color-replacement policy, and `CUSTOM_FEATURE` cannot mix with built-in policies. The graph-build diagnostic lists the affected stage IDs and the policy incompatibility.
+For low-level pipeline authoring, carry published semantic handles in an explicit `PassResult`: publish the initial result with `graph.publish_pass_result()` and declare the stages inside `with graph.pass_result(result):`. A successful effect updates the current result; a later stage's `inputs` selects which of those handles its local bus receives. Adding a name to `inputs` does not create or publish that resource. See the RenderGraph chapter for result publication and derivation.
+
+Additive and color-replacement effects can share one route. Their policies merge into `ORDERED_COMPOSITE`: the complete chain executes in Slot/Group order, then the result is partitioned into geometry-bound color and overflow before returning to its parent. Bloom and Edge Detection can therefore remain at the same mount point; swapping their order changes which image each effect processes. `CUSTOM_FEATURE` is reserved for specialized composition and cannot mix with built-in policies; the built-in pipeline compiler does not implement a custom route composer.
 
 Failure recovery has three concrete boundaries:
 
-1. Feature registration is replaceable only by the same source identity. A second source registering `game.post.edge_fade` raises `already registered`; the first registration remains active.
+1. Feature registration is replaceable only by the same source identity. A second source registering `game.post.edge_fade` raises `already registered`; the first registration remains active. Discovery publishes a source's registrations only after the entire module succeeds. A rejected edit preserves its accepted registrations; successfully removing a declaration or deleting its source retires that registration. Existing assets and Slots retain their references and report an unknown feature until its declaration is restored.
 2. Effect/group import is compile-then-publish. A malformed document, missing dependency, group cycle, unknown override, or feature failure leaves the previous artifact and loaded asset active. If creation wrote the new source file before its first import failed, that source file remains in `Assets`; fix it and reimport it or remove it explicitly.
-3. During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its `setup_passes()` raises, only additions from that effect are removed and its bus snapshot is restored. **Effect Compile Errors** records `<stage_id>/<slot_id>: <error>`; other slots can still compile. If a broader pipeline rebuild raises, the Editor keeps the last valid graph. A packaged Player refuses the Editor's default-pipeline fallback and leaves the failure visible for packaged-product repair.
+3. During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its `setup_passes()` raises, only additions from that effect are removed and its bus snapshot is restored. **Effect Compile Errors** records `<stage_id>/<slot_id>: <error>`; other slots can still compile. If a broader pipeline rebuild raises, RenderStack keeps its last valid graph when one exists. With no accepted graph, both Editor and Player fail explicitly instead of substituting a default pipeline.
 
 Most parameter edits only change a parameter block. Put a field in the decorator's `topology_parameters` only when it can change pass count, resource shape, or binding layout. Built-in Bloom, for example, marks `max_iterations`; changing it rebuilds the graph, while changing intensity updates runtime data.
+
+Each mount retains its own stage resource context for parameter updates, including typed textures and buffers, formats, sample counts, and absent resources. On a parameter revision, `setup_passes()` records updated values against an isolated copy of that context. It does not mutate the live graph or fabricate depth/normal/motion inputs. Unchanged frames do not repeat this work. If the recorded shader, resource structure, or pass layout changes, the graph must be rebuilt rather than uploading values to the old layout.
 
 ## Effect groups, policy, and runtime edits {#groups-runtime}
 
 Before stacking groups, pin down the four records this course uses. A **RenderEffect feature** is a Python class registered with `render_effect_feature(type_id, ...)`; it owns `setup_passes()` and the parameter schema. A **`.effect` asset** stores a `feature_type` plus concrete parameter values, and `RenderEffect` is its mutable runtime wrapper. An **`.effectgroup`** is an asset document whose entries reference effects or nested groups with optional overrides; when mounted, the group expands in place and has no separate runtime object. **EffectStage** and **EffectSlot** belong to the pipeline and the scene, and the next chapter covers them.
 
-An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` references. Each entry has a stable `entry_id`, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source `.effect` value intact.
+An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` references. Each entry has a stable `entry_id`, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source `.effect` value intact. Before saving the JSON below, replace `EDGE_FADE_EFFECT_GUID` with `metadata.guid.value` from the imported `Assets/Rendering/Edge Fade.effect.meta`. The group entry stores that GUID; an empty GUID leaves the entry unassigned and it is skipped.
 
 ```json
 {
@@ -199,8 +202,7 @@ An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` refer
     {
       "entry_id": "edge_fade",
       "asset": {
-        "guid": "",
-        "path_hint": "Assets/Rendering/Edge Fade.effect"
+        "guid": "EDGE_FADE_EFFECT_GUID"
       },
       "enabled": true,
       "overrides": {
@@ -227,7 +229,8 @@ Route policy controls how a route- or layer-scoped image is returned to its pare
 | `MASK_AND_MODIFY` | Change selected existing pixels without a wider silhouette |
 | `ISOLATE_AND_COMPOSITE` | Process an isolated image, then composite it back |
 | `ADDITIVE_EXTRACT` | Return additive energy such as bloom |
-| `CUSTOM_FEATURE` | Let specialized feature code own composition |
+| `ORDERED_COMPOSITE` | Automatically selected for mixed additive/replacement chains; preserve Slot/Group order, geometry coverage, and overflow |
+| `CUSTOM_FEATURE` | Reserved for specialized route composers; not implemented by the built-in pipeline compiler |
 
 At runtime, `RenderEffect` provides typed getters and setters for floats, integers, booleans, vectors, and colors. Loaded assets are shared. `clone()` creates an isolated runtime-only copy with no source path or GUID, so edits to the clone do not save over the project asset.
 
@@ -355,10 +358,10 @@ Assets/
 然后按以下顺序完成接入：
 
 1. 把上面的注册类保存到 `Assets/Rendering/edge_fade_effect.py`，把全屏 Shader 保存到 `Assets/Shaders/edge_fade.frag`。扫描根目录是当前项目的 `Assets`。隐藏目录以及 `__pycache__`、`build`、`dist`、`.venv`、`venv`、`.runtime` 会被跳过；Python 源码候选文件必须出现 `render_effect_feature` 或 `register_render_effect_feature`。
-2. 使用下方严格 JSON 保存 `Assets/Rendering/Edge Fade.effect`。系统查询其中的 `feature_type` 时，会导入候选模块并查找注册项。Project 面板的 **Create > Render Effect** 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 `Edge Fade.effect` 已存在时会拒绝覆盖。
-3. 导入过程先编译文档，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数、记录 `setup_passes()` 生成的 Pass、准备声明的 Shader 依赖，最后把成功产物写到 `Library/Artifacts/RenderEffect/<guid>.inxeffect`。源码通过 `.meta` 获得 GUID；引用同时保留 GUID 与 `path_hint`。
+2. Shader 导入后，从 `Assets/Shaders/edge_fade.frag.meta` 读取 `metadata.guid.value`，用这个实际 GUID 替换下方严格 JSON 中的 `EDGE_FADE_SHADER_GUID`，再保存 `Assets/Rendering/Edge Fade.effect`。空 GUID 表示未赋值的引用，路径不会代替它解析资产。系统查询其中的 `feature_type` 时，会导入候选模块并查找注册项。Project 面板的 **Create > Render Effect** 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 `Edge Fade.effect` 已存在时会拒绝覆盖。
+3. 导入过程先验证可独立于阶段使用的声明，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数和无法解析的依赖 GUID、记录资源需求与拓扑参数，最后把成功产物写到 `Library/Artifacts/RenderEffect/<guid>.inxeffect`。导入时尚无挂载阶段或 View 资源，因此不执行 `setup_passes()`。命中缓存产物时也会检查依赖与 Feature。Shader 的渲染准备和 `setup_passes()` 在编译实际挂载后的渲染图时进行。源码通过 `.meta` 获得 GUID；引用只保存 GUID。路径用于创作时选择文件，不是序列化引用的身份。
 4. 加入 RenderStack 组件并选中其 GameObject，把 `Edge Fade.effect` 拖入 `final`。RenderStack 解析启用的 Slot，为这次挂载实例化 Feature，并在图到达 `final` 时调用 `setup_passes()`。
-5. 在 Game 视图验收：先把 `intensity` 设为 `0`，再设为 `1`。中心应保持原样，四角在 `1` 时变暗。确认 RenderStack Inspector 的 **Effect Compile Errors** 为空。项目 Shader 缺失时应出现 `failed to prepare effect shader dependency`；Feature 无法导入时，挂载位置最终显示 `unknown render effect feature`，其中带 Stage 与 Slot，原始 Python 导入异常则由发现系统保留，并在失败的导入或重载路径中记录。
+5. 在 Game 视图验收：先把 `intensity` 设为 `0`，再设为 `1`。中心应保持原样，四角在 `1` 时变暗。确认 RenderStack Inspector 的 **Effect Compile Errors** 为空。依赖 GUID 无法解析时，导入阶段报告 `effect dependency GUID is unavailable`。Shader 的渲染准备失败时，编译挂载后的渲染图会报告 `failed to prepare effect shader dependency`。Feature 无法导入时，挂载位置最终显示 `unknown render effect feature`，其中带 Stage 与 Slot，原始 Python 导入异常则由发现系统保留，并在失败的导入或重载路径中记录。
 
 发现、资产导入与图编译由数据变化触发，运行时不会每帧扫描源码。
 
@@ -369,8 +372,7 @@ Assets/
   "$schema": "infernux.render_effect",
   "dependencies": [
     {
-      "guid": "",
-      "path_hint": "Assets/Shaders/edge_fade.frag"
+      "guid": "EDGE_FADE_SHADER_GUID"
     }
   ],
   "feature_type": "game.post.edge_fade",
@@ -394,8 +396,8 @@ Assets/
 - 直接挂载的 `.effect` 只有一份共享的已加载 `RenderEffect` 文档。资产 Inspector 与 Slot Inspector 都把修改提交给这份文档，因此最后一次被接受的修改会立即出现在两个视图和该资产的所有直接挂载中。直接 Slot 没有私有参数 Override。
 - 每次被接受的 Inspector 修改都会作为文档操作进入全局 Undo 历史。Undo 会撤销最后一次被接受的修改，不受修改入口影响；恢复后的内存文档会再次发布，并重新安排持久化。外部文件重载属于文件系统结果，不会新增 Undo 条目。
 - `.effect` 文档通过 0.5 秒防抖快照自动保存。保存场景会持久化 Slot 身份、Stage、顺序、资产引用与启用状态；`.effect` 资产仍由自己的自动保存负责。关闭场景或切换场景时，资源文档生命周期会排空待完成的自动保存。
-- 与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。通知在本地写入尚未完成时会被延后。系统确认磁盘上出现另一份持久 Revision 后，这类非 Scene 资产会自动跟随磁盘内容：排队中的本地资产持久化会取消，已加载资源会刷新，两个视图也会更新。
-- 外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID/路径引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。
+- 与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。已接受的本地修改还在等待防抖保存或磁盘写入时，本地修改优先：通知会被延后，待完成的保存可能覆盖这期间发生的外部磁盘修改。本地持久化完成后，后续外部版本会自动导入，共享资源与 Inspector 视图都会跟随磁盘内容。要保留外部修改，应等本地保存完成后再修改文件。
+- 外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID 引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。
 
 ## 声明读写资源 {#resource-contract_1}
 
@@ -407,27 +409,31 @@ Assets/
 | `modifies` | 读写资源，同时也算作需求 |
 | `creates` | 新建并发布给后续步骤的语义资源 |
 
-构建管线前，RenderStack 会收集所有启用 Slot 的 `requires ∪ modifies`。这样法线、Motion 等可选几何 Buffer 只会在有 Effect 需要时生成。到了挂载点，`EffectStage` 契约决定局部 Bus 能拿到哪些 Handle。需要深度或 Motion 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。
+构建管线前，RenderStack 会收集所有启用 Slot 的 `requires ∪ modifies`。这样法线、Motion 等可选几何 Buffer，以及只读、每相机的 `light_list`，只会在有 Effect 需要时准备。到了挂载点，`EffectStage` 契约决定局部 Bus 能拿到哪些 Handle。需要深度、Motion 或 `light_list` 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。`light_list` 是原生逐帧 View 资源，不是可写入或从项目导入的 Buffer。
 
 声明必须和 `setup_passes()` 一致。写下 `modifies = {"color"}` 不会自动修改颜色，Feature 仍要把替换后的 Handle 发布回 Bus。
 
 `creates` 同样只负责声明。实现代码必须创建图资源，并调用 `bus.set("semantic_name", handle)`。同一 Stage 中的后续 Effect 可以消费它；后续 Stage 只有在管线把该语义列入 `inputs` 时才能收到它。当前 `ResourceBus.set()` 会替换同名语义的已有 Handle，所以两个成功 Effect 发布同一名称时，结果由 Slot/Group 顺序决定，后发布者生效。系统目前没有重复 `creates` 的自动诊断；需要同时保留两份产物时，请使用不同语义名称。
 
-Route Policy 冲突走另一条校验路径。例如，`ADDITIVE_EXTRACT` 无法与颜色替换 Policy 共用同一 Route，`CUSTOM_FEATURE` 也无法与内置 Policy 混用。图构建诊断会列出相关 Stage ID 与 Policy 不兼容原因。
+编写底层管线时，用显式 `PassResult` 传递已发布的语义 Handle：先通过 `graph.publish_pass_result()` 发布初始结果，再在 `with graph.pass_result(result):` 内声明各个 Stage。成功的 Effect 会更新当前 Result；后续 Stage 的 `inputs` 决定它的局部 Bus 接收哪些 Handle。仅向 `inputs` 添加名称不会创建或发布该资源。Result 的发布与派生见 RenderGraph 章节。
+
+发光与颜色替换效果可以共用同一 Route，其 Policy 会合并为 `ORDERED_COMPOSITE`：完整效果链按 Slot/Group 顺序执行，再将结果分成物体覆盖区域内的颜色与区域外的效果像素，合回父级。Bloom 与 Edge Detection 可以保持在同一挂点；交换顺序会改变各自处理的输入图像。`CUSTOM_FEATURE` 预留给专用合成逻辑，不能与内置 Policy 混用；内置管线编译器目前没有实现自定义 Route 合成器。
 
 失败恢复有三个明确边界：
 
-1. Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 `game.post.edge_fade` 时会抛出 `already registered`，首次注册项继续生效。
+1. Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 `game.post.edge_fade` 时会抛出 `already registered`，首次注册项继续生效。发现器会等整个模块执行成功后才发布该源码的注册项。被拒绝的修改保留已接受的注册项；成功移除声明或删除源码后，对应注册项会被注销。现有资产和 Slot 继续保留引用，并报告未知 Feature，直到声明恢复。
 2. Effect/Group 导入采用“编译完成后发布”。文档格式错误、依赖缺失、Group 循环、未知 Override 或 Feature 失败时，上一份 Artifact 与已加载资产继续生效。如果创建流程已经写入新 Source，首次导入随后失败，这个 Source 文件会留在 `Assets` 中；修复后重新导入，或显式移除该文件。
-3. 编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。`setup_passes()` 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。**Effect Compile Errors** 记录 `<stage_id>/<slot_id>: <error>`，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，Editor 保留上一份有效图。打包 Player 不采用 Editor 的默认管线回退，打包产物问题会保持可见，等待修复对应产物。
+3. 编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。`setup_passes()` 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。**Effect Compile Errors** 记录 `<stage_id>/<slot_id>: <error>`，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，RenderStack 会保留已有的上一份有效图。没有已接受的图时，Editor 和 Player 都明确报告失败，不会替换成默认管线。
 
 大多数参数修改只需更新参数块。会改变 Pass 数量、资源形状或绑定布局的字段才应放进装饰器的 `topology_parameters`。例如内置 Bloom 把 `max_iterations` 列为拓扑参数；改迭代次数会重建图，改强度只更新运行时数据。
+
+每次挂载都会保留自己的阶段资源上下文，包括 Texture 与 Buffer 的类型、格式、采样数，以及哪些资源不存在。参数 Revision 变化时，`setup_passes()` 在这个上下文的隔离副本上记录新值，不会修改运行中的图，也不会虚构 Depth、Normal 或 Motion 输入。参数未变化的帧不会重复执行这一步。如果记录的 Shader、资源结构或 Pass 布局改变，就必须重建图，不能把新值上传到旧布局。
 
 ## EffectGroup、Policy 与运行时修改 {#groups-runtime_1}
 
 在叠加 Group 之前，先固定本课程用到的四类记录。**RenderEffect Feature** 是注册了 `render_effect_feature(type_id, ...)` 的 Python 类，它拥有 `setup_passes()` 和参数 Schema。**`.effect` 资产**保存 `feature_type` 与具体参数值，`RenderEffect` 是它的可变运行时包装。**`.effectgroup`** 是资产文档，条目引用 Effect 或嵌套 Group，可以带 Override；挂载时 Group 就地展开，没有独立的运行时对象。**EffectStage** 与 **EffectSlot** 属于管线与场景，下一章介绍。
 
-`.effectgroup` 是一份有序的 `.effect` 或嵌套 `.effectgroup` 引用列表。每项有稳定的 `entry_id`、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 `.effect` 数值保持不变。
+`.effectgroup` 是一份有序的 `.effect` 或嵌套 `.effectgroup` 引用列表。每项有稳定的 `entry_id`、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 `.effect` 数值保持不变。保存下方 JSON 前，从已导入的 `Assets/Rendering/Edge Fade.effect.meta` 读取 `metadata.guid.value`，用它替换 `EDGE_FADE_EFFECT_GUID`。组条目保存这个 GUID；空 GUID 表示未赋值，该条目会被跳过。
 
 ```json
 {
@@ -436,8 +442,7 @@ Route Policy 冲突走另一条校验路径。例如，`ADDITIVE_EXTRACT` 无法
     {
       "entry_id": "edge_fade",
       "asset": {
-        "guid": "",
-        "path_hint": "Assets/Rendering/Edge Fade.effect"
+        "guid": "EDGE_FADE_EFFECT_GUID"
       },
       "enabled": true,
       "overrides": {
@@ -464,7 +469,8 @@ Route Policy 决定 Route 或 Layer 局部图像怎样返回父级合成：
 | `MASK_AND_MODIFY` | 修改已选像素，不扩张轮廓 |
 | `ISOLATE_AND_COMPOSITE` | 处理隔离图像，再合回父级 |
 | `ADDITIVE_EXTRACT` | 返回 Bloom 等加法能量 |
-| `CUSTOM_FEATURE` | 由专用 Feature 负责合成 |
+| `ORDERED_COMPOSITE` | 发光与颜色替换混用时自动选用；保留 Slot/Group 顺序、物体覆盖区域与外溢效果 |
+| `CUSTOM_FEATURE` | 预留给专用 Route 合成器；内置管线编译器尚未实现 |
 
 运行时的 `RenderEffect` 提供 Float、Int、Bool、向量和颜色的类型化 Getter/Setter。加载的资产默认共享。`clone()` 会生成没有源路径和 GUID 的纯运行时副本，修改它不会覆盖项目资产。
 

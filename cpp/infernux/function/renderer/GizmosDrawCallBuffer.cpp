@@ -1,6 +1,7 @@
 #include "GizmosDrawCallBuffer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
@@ -8,12 +9,28 @@
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <glm/glm.hpp>
+#include <limits>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace infernux
 {
 namespace
 {
+uint64_t AllocateGeometryObjectId(uint64_t prefix)
+{
+    // Shared by all buffers and geometry routes. Never truncate an author's
+    // 64-bit identity or reuse an ID after its geometry has been retired.
+    static std::atomic<uint64_t> next{1};
+    uint64_t value = next.load(std::memory_order_relaxed);
+    for (;;) {
+        if (value > (std::numeric_limits<uint32_t>::max)())
+            throw std::overflow_error("Component Gizmo renderer identity space exhausted");
+        if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed))
+            return prefix | value;
+    }
+}
+
 bool SameVertex(const Vertex &left, const Vertex &right) noexcept
 {
     return std::memcmp(&left.pos, &right.pos, sizeof(left.pos)) == 0 &&
@@ -47,6 +64,10 @@ void AdvanceRevision(uint64_t &revision) noexcept
 void GizmosDrawCallBuffer::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices,
                                    std::vector<DrawDescriptor> descriptors)
 {
+    if (m_cpuObjectIds.size() > descriptors.size())
+        m_cpuObjectIds.resize(descriptors.size());
+    while (m_cpuObjectIds.size() < descriptors.size())
+        m_cpuObjectIds.push_back(AllocateGeometryObjectId(OBJECT_ID_PREFIX));
     bool sameLayout = descriptors.size() == m_descriptors.size();
     for (size_t i = 0; sameLayout && i < descriptors.size(); ++i) {
         sameLayout = descriptors[i].indexStart == m_descriptors[i].indexStart &&
@@ -86,6 +107,7 @@ void GizmosDrawCallBuffer::SetResidentData(std::vector<ResidentDrawDescriptor> d
             if (*std::max_element(descriptor.indices.begin(), descriptor.indices.end()) >= descriptor.vertexCount)
                 throw std::out_of_range("Resident Gizmo line index is outside the vertex buffer");
             ResidentDraw draw;
+            draw.objectId = AllocateGeometryObjectId(OBJECT_ID_PREFIX);
             draw.vertexBuffer = std::move(descriptor.vertexBuffer);
             draw.topologyVertices.resize(descriptor.vertexCount);
             draw.indices = std::move(descriptor.indices);
@@ -136,6 +158,7 @@ void GizmosDrawCallBuffer::ClearCpuData()
     m_vertices.clear();
     m_indices.clear();
     m_descriptors.clear();
+    m_cpuObjectIds.clear();
     m_slicedVertices.clear();
     m_slicedIndices.clear();
     m_slicesDirty = true;
@@ -234,7 +257,7 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
         dc.indexCount = static_cast<uint32_t>(m_slicedIndices[i].size());
         dc.worldMatrix = world;
         dc.material = gizmoMaterial;
-        dc.objectId = OBJECT_ID_PREFIX | static_cast<uint64_t>(i);
+        dc.objectId = m_cpuObjectIds[i];
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_slicedVertices[i];
         dc.meshIndices = &m_slicedIndices[i];
@@ -253,7 +276,7 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
         dc.indexCount = static_cast<uint32_t>(draw.indices.size());
         dc.worldMatrix = draw.worldMatrix;
         dc.material = gizmoMaterial;
-        dc.objectId = OBJECT_ID_PREFIX | (identity & 0x00000000FFFFFFFFULL);
+        dc.objectId = draw.objectId;
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &draw.topologyVertices;
         dc.meshIndices = &draw.indices;
@@ -369,6 +392,8 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         nextVertices.push_back(makeVertex(bottomLeft, glm::vec2(0.0f, 1.0f)));
 
         IconGeometryState &geometry = m_iconGeometryStates[icon.objectId];
+        if (geometry.objectId == 0)
+            geometry.objectId = AllocateGeometryObjectId(ICON_ID_PREFIX);
         if (!SameVertices(geometry.vertices, nextVertices)) {
             geometry.vertices = std::move(nextVertices);
             AdvanceRevision(geometry.revision);
@@ -391,7 +416,7 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         // icon click select the synthetic draw itself; the selection/outline
         // path can then render the icon with editor highlight data instead of
         // its authored white texture.
-        dc.objectId = ICON_ID_PREFIX | (icon.objectId & 0x00000000FFFFFFFFULL);
+        dc.objectId = geometry.objectId;
         dc.pickingObjectId = icon.objectId;
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &geometry.vertices;

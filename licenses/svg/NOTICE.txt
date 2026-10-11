@@ -1,0 +1,19 @@
+SVG rasterization uses LunaSVG and its bundled PlutoVG.
+Source: https://github.com/sammycage/lunasvg
+Pinned revision: 83c58df8103dc7dca423dfd824992af94d49bed6
+Both projects use the MIT license in LunaSVG-PlutoVG.txt.
+
+Infernux compiles a generated copy of LunaSVG's svgelement.cpp which disables
+external filesystem image hrefs. Embedded data images remain supported.
+All other renderer sources are unchanged.
+
+PlutoVG contains code from the FreeType project. This software is based in
+part on the work of the FreeType Team (https://www.freetype.org).
+Copyright 2000-2003, 2005-2014 David Turner, Robert Wilhelm, Werner Lemberg.
+The original FreeType project license is included as FTL.txt.
+
+Static SVG features include paths, shapes, gradients, clipping, masks,
+transforms and embedded images. Animations, scripts and SVG filter effects
+are not supported by this rasterizer. For portable text appearance, convert
+text to outlines before import; font lookup otherwise uses the import host.
+Player packages consume the cooked texture, not the SVG or host fonts.

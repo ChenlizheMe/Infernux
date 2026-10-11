@@ -1,7 +1,7 @@
 # InxUIComponent
 
 <div class="class-info">
-class in <b>Infernux.ui</b>
+class in <b>infernux.ui</b>
 </div>
 
 **Inherits from:** [InxComponent](InxComponent.md)

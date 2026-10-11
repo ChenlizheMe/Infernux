@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace infernux
@@ -272,6 +273,10 @@ class MeshRenderer : public Component
     /// @brief Bulk-set all materials from GUID list.
     void SetMaterials(const std::vector<std::string> &guids);
 
+    using MaterialSlotValue = std::variant<std::string, std::shared_ptr<InxMaterial>>;
+    /// Replace all slots, preserving explicit native instances and unresolved GUIDs.
+    void SetMaterialSlots(const std::vector<MaterialSlotValue> &materials);
+
     /// @brief Resize the material slot array (new slots get empty refs).
     void SetMaterialSlotCount(uint32_t count);
 
@@ -363,19 +368,13 @@ class MeshRenderer : public Component
     {
         return m_castShadows;
     }
-    void SetCastShadows(bool cast)
-    {
-        m_castShadows = cast;
-    }
+    void SetCastShadows(bool cast);
 
     [[nodiscard]] bool ReceivesShadows() const
     {
         return m_receiveShadows;
     }
-    void SetReceivesShadows(bool receive)
-    {
-        m_receiveShadows = receive;
-    }
+    void SetReceivesShadows(bool receive);
 
     // ========================================================================
     // Bounds (for culling)
@@ -446,6 +445,11 @@ class MeshRenderer : public Component
 
   protected:
     static void ValidateSerializedDocumentForType(const nlohmann::json &document, std::string_view expectedType);
+
+    // Engine-derived parameters have a component-defined type before a shader
+    // is linked. Callers validate their value; publication shares the same
+    // owner/precedence/dependency path as the public reflected parameter API.
+    void SetRuntimeParameterProperty(uint32_t slot, MaterialProperty property, const std::string &owner);
 
     /// Derived renderers may generate their inline mesh entirely from their
     /// authored fields and omit that cache from scene documents.

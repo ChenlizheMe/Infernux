@@ -286,7 +286,6 @@ class InspectorPanel : public EditorPanel
     uint64_t m_cachedMultiTransformValueRevision = 0;
 
     // ── Cached icon IDs ──────────────────────────────────────────────
-    uint64_t m_cachedTransformIconId = 0;
     float m_cachedTransformBodyHeight = 0.0f;
     float m_lastDpiScale = 0.0f;
 

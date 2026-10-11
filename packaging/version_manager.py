@@ -13,14 +13,18 @@ Layout on disk::
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import unquote, urlsplit
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -29,9 +33,11 @@ import logging
 
 from packaging.tags import sys_tags
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
 
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME, PythonRuntimeId
-from hub_utils import get_hub_shared_data_dir
+from hub_utils import get_hub_shared_data_dir, replace_path
+from wheel_identity import has_matching_wheel_identity, validate_wheel_identity
 
 
 class DownloadCancelled(Exception):
@@ -43,7 +49,7 @@ class DownloadCancelled(Exception):
 GITHUB_OWNER = "ChenlizheMe"
 GITHUB_REPO = "Infernux"
 _API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-_PYPI_API = "https://pypi.org/pypi/Infernux/json"
+_PYPI_API = "https://pypi.org/pypi/infernux/json"
 _VERSIONS_DIR = Path(get_hub_shared_data_dir()) / "Engines"
 _CACHE_TTL = 300  # seconds before re-fetching release list
 
@@ -55,6 +61,7 @@ class EngineWheel:
     size: int
     python_version: str
     source: str = "github"
+    sha256: str = ""
 
 
 @dataclass
@@ -91,9 +98,23 @@ class VersionManager:
 
     # ── Public API ───────────────────────────────────────────────────
 
-    def list_versions(self, *, include_prerelease: bool = False) -> List[EngineVersion]:
+    def catalog_timestamp(self) -> float | None:
+        """When the newest known release catalog was fetched, or None."""
+        if self._cached_releases is not None:
+            return self._cached_at
+        cached = self._read_catalog_cache()
+        return cached[0] if cached is not None else None
+
+    def cached_versions(self, *, include_prerelease: bool = False) -> List[EngineVersion]:
+        """Same as list_versions(), but from the last catalog without any network.
+
+        The Installs UI shows this immediately and refreshes in the background.
+        """
+        return self.list_versions(include_prerelease=include_prerelease, offline=True)
+
+    def list_versions(self, *, include_prerelease: bool = False, offline: bool = False) -> List[EngineVersion]:
         """Return available versions (remote + local), newest first."""
-        remote = self._fetch_releases()
+        remote = self._offline_releases() if offline else self._fetch_releases()
         versions: dict[str, EngineVersion] = {}
 
         for rel in remote:
@@ -178,35 +199,47 @@ class VersionManager:
         atomic installs existed) are deleted on sight so they neither appear
         in the version list nor block a clean re-download (issue #43).
         """
-        ver_dir = _VERSIONS_DIR / version
+        if _tag_to_version(version) != version:
+            return None
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         if not ver_dir.is_dir():
             return None
         target_python = (
             PythonRuntimeId.parse(python_version).series if python_version else ""
         )
         valid_wheels: list[str] = []
+        catalog_wheels = self._cached_wheel_assets(version)
         for wheel in glob.glob(str(ver_dir / "infernux-*.whl")):
-            if self._is_valid_wheel(wheel):
-                if not wheel_platform_compatible(wheel):
-                    continue
-                if target_python and wheel_python_version(wheel) != target_python:
-                    continue
-                valid_wheels.append(wheel)
+            expected = tuple(
+                item for item in catalog_wheels if item.filename == os.path.basename(wheel)
+            )
+            verdict = _cached_wheel_verdict(wheel, expected)
+            if verdict == "corrupt":
+                try:
+                    os.remove(wheel)
+                    logging.getLogger(__name__).warning(
+                        "Removed corrupted cached wheel: %s", wheel
+                    )
+                except OSError:
+                    pass
                 continue
-            try:
-                os.remove(wheel)
-                logging.getLogger(__name__).warning(
-                    "Removed corrupted cached wheel: %s", wheel
-                )
-            except OSError:
-                pass
+            if wheel_release(wheel) != version or not wheel_platform_compatible(wheel):
+                continue
+            if not wheel_python_version(wheel):
+                continue
+            if target_python and wheel_python_version(wheel) != target_python:
+                continue
+            if verdict == "valid":
+                valid_wheels.append(wheel)
         if not valid_wheels:
             return None
         preferred = self._preferred_local_wheel(valid_wheels)
         return preferred or max(valid_wheels, key=wheel_build)
 
     def installed_python_versions(self, version: str) -> list[str]:
-        ver_dir = _VERSIONS_DIR / version
+        if _tag_to_version(version) != version:
+            return []
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         if not ver_dir.is_dir():
             return []
         versions = {
@@ -214,8 +247,11 @@ class VersionManager:
             for path in glob.glob(str(ver_dir / "infernux-*.whl"))
             if (
                 self._is_valid_wheel(path)
+                and wheel_release(path) == version
                 and wheel_platform_compatible(path)
                 and wheel_python_version(path)
+                and has_matching_wheel_identity(path)
+                and self.get_wheel_path(version, wheel_python_version(path)) is not None
             )
         }
         return sorted(
@@ -283,31 +319,46 @@ class VersionManager:
                 f"No wheel asset found for Infernux {version} on this platform"
             )
         wheel = wheels[0]
+        hashes = {candidate.sha256 for candidate in wheels if candidate.sha256}
+        if len(hashes) > 1:
+            raise ValueError(f"Release sources disagree on wheel SHA-256: {wheel.filename}")
+        if wheel_release(wheel.filename) != version or not wheel_platform_compatible(wheel.filename):
+            raise ValueError(f"Incompatible engine download for {version}: {wheel.filename}")
         self._require_installed_python(wheel.python_version, engine_version=version)
 
-        ver_dir = _VERSIONS_DIR / version
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         ver_dir.mkdir(parents=True, exist_ok=True)
 
         filename = wheel.filename or wheel.url.rsplit("/", 1)[-1]
         dest = ver_dir / filename
 
         if dest.exists():
-            if self._is_valid_wheel(str(dest)):
-                return str(dest)
-            dest.unlink(missing_ok=True)  # heal corrupted leftovers
+            if self._is_valid_wheel(str(dest)) and has_matching_wheel_identity(str(dest)):
+                try:
+                    for expected in wheels:
+                        _verify_download(dest, expected)
+                except ValueError:
+                    logging.getLogger(__name__).warning("Cached wheel differs from release: %s", dest)
+                else:
+                    logging.getLogger(__name__).info("Engine cache hit: release=%s wheel=%s", version, dest)
+                    return str(dest)
 
         # PyPI wheels sort first. A transport failure gets one deterministic
         # chance to use the matching GitHub Release asset; invalid content is
         # never treated as a reason to change sources.
         transport_error: BaseException | None = None
         for index, candidate in enumerate(wheels):
+            logging.getLogger(__name__).info(
+                "Engine download: release=%s platform=%s Python=%s source=%s wheel=%s destination=%s",
+                version, sys.platform, candidate.python_version, candidate.source, filename, dest,
+            )
             req = urllib.request.Request(candidate.url)
             req.add_header("Accept", "application/octet-stream")
             req.add_header("User-Agent", "Infernux-Hub/1.0")
             tmp_path = f"{dest}.tmp-{uuid.uuid4().hex[:8]}"
             try:
                 try:
-                    response = urllib.request.urlopen(req)
+                    response = urllib.request.urlopen(req, timeout=120)
                     with response as resp, open(tmp_path, "wb") as stream:
                         total = int(resp.headers.get("Content-Length", 0)) or candidate.size
                         downloaded = 0
@@ -332,7 +383,12 @@ class VersionManager:
                         f"Downloaded file for {version} is not a valid wheel "
                         "(truncated or corrupted transfer)."
                     )
-                os.replace(tmp_path, str(dest))
+                validate_wheel_identity(tmp_path, filename=filename)
+                # A mirror without a digest must not bypass the hash published
+                # by another source for this exact same wheel filename.
+                for expected in wheels:
+                    _verify_download(Path(tmp_path), expected)
+                replace_path(tmp_path, str(dest))
                 transport_error = None
                 break
             finally:
@@ -358,13 +414,17 @@ class VersionManager:
 
     def remove_version(self, version: str) -> bool:
         """Delete a cached version.  Returns True if it existed."""
-        import shutil
-
-        ver_dir = _VERSIONS_DIR / version
-        if ver_dir.is_dir():
-            shutil.rmtree(ver_dir, ignore_errors=True)
-            return True
-        return False
+        ver_dir = _VERSIONS_DIR / _base_version(version)
+        if not ver_dir.is_dir():
+            return False
+        removed = False
+        for path in ver_dir.glob("infernux-*.whl"):
+            if wheel_release(str(path)) == version:
+                path.unlink()
+                removed = True
+        if not any(ver_dir.iterdir()):
+            ver_dir.rmdir()
+        return removed
 
     def install_local_wheel(self, wheel_path: str) -> str:
         """Copy a local .whl into the versions cache.
@@ -379,13 +439,12 @@ class VersionManager:
             raise ValueError(
                 f"The selected wheel is not compatible with this platform: {filename}"
             )
-        match = re.match(r"infernux-([^-]+)-", filename, re.IGNORECASE)
-        if not match:
+        version = wheel_release(filename)
+        if not version:
             raise ValueError(
                 f"Cannot determine version from wheel filename: {filename}\n"
                 "Expected a file like infernux-0.4.0-cp313-cp313-win_amd64.whl"
             )
-        version = match.group(1)
         python_version = wheel_python_version(filename)
         if not python_version:
             raise ValueError(
@@ -401,10 +460,22 @@ class VersionManager:
                 f"target Python {python_version}."
             )
 
-        ver_dir = _VERSIONS_DIR / version
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         ver_dir.mkdir(parents=True, exist_ok=True)
         dest = ver_dir / filename
-        shutil.copy2(wheel_path, str(dest))
+        temporary = ver_dir / f"{filename}.tmp-{uuid.uuid4().hex}"
+        try:
+            shutil.copyfile(wheel_path, temporary)
+            validate_wheel_identity(str(temporary), filename=filename)
+            for expected in self._cached_wheel_assets(version):
+                if expected.filename == filename:
+                    _verify_download(temporary, expected)
+            replace_path(temporary, dest)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning("Could not remove temporary wheel: %s", temporary)
         return version
 
     # ── Project version binding ──────────────────────────────────────
@@ -418,10 +489,10 @@ class VersionManager:
         """
         vf = os.path.join(project_dir, ".infernux-version")
         if os.path.isfile(vf):
-            for line in open(vf, encoding="utf-8"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    return line
+            with open(vf, encoding="utf-8") as stream:
+                versions = [line.strip() for line in stream
+                            if line.strip() and not line.lstrip().startswith("#")]
+            return versions[0] if len(versions) == 1 else None
         return None
 
     @staticmethod
@@ -430,7 +501,7 @@ class VersionManager:
         vf = os.path.join(project_dir, ".infernux-version")
         with open(vf, "w", encoding="utf-8") as f:
             f.write("# Infernux project version pin — do not edit manually.\n")
-            f.write("# Format: <major>.<minor>.<patch>\n")
+            f.write("# Exact release: <package-version>[-v<revision>]; no automatic upgrades.\n")
             f.write(version + "\n")
 
     # ── Internal ─────────────────────────────────────────────────────
@@ -443,90 +514,134 @@ class VersionManager:
         if self._cached_releases is not None and (now - self._cached_at) < _CACHE_TTL:
             return self._cached_releases
 
-        # Try disk cache
-        if self._cache_file.exists():
-            try:
-                data = json.loads(self._cache_file.read_text(encoding="utf-8"))
-                cached_at = data.get("_ts", 0.0)
-                if (now - cached_at) < _CACHE_TTL:
-                    self._cached_releases = data.get("releases", [])
-                    self._cached_at = cached_at
-                    return self._cached_releases
-            except (json.JSONDecodeError, KeyError) as _exc:
-                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-                pass
+        # Cache the raw catalog, never a host's selected download URL.
+        cached = self._read_catalog_cache()
+        if cached is not None and 0 <= now - cached[0] < _CACHE_TTL:
+            self._cached_at, self._cached_releases = cached
+            return self._cached_releases
 
         github: list[dict] = []
         pypi: dict = {}
         reached = False
         failures = []
-        for source, url, accept in (
+
+        def request(source: str, url: str, accept: str):
+            req = urllib.request.Request(url)
+            req.add_header("Accept", accept)
+            req.add_header("User-Agent", "Infernux-Hub/1.0")
+            if source == "github":
+                token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+                if token:
+                    req.add_header("Authorization", "Bearer " + token)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        sources = (
             ("pypi", _PYPI_API, "application/json"),
             ("github", f"{_API_BASE}/releases?per_page=50", "application/vnd.github+json"),
-        ):
-            try:
-                req = urllib.request.Request(url)
-                req.add_header("Accept", accept)
-                req.add_header("User-Agent", "Infernux-Hub/1.0")
-                if source == "github":
-                    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-                    if token:
-                        req.add_header("Authorization", f"Bearer {token}")
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    document = json.loads(resp.read().decode("utf-8"))
-                if source == "pypi" and isinstance(document, dict):
-                    pypi = document
-                    reached = True
-                elif source == "github" and isinstance(document, list):
-                    github = document
-                    reached = True
-                else:
-                    raise ValueError(f"Unexpected {source} catalog response")
-            except (urllib.error.URLError, OSError, ValueError) as exc:
-                failures.append(f"{source}: {type(exc).__name__}: {exc}")
-                logging.getLogger(__name__).warning("Engine catalog request failed: %s", source, exc_info=True)
-                continue
+        )
+        # The catalogs are independent: fetching them together halves the
+        # wait, and one slow source no longer delays the other.
+        with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="engine-catalog") as pool:
+            futures = [(source, pool.submit(request, source, url, accept)) for source, url, accept in sources]
+            for source, future in futures:
+                try:
+                    document = future.result()
+                    if source == "pypi" and isinstance(document, dict):
+                        pypi = document
+                        reached = True
+                    elif source == "github" and isinstance(document, list):
+                        github = document
+                        reached = True
+                    else:
+                        raise ValueError(f"Unexpected {source} catalog response")
+                except (urllib.error.URLError, OSError, ValueError) as exc:
+                    failures.append(f"{source}: {type(exc).__name__}: {exc}")
+                    logging.getLogger(__name__).warning("Engine catalog request failed: %s", source, exc_info=True)
 
         if not reached:
             # Offline — fall back to disk cache regardless of age
-            if self._cache_file.exists():
-                try:
-                    data = json.loads(self._cache_file.read_text(encoding="utf-8"))
-                    self._cached_releases = data.get("releases", [])
-                    self._cached_at = now
-                    return self._cached_releases
-                except (json.JSONDecodeError, KeyError) as _exc:
-                    logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-                    pass
+            if cached is not None:
+                self._cached_releases = cached[1]
+                self._cached_at = now
+                logging.getLogger(__name__).warning("Using offline engine catalog: %s", self._cache_file)
+                return self._cached_releases
             raise RuntimeError("Unable to fetch engine versions.\n" + "\n".join(failures))
 
         releases = _merge_release_catalogs(github, pypi)
 
         # Save to disk cache
         cache_data = {"_ts": now, "releases": releases}
+        temporary = self._cache_file.with_name(f"{self._cache_file.name}.tmp-{uuid.uuid4().hex}")
         try:
-            self._cache_file.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+            temporary.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+            replace_path(temporary, self._cache_file)
         except OSError:
             logging.getLogger(__name__).warning("Could not save engine catalog cache: %s", self._cache_file, exc_info=True)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning("Could not remove temporary catalog: %s", temporary)
 
         self._cached_releases = releases
         self._cached_at = now
         return releases
 
+    def _offline_releases(self) -> list[dict]:
+        if self._cached_releases is not None:
+            return self._cached_releases
+        cached = self._read_catalog_cache()
+        if cached is None:
+            return []
+        self._cached_at, self._cached_releases = cached
+        return self._cached_releases
+
+    def _read_catalog_cache(self) -> tuple[float, list[dict]] | None:
+        try:
+            data = json.loads(self._cache_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("_ts"), (int, float)):
+                return None
+            releases = data.get("releases")
+            if not isinstance(releases, list) or any(
+                not isinstance(item, dict) or not isinstance(item.get("tag_name"), str)
+                or not isinstance(item.get("assets", []), list) for item in releases
+            ):
+                return None
+            return data["_ts"], releases
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning("Ignoring unreadable engine catalog: %s", self._cache_file)
+            return None
+
+    def _cached_wheel_assets(self, version: str) -> tuple[EngineWheel, ...]:
+        """Use known release digests for offline cache reads, without networking."""
+        releases = self._cached_releases
+        if releases is None:
+            cached = self._read_catalog_cache()
+            releases = cached[1] if cached is not None else []
+        return tuple(
+            wheel for release in releases
+            if _tag_to_version(release.get("tag_name", "")) == version
+            for wheel in _find_wheel_assets(release)
+        )
     def _local_versions(self, python_version: str | None = None) -> List[str]:
         """List versions with a VALID wheel downloaded locally.
 
         Uses get_wheel_path() so corrupted leftovers from interrupted
         installs are healed and never listed (issue #43).
         """
-        result = []
+        result = set()
         if not _VERSIONS_DIR.is_dir():
-            return result
+            return []
         for entry in _VERSIONS_DIR.iterdir():
             if entry.is_dir() and not entry.name.startswith("_"):
-                if self.get_wheel_path(entry.name, python_version):
-                    result.append(entry.name)
-        return result
+                for path in entry.glob("infernux-*.whl"):
+                    release = wheel_release(str(path))
+                    if release and _base_version(release) == entry.name and self.get_wheel_path(release, python_version):
+                        result.add(release)
+        return list(result)
 
     def _require_installed_python(
         self,
@@ -589,36 +704,126 @@ class VersionManager:
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-_TAG_RE = re.compile(r"^v?(\d+\.\d+\.\d+.*)$")
+_RELEASE_RE = re.compile(r"([0-9][A-Za-z0-9.!+]*)(?:-v([1-9]\d*))?")
+
+
+def _base_version(release: str) -> str:
+    match = _RELEASE_RE.fullmatch(release)
+    if match is None:
+        raise ValueError(f"Invalid Infernux release identity: {release!r}")
+    return str(Version(match.group(1)))
+
+
+def _release_for(version: str, build: int) -> str:
+    return version if build == 1 else f"{version}-v{build}"
 
 
 def _tag_to_version(tag: str) -> str:
     """Convert 'v0.3.0' → '0.3.0', return '' on failure."""
-    m = _TAG_RE.match(tag)
-    return re.sub(r"-v[1-9]\d*$", "", m.group(1)) if m else ""
+    value = tag.removeprefix("v")
+    match = _RELEASE_RE.fullmatch(value)
+    if match is None:
+        return ""
+    try:
+        return _release_for(_base_version(value), int(match.group(2) or 1))
+    except InvalidVersion:
+        return ""
 
 
 def _version_tuple(version: str):
-    """Parse '0.3.0' → (0, 3, 0) for sorting."""
-    parts = []
-    for p in version.split(".")[:3]:
-        digits = re.match(r"\d+", p)
-        parts.append(int(digits.group()) if digits else 0)
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts)
+    """Sort package versions and their independent wheel revisions numerically."""
+    match = _RELEASE_RE.fullmatch(version)
+    return (Version(_base_version(version)), int(match.group(2) or 1))
 
 
-_CPYTHON_WHEEL_TAG = re.compile(r"(?:^|-)(cp(\d)(\d{1,2}))(?:-|_)", re.IGNORECASE)
+# ── Hotfix presentation ──────────────────────────────────────────────
+# A release identity is "<version>[-v<n>]"; n > 1 is a hotfix of <version>.
+# Projects still pin the exact identity, but lists show one entry per
+# version: its newest hotfix.
+
+def hotfix_number(release: str) -> int:
+    match = _RELEASE_RE.fullmatch(release or "")
+    return int(match.group(2) or 1) if match else 1
+
+
+def display_release(release: str) -> str:
+    """The version a person reads: hotfix revisions fold into their version."""
+    try:
+        return _base_version(release)
+    except (ValueError, InvalidVersion):
+        return release
+
+
+def hotfix_label(release: str) -> str:
+    number = hotfix_number(release)
+    return f"HOTFIX {number}" if number > 1 else ""
+
+
+def latest_releases(releases) -> list[str]:
+    """Keep the newest hotfix of each version, newest version first."""
+    newest: dict[str, str] = {}
+    for release in releases:
+        try:
+            base = _base_version(release)
+        except (ValueError, InvalidVersion):
+            continue
+        current = newest.get(base)
+        if current is None or _version_tuple(release) > _version_tuple(current):
+            newest[base] = release
+    return sorted(newest.values(), key=_version_tuple, reverse=True)
+
+
+def latest_engine_versions(versions, *, keep: str = "") -> list["EngineVersion"]:
+    """Collapse a catalog to one row per version: its newest usable hotfix.
+
+    A hotfix without a wheel for this platform does not hide an older hotfix
+    that has one. If an older hotfix is installed, the visible row offers the
+    newer one as an update. ``keep`` (an exact identity a project pins) stays
+    listed even when a newer hotfix exists.
+    """
+    groups: dict[str, list[EngineVersion]] = {}
+    for item in versions:
+        groups.setdefault(display_release(item.version), []).append(item)
+    result = []
+    for members in groups.values():
+        members.sort(key=lambda item: _version_tuple(item.version), reverse=True)
+        usable = [item for item in members if item.wheel_url and not item.compatibility_error]
+        chosen = (usable or members)[0]
+        if any(item.installed for item in members if item is not chosen) and not chosen.installed:
+            chosen.installed = True
+            chosen.update_available = True
+        result.append(chosen)
+        result.extend(item for item in members if item.version == keep and item is not chosen)
+    return sorted(result, key=lambda item: _version_tuple(item.version), reverse=True)
+
+
+def wheel_release(path_or_name: str) -> str:
+    """Read the exact release identity, never infer it from a cache directory."""
+    try:
+        distribution, version, build, _tags = parse_wheel_filename(os.path.basename(path_or_name))
+    except InvalidWheelFilename:
+        return ""
+    if distribution != "infernux" or (build and (build[0] < 1 or build[1])):
+        return ""
+    return _release_for(str(version), build[0] if build else 1)
+
+
+_CPYTHON_WHEEL_TAG = re.compile(r"cp(\d)(\d{1,2})")
 
 
 def wheel_python_version(path_or_name: str) -> str:
     """Return the Python major/minor ABI encoded in an Infernux wheel name."""
-    name = os.path.basename(path_or_name)
-    match = _CPYTHON_WHEEL_TAG.search(name)
+    try:
+        _distribution, _version, _build, tags = parse_wheel_filename(os.path.basename(path_or_name))
+    except InvalidWheelFilename:
+        return ""
+    interpreters = {tag.interpreter for tag in tags}
+    if len(interpreters) != 1 or any(tag.abi != tag.interpreter for tag in tags):
+        return ""
+    match = _CPYTHON_WHEEL_TAG.fullmatch(next(iter(interpreters)))
     if match is None:
         return ""
-    return f"{int(match.group(2))}.{int(match.group(3))}"
+    return f"{int(match.group(1))}.{int(match.group(2))}"
 
 
 @lru_cache(maxsize=1)
@@ -637,7 +842,80 @@ def wheel_platform_compatible(path_or_name: str) -> bool:
     except InvalidWheelFilename:
         return False
     platforms = supported_wheel_platforms()
-    return any(tag.platform in platforms for tag in tags)
+    # Do not let cross-build sysconfig overrides make a Windows Hub accept
+    # Linux artifacts. ABI selection is separate, but OS identity is not.
+    def same_os(platform: str) -> bool:
+        if sys.platform == "win32":
+            return platform.startswith("win")
+        if sys.platform.startswith("linux"):
+            return platform.startswith(("linux_", "manylinux", "musllinux"))
+        if sys.platform == "darwin":
+            return platform.startswith("macosx_")
+        return False
+    return any(tag.platform in platforms and same_os(tag.platform) for tag in tags)
+
+
+def _verify_download(path: Path, wheel: EngineWheel) -> None:
+    if wheel.size and path.stat().st_size != wheel.size:
+        raise ValueError(f"Wheel size mismatch for {wheel.filename}: expected {wheel.size}, got {path.stat().st_size}")
+    if wheel.sha256:
+        with path.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if actual != wheel.sha256:
+            raise ValueError(f"Wheel SHA-256 mismatch for {wheel.filename}: expected {wheel.sha256}, got {actual}")
+
+
+# Hashing a 24-90 MB wheel took most of every Installs/Projects refresh. A
+# verdict stays valid while the file's identity (size, mtime) and the published
+# expectations are unchanged; any rewrite of the file invalidates it.
+_WHEEL_VERDICTS: dict[tuple, str] = {}
+
+
+def _cached_wheel_verdict(path: str, expected: tuple[EngineWheel, ...]) -> str:
+    """Return "valid", "invalid" (keep, but do not use) or "corrupt" (delete)."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return "invalid"
+    key = (
+        os.path.normcase(os.path.abspath(path)), stat.st_size,
+        stat.st_mtime_ns, stat.st_ctime_ns,
+        tuple((item.size, item.sha256) for item in expected),
+    )
+    verdict = _WHEEL_VERDICTS.get(key)
+    if verdict is not None:
+        return verdict
+    if not VersionManager._is_valid_wheel(path):
+        verdict = "corrupt"
+    elif not has_matching_wheel_identity(path):
+        verdict = "invalid"
+    else:
+        verdict = "valid"
+        try:
+            for item in expected:
+                _verify_download(Path(path), item)
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning("Ignoring invalid cached wheel: %s", exc)
+            verdict = "invalid"
+    if len(_WHEEL_VERDICTS) > 256:
+        _WHEEL_VERDICTS.clear()
+    # An invalid file is commonly being replaced in place (for example after
+    # an interrupted download).  Do not retain that negative result: some
+    # filesystems expose coarse timestamp resolution, so a corrected file can
+    # otherwise reuse the stale verdict despite having the same size and
+    # timestamp.  Valid results remain metadata-keyed for the hot path.
+    if verdict != "invalid":
+        _WHEEL_VERDICTS[key] = verdict
+    return verdict
+
+
+def _asset_sha256(asset: dict) -> str:
+    digest = asset.get("digest") or ""
+    if not digest or digest == "sha256:":
+        return ""
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        raise ValueError(f"Invalid wheel SHA-256 in release catalog: {asset.get('name')}")
+    return digest.split(":", 1)[1].lower()
 
 
 def wheel_build(path_or_name: str) -> tuple[int, str]:
@@ -656,10 +934,27 @@ def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
     """Find host-compatible CPython wheels in a merged remote release."""
     result: list[EngineWheel] = []
     for asset in release.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
         name = asset.get("name", "")
+        url = asset.get("browser_download_url", "")
+        if not isinstance(name, str) or not isinstance(url, str):
+            continue
+        if any(character in name for character in ("/", "\\", ":")):
+            continue
+        try:
+            target = urlsplit(url)
+        except ValueError:
+            continue
+        url_name = unquote(target.path.rsplit("/", 1)[-1])
+        if target.scheme not in {"https", "http"} or not target.netloc:
+            continue
+        if url_name.endswith(".whl") and url_name != name:
+            logging.getLogger(__name__).warning("Ignoring mismatched wheel URL: filename=%s URL filename=%s", name, url_name)
+            continue
         if (
             name.endswith(".whl")
-            and "infernux" in name.lower()
+            and wheel_release(name) == _tag_to_version(release.get("tag_name", ""))
             and wheel_platform_compatible(name)
         ):
             python_version = wheel_python_version(name)
@@ -672,6 +967,7 @@ def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
                     size=asset.get("size", 0),
                     python_version=python_version,
                     source=str(asset.get("source", "github")),
+                    sha256=_asset_sha256(asset),
                 )
             )
     return tuple(
@@ -719,6 +1015,7 @@ def _merge_release_catalogs(github: list[dict], pypi: dict) -> list[dict]:
                     "browser_download_url": str(item.get("url", "")),
                     "size": int(item.get("size", 0) or 0),
                     "source": "pypi",
+                    "digest": "sha256:" + str(item.get("digests", {}).get("sha256", "")),
                 }
                 for item in files
                 if isinstance(item, dict)
@@ -729,19 +1026,23 @@ def _merge_release_catalogs(github: list[dict], pypi: dict) -> list[dict]:
             ]
             if not wheels:
                 continue
-            current = merged.setdefault(
-                str(version),
-                {
-                    "tag_name": f"v{version}",
-                    "prerelease": bool(re.search(r"[A-Za-z]", str(version))),
-                    "published_at": max(
-                        (str(item.get("upload_time_iso_8601", "")) for item in files if isinstance(item, dict)),
-                        default="",
-                    ),
-                    "assets": [],
-                },
-            )
-            current["assets"] = wheels + list(current.get("assets", []))
+            for wheel in wheels:
+                release = wheel_release(wheel["name"])
+                if not release or _base_version(release) != str(version):
+                    continue
+                current = merged.setdefault(
+                    release,
+                    {
+                        "tag_name": f"v{release}",
+                        "prerelease": Version(str(version)).is_prerelease,
+                        "published_at": max(
+                            (str(item.get("upload_time_iso_8601", "")) for item in files if isinstance(item, dict)),
+                            default="",
+                        ),
+                        "assets": [],
+                    },
+                )
+                current["assets"].insert(0, wheel)
 
     return sorted(
         merged.values(),

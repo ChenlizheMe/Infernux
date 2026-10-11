@@ -27,6 +27,8 @@ struct TextLayoutParams
 {
     std::string text;
     std::string fontPath;
+    // Positive sizes are authored em units; zero inherits the current ImGui
+    // raster size and line height without applying em conversion a second time.
     float fontSize = 0.0f;
     float wrapWidth = 0.0f;
     float lineHeight = 1.0f;
@@ -50,6 +52,9 @@ struct TextGlyph
     ImFont *font = nullptr;
     float fontSize = 0.0f;
     float advance = 0.0f;
+    float inkMinY = 0.0f;
+    float inkMaxY = 0.0f;
+    bool visible = false;
     ImWchar codepoint = 0;
 };
 
@@ -65,6 +70,8 @@ struct TextLayoutResult
     float baseLineHeight = 0.0f;
     float totalWidth = 0.0f;
     float totalHeight = 0.0f;
+    float inkMinY = 0.0f;
+    float inkMaxY = 0.0f;
     std::vector<TextLine> lines;
     std::vector<TextGlyph> glyphs;
 };
@@ -182,6 +189,52 @@ inline uint64_t &FontCacheGeneration()
     return generation;
 }
 
+inline std::unordered_set<ImFont *> &GetRetiredFonts()
+{
+    detail::AssertMainThread();
+    static std::unordered_set<ImFont *> fonts;
+    return fonts;
+}
+
+// Remove path aliases immediately, but keep atlas-owned font storage alive
+// until the GUI's next frame boundary has drained its submitted GPU work.
+inline bool InvalidateFontPath(const std::string &path)
+{
+    const std::string requestKey = LexicalFilesystemPathKey(path);
+    const std::string resolvedKey = FoldFilesystemPathCase(ResolveFilesystemPath(path));
+    auto &cache = GetFontCache();
+    auto &missing = GetMissingFonts();
+    auto &retired = GetRetiredFonts();
+    bool changed = false;
+    for (const auto &key : {requestKey, resolvedKey}) {
+        if (key.empty())
+            continue;
+        changed = missing.erase(key) != 0 || changed;
+        if (const auto found = cache.find(key); found != cache.end()) {
+            retired.insert(found->second);
+            changed = true;
+        }
+    }
+    if (!changed)
+        return false;
+    for (auto entry = cache.begin(); entry != cache.end();) {
+        if (retired.count(entry->second))
+            entry = cache.erase(entry);
+        else
+            ++entry;
+    }
+    ++FontCacheGeneration();
+    return true;
+}
+
+inline void CollectRetiredFonts()
+{
+    // Caller owns the main-thread, between-frame and GPU-completion boundary.
+    for (ImFont *font : GetRetiredFonts())
+        font->OwnerAtlas->RemoveFont(font);
+    GetRetiredFonts().clear();
+}
+
 // The editor/player GUI installs one authoritative engine font at startup.
 // UIText without an authored Font asset must use that same PingFang face,
 // rather than inheriting whatever ambient ImGui font happens to be active.
@@ -202,6 +255,8 @@ inline void ClearFontCache()
 {
     GetFontCache().clear();
     GetMissingFonts().clear();
+    // Atlas Clear/Destroy owns these objects when the entire GUI is reset.
+    GetRetiredFonts().clear();
     ++FontCacheGeneration();
 }
 
@@ -233,7 +288,7 @@ inline ImFont *ResolveFont(const std::string &fontPath)
 
     const std::string normalizedPath = NormalizeFontPath(fontPath);
     if (normalizedPath.empty()) {
-        if (missingFonts.insert(fontPath).second)
+        if (missingFonts.insert(requestKey).second)
             INXLOG_ERROR("UIText explicit font path cannot be resolved: '", fontPath, "'");
         return nullptr;
     }
@@ -404,10 +459,12 @@ inline TextLayoutResult LayoutText(const TextLayoutParams &params)
     TextLayoutResult result{};
     result.text = params.text;
     result.font = ResolveFont(params.fontPath);
-    const float logicalFontSize = ResolveFontSize(params.fontSize);
+    const float lineFontSize = ResolveFontSize(params.fontSize);
+    const float rasterScale = ResolveEmRasterScale(result.font);
+    const float logicalFontSize = params.fontSize > 0.0f ? lineFontSize : lineFontSize / rasterScale;
     result.logicalFontSize = logicalFontSize;
-    result.fontSize = logicalFontSize * ResolveEmRasterScale(result.font);
-    result.baseLineHeight = logicalFontSize;
+    result.fontSize = params.fontSize > 0.0f ? lineFontSize * rasterScale : lineFontSize;
+    result.baseLineHeight = lineFontSize;
     result.lineAdvance = result.baseLineHeight * std::max(params.lineHeight, 0.1f);
 
     if (result.font != nullptr) {
@@ -470,6 +527,14 @@ inline TextLayoutResult LayoutText(const TextLayoutParams &params)
                 glyph.font = ResolveGlyphFont(result, glyph.codepoint);
                 glyph.fontSize = ResolveGlyphRasterSize(result, glyph.font);
                 glyph.advance = glyph.font->CalcTextSizeA(glyph.fontSize, FLT_MAX, 0.0f, cursor, cursor + consumed).x;
+                auto *baked = glyph.font->GetFontBaked(glyph.fontSize);
+                const auto *quad = baked->FindGlyph(glyph.codepoint);
+                if (quad && quad->Visible) {
+                    const float scale = glyph.fontSize / baked->Size;
+                    glyph.inkMinY = quad->Y0 * scale;
+                    glyph.inkMaxY = quad->Y1 * scale;
+                    glyph.visible = true;
+                }
             }
             result.glyphs.push_back(glyph);
         }
@@ -540,8 +605,32 @@ inline TextLayoutResult LayoutText(const TextLayoutParams &params)
     else if (endedWithNewline)
         PushLine(result, textBegin, textEnd, textEnd, 0.0f);
 
-    if (!result.lines.empty())
+    if (!result.lines.empty()) {
         result.totalHeight = result.baseLineHeight + result.lineAdvance * static_cast<float>(result.lines.size() - 1);
+        // Logical line height still owns wrapping, intrinsic size and spacing.
+        // Align the rendered content using the same glyph rectangles RenderChar
+        // consumes, so font ascent padding does not shift every label downward.
+        result.inkMinY = FLT_MAX;
+        result.inkMaxY = -FLT_MAX;
+        for (size_t index = 0; index < result.lines.size(); ++index) {
+            const auto &line = result.lines[index];
+            const float lineY = result.lineAdvance * static_cast<float>(index);
+            bool visible = false;
+            for (size_t glyphIndex = line.glyphStart; glyphIndex < line.glyphEnd; ++glyphIndex) {
+                const auto &glyph = result.glyphs[glyphIndex];
+                if (!glyph.visible)
+                    continue;
+                result.inkMinY = std::min(result.inkMinY, lineY + glyph.inkMinY);
+                result.inkMaxY = std::max(result.inkMaxY, lineY + glyph.inkMaxY);
+                visible = true;
+            }
+            if (!visible) {
+                // Preserve intentional blank/whitespace lines in the block.
+                result.inkMinY = std::min(result.inkMinY, lineY);
+                result.inkMaxY = std::max(result.inkMaxY, lineY + result.baseLineHeight);
+            }
+        }
+    }
 
     return result;
 }
@@ -574,7 +663,8 @@ inline void RenderTextBox(ImDrawList *drawList, float minX, float minY, float ma
 
     const float boxWidth = maxX - minX;
     const float boxHeight = maxY - minY;
-    const float baseY = minY + (boxHeight - layout.totalHeight) * alignY;
+    const float inkHeight = layout.inkMaxY - layout.inkMinY;
+    const float baseY = minY + (boxHeight - inkHeight) * alignY - layout.inkMinY;
 
     for (size_t index = 0; index < layout.lines.size(); ++index) {
         const TextLine &line = layout.lines[index];

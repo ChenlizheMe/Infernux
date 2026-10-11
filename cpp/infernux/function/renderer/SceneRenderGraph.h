@@ -60,6 +60,7 @@ namespace particle
 class ParticleGpuDrawRegistry;
 class ParticleGpuCuller;
 class ParticleGpuSorter;
+class ParticleGpuOutputRenderer;
 } // namespace particle
 
 // Forward-declare from Camera.h
@@ -201,8 +202,9 @@ class SceneRenderGraph
      * order, resource connections).
      *
      * @param desc The graph topology description from Python
+     * @return Whether the description was accepted, including an unchanged replay.
      */
-    void ApplyPythonGraph(const RenderGraphDescription &desc);
+    bool ApplyPythonGraph(const RenderGraphDescription &desc);
 
     /// Validate a backend-neutral graph description before applying it.
     [[nodiscard]] static bool ValidateGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples);
@@ -305,7 +307,7 @@ class SceneRenderGraph
      * @param width Texture width
      * @param height Texture height
      * @param format Vulkan format
-     * @param isTransient If true, resource can be aliased
+     * @param isTransient Transient usage hint; graph-owned storage remains independent
      * @return Resource handle for use in pass configuration
      */
     vk::ResourceHandle CreateTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
@@ -492,7 +494,8 @@ class SceneRenderGraph
 
     /// Latest background-compute publication consumed by this view's material
     /// or imported graph buffers. Callers add its compute->graphics frame wait.
-    [[nodiscard]] rhi::SubmissionTicket GetLatestComputeBufferWriteSubmission() const noexcept;
+    [[nodiscard]] rhi::SubmissionTicket
+    GetLatestComputeBufferWriteSubmission(rhi::PipelineStage &consumerStages) const noexcept;
 
     /// Classify an implicit material/UI sample against explicit same-graph
     /// writers. Sampling before a local producer or in its writing pass is
@@ -868,6 +871,13 @@ class SceneRenderGraph
     uint64_t m_particleDrawRegistryRevision = 0;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuCuller>> m_particleCullers;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuSorter>> m_particleSorters;
+    struct ParticleViewBinding
+    {
+        std::shared_ptr<particle::ParticleGpuOutputRenderer> renderer;
+        rhi::BufferHandle indices;
+    };
+    std::unordered_map<uint64_t, ParticleViewBinding> m_particleViewBindings;
+    void ReleaseParticleViewBindings() noexcept;
     std::shared_ptr<ParticleViewDiagnosticState> m_particleViewDiagnosticState;
     std::vector<PendingParticleViewDiagnostic> m_pendingParticleViewDiagnostics;
     uint64_t m_nextParticleViewDiagnosticRequestId = 1;
@@ -987,7 +997,9 @@ class SceneRenderGraph
         VkImageView imageView = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        bool usesDefaultTexture = true;
+        // A reset invalidates the descriptor's publication proof. Each frame
+        // slot must bind its default texture after its own fence has passed.
+        bool usesDefaultTexture = false;
     };
 
     struct PerViewFrameState

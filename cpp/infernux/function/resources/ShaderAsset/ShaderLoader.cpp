@@ -98,7 +98,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
 
     auto compiledPtr = compiler.Compile(content.data(), content.size(), loadMeta);
     if (!compiledPtr || compiledPtr->empty()) {
-        INXLOG_ERROR("ShaderLoader: compilation failed for '", filePath, "'");
+        if (!InxShaderLoader::AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR("ShaderLoader: compilation failed for '", filePath, "'");
         return nullptr;
     }
 

@@ -30,6 +30,8 @@ struct GpuParticleViewOutputDiagnostic
     uint32_t drawVertexCount = 0;
     uint32_t drawInstanceCount = 0;
     uint32_t sortGroupCountX = 0;
+    // Shared output renderer's resident bindings across all camera views.
+    uint32_t residentViewBindingCount = 0;
     bool boundsValid = false;
     bool coarseRejected = false;
     bool sorterAllocated = false;

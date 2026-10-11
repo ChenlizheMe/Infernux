@@ -1,4 +1,5 @@
 #include "VulkanRhiDevice.h"
+#include "VulkanCommandUploads.h"
 
 #include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
@@ -257,7 +258,7 @@ void AppendProperty(void *&tail, VkPhysicalDeviceProperties2 &root, Property &pr
     tail = node;
 }
 
-void SetEnabled(rhi::DeviceCapabilityStatus &status) noexcept
+void SetEnabled(vk::DeviceCapabilityStatus &status) noexcept
 {
     status.enabled = status.supported;
 }
@@ -410,6 +411,27 @@ VulkanCapabilitySnapshot VulkanCapabilitySnapshot::FromProbe(const VulkanCapabil
     return result;
 }
 
+bool MeetsVulkanDeviceRequirements(const VulkanCapabilityProbeData &probe) noexcept
+{
+    if (probe.apiVersion < VK_API_VERSION_1_2 || probe.coreFeatures.samplerAnisotropy != VK_TRUE)
+        return false;
+    const auto snapshot = VulkanCapabilitySnapshot::FromProbe(probe);
+    return snapshot.supported.dynamicRendering.supported && snapshot.supported.synchronization2.supported;
+}
+
+const VulkanPhysicalDeviceCandidate *
+SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &candidates) noexcept
+{
+    const VulkanPhysicalDeviceCandidate *best = nullptr;
+    for (const auto &candidate : candidates) {
+        if (candidate.device == VK_NULL_HANDLE || !MeetsVulkanDeviceRequirements(candidate.probe))
+            continue;
+        if (best == nullptr || candidate.score > best->score)
+            best = &candidate;
+    }
+    return best;
+}
+
 VulkanDeviceFeatureChain::VulkanDeviceFeatureChain(const VulkanCapabilitySnapshot &supported) noexcept
     : m_supported(supported)
 {
@@ -472,8 +494,8 @@ void VulkanDeviceFeatureChain::Link(void *feature) noexcept
 bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
 {
     if (!m_supported.supported.bindless.IsSupported()) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing,
-                     rhi::DeviceCapability::DescriptorIndexing};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing,
+                     vk::DeviceCapability::DescriptorIndexing};
         return false;
     }
     const bool core12 = IsCoreVersionAtLeast(m_supported.apiVersion, 1, 2);
@@ -511,7 +533,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
         m_descriptorIndexingEXT.descriptorBindingUpdateUnusedWhilePending =
             m_supported.supported.bindless.descriptorBindingUpdateUnusedWhilePending.supported;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DescriptorIndexing};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::DescriptorIndexing};
         return false;
     }
     m_enabled.bindless = m_supported.supported.bindless;
@@ -530,7 +552,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
 bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
 {
     if (!m_supported.supported.timelineSemaphore.supported) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::TimelineSemaphore};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::TimelineSemaphore};
         return false;
     }
     if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 2)) {
@@ -546,7 +568,7 @@ bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
         }
         m_timelineSemaphoreKHR.timelineSemaphore = VK_TRUE;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::TimelineSemaphore};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::TimelineSemaphore};
         return false;
     }
     m_enabled.timelineSemaphore = {true, true};
@@ -556,7 +578,7 @@ bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
 bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
 {
     if (!m_supported.supported.dynamicRendering.supported) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DynamicRendering};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::DynamicRendering};
         return false;
     }
     if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 3)) {
@@ -572,7 +594,7 @@ bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
         }
         m_dynamicRenderingKHR.dynamicRendering = VK_TRUE;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DynamicRendering};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::DynamicRendering};
         return false;
     }
     m_enabled.dynamicRendering = {true, true};
@@ -582,7 +604,7 @@ bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
 bool VulkanDeviceFeatureChain::EnableSynchronization2() noexcept
 {
     if (!m_supported.supported.synchronization2.supported) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::Synchronization2};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::Synchronization2};
         return false;
     }
     if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 3)) {
@@ -598,14 +620,14 @@ bool VulkanDeviceFeatureChain::EnableSynchronization2() noexcept
         }
         m_synchronization2KHR.synchronization2 = VK_TRUE;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::Synchronization2};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::Synchronization2};
         return false;
     }
     m_enabled.synchronization2 = {true, true};
     return true;
 }
 
-bool VulkanDeviceFeatureChain::Enable(const rhi::DeviceCapabilityRequest &request) noexcept
+bool VulkanDeviceFeatureChain::Enable(const vk::DeviceCapabilityRequest &request) noexcept
 {
     ResetChain();
     m_failure = {};
@@ -629,23 +651,23 @@ bool VulkanDeviceFeatureChain::Enable(const rhi::DeviceCapabilityRequest &reques
     struct NumericRequest
     {
         bool requested;
-        rhi::DeviceCapability capability;
-        rhi::DeviceCapabilityStatus *status;
+        vk::DeviceCapability capability;
+        vk::DeviceCapabilityStatus *status;
         VkBool32 *feature;
     };
     const NumericRequest numericRequests[] = {
-        {request.shaderInt16, rhi::DeviceCapability::ShaderInt16, &m_enabled.shaderInt16,
+        {request.shaderInt16, vk::DeviceCapability::ShaderInt16, &m_enabled.shaderInt16,
          &m_features2.features.shaderInt16},
-        {request.shaderInt64, rhi::DeviceCapability::ShaderInt64, &m_enabled.shaderInt64,
+        {request.shaderInt64, vk::DeviceCapability::ShaderInt64, &m_enabled.shaderInt64,
          &m_features2.features.shaderInt64},
-        {request.shaderFloat64, rhi::DeviceCapability::ShaderFloat64, &m_enabled.shaderFloat64,
+        {request.shaderFloat64, vk::DeviceCapability::ShaderFloat64, &m_enabled.shaderFloat64,
          &m_features2.features.shaderFloat64},
     };
     for (const auto &numeric : numericRequests) {
         if (!numeric.requested)
             continue;
         if (!numeric.status->supported) {
-            m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, numeric.capability};
+            m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, numeric.capability};
             return reject();
         }
         *numeric.feature = VK_TRUE;
@@ -682,10 +704,8 @@ const rhi::ComputeCommandEncoder::DispatchTable VulkanRhiDevice::s_computeDispat
     &VulkanRhiDevice::Dispatch, &VulkanRhiDevice::DispatchIndirect};
 
 const rhi::TransferCommandEncoder::DispatchTable VulkanRhiDevice::s_transferDispatch = {
-    &VulkanRhiDevice::CopyBuffer,
-    &VulkanRhiDevice::CopyTexture,
-    &VulkanRhiDevice::ResolveTexture,
-    &VulkanRhiDevice::FillBuffer,
+    &VulkanRhiDevice::CopyBuffer, &VulkanRhiDevice::CopyTexture,  &VulkanRhiDevice::ResolveTexture,
+    &VulkanRhiDevice::FillBuffer, &VulkanRhiDevice::UpdateBuffer,
 };
 
 VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
@@ -694,8 +714,7 @@ VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
 
 VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                                  uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                                 uint32_t transferQueueFamily,
-                                 const rhi::DeviceCapabilityState &capabilityState) noexcept
+                                 uint32_t transferQueueFamily, const vk::VulkanFeatureState &capabilityState)
     : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
       m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
       m_transferQueueFamily(transferQueueFamily), m_capabilityState(capabilityState),
@@ -725,7 +744,7 @@ void VulkanRhiDevice::UseSubmissionSerials(std::function<rhi::SubmissionSerial()
 
 void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                             uint32_t graphicsQueueFamily, uint32_t computeQueueFamily, uint32_t transferQueueFamily,
-                            const rhi::DeviceCapabilityState &capabilityState) noexcept
+                            const vk::VulkanFeatureState &capabilityState) noexcept
 {
     if (m_lifetime) {
         std::unique_lock lock(m_lifetime->gate);
@@ -840,13 +859,14 @@ void VulkanRhiDevice::SaveAndDestroyPipelineCache() noexcept
     m_pipelineCache = VK_NULL_HANDLE;
 }
 
-rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byteSize)
+rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byteSize, bool concurrentQueueSharing)
 {
     return buffer == VK_NULL_HANDLE
                ? rhi::BufferHandle{}
                : Register<rhi::BufferHandle>(
                      m_buffers, m_freeBuffer,
-                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal, false});
+                     BufferPayload{
+                         buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal, concurrentQueueSharing});
 }
 
 rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)
@@ -885,9 +905,10 @@ void VulkanRhiDevice::Release(std::vector<Slot<Payload>> &slots, uint32_t &freeH
 
     slot.payload = {};
     slot.occupied = false;
-    ++slot.generation;
-    if (slot.generation == 0)
-        slot.generation = 1;
+    if (!rhi::AdvanceHandleVersion(slot.generation)) {
+        slot.nextFree = UINT32_MAX;
+        return;
+    }
     slot.nextFree = freeHead;
     freeHead = handle.index;
 }
@@ -899,10 +920,12 @@ void VulkanRhiDevice::ResetSlots(std::vector<Slot<Payload>> &slots, uint32_t &fr
     for (size_t i = slots.size(); i > 0; --i) {
         auto &slot = slots[i - 1];
         slot.payload = {};
+        if (slot.occupied)
+            (void)rhi::AdvanceHandleVersion(slot.generation);
         slot.occupied = false;
-        ++slot.generation;
+        slot.nextFree = UINT32_MAX;
         if (slot.generation == 0)
-            slot.generation = 1;
+            continue;
         slot.nextFree = freeHead;
         freeHead = static_cast<uint32_t>(i - 1);
     }
@@ -1085,7 +1108,7 @@ rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)
     if (m_device == VK_NULL_HANDLE || m_allocator == VK_NULL_HANDLE || !IsValidTextureDesc(desc))
         return {};
 
-    if (m_capabilities.backend != rhi::BackendType::Unknown) {
+    if (!m_capabilities.backendId.Empty()) {
         const auto &limits = m_capabilities.limits;
         const bool dimensionsSupported =
             (desc.dimension == rhi::TextureDimension::Texture1D && desc.width <= limits.maxTextureDimension1D &&
@@ -1424,10 +1447,25 @@ rhi::ComputePipelineHandle VulkanRhiDevice::RegisterComputePipeline(VkPipeline p
                                                       GraphicsPipelinePayload{pipeline, layout});
 }
 
+bool VulkanRhiDevice::SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32_t pushConstantBytes,
+                                             const char *pipelineKind) const
+{
+    const auto &limits = m_capabilities.limits;
+    if (bindingLayoutCount > limits.maxBindingLayouts || pushConstantBytes > limits.maxPushConstantBytes) {
+        INXLOG_ERROR(pipelineKind, " pipeline layout requires ", bindingLayoutCount, " descriptor sets and ",
+                     pushConstantBytes, " push-constant bytes; device supports ", limits.maxBindingLayouts,
+                     " descriptor sets and ", limits.maxPushConstantBytes, " push-constant bytes");
+        return false;
+    }
+    return true;
+}
+
 rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::ComputePipelineDesc &desc)
 {
     if (m_device == VK_NULL_HANDLE || !desc.computeShader.IsValid() ||
         desc.bindingLayoutCount > desc.bindingLayouts.size() || (desc.pushConstantBytes % 4u) != 0u)
+        return {};
+    if (!SupportsPipelineLayout(desc.bindingLayoutCount, desc.pushConstantBytes, "Compute"))
         return {};
 
     const VkShaderModule shader = Resolve(desc.computeShader);
@@ -1486,6 +1524,8 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
         !desc.HasValidRenderingContract() || desc.bindingLayoutCount > desc.bindingLayouts.size() ||
         desc.colorTargetCount > desc.colorTargets.size() || (desc.pushConstantBytes % 4u) != 0u ||
         (desc.pushConstantBytes > 0 && desc.pushConstantStages == rhi::ShaderStage::None))
+        return {};
+    if (!SupportsPipelineLayout(desc.bindingLayoutCount, desc.pushConstantBytes, "Graphics"))
         return {};
 
     std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
@@ -2099,6 +2139,23 @@ bool VulkanRhiDevice::FillBuffer(void *context, rhi::BufferHandle destination, u
         return false;
     vkCmdFillBuffer(command.commandBuffer, buffer->buffer, offset, byteSize, value);
     return true;
+}
+
+bool VulkanRhiDevice::UpdateBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, const void *data,
+                                   uint64_t byteSize)
+{
+    auto &command = *static_cast<VulkanTransferCommandContext *>(context);
+    const auto *buffer = command.device ? command.device->Resolve(command.device->m_buffers, destination) : nullptr;
+    if (command.commandBuffer == VK_NULL_HANDLE || !buffer || buffer->buffer == VK_NULL_HANDLE ||
+        offset > buffer->byteSize || byteSize > buffer->byteSize - offset)
+        return false;
+    if (byteSize <= 65536) {
+        // Small control blocks stay directly in the command recording.
+        vkCmdUpdateBuffer(command.commandBuffer, buffer->buffer, offset, byteSize, data);
+        return true;
+    }
+    auto *uploads = VulkanCommandUploads::Current(command.device->m_allocator, command.commandBuffer);
+    return uploads && uploads->Update(command.commandBuffer, buffer->buffer, offset, data, byteSize);
 }
 
 void VulkanRhiDevice::CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,

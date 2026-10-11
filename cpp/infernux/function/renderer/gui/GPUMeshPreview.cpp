@@ -209,14 +209,6 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     if (!EnsureResources(renderSize))
         return nullptr;
 
-    // ── Upload mesh geometry to temporary GPU buffers ────────────────
-    auto &rm = m_vkCore->GetResourceManager();
-    auto vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
-    const auto indexUpload = PreparePreviewIndices(vertices.size(), indices, mesh.GetIndexFormat());
-    auto ibo = rm.CreateIndexBuffer(indexUpload.data, indexUpload.byteSize);
-    if (!vbo || !ibo)
-        return nullptr;
-
     // ── Prepare per-submesh material pipelines ───────────────────────
     // Get a default material for submeshes without an assigned material.
     auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
@@ -300,9 +292,13 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     if (bindings.empty())
         return nullptr;
 
-    // Update UBO data for each preview material
-    for (auto &b : bindings)
+    // A thumbnail is a completed dependency product. Do not cache pixels
+    // sampled from a placeholder/old texture while its upload is pending.
+    for (auto &b : bindings) {
         m_vkCore->UpdateMaterialUBO(*b.ownedMaterial);
+        if (m_vkCore->GetMaterialPipelineManager().HasPendingTextureProperties(b.ownedMaterial->GetMaterialKey()))
+            return nullptr;
+    }
 
     // Texture synchronization may publish a copy-on-write material descriptor
     // and retire the handle captured above. Re-read every binding after the
@@ -323,6 +319,15 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
                                   }),
                    bindings.end());
     if (bindings.empty())
+        return nullptr;
+
+    // Allocate geometry only after the material textures are ready; waiting
+    // for an upload must not recreate vertex/index buffers every frame.
+    auto &rm = m_vkCore->GetResourceManager();
+    auto vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
+    const auto indexUpload = PreparePreviewIndices(vertices.size(), indices, mesh.GetIndexFormat());
+    auto ibo = rm.CreateIndexBuffer(indexUpload.data, indexUpload.byteSize);
+    if (!vbo || !ibo)
         return nullptr;
 
     // ── Scene UBO ────────────────────────────────────────────────────
@@ -679,7 +684,7 @@ bool GPUMeshPreview::EnsureResources(int size)
     VkFormat depthFormat = mpm.GetDepthFormat();
     VkSampleCountFlagBits sampleCount = mpm.GetSampleCount();
     const auto dynamicCommands = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice());
-    if (!m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled ||
+    if (!m_vkCore->GetDeviceContext().GetRhiDevice().GetVulkanFeatures().dynamicRendering.enabled ||
         !dynamicCommands.IsValid()) {
         INXLOG_ERROR("GPUMeshPreview: dynamic rendering is required for mesh previews");
         return false;
@@ -1038,8 +1043,11 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     if (bindings.empty())
         return 0;
 
-    for (auto &b : bindings)
+    for (auto &b : bindings) {
         m_vkCore->UpdateMaterialUBO(*b.ownedMaterial);
+        if (m_vkCore->GetMaterialPipelineManager().HasPendingTextureProperties(b.ownedMaterial->GetMaterialKey()))
+            return 0;
+    }
 
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
                                   [&](SubmeshBinding &binding) {

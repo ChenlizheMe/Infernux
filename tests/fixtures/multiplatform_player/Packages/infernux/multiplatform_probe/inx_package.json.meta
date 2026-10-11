@@ -1,12 +1,16 @@
 {
-  "metadata": {
-    "guid": {
-      "type": "string",
-      "value": "04000000000000000000000000000010"
-    },
-    "content_hash": {
-      "type": "string",
-      "value": "e266f709805f2a69"
+    "metadata": {
+        "file_path": {
+            "type": "string",
+            "value": "Packages/infernux/multiplatform_probe/inx_package.json"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000010"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
     }
-  }
 }

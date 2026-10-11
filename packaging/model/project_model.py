@@ -1,13 +1,17 @@
-import datetime
 import os
+import hashlib
+import ntpath
 import sys
 import json
 import subprocess
 import shutil
 import zipfile
 import uuid
+import runpy
+import sysconfig
 
 from hub_utils import is_frozen, merge_child_env_utf8
+from hub_utils import remove_directory_tree as _remove_tree
 from project_paths import inspect_existing_project, new_project_target
 from project_python_runtime import (
     project_runtime_directory,
@@ -16,59 +20,42 @@ from project_python_runtime import (
 )
 from python_runtime_catalog import PythonRuntimeId
 from python_runtime import PythonRuntimeError, PythonRuntimeManager
+from python_execution import prepare_private_runtime_paths, python_executable_path
+from version_manager import wheel_platform_compatible, wheel_python_version, wheel_release
+from wheel_identity import validate_wheel_identity
+from engine_wheel import read_project_template, runtime_package_script
 
 # Suppress console windows for all child processes on Windows
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
 
-_COMPONENT_SCRIPT_NAMESPACE = uuid.UUID("594f85cc-9c3a-4ea9-93ed-65a26f77e3a4")
-_COMPONENT_TYPE_NAMESPACE = uuid.UUID("41934666-ab60-4a29-b7ae-c8e15faf83c2")
-
 def _project_python_version(project_dir: str) -> str:
-    version = read_project_python_version(project_dir, required=is_frozen())
-    if version:
-        return version
-    return f"{sys.version_info.major}.{sys.version_info.minor}"
+    return read_project_python_version(project_dir)
 
 
-def _engine_component_type_id(module_name: str, qualified_name: str) -> str:
-    """Return the stable scene identity used by engine-owned Python components."""
-    script_guid = uuid.uuid5(_COMPONENT_SCRIPT_NAMESPACE, module_name).hex
-    type_guid = uuid.uuid5(
-        _COMPONENT_TYPE_NAMESPACE,
-        f"{module_name}:{qualified_name}",
-    ).hex
-    return f"python:{script_guid}:{type_guid}:{module_name}:{qualified_name}"
+def source_engine_version() -> str:
+    """Read the source release identity without importing the native engine."""
+    engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return runpy.run_path(os.path.join(engine_root, "python", "infernux", "version.py"))["ENGINE_RELEASE"]
 
 
-def _write_json_document(path: str, document: dict) -> None:
+def _write_json_document(path: str, document: dict, *, indent: int = 2) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as stream:
-        json.dump(document, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dump(document, stream, ensure_ascii=False, indent=indent, sort_keys=True)
         stream.write("\n")
 
 
-def _write_asset_identity_meta(path: str, guid: str, resource_type: str) -> None:
+def _write_asset_identity_meta(path: str, guid: str, resource_type: str, *, project_root: str) -> None:
     """Seed an asset identity before the first AssetDatabase scan.
 
     The first AssetDatabase scan fills the derived metadata while preserving
     this GUID, so generated references are valid from frame zero.
     """
-    with open(path, "rb") as stream:
-        content = stream.read()
-
-    content_hash = 14695981039346656037
-    for byte in content:
-        content_hash ^= byte
-        content_hash = (content_hash * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-
     _write_json_document(
         path + ".meta",
         {
             "metadata": {
-                "content_hash": {
-                    "type": "string",
-                    "value": f"{content_hash:016x}",
-                },
+                "file_path": {"type": "string", "value": os.path.relpath(path, project_root).replace("\\", "/")},
                 "guid": {"type": "string", "value": guid},
                 "resource_type": {
                     "type": "enum infernux::ResourceType",
@@ -76,269 +63,68 @@ def _write_asset_identity_meta(path: str, guid: str, resource_type: str) -> None
                 },
             }
         },
+        indent=4,
     )
 
 
-def _default_scene_document(default_effect_guid: str) -> dict:
-    render_stack_type = _engine_component_type_id(
-        "Infernux.renderstack.render_stack",
-        "RenderStack",
-    )
-    return {
-        "isPlaying": False,
-        "mainCameraComponentId": 2,
-        "name": "Start",
-        "objects": [
-            {
-                "active": True,
-                "children": [],
-                "components": [
-                    {
-                        "component_id": 2,
-                        "data": {
-                            "aspectRatio": 1.7777777910232544,
-                            "backgroundColor": [0.1, 0.1, 0.1, 1.0],
-                            "clearFlags": 0,
-                            "cullingMask": 4294967295,
-                            "depth": 0.0,
-                            "dithering": False,
-                            "farClip": 5000.0,
-                            "fov": 60.0,
-                            "usePhysicalProperties": False,
-                            "iso": 200,
-                            "shutterSpeed": 0.005,
-                            "aperture": 16.0,
-                            "focusDistance": 10.0,
-                            "focalLength": 50.0,
-                            "bladeCount": 5,
-                            "curvature": [2.0, 11.0],
-                            "barrelClipping": 0.25,
-                            "anamorphism": 0.0,
-                            "sensorSize": [36.0, 24.0],
-                            "lensShift": [0.0, 0.0],
-                            "gateFit": 2,
-                            "nearClip": 0.01,
-                            "orthoSize": 5.0,
-                            "projectionMode": 0,
-                            "stopNaNs": False,
-                            "targetTextureGuid": "",
-                        },
-                        "enabled": True,
-                        "execution_order": 0,
-                        "type_id": "native:infernux.Camera",
-                    }
-                ],
-                "id": 1,
-                "is_static": False,
-                "layer": 0,
-                "name": "Main Camera",
-                "tag": "MainCamera",
-                "transform": {
-                    "component_id": 1,
-                    "enabled": True,
-                    "execution_order": 0,
-                    "position": [0.0, 1.0, -10.0],
-                    "rotation": [0.0, 0.0, 0.0],
-                    "scale": [1.0, 1.0, 1.0],
-                    "type": "Transform",
-                },
-            },
-            {
-                "active": True,
-                "children": [],
-                "components": [
-                    {
-                        "component_id": 4,
-                        "data": {
-                            "baked": False,
-                            "areaSize": [1.6, 1.0],
-                            "areaTwoSided": False,
-                            "color": [1.0, 0.95, 0.9],
-                            "useColorTemperature": False,
-                            "colorTemperature": 6500.0,
-                            "cullingMask": 4294967295,
-                            "influenceDomains": 3,
-                            "intensity": 1.0,
-                            "lightType": 0,
-                            "outerSpotAngle": 45.0,
-                            "range": 10.0,
-                            "renderMode": 0,
-                            "shadowSoftness": 1.5,
-                            "shadowStrength": 1.0,
-                            "shadows": 2,
-                            "spotAngle": 30.0,
-                        },
-                        "enabled": True,
-                        "execution_order": 0,
-                        "type_id": "native:infernux.Light",
-                    }
-                ],
-                "id": 2,
-                "is_static": False,
-                "layer": 0,
-                "name": "Directional Light",
-                "tag": "Untagged",
-                "transform": {
-                    "component_id": 3,
-                    "enabled": True,
-                    "execution_order": 0,
-                    "position": [0.0, 0.0, 0.0],
-                    "rotation": [50.0, 330.0, 0.0],
-                    "scale": [1.0, 1.0, 1.0],
-                    "type": "Transform",
-                },
-            },
-            {
-                "active": True,
-                "children": [],
-                "components": [
-                    {
-                        "component_id": 6,
-                        "data": {
-                            "effect_slots": [
-                                {
-                                    "$type": "serializable_object",
-                                    "fields": {
-                                        "effect": {
-                                            "$type": "asset_ref",
-                                            "asset_type": "RenderEffect",
-                                            "guid": default_effect_guid,
-                                            "path_hint": "Assets/Rendering/Default Post Processing.effectgroup",
-                                        },
-                                        "enabled": True,
-                                        "slot_id": "default_post_processing",
-                                        "stage_id": "final",
-                                    },
-                                    "type_id": "Infernux.renderstack.effect_slot:EffectSlot",
-                                }
-                            ],
-                            "pipeline_class_name": "",
-                            "pipeline_params_json": "",
-                        },
-                        "enabled": True,
-                        "execution_order": 0,
-                        "type_id": render_stack_type,
-                    }
-                ],
-                "id": 3,
-                "is_static": False,
-                "layer": 0,
-                "name": "RenderStack",
-                "tag": "Untagged",
-                "transform": {
-                    "component_id": 5,
-                    "enabled": True,
-                    "execution_order": 0,
-                    "position": [0.0, 0.0, 0.0],
-                    "rotation": [0.0, 0.0, 0.0],
-                    "scale": [1.0, 1.0, 1.0],
-                    "type": "Transform",
-                },
-            },
-        ],
-    }
+def _read_source_project_template(name: str) -> bytes:
+    engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    path = os.path.join(engine_root, "python", "infernux", "templates", "project", name)
+    try:
+        with open(path, "rb") as stream:
+            return stream.read()
+    except OSError as exc:
+        raise RuntimeError(f"Required Infernux project template is unavailable: {name}") from exc
 
 
 def _create_default_project_content(
     staging_dir: str,
     project_name: str,
+    *,
+    read_template=None,
 ) -> None:
+    """Publish the selected engine's minimal URP-style project template."""
+    read_template = read_template or _read_source_project_template
     assets_dir = os.path.join(staging_dir, "Assets")
-    for folder in (
-        "Scenes",
-        "Rendering",
-        "Materials",
-        "Scripts",
-        "Textures",
-        "Models",
-        "Audio",
-    ):
+    for folder in ("Scenes", "Settings"):
         os.makedirs(os.path.join(assets_dir, folder), exist_ok=True)
 
-    bloom_guid = uuid.uuid4().hex
-    tone_mapping_guid = uuid.uuid4().hex
-    effect_group_guid = uuid.uuid4().hex
-    bloom = {
-        "$schema": "infernux.render_effect",
-        "dependencies": [],
-        "feature_type": "infernux.post.bloom",
-        "parameters": {
-            "clamp": 65472.0,
-            "intensity": 0.8,
-            "max_iterations": 5,
-            "scatter": 0.7,
-            "threshold": 1.0,
-            "tint": [1.0, 1.0, 1.0, 1.0],
-        },
+    scene_guid, bloom_guid, tone_guid, group_guid = (uuid.uuid4().hex for _ in range(4))
+    replacements = {
+        "@BLOOM_GUID@": bloom_guid,
+        "@TONEMAPPING_GUID@": tone_guid,
+        "@EFFECT_GROUP_GUID@": group_guid,
     }
-    tone_mapping = {
-        "$schema": "infernux.render_effect",
-        "dependencies": [],
-        "feature_type": "infernux.post.tonemapping",
-        "parameters": {"exposure": 1.0, "mode": 2},
-    }
-    effect_group = {
-        "$schema": "infernux.render_effect_group",
-        "entries": [
-            {
-                "asset": {
-                    "guid": bloom_guid,
-                    "path_hint": "Assets/Rendering/Bloom.effect",
-                },
-                "enabled": True,
-                "entry_id": "bloom",
-                "overrides": {},
-            },
-            {
-                "asset": {
-                    "guid": tone_mapping_guid,
-                    "path_hint": "Assets/Rendering/ACES Tone Mapping.effect",
-                },
-                "enabled": True,
-                "entry_id": "tonemapping",
-                "overrides": {},
-            },
-        ],
-    }
-    rendering_dir = os.path.join(assets_dir, "Rendering")
-    bloom_path = os.path.join(rendering_dir, "Bloom.effect")
-    tone_mapping_path = os.path.join(rendering_dir, "ACES Tone Mapping.effect")
-    effect_group_path = os.path.join(rendering_dir, "Default Post Processing.effectgroup")
-    _write_json_document(bloom_path, bloom)
-    _write_json_document(
-        tone_mapping_path,
-        tone_mapping,
+    templates = (
+        ("default_scene.json", "Scenes/SampleScene.scene", scene_guid, "DefaultText"),
+        ("default_bloom.json", "Settings/Bloom.effect", bloom_guid, "RenderEffect"),
+        ("default_tonemapping.json", "Settings/ACES Tone Mapping.effect", tone_guid, "RenderEffect"),
+        ("default_effect_group.json", "Settings/Default Post Processing.effectgroup", group_guid, "RenderEffect"),
     )
-    _write_json_document(
-        effect_group_path,
-        effect_group,
-    )
-    _write_asset_identity_meta(bloom_path, bloom_guid, "RenderEffect")
-    _write_asset_identity_meta(tone_mapping_path, tone_mapping_guid, "RenderEffect")
-    _write_asset_identity_meta(effect_group_path, effect_group_guid, "RenderEffect")
+    documents = {name: read_template(name) for name, *_ in templates}
+    if all(content is None for content in documents.values()):
+        # Older wheels let their own Editor bootstrap the initial scene. Do
+        # not inject this Hub's newer scene/component serialization into them.
+        return
+    missing = [name for name, content in documents.items() if content is None]
+    if missing:
+        raise RuntimeError(f"Incomplete engine scene templates: {', '.join(missing)}")
+    for template_name, relative, guid, resource_type in templates:
+        text = documents[template_name].decode("utf-8")
+        for token, value in replacements.items():
+            text = text.replace(token, value)
+        document = json.loads(text)
+        path = os.path.join(assets_dir, *relative.split("/"))
+        _write_json_document(path, document)
+        _write_asset_identity_meta(path, guid, resource_type, project_root=staging_dir)
 
-    scene_path = os.path.join(assets_dir, "Scenes", "Start.scene")
-    _write_json_document(scene_path, _default_scene_document(effect_group_guid))
-    scene_guid = uuid.uuid4().hex
-    # Scenes are text assets in the native ResourceType contract.
-    _write_asset_identity_meta(scene_path, scene_guid, "DefaultText")
     _write_json_document(
         os.path.join(staging_dir, "ProjectSettings", "BuildSettings.json"),
         {
-            "build_target": "",
-            "debug_mode": False,
-            "game_name": project_name,
-            "icon_guid": "",
-            "lto": True,
-            "output_dir": "",
-            "scene_guids": [scene_guid],
-            "splash_items": [],
-            "platform_options": {},
+            "build_target": "", "debug_mode": False, "game_name": project_name,
+            "icon_guid": "", "lto": True, "output_dir": "",
+            "scene_guids": [scene_guid], "splash_items": [], "platform_options": {},
         },
-    )
-    _write_json_document(
-        os.path.join(staging_dir, "ProjectSettings", "EditorSettings.json"),
-        {"lastOpenedSceneGuid": scene_guid},
     )
 
 
@@ -370,6 +156,7 @@ def _run_hidden(args: list[str], *, timeout: int) -> subprocess.CompletedProcess
     try:
         return subprocess.run(
             args,
+            executable=python_executable_path(args[0]),
             check=True,
             timeout=timeout,
             **_popen_kwargs(capture_output=True),
@@ -393,18 +180,13 @@ def _summarize_output(output: str) -> str:
     return "\n".join(lines[-20:])
 
 
-_NATIVE_IMPORT_SMOKE_TEST = (
-    "import Infernux.lib\n"
-    "print('INFERNUX_NATIVE_IMPORT_OK')\n"
-)
-
-
 def _wheel_install_fingerprint(wheel_path: str) -> str:
     try:
-        stat = os.stat(wheel_path)
+        with open(wheel_path, "rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
     except OSError:
         return ""
-    return f"{os.path.abspath(wheel_path)}\n{stat.st_size}\n{stat.st_mtime_ns}\n"
+    return f"{os.path.abspath(wheel_path)}\nsha256:{digest}\n"
 
 
 def _project_wheel_marker(project_dir: str) -> str:
@@ -427,27 +209,12 @@ def _distribution_files_present(site_packages: str, distribution_name: str) -> b
     return False
 
 
-def _remove_tree(path: str) -> None:
-    if not path or not os.path.exists(path):
-        return
-    if sys.platform == "win32":
-        completed = subprocess.run(
-            ["cmd", "/c", "rd", "/s", "/q", path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=_NO_WINDOW,
-            env=merge_child_env_utf8(),
-        )
-        if completed.returncode == 0 and not os.path.exists(path):
-            return
-    shutil.rmtree(path, ignore_errors=True)
-
-
 def _safe_wheel_member_path(name: str) -> str:
-    normalized = name.replace("\\", "/").lstrip("/")
+    normalized = name.replace("\\", "/")
     parts = [part for part in normalized.split("/") if part]
-    if not parts or any(part == ".." for part in parts):
-        return ""
+    if (not parts or normalized.startswith("/") or ntpath.splitdrive(normalized)[0]
+            or any(part in {".", ".."} or ":" in part for part in parts)):
+        raise ValueError(f"Unsafe wheel member path: {name!r}")
     return os.path.join(*parts)
 
 
@@ -466,21 +233,38 @@ def _wheel_target_relative_path(member_name: str) -> str:
 def _remove_installed_distribution(site_packages: str, distribution_name: str) -> None:
     normalized_package = distribution_name.replace("-", "_").lower()
     dist_info_prefix = distribution_name.replace("_", "-").lower() + "-"
+    # These entrances belonged to the former uppercase package/flat facade.
+    # An upgrade must leave only the wheel's real lowercase package and stubs.
+    retired_entrances = (
+        {"infernux.py", "infernux.pyi", "infernux-stubs"}
+        if normalized_package == "infernux" else set()
+    )
     names = os.listdir(site_packages)
 
     for name in names:
         lower_name = name.lower()
-        if lower_name == normalized_package or (
+        if lower_name == normalized_package or lower_name in retired_entrances or (
             lower_name.startswith(dist_info_prefix) and lower_name.endswith(".dist-info")
         ):
             path = os.path.join(site_packages, name)
             if os.path.isdir(path) and not os.path.islink(path):
-                _remove_tree(path)
+                shutil.rmtree(path)
             else:
                 os.remove(path)
 
 
 def _install_wheel_direct(wheel_path: str, site_packages: str, distribution_name: str) -> None:
+    # This path deliberately bypasses pip, so it must retain pip's platform
+    # and metadata checks before removing a working project installation.
+    if not wheel_platform_compatible(wheel_path):
+        raise ValueError(f"Wheel is not compatible with this platform: {os.path.basename(wheel_path)}")
+    validate_wheel_identity(wheel_path)
+    with zipfile.ZipFile(wheel_path) as archive:
+        for member in archive.infolist():
+            _wheel_target_relative_path(member.filename)
+        corrupt = archive.testzip()
+        if corrupt:
+            raise ValueError(f"Corrupted wheel member: {corrupt}")
     os.makedirs(site_packages, exist_ok=True)
     _remove_installed_distribution(site_packages, distribution_name)
 
@@ -572,6 +356,13 @@ class ProjectModel:
                     f"Infernux {engine_version} is not installed in Hub."
                 )
         else:
+            current_version = source_engine_version()
+            if engine_version and engine_version != current_version:
+                raise RuntimeError(
+                    f"The source engine is Infernux {current_version}, not {engine_version}. "
+                    "Create and open projects with the exact same engine version."
+                )
+            engine_version = current_version
             target_python_version = (
                 f"{sys.version_info.major}.{sys.version_info.minor}"
             )
@@ -587,12 +378,13 @@ class ProjectModel:
         committed = False
 
         try:
-            for subdir in ("ProjectSettings", "Logs", "Library", "Assets"):
+            for subdir in ("ProjectSettings", "Assets"):
                 os.makedirs(os.path.join(staging_dir, subdir))
 
             _create_default_project_content(
                 staging_dir,
                 project_name,
+                read_template=lambda name: self._read_bundled_support_file(name, engine_version, required=False),
             )
 
             self._copy_bundled_project_gitignore(
@@ -608,13 +400,10 @@ class ProjectModel:
             self._copy_bundled_requirements(req_path, engine_version)
 
             ini_path = os.path.join(staging_dir, f"{project_name}.ini")
-            now = datetime.datetime.now()
             with open(ini_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write("[Project]\n")
                 f.write(f"name = {project_name}\n")
-                f.write(f"path = {final_dir}\n")
-                f.write(f"created_at = {now}\n")
-                f.write(f"changed_at = {now}\n")
+                f.write("path = .\n")
 
             if engine_version:
                 from version_manager import VersionManager
@@ -654,8 +443,9 @@ class ProjectModel:
         _run_hidden(
             [
                 project_python,
-                "-m",
-                "Infernux.plugins.official",
+                "-c",
+                runtime_package_script(installed=is_frozen())
+                + "import runpy\nrunpy.run_module(_engine_package + '.plugins.official', run_name='__main__')\n",
                 "--project",
                 project_dir,
             ],
@@ -668,40 +458,21 @@ class ProjectModel:
         dest_path: str,
         engine_version: str,
     ) -> None:
-        """Copy one support template from the source tree or selected wheel."""
-        import zipfile
+        """Copy one template owned by the selected engine version."""
+        content = self._read_bundled_support_file(source_name, engine_version)
+        with open(dest_path, "wb") as stream:
+            stream.write(content)
 
-        engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        source_path = os.path.join(
-            engine_root,
-            "python",
-            "Infernux",
-            "resources",
-            "project_templates",
-            source_name,
+    def _read_bundled_support_file(self, source_name: str, engine_version: str, *, required: bool = True) -> bytes | None:
+        if not is_frozen():
+            return _read_source_project_template(source_name)
+        wheel = (
+            self.version_manager.get_wheel_path(engine_version)
+            if engine_version and self.version_manager is not None else ""
         )
-        if os.path.isfile(source_path):
-            shutil.copy2(source_path, dest_path)
-            return
-
-        wheel = ""
-        if engine_version and self.version_manager is not None:
-            wheel = self.version_manager.get_wheel_path(engine_version) or ""
-        if wheel and os.path.isfile(wheel):
-            with zipfile.ZipFile(wheel) as zf:
-                archive_suffix = f"resources/project_templates/{source_name}"
-                matches = [name for name in zf.namelist() if name.endswith(archive_suffix)]
-                if len(matches) != 1:
-                    raise RuntimeError(
-                        f"Infernux wheel must contain exactly one current project "
-                        f"template '{archive_suffix}', found {len(matches)}"
-                    )
-                with zf.open(matches[0]) as src, open(dest_path, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                return
-        raise RuntimeError(
-            f"Required Infernux project template is unavailable: {source_name}"
-        )
+        if not wheel or not os.path.isfile(wheel):
+            raise RuntimeError(f"Required Infernux project template is unavailable: {source_name}")
+        return read_project_template(wheel, source_name, required=required)
 
     def _copy_bundled_project_gitignore(self, dest_path: str, engine_version: str) -> None:
         self._copy_bundled_support_file(
@@ -719,7 +490,7 @@ class ProjectModel:
         """Copy the default requirements.txt to *dest_path*.
 
         Resolves the file from the source tree (dev mode) or extracts it
-        from the engine wheel, avoiding any ``import Infernux`` in the Hub
+        from the engine wheel, avoiding any ``import infernux`` in the Hub
         process (which doesn't have the engine package installed).
         """
         self._copy_bundled_support_file("requirements.txt", dest_path, engine_version)
@@ -748,10 +519,22 @@ class ProjectModel:
             return os.path.join(venv_dir, "Scripts", "python.exe")
         return os.path.join(venv_dir, "bin", "python")
 
-    def _create_project_runtime(self, project_dir: str, *, on_status=None) -> None:
+    def _create_project_runtime(
+        self,
+        project_dir: str,
+        *,
+        on_status=None,
+        replace_existing: bool = False,
+    ) -> None:
         if is_frozen():
             target_version = read_project_python_version(project_dir)
             runtime_path = project_runtime_directory(project_dir, target_version)
+            if replace_existing and os.path.exists(runtime_path):
+                # The project runtime is generated state and is deliberately
+                # ignored by Git.  A missing executable means a partial clone
+                # or interrupted copy; rebuild that cache from the Hub-owned
+                # runtime before launch.
+                _remove_tree(runtime_path)
             try:
                 self.runtime_manager.create_project_runtime(
                     runtime_path,
@@ -815,10 +598,30 @@ class ProjectModel:
                 "Open the Installs page and install that engine version first."
             )
 
+        if (not wheel_platform_compatible(wheel) or wheel_release(wheel) != engine_version
+                or wheel_python_version(wheel) != project_python_version):
+            raise RuntimeError(
+                f"Incompatible cached engine wheel: {os.path.basename(wheel)}. "
+                f"Project requires Infernux {engine_version}, Python {project_python_version}, {sys.platform}. "
+                "Update Hub itself and reinstall the matching engine in Installs."
+            )
+        validate_wheel_identity(wheel)
+        actual_python = _run_hidden(
+            [project_python, "-I", "-c", "import sys; print('%s.%s' % sys.version_info[:2])"],
+            timeout=30,
+        ).stdout.strip()
+        if actual_python != project_python_version:
+            raise RuntimeError(
+                f"Project Python ABI mismatch: expected {project_python_version}, got {actual_python} "
+                f"at {project_python}. Repair the project runtime before installing engine files."
+            )
+
         if on_status:
             on_status("Checking the project runtime...")
+        prepare_private_runtime_paths(os.path.dirname(project_python) if sys.platform == "win32"
+                                      else os.path.dirname(os.path.dirname(project_python)))
         site_packages = ProjectModel._get_site_packages(project_dir)
-        distribution_present = _distribution_files_present(site_packages, "Infernux")
+        distribution_present = _distribution_files_present(site_packages, "infernux")
         marker_path = _project_wheel_marker(project_dir)
         expected_fingerprint = _wheel_install_fingerprint(wheel)
         installed_fingerprint = ""
@@ -841,7 +644,7 @@ class ProjectModel:
 
         if on_status:
             on_status("Installing Infernux engine files...")
-        _install_wheel_direct(wheel, site_packages, "Infernux")
+        _install_wheel_direct(wheel, site_packages, "infernux")
         if on_status:
             on_status("Validating project runtime...")
         ProjectModel.validate_python_runtime(project_python)
@@ -857,7 +660,11 @@ class ProjectModel:
                 "The project runtime may not have been created correctly."
             )
 
-        _run_hidden([project_python, "-c", _NATIVE_IMPORT_SMOKE_TEST], timeout=120)
+        script = runtime_package_script(installed=is_frozen()) + (
+            "importlib.import_module(_engine_package + '.lib')\n"
+            "print('INFERNUX_NATIVE_IMPORT_OK')\n"
+        )
+        _run_hidden([project_python, "-c", script], timeout=120)
 
     @staticmethod
     def validate_project_runtime(project_dir: str) -> None:
@@ -899,7 +706,10 @@ class ProjectModel:
         os.makedirs(vscode_dir, exist_ok=True)
 
         # ── settings.json ───────────────────────────────────────────────
-        site_packages = ProjectModel._get_site_packages(project_dir)
+        site_packages = (
+            os.path.relpath(ProjectModel._get_site_packages(project_dir), project_dir)
+            if is_frozen() else sysconfig.get_path("purelib")
+        ).replace("\\", "/")
         vscode_python = ProjectModel._vscode_python_path(project_dir)
         settings = {
             "python.defaultInterpreterPath": vscode_python,
@@ -938,29 +748,17 @@ class ProjectModel:
             json.dump(extensions, f, indent=4, ensure_ascii=False)
 
         # ── pyrightconfig.json (at project root) ────────────────────────
-        # In frozen mode, point Pyright directly at the project runtime Python;
-        # in dev mode, use the classic venvPath/venv convention.
+        # Search the same environment that launches the editor. A source Hub
+        # uses its own interpreter, rather than an assumed project .venv.
         python_version = _project_python_version(project_dir)
-        if is_frozen():
-            pyright_config = {
-                "pythonVersion": python_version,
-                "typeCheckingMode": "basic",
-                "reportMissingModuleSource": False,
-                "reportWildcardImportFromLibrary": False,
-                "extraPaths": [site_packages],
-                "include": ["Assets"],
-            }
-        else:
-            pyright_config = {
-                "venvPath": ".",
-                "venv": ".venv",
-                "pythonVersion": python_version,
-                "typeCheckingMode": "basic",
-                "reportMissingModuleSource": False,
-                "reportWildcardImportFromLibrary": False,
-                "extraPaths": [site_packages],
-                "include": ["Assets"],
-            }
+        pyright_config = {
+            "pythonVersion": python_version,
+            "typeCheckingMode": "basic",
+            "reportMissingModuleSource": False,
+            "reportWildcardImportFromLibrary": False,
+            "extraPaths": [site_packages],
+            "include": ["Assets"],
+        }
         pyright_path = os.path.join(project_dir, "pyrightconfig.json")
         with open(pyright_path, "w", encoding="utf-8") as f:
             json.dump(pyright_config, f, indent=4, ensure_ascii=False)
@@ -969,7 +767,6 @@ class ProjectModel:
     def _vscode_python_path(project_dir: str) -> str:
         """Return the interpreter path VSCode should store in settings.json."""
         if is_frozen():
-            return ProjectModel._get_project_python(project_dir).replace("\\", "/")
-        if sys.platform == "win32":
-            return "${workspaceFolder}/.venv/Scripts/python.exe"
-        return "${workspaceFolder}/.venv/bin/python"
+            relative = os.path.relpath(ProjectModel._get_project_python(project_dir), project_dir)
+            return "${workspaceFolder}/" + relative.replace("\\", "/")
+        return sys.executable.replace("\\", "/")

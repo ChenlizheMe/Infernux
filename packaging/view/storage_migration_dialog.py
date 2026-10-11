@@ -1,10 +1,11 @@
 """Modal Hub migration progress; disk copying never blocks the GUI thread."""
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout
 
 from i18n import tr
 from shared_storage_migration import migrate_legacy_storage
+from view.forge import HazardStripe, SegmentMeter, mono_label
 
 
 class _MigrationThread(QThread):
@@ -32,12 +33,26 @@ class StorageMigrationDialog(QDialog):
         self.setWindowTitle(tr("Migrate Legacy Resources"))
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self._stripe = HazardStripe(5)
+        self._stripe.set_active(True)
+        layout.addWidget(self._stripe)
+        body = QVBoxLayout()
+        body.setContentsMargins(24, 18, 24, 22)
+        body.setSpacing(10)
+        body.addWidget(mono_label(tr("STORAGE  ·  TRANSFER IN PROGRESS"), "pageKicker", spacing=1.6))
+        title = QLabel(tr("Migrate Legacy Resources"))
+        title.setObjectName("dialogTitle")
+        body.addWidget(title)
         self.status = QLabel(tr("Moving resources. Keep Hub open until this finishes."))
+        self.status.setObjectName("dialogBody")
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        progress = QProgressBar()
-        progress.setRange(0, 0)
-        layout.addWidget(progress)
+        body.addWidget(self.status)
+        meter = SegmentMeter(height=6)
+        meter.set_fraction(None)
+        body.addWidget(meter)
+        layout.addLayout(body)
         self.worker = _MigrationThread(plan, project_roots, self)
         self.worker.progress.connect(self.status.setText)
         self.worker.finished.connect(self.accept)

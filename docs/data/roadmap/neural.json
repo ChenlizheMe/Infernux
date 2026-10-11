@@ -1,0 +1,262 @@
+{
+  "key": "neural",
+  "titleKey": "roadmap.galaxy.neural.title",
+  "branches": [
+    {
+      "en": "JIT TARGETS",
+      "zh": "JIT 目标",
+      "leaves": [
+        ["CPU kernels","CPU Kernel","live"],
+        ["GPU kernels","GPU Kernel","live"],
+        ["Taichi bridge","Taichi 桥","live"],
+        ["Portable warmup cache","可移植预热缓存","live"],
+        ["Kernel specialization","内核特化","live"],
+        ["Compilation budgets","编译预算","live"],
+        ["Target feature gates","目标能力门控","live"],
+        ["Kernel diagnostics","内核诊断","live"]
+      ]
+    },
+    {
+      "en": "TENSOR PLANE",
+      "zh": "张量数据面",
+      "leaves": [
+        ["Observation tensors","观测张量","planned"],
+        ["Replay datasets","回放数据集","planned"],
+        ["Batch stepping","批量步进","planned"],
+        ["Inference buffers","推理缓冲","planned"],
+        ["Tensor shape declarations","张量形状声明","planned"],
+        ["Device memory ownership","设备内存归属","planned"],
+        ["Asynchronous tensor transfer","异步张量传输","planned"]
+      ]
+    },
+    {
+      "en": "Compute execution",
+      "zh": "计算执行",
+      "leaves": [
+        ["CPU kernel scheduling","CPU 内核调度","live"],
+        ["GPU dispatch batching","GPU 分派批处理","live"],
+        ["JIT warmup manifests","JIT 预热清单","live"],
+        ["AOT target preparation","AOT 目标准备","live"],
+        ["Compute resource lifetime","计算资源生命周期","live"],
+        ["Compute error attribution","计算错误归因","live"],
+        ["Transfer cost profiling","传输成本分析","live"],
+        ["Cross-target compute contracts","跨目标计算契约","live"]
+      ]
+    },
+    {
+      "en": "Model runtime",
+      "zh": "模型运行时",
+      "leaves": [
+        ["Inference backend interface","推理后端接口","planned"],
+        ["Model package metadata","模型包元数据","planned"],
+        ["Input / output binding","输入输出绑定","planned"],
+        ["Model warmup","模型预热","planned"],
+        ["Inference scheduling","推理调度","planned"],
+        ["Quantization profiles","量化配置","future"],
+        ["Model replacement transactions","模型替换事务","planned"],
+        ["Inference performance budgets","推理性能预算","planned"]
+      ]
+    },
+    {
+      "en": "Training environments",
+      "zh": "训练环境",
+      "leaves": [
+        ["Vectorized environment stepping","向量化环境步进","planned"],
+        ["Batch reset semantics","批量重置语义","planned"],
+        ["Episode lifecycle","Episode 生命周期","planned"],
+        ["Reward / termination contracts","奖励与终止契约","planned"],
+        ["Seed distribution","随机种子分配","planned"],
+        ["Curriculum parameters","课程参数","future"],
+        ["Headless rollout workers","无窗口采样执行器","planned"],
+        ["Training framework adapters","训练框架适配器","planned"]
+      ]
+    },
+    {
+      "en": "Datasets & evaluation",
+      "zh": "数据集与评估",
+      "leaves": [
+        ["Trajectory recording","轨迹记录","planned"],
+        ["Dataset schema versions","数据集结构版本","planned"],
+        ["Observation provenance","观测数据来源","future"],
+        ["Dataset slicing","数据集切片","future"],
+        ["Offline policy evaluation","离线策略评估","future"],
+        ["Scenario benchmark suites","场景基准套件","planned"],
+        ["Reproducible experiment records","可复现实验记录","future"]
+      ]
+    },
+    {
+      "en": "Model interoperability",
+      "zh": "模型互操作",
+      "leaves": [
+        ["Model format import","模型格式导入","planned"],
+        ["Operator capability inventory","算子能力清单","planned"],
+        ["Dynamic shape profiles","动态形状配置","planned"],
+        ["Tensor dtype negotiation","张量类型协商","planned"],
+        ["Backend conformance cases","后端一致性用例","planned"],
+        ["Model metadata inspection","模型元数据检查","planned"],
+        ["Framework export recipes","框架导出流程","planned"],
+        ["Custom operator registration","自定义算子注册","future"]
+      ]
+    },
+    {
+      "en": "Accelerated execution",
+      "zh": "加速执行",
+      "leaves": [
+        ["SIMD kernel dispatch","SIMD 内核分派","planned"],
+        ["GPU command stream ownership","GPU 命令流归属","live"],
+        ["Tensor memory pooling","张量内存池","planned"],
+        ["Pinned host transfers","固定主机内存传输","planned"],
+        ["Kernel fusion planning","内核融合规划","future"],
+        ["Mixed precision execution","混合精度执行","future"],
+        ["Multi-device partitioning","多设备分区","future"],
+        ["Compute throughput benchmarks","计算吞吐基准","planned"]
+      ]
+    },
+    {
+      "en": "Neural deployment",
+      "zh": "神经计算部署",
+      "leaves": [
+        ["Target inference profiles","目标推理配置","planned"],
+        ["Model asset cooking","模型资产烘焙","planned"],
+        ["Inference dependency manifests","推理依赖清单","planned"],
+        ["Mobile inference budgets","移动端推理预算","planned"],
+        ["Browser inference constraints","浏览器推理约束","planned"],
+        ["Inference startup diagnostics","推理启动诊断","planned"],
+        ["Model upgrade compatibility","模型升级兼容性","planned"]
+      ]
+    },
+    {
+      "en": "Neural development tools",
+      "zh": "神经计算开发工具",
+      "leaves": [
+        ["Operator timeline traces","算子时间线追踪","planned"],
+        ["Model memory attribution","模型内存归因","planned"],
+        ["Inference request inspector","推理请求检查器","planned"],
+        ["Policy action inspection","策略动作检查","planned"],
+        ["Model accuracy comparisons","模型精度对比","planned"],
+        ["End-to-end latency traces","端到端延迟追踪","planned"]
+      ]
+    },
+    {
+      "en": "Tensor layout details",
+      "zh": "张量布局细节",
+      "leaves": [
+        ["Symbolic tensor dimensions","符号张量维度","planned"],
+        ["Tensor dtype promotion rules","张量类型提升规则","planned"],
+        ["Tensor transfer completion events","张量传输完成事件","planned"],
+        ["Tensor allocation reuse barriers","张量分配复用屏障","planned"],
+        ["Tensor shape mismatch reports","张量形状不匹配报告","planned"],
+        ["Tensor memory footprint views","张量内存足迹视图","planned"],
+        ["Tensor layout conformance cases","张量布局一致性用例","planned"]
+      ]
+    },
+    {
+      "en": "Kernel compiler details",
+      "zh": "内核编译器细节",
+      "leaves": [
+        ["Kernel typed intermediate representation","内核类型化中间表示","live"],
+        ["Kernel control-flow verification","内核控制流验证","live"],
+        ["Kernel alias analysis","内核别名分析","live"],
+        ["Loop dependence analysis","循环依赖分析","live"],
+        ["Kernel specialization cache keys","内核特化缓存键","live"],
+        ["Compilation source location mapping","编译源码位置映射","live"],
+        ["CPU ISA target selection","CPU 指令集目标选择","planned"],
+        ["Kernel compile-time tracing","内核编译耗时追踪","live"],
+        ["Kernel numeric mode declarations","内核数值模式声明","planned"],
+        ["Kernel generated-code inspection","内核生成代码检查","planned"]
+      ]
+    },
+    {
+      "en": "GPU workload mechanics",
+      "zh": "GPU 工作负载细节",
+      "leaves": [
+        ["Workgroup shape selection","工作组形状选择","planned"],
+        ["GPU reduction tree ordering","GPU 归约树顺序","planned"],
+        ["GPU prefix scan primitives","GPU 前缀扫描原语","planned"],
+        ["Dispatch dependency barriers","分派依赖屏障","live"],
+        ["Indirect compute dispatch sizing","间接计算分派尺寸","planned"],
+        ["Compute staging memory budgets","计算暂存内存预算","planned"],
+        ["GPU kernel timeout attribution","GPU 内核超时归因","planned"]
+      ]
+    },
+    {
+      "en": "Inference graph details",
+      "zh": "推理图细节",
+      "leaves": [
+        ["Attention KV cache ownership","注意力 KV 缓存归属","future"],
+        ["Backend operator assignment","后端算子分配","planned"],
+        ["Stateful model reset hooks","有状态模型重置接口","planned"],
+        ["Inference output publication","推理输出发布","planned"],
+        ["Operator failure source mapping","算子失败来源映射","planned"]
+      ]
+    },
+    {
+      "en": "Numeric inference profiles",
+      "zh": "推理数值配置",
+      "leaves": [
+        ["FP16 accumulation rules","FP16 累积规则","future"],
+        ["BF16 capability profiles","BF16 能力配置","future"],
+        ["INT8 activation calibration","INT8 激活校准","future"],
+        ["Calibration dataset provenance","校准数据集来源","future"],
+        ["Numerical tolerance profiles","数值容差配置","planned"],
+        ["Cross-backend output comparison","跨后端输出对比","planned"],
+        ["Precision-throughput benchmarks","精度吞吐基准","future"],
+        ["Model accuracy acceptance thresholds","模型精度验收阈值","planned"]
+      ]
+    },
+    {
+      "en": "Batched world execution",
+      "zh": "批量世界执行",
+      "leaves": [
+        ["World batch identity tables","世界批次标识表","planned"],
+        ["World batch step barriers","世界批次步进屏障","planned"],
+        ["World reset mask semantics","世界重置遮罩语义","planned"],
+        ["Episode terminal state retention","回合终态保留","planned"],
+        ["Truncation versus termination flags","截断与终止标志","planned"],
+        ["Reward accumulation windows","奖励累积时间窗","planned"],
+        ["World observation gather kernels","世界观测收集内核","planned"],
+        ["Action scatter publication","动作分发发布","planned"],
+        ["Batch world memory quotas","批量世界内存配额","planned"],
+        ["World batch straggler metrics","世界批次拖延指标","planned"],
+        ["Headless rendering observation targets","无窗口渲染观测目标","planned"],
+        ["Batched simulation reproducibility cases","批量模拟可复现用例","planned"]
+      ]
+    },
+    {
+      "en": "Trajectory data details",
+      "zh": "轨迹数据细节",
+      "leaves": [
+        ["Episode boundary records","回合边界记录","planned"],
+        ["Observation-action alignment","观测动作对齐","planned"],
+        ["Trajectory compression blocks","轨迹压缩块","planned"],
+        ["Trajectory chunk random access","轨迹块随机访问","planned"],
+        ["Policy version trajectory tags","策略版本轨迹标签","planned"],
+        ["Trajectory replay visualization","轨迹回放可视化","planned"]
+      ]
+    },
+    {
+      "en": "Model format contracts",
+      "zh": "模型格式契约",
+      "leaves": [
+        ["Operator set version gates","算子集版本约束","planned"],
+        ["External weight file resolution","外部权重文件解析","planned"],
+        ["Unsupported operator reports","不支持算子报告","planned"],
+        ["Model import validation fixtures","模型导入验证夹具","planned"],
+        ["Imported model source identities","导入模型源标识","planned"]
+      ]
+    },
+    {
+      "en": "Model delivery details",
+      "zh": "模型交付细节",
+      "leaves": [
+        ["Model weight shard packaging","模型权重分片打包","future"],
+        ["Model startup allocation budgets","模型启动分配预算","planned"],
+        ["Active inference drain rules","活跃推理排空规则","planned"],
+        ["Model state migration contracts","模型状态迁移契约","future"],
+        ["Model package license records","模型包许可记录","planned"],
+        ["Model deployment smoke scenes","模型部署冒烟场景","planned"],
+        ["Inference cold-start measurements","推理冷启动测量","planned"]
+      ]
+    }
+  ]
+}

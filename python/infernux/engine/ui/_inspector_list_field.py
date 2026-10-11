@@ -1,0 +1,617 @@
+"""List field rendering helpers for the Inspector component renderers."""
+
+from dataclasses import replace
+import json
+from infernux.components.component import InxComponent
+from infernux.lib import InxGUIContext
+from .inspector_utils import (
+    max_label_w, render_serialized_field, has_field_changed,
+    render_compact_section_header, pretty_field_name,
+    get_enum_members as _get_enum_members,
+)
+from .theme import Theme
+from ._inspector_undo import _record_property
+from ._inspector_references import (
+    _create_reference_value_from_payload,
+    _reference_owner_scene,
+    _render_serializable_members,
+    _get_reference_display_name,
+    _game_object_has_required_component,
+    _picker_scene_gameobjects,
+    _picker_scene_components,
+    render_asset_reference_field,
+)
+
+
+# ImGui payload type names are limited to 32 bytes. List identity belongs
+# in the payload data, where long and Unicode field names remain exact.
+_LIST_REORDER_TYPE = "INX_INSPECTOR_LIST_REORDER"
+
+
+def _make_list_default_element(metadata, element_type):
+    from infernux.components.fields import FieldType
+    from infernux.math import Vector2, Vector3, vec4f
+
+    if element_type == FieldType.INT:
+        return 0
+    if element_type == FieldType.FLOAT:
+        return 0.0
+    if element_type == FieldType.BOOL:
+        return False
+    if element_type == FieldType.STRING:
+        return ""
+    if element_type == FieldType.VEC2:
+        return Vector2(0.0, 0.0)
+    if element_type == FieldType.VEC3:
+        return Vector3(0.0, 0.0, 0.0)
+    if element_type == FieldType.VEC4:
+        return vec4f(0.0, 0.0, 0.0, 0.0)
+    if element_type == FieldType.COLOR:
+        from infernux.components.fields import RGBA_DEFAULT
+        return list(RGBA_DEFAULT)
+    if element_type == FieldType.ENUM and metadata.enum_type is not None:
+        members = _get_enum_members(metadata.enum_type)
+        return members[0] if members else metadata.default
+    if element_type == FieldType.GAME_OBJECT:
+        from infernux.components.ref_wrappers import GameObjectRef
+        return GameObjectRef(persistent_id=0)
+    if element_type == FieldType.MATERIAL:
+        from infernux.components.ref_wrappers import MaterialRef
+        return MaterialRef(guid="")
+    if element_type == FieldType.TEXTURE:
+        from infernux.core.asset_ref import TextureRef
+        return TextureRef()
+    if element_type == FieldType.SHADER:
+        from infernux.core.asset_ref import ShaderRef
+        return ShaderRef()
+    if element_type == FieldType.ASSET:
+        from infernux.components._serialize_helpers import make_null_ref
+        return make_null_ref(FieldType.ASSET, metadata)
+    if element_type == FieldType.SERIALIZABLE_OBJECT:
+        elem_cls = metadata.element_class
+        if elem_cls is not None:
+            return elem_cls()
+        return None
+    if element_type == FieldType.COMPONENT:
+        from infernux.components.ref_wrappers import ComponentRef
+        comp_type = getattr(metadata, 'component_type', '') or ''
+        return ComponentRef(component_type=comp_type)
+    return None
+
+
+def _infer_list_element_type(metadata, current_value):
+    from infernux.components.fields import infer_field_type_from_value, FieldType
+
+    if metadata.element_type is not None:
+        return metadata.element_type
+
+    from infernux.components.fields import is_rgba_storage
+
+    for container in (current_value, metadata.default):
+        if is_rgba_storage(container):
+            return FieldType.COLOR
+        if not isinstance(container, (list, tuple)):
+            continue
+        for item in container:
+            if item is None:
+                continue
+            inferred = infer_field_type_from_value(item)
+            if inferred != FieldType.UNKNOWN:
+                return inferred
+
+    return FieldType.STRING
+
+
+def _list_drag_drop_type(element_type, metadata=None):
+    from infernux.components.fields import FieldType
+
+    mapping = {
+        FieldType.GAME_OBJECT: ["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
+        FieldType.MATERIAL: "MATERIAL_FILE",
+        FieldType.TEXTURE: "TEXTURE_FILE",
+        FieldType.SHADER: "SHADER_FILE",
+        FieldType.COMPONENT: "HIERARCHY_GAMEOBJECT",
+    }
+    if element_type == FieldType.ASSET:
+        asset_type = getattr(metadata, "asset_type", None) if metadata else None
+        if not asset_type:
+            raise ValueError("ASSET list elements require an explicit asset_type")
+        from infernux.core.asset_reference_types import asset_type_registry
+
+        return asset_type_registry.require(asset_type).drag_types
+    return mapping.get(element_type)
+
+
+def _list_type_hint(element_type, metadata):
+    from infernux.components.fields import FieldType
+
+    if element_type == FieldType.GAME_OBJECT:
+        return f"GameObject:{metadata.required_component}" if metadata.required_component else "GameObject"
+    if element_type == FieldType.MATERIAL:
+        return "Material"
+    if element_type == FieldType.TEXTURE:
+        return "Texture"
+    if element_type == FieldType.SHADER:
+        return "Shader"
+    if element_type == FieldType.ASSET:
+        asset_type = getattr(metadata, "asset_type", None) if metadata else None
+        if not asset_type:
+            raise ValueError("ASSET list elements require an explicit asset_type")
+        from infernux.core.asset_reference_types import asset_type_registry
+
+        return asset_type_registry.require(asset_type).display_name
+    if element_type == FieldType.COMPONENT:
+        comp_type = getattr(metadata, 'component_type', '') or ''
+        return comp_type or "Component"
+    return "Element"
+
+
+def _make_list_picker_providers(element_type, metadata, *, comp):
+    """Return ``(scene_items_fn_or_None, asset_items_fn_or_None)`` for a list element type."""
+    from infernux.components.fields import FieldType
+
+    if element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
+        _rc = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
+        provider = _picker_scene_components if element_type == FieldType.COMPONENT else _picker_scene_gameobjects
+        return (
+            lambda filt, _rc=_rc: provider(filt, required_component=_rc, scene=_reference_owner_scene(comp)),
+            None,
+        )
+
+    if element_type in {
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+    }:
+        return (None, None)
+    return (None, None)
+
+
+def _create_list_pick_ref(element_type, value, required_component=None, metadata=None, *, scene=None):
+    """Create a reference wrapper from a picker selection for a list element."""
+    from infernux.components.fields import FieldType
+
+    if element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
+        return _create_reference_value_from_payload(
+            element_type, value, required_component, scene=scene,
+        )
+
+    # Asset types: value is a file path
+    if element_type == FieldType.MATERIAL:
+        return _create_reference_value_from_payload(FieldType.MATERIAL, value)
+    if element_type == FieldType.TEXTURE:
+        return _create_reference_value_from_payload(FieldType.TEXTURE, value)
+    if element_type == FieldType.SHADER:
+        return _create_reference_value_from_payload(FieldType.SHADER, value)
+    if element_type == FieldType.ASSET:
+        return _create_reference_value_from_payload(FieldType.ASSET, value, metadata=metadata)
+    return None
+
+
+def _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type, *, comp):
+    """Render a single reference-type list element (GameObject, Material, etc.).
+
+    Mutates *items* in-place on drop/pick/clear. Returns True if changed.
+    """
+    from infernux.components.fields import FieldType
+    from .igui import IGUI
+    changed = False
+    _req = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
+
+    def _replace_item(payload, _index=index, _req=_req, _meta=metadata):
+        nonlocal changed
+        value = _create_reference_value_from_payload(
+            element_type, payload, _req, metadata=_meta, scene=_reference_owner_scene(comp),
+        )
+        if value is not None:
+            items[_index] = value
+            changed = True
+
+    _li_scene, _li_assets = _make_list_picker_providers(
+        element_type, metadata, comp=comp,
+    )
+
+    def _li_on_pick(value, _index=index, _et=element_type, _req=_req, _meta=metadata):
+        nonlocal changed
+        ref = _create_list_pick_ref(_et, value, _req, metadata=_meta, scene=_reference_owner_scene(comp))
+        if ref is not None:
+            items[_index] = ref
+            changed = True
+
+    def _li_on_clear(_index=index, _et=element_type):
+        nonlocal changed
+        items[_index] = _make_list_default_element(metadata, _et)
+        changed = True
+
+    display = _get_reference_display_name(element_type, item)
+    asset_types = {
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+    }
+
+    from ._inspector_references import _resolve_asset_disk_path
+
+    asset_path = _resolve_asset_disk_path(item) if element_type in asset_types else ""
+
+    field_renderer = (
+        IGUI.asset_reference_field
+        if element_type in asset_types
+        else IGUI.object_field
+    )
+    kwargs = {
+        "on_drop": _replace_item,
+        "picker_scene_items": _li_scene,
+        "on_pick": _li_on_pick,
+        "on_clear": _li_on_clear,
+        "ping_path": asset_path or None,
+        "has_value": item is not None and display != "None",
+    }
+    if element_type in asset_types:
+        kwargs["asset_type"] = _list_type_hint(element_type, metadata)
+    else:
+        kwargs["accept"] = _list_drag_drop_type(element_type, metadata)
+        kwargs["picker_asset_items"] = _li_assets
+    field_renderer(
+        ctx,
+        f"list_{field_name}_{index}",
+        display,
+        _list_type_hint(element_type, metadata),
+        **kwargs,
+    )
+    return changed
+
+
+def _render_serializable_list_item(
+    ctx,
+    field_name,
+    index,
+    item,
+    items,
+    metadata,
+    *,
+    item_label=None,
+    item_renderer=None,
+):
+    """Render a single SERIALIZABLE_OBJECT list element with nested fields.
+
+    Mutates *items[index]* in-place on change. Returns True if changed.
+    """
+    import copy as _copy
+    so_class = type(item) if item is not None else metadata.element_class
+    so_label = (
+        str(item_label(item, index))
+        if item_label is not None
+        else f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
+    )
+    if not render_compact_section_header(ctx, so_label, level="tertiary"):
+        return False
+    if not so_class or item is None:
+        return False
+    elem_changes = _render_serializable_members(
+        ctx, f"{field_name}_{index}", item, readonly=metadata.readonly,
+        value_renderer=_render_serializable_list_value,
+    )
+    changed = bool(elem_changes)
+    if changed:
+        edited = _copy.deepcopy(item)
+        for fn, fv in elem_changes.items():
+            setattr(edited, fn, fv)
+        items[index] = edited
+        item = edited
+    if item_renderer is not None:
+        item_renderer(ctx, item, index, f"{field_name}_{index}")
+    return changed
+
+
+def _render_serializable_list_value(ctx, parent_id, field_name, metadata, value, label_width):
+    from infernux.components.fields import FieldType
+
+    if metadata.field_type in {FieldType.MATERIAL, FieldType.TEXTURE, FieldType.SHADER, FieldType.ASSET}:
+        return _render_serializable_asset_reference(
+            ctx, f"{parent_id}_{field_name}", field_name, metadata, value, label_width,
+        )
+    return render_serialized_field(
+        ctx, f"##{parent_id}_{field_name}", field_name, metadata, value, label_width,
+    )
+
+
+def _render_serializable_asset_reference(
+    ctx,
+    widget_id,
+    field_name,
+    metadata,
+    current_value,
+    label_width,
+):
+    """Render a resource ref nested inside a SerializableObject list item."""
+    from infernux.components.fields import FieldType
+    from infernux.components._serialize_helpers import make_null_ref
+    from ._inspector_references import (
+        _create_asset_ref_from_payload,
+        _create_reference_value_from_payload,
+        _get_asset_ref_config,
+        _get_reference_display_name,
+        _resolve_asset_disk_path,
+    )
+    from .inspector_utils import field_label, pretty_field_name
+
+    field_type = metadata.field_type
+    if field_type == FieldType.ASSET:
+        asset_type = str(getattr(metadata, "asset_type", "") or "")
+        if not asset_type:
+            raise ValueError("nested ASSET fields require an explicit asset_type")
+        from infernux.core.asset_reference_types import asset_type_registry
+
+        descriptor = asset_type_registry.require(asset_type)
+        type_hint = descriptor.display_name
+        drag_type = descriptor.drag_types
+        prefix = descriptor.widget_prefix
+    else:
+        type_hint, drag_type, _globs, prefix = _get_asset_ref_config()[field_type]
+        asset_type = type_hint
+
+    selected = current_value
+
+    def _make_value(path):
+        if field_type == FieldType.ASSET:
+            return _create_asset_ref_from_payload(metadata, path)
+        return _create_reference_value_from_payload(field_type, path)
+
+    def _on_pick(path):
+        nonlocal selected
+        value = _make_value(path)
+        if value is not None:
+            selected = value
+
+    def _on_clear():
+        nonlocal selected
+        selected = make_null_ref(field_type, metadata)
+
+    field_label(ctx, pretty_field_name(field_name), label_width)
+    display = _get_reference_display_name(field_type, current_value)
+
+    render_asset_reference_field(
+        ctx,
+        f"{prefix}_nested_ref_{widget_id}",
+        display,
+        type_hint,
+        accept_drag_type=drag_type,
+        on_assign=_on_pick,
+        on_clear=_on_clear,
+        ping_path=_resolve_asset_disk_path(current_value) or None,
+        has_value=current_value is not None and display != "None",
+        asset_type=asset_type,
+        reference_value=current_value,
+    )
+    return selected
+
+
+def _render_list_items_body(
+    ctx,
+    comp,
+    field_name,
+    metadata,
+    items,
+    element_type,
+    reference_types,
+    button_spacing,
+    current_value,
+    *,
+    item_label=None,
+    item_renderer=None,
+):
+    """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
+    from .igui import IGUI
+    from .inspector_utils import render_serialized_field, has_field_changed
+    from infernux.components.fields import FieldType
+    from dataclasses import replace
+
+    changed = False
+    move_from = None
+    move_to = None
+
+    def _make_reorder_cb(target_index):
+        def _cb(payload):
+            nonlocal move_from, move_to
+            owner, field, src = json.loads(payload)
+            if owner != id(comp) or field != field_name or not 0 <= src < len(items):
+                return
+            if src != target_index and src != target_index - 1:
+                move_from = src
+                move_to = target_index
+        return _cb
+
+    # ── List body background ──
+    body_state = IGUI.list_body_begin(ctx, f"list_body_{field_name}")
+
+    if not metadata.readonly:
+        IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _LIST_REORDER_TYPE, _make_reorder_cb(0))
+
+    remove_index = None
+    element_meta = replace(metadata, field_type=element_type, default=_make_list_default_element(metadata, element_type))
+
+    for index, item in enumerate(items):
+        ctx.push_id_str(f"{field_name}_{index}")
+        remove_clicked = False
+        if not metadata.readonly:
+            remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
+            ctx.same_line(0, button_spacing)
+
+        if not metadata.readonly and ctx.begin_drag_drop_source(0):
+            ctx.set_drag_drop_payload_str(
+                _LIST_REORDER_TYPE,
+                json.dumps((id(comp), field_name, index), separators=(",", ":")),
+            )
+            ctx.label(f"[{index}]")
+            ctx.end_drag_drop_source()
+
+        if element_type in reference_types:
+            if metadata.readonly:
+                ctx.begin_disabled(True)
+            try:
+                reference_changed = _render_reference_list_item(
+                    ctx, field_name, index, item, items, metadata, element_type, comp=comp,
+                )
+            finally:
+                if metadata.readonly:
+                    ctx.end_disabled()
+            if reference_changed and not metadata.readonly:
+                changed = True
+        elif element_type == FieldType.SERIALIZABLE_OBJECT:
+            if _render_serializable_list_item(
+                ctx,
+                field_name,
+                index,
+                item,
+                items,
+                metadata,
+                item_label=item_label,
+                item_renderer=item_renderer,
+            ):
+                changed = True
+        else:
+            if metadata.readonly:
+                ctx.begin_disabled(True)
+            try:
+                new_item = render_serialized_field(
+                    ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
+                )
+            finally:
+                if metadata.readonly:
+                    ctx.end_disabled()
+            if not metadata.readonly and has_field_changed(element_type, item, new_item):
+                items[index] = new_item
+                changed = True
+
+        if remove_clicked:
+            remove_index = index
+        ctx.pop_id()
+        if not metadata.readonly:
+            IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _LIST_REORDER_TYPE, _make_reorder_cb(index + 1))
+
+    IGUI.list_body_end(ctx, body_state)
+
+    if remove_index is not None:
+        items.pop(remove_index)
+        changed = True
+
+    if move_from is not None and move_to is not None:
+        elem = items.pop(move_from)
+        insert_at = move_to if move_to < move_from else move_to - 1
+        items.insert(insert_at, elem)
+        changed = True
+
+    return changed
+
+
+def _render_list_field(
+    ctx: InxGUIContext,
+    comp,
+    field_name: str,
+    metadata,
+    current_value,
+    lw: float,
+    *,
+    display_name: str | None = None,
+    header_drop_type: str | None = None,
+    header_drop_factory=None,
+    item_label=None,
+    item_renderer=None,
+    on_change=None,
+):
+    from infernux.components.fields import FieldType
+    from .igui import IGUI
+
+    items = list(current_value) if isinstance(current_value, list) else []
+    element_type = _infer_list_element_type(metadata, items)
+    changed = False
+    button_spacing = Theme.INSPECTOR_INLINE_BTN_GAP
+
+    reference_types = {
+        FieldType.GAME_OBJECT,
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+        FieldType.COMPONENT,
+    }
+
+    def _commit_change() -> None:
+        if not changed or metadata.readonly:
+            return
+        if on_change is not None:
+            on_change(comp, field_name, current_value, items)
+            return
+        _record_property(comp, field_name, current_value, items, f"Set {field_name}")
+
+    # ── Callbacks for IGUI.list_header ──
+    def _on_add():
+        nonlocal changed
+        items.append(_make_list_default_element(metadata, element_type))
+        changed = True
+
+    def _on_remove_last():
+        nonlocal changed
+        if items:
+            items.pop()
+            changed = True
+
+    # Header drop callback (for reference types)
+    _hdr_drag_type = header_drop_type
+    if _hdr_drag_type is None and element_type in reference_types:
+        _hdr_drag_type = _list_drag_drop_type(element_type, metadata)
+    _hdr_req = (metadata.component_type if element_type == FieldType.COMPONENT
+                else metadata.required_component) if element_type in reference_types else None
+
+    def _header_drop(payload):
+        nonlocal changed
+        if header_drop_factory is not None:
+            value = header_drop_factory(payload)
+        else:
+            value = _create_reference_value_from_payload(
+                element_type, payload, _hdr_req, metadata=metadata,
+                scene=_reference_owner_scene(comp),
+            )
+        if value is not None:
+            items.append(value)
+            changed = True
+
+    # ── Unified list header: [label [N] ........... [-][+]] ──
+    header_open = IGUI.list_header(
+        ctx, display_name or pretty_field_name(field_name), len(items),
+        on_add=_on_add if not metadata.readonly else None,
+        on_remove=_on_remove_last if items and not metadata.readonly else None,
+        accept_drop=_hdr_drag_type if not metadata.readonly else None,
+        on_header_drop=_header_drop if _hdr_drag_type and not metadata.readonly else None,
+    )
+
+    if not header_open:
+        _commit_change()
+        return
+
+    # The header itself remains a complete add/remove/drop target. Avoid
+    # building an empty body and reorder separator until an item exists.
+    if not items:
+        _commit_change()
+        return
+
+    # ── Render items, reorder separators, bottom drop zone ──
+    if _render_list_items_body(
+        ctx,
+        comp,
+        field_name,
+        metadata,
+        items,
+        element_type,
+        reference_types,
+        button_spacing,
+        current_value,
+        item_label=item_label,
+        item_renderer=item_renderer,
+    ):
+        changed = True
+
+    _commit_change()

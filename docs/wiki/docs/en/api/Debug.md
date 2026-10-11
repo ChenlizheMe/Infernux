@@ -1,7 +1,7 @@
 # Debug
 
 <div class="class-info">
-class in <b>Infernux.debug</b>
+class in <b>infernux.debug</b>
 </div>
 
 ## Description

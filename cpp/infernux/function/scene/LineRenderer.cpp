@@ -1,4 +1,5 @@
 #include "LineRenderer.h"
+#include "Camera.h"
 #include "ComponentFactory.h"
 #include "Transform.h"
 #include <algorithm>
@@ -19,6 +20,31 @@ constexpr uint32_t LINE_VERTEX_MARKER = 0x4C494E45u;
 constexpr float DIRECTION_EPSILON = 1.0e-6f;
 constexpr float METRIC_EPSILON = 1.0e-5f;
 constexpr uint32_t MAX_ROUNDING_VERTICES = 1024u;
+
+// Keep expansion identical to the LINE vertex branch in vertex_main.glsl.
+// Camera-plane axes define the width when the tangent approaches the view
+// normal; the geometric hemisphere keeps that transition continuous.
+glm::vec3 RibbonSide(const glm::vec3 &facing, const glm::vec3 &tangent, const glm::vec3 &cameraRight,
+                     const glm::vec3 &cameraUp)
+{
+    glm::vec3 planeSide = cameraRight - tangent * glm::dot(cameraRight, tangent);
+    if (glm::dot(planeSide, planeSide) < 1.0e-8f)
+        planeSide = cameraUp - tangent * glm::dot(cameraUp, tangent);
+    if (glm::dot(planeSide, planeSide) < 1.0e-10f)
+        planeSide = std::abs(tangent.x) < 0.9f ? glm::cross(tangent, glm::vec3(1, 0, 0))
+                                               : glm::cross(tangent, glm::vec3(0, 1, 0));
+    planeSide = glm::normalize(planeSide);
+    glm::vec3 geometricSide = glm::cross(facing, tangent);
+    const float geometricLength = glm::length(geometricSide);
+    if (geometricLength > 0.20f)
+        return geometricSide / geometricLength;
+    if (geometricLength <= 1.0e-6f)
+        return planeSide;
+    geometricSide /= geometricLength;
+    if (glm::dot(planeSide, geometricSide) < 0.0f)
+        planeSide = -planeSide;
+    return glm::normalize(glm::mix(planeSide, geometricSide, glm::smoothstep(0.025f, 0.20f, geometricLength)));
+}
 
 bool ApproximatelyEqual(const glm::mat3 &left, const glm::mat3 &right)
 {
@@ -209,7 +235,6 @@ LineRenderer::LineRenderer()
 {
     SetCastShadows(false);
     SetInlineMeshName("Line");
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -265,7 +290,6 @@ void LineRenderer::SetStartWidth(float width)
         key->value = width;
     else
         m_widthCurve.insert(key, LineWidthKey{0.0f, width, 0.0f, 0.0f});
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -285,7 +309,6 @@ void LineRenderer::SetEndWidth(float width)
         key->value = width;
     else
         m_widthCurve.insert(key, LineWidthKey{1.0f, width, 0.0f, 0.0f});
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -295,7 +318,6 @@ void LineRenderer::SetWidthMultiplier(float multiplier)
     if (m_widthMultiplier == multiplier)
         return;
     m_widthMultiplier = multiplier;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -303,7 +325,6 @@ void LineRenderer::SetWidthCurve(const std::vector<LineWidthKey> &keys)
 {
     ValidateWidthCurve(keys);
     m_widthCurve = keys;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -312,7 +333,6 @@ void LineRenderer::SetWidthCurvePreWrap(LineCurveWrapMode mode)
     if (m_widthCurvePreWrap == mode)
         return;
     m_widthCurvePreWrap = mode;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -321,7 +341,6 @@ void LineRenderer::SetWidthCurvePostWrap(LineCurveWrapMode mode)
     if (m_widthCurvePostWrap == mode)
         return;
     m_widthCurvePostWrap = mode;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -452,9 +471,23 @@ void LineRenderer::SetGenerateLightingData(bool generate)
     RebuildMesh();
 }
 
-void LineRenderer::BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPosition, bool useTransform) const
+void LineRenderer::BakeMesh(MeshRenderer &target, const Camera *camera, bool useTransform) const
 {
-    RequireFinite(cameraPosition, "LineRenderer bake camera position");
+    glm::mat4 cameraWorld(1.0f);
+    if (camera) {
+        // The view override is authoritative, including reflected/custom
+        // cameras. Transform position/rotation alone cannot describe it.
+        cameraWorld = glm::inverse(camera->GetViewMatrix());
+    } else if (const auto *transform = GetTransform()) {
+        cameraWorld[0] = glm::vec4(transform->GetWorldRight(), 0.0f);
+        cameraWorld[1] = glm::vec4(transform->GetWorldUp(), 0.0f);
+        cameraWorld[2] = glm::vec4(-transform->GetWorldForward(), 0.0f);
+    } else {
+        cameraWorld[2][2] = -1.0f;
+    }
+    const glm::vec3 viewFacing = glm::normalize(-glm::vec3(cameraWorld[2]));
+    const glm::vec3 cameraRight = glm::normalize(glm::vec3(cameraWorld[0]));
+    const glm::vec3 cameraUp = glm::normalize(glm::vec3(cameraWorld[1]));
     const std::vector<Vertex> sourceVertices = GetInlineVertices();
     const std::vector<uint32_t> sourceIndices = GetInlineIndices();
     std::vector<Vertex> bakedVertices;
@@ -473,36 +506,32 @@ void LineRenderer::BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPositio
         Vertex baked = source;
         const glm::vec3 centerWorld = glm::vec3(objectWorld * glm::vec4(source.pos, 1.0f));
         glm::vec3 tangentWorld = glm::mat3(objectWorld) * glm::vec3(source.tangent);
-        if (glm::dot(tangentWorld, tangentWorld) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
+        if (glm::dot(tangentWorld, tangentWorld) <= 1.0e-10f)
             tangentWorld = glm::vec3(1.0f, 0.0f, 0.0f);
         else
             tangentWorld = glm::normalize(tangentWorld);
-        glm::vec3 facing =
-            m_alignment == LineAlignment::View ? cameraPosition - centerWorld : normalMatrix * source.normal;
-        if (glm::dot(facing, facing) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
-            facing = glm::vec3(0.0f, 0.0f, 1.0f);
+        glm::vec3 authoredNormal = normalMatrix * source.normal;
+        if (glm::dot(authoredNormal, authoredNormal) <= 1.0e-10f)
+            authoredNormal = glm::vec3(0.0f, 0.0f, 1.0f);
         else
-            facing = glm::normalize(facing);
-        glm::vec3 side = glm::cross(facing, tangentWorld);
-        if (glm::dot(side, side) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
-            side = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), tangentWorld);
-        if (glm::dot(side, side) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
-            side = glm::vec3(1.0f, 0.0f, 0.0f);
-        else
-            side = glm::normalize(side);
+            authoredNormal = glm::normalize(authoredNormal);
+        const glm::vec3 facing = m_alignment == LineAlignment::View ? viewFacing : authoredNormal;
+        const glm::vec3 side = RibbonSide(facing, tangentWorld, cameraRight, cameraUp);
         const glm::vec3 expandedWorld = centerWorld + side * source.boneWeights.x;
+        const glm::vec3 worldNormal = m_generateLightingData ? facing : authoredNormal;
 
         if (outputWorldSpace) {
             baked.pos = expandedWorld;
-            baked.normal = facing;
+            baked.normal = worldNormal;
             baked.tangent = glm::vec4(tangentWorld, 1.0f);
         } else {
             baked.pos = glm::vec3(inverseWorld * glm::vec4(expandedWorld, 1.0f));
-            glm::vec3 localNormal = glm::transpose(glm::mat3(objectWorld)) * facing;
+            glm::vec3 localNormal = glm::transpose(glm::mat3(objectWorld)) * worldNormal;
             if (glm::dot(localNormal, localNormal) > DIRECTION_EPSILON * DIRECTION_EPSILON)
                 localNormal = glm::normalize(localNormal);
             baked.normal = localNormal;
             baked.tangent = source.tangent;
+            baked.tangent.w = glm::sign(glm::determinant(glm::mat3(objectWorld)));
         }
         baked.boneIndices = glm::uvec4(0u);
         baked.boneWeights = glm::vec4(0.0f);
@@ -567,26 +596,15 @@ void LineRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &o
         return;
     }
     MeshRenderer::ComputeWorldBounds(ResolveRenderWorldMatrix(worldMatrix), outMin, outMax);
-    const float radius = 0.5f * m_maximumWidth;
-    outMin -= glm::vec3(radius);
-    outMax += glm::vec3(radius);
-}
-
-void LineRenderer::UpdateMaximumWidth()
-{
-    float maximumWidth = 0.0f;
-    for (uint32_t sample = 0; sample <= 64; ++sample) {
-        const float t = static_cast<float>(sample) / 64.0f;
-        maximumWidth =
-            std::max(maximumWidth, EvaluateWidthCurve(m_widthCurve, t, m_widthCurvePreWrap, m_widthCurvePostWrap));
-    }
-    m_maximumWidth = maximumWidth * m_widthMultiplier;
+    outMin -= glm::vec3(m_maximumHalfWidth);
+    outMax += glm::vec3(m_maximumHalfWidth);
 }
 
 void LineRenderer::RebuildMesh()
 {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    m_maximumHalfWidth = 0.0f;
 
     // Consecutive duplicate samples are common in runtime trails while an
     // object is stationary. Keeping them creates degenerate triangles and
@@ -743,6 +761,10 @@ void LineRenderer::RebuildMesh()
         const float halfWidth =
             0.5f * std::max(0.0f, EvaluateWidthCurve(m_widthCurve, t, m_widthCurvePreWrap, m_widthCurvePostWrap)) *
             m_widthMultiplier * sample.widthScale;
+        // Bound the actual GPU expansion, including wrapped curves, Hermite
+        // overshoot and rounded samples. Fixed curve sampling can miss peaks.
+        // Centers (including cap offsets) are bounded by SetProceduralMesh.
+        m_maximumHalfWidth = std::max(m_maximumHalfWidth, halfWidth);
         const glm::vec4 color = EvaluateColorGradient(m_colorGradient, t, m_colorGradientMode);
         float u = t;
         switch (m_textureMode) {
@@ -865,7 +887,6 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
         m_shadowBias = document["shadowBias"].get<float>();
         m_generateLightingData = document["generateLightingData"].get<bool>();
         SetInlineMeshName("Line");
-        UpdateMaximumWidth();
         RebuildMesh();
         return true;
     } catch (const std::exception &error) {
@@ -877,7 +898,10 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
 std::unique_ptr<Component> LineRenderer::Clone() const
 {
     auto clone = std::make_unique<LineRenderer>();
-    clone->DeserializeDocument(SerializeDocument());
+    auto document = SerializeDocument();
+    document.erase("component_id");
+    if (!clone->DeserializeDocument(document))
+        throw std::runtime_error("LineRenderer clone could not restore its authored state");
     return clone;
 }
 

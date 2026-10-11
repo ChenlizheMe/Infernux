@@ -1,7 +1,7 @@
 # Physics
 
 <div class="class-info">
-class in <b>Infernux.physics</b>
+class in <b>infernux.physics</b>
 </div>
 
 ## Description

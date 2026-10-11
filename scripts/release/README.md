@@ -1,7 +1,7 @@
 # Hub publication and update discovery
 
 Every public change must have a new version/build identity. A same-version
-rebuild increments `setup.cfg`'s wheel build number: engine metadata stays
+rebuild increments `ENGINE_BUILD_NUMBER` in `python/infernux/version.py`: engine metadata stays
 `0.4.1`, the wheel uses build tag `2`, Hub uses `0.4.1-2`, and the GitHub tag
 is `v0.4.1-v2`. Numeric post-release Hub identities are understood by existing
 0.4.1 installations. Published artifact URLs are immutable.
@@ -24,9 +24,7 @@ after its actual artifacts have been published.
    before the public registry is updated.
 4. Run **Publish Infernux Release** to build, test, and publish. Enable
    `sign_windows_release` only after the release certificate is issued and the
-   configuration below is complete. For an already successful desktop build,
-   **Publish Desktop Release Artifacts** accepts its run ID and verifies its
-   signing state; it never retroactively signs or rebuilds those artifacts.
+   configuration below is complete.
    Unsigned releases are explicitly disclosed. A prewritten draft requires
    `replace_existing_release=true`.
 5. The publisher uploads wheels to PyPI, Hub assets to GitHub/R2, publishes the
@@ -201,10 +199,10 @@ still require confirmation. The manual settings action checks explicitly.
   publication restrictions. Subsequent tests exercise both desktop platforms
   and mock all publication/deployment network writes.
 - Final full Hub suite: `python -m pytest -q -rs -o pythonpath=packaging
-  --confcutdir=packaging/tests packaging/tests` — 375 passed, 3 skipped. The
+  --confcutdir=tests/hub tests/hub` — 375 passed, 3 skipped. The
   skips are POSIX permission checks and Linux standalone CPython layout on
   the Windows host. `python -m pytest -q --noconftest
-  python/test/test_release_automation.py` — 3 passed. Workflow YAML parsing and
+  tests/python/test_release_automation.py` — 3 passed. Workflow YAML parsing and
   `git diff --check` passed. No native engine test fixture was loaded.
 - The final suite includes unset/enabled/disabled startup and settings behavior,
   confirmation before any update download, and English/Chinese installer text

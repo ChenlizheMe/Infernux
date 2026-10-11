@@ -1,0 +1,227 @@
+{
+  "key": "network",
+  "titleKey": "roadmap.galaxy.network.title",
+  "branches": [
+    {
+      "en": "TRANSPORT",
+      "zh": "传输",
+      "leaves": [
+        ["Socket layer","Socket 层","future"],
+        ["Reliable channels","可靠通道","future"],
+        ["Datagrams","数据报","future"],
+        ["Encryption","加密","future"],
+        ["Connection lifecycle","连接生命周期","future"],
+        ["Congestion control","拥塞控制","future"]
+      ]
+    },
+    {
+      "en": "REPLICATION",
+      "zh": "复制",
+      "leaves": [
+        ["Snapshot delta","快照增量","future"],
+        ["Entity ownership","实体所有权","future"],
+        ["Interest filters","兴趣过滤","future"],
+        ["Bandwidth budget","带宽预算","future"],
+        ["Spawn / despawn replication","生成与销毁复制","future"],
+        ["State quantization","状态量化","future"]
+      ]
+    },
+    {
+      "en": "SERVER",
+      "zh": "服务器",
+      "leaves": [
+        ["Dedicated runtime","专用运行时","future"],
+        ["Headless player","无窗口 Player","planned"],
+        ["Server tick budgets","服务器 Tick 预算","future"],
+        ["Graceful shutdown","平滑关闭","future"]
+      ]
+    },
+    {
+      "en": "DIAGNOSTICS",
+      "zh": "诊断",
+      "leaves": [
+        ["Latency traces","延迟追踪","future"],
+        ["Network replay","网络回放","future"],
+        ["Packet inspection","数据包检查","future"],
+        ["Connection health","连接健康度","future"],
+        ["Packet loss simulation","丢包模拟","future"],
+        ["Jitter simulation","抖动模拟","future"],
+        ["Desync inspection","失同步检查","future"]
+      ]
+    },
+    {
+      "en": "Time & synchronization",
+      "zh": "时间与同步",
+      "leaves": [
+        ["Clock offset estimation","时钟偏移估计","future"],
+        ["Tick synchronization","Tick 同步","future"],
+        ["Interpolation buffers","插值缓冲","future"],
+        ["Lag compensation","延迟补偿","future"],
+        ["Client prediction","客户端预测","future"],
+        ["Server reconciliation","服务器协调纠正","future"],
+        ["Rollback history","回滚历史","future"],
+        ["Deterministic input exchange","确定性输入交换","future"]
+      ]
+    },
+    {
+      "en": "Session services",
+      "zh": "会话服务",
+      "leaves": [
+        ["Lobby lifecycle","大厅生命周期","future"],
+        ["Matchmaking contracts","匹配服务契约","future"],
+        ["Player identity","玩家身份","future"],
+        ["Reconnect tokens","重连令牌","future"],
+        ["Host migration","主机迁移","future"],
+        ["Spectator sessions","观战会话","future"],
+        ["Session discovery","会话发现","future"]
+      ]
+    },
+    {
+      "en": "Security boundaries",
+      "zh": "网络安全边界",
+      "leaves": [
+        ["Authenticated handshakes","身份认证握手","future"],
+        ["Message validation","消息验证","future"],
+        ["Rate limits","速率限制","future"],
+        ["Replay protection","重放防护","future"],
+        ["Authority validation","权威验证","future"],
+        ["Credential lifecycle","凭证生命周期","future"]
+      ]
+    },
+    {
+      "en": "Networked worlds",
+      "zh": "联网世界",
+      "leaves": [
+        ["World partition handoff","世界分区交接","future"],
+        ["Cross-scene replication","跨场景复制","future"],
+        ["Persistent entity IDs","持久实体标识","future"],
+        ["Distributed world ownership","分布式世界归属","future"],
+        ["World-state checkpointing","世界状态检查点","future"]
+      ]
+    },
+    {
+      "en": "Protocol tooling",
+      "zh": "协议工具",
+      "leaves": [
+        ["Protocol schema compiler","协议结构编译器","future"],
+        ["Protocol compatibility tests","协议兼容性测试","future"],
+        ["Multi-client test harness","多客户端测试框架","future"],
+        ["Server load generation","服务器负载生成","future"],
+        ["Network regression gates","网络回归检查","future"]
+      ]
+    },
+    {
+      "en": "Remote neural execution",
+      "zh": "远程神经执行",
+      "leaves": [
+        ["Inference RPC contract","推理 RPC 契约","future"],
+        ["Observation serialization","观测序列化","future"],
+        ["Action response deadlines","动作响应时限","future"],
+        ["Model version negotiation","模型版本协商","future"],
+        ["Batched inference transport","批量推理传输","future"],
+        ["Inference cancellation","推理取消","future"],
+        ["Remote execution traces","远程执行追踪","future"]
+      ]
+    },
+    {
+      "en": "Replication encoding",
+      "zh": "复制编码细节",
+      "leaves": [
+        ["Network entity generation IDs","网络实体代际标识","future"],
+        ["Replicated field descriptors","复制字段描述","future"],
+        ["Full snapshot resynchronization","完整快照重新同步","future"],
+        ["Replicated reference resolution","复制引用解析","future"]
+      ]
+    },
+    {
+      "en": "Prediction mechanics",
+      "zh": "预测细节",
+      "leaves": [
+        ["Predicted event deduplication","预测事件去重","future"],
+        ["Correction smoothing envelopes","修正平滑包络","future"],
+        ["Physics prediction state capture","物理预测状态捕获","future"],
+        ["Missing-input server policy","服务端缺输入策略","future"],
+        ["Prediction error overlays","预测误差叠层","future"],
+        ["Prediction rollback fixtures","预测回滚夹具","future"]
+      ]
+    },
+    {
+      "en": "Network clocks",
+      "zh": "网络时钟细节",
+      "leaves": [
+        ["Jitter buffer adaptation","抖动缓冲适应","future"],
+        ["Hit-query historical poses","命中查询历史姿态","future"],
+        ["Time dilation correction limits","时间膨胀修正上限","future"],
+        ["Network tick catch-up budgets","网络 Tick 追赶预算","future"],
+        ["Network timeline visualization","网络时间线可视化","future"]
+      ]
+    },
+    {
+      "en": "Interest management details",
+      "zh": "兴趣管理细节",
+      "leaves": [
+        ["Spatial interest grid indexing","空间兴趣网格索引","future"],
+        ["Relevance enter-exit hysteresis","相关性进出滞后","future"],
+        ["Distance update frequency tiers","距离更新频率分级","future"],
+        ["Visibility-based relevance","基于可见性的相关性","future"],
+        ["Dormant entity wake rules","休眠实体唤醒规则","future"],
+        ["Replication priority accumulation","复制优先级累积","future"]
+      ]
+    },
+    {
+      "en": "Server world operations",
+      "zh": "服务端世界操作",
+      "leaves": [
+        ["Per-world CPU quotas","逐世界 CPU 配额","future"],
+        ["Server simulation overload policy","服务端模拟过载策略","future"],
+        ["Server soak scenario suites","服务端耐久场景套件","future"]
+      ]
+    },
+    {
+      "en": "Protocol trust details",
+      "zh": "协议信任细节",
+      "leaves": [
+        ["Connection key rotation","连接密钥轮换","future"],
+        ["Decode recursion limits","解码递归上限","future"],
+        ["Disconnect reason taxonomy","断线原因分类","future"],
+        ["Protocol fuzz input corpus","协议模糊输入语料","future"]
+      ]
+    },
+    {
+      "en": "Network test laboratory",
+      "zh": "网络测试环境",
+      "leaves": [
+        ["Packet reorder windows","数据包乱序窗口","future"],
+        ["Bandwidth cap emulation","带宽上限模拟","future"],
+        ["Disconnect reconnect scripts","断连重连脚本","future"],
+        ["Packet-to-entity correlation","数据包实体关联","future"],
+        ["Replication convergence assertions","复制收敛检查","future"],
+        ["Desync trace minimization","失同步轨迹最小化","future"]
+      ]
+    },
+    {
+      "en": "Remote inference transport details",
+      "zh": "远程推理传输细节",
+      "leaves": [
+        ["Tensor transport compression","张量传输压缩","future"],
+        ["Inference retry idempotency contracts","推理重试幂等契约","future"],
+        ["Batched request fairness","批量请求公平性","future"],
+        ["Remote policy state tokens","远程策略状态令牌","future"],
+        ["Inference transport backpressure","推理传输背压","future"]
+      ]
+    },
+    {
+      "en": "RPC execution details",
+      "zh": "RPC 执行细节",
+      "leaves": [
+        ["RPC method identifier tables","RPC 方法标识表","future"],
+        ["RPC argument serialization","RPC 参数序列化","future"],
+        ["RPC return correlation","RPC 返回关联","future"],
+        ["RPC invocation authority rules","RPC 调用权威规则","future"],
+        ["RPC reliable-channel selection","RPC 可靠通道选择","future"],
+        ["RPC tick scheduling stamps","RPC Tick 调度戳","future"],
+        ["RPC duplicate execution policy","RPC 重复执行策略","future"]
+      ]
+    }
+  ]
+}

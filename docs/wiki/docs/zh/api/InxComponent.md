@@ -1,7 +1,7 @@
 # InxComponent
 
 <div class="class-info">
-类位于 <b>Infernux.components</b>
+类位于 <b>infernux.components</b>
 </div>
 
 ## 描述

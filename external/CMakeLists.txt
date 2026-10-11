@@ -121,6 +121,8 @@ set(JPH_USE_CPU_COMPUTE ON CACHE BOOL "" FORCE)               # CPU physics only
 # External Libraries
 # ------------------------------------------------------------------------------
 
+add_subdirectory(svg)
+
 # ------------------------------------------------------------------------------
 # InxPack codec — the only codec available to exported Player containers.
 # ------------------------------------------------------------------------------
@@ -332,10 +334,10 @@ add_library(dr_libs INTERFACE)
 target_include_directories(dr_libs INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/dr_libs)
 
 # SDL3
-add_subdirectory(SDL)
+add_subdirectory(sdl_for_infernux)
 
 # Jolt Physics (CMakeLists.txt is in Build/ subdirectory)
-add_subdirectory(JoltPhysics/Build JoltPhysics)
+add_subdirectory(joltphysics_for_infernux/Build joltphysics_for_infernux)
 
 # Vulkan
 find_package(Vulkan REQUIRED)
@@ -354,13 +356,14 @@ set_property(TARGET VulkanMemoryAllocator PROPERTY
 # ------------------------------------------------------------------------------
 # ImGui
 # ------------------------------------------------------------------------------
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui_for_infernux)
 
 set(IMGUI_CORE_SRCS
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 
 set(INFERNUX_IMGUI_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/imgui")
@@ -372,22 +375,17 @@ set(INFERNUX_IMGUI_FRAGMENT_SOURCE
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend/infernux_imgui_frag.frag")
 set(INFERNUX_IMGUI_FRAGMENT_HEADER
     "${INFERNUX_IMGUI_GENERATED_DIR}/infernux_imgui_frag.u32")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
-    "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
-)
-file(MAKE_DIRECTORY "${INFERNUX_IMGUI_GENERATED_DIR}")
-execute_process(
+add_custom_command(
+    OUTPUT "${INFERNUX_IMGUI_FRAGMENT_HEADER}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${INFERNUX_IMGUI_GENERATED_DIR}"
     COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
         -V -x
         -o "${INFERNUX_IMGUI_FRAGMENT_HEADER}"
         "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
-    RESULT_VARIABLE INFERNUX_IMGUI_SHADER_RESULT
-    ERROR_VARIABLE INFERNUX_IMGUI_SHADER_ERROR
+    DEPENDS "${INFERNUX_IMGUI_FRAGMENT_SOURCE}" "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
+    COMMENT "Compile the Infernux ImGui fragment shader"
+    VERBATIM
 )
-if(NOT INFERNUX_IMGUI_SHADER_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to compile the Infernux ImGui fragment shader: ${INFERNUX_IMGUI_SHADER_ERROR}")
-endif()
 
 set(IMGUI_BACKEND_SRCS
     ${INFERNUX_IMGUI_VULKAN_BACKEND}
@@ -397,6 +395,7 @@ set(IMGUI_BACKEND_SRCS
 set(IMGUI_ALL_SRCS
     ${IMGUI_CORE_SRCS}
     ${IMGUI_BACKEND_SRCS}
+    ${INFERNUX_IMGUI_FRAGMENT_HEADER}
 )
 
 add_library(imgui STATIC ${IMGUI_ALL_SRCS})

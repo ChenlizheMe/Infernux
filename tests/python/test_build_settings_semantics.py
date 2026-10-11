@@ -1,0 +1,1034 @@
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from infernux.engine.build import BuildTarget, PlatformCapabilities
+from infernux.engine.ui.build_settings_panel import BuildSettingsPanel
+
+
+def test_shared_build_output_stays_relative_when_the_project_moves(monkeypatch, tmp_path):
+    from infernux.engine.build import BuildRequest
+    from infernux.engine.build_settings import normalize_build_settings
+
+    original = tmp_path / "AuthorProject"
+    cloned = tmp_path / "ClonedProject"
+    elsewhere = tmp_path / "UnrelatedWorkingDirectory"
+    for path in (original, cloned, elsewhere):
+        path.mkdir()
+    settings = normalize_build_settings(
+        {"output_dir": str(original / "Builds" / "Windows")}, project_path=str(original),
+    )
+    assert settings["output_dir"] == "Builds/Windows"
+    monkeypatch.chdir(elsewhere)
+    request = BuildRequest(str(cloned), "windows-x64", settings["output_dir"])
+    assert request.output_dir == str((cloned / "Builds" / "Windows").resolve())
+    external = normalize_build_settings(
+        {"output_dir": str(tmp_path / "SharedBuild")}, project_path=str(original),
+    )
+    assert external["output_dir"] == "../SharedBuild"
+
+
+@pytest.mark.parametrize("field", ["scenes", "scene_paths", "icon_path", "scene_gudis"])
+def test_build_rejects_unknown_settings_without_rewriting_the_shared_document(tmp_path, field):
+    import json
+    from infernux.engine.build_settings import load_build_settings_for_build
+
+    path = tmp_path / "ProjectSettings/BuildSettings.json"
+    path.parent.mkdir()
+    original = (json.dumps({field: []}) + "\n").encode()
+    path.write_bytes(original)
+    with pytest.raises(ValueError, match=f"unknown fields.*{field}"):
+        load_build_settings_for_build(str(tmp_path))
+    assert path.read_bytes() == original
+
+
+def _host_build_target() -> BuildTarget:
+    platform_name = "windows" if sys.platform == "win32" else "linux"
+    return BuildTarget(
+        f"{platform_name}-x64",
+        f"{platform_name.title()} x64",
+        platform_name,
+        "x86_64",
+        PlatformCapabilities(graphics_api="vulkan"),
+    )
+
+
+class _Context:
+    def __init__(self, button_results: list[bool] | None = None) -> None:
+        self.semantic_items: list[tuple[str, str, bool, str]] = []
+        self.semantic_values: dict[str, object] = {}
+        self._button_results = iter(button_results or [])
+        self.disabled_depth = 0
+        self.disabled_transitions: list[str] = []
+        self.progress_bars: list[tuple] = []
+        self.labels: list[str] = []
+        self.wrapped_texts: list[str] = []
+        self.child_ids: list[str] = []
+        self.same_line_count = 0
+        self.cursor_x = 0.0
+        self.item_widths: list[float] = []
+        self.input_int_calls: list[tuple[str, int, int, int, int]] = []
+
+    def begin_disabled(self, _disabled: bool) -> None:
+        self.disabled_depth += 1
+        self.disabled_transitions.append("begin")
+
+    def end_disabled(self) -> None:
+        self.disabled_depth -= 1
+        self.disabled_transitions.append("end")
+        assert self.disabled_depth >= 0
+
+    def button(self, *args, **kwargs) -> bool:
+        clicked = next(self._button_results, False)
+        callback = args[1] if len(args) > 1 else kwargs.get("on_click")
+        if clicked and callable(callback):
+            callback()
+        return clicked
+
+    @staticmethod
+    def text_input(_label: str, value: str, _capacity: int) -> str:
+        return value
+
+    @staticmethod
+    def checkbox(_label: str, value: bool) -> bool:
+        return value
+
+    @staticmethod
+    def combo(_label: str, selected: int, _items: list[str]) -> int:
+        return selected
+
+    def set_next_item_width(self, width: float) -> None:
+        self.item_widths.append(float(width))
+
+    def input_int(
+        self, label: str, value: int, step: int = 1,
+        step_fast: int = 100, flags: int = 0,
+    ) -> int:
+        self.input_int_calls.append((label, value, step, step_fast, flags))
+        return value
+
+    @staticmethod
+    def push_style_color(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_color(_count: int) -> None:
+        pass
+
+    @staticmethod
+    def get_content_region_avail_width() -> float:
+        return 600.0
+
+    @staticmethod
+    def get_content_region_avail_height() -> float:
+        return 600.0
+
+    @staticmethod
+    def get_dpi_scale() -> float:
+        return 1.0
+
+    @staticmethod
+    def dummy(*_args) -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_float(*_args) -> None:
+        pass
+
+    def begin_child(self, *args) -> bool:
+        if args:
+            self.child_ids.append(str(args[0]))
+        return True
+
+    @staticmethod
+    def end_child() -> None:
+        pass
+
+    @staticmethod
+    def separator() -> None:
+        pass
+
+    def progress_bar(self, *args) -> None:
+        self.progress_bars.append(args)
+
+    @staticmethod
+    def is_item_hovered() -> bool:
+        return False
+
+    @staticmethod
+    def set_tooltip(_text: str) -> None:
+        pass
+
+    @staticmethod
+    def push_id(_value: int) -> None:
+        pass
+
+    @staticmethod
+    def pop_id() -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_vec2(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(_count: int) -> None:
+        pass
+
+    @staticmethod
+    def selectable(*_args, **_kwargs) -> bool:
+        return False
+
+    @staticmethod
+    def begin_drag_drop_source(_flags: int) -> bool:
+        return False
+
+    def same_line(self, *_args) -> None:
+        self.same_line_count += 1
+
+    @staticmethod
+    def get_window_width() -> float:
+        return 600.0
+
+    def label(self, text: str) -> None:
+        self.labels.append(text)
+
+    def text_wrapped(self, text: str) -> None:
+        self.wrapped_texts.append(text)
+
+    def get_cursor_pos_x(self) -> float:
+        return self.cursor_x
+
+    def set_cursor_pos_x(self, x: float) -> None:
+        self.cursor_x = float(x)
+
+    def record_semantic_item(
+        self,
+        kind: str,
+        label: str,
+        enabled: bool,
+        semantic_id: str,
+        bool_value: bool | None = None,
+        numeric_value: float | None = None,
+        string_value: str | None = None,
+    ) -> None:
+        self.semantic_items.append((kind, label, enabled, semantic_id))
+        values = [value for value in (bool_value, numeric_value, string_value) if value is not None]
+        if values:
+            assert len(values) == 1
+            self.semantic_values[semantic_id] = values[0]
+
+
+def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
+    import infernux.engine.scene_manager as scene_manager
+    import infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.igui as igui
+
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+    monkeypatch.setattr(
+        scene_manager.SceneFileManager,
+        "instance",
+        staticmethod(lambda: SimpleNamespace(current_scene_path="C:/RacingPilot/Assets/racetrack.scene")),
+    )
+    monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_path_from_guid=lambda guid: {
+                "racetrack-guid": "C:/RacingPilot/Assets/racetrack.scene",
+                "results-guid": "C:/RacingPilot/Assets/results.scene",
+            }.get(guid, "")
+        ))),
+    )
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._scenes = [
+        "racetrack-guid",
+        "results-guid",
+    ]
+    panel._save = lambda: None
+    ctx = _Context()
+
+    panel._render_scene_section(ctx)
+
+    semantic_ids = {item[3] for item in ctx.semantic_items}
+    assert {
+        "build_settings.scene.add_open",
+        "build_settings.scene.0.row",
+        "build_settings.scene.0.move_down",
+        "build_settings.scene.0.remove",
+        "build_settings.scene.1.row",
+        "build_settings.scene.1.move_up",
+        "build_settings.scene.1.remove",
+    } <= semantic_ids
+    assert ctx.semantic_values["build_settings.scene.0.row"] == "racetrack-guid"
+    assert ctx.semantic_values["build_settings.scene.1.row"] == "results-guid"
+
+
+def test_build_settings_scene_row_survives_a_path_outside_the_project(monkeypatch):
+    import infernux.engine.scene_manager as scene_manager
+    import infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.igui as igui
+
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+
+    def outside_project(*_args):
+        raise ValueError("outside root")
+
+    monkeypatch.setattr(module, "relative_path", outside_project)
+    monkeypatch.setattr(
+        scene_manager.SceneFileManager, "instance", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_path_from_guid=lambda _guid: "D:/Other/Scene.scene"
+        ))),
+    )
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._scenes = ["scene-guid"]
+    panel._save = lambda: None
+    ctx = _Context()
+    row_labels = []
+    ctx.selectable = lambda label, *_args: row_labels.append(label) or False
+
+    panel._render_scene_section(ctx)
+
+    assert ctx.semantic_values["build_settings.scene.0.row"] == "scene-guid"
+    assert module.resolved_path("D:/Other/Scene.scene") in row_labels[0]
+
+
+def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._splash_items = [
+        {
+            "type": "image",
+            "asset_guid": "missing-splash-guid",
+            "duration": 3.0,
+        }
+    ]
+    panel._bind_project_settings_document = lambda: None
+    saves = []
+    panel._save = lambda: saves.append(True)
+
+    panel.on_enable()
+
+    assert panel._splash_items[0]["asset_guid"] == "missing-splash-guid"
+    assert saves == []
+
+
+def test_build_settings_loader_does_not_invent_a_missing_document(tmp_path):
+    from infernux.engine.build_settings import load_build_settings
+
+    project = tmp_path / "Project"
+    (project / "ProjectSettings").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError, match="Build settings are missing"):
+        load_build_settings(str(project))
+
+
+def test_build_settings_loader_propagates_malformed_current_json(tmp_path):
+    from infernux.engine.build_settings import load_build_settings
+
+    settings = tmp_path / "Project" / "ProjectSettings" / "BuildSettings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Build settings are unreadable"):
+        load_build_settings(str(tmp_path / "Project"))
+
+
+def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
+    import infernux.engine.scene_manager as scene_manager
+    import infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.igui as igui
+
+    current_scene = "C:/RacingPilot/Assets/racetrack.scene"
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+    monkeypatch.setattr(
+        scene_manager.SceneFileManager,
+        "instance",
+        staticmethod(lambda: SimpleNamespace(current_scene_path=current_scene)),
+    )
+    monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_guid_from_path=lambda _path: "racetrack-guid",
+            get_path_from_guid=lambda guid: current_scene
+            if guid == "racetrack-guid" else "",
+        ))),
+    )
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._scenes = []
+    saves: list[list[str]] = []
+    panel._save = lambda: saves.append(list(panel._scenes))
+
+    panel._render_scene_section(_Context(button_results=[True]))
+
+    assert panel._scenes == ["racetrack-guid"]
+    assert saves == [["racetrack-guid"]]
+
+
+def test_build_settings_rejects_scene_outside_assets(monkeypatch):
+    import infernux.engine.ui.build_settings_panel as module
+
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._scenes = []
+    saves = []
+    panel._save = lambda: saves.append(True)
+
+    panel._add_scene("C:/RacingPilot/Legacy.scene")
+
+    assert panel._scenes == []
+    assert saves == []
+
+
+def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
+    import infernux.engine.ui.build_settings_panel as module
+
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._game_name = "RacingPilot"
+    panel._debug_mode = False
+    panel._lto = True
+    panel._output_dir = "C:/Builds/RacingPilot"
+    panel._icon_guid = ""
+    panel._save = lambda: None
+    ctx = _Context()
+
+    panel._render_output_section(ctx)
+
+    semantic_ids = {item[3] for item in ctx.semantic_items}
+    assert {
+        "build_settings.game_name",
+            "build_settings.debug_mode",
+            "build_settings.lto",
+            "build_settings.output_dir",
+        "build_settings.output_dir.browse",
+        "build_settings.icon",
+        "build_settings.icon.browse",
+    } <= semantic_ids
+    assert ctx.semantic_values == {
+        "build_settings.game_name": "RacingPilot",
+            "build_settings.debug_mode": False,
+            "build_settings.lto": True,
+            "build_settings.output_dir": "C:/Builds/RacingPilot",
+        "build_settings.icon": "",
+    }
+
+
+def test_build_settings_output_error_stays_inside_editor(monkeypatch):
+    import infernux.engine.ui.build_settings_panel as module
+    from infernux.engine.game_builder import BuildOutputDirectoryError, GameBuilder
+
+    assert not hasattr(module, "show_system_error_dialog")
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_error = None
+    error = BuildOutputDirectoryError(
+        "required",
+        "",
+        marker_filename=GameBuilder.OUTPUT_MARKER_FILENAME,
+    )
+
+    panel._show_output_directory_error(error)
+
+    assert panel._build_error
+
+
+def test_build_settings_disables_only_the_settings_body_while_building(monkeypatch):
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = True
+    panel._build_message = "Building"
+    panel._build_progress = 0.5
+    panel._cancel_event = threading.Event()
+    panel._execute_build_command = lambda _command_id: True
+    for name in (
+        "_render_output_section",
+        "_render_target_section",
+        "_render_display_section",
+        "_render_splash_section",
+        "_render_scene_section",
+    ):
+        monkeypatch.setattr(panel, name, lambda _ctx: None)
+    ctx = _Context()
+
+    panel._render_body(ctx)
+
+    assert ctx.disabled_transitions == ["begin", "end"]
+    assert ctx.disabled_depth == 0
+
+
+def test_build_click_cannot_unbalance_the_disabled_stack_mid_frame():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._build_cancelled = False
+    panel._build_error = None
+    panel._build_output_dir = None
+    panel._scenes = ["main-menu-guid"]
+    panel._output_dir = "C:/Builds/RacingPilot"
+    host_target = _host_build_target()
+    panel._build_target = str(host_target.id)
+    panel._available_build_targets = lambda: (host_target,)
+    panel.can_run_after_build = lambda: True
+    commands: list[str] = []
+    panel._execute_build_command = lambda command_id: (
+        commands.append(command_id)
+        or setattr(panel, "_building", command_id == "build.start")
+        or True
+    )
+    ctx = _Context(button_results=[True, False])
+
+    panel._render_build_controls(ctx)
+
+    assert panel._building is True
+    assert commands == ["build.start"]
+    assert ctx.disabled_transitions == []
+    assert ctx.disabled_depth == 0
+
+
+def test_build_status_actions_expose_stable_semantic_ids():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_message = "Building"
+    panel._build_progress = 0.5
+    panel._cancel_event = threading.Event()
+    panel._execute_build_command = lambda _command_id: True
+
+    panel._building = True
+    panel._build_cancelled = False
+    panel._build_error = None
+    panel._build_output_dir = None
+    building = _Context()
+    panel._render_build_controls(building)
+
+    panel._building = False
+    panel._build_cancelled = True
+    cancelled = _Context()
+    panel._render_build_controls(cancelled)
+
+    panel._build_cancelled = False
+    panel._build_error = "Failed"
+    failed = _Context()
+    panel._render_build_controls(failed)
+
+    panel._build_error = None
+    panel._build_output_dir = "C:/Builds/RacingPilot"
+    succeeded = _Context()
+    panel._render_build_controls(succeeded)
+
+    assert {item[3] for item in building.semantic_items} == {
+        "build_settings.status",
+        "build_settings.progress",
+        "build_settings.progress_message",
+        "build_settings.cancel",
+    }
+    assert building.semantic_values["build_settings.status"] == "building"
+    assert building.semantic_values["build_settings.progress"] == 0.5
+    assert building.semantic_values["build_settings.progress_message"] == "Building"
+    assert {item[3] for item in cancelled.semantic_items} == {
+        "build_settings.status",
+        "build_settings.cancelled.dismiss",
+    }
+    assert cancelled.semantic_values["build_settings.status"] == "cancelled"
+    assert {item[3] for item in failed.semantic_items} == {
+        "build_settings.status",
+        "build_settings.error",
+        "build_settings.error.dismiss",
+    }
+    assert failed.semantic_values["build_settings.status"] == "failed"
+    assert failed.semantic_values["build_settings.error"] == "Failed"
+    assert {item[3] for item in succeeded.semantic_items} == {
+        "build_settings.status",
+        "build_settings.result.output_dir",
+        "build_settings.result.open_folder",
+        "build_settings.result.dismiss",
+    }
+    assert succeeded.semantic_values["build_settings.status"] == "succeeded"
+    assert succeeded.semantic_values["build_settings.result.output_dir"] == "C:/Builds/RacingPilot"
+    assert len(building.progress_bars) == 1
+    assert "##build_status_message" in failed.child_ids
+    assert failed.wrapped_texts
+    assert failed.same_line_count == 0
+
+
+def test_build_window_hides_its_slider_while_preflight_owns_progress(monkeypatch):
+    import infernux.engine.ui.build_preflight_progress as preflight
+
+    monkeypatch.setattr(
+        preflight.BuildPreflightProgressService,
+        "instance",
+        staticmethod(lambda: SimpleNamespace(is_active=True)),
+    )
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = True
+    panel._build_message = "Scanning project resources..."
+    panel._build_progress = 0.0
+    panel._cancel_event = threading.Event()
+    panel._execute_build_command = lambda _command_id: True
+    ctx = _Context()
+
+    panel._render_build_controls(ctx)
+
+    assert ctx.progress_bars == []
+    assert "build_settings.progress" not in ctx.semantic_values
+    assert ctx.semantic_values["build_settings.status"] == "building"
+    assert "build_settings.cancel" in {item[3] for item in ctx.semantic_items}
+
+
+def test_build_error_log_does_not_push_the_dismiss_button_offscreen():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._build_cancelled = False
+    panel._build_error = (
+        "Library artifact is stale for 432e6ee7b2e0d6dbbb11ca04725e8100:\n"
+        + ("D:/Temp/惊梦/Library/Artifacts/Particle/" + "a" * 80 + ".inxparticle\n") * 12
+        + "See: D:/very/long/path/to/infernux-player-build/build.log"
+    )
+    panel._build_output_dir = None
+    ctx = _Context()
+
+    panel._render_build_controls(ctx)
+
+    assert ctx.progress_bars == []
+    assert ctx.same_line_count == 0
+    assert "##build_status_message" in ctx.child_ids
+    assert any(panel._build_error in text for text in ctx.wrapped_texts)
+    assert "build_settings.error.dismiss" in {item[3] for item in ctx.semantic_items}
+
+
+def test_build_progress_does_not_drive_a_second_status_bar_slider(monkeypatch):
+    import infernux.engine.ui.engine_status as engine_status
+
+    recorded: list[tuple] = []
+
+    @classmethod
+    def _capture(cls, text, progress=-1.0, kind=None, **kwargs):
+        recorded.append((text, progress, kind, kwargs))
+
+    monkeypatch.setattr(engine_status.EngineStatus, "set", _capture)
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._cancel_event = threading.Event()
+
+    panel._on_build_progress("Packing project content", 0.981)
+
+    assert panel._build_progress == 0.981
+    assert recorded == [
+        ("Packing project content", -1.0, "activity", {"source": "build", "priority": 20})
+    ]
+
+
+def test_build_commands_gate_start_and_cancel_without_entering_undo():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._scenes = ["main-scene-guid"]
+    panel._output_dir = "C:/Builds/RacingPilot"
+    host_target = _host_build_target()
+    panel._build_target = str(host_target.id)
+    panel._available_build_targets = lambda: (host_target,)
+    panel._is_desktop_target = lambda _target_id=None: True
+    panel._cancel_event = threading.Event()
+    starts: list[bool] = []
+    panel._do_build = lambda *, run_after: starts.append(run_after) or True
+
+    assert panel.can_start_build()
+    assert panel.command_start_build(run_after=False)
+    assert panel.command_start_build(run_after=True)
+    assert starts == [False, True]
+
+    panel._building = True
+    assert not panel.can_start_build()
+    assert panel.can_cancel_build()
+    assert panel.command_cancel_build()
+    assert panel._cancel_event.is_set()
+    assert not panel.can_cancel_build()
+    assert not panel.command_cancel_build()
+
+
+def test_build_preparation_flushes_writes_before_publishing_asset_index(
+    monkeypatch, tmp_path
+):
+    import infernux.core.assets as assets_module
+
+    events: list[str] = []
+    index_path = tmp_path / "Library" / "AssetIndex.json"
+
+    class _Database:
+        asset_index_path = str(index_path)
+
+        def refresh(self) -> None:
+            events.append("refresh")
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            index_path.write_text('{"project_root":"test","entries":[]}\n', encoding="utf-8")
+
+        def flush_derived_index(self) -> None:
+            events.append("flush_index")
+
+    monkeypatch.setattr(
+        assets_module.AssetManager,
+        "flush_all_asset_writes",
+        classmethod(lambda cls: events.append("flush_writes")),
+    )
+    monkeypatch.setattr(
+        "infernux.engine.runtime_artifact_catalog.load_asset_index",
+        lambda _root: [],
+    )
+    monkeypatch.setattr(
+        "infernux.renderstack.discovery.discover_effect_features",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "infernux.particle.artifact.ParticleArtifactRegistry.ensure_project_compiled",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.get_project_root",
+        lambda: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        BuildSettingsPanel,
+        "services",
+        property(lambda _self: SimpleNamespace(asset_database=_Database())),
+    )
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    assert panel._prepare_asset_catalog_for_build() == str(index_path)
+    assert events == ["flush_writes", "refresh", "flush_index"]
+
+
+def test_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path):
+    index_path = tmp_path / "Library" / "AssetIndex.json"
+    entries = [
+        {
+            "guid": "a" * 32,
+            "normalized_path": "assets/main.scene",
+            "source": {"size": 1, "modified_ns": 1},
+            "content_hash": "a" * 16,
+            "dependencies": [],
+        }
+    ]
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+
+    snapshot = panel._published_player_catalog_entries(
+        {"path": str(index_path), "entries": entries}
+    )
+
+    assert not index_path.exists()
+    assert snapshot == entries
+    assert snapshot is not entries
+
+
+def test_build_target_remains_selected_when_platform_plugin_disappears(
+    monkeypatch,
+):
+    desktop = _host_build_target()
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "android-arm64"
+    panel._settings_controller = None
+    monkeypatch.setattr(panel, "_available_build_targets", lambda: (desktop,))
+
+    selected = panel._synchronize_build_target(persist=True)
+
+    assert selected is None
+    assert panel._build_target == "android-arm64"
+
+
+def test_missing_platform_plugin_is_visible_and_blocks_build(monkeypatch):
+    desktop = _host_build_target()
+    support = SimpleNamespace(
+        target_id="android-arm64",
+        package_reference="infernux/platform-android",
+        installed=False,
+        enabled=False,
+        registered=False,
+    )
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "android-arm64"
+    panel._android_artifact = "apk"
+    panel._settings_controller = None
+    panel._building = False
+    panel._scenes = ["main-scene-guid"]
+    panel._output_dir = "C:/Builds/Game"
+    panel._save = lambda: None
+    monkeypatch.setattr(panel, "_available_build_targets", lambda: (desktop,))
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.platform_support_catalog",
+        lambda _root: (support,),
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.get_project_root",
+        lambda: "C:/Project",
+    )
+    ctx = _Context()
+
+    panel._render_target_section(ctx)
+
+    assert panel._build_target == "android-arm64"
+    assert not panel.can_start_build()
+    assert ctx.semantic_values["build_settings.target"] == "android-arm64"
+    assert (
+        ctx.semantic_values["build_settings.target_support"]
+        == "infernux/platform-android"
+    )
+    assert any("infernux/platform-android" in text for text in ctx.wrapped_texts)
+
+
+def test_build_settings_opens_plugins_and_selects_required_reference():
+    selected: list[str] = []
+    opened: list[tuple[str, str]] = []
+    plugin_panel = SimpleNamespace(
+        select_reference=lambda reference: selected.append(reference) or True
+    )
+
+    class _WindowManager:
+        def open_window_from_user(self, type_id, *, reason):
+            opened.append((type_id, reason))
+            return plugin_panel
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._window_manager = _WindowManager()
+
+    assert panel._open_platform_plugin("infernux/platform-web")
+    assert opened == [("plugins", "build_platform_plugin_navigation")]
+    assert selected == ["infernux/platform-web"]
+
+
+def test_plugin_panel_external_selection_clears_filters():
+    from infernux.engine.ui.plugin_panel import PluginPanel
+
+    panel = PluginPanel()
+    panel._scope_index = 1
+    panel._search = "something else"
+
+    assert panel.select_reference("infernux/platform-web")
+    assert panel._scope_index == 0
+    assert panel._search == ""
+    assert panel._selected_reference == "infernux/platform-web"
+
+
+def test_plugin_panel_reads_the_current_shared_cache_contract():
+    from infernux.engine.ui.plugin_panel import PluginPanel
+
+    registry = SimpleNamespace(
+        available=lambda: (
+            {
+                "reference": "infernux/platform-web",
+                "name": "Infernux Web Platform",
+                "version": "0.1.0",
+                "source": {"official": True},
+            },
+        ),
+        installed_metadata=lambda: (),
+    )
+    cache_queries: list[str] = []
+    manager = SimpleNamespace(
+        registry=registry,
+        states={},
+        cached_reference_path=lambda reference: cache_queries.append(reference) or "",
+    )
+
+    rows = PluginPanel()._visible_rows(manager)
+
+    assert [row["reference"] for row in rows] == ["infernux/platform-web"]
+    assert rows[0]["_official"] is True
+    assert rows[0]["_cached"] is False
+    assert cache_queries == ["infernux/platform-web"]
+
+
+def test_plugin_panel_distinguishes_downloadable_downloaded_and_local_available():
+    from infernux.engine.i18n import t
+    from infernux.engine.ui.plugin_panel import PluginPanel
+
+    assert PluginPanel._state_visual(None, {"_cached": False})[0] == t(
+        "plugins.downloadable"
+    )
+    assert PluginPanel._state_visual(None, {"_cached": True})[0] == t(
+        "plugins.downloaded"
+    )
+    assert PluginPanel._state_visual(
+        None,
+        {"_cached": False, "source": {"type": "local"}},
+    )[0] == t("plugins.available")
+
+
+def test_build_settings_balances_child_and_style_stacks_when_body_raises():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._build_error = None
+    panel._build_cancelled = False
+    panel._build_output_dir = None
+    panel._render_target_section = lambda _ctx: (_ for _ in ()).throw(
+        RuntimeError("render failure")
+    )
+    events = []
+
+    class Context:
+        def get_dpi_scale(self):
+            return 1.0
+
+        def dummy(self, *_args):
+            pass
+
+        def get_content_region_avail_height(self):
+            return 500.0
+
+        def push_style_color(self, *_args):
+            events.append("push_color")
+
+        def push_style_var_float(self, *_args):
+            events.append("push_var")
+
+        def begin_child(self, *_args):
+            events.append("begin_child")
+            return True
+
+        def end_child(self):
+            events.append("end_child")
+
+        def pop_style_var(self, *_args):
+            events.append("pop_var")
+
+        def pop_style_color(self, *_args):
+            events.append("pop_color")
+
+    with pytest.raises(RuntimeError, match="render failure"):
+        panel._render_body(Context())
+
+    assert events == [
+        "push_color",
+        "push_var",
+        "begin_child",
+        "end_child",
+        "pop_var",
+        "pop_color",
+    ]
+
+
+def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatch):
+    from infernux.engine.build import (
+        BuildOption,
+        BuildOptionChoice,
+        BuildOptionKind,
+        BuildTarget,
+        PlatformCapabilities,
+    )
+
+    target = BuildTarget(
+        "android-arm64",
+        "Android arm64",
+        "android",
+        "arm64-v8a",
+        PlatformCapabilities(graphics_api="vulkan"),
+    )
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "android-arm64"
+    panel._platform_options = {"android-arm64": {"android_artifact": "apk"}}
+    panel._settings_controller = None
+    panel._save = lambda: None
+    monkeypatch.setattr(panel, "_available_build_targets", lambda: (target,))
+    descriptor = BuildOption(
+        "android_artifact", "build.android_artifact", BuildOptionKind.ENUM, "apk",
+        choices=(
+            BuildOptionChoice("apk", "APK"),
+            BuildOptionChoice("aab", "AAB"),
+        ),
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.exporter_registry.options",
+        lambda _target: (descriptor,),
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
+        lambda _target, configured, **_kwargs: {
+            "android_artifact": configured.get("android_artifact", "apk")
+        },
+    )
+    ctx = _Context()
+
+    panel._render_target_section(ctx)
+    panel._render_display_section(ctx)
+
+    assert ctx.semantic_values["build_settings.target"] == "android-arm64"
+    assert (
+        ctx.semantic_values[
+            "build_settings.platform_options.android-arm64.android_artifact"
+        ]
+        == "apk"
+    )
+
+
+def test_integer_platform_option_uses_the_native_input_int_contract(monkeypatch):
+    from infernux.engine.build import BuildOption, BuildOptionKind
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "windows-x64"
+    panel._platform_options = {"windows-x64": {"window_width": 1280}}
+    panel._save = lambda: None
+    descriptor = BuildOption(
+        "window_width", "build.window_width", BuildOptionKind.INTEGER, 1280,
+        minimum=320, maximum=16384, step=1,
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.exporter_registry.options",
+        lambda _target: (descriptor,),
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
+        lambda _target, configured, **_kwargs: {
+            "window_width": configured.get("window_width", 1280)
+        },
+    )
+    ctx = _Context()
+
+    panel._render_display_section(ctx)
+
+    assert ctx.item_widths == [180.0]
+    assert ctx.input_int_calls == [("##platform_window_width", 1280, 1, 100, 0)]
+
+
+def test_platform_option_contract_errors_are_not_hidden(monkeypatch):
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_target = "windows-x64"
+    panel._platform_options = {"windows-x64": {"widht": 1280}}
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.exporter_registry.options",
+        lambda _target: (),
+    )
+    monkeypatch.setattr(
+        "infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("Unknown build options for windows-x64: widht")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Unknown build options.*widht"):
+        panel._render_display_section(_Context())
+
+
+def test_platform_progress_mapping_is_phase_aware_and_monotonic(monkeypatch):
+    from infernux.engine.build import BuildProgress
+    import infernux.engine.ui.engine_status as engine_status
+
+    monkeypatch.setattr(engine_status.EngineStatus, "set", classmethod(lambda *_args, **_kwargs: None))
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._build_progress = 0.0
+    panel._cancel_event = threading.Event()
+    panel._build_cancellation = None
+
+    panel._on_platform_build_progress(BuildProgress("compile", 1, 2, "Compiling"))
+    compile_fraction = panel._build_progress
+    panel._on_platform_build_progress(BuildProgress("shaders", 2, 2, "Shaders ready"))
+
+    assert 0.78 < compile_fraction < 0.92
+    assert panel._build_progress == compile_fraction

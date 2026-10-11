@@ -1,7 +1,7 @@
 # VignetteEffect
 
 <div class="class-info">
-类位于 <b>Infernux.renderstack</b>
+类位于 <b>infernux.renderstack</b>
 </div>
 
 **继承自:** [FullScreenEffect](FullScreenEffect.md)

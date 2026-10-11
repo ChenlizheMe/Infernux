@@ -213,7 +213,17 @@ void Collider::OnEnable()
     if (!actor.primaryCollider || !actor.primaryCollider->IsEnabled())
         actor.primaryCollider = this;
     // Re-enable after disable — body already exists, normal path.
-    PhysicsWorld::Instance().UpdateBodyShape(this);
+    auto &world = PhysicsWorld::Instance();
+    world.UpdateBodyShape(this);
+    if (!actor.bodyInBroadphase) {
+        // Properties authored while every member was disabled belong to the
+        // next resident body. Reapply them once on the first member's return.
+        auto *body = actor.rigidbody;
+        const bool dynamicOwner = body && body->IsEnabled();
+        world.SetBodyMotionType(actor.bodyId, dynamicOwner ? (body->IsKinematic() ? 1 : 2) : 0);
+        if (dynamicOwner)
+            body->ApplyConfigurationToBody(actor.bodyId);
+    }
     AddToBroadphase();
 }
 
@@ -531,11 +541,12 @@ void Collider::UnregisterBody()
     if (go) {
         auto colliders = go->GetComponents<Collider>();
         for (auto *col : colliders) {
-            if (!col || col == this)
+            if (!col || col == this || col->IsBeingDestroyed())
                 continue;
             if (col->GetBodyId() == actor.bodyId) {
                 replacement = col;
-                break;
+                if (col->IsEnabled())
+                    break;
             }
         }
     }
@@ -564,6 +575,11 @@ void Collider::UnregisterBody()
 
             if (hasOtherEnabledSibling) {
                 PhysicsWorld::Instance().UpdateBodyShape(replacement, this);
+            } else {
+                // The allocation belongs to the surviving disabled members,
+                // but the removed member's geometry must no longer participate.
+                RemoveFromBroadphase();
+                actor.primaryCollider = nullptr;
             }
         }
     } else {
@@ -596,12 +612,10 @@ void Collider::AddToBroadphase()
     if (actor.bodyInBroadphase)
         return;
 
-    bool isStatic = (actor.rigidbody == nullptr || !actor.rigidbody->IsEnabled());
-
     // Defer broadphase addition to the next pre-physics flush (Unity-style).
     // The body exists in Jolt but won't participate in queries/simulation
     // until SceneManager flushes the pending queue.
-    store.QueueBroadphaseAdd(actor.bodyId, isStatic);
+    store.QueueBroadphaseAdd(actor.bodyId);
     actor.bodyInBroadphase = true;
 }
 
@@ -655,13 +669,6 @@ void Collider::RebuildShape()
 
     PhysicsWorld::Instance().UpdateBodyShape(this);
     ++actor.shapeRevision;
-
-    // If this is a static body (no Rigidbody), wake nearby dynamic
-    // bodies so they react to the shape change immediately.
-    bool isStatic = (actor.rigidbody == nullptr || !actor.rigidbody->IsEnabled());
-    if (isStatic) {
-        PhysicsWorld::Instance().WakeBodiesTouchingStatic(actor.bodyId);
-    }
 }
 
 void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsBodyPoseUpdate> *staticPoseBatch)
@@ -786,6 +793,9 @@ void Collider::CloneBaseColliderData(Collider &target) const
     auto &dst = target.DataMut();
     dst.isTrigger = src.isTrigger;
     dst.center = src.center;
+    // Clone already has an authored shape, just like a deserialized collider.
+    // Awake must not replace it with a new-component fit to renderer bounds.
+    dst.deserialized = true;
     if (m_physicMaterial.HasGuid())
         target.SetPhysicMaterialGuid(m_physicMaterial.GetGuid());
     else

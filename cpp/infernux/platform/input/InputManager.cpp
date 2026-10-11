@@ -121,8 +121,11 @@ void InputManager::BuildNameTable()
     s_nameToScancode["slash"] = SDL_SCANCODE_SLASH;
 
     // Numpad
+    constexpr SDL_Scancode keypad[] = {SDL_SCANCODE_KP_0, SDL_SCANCODE_KP_1, SDL_SCANCODE_KP_2, SDL_SCANCODE_KP_3,
+                                       SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_5, SDL_SCANCODE_KP_6, SDL_SCANCODE_KP_7,
+                                       SDL_SCANCODE_KP_8, SDL_SCANCODE_KP_9};
     for (int i = 0; i <= 9; ++i) {
-        s_nameToScancode["keypad_" + std::to_string(i)] = SDL_SCANCODE_KP_0 + i;
+        s_nameToScancode["keypad_" + std::to_string(i)] = keypad[i];
     }
     s_nameToScancode["keypad_plus"] = SDL_SCANCODE_KP_PLUS;
     s_nameToScancode["keypad_minus"] = SDL_SCANCODE_KP_MINUS;
@@ -354,8 +357,16 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     touch->windowId = windowId;
     touch->x = x;
     touch->y = y;
-    touch->deltaX = deltaX;
-    touch->deltaY = deltaY;
+    // The snapshot exposes movement over this input frame, not just the
+    // final event. A newly begun contact starts its own displacement even
+    // when the platform reuses a finger ID before the next BeginFrame.
+    if (phase == TouchPhase::Began) {
+        touch->deltaX = deltaX;
+        touch->deltaY = deltaY;
+    } else {
+        touch->deltaX += deltaX;
+        touch->deltaY += deltaY;
+    }
     touch->deltaTime = previousTimestampNs != 0 && timestampNs >= previousTimestampNs
                            ? static_cast<float>(timestampNs - previousTimestampNs) * 1.0e-9f
                            : 0.0f;

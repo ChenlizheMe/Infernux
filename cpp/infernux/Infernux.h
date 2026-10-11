@@ -49,10 +49,12 @@ class LinkedShaderProgramLoadTicket final
   public:
     [[nodiscard]] bool IsComplete() const noexcept;
     [[nodiscard]] bool IsCommitted() const noexcept;
+    [[nodiscard]] bool IsSuperseded() const noexcept;
     [[nodiscard]] bool WasProducedOnWorker() const noexcept;
     bool Cancel() noexcept;
 
   private:
+    struct SourceIdentity;
     struct State;
     friend class Infernux;
     std::shared_ptr<State> m_state;
@@ -242,7 +244,12 @@ class Infernux
     /// @return true if successful, false otherwise
     /// @brief Reload a shader file and refresh materials using it.
     /// @return Empty string on success, or error message on failure.
-    std::string ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId);
+    std::string ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId,
+                                    const std::string &previousSourcePath = "");
+    const std::vector<std::string> &GetShaderReloadSources() const
+    {
+        return m_shaderReloadSources;
+    }
 
     /// @brief Invalidate and reload a texture after import settings change
     /// @param texturePath The texture file path whose .meta was updated
@@ -334,6 +341,14 @@ class Infernux
     /// @brief Invalidate one texture preview task/cache entry.
     void InvalidateTexturePreviewTask(const std::string &resourceKey);
 
+    /// @brief Retire decoded/uploaded texture data and pending publications.
+    /// Retains only a generation tombstone so late jobs cannot revive the key.
+    void ReleaseTexturePreviewTask(const std::string &resourceKey);
+    /// Retire queued/rendering material work and its published thumbnail.
+    void ReleaseMaterialPreviewTask(const std::string &resourceKey);
+    /// Retire all previews (including embedded model products) for a deleted source path.
+    void ReleaseAssetPreviewTasks(const std::string &assetPath);
+
     /// @brief Combined query + schedule for texture preview.
     ///
     /// Returns (textureId, width, height).  Internally manages a monotonic
@@ -341,12 +356,14 @@ class Infernux
     ///
     /// @param contentStampHint Caller-provided content hash (mtime combo, etc.).
     ///        C++ uses this to detect changes and bump the generation counter.
+    /// @param useImportedTexture Use the game asset publication. Document
+    ///        illustrations set false to preserve the source image's pixels.
     std::tuple<uint64_t, int, int> QueryOrScheduleTexturePreview(const std::string &resourceKey,
                                                                  const std::string &textureFilePath,
                                                                  uint64_t contentStampHint, bool nearest, bool srgb,
                                                                  int maxSize, const std::string &textureFormat,
                                                                  const std::string &textureType, bool authoring,
-                                                                 bool pump);
+                                                                 bool pump, bool useImportedTexture = true);
 
     /// @brief Schedule texture preview from in-memory data (JPEG/PNG/etc.).
     ///
@@ -363,7 +380,7 @@ class Infernux
     ///
     /// Returns the current ImGui texture id (stale-return for anti-flicker).
     /// Internally manages a monotonic generation counter; re-renders only
-    /// when the content changes (file mtime).
+    /// when the asset or any of its published dependencies changes.
     ///
     /// @param resourceKey    Stable cache key (e.g. "mesh|<norm_path>")
     /// @param meshFilePath   Path to the model file (.fbx, .obj, .gltf, ...)
@@ -371,6 +388,7 @@ class Infernux
     /// @return ImGui texture id (0 if not ready yet)
     uint64_t QueryOrScheduleMeshPreview(const std::string &resourceKey, const std::string &meshFilePath,
                                         uint64_t fileMtimeHint = 0);
+    [[nodiscard]] uint64_t GetMeshPreviewDependencyRevision(const std::string &meshFilePath) const;
 
     /// @brief Queue a Timeline cube preview render (non-blocking). Returns the latest
     ///        ImGui texture id immediately; GPU work runs in PumpPreviewTasks().
@@ -433,12 +451,22 @@ class Infernux
         std::string error;
     };
 
+    std::string ReloadShaderDependencies(const std::string &shaderPath, const std::string &previousSourcePath);
+    std::string ReloadShaderSourceBatch(const std::vector<std::string> &roots);
+    // Sources checked by the last synchronous candidate publication. Diagnostic
+    // owners use this receipt to retire only errors resolved by that result.
+    std::vector<std::string> m_shaderReloadSources;
+
     struct LinkedShaderProgramCacheEntry
     {
         uint64_t sourceStamp = 0;
         ShaderProgramKey programKey;
         uint64_t failedSourceStamp = 0;
         std::string lastError;
+        bool failureReported = false;
+        // Compiled UI candidates wait for an actual draw to acquire GPU ownership.
+        std::shared_ptr<const ShaderProgramArtifact> preparedArtifact;
+        uint64_t sourceEnvironmentRevision = 0;
     };
 
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
@@ -452,6 +480,11 @@ class Infernux
     InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &material) const;
 
     std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
+    // Concurrent scene loads share the same immutable source identity; a
+    // changed identity retires old work without retaining jobs/artifacts.
+    std::unordered_map<ShaderStagePair, std::shared_ptr<const LinkedShaderProgramLoadTicket::SourceIdentity>,
+                       ShaderStagePairHash>
+        m_linkedShaderPreparations;
 
     struct TexturePreviewCompleted
     {
@@ -462,6 +495,11 @@ class Infernux
         bool nearest = false;
         bool success = false;
         std::vector<unsigned char> pixels;
+        std::shared_ptr<const TextureCpuData> sourcePixels;
+        uint64_t pixelHash = 0;
+        uint32_t nonTransparentPixelCount = 0;
+        uint8_t minRgb = 0;
+        uint8_t maxRgb = 0;
     };
 
     struct MaterialPreviewRequest
@@ -494,10 +532,11 @@ class Infernux
 
     struct MaterialPreviewState
     {
-        uint64_t generation = 0;      ///< Monotonic counter, bumped on detected content change
-        uint64_t readyGeneration = 0; ///< Generation of last completed render
-        uint64_t lastJsonHash = 0;    ///< std::hash of last JSON string seen
-        uint64_t lastFileMtime = 0;   ///< Last file mtime seen from ProjectPanel
+        uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
+        uint64_t readyGeneration = 0;  ///< Generation of last completed render
+        uint64_t failedGeneration = 0; ///< Rejected source is retried only after a change
+        uint64_t lastJsonHash = 0;     ///< std::hash of last JSON string seen
+        uint64_t lastFileMtime = 0;    ///< Last file mtime seen from ProjectPanel
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
@@ -526,6 +565,7 @@ class Infernux
     {
         uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
         uint64_t readyGeneration = 0;  ///< Generation of last completed render
+        uint64_t failedGeneration = 0; ///< Retry decode only when the source/settings change
         uint64_t lastContentStamp = 0; ///< Last content stamp seen from caller
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
@@ -557,6 +597,7 @@ class Infernux
         uint64_t readyGeneration = 0;
         uint64_t failedGeneration = 0;
         uint64_t lastFileMtime = 0;
+        uint64_t lastDependencyRevision = 0;
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
@@ -582,6 +623,8 @@ class Infernux
     static std::string BuildTexturePreviewTextureName(const std::string &resourceKey);
     static std::string BuildMeshPreviewTextureName(const std::string &resourceKey);
     void CommitPublishedPreviewTextures();
+    // Caller holds m_previewResultMutex; one task owns each mesh's latest request.
+    void ScheduleDirtyMeshPreview(const std::string &key, MeshPreviewState &state);
     void DrainPreviewJobs();
 
     InxAppMetadata m_metadata{"Infernux", 0, 1, 0, "com.infrenderer.Infernux"};

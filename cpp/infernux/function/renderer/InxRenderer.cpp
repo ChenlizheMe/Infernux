@@ -13,7 +13,6 @@
 #include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
 #include "ScriptableRenderContext.h"
-#include "TransientResourcePool.h"
 #include "gui/InxGUI.h"
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUISemantics.h"
@@ -28,10 +27,12 @@
 #include "particle/ParticleGpuRibbonTopology.h"
 #include "particle/ParticleGpuSorter.h"
 #include "particle/ParticleGpuSystemManager.h"
+#include "particle/ParticleSceneSources.h"
 #include "rhi/RhiComputeHost.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/TransientResourcePool.h"
 #include "vk/VkHandle.h"
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
@@ -764,6 +765,9 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
         throw std::runtime_error("Startup cancelled");
 
     m_view->CreateSurface(&m_vkCore->m_instance, &m_vkCore->m_surface);
+    // Publish ownership before pumping cancellation: a close request here
+    // must release the surface even though PrepareSurface has not run yet.
+    m_vkCore->GetDeviceContext().SetExternalSurface(m_vkCore->m_surface);
     if (!PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 
@@ -843,6 +847,10 @@ void InxRenderer::PreparePipeline()
                 return;
             UpdateParticleCollisionScene();
             m_particleGpuSystemManager->Execute(cmdBuf);
+        });
+        m_vkCore->SetFrameComputeSubmissionCallback([this](bool submitted) {
+            if (m_particleGpuSystemManager)
+                m_particleGpuSystemManager->NotifySubmission(submitted);
         });
         m_vkCore->SetFrameComputeWorkPredicate(
             [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->HasPendingGpuWork(); });
@@ -981,9 +989,9 @@ void InxRenderer::PreparePipeline()
                     return true;
                 graph->SetDrawViewMatrix(view);
                 vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
-                m_vkCore->RegisterFrameComputeReadDependency(graph->GetLatestComputeBufferWriteSubmission(),
-                                                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                rhi::PipelineStage bufferAccessStages;
+                const auto bufferWrite = graph->GetLatestComputeBufferWriteSubmission(bufferAccessStages);
+                m_vkCore->RegisterFrameComputeReadDependency(bufferWrite, rhi::ToVkPipelineStages(bufferAccessStages));
                 const auto &viewContext = graph->GetRenderViewContext();
                 std::vector<uint32_t> graphDependencies = predecessors;
                 if (particleComputeWorkItem != 0)
@@ -1341,6 +1349,19 @@ void InxRenderer::DrawFrame()
     if (m_vkCore) {
         m_vkCore->WaitForCurrentFrame();
         m_vkCore->CollectRetiredGpuResources();
+        if (m_transientResourcePool) {
+            const auto completedEpoch = m_vkCore->GetBackendContext().Queues().GetCompletedCompletionEpoch();
+            m_transientResourcePool->Collect(completedEpoch);
+        }
+        // SDL pixel-size changes are authoritative even when acquire/present
+        // keep succeeding. Commit the new attachments before GUI layout and
+        // render-graph construction, rather than relying on driver errors.
+        if (!m_vkCore->RefreshPresentationSize()) {
+            sceneManager.EndFrame();
+            runDeferredTasks();
+            SDL_Delay(16);
+            return;
+        }
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [3] after WaitForCurrentFrame (GPU fence)
@@ -1488,11 +1509,18 @@ void InxRenderer::DrawFrame()
                      "Call engine.set_render_pipeline(DefaultRenderPipelineAsset()) to activate rendering.");
     }
 
+    // All runtime UI packets now exist. Their dynamic font images must be
+    // resident before Scene/Game command recording, including the first draw.
+    if (m_gui)
+        m_gui->PrepareRuntimeFontTextures();
+
     // RenderPipeline::Render() applies the current Python graph. Re-check the
     // requested MSAA here so a newly selected pipeline can switch sample count
     // before any stale render graph executes this frame.
     if (CheckAndApplyMsaaRequest(true, sceneViewActive,
                                  m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game))) {
+        if (m_transientResourcePool)
+            m_transientResourcePool->AbandonReleased();
         sceneManager.EndFrame();
         runDeferredTasks();
         return;
@@ -1600,6 +1628,9 @@ void InxRenderer::DrawFrame()
     if (HasPendingCapture(CaptureSource::Editor))
         m_vkCore->RequestPresentationReadback();
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
+    if (m_transientResourcePool)
+        m_transientResourcePool->RetireReleased(m_vkCore->GetLastSubmittedCompletionEpoch());
+    sceneManager.CommitSkinPoseHistories();
     if (m_vkCore->ConsumeFirstVisiblePresentation())
         m_view->RevealAfterFirstPresentation();
     if (m_vkCore->ConsumePresentationSurfaceLost()) {
@@ -2627,6 +2658,22 @@ bool InxRenderer::PublishShaderProgramArtifact(const ShaderProgramArtifact &arti
     return true;
 }
 
+bool InxRenderer::PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts)
+{
+    if (!m_vkCore)
+        return false;
+    std::vector<ShaderStagePair> changed;
+    for (const auto &artifact : artifacts)
+        if (!m_vkCore->HasShaderProgramArtifact(artifact.key))
+            changed.push_back(artifact.key.stages);
+    if (!m_vkCore->PublishShaderProgramArtifacts(artifacts))
+        return false;
+    if (m_screenUIRenderer)
+        for (const auto &stages : changed)
+            m_screenUIRenderer->InvalidateMaterialProgram(stages);
+    return true;
+}
+
 void InxRenderer::InvalidateUIMaterialProgram(const ShaderStagePair &stages)
 {
     // Reload can touch a UI pair that was never drawn. Such a pair has no UI
@@ -2637,6 +2684,14 @@ void InxRenderer::InvalidateUIMaterialProgram(const ShaderStagePair &stages)
         m_screenUIRenderer->InvalidateMaterialProgram(stages);
     if (oldProgram)
         m_vkCore->ReleaseUIShaderProgramArtifact(oldProgram->key);
+}
+
+void InxRenderer::RetireShaderProgramArtifact(const ShaderProgramKey &key)
+{
+    if (m_screenUIRenderer)
+        m_screenUIRenderer->InvalidateMaterialProgram(key.stages);
+    if (m_vkCore)
+        m_vkCore->RetireShaderProgramArtifact(key);
 }
 
 bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
@@ -2844,6 +2899,12 @@ void InxRenderer::SetGUIFont(const char *fontPath, float fontSize)
     }
 }
 
+void InxRenderer::InvalidateGUIFontAsset(const std::string &path)
+{
+    if (m_gui)
+        m_gui->InvalidateFontAsset(path);
+}
+
 float InxRenderer::GetDisplayScale() const
 {
     if (!m_gui)
@@ -2901,6 +2962,13 @@ uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, cons
         return 0;
     auto texture = m_vkCore->ResolveTextureForEditorPreview(textureGuid);
     return texture ? m_gui->PublishTextureViewForImGui(name, std::move(texture)) : 0;
+}
+
+uint64_t InxRenderer::SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels)
+{
+    if (!m_gui)
+        throw std::logic_error("Document texture submission requires an initialized GUI");
+    return m_gui->SubmitDocumentTextureForImGui(name, pixels);
 }
 
 uint64_t InxRenderer::GetRenderTextureUITextureId(const std::shared_ptr<rhi::RenderTexture> &texture)
@@ -3841,9 +3909,12 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         particle::GpuBillboardTextureLease lease;
         TextureResolveResult resolved;
         if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
-            const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
-                                bindingName.find("Normal") != std::string::npos;
-            auto residentSlot = core->GetTextureCache().Find(normal ? "_default_normal" : "white");
+            // SurfaceBinding already resolves ShaderInfo defaults. A property's
+            // spelling must never change the meaning of its texture value.
+            const char *textureKey = textureGuid == "normal"  ? "_default_normal"
+                                     : textureGuid == "black" ? "_default_black"
+                                                              : "white";
+            auto residentSlot = core->GetTextureCache().Find(textureKey);
             auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
             if (!resident || !resident->IsValid()) {
                 lease.status = particle::GpuBillboardTextureStatus::Pending;
@@ -3907,36 +3978,12 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         INXLOG_ERROR("Failed to compile one or more GPU particle support programs");
         return nullptr;
     }
-    const auto particleSkinnedMeshResolver =
-        [](const ObjectHandle &handle) -> std::optional<particle::GpuParticleSkinnedMeshSnapshot> {
-        Scene *scene = SceneManager::Instance().GetActiveScene();
-        auto *renderer = scene ? dynamic_cast<SkinnedMeshRenderer *>(scene->ResolveComponent(handle)) : nullptr;
-        if (!renderer || !renderer->GetGameObject() || !renderer->GetGameObject()->GetTransform())
-            return std::nullopt;
-        const auto pose = renderer->GetRuntimeSkinPoseSnapshot();
-        auto mesh = renderer->GetMeshAssetRef().Get();
-        auto model = renderer->GetRuntimeModelSnapshot();
-        if (!pose || !pose->IsValid() || !mesh || !model)
-            return std::nullopt;
-        particle::GpuParticleSkinnedMeshSnapshot snapshot;
-        snapshot.mesh = std::move(mesh);
-        snapshot.model = std::move(model);
-        snapshot.currentPalette = pose->current;
-        snapshot.previousPalette = pose->previous;
-        snapshot.revision = pose->revision;
-        const glm::mat4 &world = renderer->GetGameObject()->GetTransform()->GetWorldMatrix();
-        for (uint32_t row = 0; row < 4; ++row) {
-            for (uint32_t column = 0; column < 4; ++column)
-                snapshot.sourceToWorld[row * 4 + column] = world[column][row];
-        }
-        return snapshot;
-    };
-    if (!manager->Initialize(
-            m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
-            m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
-            std::move(particleVectorFieldTextureResolver), std::move(particleSkinnedMeshResolver), programs.sort.View(),
-            programs.cull.View(), programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
-            programs.ribbonTopology.View(), programs.ribbonRender.View(), m_vkCore->GetMaxFramesInFlight())) {
+    if (!manager->Initialize(m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(),
+                             m_vkCore->GetResourceManager(), m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry,
+                             std::move(particleTextureResolver), std::move(particleVectorFieldTextureResolver),
+                             particle::ResolveSceneSkinnedMeshSource, programs.sort.View(), programs.cull.View(),
+                             programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
+                             programs.ribbonTopology.View(), programs.ribbonRender.View())) {
         INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         return nullptr;
     }
@@ -4275,6 +4322,8 @@ void InxRenderer::InvalidateTextureCache(const std::string &texturePath)
     }
 
     m_vkCore->InvalidateTextureCache(texturePath);
+    if (m_particleGpuSystemManager)
+        m_particleGpuSystemManager->InvalidateTextureAssets(texturePath);
 }
 
 void InxRenderer::InvalidateMeshCache(const std::string &meshGuid)
@@ -4741,7 +4790,10 @@ void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
 {
     if (m_particleGpuSystemManager) {
         m_particleGpuSystemManager->AbortAsyncRecording();
-        m_particleGpuSystemManager->ResetAll();
+        // View invalidation runs after Scene Update. Particle owners have
+        // already rebuilt and scheduled the new scene's first frame here.
+        // Resetting simulation would discard that frame's initial bursts;
+        // scene/component lifecycle owns simulation resets, not view caches.
     }
     if (m_sceneRenderGraph)
         m_sceneRenderGraph->InvalidateParticleViews();
@@ -4801,6 +4853,7 @@ void InxRenderer::SetSceneViewVisible(bool visible)
 
 void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer)
 {
+    renderer.SetFontTexturePublisher([this] { m_gui->PrepareRuntimeFontTextures(); });
     renderer.SetMaterialAssetResolver([](const std::string &guid, uint64_t generation) {
         auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(guid);
         if (!material || material->IsDeleted() || material->GetVersion() != generation)

@@ -132,8 +132,27 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     if (cachedResult.drawCalls.empty())
         return result;
 
+    // Camera visibility does not determine shadow visibility. Offscreen and
+    // camera-masked geometry can cast into visible receivers. The shadow
+    // renderer filters this scene-owned list by each light's mask and frustum.
+    if (includeShadowDrawCalls)
+        result.shadowDrawCallsRef = &cachedResult.drawCalls;
+
     const uint64_t cacheKey = camera.cameraId != 0 ? camera.cameraId : 1;
-    CameraCullCache &cameraCache = m_cameraCullCaches[cacheKey];
+    auto &cacheOwner = m_cameraCullCaches[cacheKey];
+    if (!cacheOwner)
+        cacheOwner = std::make_shared<CameraCullCache>();
+    CameraCullCache &cameraCache = *cacheOwner;
+    auto retainVisibleList = [&] {
+        // The visible list lives in the cull cache, not in RenderWorldFrame.
+        // A submitted render graph may still borrow it when its camera or
+        // renderer set retires. Retain both storages through the publication's
+        // existing owner, without copying DrawCalls or retaining dead caches
+        // in the renderer. The cache itself only owns the plain world frame.
+        using Owners = std::pair<std::shared_ptr<const RenderWorldFrame>, std::shared_ptr<CameraCullCache>>;
+        auto owners = std::make_shared<Owners>(result.worldOwner, cacheOwner);
+        result.worldOwner = std::shared_ptr<const RenderWorldFrame>(std::move(owners), result.worldOwner.get());
+    };
     const bool worldMatches = cameraCache.worldId == result.worldOwner->WorldId();
     const bool structuralMatches = cameraCache.structuralRevision == result.worldOwner->StructuralRevision();
     const bool transformMatches = cameraCache.transformRevision == result.worldOwner->TransformRevision();
@@ -173,6 +192,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
                     destination.previousSkinBoneMatricesOwner = source.previousSkinBoneMatricesOwner;
                     destination.previousSkinBoneMatrices = source.previousSkinBoneMatrices;
                     destination.parameterBlock = source.parameterBlock;
+                    destination.castsShadows = source.castsShadows;
+                    destination.receivesShadows = source.receivesShadows;
                 }
             }
             cameraCache.contentRevision = result.worldOwner->ContentRevision();
@@ -183,9 +204,10 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         cameraCache.worldOwner = result.worldOwner;
         result.visibleDrawCallsRef =
             cameraCache.usesWorldDrawCalls ? &cachedResult.drawCalls : &cameraCache.visibleDrawCalls;
+        if (!cameraCache.usesWorldDrawCalls)
+            retainVisibleList();
         result.visibleListRevision = cameraCache.visibleListRevision;
-        if (camera.cullingMask == 0xFFFFFFFFu && includeShadowDrawCalls) {
-            result.shadowDrawCallsRef = &cachedResult.drawCalls;
+        if (result.shadowDrawCallsRef) {
             result.shadowListRevision = cameraCache.visibleListRevision;
         }
         m_visibleCount.store(cameraCache.visibleCount, std::memory_order_relaxed);
@@ -205,8 +227,6 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         frustum.ExtractFromMatrix(camera.viewProjection);
 
     const bool allLayersVisible = cullingMask == 0xFFFFFFFFu;
-    if (allLayersVisible && includeShadowDrawCalls)
-        result.shadowDrawCallsRef = &cachedResult.drawCalls;
 
     // A dense static field is cheaper to submit as one conservative instance
     // batch than to compact tens of thousands of DrawCalls merely to reject a
@@ -278,17 +298,6 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
 
         const bool visible = !testBounds || frustum.IntersectsAABB(renderable.frame.worldBounds);
         if (!visible) {
-            if (allLayersVisible)
-                return;
-            if (includeShadowDrawCalls) {
-                const size_t drawCallEnd =
-                    std::min(cache.drawCallStart + cache.drawCallCount, cachedResult.drawCalls.size());
-                for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
-                    DrawCall drawCall = cachedResult.drawCalls[drawCallIndex];
-                    drawCall.frustumVisible = false;
-                    result.shadowDrawCalls.push_back(std::move(drawCall));
-                }
-            }
             return;
         }
 
@@ -301,8 +310,6 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
             drawCall.frustumVisible = true;
             cameraCache.visibleDrawCalls.push_back(drawCall);
             cameraCache.visibleDrawCallSourceIndices.push_back(drawCallIndex);
-            if (includeShadowDrawCalls && !allLayersVisible)
-                result.shadowDrawCalls.push_back(std::move(drawCall));
         }
     };
 
@@ -331,6 +338,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         m_nextCameraCullRevision = 1;
     cameraCache.worldOwner = result.worldOwner;
     result.visibleDrawCallsRef = &cameraCache.visibleDrawCalls;
+    retainVisibleList();
     result.visibleListRevision = cameraCache.visibleListRevision;
     if (result.shadowDrawCallsRef || !result.shadowDrawCalls.empty())
         result.shadowListRevision = cameraCache.visibleListRevision;

@@ -1,0 +1,413 @@
+"""
+Base classes for the Scriptable Render Pipeline.
+
+Users extend RenderPipeline to define custom rendering logic.
+RenderPipelineAsset acts as a factory for pipeline instances.
+
+RenderStack integration:
+    Subclasses implement ``define_topology(graph)`` to declare passes
+    and stable EffectStages inline on the ``RenderGraph``. Injection points
+    remain available for mounted RenderPass instances. The system
+    auto-records the topology sequence. ScreenUI/post-process section is
+    inserted explicitly by calling ``graph.screen_ui_section()``.
+
+Exposing parameters:
+    RenderPipeline supports the same ``serialized_field`` mechanism as
+    ``InxComponent``.  Declare class-level attributes and they will be
+    collected automatically, shown in the RenderStack inspector, and
+    available to ``define_topology()``::
+
+        class MyPipeline(RenderPipeline):
+            name = "My Pipeline"
+            shadow_resolution: int = serialized_field(default=4096, range=(512, 8192))
+            enable_bloom: bool = True
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, TYPE_CHECKING
+
+from infernux.lib import RenderPipelineCallback
+from infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
+from infernux.renderstack.geometry_buffers import (
+    GeometryBufferProviderContext,
+    GeometryBufferTopologyError,
+    GeometryStagePhase,
+    BASE_COLOR,
+    DEPTH,
+    MOTION,
+    NORMAL,
+    geometry_buffer,
+    provider_specs,
+    requirement_closure,
+    topological_provider_order,
+)
+from infernux.renderstack.pass_result import BufferHandle, PassResult
+
+if TYPE_CHECKING:
+    from infernux.rendergraph.graph import RenderGraph
+
+
+class RenderPipelineAsset:
+    """
+    Factory for creating RenderPipeline instances.
+
+    Override ``create_pipeline()`` to return your custom RenderPipeline.
+
+    Usage::
+
+        class MyPipelineAsset(RenderPipelineAsset):
+            def create_pipeline(self):
+                return MyPipeline()
+
+        engine.set_render_pipeline(MyPipelineAsset())
+    """
+
+    def create_pipeline(self) -> "RenderPipeline":
+        raise NotImplementedError("Subclass must implement create_pipeline()")
+
+
+# Reserved attribute names that should never be treated as serialized fields.
+_RESERVED_ATTRS = frozenset({
+    "name",
+})
+
+
+class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
+    """
+    Base class for scriptable render pipelines.
+
+    The minimal subclass only needs ``define_topology()`` and optionally
+    ``render_camera()`` for per-camera custom logic::
+
+        class MyPipeline(RenderPipeline):
+            name = "My Pipeline"
+
+            def define_topology(self, graph):
+                graph.create_texture("color", camera_target=True)
+                graph.create_texture("depth", format=Format.D32_SFLOAT)
+                with graph.add_pass("OpaquePass") as p:
+                    p.write_color("color")
+                    p.write_depth("depth")
+                    p.draw_renderers(queue_range=(0, 2500))
+                graph.set_output("color")
+
+    Exposable parameters:
+        Use class-level attributes (plain values or ``serialized_field()``)
+        just like ``InxComponent``::
+
+            class MyPipeline(RenderPipeline):
+                shadow_resolution: int = serialized_field(default=2048, range=(256, 8192))
+                enable_ssao: bool = True
+
+        These are collected into ``_serialized_fields_`` and rendered by
+        the RenderStack inspector.
+
+    RenderStack integration:
+        Subclasses implement ``define_topology(graph)`` to declare passes
+        and ``graph.effects(stable_id, ...)`` attachment stages inline. The
+        ``RenderGraph`` auto-records the topology sequence; scene RenderStacks
+        may only bind effects to those declarations.
+    """
+
+    # Display name for Editor UI and discovery. Subclasses should override.
+    name: str = "Unnamed Pipeline"
+
+    # Class-level storage for serialized field metadata (same pattern as InxComponent)
+    _serialized_fields_: Dict[str, Any] = {}
+
+    # Pipeline routing constants describe the implementation and must not be
+    # serialized as user-facing pipeline parameters.
+    _reserved_attrs_ = frozenset({"name", "material_pass"})
+
+    # Optional back-reference to owning RenderStack (set when pipeline is
+    # created by RenderStack, used to invalidate_graph on param change).
+    _render_stack: Any = None
+
+    # ------------------------------------------------------------------
+    # Instance init: set field defaults
+    # ------------------------------------------------------------------
+
+    def __init__(self):
+        super().__init__()
+        self._render_stack = None
+        self._standalone_graphs = {}
+        self._standalone_desc = None
+        # Initialize serialized fields with defaults
+        from infernux.components.fields import get_serialized_fields
+        for field_name, meta in get_serialized_fields(self.__class__).items():
+            # If descriptor already provides the default via __get__, skip.
+            # But we need to ensure instance storage is primed.
+            if not hasattr(self, f"_sf_{field_name}"):
+                # Trigger descriptor __set__ so instance value is stored
+                try:
+                    setattr(self, field_name, meta.default)
+                except Exception as e:
+                    from infernux.debug import Debug
+                    Debug.log_warning(f"RenderPipeline: failed to set default for '{field_name}': {e}")
+
+    def require_buffer(self, semantic: str) -> BufferHandle:
+        """Declare one semantic required from the unified geometry stage."""
+        handle = BufferHandle(semantic)
+        graph = getattr(self, "_defining_graph", None)
+        if graph is None:
+            raise RuntimeError("require_buffer() is only valid while defining a pipeline")
+        graph.require_geometry_buffers({handle.name})
+        return handle
+
+    def sample_buffer(
+        self,
+        result: PassResult,
+        semantic: str | BufferHandle,
+    ):
+        """Sample a semantic from one explicit pass/stage result."""
+        if not isinstance(result, PassResult):
+            raise TypeError("sample_buffer() requires a PassResult source")
+        return result.sample(semantic)
+
+    def publish_result(self, source: str, buffers) -> PassResult:
+        """Publish the initial named-buffer result of a stage or pass."""
+        graph = getattr(self, "_defining_graph", None)
+        if graph is None:
+            raise RuntimeError("publish_result() is only valid while defining a pipeline")
+        return graph.publish_pass_result(source, buffers)
+
+    def write_buffer(
+        self,
+        result: PassResult,
+        semantic: str | BufferHandle,
+        texture,
+        *,
+        source: str,
+    ) -> PassResult:
+        """Publish a new result revision after a pass writes one buffer.
+
+        The parent remains valid, so later code may deliberately sample either
+        the pre-pass or post-pass resource set.
+        """
+        graph = getattr(self, "_defining_graph", None)
+        if graph is None:
+            raise RuntimeError("write_buffer() is only valid while defining a pipeline")
+        if not isinstance(result, PassResult):
+            raise TypeError("write_buffer() requires a PassResult parent")
+        name = semantic.name if isinstance(semantic, BufferHandle) else semantic
+        return graph.write_buffer(source, result, name, texture)
+
+    @geometry_buffer(BASE_COLOR, phase=GeometryStagePhase.OPAQUE, dependencies={DEPTH})
+    def _provide_builtin_base_color(self, context: GeometryBufferProviderContext):
+        from infernux.renderstack._pipeline_common import add_base_color_buffer_pass
+
+        return add_base_color_buffer_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH),
+            queue_range=context.queue_range,
+            msaa_samples=context.msaa_samples,
+        )
+
+    @geometry_buffer(NORMAL, phase=GeometryStagePhase.OPAQUE, dependencies={DEPTH})
+    def _provide_builtin_normal(self, context: GeometryBufferProviderContext):
+        from infernux.renderstack._pipeline_common import add_normal_buffer_pass
+
+        return add_normal_buffer_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH),
+            queue_range=context.queue_range,
+            msaa_samples=context.msaa_samples,
+        )
+
+    @geometry_buffer(MOTION, phase=GeometryStagePhase.OPAQUE, dependencies={DEPTH})
+    def _provide_builtin_motion(self, context: GeometryBufferProviderContext):
+        from infernux.renderstack._pipeline_common import add_motion_vector_pass
+
+        return add_motion_vector_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH),
+            queue_range=context.queue_range,
+            clear=context.clear,
+            sort_mode=context.sort_mode,
+            msaa_samples=context.msaa_samples,
+        )
+
+    def _required_geometry_buffers(
+        self, graph, *, phase: GeometryStagePhase | str = GeometryStagePhase.OPAQUE,
+    ) -> frozenset[str]:
+        """Plan this phase's inputs before declaring built-in producers."""
+        return requirement_closure(
+            graph.geometry_buffer_requirements, provider_specs(type(self)), phase=phase,
+        )
+
+    def geometry_stage(
+        self,
+        graph,
+        source: str,
+        *,
+        phase: GeometryStagePhase | str = GeometryStagePhase.OPAQUE,
+        buffers,
+        queue_range,
+        msaa_samples: int = 1,
+        sort_mode: str = "front_to_back",
+        clear: bool = False,
+    ) -> PassResult:
+        """Publish one geometry result and lazily materialize requested buffers."""
+
+        normalized_phase = GeometryStagePhase(phase)
+        specs = provider_specs(type(self))
+        # Dependencies are resolved from this result's seeds and phase by
+        # materialize(). Only explicit demand belongs to the graph: expanding
+        # it here would leak another phase's inputs and run providers whose
+        # semantic is already supplied by the caller.
+        requirements = graph.geometry_buffer_requirements
+        result: PassResult | None = None
+
+        def materialize(_result: PassResult, semantic: str):
+            context = GeometryBufferProviderContext(
+                self,
+                graph,
+                source=_result.source,
+                phase=normalized_phase,
+                seed=_result.snapshot,
+                queue_range=queue_range,
+                msaa_samples=msaa_samples,
+                sort_mode=sort_mode,
+                clear=clear,
+            )
+            order = topological_provider_order(
+                {semantic},
+                available=context._buffers,
+                phase=normalized_phase,
+                providers=specs,
+                source=_result.source,
+            )
+            for spec in order:
+                value = getattr(self, spec.method_name)(context)
+                if value is None:
+                    raise GeometryBufferTopologyError(
+                        f"geometry buffer provider {spec.method_name!r} returned no "
+                        f"resource for {spec.semantic!r} in source {_result.source!r}"
+                    )
+                context.publish(spec.semantic, value)
+                _result._publish_materialized(spec.semantic, value)
+            return _result.sample(semantic)
+
+        result = graph.publish_pass_result(
+            source,
+            buffers,
+            materialize=materialize,
+        )
+        for semantic in sorted(requirements):
+            result.sample(semantic)
+        return result
+
+    # ==================================================================
+    # Standalone render entry point (without RenderStack)
+    # ==================================================================
+
+    def render(self, context, camera):
+        """Render one camera through its dedicated context.
+
+        The base implementation builds the graph once from
+        ``define_topology()``, filters the camera via
+        ``should_render_camera()``, then calls ``render_camera()``.
+
+        The renderer owns multi-camera enumeration and creates a distinct
+        context and RenderView for every camera. Pipelines must never loop
+        cameras inside one context. For camera filtering, override
+        ``should_render_camera()``.
+        """
+        from infernux.rendergraph.graph import RenderGraph
+
+        if not self.should_render_camera(camera):
+            return
+        samples = context.output_samples
+        self._standalone_desc = self._standalone_graphs.get(samples)
+        if self._standalone_desc is None:
+            g = RenderGraph(self.name, output_samples=samples)
+            self._defining_graph = g
+            try:
+                self.define_topology(g)
+            finally:
+                self._defining_graph = None
+            self._standalone_desc = self._standalone_graphs[samples] = g.build()
+        context.setup_camera_properties(camera)
+        culling = context.cull(camera)
+        self.render_camera(context, camera, culling)
+
+    def should_render_camera(self, camera) -> bool:
+        """Decide whether *camera* should be rendered this frame.
+
+        Override to filter out specific cameras, e.g. skip editor cameras
+        or only render cameras on a certain layer::
+
+            def should_render_camera(self, camera):
+                return not camera.is_editor_camera
+
+        Returns ``True`` by default.
+        """
+        return True
+
+    def render_camera(self, context, camera, culling):
+        """Per-camera render hook.
+
+        The default implementation applies the compiled graph and submits
+        culling results.  Override to inject custom per-camera logic
+        (e.g. per-camera shadow passes, camera-specific post-process).
+
+        Args:
+            context: The render context provided by the engine.
+            camera: The current camera being rendered.
+            culling: Culling results from ``context.cull(camera)``.
+        """
+        if not context.is_graph_revision_current(self._standalone_desc.source_revision):
+            context.apply_graph(self._standalone_desc)
+        context.submit_culling(culling)
+
+    def dispose(self):
+        """Override to release resources when the pipeline is replaced."""
+        self._standalone_desc = None
+        self._standalone_graphs.clear()
+
+    # ==================================================================
+    # RenderStack integration
+    # ==================================================================
+
+    def define_topology(self, graph: "RenderGraph") -> None:
+        """Define the rendering topology on *graph*.
+
+        Subclass implementation should:
+        1. Create textures via ``graph.create_texture(...)``
+        2. Add passes via ``graph.add_pass(...)``
+        3. Declare user stages via ``graph.effects(...)``
+        4. Call ``graph.set_output(...)``
+
+        **Rules**:
+        - No injection point before the first pass (validated by system).
+
+        Args:
+            graph: The ``RenderGraph`` builder to populate.
+        """
+        from infernux.renderstack.pipeline_compiler import compile_pipeline_definition
+        from infernux.renderstack.pipeline_dsl import PipelineBuilder
+
+        self._defining_graph = graph
+        try:
+            builder = PipelineBuilder()
+            self.define(builder)
+            definition = builder.build()
+            self._declarative_definition = definition
+            compile_pipeline_definition(definition, graph, pipeline=self)
+        finally:
+            self._defining_graph = None
+
+    def define(self, pipeline) -> None:
+        """Declare a low-nesting pipeline topology.
+
+        New pipelines override this method. Existing pipelines that override
+        :meth:`define_topology` continue to use the lower-level RenderGraph API.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement define(pipeline) or "
+            "define_topology(graph)"
+        )

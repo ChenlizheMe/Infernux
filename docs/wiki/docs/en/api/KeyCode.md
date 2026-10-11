@@ -1,7 +1,7 @@
 # KeyCode
 
 <div class="class-info">
-class in <b>Infernux.input</b>
+class in <b>infernux.input</b>
 </div>
 
 ## Description

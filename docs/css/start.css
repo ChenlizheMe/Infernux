@@ -20,7 +20,7 @@
 .start-heading h1 {
     margin: 12px 0 10px;
     font-family: var(--font-display);
-    font-size: 1.55rem;
+    font-size: clamp(2rem, 4vw, 3.4rem);
     line-height: 1.16;
     letter-spacing: 0;
 }
@@ -34,7 +34,7 @@
 
 .start-section {
     display: grid;
-    grid-template-columns: 46px minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
     gap: 20px;
     padding: 34px 0;
     border-bottom: 1px solid var(--border);
@@ -42,8 +42,8 @@
 
 .start-step {
     display: grid;
-    width: 38px;
-    height: 38px;
+    width: 48px;
+    height: 48px;
     place-items: center;
     border: 1px solid var(--border-strong);
     color: var(--accent);
@@ -160,3 +160,5 @@
         grid-template-columns: 1fr;
     }
 }
+
+.start-step { background: var(--bg-panel); border-top: 2px solid var(--accent-fill); }

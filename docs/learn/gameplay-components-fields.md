@@ -18,29 +18,27 @@ The first component ran with values fixed in code. This chapter turns those valu
 Create `TargetReporter.py` under `Assets` and use this complete script:
 
 ```python
-from typing import Annotated
-
 import infernux as inx
 
 
 @inx.disallow_multiple
 @inx.require_component(inx.Rigidbody)
 class TargetReporter(inx.InxComponent):
-    speed: Annotated[
-        float,
-        inx.components.Header("Movement"),
-        inx.components.Range(0.0, 12.0),
-        inx.components.Tooltip("Maximum movement speed in units per second."),
-    ] = 3.0
+    speed: float = inx.serialized_field(
+        default=3.0,
+        range=(0.0, 12.0),
+        header="Movement",
+        tooltip="Maximum movement speed in units per second.",
+    )
 
-    target: Annotated[
-        inx.GameObject,
-        inx.components.Header("References"),
-        inx.components.RequiredComponent("MeshRenderer"),
-        inx.components.Tooltip("Target must have a MeshRenderer."),
-    ]
+    target: inx.GameObject = inx.serialized_field(
+        default=None,
+        header="References",
+        required_component="MeshRenderer",
+        tooltip="Target must have a MeshRenderer.",
+    )
 
-    body: inx.Rigidbody = inx.component_field(
+    body: inx.Rigidbody = inx.serialized_field(
         component_type="Rigidbody",
         tooltip="Rigidbody used by this reporter.",
     )
@@ -56,7 +54,7 @@ class TargetReporter(inx.InxComponent):
         )
 ```
 
-The imports and declarations above are public APIs. `Annotated` metadata controls Inspector presentation and validation. `component_field()` creates a typed component-reference slot.
+The imports and declarations above are public APIs. `serialized_field()` makes the Inspector contract explicit: its keyword metadata controls presentation and validation. `component_type="Rigidbody"` declares a typed component-reference slot using the same field API.
 
 ## Author the scene {#author-the-scene}
 
@@ -71,9 +69,11 @@ The expected log is `Reporter -> Target; speed=6.0`. The exact numeric formattin
 
 ## Serialized fields {#fields}
 
-Supported public annotations include `int`, `float`, `bool`, `str`, vectors, enums, known asset references, `GameObject`, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Explicit `serialized_field(...)` remains useful when keyword metadata is clearer.
+Supported public annotations include `int`, `float`, `bool`, `str`, vectors, enums, known asset references, `GameObject`, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Use `serialized_field(...)` to declare authored fields and their Inspector metadata explicitly.
 
-`Range(0.0, 12.0)` supplies a slider and enforces the numeric bounds on Inspector edits, deserialization, and script assignment. `Header` adds a section label and `Tooltip` adds hover help. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.
+The annotation also supplies the type of a `serialized_field` declaration: `numbers: list[int] = inx.serialized_field(default=[])` declares integer elements even when the default list is empty, and `speed: float = inx.serialized_field(default=1)` has a float default of `1.0`. Explicit type arguments such as `field_type` or `element_type` take precedence over the corresponding annotation information.
+
+The `range`, `header`, and `tooltip` arguments to `serialized_field()` supply a slider, section label, and hover help. The same numeric bounds apply to Inspector edits, deserialization, and script assignment. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.
 
 Use private `_name` attributes for transient state. Use `serialized_field(..., hidden=True)` when data must be saved but omitted from the Inspector. Regular mutable runtime caches should be rebuilt in lifecycle callbacks and kept out of serialized fields.
 
@@ -81,9 +81,11 @@ Under the hood, numeric fields (`int`, `float`, `bool`, `Vector2/3/4`) are backe
 
 ## Inspector references {#references}
 
-`target` is a GameObject field. Its stored form is a persistent scene-object reference; reading `self.target` resolves and returns the live `GameObject`, or `None` when the target is missing or destroyed. `RequiredComponent("MeshRenderer")` filters the picker and rejects Hierarchy drops whose object has no matching component.
+`target` is a GameObject field. Its stored form is a persistent scene-object reference; reading `self.target` resolves and returns the live `GameObject`, or `None` when the target is missing or destroyed. `required_component="MeshRenderer"` filters the picker and rejects Hierarchy drops whose object has no matching component.
 
 `body` stores a component reference constrained to `Rigidbody`. Reading `self.body` returns the resolved component wrapper or `None`. A reference field does not add the referenced component and does not keep a destroyed object alive. Always handle `None`, especially for optional targets or objects that can be destroyed during play.
+
+Assigned component references store the exact component ID. Renaming a script's component class during reload preserves that reference, and the Inspector and saved document use the new class name. Removing the referenced component returns `None`; another component of the same type does not replace it.
 
 Scene-object and component slots accept Hierarchy selections through drag-and-drop or their picker. Save the scene after assignment so the persistent IDs are written to the scene document.
 
@@ -94,7 +96,7 @@ The two class decorators govern attachment:
 - `@require_component(Rigidbody)` declares that `TargetReporter` depends on a `Rigidbody` on the same GameObject. When the dependency is missing, the engine adds it automatically during attachment; if any required component cannot be added, the whole operation rolls back and returns `None` with a warning. Removing a component that another component still requires is blocked.
 - `@disallow_multiple` allows one `TargetReporter` instance per GameObject. A second add attempt is rejected.
 
-These decorators constrain the owner's component set. `RequiredComponent("MeshRenderer")` belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.
+These decorators constrain the owner's component set. `required_component="MeshRenderer"` belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.
 
 ## Verify the contracts {#verify}
 
@@ -140,29 +142,27 @@ Run these checks in order:
 在 `Assets` 下创建 `TargetReporter.py`，写入下面的完整脚本：
 
 ```python
-from typing import Annotated
-
 import infernux as inx
 
 
 @inx.disallow_multiple
 @inx.require_component(inx.Rigidbody)
 class TargetReporter(inx.InxComponent):
-    speed: Annotated[
-        float,
-        inx.components.Header("Movement"),
-        inx.components.Range(0.0, 12.0),
-        inx.components.Tooltip("Maximum movement speed in units per second."),
-    ] = 3.0
+    speed: float = inx.serialized_field(
+        default=3.0,
+        range=(0.0, 12.0),
+        header="Movement",
+        tooltip="Maximum movement speed in units per second.",
+    )
 
-    target: Annotated[
-        inx.GameObject,
-        inx.components.Header("References"),
-        inx.components.RequiredComponent("MeshRenderer"),
-        inx.components.Tooltip("Target must have a MeshRenderer."),
-    ]
+    target: inx.GameObject = inx.serialized_field(
+        default=None,
+        header="References",
+        required_component="MeshRenderer",
+        tooltip="Target must have a MeshRenderer.",
+    )
 
-    body: inx.Rigidbody = inx.component_field(
+    body: inx.Rigidbody = inx.serialized_field(
         component_type="Rigidbody",
         tooltip="Rigidbody used by this reporter.",
     )
@@ -178,7 +178,7 @@ class TargetReporter(inx.InxComponent):
         )
 ```
 
-这里的导入和声明都来自公开 API。`Annotated` 元数据控制 Inspector 展示与校验，`component_field()` 创建带类型筛选的组件引用槽。
+这里的导入和声明都来自公开 API。`serialized_field()` 用关键字明确表达 Inspector 的展示与校验契约；`component_type="Rigidbody"` 通过同一套字段 API 创建带类型筛选的组件引用槽。
 
 ## 编辑场景 {#author-the-scene_1}
 
@@ -193,9 +193,11 @@ class TargetReporter(inx.InxComponent):
 
 ## 序列化字段 {#fields_1}
 
-公开注解支持 `int`、`float`、`bool`、`str`、向量、枚举、已知资产引用、`GameObject`、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。需要用关键字集中表达元数据时，可以显式使用 `serialized_field(...)`。
+公开注解支持 `int`、`float`、`bool`、`str`、向量、枚举、已知资产引用、`GameObject`、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。使用 `serialized_field(...)` 明确声明可编辑字段及其 Inspector 元数据。
 
-`Range(0.0, 12.0)` 提供滑块，并对 Inspector 编辑、反序列化和脚本赋值统一执行数值边界。`Header` 添加分区标题，`Tooltip` 添加悬停提示。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。
+注解同样为 `serialized_field` 声明提供类型：`numbers: list[int] = inx.serialized_field(default=[])` 即使默认列表为空，也会声明整数元素；`speed: float = inx.serialized_field(default=1)` 的默认值是浮点数 `1.0`。显式传入的 `field_type`、`element_type` 等类型参数优先于注解中的对应信息。
+
+`serialized_field()` 的 `range`、`header` 和 `tooltip` 参数分别提供滑块、分区标题和悬停提示。相同的数值边界会用于 Inspector 编辑、反序列化和脚本赋值。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。
 
 临时状态适合放在私有 `_name` 属性中。数据需要保存且无需出现在 Inspector 时，使用 `serialized_field(..., hidden=True)`。普通运行时缓存应在生命周期回调中重建，并避开序列化字段。
 
@@ -203,9 +205,11 @@ class TargetReporter(inx.InxComponent):
 
 ## Inspector 引用 {#references_1}
 
-`target` 是 GameObject 字段。存储层保存持久场景物体引用；读取 `self.target` 时会解析并返回实时 `GameObject`，目标缺失或已销毁时返回 `None`。`RequiredComponent("MeshRenderer")` 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。
+`target` 是 GameObject 字段。存储层保存持久场景物体引用；读取 `self.target` 时会解析并返回实时 `GameObject`，目标缺失或已销毁时返回 `None`。`required_component="MeshRenderer"` 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。
 
 `body` 保存限定为 `Rigidbody` 的组件引用。读取 `self.body` 会得到解析后的组件包装器，无法解析时返回 `None`。引用字段不会添加目标组件，也不会让已销毁物体继续存活。可选目标或运行中可能销毁的物体都要处理 `None`。
+
+已赋值的组件引用保存精确的组件 ID。热重载时修改脚本组件类名，不会破坏该引用；Inspector 和保存的文档会显示新类名。删除目标组件后引用返回 `None`，不会自动指向另一个同类组件。
 
 场景物体槽与组件槽支持从 Hierarchy 拖放，也可以使用选择器。赋值后保存场景，持久 ID 才会写入场景文档。
 
@@ -216,7 +220,7 @@ class TargetReporter(inx.InxComponent):
 - `@require_component(Rigidbody)` 声明 `TargetReporter` 依赖同一 GameObject 上的 `Rigidbody`。依赖缺失时，引擎会在挂载过程中自动补加；任何必需组件无法添加时，整个操作回滚并返回 `None`，同时给出警告。删除仍被其他组件依赖的组件会被阻止。
 - `@disallow_multiple` 让每个 GameObject 最多拥有一个 `TargetReporter`，第二次添加会被拒绝。
 
-这两个装饰器约束所属物体的组件集合。`RequiredComponent("MeshRenderer")` 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。
+这两个装饰器约束所属物体的组件集合。`required_component="MeshRenderer"` 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。
 
 ## 验证约束与保存结果 {#verify_1}
 
@@ -241,3 +245,4 @@ class TargetReporter(inx.InxComponent):
 ## 下一章
 
 [输入、时间与移动](gameplay-input-movement.html)会使用这些编辑值与组件查询，构建不受帧率影响的控制逻辑。
+

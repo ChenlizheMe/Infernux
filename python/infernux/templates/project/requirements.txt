@@ -1,0 +1,3 @@
+# Project Python dependencies — one package per line.
+# Add project dependencies here; engine dependencies belong to its managed runtime.
+# The engine installs missing project dependencies on startup.

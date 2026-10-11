@@ -206,10 +206,11 @@ class PhysicsECSStore
     // ---- Pending broadphase queue (deferred body activation) ----
 
     /// Queue a body ID for batch broadphase addition at next flush.
-    void QueueBroadphaseAdd(uint32_t bodyId, bool isStatic);
+    void QueueBroadphaseAdd(uint32_t bodyId);
 
-    /// Consume pending broadphase additions.  Returns pairs of (bodyId, isStatic).
-    std::vector<std::pair<uint32_t, bool>> ConsumePendingBroadphaseAdds();
+    /// Consume each final add request once, in request order. Motion type is
+    /// read from the body at publication, after all authored changes.
+    std::vector<uint32_t> ConsumePendingBroadphaseAdds();
 
     /// Cancel an add that has not reached Jolt yet.
     bool CancelBroadphaseAdd(uint32_t bodyId);
@@ -248,9 +249,9 @@ class PhysicsECSStore
         m_pendingBroadphaseRemoveSet.reserve(m_pendingBroadphaseRemoveSet.size() + count);
     }
 
-    /// Clear all pending queues (body creation + broadphase adds + dirty tracking).
-    /// Must be called before scene rebuild so stale handle.index entries in the
-    /// dedup sets don't block newly allocated colliders that reuse pool slots.
+    /// Clear all pending work after all Worlds have retired at engine shutdown.
+    /// Scene replacement must preserve live Worlds' commands. Generation-aware
+    /// handles already distinguish newly allocated slots from retired owners.
     void ClearPendingQueues();
 
     // ---- Rigidbody pool ----
@@ -300,8 +301,8 @@ class PhysicsECSStore
     std::vector<ColliderHandle> m_pendingBodyCreationList;
     std::unordered_set<uint64_t> m_pendingBodyCreationSet; // generation-aware handle dedup
 
-    // Pending broadphase add queue — (bodyId, isStatic) pairs.
-    std::vector<std::pair<uint32_t, bool>> m_pendingBroadphaseAdds;
+    // Pending broadphase add queue — body IDs in authored request order.
+    std::vector<uint32_t> m_pendingBroadphaseAdds;
     std::unordered_set<uint32_t> m_pendingBroadphaseSet; // deduplicate
 
     // Pending broadphase removals. Entries remain in the vector after a

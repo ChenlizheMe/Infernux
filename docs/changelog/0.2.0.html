@@ -7,8 +7,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Infernux 0.2.0: features, fixes and upgrade notes.">
-    <meta name="theme-color" content="#0a0c11">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#100d12">
+    <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/changelog/0.2.0.html">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
@@ -21,14 +21,14 @@
     <meta name="twitter:description" content="Infernux 0.2.0: features, fixes and upgrade notes.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <title>Infernux 0.2.0 · Changelog</title>
-    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="../assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="../assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="../site.webmanifest">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/fonts.css?v=3">
+    <link rel="stylesheet" href="../css/style.css?v=27">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/changelog.css?v=1">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/changelog.css?v=2">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -44,20 +44,18 @@
         <nav class="navbar" aria-label="Primary navigation">
             <div class="nav-container">
                 <a href="../index.html" class="nav-logo">
-                    <span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                    <span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                     <span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span>
                 </a>
                 <div class="nav-links" id="primary-navigation">
-                    <a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a>
-                    <a href="../learn.html" data-i18n="nav.learn">Learn</a>
+                    <a href="../tutorials.html" class="nav-priority" data-i18n="nav.tutorials">Tutorials</a>
                     <a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a>
-                    <a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" class="active" aria-current="page" data-i18n="nav.changelog">Changelog</a>
+                    <a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
                     <a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a>
                     <a href="../download.html" data-i18n="nav.download">Download</a>
                     <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a>
                 </div>
                 <div class="nav-right">
-                    <button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button>
                     <button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button>
                     <button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button>
                 </div>
@@ -66,7 +64,7 @@
     </header>
 
     <main class="page-shell changelog-page" id="main-content">
-<article class="container release-article" data-page-language="en"><a href="../changelog.html?lang=en">← All releases</a><header class="changelog-heading"><span class="mini-tag">v0.2.0 · 2026-06-25</span><h1>Release notes</h1>
+<article class="container release-article" data-page-language="en"><a href="../roadmap.html#release-log">← All releases</a><header class="changelog-heading"><span class="mini-tag">v0.2.0 · 2026-06-25</span><h1>Release notes</h1>
 <a href="https://github.com/ChenlizheMe/Infernux/releases/tag/v0.2.0">GitHub Release ↗</a>
 </header><div class="release-prose"><p><em>Original release notes (English)</em></p>
 <h2 id="en-whats-changed">What's Changed</h2>
@@ -83,7 +81,7 @@
 <li>@Jianguo-Nut made their first contribution in https://github.com/ChenlizheMe/Infernux/pull/45</li>
 </ul>
 <p><strong>Full Changelog</strong>: https://github.com/ChenlizheMe/Infernux/compare/v0.1.6...v0.2.0</p></div></article>
-<article class="container release-article" data-page-language="zh" hidden><a href="../changelog.html?lang=zh">← 全部版本</a><header class="changelog-heading"><span class="mini-tag">v0.2.0 · 2026-06-25</span><h1>发布记录</h1>
+<article class="container release-article" data-page-language="zh" hidden><a href="../roadmap.html#release-log">← 全部版本</a><header class="changelog-heading"><span class="mini-tag">v0.2.0 · 2026-06-25</span><h1>发布记录</h1>
 <a href="https://github.com/ChenlizheMe/Infernux/releases/tag/v0.2.0">GitHub Release ↗</a>
 </header><div class="release-prose"><p><em>以下保留原始发布记录（英文）</em></p>
 <h2 id="zh-whats-changed">What's Changed</h2>
@@ -105,15 +103,15 @@
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
-                <div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">A Python-first game engine on the road to a Neural Network-Native Engine. Open source under MIT.</p></div>
-                <div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div>
+                <div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">A game engine you write in Python, built toward a Neural Network-Native future. Open source under MIT.</p></div>
+                <div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html" class="nav-priority" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div>
             </div>
             <div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div>
         </div>
     </footer>
     <script src="../js/i18n-changelog.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
-    <script src="../js/main.js?v=15"></script>
+    <script src="../js/i18n.js?v=21"></script>
+    <script src="../js/vendor/gsap.min.js?v=3.13.0"></script><script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="../js/main.js?v=16"></script><script src="../js/motion.js?v=5"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

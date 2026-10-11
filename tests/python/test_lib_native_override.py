@@ -1,0 +1,140 @@
+import os
+import sys
+import types
+from pathlib import Path
+import subprocess
+
+import pytest
+
+import infernux.lib as lib
+
+
+def test_crt_preload_uses_ctypes_and_preserves_dependency_order(tmp_path, monkeypatch):
+    for name in ("vcruntime140.dll", "msvcp140.dll", "concrt140.dll"):
+        (tmp_path / name).write_bytes(b"crt")
+    loaded = []
+    monkeypatch.setattr(lib, "native_dir", str(tmp_path))
+    monkeypatch.setattr(lib.sys, "platform", "win32")
+    monkeypatch.setattr(
+        lib.ctypes,
+        "WinDLL",
+        lambda path: loaded.append(path),
+        raising=False,
+    )
+
+    lib._preload_bundled_crt_dlls()
+
+    assert [os.path.basename(path) for path in loaded] == [
+        "vcruntime140.dll",
+        "msvcp140.dll",
+        "concrt140.dll",
+    ]
+
+
+def test_override_loads_exact_abi_module_under_package_name(tmp_path, monkeypatch):
+    abi_module = tmp_path / "_Infernux.test-abi.pyd"
+    short_module = tmp_path / "_Infernux.pyd"
+    abi_module.write_bytes(b"abi")
+    short_module.write_bytes(b"short")
+    loaded = []
+
+    class _Loader:
+        def exec_module(self, module):
+            loaded.append((module.__name__, sys.modules.get(module.__name__) is module))
+            module.PublicSymbol = "override"
+
+    spec = types.SimpleNamespace(loader=_Loader())
+    monkeypatch.setattr(
+        lib.importlib.machinery,
+        "EXTENSION_SUFFIXES",
+        [".test-abi.pyd", ".pyd"],
+    )
+    monkeypatch.setattr(
+        lib.importlib.util,
+        "spec_from_file_location",
+        lambda name, path: spec if os.path.samefile(path, abi_module) else None,
+    )
+    monkeypatch.setattr(
+        lib.importlib.util,
+        "module_from_spec",
+        lambda _spec: types.ModuleType("infernux.lib._Infernux"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "infernux.lib._Infernux",
+        types.ModuleType("old_native_module"),
+    )
+
+    module = lib._load_native_module_from_dir(str(tmp_path))
+
+    assert loaded == [("infernux.lib._Infernux", True)]
+    assert sys.modules["infernux.lib._Infernux"] is module
+    assert module.PublicSymbol == "override"
+
+
+def test_native_override_diagnostic_reports_actual_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(lib, "native_dir", str(tmp_path))
+    monkeypatch.setattr(lib, "_collect_windows_native_load_hints", lambda: [])
+    monkeypatch.setattr(lib, "_list_lib_dir_contents", lambda: [])
+
+    with pytest.raises(ImportError) as caught:
+        lib._raise_native_import_error(ImportError("load failed"))
+
+    assert f"Native directory: {tmp_path}" in str(caught.value)
+    assert f"Library directory: {lib.lib_dir}" not in str(caught.value)
+
+
+def test_native_loader_without_override_preserves_package_import(monkeypatch):
+    expected = types.ModuleType("infernux.lib._Infernux")
+    imported = []
+
+    def _import_module(name):
+        imported.append(name)
+        return expected
+
+    monkeypatch.setattr(lib.importlib, "import_module", _import_module)
+
+    assert lib._load_native_module(None) is expected
+    assert imported == ["infernux.lib._Infernux"]
+
+
+def test_explicit_native_override_excludes_package_library_directory(monkeypatch):
+    registered = []
+    monkeypatch.setattr(lib, "_register_native_search_dir", registered.append)
+
+    lib._register_default_native_search_dir("/current/native-closure")
+
+    assert registered == []
+
+
+def test_default_native_resolution_registers_package_library_directory(monkeypatch):
+    registered = []
+    monkeypatch.setattr(lib, "_register_native_search_dir", registered.append)
+
+    lib._register_default_native_search_dir(None)
+
+    assert registered == [lib.lib_dir]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 native DLL loader contract")
+def test_real_native_override_loads_through_long_directory(tmp_path, directory_junction):
+    parent = tmp_path / "原生加载 & spaces"
+    while len(str(parent)) < 270:
+        parent /= "native-extension-path-validation"
+    parent.mkdir(parents=True)
+    link = parent / "native"
+    directory_junction(link, Path(lib.native_dir))
+    script = (
+        "import os, sys; sys.path.insert(0, sys.argv[1]); "
+        "os.environ['INFERNUX_NATIVE_MODULE_DIR'] = sys.argv[2]; "
+        "import infernux.lib as lib; "
+        "assert os.path.samefile(os.path.dirname(lib._Infernux.__file__), sys.argv[2]); "
+        "print('NATIVE_LONG_PATH_OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", "-c", script,
+         str(Path(lib.__file__).parents[2]), str(link)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "NATIVE_LONG_PATH_OK"

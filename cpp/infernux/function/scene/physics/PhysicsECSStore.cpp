@@ -14,9 +14,10 @@
  * Rigidbody::OnDisable() is the primary cleaner;
  *     ScrubCachedRigidbody() is the safety net for paths that bypass
  * it (editor undo/redo on inactive objects, scene rebuild order anomalies).
- *   * The pending-queue dedup sets MUST be cleared whenever pool slots may be
- *     recycled; ClearPendingQueues() is the single chokepoint for that — see
- *     SceneManager::ClearComponentRegistries.
+ *   * Deferred collider/actor handles include their pool generation; retiring
+ *     one World must not discard another World's pending physics work.
+ *     Body destruction cancels its own queued broadphase commands.
+ *     ClearPendingQueues() is reserved for complete SceneManager shutdown.
  */
 
 #include "PhysicsECSStore.h"
@@ -337,22 +338,25 @@ std::vector<PhysicsECSStore::ColliderHandle> PhysicsECSStore::ConsumePendingBody
 // Pending broadphase queue
 // ============================================================================
 
-void PhysicsECSStore::QueueBroadphaseAdd(uint32_t bodyId, bool isStatic)
+void PhysicsECSStore::QueueBroadphaseAdd(uint32_t bodyId)
 {
     if (bodyId == 0xFFFFFFFF)
         return;
     if (m_pendingBroadphaseSet.insert(bodyId).second)
-        m_pendingBroadphaseAdds.push_back({bodyId, isStatic});
+        m_pendingBroadphaseAdds.push_back(bodyId);
 }
 
-std::vector<std::pair<uint32_t, bool>> PhysicsECSStore::ConsumePendingBroadphaseAdds()
+std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseAdds()
 {
-    std::vector<std::pair<uint32_t, bool>> result;
+    std::vector<uint32_t> result;
     result.reserve(m_pendingBroadphaseAdds.size());
-    for (const auto &entry : m_pendingBroadphaseAdds) {
-        if (m_pendingBroadphaseSet.find(entry.first) != m_pendingBroadphaseSet.end())
-            result.push_back(entry);
+    // A later request must not revive an older canceled queue entry. Claim
+    // each body's latest request once, then restore final request order.
+    for (auto it = m_pendingBroadphaseAdds.rbegin(); it != m_pendingBroadphaseAdds.rend(); ++it) {
+        if (m_pendingBroadphaseSet.erase(*it) != 0)
+            result.push_back(*it);
     }
+    std::reverse(result.begin(), result.end());
     m_pendingBroadphaseAdds.clear();
     m_pendingBroadphaseSet.clear();
     return result;
@@ -380,10 +384,11 @@ std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseRemoves()
 {
     std::vector<uint32_t> result;
     result.reserve(m_pendingBroadphaseRemoves.size());
-    for (const uint32_t bodyId : m_pendingBroadphaseRemoves) {
-        if (m_pendingBroadphaseRemoveSet.find(bodyId) != m_pendingBroadphaseRemoveSet.end())
-            result.push_back(bodyId);
+    for (auto it = m_pendingBroadphaseRemoves.rbegin(); it != m_pendingBroadphaseRemoves.rend(); ++it) {
+        if (m_pendingBroadphaseRemoveSet.erase(*it) != 0)
+            result.push_back(*it);
     }
+    std::reverse(result.begin(), result.end());
     m_pendingBroadphaseRemoves.clear();
     m_pendingBroadphaseRemoveSet.clear();
     return result;
