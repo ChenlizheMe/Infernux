@@ -25,6 +25,10 @@ from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 _VISUAL_STUDIO_GENERATOR_PREFIX = "Visual Studio "
+_VISUAL_STUDIO_GENERATOR_RE = re.compile(
+    rf"^\s*\*?\s*({_VISUAL_STUDIO_GENERATOR_PREFIX}\d+\s+\d{{4}})\s+=",
+    re.MULTILINE,
+)
 _FORBIDDEN_WINDOWS_RUNTIME_IMPORTS = (
     "libgcc_s_",
     "libstdc++",
@@ -248,7 +252,44 @@ def _require_msbuild_generator(cmake_generator: str) -> None:
         )
 
 
-def _find_visual_studio() -> Path:
+def _available_visual_studio_generators() -> list[str]:
+    """Return CMake's Visual Studio generators, newest first.
+
+    The list is intentionally obtained from the installed CMake instead of
+    encoding release names in the repository.  A newer CMake/VS pair therefore
+    becomes usable without a source change, while older machines naturally
+    fall back to the newest generator they do support.
+    """
+    configured = os.environ.get("CMAKE_GENERATOR", "").strip()
+    candidates: list[str] = []
+    if configured.startswith(_VISUAL_STUDIO_GENERATOR_PREFIX):
+        candidates.append(configured)
+    try:
+        result = subprocess.run(
+            ["cmake", "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            "CMake is required to discover a Visual Studio generator."
+        ) from exc
+    candidates.extend(match.group(1) for match in _VISUAL_STUDIO_GENERATOR_RE.finditer(result.stdout))
+
+    def sort_key(generator: str) -> tuple[int, int]:
+        match = re.search(r"Visual Studio (\d+) (\d{4})$", generator)
+        return (int(match.group(1)), int(match.group(2))) if match else (-1, -1)
+
+    ordered = sorted(set(candidates), key=sort_key, reverse=True)
+    if configured.startswith(_VISUAL_STUDIO_GENERATOR_PREFIX):
+        ordered.remove(configured)
+        ordered.insert(0, configured)
+    return ordered
+
+
+def _find_visual_studio(cmake_generator: str = "") -> Path:
     program_files_x86 = os.environ.get("ProgramFiles(x86)")
     if not program_files_x86:
         raise RuntimeError(
@@ -262,27 +303,62 @@ def _find_visual_studio() -> Path:
     )
     if not vswhere.is_file():
         raise RuntimeError(f"Visual Studio locator is missing: {vswhere}")
+    arguments = [
+        str(vswhere),
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    ]
+    # Keep the compiler environment paired with the selected CMake generator.
+    # This matters when multiple Visual Studio installations are present: a
+    # generator for one installation must not inherit vcvars from the other.
+    generator_match = re.fullmatch(
+        rf"{re.escape(_VISUAL_STUDIO_GENERATOR_PREFIX)}(\d+)\s+\d{{4}}",
+        cmake_generator.strip(),
+    )
+    if generator_match:
+        major = int(generator_match.group(1))
+        arguments[1:1] = ["-version", f"[{major}.0,{major + 1}.0)"]
+    arguments.extend(("-property", "installationPath"))
     result = subprocess.run(
-        [
-            str(vswhere),
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            "-property",
-            "installationPath",
-        ],
+        arguments,
         check=True,
         capture_output=True,
         text=True,
     )
-    installation = Path(result.stdout.strip())
-    if not installation.is_dir():
+    installation_text = result.stdout.strip()
+    installation = Path(installation_text)
+    if not installation_text or not installation.is_dir():
         raise RuntimeError(
             "Visual Studio with the Desktop development with C++ workload is required"
         )
     return installation
+
+
+def _select_msbuild_generator(requested: str = "") -> str:
+    """Select the first CMake generator whose VS installation is usable."""
+    if requested.strip():
+        _require_msbuild_generator(requested)
+        _find_visual_studio(requested)
+        return requested.strip()
+
+    failures: list[str] = []
+    for generator in _available_visual_studio_generators():
+        try:
+            _find_visual_studio(generator)
+        except RuntimeError as exc:
+            failures.append(f"{generator}: {exc}")
+            continue
+        return generator
+    details = "\n".join(failures[-3:])
+    raise RuntimeError(
+        "No usable Visual Studio generator was found in CMake's generator list. "
+        "Install a Visual Studio C++ workload and make sure `cmake --help` lists "
+        "its generator.\n"
+        f"Details:\n{details}"
+    )
 
 
 def _is_mingw_path(path: str) -> bool:
@@ -290,8 +366,10 @@ def _is_mingw_path(path: str) -> bool:
     return "\\mingw" in normalized or "\\msys" in normalized
 
 
-def _msvc_build_environment() -> tuple[dict[str, str], dict[str, str]]:
-    installation = _find_visual_studio()
+def _msvc_build_environment(
+    cmake_generator: str = "",
+) -> tuple[dict[str, str], dict[str, str]]:
+    installation = _find_visual_studio(cmake_generator)
     vcvars = installation / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
     msbuild = installation / "MSBuild" / "Current" / "Bin" / "MSBuild.exe"
     if not vcvars.is_file() or not msbuild.is_file():
@@ -728,18 +806,21 @@ def main() -> int:
     build_dir.mkdir(parents=True, exist_ok=True)
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    _require_msbuild_generator(args.cmake_generator)
     build_env: Mapping[str, str] | None = None
     tools: Mapping[str, str] | None = None
+    cmake_generator = args.cmake_generator
     if os.name == "nt":
-        build_env, tools = _msvc_build_environment()
+        cmake_generator = _select_msbuild_generator(cmake_generator)
+        build_env, tools = _msvc_build_environment(cmake_generator)
+    else:
+        _require_msbuild_generator(cmake_generator)
 
     if args.target == "hub":
         _build_hub(
             source_root,
             build_dir,
             package_dir,
-            cmake_generator=args.cmake_generator,
+            cmake_generator=cmake_generator,
             build_env=build_env,
             tools=tools,
         )

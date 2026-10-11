@@ -85,7 +85,9 @@ class Spin(inx.InxComponent):
 
 **直接使用引擎。** 安装 [InfernuxHub](https://infernux-engine.com/download.html)，选择引擎版本并创建项目。Hub 会替你管理 Python 环境与 Android 工具，无需安装原生编译器。然后跟着 [五步入门](https://infernux-engine.com/start.html) 写出第一个让方块旋转的组件，再继续学习 [系列课程](https://infernux-engine.com/learn.html)。
 
-**从源码构建。** Windows 需要 Visual Studio 2022（MSVC v143）、CMake 3.25+、Vulkan SDK 与 Python 3.13：
+**从源码构建。** Windows 需要安装带 C++ 桌面开发工作负载的 Visual
+Studio、CMake 3.25+、Vulkan SDK 与 Python 3.13。Windows 预设会让 CMake
+自动选择本机安装的最高兼容 Visual Studio generator。
 
 ```powershell
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
@@ -97,6 +99,9 @@ cmake --build --preset windows-msvc-release
 cmake --build --preset windows-msvc-install-wheel
 python packaging/launcher.py
 ```
+
+如果配置时无法创建所选 generator，请升级到 `cmake --help` 中列出该
+generator 的 CMake，或设置 `CMAKE_GENERATOR` 为列表中的某一项后重新配置。
 
 Linux 上先运行 `scripts/setup/install_linux_dependencies.sh` 与 `bash scripts/setup/configure_development.sh`，激活 `infernux` 环境，再使用 `linux-clang-release` 与 `linux-clang-install-wheel` 预设。完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

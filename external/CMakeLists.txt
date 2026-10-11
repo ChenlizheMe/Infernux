@@ -1,4 +1,12 @@
-cmake_minimum_required(VERSION 3.17)
+cmake_minimum_required(VERSION 3.25)
+
+include("${CMAKE_SOURCE_DIR}/cmake/InfernuxDependencyLayout.cmake")
+
+# Stop at the dependency boundary with an actionable error instead of letting
+# a nested third-party project report a misleading missing-file failure.
+foreach(_infernux_dependency IN LISTS INFERNUX_THIRD_PARTY_SUBMODULES)
+    infernux_require_dependency("${_infernux_dependency}" "external dependency")
+endforeach()
 
 # ------------------------------------------------------------------------------
 # Build Configuration

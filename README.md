@@ -85,7 +85,10 @@ Requirements and known limits per platform are in [SUPPORT.md](SUPPORT.md#platfo
 
 **Use the engine.** Install [InfernuxHub](https://infernux-engine.com/download.html), pick an engine version and create a project. The Hub manages Python environments and Android tools for you; no native compiler is needed. Then follow the [five-step start](https://infernux-engine.com/start.html) to a component spinning a cube, and continue with the [courses](https://infernux-engine.com/learn.html).
 
-**Build from source.** Windows needs Visual Studio 2022 (MSVC v143), CMake 3.25+, the Vulkan SDK and Python 3.13:
+**Build from source.** Windows needs a Visual Studio installation with the
+Desktop C++ workload, CMake 3.25+, the Vulkan SDK and Python 3.13. The Windows
+preset lets CMake select the newest compatible Visual Studio generator installed
+on the machine.
 
 ```powershell
 git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
@@ -97,6 +100,10 @@ cmake --build --preset windows-msvc-release
 cmake --build --preset windows-msvc-install-wheel
 python packaging/launcher.py
 ```
+
+If configuration cannot create the selected generator, install a CMake version
+that lists a compatible Visual Studio generator in `cmake --help`, or set
+`CMAKE_GENERATOR` to one of the listed generators and configure again.
 
 On Linux, run `scripts/setup/install_linux_dependencies.sh` and `bash scripts/setup/configure_development.sh`, activate `infernux`, then use the `linux-clang-release` and `linux-clang-install-wheel` presets. [CONTRIBUTING.md](CONTRIBUTING.md) covers the full workflow.
 

@@ -6,7 +6,6 @@
       "name": "windows-msvc-base",
       "hidden": true,
       "inherits": "infernux-base",
-      "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "condition": {
         "type": "equals",

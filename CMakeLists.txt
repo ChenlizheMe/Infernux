@@ -8,6 +8,7 @@ cmake_minimum_required(VERSION 3.25)
 # probe. Ubuntu installs versioned LLVM binaries without always publishing the
 # unversioned llvm-ar/llvm-ranlib names expected by CMake's Clang integration.
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxCompilerTools.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxDependencyLayout.cmake")
 
 project(Infernux LANGUAGES C CXX)
 

@@ -718,9 +718,25 @@ def _find_msvc_environment_scripts() -> list[tuple[str, list[str]]]:
             roots.append(root)
 
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-    for year in ("2022", "2019"):
+    # vswhere/registry discovery is authoritative.  Keep the filesystem
+    # fallback version-agnostic so a newly released VS installation is tried
+    # before older side-by-side installations without another source edit.
+    visual_studio_root = os.path.join(program_files, "Microsoft Visual Studio")
+    try:
+        version_roots = sorted(
+            (
+                entry
+                for entry in os.scandir(visual_studio_root)
+                if entry.is_dir(follow_symlinks=False)
+            ),
+            key=lambda entry: entry.name.casefold(),
+            reverse=True,
+        )
+    except OSError:
+        version_roots = []
+    for version_root in version_roots:
         for edition in ("BuildTools", "Community", "Professional", "Enterprise"):
-            roots.append(os.path.join(program_files, "Microsoft Visual Studio", year, edition))
+            roots.append(os.path.join(version_root.path, edition))
 
     candidates: list[tuple[str, list[str]]] = []
     seen_roots: set[str] = set()
@@ -827,8 +843,9 @@ def _ensure_windows_msvc_environment(env: dict[str, str]) -> dict[str, str]:
         "Windows game builds require an initialized MSVC + Windows SDK build environment.\n"
         "Visual Studio was detected, but Infernux could not initialize the C++ toolchain "
         "for Nuitka/SCons.\n"
-        "Install or repair Visual Studio 2022 with 'Desktop development with C++', "
-        "including MSVC v143 and a Windows 10/11 SDK, then try again. If the SDK is already installed, "
+        "Install or repair a current Visual Studio release with 'Desktop development "
+        "with C++', including its matching MSVC toolset "
+        "and a Windows 10/11 SDK, then try again. If the SDK is already installed, "
         "make sure WindowsSdkDir points at the Windows Kits root or repair the VS workload so rc.exe/mt.exe are registered.\n"
         f"Details:\n{details}"
     )

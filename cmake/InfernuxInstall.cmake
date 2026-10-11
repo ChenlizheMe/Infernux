@@ -135,8 +135,11 @@ endif()
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_BINARY_DIR}/platform-player/runtime-packs")
 set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_BINARY_DIR}/platform-player/_runtime_modules")
 string(TOLOWER "${CMAKE_SYSTEM_NAME}" _infernux_player_platform)
+infernux_dependency_path(
+    _infernux_player_plugin
+    "infernux_${_infernux_player_platform}")
 set(INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR
-    "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/package/editor/infernux_${_infernux_player_platform}/player")
+    "${_infernux_player_plugin}/package/editor/infernux_${_infernux_player_platform}/player")
 add_custom_target(prebuild_player_runtime
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
@@ -153,7 +156,7 @@ add_custom_target(prebuild_player_runtime
         "-DINFERNUX_STRIP_TOOL=${CMAKE_STRIP}"
         -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
     COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/release.py"
+        "${_infernux_player_plugin}/release.py"
     DEPENDS _Infernux _InfernuxBootstrap
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Publishing the platform Player payload and complete InxPackage in its subrepository"

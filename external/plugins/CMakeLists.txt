@@ -3,6 +3,22 @@
 # platform packages remain release artifacts and are downloaded on demand.
 # Wheel staging depends on this target, preserving the order native module →
 # official plugins → wheel.
+include("${CMAKE_SOURCE_DIR}/cmake/InfernuxDependencyLayout.cmake")
+
+set(INFERNUX_OFFICIAL_PLUGIN_CATALOG
+    "${CMAKE_CURRENT_SOURCE_DIR}/plugins.json")
+set(INFERNUX_OFFICIAL_PLUGIN_BUILDER
+    "${CMAKE_CURRENT_SOURCE_DIR}/build_official_plugins.py")
+
+option(INFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES
+    "Copy the generated default plugin catalog/package into the source checkout"
+    ON
+)
+
+foreach(_infernux_plugin IN LISTS INFERNUX_OFFICIAL_PLUGIN_NAMES)
+    infernux_require_dependency("${_infernux_plugin}" "official plugin source")
+endforeach()
+
 set(INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR
     "${CMAKE_BINARY_DIR}/official-plugins"
 )
@@ -20,9 +36,6 @@ set(INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-    "${CMAKE_SOURCE_DIR}/python/infernux/resources/infernux.mcp.inxpkg"
-    "${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages/official-registry.json"
-    "${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages/default-libraries.json"
 )
 
 # The plugin builder imports the freshly linked native module.  On ELF hosts
@@ -36,29 +49,36 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
-add_custom_target(infernux_official_plugins ALL
+set(_infernux_editor_plugin_refresh_commands)
+if(INFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES)
+    list(APPEND _infernux_editor_plugin_refresh_commands
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
+            "${CMAKE_SOURCE_DIR}/python/infernux/resources/infernux.mcp.inxpkg"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
+            "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
+            "${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages"
+    )
+endif()
+
+add_custom_target(infernux_official_plugins
     COMMAND ${CMAKE_COMMAND} -E env
         "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
         "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
         ${INFERNUX_OFFICIAL_PLUGIN_RUNTIME_ENV}
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/build_official_plugins.py"
+        "${INFERNUX_OFFICIAL_PLUGIN_BUILDER}"
         --source-root "${CMAKE_CURRENT_SOURCE_DIR}"
         --output-root "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}"
-        --catalog "${CMAKE_CURRENT_SOURCE_DIR}/plugins.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-        "${CMAKE_SOURCE_DIR}/python/infernux/resources/infernux.mcp.inxpkg"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
-        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
-        "${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages"
+        --catalog "${INFERNUX_OFFICIAL_PLUGIN_CATALOG}"
+    ${_infernux_editor_plugin_refresh_commands}
     DEPENDS
         _Infernux
-        "${CMAKE_CURRENT_SOURCE_DIR}/build_official_plugins.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/plugins.json"
+        "${INFERNUX_OFFICIAL_PLUGIN_BUILDER}"
+        "${INFERNUX_OFFICIAL_PLUGIN_CATALOG}"
     BYPRODUCTS ${INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS}
     COMMENT "Building official Infernux plugins"
     VERBATIM

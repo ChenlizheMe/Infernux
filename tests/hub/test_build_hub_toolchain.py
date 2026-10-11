@@ -102,6 +102,83 @@ def test_msbuild_generator_is_required_on_windows(monkeypatch: pytest.MonkeyPatc
         build_hub._require_msbuild_generator("Ninja")
 
 
+def test_visual_studio_locator_matches_cmake_generator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    installer = tmp_path / "Microsoft Visual Studio" / "Installer"
+    installer.mkdir(parents=True)
+    (installer / "vswhere.exe").write_bytes(b"locator")
+    installation = tmp_path / "VS-current"
+    installation.mkdir()
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path))
+    calls = []
+
+    def locate(arguments, **_kwargs):
+        calls.append(arguments)
+        return type("Completed", (), {"stdout": str(installation)})()
+
+    monkeypatch.setattr(build_hub.subprocess, "run", locate)
+
+    generator = f"{build_hub._VISUAL_STUDIO_GENERATOR_PREFIX}18 2099"
+    assert build_hub._find_visual_studio(generator) == installation
+    assert calls == [
+        [
+            str(installer / "vswhere.exe"),
+            "-version",
+            "[18.0,19.0)",
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ]
+    ]
+
+
+def test_visual_studio_generators_are_discovered_from_cmake(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("CMAKE_GENERATOR", raising=False)
+
+    def cmake_help(_arguments, **_kwargs):
+        return type(
+            "Completed",
+            (),
+            {
+                "stdout": (
+                    "  Visual Studio 17 2022 = Generates project files.\n"
+                    "* Visual Studio 18 2026 = Generates project files.\n"
+                )
+            },
+        )()
+
+    monkeypatch.setattr(build_hub.subprocess, "run", cmake_help)
+    assert build_hub._available_visual_studio_generators() == [
+        "Visual Studio 18 2026",
+        "Visual Studio 17 2022",
+    ]
+
+
+def test_visual_studio_selection_falls_back_when_newest_install_is_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidates = ["Visual Studio newest", "Visual Studio older"]
+    monkeypatch.setattr(build_hub, "_available_visual_studio_generators", lambda: candidates)
+    attempted = []
+
+    def locate(generator: str):
+        attempted.append(generator)
+        if generator == candidates[0]:
+            raise RuntimeError("missing C++ workload")
+        return Path("C:/VisualStudio")
+
+    monkeypatch.setattr(build_hub, "_find_visual_studio", locate)
+    assert build_hub._select_msbuild_generator() == candidates[1]
+    assert attempted == candidates
+
+
 def test_hub_build_requires_the_private_runtime_bundle(tmp_path: Path):
     source_root = tmp_path / "source"
     (source_root / "packaging").mkdir(parents=True)

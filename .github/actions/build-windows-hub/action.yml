@@ -36,7 +36,7 @@ runs:
         conda activate infernux
         python packaging/stage_bundled_python_runtime.py --dest-root out/stage/windows-msvc-release/runtime/python313
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        python packaging/build_hub.py --target hub --source-root . --build-dir out/build/windows-msvc-release/hub_build --package-dir out/stage/windows-msvc-release --cmake-generator "Visual Studio 17 2022"
+        python packaging/build_hub.py --target hub --source-root . --build-dir out/build/windows-msvc-release/hub_build --package-dir out/stage/windows-msvc-release
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     - name: Sign Hub before embedding it
       if: inputs.signing != 'none'
@@ -60,7 +60,7 @@ runs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         # Do not invoke infernux_hub_installer here: its dependency rebuilds Hub,
         # replacing the signed executable with an unsigned one.
-        python packaging/build_hub.py --target installer --source-root . --build-dir out/build/windows-msvc-release/installer_build --package-dir out/stage/windows-msvc-release --release-dir "dist/releases/$env:VERSION" --cmake-generator "Visual Studio 17 2022"
+        python packaging/build_hub.py --target installer --source-root . --build-dir out/build/windows-msvc-release/installer_build --package-dir out/stage/windows-msvc-release --release-dir "dist/releases/$env:VERSION"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         python scripts/release/verify_hub_payloads.py --hub out/stage/windows-msvc-release/hub --update "dist/releases/$env:VERSION/InfernuxHub-$env:HUB_VERSION-windows-x64-full.zip" --installer-payload out/build/windows-msvc-release/installer_build/infernux-hub-payload.zip
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

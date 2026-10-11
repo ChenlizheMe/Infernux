@@ -48,7 +48,7 @@ try {
     git -C $Source apply $AbiPatch
     if ($LASTEXITCODE -ne 0) { throw 'Could not apply the pinned Infernux shader ABI profile.' }
 
-    cmake -S $Source -B $Build -G 'Visual Studio 17 2022' -A x64 -T host=x64 `
+    cmake -S $Source -B $Build -A x64 -T host=x64 `
         -DSWIFTSHADER_BUILD_TESTS=OFF `
         -DSWIFTSHADER_BUILD_BENCHMARKS=OFF `
         -DSWIFTSHADER_WARNINGS_AS_ERRORS=OFF

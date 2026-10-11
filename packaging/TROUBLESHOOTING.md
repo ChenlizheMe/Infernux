@@ -88,6 +88,14 @@ excluded. In `cmake_minimum_required(VERSION min...policy_max)`, the second numb
 controls policy behavior, not the newest allowed executable. Do not lower the
 minimum or force every dependency to the newest policy merely to hide a warning.
 
+Windows source builds intentionally leave the generator open in the
+`windows-msvc-*` presets. CMake selects the newest compatible Visual Studio
+generator available on the machine; if that generator cannot be created, use a
+CMake build that lists it in `cmake --help` or set `CMAKE_GENERATOR` to another
+listed generator and configure again. The Hub's MSVC discovery pairs `vswhere`
+with the selected generator, so side-by-side Visual Studio installations do not
+silently mix compiler environments.
+
 The original Linux 0.4.1 Hub bundled OpenSSL with a build-machine conda certificate
 path. On a clean machine this can cause `CERTIFICATE_VERIFY_FAILED` for both the
 engine catalog and Blender downloads. The rebuilt Hub uses the distribution's
