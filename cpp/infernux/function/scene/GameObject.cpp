@@ -101,6 +101,7 @@ void GameObject::SetLayer(int layer)
 void GameObject::SetScene(Scene *scene)
 {
     m_scene = scene;
+    InvalidateComponentExecutionCache(); // Dispatch handles include the owning world ID.
     m_transform.SetGameObject(this);
     for (const auto &child : m_children) {
         if (child) {
@@ -167,47 +168,61 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
     if (!m_scene) {
         return;
     }
+    Scene *scene = m_scene;
+    const ObjectHandle owner = GetHandle();
+    const auto components = GetComponentDispatchSnapshot();
 
     if (isActiveInHierarchy) {
-        const auto &components = GetComponentsInExecutionOrderCached();
-        for (Component *comp : components) {
+        for (ObjectHandle handle : *components) {
+            if (scene->ResolveGameObject(owner) != this)
+                return;
+            Component *comp = scene->ResolveComponent(handle);
             if (!comp)
                 continue;
             if (!comp->HasAwake()) {
                 comp->CallAwake();
             }
+            comp = scene->ResolveComponent(handle);
+            if (!comp)
+                continue;
             if (comp->IsEnabled()) {
                 comp->CallOnEnable();
-                if (playing && m_scene->HasStarted()) {
-                    m_scene->QueueComponentStart(comp);
+                comp = scene->ResolveComponent(handle);
+                if (comp && playing && scene->HasStarted()) {
+                    scene->QueueComponentStart(comp);
                 }
             }
         }
     } else {
-        const auto &components = GetComponentsInExecutionOrderCached();
-        for (Component *comp : components) {
+        for (ObjectHandle handle : *components) {
+            if (scene->ResolveGameObject(owner) != this)
+                return;
+            Component *comp = scene->ResolveComponent(handle);
             if (!comp)
                 continue;
             comp->OnGameObjectDeactivated();
+            comp = scene->ResolveComponent(handle);
+            if (!comp)
+                continue;
             if (comp->IsEnabled() && comp->HasAwake()) {
                 comp->CallOnDisable();
             }
         }
     }
 
-    for (size_t i = 0; i < m_children.size(); ++i) {
-        auto &child = m_children[i];
+    if (scene->ResolveGameObject(owner) != this)
+        return;
+    std::vector<ObjectHandle> children;
+    for (const auto &child : m_children)
+        children.push_back(child->GetHandle());
+    for (ObjectHandle handle : children) {
+        GameObject *child = scene->ResolveGameObject(handle);
         if (!child)
             continue;
         bool childWasActive = wasActiveInHierarchy && child->m_active;
         bool childIsActive = isActiveInHierarchy && child->m_active;
         child->HandleActiveStateChanged(childWasActive, childIsActive);
     }
-}
-
-std::vector<Component *> GameObject::GetComponentsInExecutionOrder() const
-{
-    return GetComponentsInExecutionOrderCached();
 }
 
 const std::vector<Component *> &GameObject::GetComponentsInExecutionOrderCached() const
@@ -233,6 +248,11 @@ const std::vector<Component *> &GameObject::GetComponentsInExecutionOrderCached(
                          return a->GetComponentID() < b->GetComponentID();
                      });
 
+    auto handles = std::make_shared<std::vector<ObjectHandle>>();
+    handles->reserve(m_executionOrderCache.size());
+    for (const auto *component : m_executionOrderCache)
+        handles->push_back(component->GetHandle());
+    m_componentDispatchSnapshot = std::move(handles);
     m_executionOrderCacheDirty = false;
     return m_executionOrderCache;
 }
@@ -240,6 +260,12 @@ const std::vector<Component *> &GameObject::GetComponentsInExecutionOrderCached(
 void GameObject::InvalidateComponentExecutionCache()
 {
     m_executionOrderCacheDirty = true;
+}
+
+std::shared_ptr<const std::vector<ObjectHandle>> GameObject::GetComponentDispatchSnapshot() const
+{
+    (void)GetComponentsInExecutionOrderCached();
+    return m_componentDispatchSnapshot;
 }
 
 void GameObject::RefreshLifecycleDispatchFlags()
@@ -274,12 +300,11 @@ void GameObject::RefreshLifecycleDispatchFlags()
 
 void GameObject::SetActive(bool active)
 {
-    bool wasActiveInHierarchy = IsActiveInHierarchy();
-
     if (m_active == active) {
         return;
     }
 
+    bool wasActiveInHierarchy = IsActiveInHierarchy();
     m_active = active;
 
     // Active state participates in hierarchy-derived render and editor caches.
@@ -605,8 +630,10 @@ Component *GameObject::AttachComponent(std::unique_ptr<Component> component, boo
             return nullptr;
         }
     }
+    const ObjectHandle identity = ptr->GetHandle();
     PostAddComponent(ptr);
-    return ptr;
+    auto *current = Component::FindByComponentId(identity.id);
+    return current == ptr && current->GetLifetimeGeneration() == identity.generation ? current : nullptr;
 }
 
 Component *GameObject::AddExistingComponent(std::unique_ptr<Component> component)
@@ -747,6 +774,9 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
     component->m_enabled = authoredEnabled;
     proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
+    const ObjectHandle ownerHandle = GetHandle();
+    const ObjectHandle componentHandle = component->GetHandle();
+    Scene *scene = m_scene;
     component->CallAwake();
     // Lifecycle callbacks may deliberately change enabled or owner activity.
     // Keep their result, just as normal attachment does; restoring the saved
@@ -755,8 +785,11 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     // playing flag is raised.  HasStarted is the lifecycle safe-point that
     // matters here; gate on it so the newly attached component cannot miss
     // Start permanently.
-    if (m_scene->HasStarted() && component->IsEnabled())
-        m_scene->QueueComponentStart(component);
+    component = Component::FindByComponentId(componentHandle.id);
+    if (scene->ResolveGameObject(ownerHandle) && component &&
+        component->GetLifetimeGeneration() == componentHandle.generation && scene->HasStarted() &&
+        component->IsEnabled())
+        scene->QueueComponentStart(component);
 }
 
 bool GameObject::RemovePreparedPythonComponent(Component *component)
@@ -768,12 +801,17 @@ bool GameObject::RemovePreparedPythonComponent(Component *component)
     for (auto it = m_components.begin(); it != m_components.end(); ++it) {
         if (it->get() != component)
             continue;
-        (*it)->CallOnDestroy();
+        auto removed = std::move(*it);
         m_components.erase(it);
+        const ObjectHandle owner = GetHandle();
+        Scene *scene = m_scene;
         if (m_scene)
             m_scene->BumpStructureVersion();
         InvalidateComponentExecutionCache();
         RefreshLifecycleDispatchFlags();
+        removed->CallOnDestroy();
+        if (scene && scene->ResolveGameObject(owner) != this)
+            removed->SetGameObject(nullptr);
         return true;
     }
     return false;
@@ -805,10 +843,15 @@ void GameObject::PostAddComponent(Component *component)
     m_scene->BumpStructureVersion();
     InvalidateComponentExecutionCache();
     RefreshLifecycleDispatchFlags();
+    Scene *scene = m_scene;
+    const ObjectHandle owner = GetHandle();
+    const ObjectHandle identity = component->GetHandle();
 
     // Unity: Reset is editor-only and fires when a component is first added.
     if (!m_scene->IsPlaying())
         component->CallReset();
+    if (scene->ResolveGameObject(owner) != this || !(component = scene->ResolveComponent(identity)))
+        return;
 
     // Unity: components added to inactive objects do not Awake until the
     // object first becomes active in the hierarchy.
@@ -817,6 +860,8 @@ void GameObject::PostAddComponent(Component *component)
     }
 
     component->CallAwake();
+    if (scene->ResolveGameObject(owner) != this || !(component = scene->ResolveComponent(identity)))
+        return;
 
     // Start is always play-mode only and is deferred until the component's
     // first simulation frame.
@@ -853,16 +898,21 @@ bool GameObject::RemoveComponent(Component *component)
 
     for (auto it = m_components.begin(); it != m_components.end(); ++it) {
         if (it->get() == component) {
+            Scene *scene = m_scene;
+            const ObjectHandle owner = GetHandle();
             if (m_scene)
                 m_scene->m_nextDocumentComponentId =
                     std::max(m_scene->m_nextDocumentComponentId, component->GetComponentID() + 1);
-            (*it)->CallOnDestroy();
+            auto removed = std::move(*it);
             m_components.erase(it);
             if (m_scene) {
                 m_scene->BumpStructureVersion();
             }
             InvalidateComponentExecutionCache();
             RefreshLifecycleDispatchFlags();
+            removed->CallOnDestroy();
+            if (scene && scene->ResolveGameObject(owner) != this)
+                removed->SetGameObject(nullptr);
             return true;
         }
     }
@@ -1055,78 +1105,61 @@ GameObject *GameObject::FindDescendant(const std::string &name) const
     return nullptr;
 }
 
+void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(float), bool editMode)
+{
+    Scene *scene = m_scene;
+    const ObjectHandle owner = GetHandle();
+    const auto components = GetComponentDispatchSnapshot();
+    const auto resolve = [&](ObjectHandle handle) -> Component * {
+        auto *component = scene ? scene->ResolveComponent(handle) : Component::FindByComponentId(handle.id);
+        return component && component->GetLifetimeGeneration() == handle.generation &&
+                       component->GetGameObject() == this
+                   ? component
+                   : nullptr;
+    };
+    for (const ObjectHandle handle : *components) {
+        if (scene && scene->ResolveGameObject(owner) != this)
+            return;
+        Component *component = resolve(handle);
+        if (!component || !component->IsEnabled())
+            continue;
+        if (scene && scene->UsesRuntimeLifecycleScheduler() && component->UsesRuntimeLifecycleScheduler())
+            continue;
+        if (editMode) {
+            if (!component->WantsEditModeUpdate())
+                continue;
+            if (!component->HasAwake() && component->WantsEditModeLifecycle())
+                component->CallAwake();
+            component = resolve(handle);
+            if (!component || !component->HasAwake())
+                continue;
+        }
+        (component->*update)(deltaTime);
+    }
+}
+
 void GameObject::Update(float deltaTime)
 {
-    if (!m_active || !m_hasUpdateReceivers)
-        return;
-
-    const auto &components = GetComponentsInExecutionOrderCached();
-    for (Component *comp : components) {
-        if (!comp)
-            continue;
-        // Python proxies are dispatched by SceneManager's shared runtime
-        // scheduler when the bridge is active. Native components remain in
-        // this traversal, preserving the native scene update path without
-        // invoking the same Python proxy a second time.
-        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
-            continue;
-        if (comp->IsEnabled())
-            comp->Update(deltaTime);
-    }
+    if (m_active && m_hasUpdateReceivers)
+        DispatchUpdates(deltaTime, &Component::Update);
 }
 
 void GameObject::FixedUpdate(float fixedDeltaTime)
 {
-    if (!m_active || !m_hasFixedUpdateReceivers)
-        return;
-
-    const auto &components = GetComponentsInExecutionOrderCached();
-    for (Component *comp : components) {
-        if (!comp)
-            continue;
-        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
-            continue;
-        if (comp->IsEnabled())
-            comp->FixedUpdate(fixedDeltaTime);
-    }
+    if (m_active && m_hasFixedUpdateReceivers)
+        DispatchUpdates(fixedDeltaTime, &Component::FixedUpdate);
 }
 
 void GameObject::LateUpdate(float deltaTime)
 {
-    if (!m_active || !m_hasLateUpdateReceivers)
-        return;
-
-    const auto &components = GetComponentsInExecutionOrderCached();
-    for (Component *comp : components) {
-        if (!comp)
-            continue;
-        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
-            continue;
-        if (comp->IsEnabled())
-            comp->LateUpdate(deltaTime);
-    }
+    if (m_active && m_hasLateUpdateReceivers)
+        DispatchUpdates(deltaTime, &Component::LateUpdate);
 }
 
 void GameObject::EditorUpdate(float deltaTime)
 {
-    if (!m_active)
-        return;
-
-    const auto &components = GetComponentsInExecutionOrderCached();
-    for (Component *comp : components) {
-        if (!comp || !comp->IsEnabled())
-            continue;
-        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
-            continue;
-        if (!comp->WantsEditModeUpdate())
-            continue;
-        if (!comp->HasAwake() && comp->WantsEditModeLifecycle()) {
-            comp->CallAwake();
-        }
-        if (comp->HasAwake()) {
-            comp->Update(deltaTime);
-        }
-    }
+    if (m_active)
+        DispatchUpdates(deltaTime, &Component::Update, true);
 }
 
 const nlohmann::json &GameObject::GetPrefabSourceDocument() const

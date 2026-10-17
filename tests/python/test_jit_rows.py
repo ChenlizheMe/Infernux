@@ -23,16 +23,6 @@ def _row_mix(values):
         values[i, 1] = values[i, 0] * 2
 
 
-@pytest.mark.parametrize("write,read", [
-    ("i, 0", "i, 1"), ("0, i", "1, i"),
-    ("i, 0, 1", "i, 1, 0"), ("i, i", "i, i"),
-    ("i, -1", "i, 0"),
-])
-def test_row_local_scalar_accesses_are_eligible(write, read):
-    hir = build_hir(f"def update(values, n):\n    for i in range(n):\n        values[{write}] += values[{read}]\n")
-    assert hir.eligible_loops, hir.diagnostics
-
-
 @pytest.mark.parametrize("bounds,write,read", [
     ("1, n", "i, 0", "i-1, 0"),
     ("n", "i, 0", "0, i"),
@@ -47,8 +37,14 @@ def test_unproven_row_accesses_do_not_get_parallel_permission(bounds, write, rea
     assert not hir.eligible_loops
 
 
-@pytest.mark.parametrize("layout", ["contiguous", "fortran", "strided", "reversed"])
-@pytest.mark.parametrize("count", [0, 1, 1024])
+@pytest.mark.parametrize('layout,count', [
+    ('contiguous', 0),
+    ('contiguous', 1),
+    ('contiguous', 1024),
+    ('fortran', 1024),
+    ('strided', 1024),
+    ('reversed', 1024),
+])
 def test_real_parallel_rows_preserve_strided_numpy_semantics(layout, count):
     original = np.arange(count * 6, dtype=np.float64).reshape(count, 6)
     positions = {

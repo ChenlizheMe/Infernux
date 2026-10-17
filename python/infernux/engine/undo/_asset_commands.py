@@ -56,8 +56,6 @@ class ImportSettingsDraftCommand(UndoCommand):
     def undo(self) -> None:
         self._controller.restore_draft(self._old_settings)
 
-    def redo(self) -> None:
-        self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
         return (
@@ -73,7 +71,7 @@ class ImportSettingsDraftCommand(UndoCommand):
 
 
 class EditableDocumentDraftCommand(UndoCommand):
-    """Replay an autosaved document through its stable controller."""
+    """Replay a resource document through its current controller."""
 
     marks_dirty = False
     _is_property_edit = True
@@ -93,7 +91,6 @@ class EditableDocumentDraftCommand(UndoCommand):
         from infernux.engine.interaction.documents import DocumentRegistry
 
         super().__init__(description)
-        self._controller = controller
         self._old_document = copy.deepcopy(old_document)
         self._new_document = copy.deepcopy(new_document)
         self._old_revision = int(old_revision)
@@ -104,7 +101,7 @@ class EditableDocumentDraftCommand(UndoCommand):
             self._document_id
         ).imported_disk_revision
 
-    def _require_current_external_revision(self) -> None:
+    def _current_controller(self):
         from infernux.engine.interaction.documents import DocumentRegistry
 
         document = DocumentRegistry.instance().require(self._document_id)
@@ -113,17 +110,14 @@ class EditableDocumentDraftCommand(UndoCommand):
                 "Cannot replay a whole-document edit after an external resource revision; "
                 "edit the current document instead"
             )
+        return document.controller
 
     def execute(self) -> None:
-        self._require_current_external_revision()
-        self._controller.restore_document(self._new_document, self._new_revision)
+        self._current_controller().restore_document(self._new_document, self._new_revision)
 
     def undo(self) -> None:
-        self._require_current_external_revision()
-        self._controller.restore_document(self._old_document, self._old_revision)
+        self._current_controller().restore_document(self._old_document, self._old_revision)
 
-    def redo(self) -> None:
-        self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
         return (
@@ -203,8 +197,6 @@ class ProjectAssetRenameCommand(UndoCommand):
     def undo(self) -> None:
         self._apply(self._new_path, self._old_path)
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class ProjectAssetCreateCommand(UndoCommand):
@@ -396,8 +388,6 @@ class ProjectAssetTextCommand(UndoCommand):
     def undo(self) -> None:
         self._apply(self._old_content, self._new_content)
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class ProjectPrefabCreateCommand(UndoCommand):
@@ -439,8 +429,9 @@ class ProjectPrefabCreateCommand(UndoCommand):
             try:
                 if self._asset_command.created_path:
                     self._asset_command.undo()
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                from infernux.debug import Debug
+                Debug.log_suppressed("AssetCommand.rollback_created_asset", cleanup_error)
             self._before_linkage = None
             self._after_linkage = None
             raise
@@ -601,11 +592,8 @@ class ProjectAssetDeleteCommand(UndoCommand):
                 continue
             if self._asset_database is None:
                 continue
-            try:
-                if self._asset_database.get_guid_from_path(path):
-                    yield path
-            except Exception:
-                continue
+            if self._asset_database.get_guid_from_path(path):
+                yield path
 
     @staticmethod
     def _remove_path(path: str) -> None:
@@ -714,8 +702,6 @@ class ProjectAssetDeleteCommand(UndoCommand):
         if self._on_restored is not None:
             self._on_restored()
 
-    def redo(self) -> None:
-        self.execute()
 
     def dispose(self) -> None:
         if self._disposed:
@@ -812,8 +798,6 @@ class ProjectAssetMoveCommand(UndoCommand):
     def undo(self) -> None:
         self._apply(self._destination_path, self._source_path)
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class ProjectAssetMoveBatchCommand(UndoCommand):
@@ -880,8 +864,6 @@ class ProjectAssetMoveBatchCommand(UndoCommand):
     def undo(self) -> None:
         self._apply(tuple((destination, source) for source, destination in self._moves))
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class ProjectAssetCopyCommand(UndoCommand):
@@ -1000,8 +982,6 @@ class ProjectAssetCopyCommand(UndoCommand):
             raise RuntimeError("asset copy has not been executed")
         self._delete_command.execute()
 
-    def redo(self) -> None:
-        self.execute()
 
     def dispose(self) -> None:
         if self._disposed:

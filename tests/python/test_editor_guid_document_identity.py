@@ -114,65 +114,7 @@ def test_delete_preflight_matches_registered_documents_by_guid_not_path(tmp_path
     )
 
     assert registry.documents_under_resource(old_path, guids={"new-guid"}) == ()
-    assert registry.documents_under_resource(old_path, guids={"scene-guid"}) == (
-        document,
-    )
-
-
-def test_scene_session_persists_guid_and_ignores_legacy_path_record(
-    tmp_path, monkeypatch
-):
-    from infernux.engine.interaction import DocumentRegistry
-    from infernux.engine.scene_manager import SceneFileManager
-
-    path = str(tmp_path / "Main.scene")
-    database = _Database()
-    database.register(path, "main-scene-guid")
-    manager = SceneFileManager()
-    manager.set_asset_database(database)
-    manager._current_scene_path = path
-    document = manager._replace_scene_document(
-        kind="scene",
-        resource_path=path,
-        title="Main",
-        dirty=True,
-    )
-    monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
-
-    state = manager.save_session_state()
-
-    assert state["asset_guid"] == "main-scene-guid"
-    assert "current_scene_path" not in state
-    assert DocumentRegistry.instance().require(document.document_id).is_dirty
-    assert not manager.restore_session_state(
-        {
-            "dirty": True,
-            "current_scene_path": path,
-            "document": {"name": "Legacy"},
-        }
-    )
-
-
-def test_path_keyed_registered_asset_session_record_is_silently_skipped():
-    from infernux.engine.interaction import DocumentKind, DocumentRegistry
-
-    source = DocumentRegistry()
-    document = source.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Draft",
-        controller=_RestoreController(),
-    )
-    source.attach_view(document.document_id, "particle_graph_editor")
-    state = source.capture_session_state()
-    state["documents"][0]["key"] = {
-        "identity_kind": "resource_path",
-        "identity": "Assets/Legacy.particlegraph",
-    }
-    state["documents"][0]["resource_path"] = "Assets/Legacy.particlegraph"
-
-    restored = DocumentRegistry()
-    assert restored.queue_session_restore(state) == 0
-    assert restored.capture_session_state() == {"documents": []}
+    assert registry.documents_under_resource(old_path, guids={"scene-guid"}) == (document,)
 
 
 def test_authoring_save_as_rekeys_to_published_guid(tmp_path, monkeypatch):

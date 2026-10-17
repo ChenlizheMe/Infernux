@@ -24,7 +24,7 @@ _FATAL_PATTERNS = (
     "VUID-",
     "CRASH:",
     "Traceback (most recent call last)",
-    "[ERROR]",
+    "[Error]",
     "X Error of failed request",
     "VK_ERROR_DEVICE_LOST",
     "device lost",

@@ -125,7 +125,7 @@ class Rigidbody(BuiltinComponent):
 
     def render_inspector(self, ctx) -> None:
         from infernux.engine.ui.inspector_components import (
-            render_builtin_via_setters, _record_builtin_property,
+            render_builtin_via_setters,
         )
 
         # Standard properties (skip freeze fields — rendered below)

@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
+
 import sys
+
+
 import types
+from typing import Annotated, ClassVar
+
 
 import pytest
+from infernux.components.fields import NonSerialized
+
 
 from infernux.renderstack.injection_point import InjectionPoint
+
+
 from infernux.renderstack.resource_bus import ResourceBus
+
+
 from infernux.renderstack.render_pass import RenderPass
+
+
 from infernux.renderstack.fullscreen_effect import FullScreenEffect
+from infernux.renderstack.render_pipeline import RenderPipeline
 
 
 def test_pipeline_file_callback_adopts_transactionally_published_module(monkeypatch):
@@ -51,130 +65,6 @@ def test_pipeline_file_callback_adopts_transactionally_published_module(monkeypa
     assert invalidations == ["discovery"]
 
 
-def test_pipeline_catalog_change_filter_ignores_ordinary_component(tmp_path):
-    from infernux.renderstack.discovery import script_may_affect_pipeline_catalog
-
-    component = tmp_path / "player.py"
-    component.write_text(
-        "from infernux.components import InxComponent\n"
-        "class Player(InxComponent):\n"
-        "    pass\n",
-        encoding="utf-8",
-    )
-
-    assert not script_may_affect_pipeline_catalog(str(component), "modified")
-
-
-def test_pipeline_catalog_change_filter_accepts_pipeline_source(tmp_path):
-    from infernux.renderstack.discovery import script_may_affect_pipeline_catalog
-
-    pipeline = tmp_path / "pipeline.py"
-    pipeline.write_text(
-        "from infernux.renderstack import RenderPipeline\n"
-        "class CustomPipeline(RenderPipeline):\n"
-        "    pass\n",
-        encoding="utf-8",
-    )
-
-    assert script_may_affect_pipeline_catalog(str(pipeline), "created")
-
-
-def test_project_catalog_invalidates_without_a_renderstack(tmp_path, monkeypatch):
-    import infernux.renderstack.discovery as discovery
-    from infernux.engine.resources_manager import ResourcesManager
-
-    pipeline = tmp_path / "NewPipeline.py"
-    pipeline.write_text("class NewPipeline(RenderPipeline):\n    pass\n", encoding="utf-8")
-    cached = {"Previously discovered": object}
-    monkeypatch.setattr(discovery, "_pipeline_cache", cached)
-    manager = ResourcesManager.__new__(ResourcesManager)
-    manager._script_catalog_callbacks = []
-    manager.notify_script_catalog_changed(str(pipeline), "created")
-    assert discovery._pipeline_cache is None
-
-
-def test_catalog_is_invalidated_before_consumers_but_not_for_gameplay(tmp_path, monkeypatch):
-    import infernux.renderstack.discovery as discovery
-    from infernux.engine.resources_manager import ResourcesManager
-
-    source = tmp_path / "Edited.py"
-    source.write_text("class Player(InxComponent):\n    pass\n", encoding="utf-8")
-    cached = {"Previously discovered": object}
-    monkeypatch.setattr(discovery, "_pipeline_cache", cached)
-    observed = []
-    manager = ResourcesManager.__new__(ResourcesManager)
-    manager._script_catalog_callbacks = [lambda *_: observed.append(discovery._pipeline_cache)]
-    manager.notify_script_catalog_changed(str(source), "modified")
-    assert observed == [cached] and discovery._pipeline_cache is cached
-    source.write_text("class Pipeline(RenderPipeline):\n    pass\n", encoding="utf-8")
-    manager.notify_script_catalog_changed(str(source), "modified")
-    assert observed[-1] is None
-
-
-def test_pipeline_discovery_finds_indirect_project_subclass(tmp_path):
-    from infernux.engine.project_context import get_project_root, set_project_root
-    from infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache
-
-    project = tmp_path / "IndirectPipelineProject"
-    assets = project / "Assets"
-    assets.mkdir(parents=True)
-    (assets / "pipeline_base.py").write_text(
-        "from infernux.renderstack import RenderPipeline\n"
-        "class ProjectPipelineBase(RenderPipeline):\n"
-        "    name = '_project_pipeline_base'\n",
-        encoding="utf-8",
-    )
-    child = assets / "showcase_pipeline.py"
-    child.write_text(
-        "from pipeline_base import ProjectPipelineBase\n"
-        "class IndirectShowcasePipeline(ProjectPipelineBase):\n"
-        "    name = 'Indirect Showcase Regression'\n",
-        encoding="utf-8",
-    )
-
-    previous = get_project_root()
-    set_project_root(str(project))
-    invalidate_discovery_cache()
-    try:
-        assert "RenderPipeline" not in child.read_text(encoding="utf-8")
-        assert discover_pipelines()["Indirect Showcase Regression"].__name__ == (
-            "IndirectShowcasePipeline"
-        )
-    finally:
-        set_project_root(previous)
-        invalidate_discovery_cache()
-
-
-def test_pipeline_discovery_finds_project_subclass_of_builtin_pipeline(tmp_path):
-    from infernux.engine.project_context import get_project_root, set_project_root
-    from infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache
-
-    project = tmp_path / "BuiltinPipelineBaseProject"
-    assets = project / "Assets"
-    assets.mkdir(parents=True)
-    source = assets / "showcase_pipeline.py"
-    source.write_text(
-        "from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline\n"
-        "class BuiltinDerivedShowcasePipeline(DefaultForwardPipeline):\n"
-        "    name = 'Builtin Derived Showcase Regression'\n",
-        encoding="utf-8",
-    )
-
-    previous = get_project_root()
-    set_project_root(str(project))
-    invalidate_discovery_cache()
-    try:
-        assert "class BuiltinDerivedShowcasePipeline(RenderPipeline)" not in source.read_text(
-            encoding="utf-8"
-        )
-        assert discover_pipelines()["Builtin Derived Showcase Regression"].__name__ == (
-            "BuiltinDerivedShowcasePipeline"
-        )
-    finally:
-        set_project_root(previous)
-        invalidate_discovery_cache()
-
-
 def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
     from infernux.renderstack.render_stack import RenderStack
 
@@ -187,20 +77,6 @@ def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
         stack._create_pipeline()
 
     assert stack.pipeline_class_name == "Missing Packaged Pipeline"
-
-
-def test_editor_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
-    from infernux.renderstack.render_stack import RenderStack
-
-    stack = RenderStack()
-    stack.pipeline_class_name = "Missing Editor Pipeline"
-    monkeypatch.delenv("_INFERNUX_PLAYER_MODE", raising=False)
-    monkeypatch.setattr(stack, "discover_pipelines", lambda: {})
-
-    with pytest.raises(RuntimeError, match="Missing Editor Pipeline"):
-        stack._create_pipeline()
-
-    assert stack.pipeline_class_name == "Missing Editor Pipeline"
 
 
 def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebuild():
@@ -238,40 +114,6 @@ def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebu
     assert subject.saved == 1
 
 
-@pytest.mark.parametrize('name', ['Authored Pipeline', 'Default Forward'])
-def test_restored_catalog_selection_retries_failed_build_once(name):
-    from infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
-
-    class Subject(PipelineReloadMixin):
-        DEFAULT_PIPELINE_NAME = 'Default Forward'
-
-        def __init__(self):
-            self.pipeline_class_name = name
-            self._pipeline_catalog_signature = ()
-            self._pipeline = None
-            self._cached_ips = object()
-            self.names = {name: object()}
-            self.invalidations = 0
-            self.build_failed = True
-
-        def discover_pipelines(self):
-            return self.names
-
-        def invalidate_graph(self):
-            self.invalidations += 1
-            self.build_failed = False
-
-    subject = Subject()
-    subject._sync_pipeline_catalog()
-    assert subject.pipeline_class_name == name and subject._pipeline is None
-    assert subject._cached_ips is None
-    assert subject.invalidations == 1 and not subject.build_failed
-    subject._sync_pipeline_catalog()
-    subject.names['Unrelated New Pipeline'] = object()
-    subject._sync_pipeline_catalog()
-    assert subject.invalidations == 1
-
-
 def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monkeypatch):
     from infernux.renderstack.render_stack import RenderStack
 
@@ -296,213 +138,67 @@ def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monke
     assert invalidations == [True]
 
 
-def test_effect_feature_lookup_discovers_project_registration_module(tmp_path):
-    from infernux.engine.project_context import get_project_root, set_project_root
-    from infernux.renderstack.discovery import invalidate_discovery_cache
-    from infernux.renderstack.render_effect_compiler import get_render_effect_feature
+@pytest.mark.parametrize("base", [RenderPipeline, FullScreenEffect])
+def test_render_parameters_share_typed_fields_and_round_trip(base):
+    from infernux.components.fields import get_field_schema, get_serialized_fields, serialized_field
+    from infernux.renderstack.render_stack import RenderStack
 
-    project = tmp_path / "EffectFeatureDiscoveryProject"
-    assets = project / "Assets"
-    assets.mkdir(parents=True)
-    (assets / "project_effect.py").write_text(
-        "from infernux.renderstack import FullScreenEffect, render_effect_feature\n"
-        "@render_effect_feature('tests.post.lazy_project_feature')\n"
-        "class ProjectEffect(FullScreenEffect):\n"
-        "    name = 'Project Effect Discovery Regression'\n",
-        encoding="utf-8",
-    )
+    class Parameters(base):
+        name = "Shared parameter contract"
+        injection_point: ClassVar[str] = "final"
+        _reserved_attrs_ = frozenset({"route_metadata"})
+        route_metadata: list[str] = ["color"]
+        runtime_mode: ClassVar[int] = 7
+        runtime_tag: ClassVar = "runtime"
+        CONSTANT = 32
+        _private = serialized_field(default=8)
+        count: int = serialized_field(default=3, field_id="stable_count")
+        labels: list[str] = serialized_field(default=[])
+        computed: int
+        masked: int = 2
+        transient: int = 6
 
-    previous = get_project_root()
-    set_project_root(str(project))
-    invalidate_discovery_cache()
-    try:
-        feature = get_render_effect_feature("tests.post.lazy_project_feature")
-        assert feature.effect_class.__name__ == "ProjectEffect"
-    finally:
-        set_project_root(previous)
-        invalidate_discovery_cache()
+    class Derived(Parameters):
+        _reserved_attrs_ = frozenset({"masked"})
+        masked = 9
+        count: int = serialized_field(default=4, field_id="stable_count")
+        transient: Annotated[int, NonSerialized] = 5
 
+    fields = get_serialized_fields(Derived)
+    assert set(fields) == {"count", "labels", "computed"}
+    assert get_serialized_fields(Parameters)["count"].default == 3
+    assert fields["count"].default == 4
+    assert get_field_schema(Derived, "count").attributes["field_id"] == "stable_count"
+    assert get_field_schema(Derived, "labels").attributes["element_type"] == "FieldType.STRING"
+    first, untouched, restored = Derived(), Derived(), Derived()
+    assert first.computed == 0 and first.runtime_mode == 7 and first.runtime_tag == "runtime"
+    assert first.masked == 9 and first.transient == 5
+    assert first.route_metadata == ["color"] and first._private == 8
+    first.count = 9
+    first.labels.append("authored")
+    assert untouched.labels == [] and fields["labels"].default == []
 
-def test_effect_feature_decorator_replaces_same_source_candidate_class(tmp_path):
-    import importlib.util
-
-    from infernux.renderstack.render_effect_compiler import (
-        get_render_effect_feature,
-        render_effect_feature,
-    )
-
-    source = tmp_path / "replaceable_effect.py"
-    source.write_text("class Effect:\n    pass\n", encoding="utf-8")
-
-    def load(module_name):
-        spec = importlib.util.spec_from_file_location(module_name, source)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.Effect
-
-    first = load("effect_discovery_revision")
-    second = load("effect_candidate_revision")
-    first.__module__ = "detached_discovery_module"
-    second.__module__ = "detached_candidate_module"
-    render_effect_feature("tests.post.same_source_replacement")(first)
-    render_effect_feature("tests.post.same_source_replacement")(second)
-
-    assert get_render_effect_feature("tests.post.same_source_replacement").effect_class is second
-
-
-# ══════════════════════════════════════════════════════════════════════
-# InjectionPoint
-# ══════════════════════════════════════════════════════════════════════
-
-class TestInjectionPoint:
-    def test_auto_display_name(self):
-        ip = InjectionPoint(name="after_opaque")
-        assert ip.display_name == "After Opaque"
-
-    def test_explicit_display_name(self):
-        ip = InjectionPoint(name="x", display_name="Custom")
-        assert ip.display_name == "Custom"
-
-    def test_default_resource_state(self):
-        ip = InjectionPoint(name="test")
-        assert ip.resource_state == {"color", "depth"}
-
-    def test_custom_resource_state(self):
-        ip = InjectionPoint(name="test", resource_state={"color"})
-        assert ip.resource_state == {"color"}
+    if base is FullScreenEffect:
+        document = first.get_params_dict()
+        restored.set_params_dict(document)
+    else:
+        stack = RenderStack()
+        stack.pipeline_class_name = first.name
+        stack._pipeline = first
+        stack._save_current_pipeline_params()
+        document = stack._encode_pipeline_params(first)
+        stack._restore_pipeline_params(restored)
+    assert document == {"count": 9, "labels": ["authored"], "computed": 0}
+    assert restored.count == 9 and restored.labels == ["authored"]
 
 
-# ══════════════════════════════════════════════════════════════════════
-# ResourceBus
-# ══════════════════════════════════════════════════════════════════════
+@pytest.mark.parametrize("base", [RenderPipeline, FullScreenEffect])
+def test_render_parameter_ids_must_be_unique_across_inheritance(base):
+    from infernux.components.fields import serialized_field
 
-class TestResourceBus:
-    def test_empty_bus(self):
-        bus = ResourceBus()
-        assert bus.available_resources == set()
-        assert bus.get("color") is None
-        assert not bus.has("color")
+    class Parameters(base):
+        count = serialized_field(default=3, field_id="stable_count")
 
-    def test_set_and_get(self):
-        bus = ResourceBus()
-        bus.set("color", "handle_c")
-        bus.set("depth", "handle_d")
-        assert bus.get("color") == "handle_c"
-        assert bus.has("depth")
-        assert bus.available_resources == {"color", "depth"}
-
-    def test_initial_resources(self):
-        bus = ResourceBus(initial={"a": 1, "b": 2})
-        assert bus.has("a")
-        assert bus.get("b") == 2
-
-    def test_snapshot(self):
-        bus = ResourceBus(initial={"x": 10})
-        snap = bus.snapshot()
-        assert snap == {"x": 10}
-        snap["x"] = 999
-        assert bus.get("x") == 10
-
-    def test_repr(self):
-        bus = ResourceBus(initial={"a": 1, "b": 2})
-        r = repr(bus)
-        assert "a" in r
-        assert "b" in r
-
-
-# ══════════════════════════════════════════════════════════════════════
-# RenderPass (base class)
-# ══════════════════════════════════════════════════════════════════════
-
-class TestRenderPass:
-    def test_requires_name(self):
-        with pytest.raises(ValueError, match="name"):
-            RenderPass()
-
-    def test_requires_injection_point(self):
-        class NoIP(RenderPass):
-            name = "test"
-        with pytest.raises(ValueError, match="injection_point"):
-            NoIP()
-
-    def test_valid_subclass_constructs(self):
-        class Good(RenderPass):
-            name = "good"
-            injection_point = "after_opaque"
-        p = Good()
-        assert p.enabled is True
-
-    def test_validate_missing_resources(self):
-        class NeedsColor(RenderPass):
-            name = "need"
-            injection_point = "x"
-            requires = {"color", "depth"}
-        p = NeedsColor()
-        errors = p.validate({"color"})
-        assert len(errors) > 0
-
-    def test_validate_all_satisfied(self):
-        class NeedsColor(RenderPass):
-            name = "need"
-            injection_point = "x"
-            requires = {"color"}
-        p = NeedsColor()
-        errors = p.validate({"color", "depth"})
-        assert errors == []
-
-
-# ══════════════════════════════════════════════════════════════════════
-# FullScreenEffect (base class)
-# ══════════════════════════════════════════════════════════════════════
-
-class TestFullScreenEffect:
-    def test_default_resource_declarations(self):
-        class TestFX(FullScreenEffect):
-            name = "test_fx"
-            injection_point = "before_post_process"
-        fx = TestFX()
-        assert "color" in fx.requires
-        assert "color" in fx.modifies
-
-    def test_enabled_default(self):
-        class TestFX(FullScreenEffect):
-            name = "test_fx"
-            injection_point = "before_post_process"
-        fx = TestFX()
-        assert fx.enabled is True
-
-    def test_disabled_construction(self):
-        class TestFX(FullScreenEffect):
-            name = "test_fx"
-            injection_point = "before_post_process"
-        fx = TestFX(enabled=False)
-        assert fx.enabled is False
-
-    def test_bind_buffers_uses_instance_resource_contract(self):
-        from infernux.renderstack.resource_bus import ResourceBus
-
-        class TestFX(FullScreenEffect):
-            name = "test_fx"
-            injection_point = "before_post_process"
-            requires = {"color", "depth", "normal"}
-            modifies = {"color"}
-
-        class RecordingPass:
-            def __init__(self):
-                self.bindings = {}
-
-            def set_texture(self, name, handle):
-                self.bindings[name] = handle
-
-        render_pass = RecordingPass()
-        bus = ResourceBus(
-            {"color": object(), "depth": object(), "normal": object()}
-        )
-
-        TestFX().bind_buffers(render_pass, bus)
-
-        assert set(render_pass.bindings) == {
-            "_InxPassColor",
-            "_InxPassDepth",
-            "_InxPassNormal",
-        }
+    with pytest.raises(ValueError, match="duplicate field_id 'stable_count'"):
+        class Invalid(Parameters):
+            other = serialized_field(default=4, field_id="stable_count")

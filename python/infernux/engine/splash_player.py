@@ -20,6 +20,7 @@ import os
 import struct
 import time as _time
 import uuid
+from contextlib import ExitStack
 from typing import Dict, List, Optional
 from infernux.engine.path_utils import resolved_path
 from infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
@@ -243,24 +244,31 @@ class SplashPlayer:
         self._img_h = int(tex_h)
 
     def _load_video(self, native_engine, path: str):
-        f = open(path, "rb")
-        magic = f.read(8)
-        if magic != b"INFSPLSH":
-            f.close()
-            raise RuntimeError(f"Player video splash header is invalid: {path}")
-
-        hdr = f.read(16)
-        count, self._vfps, _w, _h = struct.unpack("<IfII", hdr)
-        self._img_w = _w
-        self._img_h = _h
-
-        idx_data = f.read(count * 8)
-        self._vindex = [
-            struct.unpack_from("<II", idx_data, i * 8)
-            for i in range(count)
-        ]
-        self._vdata_offset = f.tell()
-        self._vfile = f
+        with ExitStack() as handles:
+            f = handles.enter_context(open(path, "rb"))
+            size = os.fstat(f.fileno()).st_size
+            header = f.read(24)
+            if len(header) != 24 or header[:8] != b"INFSPLSH":
+                raise RuntimeError(f"Player video splash header is invalid: {path}")
+            count, fps, width, height = struct.unpack("<IfII", header[8:])
+            if not (0 < count <= 1_000_000 and count * 8 <= size - 24
+                    and math.isfinite(fps) and fps > 0 and width > 0 and height > 0):
+                raise RuntimeError(f"Player video splash header is invalid: {path}")
+            index_bytes = f.read(count * 8)
+            if len(index_bytes) != count * 8:
+                raise RuntimeError(f"Player video splash index is truncated: {path}")
+            index = list(struct.iter_unpack("<II", index_bytes))
+            data_offset = f.tell()
+            if any(length == 0 or offset + length > size - data_offset
+                   for offset, length in index):
+                raise RuntimeError(f"Player video splash frame is truncated: {path}")
+            self._vfps = fps
+            self._img_w = width
+            self._img_h = height
+            self._vindex = index
+            self._vdata_offset = data_offset
+            self._vfile = f
+            handles.pop_all()
         self._vlast_frame = -1
 
         # Upload first frame immediately

@@ -44,6 +44,47 @@ endif()
 if(TARGET InfernuxPlayerHost)
     add_dependencies(stage_python_package InfernuxPlayerHost)
 endif()
+
+# Desktop extensions are built before both wheel and precompiled Player staging.
+# Android/Web staging retains the same Python sources and excludes host binaries.
+if(NOT INFERNUX_USE_TARGET_PYTHON AND NOT EMSCRIPTEN)
+    add_executable(InfernuxEditorProgress cpp/apps/editor/EditorProgress.cpp)
+    target_link_libraries(InfernuxEditorProgress PRIVATE SDL3::SDL3)
+    set_target_properties(InfernuxEditorProgress PROPERTIES
+        BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+    install(TARGETS InfernuxEditorProgress RUNTIME DESTINATION python/infernux/lib
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+    add_dependencies(stage_python_package InfernuxEditorProgress)
+
+    foreach(_module IN ITEMS components/_component_native components/_component_lifecycle
+            components/skeletal_animator ui/ui_render_dispatch)
+        get_filename_component(_name "${_module}" NAME)
+        get_filename_component(_package "${_module}" DIRECTORY)
+        string(REPLACE "/" "." _import_name "${_module}")
+        set(_target "infernux_python_${_name}")
+        set(_generated "${CMAKE_CURRENT_BINARY_DIR}/python-aot/${_package}/${_name}.c")
+        add_custom_command(OUTPUT "${_generated}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/python-aot/${_package}"
+            COMMAND "${Python3_EXECUTABLE}" -m cython -3 -X annotation_typing=False
+                --module-name "infernux.${_import_name}"
+                --output-file "${_generated}" "python/infernux/${_module}.py"
+            DEPENDS "${CMAKE_SOURCE_DIR}/python/infernux/${_module}.py"
+                "${CMAKE_SOURCE_DIR}/requirements.txt"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            VERBATIM)
+        Python3_add_library(${_target} MODULE WITH_SOABI "${_generated}")
+        set_target_properties(${_target} PROPERTIES
+            OUTPUT_NAME "${_name}"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python-aot/$<CONFIG>/infernux/${_package}"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python-aot/$<CONFIG>/infernux/${_package}"
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "$ORIGIN")
+        install(TARGETS ${_target}
+            LIBRARY DESTINATION "python/infernux/${_package}" COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+            RUNTIME DESTINATION "python/infernux/${_package}" COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+        add_dependencies(stage_python_package ${_target})
+    endforeach()
+endif()
 add_dependencies(prebuild_player_runtime stage_python_package)
 
 add_custom_target(package_python

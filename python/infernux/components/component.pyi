@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar, Union, overload
 
 from infernux.lib._Infernux import (
     GameObject,
@@ -11,6 +11,18 @@ from infernux.lib._Infernux import (
 )
 from infernux.components.builtin.collider import Collider
 from infernux.coroutine import Coroutine
+
+_T = TypeVar("_T")
+
+
+class per_instance(Generic[_T]):
+    """Class-level default that gives each instance its own mutable value."""
+    def __init__(self, factory: Callable[[], _T]) -> None: ...
+    def __set_name__(self, owner: type, name: str) -> None: ...
+    @overload
+    def __get__(self, instance: None, owner: type | None = ...) -> per_instance[_T]: ...
+    @overload
+    def __get__(self, instance: object, owner: type | None = ...) -> _T: ...
 
 
 class InxComponent:

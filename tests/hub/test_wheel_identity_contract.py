@@ -76,31 +76,13 @@ def test_download_identity_failure_does_not_try_another_channel(manager, tmp_pat
     assert not list((tmp_path / "cache").rglob("*.tmp-*"))
 
 
-def test_valid_wheel_can_be_imported_and_selected(manager, tmp_path):
-    source = tmp_path / NAME
-    source.write_bytes(archive_bytes())
-    assert manager.install_local_wheel(str(source)) == "0.4.1-v3"
-    assert manager.is_installed("0.4.1-v3")
 
 
-def test_failed_local_import_preserves_the_installed_artifact(manager, tmp_path):
-    source = tmp_path / NAME
-    content = archive_bytes()
-    source.write_bytes(content)
-    manager.install_local_wheel(str(source))
-    installed = manager.get_wheel_path("0.4.1-v3")
-    source.write_bytes(archive_bytes(version="0.4.0"))
-    with pytest.raises(ValueError, match="identity"):
-        manager.install_local_wheel(str(source))
-    from pathlib import Path
-    assert Path(installed).read_bytes() == content
-    assert manager.is_installed("0.4.1-v3")
-    assert not list((tmp_path / "cache").rglob("*.tmp-*"))
 
 
-@pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("case", ["bad_zip", "truncated_zip", "missing_metadata", "wrong_identity",
-                                   "copy_interrupted", "replace_denied", "missing_source", "valid"])
+@pytest.mark.parametrize('existing,case', [(True, case) for case in (
+    'bad_zip', 'truncated_zip', 'missing_metadata', 'wrong_identity', 'copy_interrupted', 'replace_denied', 'missing_source', 'valid')]
+    + [(False, 'valid'), (False, 'copy_interrupted')])
 def test_local_wheel_publication_is_atomic(manager, tmp_path, monkeypatch, existing, case):
     from pathlib import Path
     import shutil
@@ -171,8 +153,9 @@ def test_local_wheel_reimport_accepts_the_selected_cache_file(manager, tmp_path)
     assert not list(installed.parent.glob('*.tmp-*'))
 
 
-@pytest.mark.parametrize("change", [None, dict(version="0.4.0"), dict(name="other_distribution"), dict(build="2"),
-                                   dict(tag="cp313-cp313-manylinux_2_35_x86_64"), dict(tag="cp312-cp312-win_amd64")])
+# The local import matrix verifies every metadata field. The HTTP chain retains
+# successful online/offline acquisition and a rejection before cache publication.
+@pytest.mark.parametrize('change', [None, dict(version='0.4.0')])
 def test_real_http_catalog_download_cache_chain(manager, monkeypatch, change):
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

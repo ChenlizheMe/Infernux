@@ -9,7 +9,8 @@ from infernux.engine.asset_creation import AssetCreationResult
 from infernux.engine.path_utils import (
     is_case_only_rename,
     is_path_within,
-    resolve_destination_path,
+    resolve_project_path,
+    is_version_control_path,
     path_key,
     resolved_path,
     same_path,
@@ -456,9 +457,8 @@ class ProjectAssetCommandService:
         origin: ActionOrigin = ActionOrigin.USER,
         select_result: bool = False,
     ) -> str:
-        source = self._project_path(source_path)
-        self._project_path(destination_path)
-        destination = resolve_destination_path(destination_path)
+        source = self._managed_asset_path(source_path)
+        destination = self._managed_asset_path(destination_path, destination=True)
         if same_path(source, destination):
             if is_case_only_rename(source, destination):
                 from infernux.engine.undo import ProjectAssetRenameCommand
@@ -491,8 +491,8 @@ class ProjectAssetCommandService:
         origin: ActionOrigin = ActionOrigin.USER,
         select_result: bool = False,
     ) -> str:
-        source = self._project_path(source_path)
-        destination = self._project_path(destination_path)
+        source = self._managed_asset_path(source_path)
+        destination = self._managed_asset_path(destination_path)
         if same_path(source, destination):
             raise ValueError("Asset copy requires a different destination")
         overwrite_paths = (destination,) if overwrite and os.path.exists(destination) else ()
@@ -646,10 +646,19 @@ class ProjectAssetCommandService:
             description=description,
         )
 
-    def _project_path(self, value: str, *, allow_root: bool = False) -> str:
-        path = resolved_path(value)
+    def _project_path(self, value: str, *, allow_root: bool = False, destination: bool = False) -> str:
+        path = resolve_project_path(value, self._project_root, destination=destination)
         if not path or not is_path_within(path, self._project_root, allow_root=allow_root):
             raise ValueError(f"Asset path is outside the project: {value}")
+        if is_version_control_path(path):
+            raise ValueError(f"Version control paths are not assets: {value}")
+        return path
+
+    def _managed_asset_path(self, value: str, *, destination: bool = False) -> str:
+        path = self._project_path(value, destination=destination)
+        if not any(is_path_within(path, os.path.join(self._project_root, root), allow_root=False)
+                   for root in ("Assets", "Packages")):
+            raise ValueError(f"Asset path must be inside Assets or Packages: {value}")
         return path
 
     def _registered_file(self, value: str) -> str:

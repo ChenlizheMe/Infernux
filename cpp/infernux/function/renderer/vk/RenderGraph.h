@@ -245,6 +245,8 @@ struct ResourceState
     rhi::QueueRole queue = rhi::QueueRole::Count;
     uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED;
     uint32_t nativeQueueLane = UINT32_MAX;
+    rhi::Access visibleReadAccess = rhi::Access::None;
+    rhi::PipelineStage visibleReadStages = rhi::PipelineStage::None;
 };
 
 struct NativeQueueBinding
@@ -644,6 +646,7 @@ struct ResourceData
     VkImageView allocatedView = VK_NULL_HANDLE;
     VmaAllocation allocatedMemory = VK_NULL_HANDLE;
     VkBuffer allocatedBuffer = VK_NULL_HANDLE;
+    VkImageUsageFlags allocatedUsage = 0;
 
     // Lifetime tracking
     uint32_t firstPass = UINT32_MAX;
@@ -700,6 +703,19 @@ class RenderGraph
         std::string name;
         double totalMs = 0.0;
         uint64_t calls = 0;
+    };
+
+    struct ViewPassProfileEntry
+    {
+        rhi::RenderViewId view = rhi::InvalidRenderViewId;
+        uint32_t pass = 0;
+        std::string name;
+        double recordMs = 0.0;
+        double barrierMs = 0.0;
+        double callbackMs = 0.0;
+        uint64_t calls = 0;
+        uint64_t gpuRegions = 0;
+        uint64_t gpuNotSampled = 0;
     };
 
     struct ParticlePassProfileEntry
@@ -872,6 +888,7 @@ class RenderGraph
     static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
     static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
     static PassCallbackProfileEntry GetCallbackProfile(std::string_view name);
+    static std::vector<ViewPassProfileEntry> GetViewPassProfiles();
     static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
     static void ResetExecuteProfileSnapshot();
 #endif
@@ -1129,7 +1146,8 @@ class RenderGraph
 
     /// Record an ordered set of pass ids while preserving the graph's current
     /// resource-state cursor. Used by both Execute() and batch execution.
-    void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices);
+    void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices,
+                      rhi::QueueRole recordingQueue);
 
     /// Start a new graph frame without discarding the final state of graph-owned
     /// resources. External resources receive an authoritative state from their
@@ -1145,6 +1163,16 @@ class RenderGraph
 
     /// @brief Free transient resources
     void FreeResources();
+
+    /// Reset() keeps graph-owned images whose last use was on the graphics
+    /// lane; the next Compile() claims an identical image instead of holding
+    /// two generations while the old one is still in flight. Unclaimed images
+    /// are retired through the GPU deletion queue.
+    void RetainReusableImages();
+    [[nodiscard]] bool ClaimReusableImage(uint32_t resourceIndex, const VkImageCreateInfo &info);
+    void RetireReusableImages();
+    void RetireNativeResources(std::vector<VkImageView> imageViews, std::vector<VkImage> images,
+                               std::vector<VkBuffer> buffers, std::vector<VmaAllocation> allocations);
 
     // ========================================================================
     // Layout / barrier helpers
@@ -1243,6 +1271,22 @@ class RenderGraph
     // layout changes (e.g. ResolveSceneMsaa) do not leave stale barriers.
     std::vector<ResourceState> m_initialResourceStates;
 
+    struct ReusableImage
+    {
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t mipLevels = 1;
+        uint32_t arrayLayers = 1;
+        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+        VkImageUsageFlags usage = 0;
+        uint32_t graphicsLane = UINT32_MAX;
+        VkImage image = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VmaAllocation memory = VK_NULL_HANDLE;
+    };
+    std::vector<ReusableImage> m_reusableImages;
+
     // Pre-allocated scratch buffers reused every Execute() to avoid per-pass heap allocs.
     std::vector<VkImageMemoryBarrier> m_barrierScratch;
     std::vector<VkBufferMemoryBarrier> m_bufferBarrierScratch;
@@ -1255,6 +1299,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not.
     inline static std::unordered_map<std::string, PassCallbackProfileEntry> s_callbackProfiles;
+    inline static std::unordered_map<std::string, ViewPassProfileEntry> s_viewPassProfiles;
     inline static std::unordered_map<std::string, ParticlePassProfileEntry> s_particlePassProfiles;
 #endif
 };

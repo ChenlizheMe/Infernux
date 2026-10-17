@@ -1,39 +1,10 @@
 """BootstrapWiringMixin — extracted from EditorBootstrap."""
 from __future__ import annotations
 
-"""
-EditorBootstrap — structured editor initialization.
-
-Breaks the monolithic ``release_engine()`` startup path into explicit
-startup steps. Each step is a separate method, closures become instance
-methods, and panel/manager references live on the bootstrap instance.
-"""
 
 
-import logging
 import os
-import pathlib
-from typing import Optional
 
-from infernux.lib import TagLayerManager
-import infernux.resources as _resources
-from infernux.engine.engine import Engine, LogLevel
-from infernux.engine.resources_manager import ResourcesManager
-from infernux.engine.play_mode import PlayModeManager, PlayModeState
-from infernux.engine.scene_manager import SceneFileManager
-from infernux.engine.ui import (
-    SceneViewPanel,
-    GameViewPanel,
-    WindowManager,
-    TagLayerSettingsPanel,
-    BuildSettingsPanel,
-    UIEditorPanel,
-    EditorPanel,
-    EditorServices,
-    PanelRegistry,
-    editor_panel,
-)
-from infernux.engine.ui import panel_state as _panel_state
 
 
 def _native_shortcut_event(chord: str, text_input: bool, modal: bool):
@@ -555,6 +526,22 @@ class BootstrapWiringMixin:
                 and self.interaction_core.scene_objects.set_transforms(*target)
             )
 
+        def _panel_entry(command_id, display_name, category, *, target=None, **options):
+            if target is None:
+                execute = lambda context: _invoke_panel_command(context, command_id)
+                can_execute = lambda context: _can_panel_command(context, command_id)
+            else:
+                execute = lambda context: _invoke_target_panel_command(context, target, command_id)
+                can_execute = lambda context: _can_target_panel_command(context, target, command_id)
+            return EditorCommand(
+                command_id,
+                execute,
+                display_name=display_name,
+                category=category,
+                can_execute=can_execute,
+                **options,
+            )
+
         commands = (
             EditorCommand(
                 "file.new_scene",
@@ -656,151 +643,50 @@ class BootstrapWiringMixin:
                 can_execute=_can_rename_edit_selection,
                 default_shortcut="F2",
             ),
-            EditorCommand(
-                "hierarchy.set_expanded",
-                lambda context: _invoke_panel_command(
-                    context, "hierarchy.set_expanded"
-                ),
-                display_name="Set Hierarchy Item Expanded",
-                category="Hierarchy",
-                can_execute=lambda context: _can_panel_command(
-                    context, "hierarchy.set_expanded"
-                ),
+            _panel_entry(
+                'hierarchy.set_expanded', 'Set Hierarchy Item Expanded', 'Hierarchy'
             ),
-            EditorCommand(
-                "edit.duplicate",
-                lambda context: _invoke_panel_command(context, "edit.duplicate"),
-                display_name="Duplicate",
-                category="Edit",
-                can_execute=lambda context: _can_panel_command(
-                    context, "edit.duplicate"
-                ),
-                default_shortcut="Ctrl+D",
+            _panel_entry(
+                'edit.duplicate', 'Duplicate', 'Edit',
+                default_shortcut='Ctrl+D',
             ),
-            EditorCommand(
-                "view.focus_search",
-                lambda context: _invoke_panel_command(context, "view.focus_search"),
-                display_name="Focus Search",
-                category="View",
-                can_execute=lambda context: _can_panel_command(
-                    context, "view.focus_search"
-                ),
-                default_shortcut="Ctrl+F",
+            _panel_entry(
+                'view.focus_search', 'Focus Search', 'View',
+                default_shortcut='Ctrl+F',
             ),
-            EditorCommand(
-                "component.open_script",
-                lambda context: _invoke_panel_command(
-                    context, "component.open_script"
-                ),
-                display_name="Open Script",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.open_script"
-                ),
+            _panel_entry(
+                'component.open_script', 'Open Script', 'Component'
             ),
-            EditorCommand(
-                "component.copy_properties",
-                lambda context: _invoke_panel_command(
-                    context, "component.copy_properties"
-                ),
-                display_name="Copy Component",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.copy_properties"
-                ),
+            _panel_entry(
+                'component.copy_properties', 'Copy Component', 'Component'
             ),
-            EditorCommand(
-                "component.paste_properties",
-                lambda context: _invoke_panel_command(
-                    context, "component.paste_properties"
-                ),
-                display_name="Paste Component Values",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.paste_properties"
-                ),
+            _panel_entry(
+                'component.paste_properties', 'Paste Component Values', 'Component'
             ),
-            EditorCommand(
-                "component.paste_as_new",
-                lambda context: _invoke_panel_command(
-                    context, "component.paste_as_new"
-                ),
-                display_name="Paste Component As New",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.paste_as_new"
-                ),
+            _panel_entry(
+                'component.paste_as_new', 'Paste Component As New', 'Component'
             ),
-            EditorCommand(
-                "component.remove",
-                lambda context: _invoke_panel_command(context, "component.remove"),
-                display_name="Remove Component",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.remove"
-                ),
+            _panel_entry(
+                'component.remove', 'Remove Component', 'Component'
             ),
-            EditorCommand(
-                "component.reset",
-                lambda context: _invoke_panel_command(context, "component.reset"),
-                display_name="Reset Component",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.reset"
-                ),
+            _panel_entry(
+                'component.reset', 'Reset Component', 'Component'
             ),
-            EditorCommand(
-                "component.move_up",
-                lambda context: _invoke_panel_command(context, "component.move_up"),
-                display_name="Move Component Up",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.move_up"
-                ),
+            _panel_entry(
+                'component.move_up', 'Move Component Up', 'Component'
             ),
-            EditorCommand(
-                "component.move_down",
-                lambda context: _invoke_panel_command(
-                    context, "component.move_down"
-                ),
-                display_name="Move Component Down",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.move_down"
-                ),
+            _panel_entry(
+                'component.move_down', 'Move Component Down', 'Component'
             ),
-            EditorCommand(
-                "component.reorder",
-                lambda context: _invoke_panel_command(
-                    context, "component.reorder"
-                ),
-                display_name="Reorder Components",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.reorder"
-                ),
+            _panel_entry(
+                'component.reorder', 'Reorder Components', 'Component'
             ),
-            EditorCommand(
-                "component.add",
-                lambda context: _invoke_target_panel_command(
-                    context, "inspector", "component.add"
-                ),
-                display_name="Add Component",
-                category="Component",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "inspector", "component.add"
-                ),
+            _panel_entry(
+                'component.add', 'Add Component', 'Component',
+                target='inspector',
             ),
-            EditorCommand(
-                "component.set_enabled",
-                lambda context: _invoke_panel_command(
-                    context, "component.set_enabled"
-                ),
-                display_name="Set Component Enabled",
-                category="Component",
-                can_execute=lambda context: _can_panel_command(
-                    context, "component.set_enabled"
-                ),
+            _panel_entry(
+                'component.set_enabled', 'Set Component Enabled', 'Component'
             ),
             EditorCommand(
                 "prefab.save_as",
@@ -861,27 +747,13 @@ class BootstrapWiringMixin:
                 ),
                 default_shortcut="Ctrl+Shift+N",
             ),
-            EditorCommand(
-                "asset.create",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "asset.create"
-                ),
-                display_name="Create Asset",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "asset.create"
-                ),
+            _panel_entry(
+                'asset.create', 'Create Asset', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "asset.open",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "asset.open"
-                ),
-                display_name="Open Asset",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "asset.open"
-                ),
+            _panel_entry(
+                'asset.open', 'Open Asset', 'Assets',
+                target='project',
             ),
             EditorCommand(
                 "asset.rename",
@@ -897,93 +769,37 @@ class BootstrapWiringMixin:
                 category="Assets",
                 can_execute=_can_import_external_assets,
             ),
-            EditorCommand(
-                "asset.transfer",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "asset.transfer"
-                ),
-                display_name="Move Assets",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "asset.transfer"
-                ),
+            _panel_entry(
+                'asset.transfer', 'Move Assets', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.reveal_in_explorer",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.reveal_in_explorer"
-                ),
-                display_name="Reveal in File Explorer",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.reveal_in_explorer"
-                ),
+            _panel_entry(
+                'project.reveal_in_explorer', 'Reveal in File Explorer', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.navigate_directory",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.navigate_directory"
-                ),
-                display_name="Navigate Project",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.navigate_directory"
-                ),
+            _panel_entry(
+                'project.navigate_directory', 'Navigate Project', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.navigate_back",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.navigate_back"
-                ),
-                display_name="Navigate Project Back",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.navigate_back"
-                ),
+            _panel_entry(
+                'project.navigate_back', 'Navigate Project Back', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.navigate_forward",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.navigate_forward"
-                ),
-                display_name="Navigate Project Forward",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.navigate_forward"
-                ),
+            _panel_entry(
+                'project.navigate_forward', 'Navigate Project Forward', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.locate_asset",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.locate_asset"
-                ),
-                display_name="Locate Asset",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.locate_asset"
-                ),
+            _panel_entry(
+                'project.locate_asset', 'Locate Asset', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.set_folder_expanded",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.set_folder_expanded"
-                ),
-                display_name="Set Project Folder Expanded",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.set_folder_expanded"
-                ),
+            _panel_entry(
+                'project.set_folder_expanded', 'Set Project Folder Expanded', 'Assets',
+                target='project',
             ),
-            EditorCommand(
-                "project.set_model_expanded",
-                lambda context: _invoke_target_panel_command(
-                    context, "project", "project.set_model_expanded"
-                ),
-                display_name="Set Model Contents Expanded",
-                category="Assets",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "project", "project.set_model_expanded"
-                ),
+            _panel_entry(
+                'project.set_model_expanded', 'Set Model Contents Expanded', 'Assets',
+                target='project',
             ),
             EditorCommand(
                 "project.open_document",
@@ -995,225 +811,77 @@ class BootstrapWiringMixin:
                     and context.payload.get("document_kind")
                 ),
             ),
-            EditorCommand(
-                "timeline.new",
-                lambda context: _invoke_panel_command(context, "timeline.new"),
-                display_name="New Timeline",
-                category="Timeline",
-                can_execute=lambda context: _can_panel_command(
-                    context, "timeline.new"
-                ),
+            _panel_entry(
+                'timeline.new', 'New Timeline', 'Timeline'
             ),
-            EditorCommand(
-                "animclip2d.new",
-                lambda context: _invoke_panel_command(context, "animclip2d.new"),
-                display_name="New 2D Animation Clip",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.new"
-                ),
+            _panel_entry(
+                'animclip2d.new', 'New 2D Animation Clip', 'Animation'
             ),
-            EditorCommand(
-                "animclip2d.play_pause",
-                lambda context: _invoke_panel_command(
-                    context, "animclip2d.play_pause"
-                ),
-                display_name="Play / Pause 2D Animation Preview",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.play_pause"
-                ),
-                default_shortcut="Space",
+            _panel_entry(
+                'animclip2d.play_pause', 'Play / Pause 2D Animation Preview', 'Animation',
+                default_shortcut='Space',
             ),
-            EditorCommand(
-                "animclip2d.stop",
-                lambda context: _invoke_panel_command(context, "animclip2d.stop"),
-                display_name="Stop 2D Animation Preview",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.stop"
-                ),
+            _panel_entry(
+                'animclip2d.stop', 'Stop 2D Animation Preview', 'Animation'
             ),
-            EditorCommand(
-                "animclip2d.previous_frame",
-                lambda context: _invoke_panel_command(
-                    context, "animclip2d.previous_frame"
-                ),
-                display_name="Previous 2D Animation Frame",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.previous_frame"
-                ),
+            _panel_entry(
+                'animclip2d.previous_frame', 'Previous 2D Animation Frame', 'Animation'
             ),
-            EditorCommand(
-                "animclip2d.next_frame",
-                lambda context: _invoke_panel_command(
-                    context, "animclip2d.next_frame"
-                ),
-                display_name="Next 2D Animation Frame",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.next_frame"
-                ),
+            _panel_entry(
+                'animclip2d.next_frame', 'Next 2D Animation Frame', 'Animation'
             ),
-            EditorCommand(
-                "animclip2d.clear_sequence",
-                lambda context: _invoke_panel_command(
-                    context, "animclip2d.clear_sequence"
-                ),
-                display_name="Clear 2D Animation Sequence",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.clear_sequence"
-                ),
+            _panel_entry(
+                'animclip2d.clear_sequence', 'Clear 2D Animation Sequence', 'Animation'
             ),
-            EditorCommand(
-                "animclip2d.add_frame",
-                lambda context: _invoke_panel_command(
-                    context, "animclip2d.add_frame"
-                ),
-                display_name="Add 2D Animation Frame",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animclip2d.add_frame"
-                ),
+            _panel_entry(
+                'animclip2d.fill_sequence', 'Fill 2D Animation Sequence', 'Animation'
             ),
-            EditorCommand(
-                "animfsm.new",
-                lambda context: _invoke_panel_command(context, "animfsm.new"),
-                display_name="New Animation State Machine",
-                category="Animation",
-                can_execute=lambda context: _can_panel_command(
-                    context, "animfsm.new"
-                ),
+            _panel_entry(
+                'animclip2d.add_frame', 'Add 2D Animation Frame', 'Animation'
             ),
-            EditorCommand(
-                "build.start",
-                lambda context: _invoke_panel_command(context, "build.start"),
-                display_name="Build Player",
-                category="Build",
-                can_execute=lambda context: _can_panel_command(
-                    context, "build.start"
-                ),
+            _panel_entry(
+                'animfsm.new', 'New Animation State Machine', 'Animation'
             ),
-            EditorCommand(
-                "build.start_and_run",
-                lambda context: _invoke_panel_command(
-                    context, "build.start_and_run"
-                ),
-                display_name="Build and Run Player",
-                category="Build",
-                can_execute=lambda context: _can_panel_command(
-                    context, "build.start_and_run"
-                ),
+            _panel_entry(
+                'build.start', 'Build Player', 'Build'
             ),
-            EditorCommand(
-                "build.cancel",
-                lambda context: _invoke_panel_command(context, "build.cancel"),
-                display_name="Cancel Build",
-                category="Build",
-                can_execute=lambda context: _can_panel_command(
-                    context, "build.cancel"
-                ),
+            _panel_entry(
+                'build.start_and_run', 'Build and Run Player', 'Build'
             ),
-            EditorCommand(
-                "timeline.play_pause",
-                lambda context: _invoke_panel_command(
-                    context, "timeline.play_pause"
-                ),
-                display_name="Play / Pause Timeline",
-                category="Timeline",
-                can_execute=lambda context: _can_panel_command(
-                    context, "timeline.play_pause"
-                ),
-                default_shortcut="Space",
+            _panel_entry(
+                'build.cancel', 'Cancel Build', 'Build'
             ),
-            EditorCommand(
-                "timeline.stop",
-                lambda context: _invoke_panel_command(context, "timeline.stop"),
-                display_name="Stop Timeline",
-                category="Timeline",
-                can_execute=lambda context: _can_panel_command(
-                    context, "timeline.stop"
-                ),
+            _panel_entry(
+                'timeline.play_pause', 'Play / Pause Timeline', 'Timeline',
+                default_shortcut='Space',
             ),
-            EditorCommand(
-                "timeline.set_loop_preview",
-                lambda context: _invoke_panel_command(
-                    context, "timeline.set_loop_preview"
-                ),
-                display_name="Toggle Timeline Loop Preview",
-                category="Timeline",
-                can_execute=lambda context: _can_panel_command(
-                    context, "timeline.set_loop_preview"
-                ),
+            _panel_entry(
+                'timeline.stop', 'Stop Timeline', 'Timeline'
+            ),
+            _panel_entry(
+                'timeline.set_loop_preview', 'Toggle Timeline Loop Preview', 'Timeline',
                 palette_visible=False,
             ),
-            EditorCommand(
-                "timeline.add_keyframe",
-                lambda context: _invoke_panel_command(
-                    context, "timeline.add_keyframe"
-                ),
-                display_name="Add Timeline Keyframe",
-                category="Timeline",
-                can_execute=lambda context: _can_panel_command(
-                    context, "timeline.add_keyframe"
-                ),
+            _panel_entry(
+                'timeline.add_keyframe', 'Add Timeline Keyframe', 'Timeline'
             ),
-            EditorCommand(
-                "scene.create_object",
-                lambda context: _invoke_panel_command(
-                    context, "scene.create_object"
-                ),
-                display_name="Create GameObject",
-                category="GameObject",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.create_object"
-                ),
+            _panel_entry(
+                'scene.create_object', 'Create GameObject', 'GameObject'
             ),
-            EditorCommand(
-                "scene.create_empty_parent",
-                lambda context: _invoke_panel_command(
-                    context, "scene.create_empty_parent"
-                ),
-                display_name="Create Empty Parent",
-                category="GameObject",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.create_empty_parent"
-                ),
+            _panel_entry(
+                'scene.create_empty_parent', 'Create Empty Parent', 'GameObject'
             ),
-            EditorCommand(
-                "scene.instantiate_prefab",
-                lambda context: _invoke_target_panel_command(
-                    context, "hierarchy", "scene.instantiate_prefab"
-                ),
-                display_name="Instantiate Prefab",
-                category="GameObject",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "hierarchy", "scene.instantiate_prefab"
-                ),
+            _panel_entry(
+                'scene.instantiate_prefab', 'Instantiate Prefab', 'GameObject',
+                target='hierarchy',
             ),
-            EditorCommand(
-                "scene.create_model",
-                lambda context: _invoke_target_panel_command(
-                    context, "hierarchy", "scene.create_model"
-                ),
-                display_name="Create Model",
-                category="GameObject",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "hierarchy", "scene.create_model"
-                ),
+            _panel_entry(
+                'scene.create_model', 'Create Model', 'GameObject',
+                target='hierarchy',
             ),
-            EditorCommand(
-                "scene.rename_object",
-                lambda context: _invoke_target_panel_command(
-                    context, "hierarchy", "scene.rename_object"
-                ),
-                display_name="Rename GameObject",
-                category="GameObject",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "hierarchy", "scene.rename_object"
-                ),
+            _panel_entry(
+                'scene.rename_object', 'Rename GameObject', 'GameObject',
+                target='hierarchy',
             ),
             EditorCommand(
                 "scene.set_object_property",
@@ -1233,27 +901,13 @@ class BootstrapWiringMixin:
                 # wrapping every sample in a separate user action.
                 creates_user_action=False,
             ),
-            EditorCommand(
-                "scene.move_hierarchy",
-                lambda context: _invoke_target_panel_command(
-                    context, "hierarchy", "scene.move_hierarchy"
-                ),
-                display_name="Move GameObject",
-                category="GameObject",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "hierarchy", "scene.move_hierarchy"
-                ),
+            _panel_entry(
+                'scene.move_hierarchy', 'Move GameObject', 'GameObject',
+                target='hierarchy',
             ),
-            EditorCommand(
-                "scene.set_active",
-                lambda context: _invoke_target_panel_command(
-                    context, "hierarchy", "scene.set_active"
-                ),
-                display_name="Set Active Scene",
-                category="Scene",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "hierarchy", "scene.set_active"
-                ),
+            _panel_entry(
+                'scene.set_active', 'Set Active Scene', 'Scene',
+                target='hierarchy',
             ),
             EditorCommand(
                 "scene.save",
@@ -1276,175 +930,67 @@ class BootstrapWiringMixin:
                 category="Scene",
                 can_execute=lambda context: bool(context.payload.get("source_path", "")),
             ),
-            EditorCommand(
-                "scene.tool.select",
-                lambda context: _invoke_panel_command(
-                    context, "scene.tool.select"
-                ),
-                display_name="Select Tool",
-                category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.tool.select"
-                ),
-                default_shortcut="Q",
+            _panel_entry(
+                'scene.tool.select', 'Select Tool', 'Scene',
+                default_shortcut='Q',
             ),
-            EditorCommand(
-                "ui.nudge.left",
-                lambda context: _invoke_panel_command(context, "ui.nudge.left"),
-                display_name="Nudge UI Element Left",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.left"
-                ),
-                default_shortcut="Left",
+            _panel_entry(
+                'ui.nudge.left', 'Nudge UI Element Left', 'UI Editor',
+                default_shortcut='Left',
             ),
-            EditorCommand(
-                "ui.nudge.right",
-                lambda context: _invoke_panel_command(context, "ui.nudge.right"),
-                display_name="Nudge UI Element Right",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.right"
-                ),
-                default_shortcut="Right",
+            _panel_entry(
+                'ui.nudge.right', 'Nudge UI Element Right', 'UI Editor',
+                default_shortcut='Right',
             ),
-            EditorCommand(
-                "ui.nudge.up",
-                lambda context: _invoke_panel_command(context, "ui.nudge.up"),
-                display_name="Nudge UI Element Up",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.up"
-                ),
-                default_shortcut="Up",
+            _panel_entry(
+                'ui.nudge.up', 'Nudge UI Element Up', 'UI Editor',
+                default_shortcut='Up',
             ),
-            EditorCommand(
-                "ui.nudge.down",
-                lambda context: _invoke_panel_command(context, "ui.nudge.down"),
-                display_name="Nudge UI Element Down",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.down"
-                ),
-                default_shortcut="Down",
+            _panel_entry(
+                'ui.nudge.down', 'Nudge UI Element Down', 'UI Editor',
+                default_shortcut='Down',
             ),
-            EditorCommand(
-                "ui.nudge.left.fast",
-                lambda context: _invoke_panel_command(
-                    context, "ui.nudge.left.fast"
-                ),
-                display_name="Nudge UI Element Left (Fast)",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.left.fast"
-                ),
-                default_shortcut="Shift+Left",
+            _panel_entry(
+                'ui.nudge.left.fast', 'Nudge UI Element Left (Fast)', 'UI Editor',
+                default_shortcut='Shift+Left',
             ),
-            EditorCommand(
-                "ui.nudge.right.fast",
-                lambda context: _invoke_panel_command(
-                    context, "ui.nudge.right.fast"
-                ),
-                display_name="Nudge UI Element Right (Fast)",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.right.fast"
-                ),
-                default_shortcut="Shift+Right",
+            _panel_entry(
+                'ui.nudge.right.fast', 'Nudge UI Element Right (Fast)', 'UI Editor',
+                default_shortcut='Shift+Right',
             ),
-            EditorCommand(
-                "ui.nudge.up.fast",
-                lambda context: _invoke_panel_command(
-                    context, "ui.nudge.up.fast"
-                ),
-                display_name="Nudge UI Element Up (Fast)",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.up.fast"
-                ),
-                default_shortcut="Shift+Up",
+            _panel_entry(
+                'ui.nudge.up.fast', 'Nudge UI Element Up (Fast)', 'UI Editor',
+                default_shortcut='Shift+Up',
             ),
-            EditorCommand(
-                "ui.nudge.down.fast",
-                lambda context: _invoke_panel_command(
-                    context, "ui.nudge.down.fast"
-                ),
-                display_name="Nudge UI Element Down (Fast)",
-                category="UI Editor",
-                can_execute=lambda context: _can_panel_command(
-                    context, "ui.nudge.down.fast"
-                ),
-                default_shortcut="Shift+Down",
+            _panel_entry(
+                'ui.nudge.down.fast', 'Nudge UI Element Down (Fast)', 'UI Editor',
+                default_shortcut='Shift+Down',
             ),
-            EditorCommand(
-                "scene.tool.move",
-                lambda context: _invoke_panel_command(context, "scene.tool.move"),
-                display_name="Move Tool",
-                category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.tool.move"
-                ),
-                default_shortcut="W",
+            _panel_entry(
+                'scene.tool.move', 'Move Tool', 'Scene',
+                default_shortcut='W',
             ),
-            EditorCommand(
-                "scene.tool.rotate",
-                lambda context: _invoke_panel_command(
-                    context, "scene.tool.rotate"
-                ),
-                display_name="Rotate Tool",
-                category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.tool.rotate"
-                ),
-                default_shortcut="E",
+            _panel_entry(
+                'scene.tool.rotate', 'Rotate Tool', 'Scene',
+                default_shortcut='E',
             ),
-            EditorCommand(
-                "scene.tool.scale",
-                lambda context: _invoke_panel_command(
-                    context, "scene.tool.scale"
-                ),
-                display_name="Scale Tool",
-                category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.tool.scale"
-                ),
-                default_shortcut="R",
+            _panel_entry(
+                'scene.tool.scale', 'Scale Tool', 'Scene',
+                default_shortcut='R',
             ),
-            EditorCommand(
-                "scene.tool.rect",
-                lambda context: _invoke_panel_command(
-                    context, "scene.tool.rect"
-                ),
-                display_name="Rect Tool",
-                category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.tool.rect"
-                ),
-                default_shortcut="T",
+            _panel_entry(
+                'scene.tool.rect', 'Rect Tool', 'Scene',
+                default_shortcut='T',
             ),
-            EditorCommand(
-                "scene.align_to_camera",
-                lambda context: _invoke_target_panel_command(
-                    context, "scene_view", "scene.align_to_camera"
-                ),
-                display_name="Align With View",
-                category="Scene",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "scene_view", "scene.align_to_camera"
-                ),
-                default_shortcut="Ctrl+Shift+F",
+            _panel_entry(
+                'scene.align_to_camera', 'Align With View', 'Scene',
+                target='scene_view',
+                default_shortcut='Ctrl+Shift+F',
             ),
-            EditorCommand(
-                "scene.frame_selected",
-                lambda context: _invoke_target_panel_command(
-                    context, "scene_view", "scene.frame_selected"
-                ),
-                display_name="Frame Selected",
-                category="Scene",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "scene_view", "scene.frame_selected"
-                ),
-                default_shortcut="F",
+            _panel_entry(
+                'scene.frame_selected', 'Frame Selected', 'Scene',
+                target='scene_view',
+                default_shortcut='F',
             ),
             EditorCommand(
                 "scene.toggle_grid",
@@ -1462,16 +1008,8 @@ class BootstrapWiringMixin:
                 can_execute=lambda _context: self.engine is not None,
                 is_checked=_are_scene_gizmos_visible,
             ),
-            EditorCommand(
-                "scene.set_coordinate_space",
-                lambda context: _invoke_panel_command(
-                    context, "scene.set_coordinate_space"
-                ),
-                display_name="Set Scene Coordinate Space",
-                category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.set_coordinate_space"
-                ),
+            _panel_entry(
+                'scene.set_coordinate_space', 'Set Scene Coordinate Space', 'Scene'
             ),
             EditorCommand(
                 "play.toggle",
@@ -1542,49 +1080,21 @@ class BootstrapWiringMixin:
                 category="Console",
                 can_execute=lambda context: bool(_console_source_path(context)),
             ),
-            EditorCommand(
-                "console.clear",
-                lambda context: _invoke_target_panel_command(
-                    context, "console", "console.clear"
-                ),
-                display_name="Clear Console",
-                category="Console",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "console", "console.clear"
-                ),
+            _panel_entry(
+                'console.clear', 'Clear Console', 'Console',
+                target='console',
             ),
-            EditorCommand(
-                "console.set_option",
-                lambda context: _invoke_target_panel_command(
-                    context, "console", "console.set_option"
-                ),
-                display_name="Set Console Option",
-                category="Console",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "console", "console.set_option"
-                ),
+            _panel_entry(
+                'console.set_option', 'Set Console Option', 'Console',
+                target='console',
             ),
-            EditorCommand(
-                "console.set_search",
-                lambda context: _invoke_target_panel_command(
-                    context, "console", "console.set_search"
-                ),
-                display_name="Search Console",
-                category="Console",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "console", "console.set_search"
-                ),
+            _panel_entry(
+                'console.set_search', 'Search Console', 'Console',
+                target='console',
             ),
-            EditorCommand(
-                "console.set_detail_height",
-                lambda context: _invoke_target_panel_command(
-                    context, "console", "console.set_detail_height"
-                ),
-                display_name="Resize Console Details",
-                category="Console",
-                can_execute=lambda context: _can_target_panel_command(
-                    context, "console", "console.set_detail_height"
-                ),
+            _panel_entry(
+                'console.set_detail_height', 'Resize Console Details', 'Console',
+                target='console',
             ),
         )
         for command in commands:

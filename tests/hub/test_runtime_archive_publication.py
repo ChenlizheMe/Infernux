@@ -1,4 +1,5 @@
 """Runtime acquisition must preserve the installed tree on failed replacement."""
+
 from __future__ import annotations
 
 import io
@@ -44,7 +45,10 @@ def assert_previous(target):
 
 @pytest.mark.parametrize("failure", ["marker", "old_rename", "new_rename"])
 def test_archive_publication_failure_preserves_previous_tree(
-    installed_tree, runtime_archive, monkeypatch, failure,
+    installed_tree,
+    runtime_archive,
+    monkeypatch,
+    failure,
 ):
     archive = runtime_archive
     target = installed_tree
@@ -57,8 +61,9 @@ def test_archive_publication_failure_preserves_previous_tree(
 
     def fail_rename(source, destination):
         source, destination = Path(source), Path(destination)
-        if ((failure == "old_rename" and source == target)
-                or (failure == "new_rename" and source.name == "python" and destination == target)):
+        if (failure == "old_rename" and source == target) or (
+            failure == "new_rename" and source.name == "python" and destination == target
+        ):
             reached.append(True)
             raise PermissionError("injected rename failure")
         return replace(source, destination)
@@ -76,7 +81,9 @@ def test_archive_publication_failure_preserves_previous_tree(
 
 
 def test_archive_failure_to_restore_preserves_recoverable_backup(
-    installed_tree, runtime_archive, monkeypatch,
+    installed_tree,
+    runtime_archive,
+    monkeypatch,
 ):
     archive = runtime_archive
     target = installed_tree
@@ -98,7 +105,9 @@ def test_archive_failure_to_restore_preserves_recoverable_backup(
 
 
 def test_archive_success_publishes_complete_marker_and_replaces_old_files(
-    installed_tree, runtime_archive, monkeypatch,
+    installed_tree,
+    runtime_archive,
+    monkeypatch,
 ):
     archive = runtime_archive
     target = installed_tree
@@ -122,7 +131,8 @@ def test_archive_success_publishes_complete_marker_and_replaces_old_files(
 
 
 def test_archive_rejects_candidate_before_touching_installed_tree(
-    installed_tree, runtime_archive,
+    installed_tree,
+    runtime_archive,
 ):
     archive = runtime_archive
     checked = []
@@ -136,7 +146,9 @@ def test_archive_rejects_candidate_before_touching_installed_tree(
 
     with pytest.raises(RuntimeError, match="candidate rejected"):
         runtime.extract_runtime_archive(
-            archive, installed_tree, validate=reject,
+            archive,
+            installed_tree,
+            validate=reject,
         )
     assert len(checked) == 1
     assert_previous(installed_tree)
@@ -144,7 +156,10 @@ def test_archive_rejects_candidate_before_touching_installed_tree(
 
 @pytest.mark.parametrize("existing", [False, True])
 def test_failed_first_or_repeat_extract_leaves_no_incomplete_runtime(
-    tmp_path, runtime_archive, monkeypatch, existing,
+    tmp_path,
+    runtime_archive,
+    monkeypatch,
+    existing,
 ):
     archive = runtime_archive
     target = tmp_path / "python313"
@@ -201,9 +216,19 @@ def test_reinstall_download_failure_keeps_real_interpreter_discoverable(tmp_path
 
 
 def test_invalid_executable_rejected_before_manager_replaces_old_tree(
-    installed_tree, runtime_archive, monkeypatch,
+    installed_tree,
+    runtime_archive,
+    monkeypatch,
 ):
     archive = runtime_archive
+    if sys.platform == "win32":
+        # Non-PE bytes open an OS loader dialog before CreateProcess returns.
+        # A real non-Python console program exercises rejection without a GUI.
+        payload = (Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe").read_bytes()
+        with tarfile.open(archive, "w:gz") as stream:
+            member = tarfile.TarInfo("python/python.exe")
+            member.size = len(payload)
+            stream.addfile(member, io.BytesIO(payload))
     manager = manager_module.PythonRuntimeManager(runtime_dir=str(installed_tree.parent))
     monkeypatch.setattr(manager, "_ensure_runtime_archive", lambda *a, **kw: str(archive))
     with pytest.raises(manager_module.PythonRuntimeError, match="valid full runtime"):
@@ -213,7 +238,10 @@ def test_invalid_executable_rejected_before_manager_replaces_old_tree(
 
 @pytest.mark.parametrize("operation", ["ensure_runtime", "reinstall_runtime"])
 def test_custom_ca_reaches_download_through_transactional_install(
-    tmp_path, runtime_archive, monkeypatch, operation,
+    tmp_path,
+    runtime_archive,
+    monkeypatch,
+    operation,
 ):
     manager = manager_module.PythonRuntimeManager(runtime_dir=str(tmp_path / "managed"))
     monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [])

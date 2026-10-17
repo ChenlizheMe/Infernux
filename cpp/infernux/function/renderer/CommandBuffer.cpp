@@ -310,47 +310,22 @@ CommandBuffer::CommandBuffer(const std::string &name) : m_name(name)
 void CommandBuffer::Clear()
 {
     m_commands.clear();
-    // NOTE: m_nextHandleId is intentionally NOT reset.
-    // Handle IDs are unique across the lifetime of this CommandBuffer object
-    // to prevent aliasing after a clear-then-reuse cycle.
 }
 
 // ============================================================================
 // Render Target Management
 // ============================================================================
 
-RenderTargetHandle CommandBuffer::GetTemporaryRT(int width, int height, rhi::PixelFormat format,
-                                                 rhi::SampleCount samples)
+RenderTargetHandle CommandBuffer::GetTemporaryRT(int, int, rhi::PixelFormat, rhi::SampleCount)
 {
-    if (width <= 0 || height <= 0) {
-        INXLOG_WARN("CommandBuffer '", m_name, "': GetTemporaryRT with invalid size (", width, "x", height, ")");
-        return RenderTargetHandle{UINT32_MAX};
-    }
-
-    RenderTargetHandle handle{m_nextHandleId++};
-
-    GetTemporaryRTParams params;
-    params.handleId = handle.id;
-    params.width = width;
-    params.height = height;
-    params.format = format;
-    params.samples = samples;
-
-    m_commands.push_back({RenderCommandType::GetTemporaryRT, params});
-    return handle;
+    throw std::logic_error(
+        "CommandBuffer.get_temporary_rt is not supported; create textures in RenderGraphDescription");
 }
 
-void CommandBuffer::ReleaseTemporaryRT(RenderTargetHandle handle)
+void CommandBuffer::ReleaseTemporaryRT(RenderTargetHandle)
 {
-    if (!handle.IsValid()) {
-        INXLOG_WARN("CommandBuffer '", m_name, "': ReleaseTemporaryRT with invalid handle");
-        return;
-    }
-
-    ReleaseTemporaryRTParams params;
-    params.handleId = handle.id;
-
-    m_commands.push_back({RenderCommandType::ReleaseTemporaryRT, params});
+    throw std::logic_error(
+        "CommandBuffer.release_temporary_rt is not supported; texture lifetime belongs to RenderGraphDescription");
 }
 
 void CommandBuffer::SetRenderTarget(RenderTargetHandle)

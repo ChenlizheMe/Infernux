@@ -172,8 +172,6 @@ class AuthoringDocumentSnapshotCommand(UndoCommand):
     def undo(self) -> None:
         self._apply(self._before_snapshot, self._before_revision)
 
-    def redo(self) -> None:
-        self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
         compatible = (

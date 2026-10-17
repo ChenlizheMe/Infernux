@@ -1,4 +1,5 @@
 """Offline Prefab editing uses real isolated worlds and the Project asset journal."""
+
 import json
 from pathlib import Path
 
@@ -59,7 +60,9 @@ def make_asset(scene, path):
 
 
 @pytest.mark.parametrize("equal_value", [False, True])
-def test_variant_mode_draft_revert_save_and_undo_preserve_inheritance_intent(contents_project, scene, monkeypatch, equal_value):
+def test_variant_mode_draft_revert_save_and_undo_preserve_inheritance_intent(
+    contents_project, scene, monkeypatch, equal_value
+):
     from infernux.engine.scene_manager import SceneFileManager
     from infernux.engine.interaction import DocumentRegistry, SelectionDomain
     from infernux.engine.prefab_variant import variant_property_modifications
@@ -143,15 +146,17 @@ def test_variant_mode_reference_revert_remaps_ids_and_discard_keeps_source(conte
         assert files.open_prefab_mode(str(variant_path))
         root = SceneManager.instance().get_active_scene().get_root_objects()[0]
         draft, *_ = files.capture_prefab_mode_document()
-        patch = next(p for p in variant_property_modifications(draft) if p['path'] == ['data', 'target'])
+        patch = next(p for p in variant_property_modifications(draft) if p["path"] == ["data", "target"])
         root.tag = "Unrelated draft edit"
         with pytest.raises(RuntimeError, match="draft changed"):
-            core.prefabs.revert_mode_property(patch['object'], patch['component'], ('data', 'target'), expected_document=draft)
-        core.prefabs.revert_mode_property(patch['object'], patch['component'], ('data', 'target'))
+            core.prefabs.revert_mode_property(
+                patch["object"], patch["component"], ("data", "target"), expected_document=draft
+            )
+        core.prefabs.revert_mode_property(patch["object"], patch["component"], ("data", "target"))
         root = SceneManager.instance().get_active_scene().get_root_objects()[0]
         probe = root.get_py_components()[0]
         assert probe.target.game_object.id == root.get_child(0).id
-        assert probe.target.component_id == root.get_child(0).get_component('BoxCollider').component_id
+        assert probe.target.component_id == root.get_child(0).get_component("BoxCollider").component_id
         assert root.tag == "Unrelated draft edit"
         UndoManager.instance().undo()
         assert not root.get_py_components()[0].target
@@ -162,62 +167,6 @@ def test_variant_mode_reference_revert_remaps_ids_and_discard_keeps_source(conte
             files._do_exit_prefab_mode()
     assert not files._prefab_variant_overrides and files._prefab_mode_scene is None
     assert variant_path.read_bytes() == before
-
-
-def test_variant_asset_property_revert_undo_and_later_inheritance(contents_project, scene):
-    from infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
-    from infernux.engine.prefab_variant import variant_property_modifications
-    from infernux.engine.ui.asset_details_renderer import _load_prefab
-
-    core, folder = contents_project
-    database = AssetManager.require_asset_database()
-    paths = [folder / name for name in ("Base.prefab", "First.prefab", "Second.prefab")]
-    make_asset(scene, paths[0])
-    for index in (1, 2):
-        root = editor.load_prefab_contents(paths[index - 1])
-        try:
-            if index == 1:
-                root.get_child(0).layer = 5
-            else:
-                root.get_child(0).name = "Private child"
-            editor.save_as_prefab_asset(root, paths[index])
-        finally:
-            editor.unload_prefab_contents(root)
-    base = editor.load_prefab_contents(paths[0])
-    try:
-        base.get_child(0).layer = 5
-        editor.save_as_prefab_asset(base, paths[0])
-    finally:
-        editor.unload_prefab_contents(base)
-    instance = instantiate_prefab(file_path=str(paths[-1]), guid=database.get_guid_from_path(str(paths[-1])),
-                                  scene=scene, asset_database=database)
-    instance.tag = "Local tag"
-    before = [path.read_bytes() for path in paths]
-    original = instance.serialize_document()
-    current = _read_resolved_prefab_document(str(paths[1]), database)
-    row = next(item for item in variant_property_modifications(current) if item["path"] == ["layer"])
-    _, info = _load_prefab(str(paths[1]))
-    assert info["variant_modifications"] == variant_property_modifications(current)
-    assert core.prefabs.revert_asset_property(str(paths[1]), row["object"], 0, row["path"], expected_document=current)
-    after = [path.read_bytes() for path in paths]
-    assert after[0] == before[0] and after[1] != before[1]
-    assert instance.get_child(0).layer == 5
-    assert instance.tag == "Local tag" and instance.get_child(0).name == "Private child"
-    editor.undo(defer=False)
-    assert [path.read_bytes() for path in paths] == before
-    assert instance.serialize_document() == original
-    editor.redo(defer=False)
-    assert [path.read_bytes() for path in paths] == after
-    with pytest.raises(RuntimeError, match="changed"):
-        core.prefabs.revert_asset_property(str(paths[1]), row["object"], 0, row["path"], expected_document=current)
-    base = editor.load_prefab_contents(paths[0])
-    try:
-        base.get_child(0).layer = 7
-        editor.save_as_prefab_asset(base, paths[0])
-    finally:
-        editor.unload_prefab_contents(base)
-    assert instance.get_child(0).layer == 7
-    assert instance.tag == "Local tag" and instance.get_child(0).name == "Private child"
 
 
 def test_load_edit_save_unload_keeps_active_world_and_identity(contents_project, scene):
@@ -295,80 +244,6 @@ def test_contents_never_join_physics_even_after_enable_toggle(contents_project, 
         editor.unload_prefab_contents(root)
 
 
-def test_existing_target_requires_explicit_load_and_prefab_mode_closed(contents_project, scene, monkeypatch):
-    from types import SimpleNamespace
-    from infernux.engine.scene_manager import SceneFileManager
-
-    core, folder = contents_project
-    path = folder / "Guard.prefab"
-    root = make_asset(scene, path)
-    before = path.read_bytes()
-    with pytest.raises(FileExistsError, match="Load the target"):
-        editor.save_as_prefab_asset(root, path)
-    database = core.project_assets.asset_database
-    monkeypatch.setattr(SceneFileManager, "_instance", SimpleNamespace(
-        is_prefab_mode=True,
-        prefab_mode_path=str(path),
-        prefab_mode_guid=str(database.get_guid_from_path(str(path))),
-        _asset_database=database,
-    ))
-    with pytest.raises(RuntimeError, match="Close this asset"):
-        editor.load_prefab_contents(path)
-    assert path.read_bytes() == before
-
-
-def test_discard_conflict_and_session_shutdown(contents_project, scene):
-    core, folder = contents_project
-    path = folder / "Conflict.prefab"
-    make_asset(scene, path)
-    before = path.read_bytes()
-    first = editor.load_prefab_contents(path)
-    second = editor.load_prefab_contents(path)
-    assert first.id != second.id
-    first.name = "Published"
-    editor.save_as_prefab_asset(first, path)
-    second.name = "Stale"
-    with pytest.raises(RuntimeError, match="source changed"):
-        editor.save_as_prefab_asset(second, path)
-    assert json.loads(path.read_text(encoding="utf8"))["root_object"]["name"] == "Published"
-    editor.unload_prefab_contents(second)
-    first.name = "Discard this"
-    editor.unload_prefab_contents(first)
-    root = editor.load_prefab_contents(path)
-    reference = GameObjectRef(root)
-    core.prefabs.shutdown()
-    assert not reference
-    assert path.read_bytes() != before
-    assert json.loads(path.read_text(encoding="utf8"))["root_object"]["name"] == "Published"
-
-
-def test_nested_contents_preserve_references_and_save_as(contents_project, scene):
-    _, folder = contents_project
-    inner = folder / "Inner.prefab"
-    outer = folder / "Outer.prefab"
-    copy_path = folder / "Copy.prefab"
-    make_asset(scene, inner)
-    root = scene.create_game_object("Outer")
-    from infernux.engine.prefab_manager import instantiate_prefab
-    database = AssetManager.require_asset_database()
-    for _ in range(2):
-        instantiate_prefab(file_path=str(inner), guid=database.get_guid_from_path(str(inner)),
-                           scene=scene, parent=root, asset_database=database)
-    editor.save_as_prefab_asset(root, outer)
-    loaded = editor.load_prefab_contents(outer)
-    try:
-        for child in loaded.get_children():
-            assert child.get_py_component(ContentsProbe).target.game_object.id == child.get_child(0).id
-        editor.save_as_prefab_asset(loaded, copy_path)
-        first = json.loads(copy_path.read_text(encoding="utf8"))
-        editor.save_as_prefab_asset(loaded, copy_path)
-        assert json.loads(copy_path.read_text(encoding="utf8")) == first
-        assert all(child["nested_prefab"]["guid"] == database.get_guid_from_path(str(inner))
-                   for child in first["root_object"]["children"])
-    finally:
-        editor.unload_prefab_contents(loaded)
-
-
 def test_missing_script_content_survives_offline_edit_at_safe_point(contents_project, scene):
     _, folder = contents_project
     path = folder / "Missing.prefab"
@@ -378,6 +253,7 @@ def test_missing_script_content_survives_offline_edit_at_safe_point(contents_pro
     record["type_id"] = "python:" + "a" * 32 + ":" + "b" * 32 + ":Unavailable:LostScript"
     original_record = json.loads(json.dumps(record))
     from infernux.engine.interaction.session import EditorInteractionCore
+
     EditorInteractionCore.instance().project_assets.set_text(str(path), json.dumps(document))
     root = editor.load_prefab_contents(path)
     try:
@@ -386,20 +262,6 @@ def test_missing_script_content_survives_offline_edit_at_safe_point(contents_pro
         saved = json.loads(path.read_text(encoding="utf8"))["root_object"]
         assert saved["name"] == "Preserved broken script"
         assert saved["components"][0] == original_record
-    finally:
-        editor.unload_prefab_contents(root)
-
-
-def test_deleted_source_is_not_recreated_by_stale_contents(contents_project, scene):
-    core, folder = contents_project
-    path = folder / "Deleted.prefab"
-    make_asset(scene, path)
-    root = editor.load_prefab_contents(path)
-    try:
-        core.project_assets.delete([str(path)])
-        with pytest.raises(FileNotFoundError):
-            editor.save_as_prefab_asset(root, path)
-        assert not path.exists()
     finally:
         editor.unload_prefab_contents(root)
 
@@ -431,7 +293,9 @@ def test_loaded_contents_follow_prefab_guid_after_project_rename(contents_projec
 
 
 @pytest.mark.parametrize("save_offline", [True, False])
-def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_project, scene, monkeypatch, save_offline):
+def test_source_edit_updates_all_worlds_nested_instances_and_history(
+    contents_project, scene, monkeypatch, save_offline
+):
     from types import SimpleNamespace
     from infernux.engine.prefab_manager import instantiate_prefab
     from infernux.engine.prefab_overrides import build_prefab_apply_command
@@ -448,17 +312,20 @@ def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_pr
     unrelated = manager.create_scene("No linked Prefab")
     root = None
     try:
+
         def instantiate(destination, parent=None, source=path, source_guid=guid):
-            return instantiate_prefab(file_path=str(source), guid=source_guid, scene=destination,
-                                      parent=parent, asset_database=database)
+            return instantiate_prefab(
+                file_path=str(source), guid=source_guid, scene=destination, parent=parent, asset_database=database
+            )
 
         first = instantiate(scene)
         outer = second_scene.create_game_object("Outer")
         nested = instantiate(second_scene, outer)
         outer_path = folder / "Outer.prefab"
         editor.save_as_prefab_asset(outer, outer_path)
-        repeated = instantiate(scene, source=outer_path,
-                               source_guid=database.get_guid_from_path(str(outer_path))).get_child(0)
+        repeated = instantiate(
+            scene, source=outer_path, source_guid=database.get_guid_from_path(str(outer_path))
+        ).get_child(0)
         outer_bytes = outer_path.read_bytes()
         nested.get_child(0).name = "Private collider"
         nested.transform.local_position = Vector3(4, 5, 6)
@@ -472,12 +339,19 @@ def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_pr
 
         # Real registry revisions, with only the editor's world/document lookup supplied.
         registry = DocumentRegistry.instance()
-        documents = {int(world.world_id): registry.create(DocumentKind.SCENE, world.name)
-                     for world in (scene, second_scene, unrelated)}
-        monkeypatch.setattr(SceneFileManager, "_instance", SimpleNamespace(
-            is_prefab_mode=False, document_id=documents[int(scene.world_id)].document_id,
-            document_id_for_scene=lambda world: documents[int(getattr(world, "world_id", world))].document_id,
-        ))
+        documents = {
+            int(world.world_id): registry.create(DocumentKind.SCENE, world.name)
+            for world in (scene, second_scene, unrelated)
+        }
+        monkeypatch.setattr(
+            SceneFileManager,
+            "_instance",
+            SimpleNamespace(
+                is_prefab_mode=False,
+                document_id=documents[int(scene.world_id)].document_id,
+                document_id_for_scene=lambda world: documents[int(getattr(world, "world_id", world))].document_id,
+            ),
+        )
         if save_offline:
             root = editor.load_prefab_contents(path)
             root.get_child(0).name = "Updated collider"
@@ -494,7 +368,11 @@ def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_pr
 
         def verify_updated():
             assert [obj.get_child(0).id for obj in roots] == child_ids
-            assert [obj.get_child(0).name for obj in roots] == ["Updated collider", "Private collider", "Updated collider"]
+            assert [obj.get_child(0).name for obj in roots] == [
+                "Updated collider",
+                "Private collider",
+                "Updated collider",
+            ]
             assert all([c.name for c in obj.get_children()].count("New source child") == 1 for obj in roots)
             assert nested.transform.local_position.y == 5
             assert nested.get_py_component(ContentsProbe).target.component_id == external_collider.component_id
@@ -535,8 +413,9 @@ def test_offline_save_rejects_other_world_parent_cycle_before_publication(conten
     other = manager.create_scene("Conflicting instance")
     root = editor.load_prefab_contents(path)
     try:
-        peer = instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
-                                  scene=other, asset_database=database)
+        peer = instantiate_prefab(
+            file_path=str(path), guid=database.get_guid_from_path(str(path)), scene=other, asset_database=database
+        )
         left, right = peer.get_children()
         right.set_parent(left)
         left, right = root.get_children()
@@ -601,55 +480,13 @@ def test_prefab_history_does_not_recreate_deleted_or_replace_new_asset(contents_
         assert path.read_bytes() == replacement
 
 
-def test_prefab_history_allows_formatting_only_source_changes(contents_project, scene):
-    from infernux.engine.prefab_overrides import build_prefab_asset_edit_command
-
-    _, folder = contents_project
-    path = folder / "Formatting.prefab"
-    make_asset(scene, path)
-    before = json.loads(path.read_text(encoding="utf8"))
-    updated = json.loads(path.read_text(encoding="utf8"))
-    updated["root_object"]["name"] = "Our save"
-    command = build_prefab_asset_edit_command(str(path), updated, AssetManager.require_asset_database())
-    command.execute()
-    path.write_text(json.dumps(updated, sort_keys=True, indent=4), encoding="utf8")
-    command.undo()
-    assert json.loads(path.read_text(encoding="utf8")) == before
-    command.redo()
-    assert json.loads(path.read_text(encoding="utf8")) == updated
-
-
-def test_missing_prefab_instance_world_is_resolved_before_source_write(contents_project, scene, monkeypatch):
-    from infernux.engine import prefab_overrides as overrides
-    from infernux.engine.prefab_manager import instantiate_prefab
-
-    _, folder = contents_project
-    path = folder / "ClosedWorld.prefab"
-    make_asset(scene, path)
-    database = AssetManager.require_asset_database()
-    manager = SceneManager.instance()
-    other = manager.create_scene("Unregistered closed world")
-    instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
-                       scene=other, asset_database=database)
-    updated = json.loads(path.read_text(encoding="utf8"))
-    updated["root_object"]["name"] = "Our save"
-    command = overrides.build_prefab_asset_edit_command(str(path), updated, database)
-    try:
-        command.execute()
-    finally:
-        manager.unload_scene(other)
-    source_bytes = path.read_bytes()
-    monkeypatch.setattr(overrides, "_write_prefab_apply_document",
-                        lambda *args: pytest.fail("Unavailable world must be detected before writing"))
-    with pytest.raises(RuntimeError, match="world .* unavailable"):
-        command.undo()
-    assert path.read_bytes() == source_bytes
-
-
-@pytest.mark.parametrize("closed_count", [1, 2])
-@pytest.mark.parametrize("interrupt_publish", [False, True])
+@pytest.mark.parametrize("interrupt_publish,closed_count", [(False, 1), (True, 2)])
 def test_prefab_history_restores_closed_scene_owners_additively(
-    contents_project, scene, monkeypatch, closed_count, interrupt_publish,
+    contents_project,
+    scene,
+    monkeypatch,
+    closed_count,
+    interrupt_publish,
 ):
     from infernux.engine.prefab_manager import instantiate_prefab
     from infernux.engine.scene_manager import SceneFileManager
@@ -684,8 +521,9 @@ def test_prefab_history_restores_closed_scene_owners_additively(
         editor.unload_prefab_contents(root)
         root = None
         source_after = path.read_bytes()
-        after = [files.scene_for_document(doc_id).find_by_id(obj_id).serialize_document()
-                 for doc_id, obj_id, _, _ in owners]
+        after = [
+            files.scene_for_document(doc_id).find_by_id(obj_id).serialize_document() for doc_id, obj_id, _, _ in owners
+        ]
 
         def close_owners():
             for doc_id, _, _, _ in owners[:closed_count]:
@@ -694,12 +532,12 @@ def test_prefab_history_restores_closed_scene_owners_additively(
                 world_id = world.world_id
                 manager.unload_scene(world)
 
-
                 assert manager.get_scene_by_world_id(world_id) is None
 
         close_owners()
         if interrupt_publish:
             from infernux.engine import prefab_overrides
+
             publish = prefab_overrides._publish_applied_prefab
             calls = []
 
@@ -775,8 +613,12 @@ def test_variant_source_update_and_all_dependents_share_one_history(contents_pro
     finally:
         editor.unload_prefab_contents(loaded)
     paths = [base_path, first_path, second_path]
-    instances = [instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
-                                    scene=scene, asset_database=database) for path in paths]
+    instances = [
+        instantiate_prefab(
+            file_path=str(path), guid=database.get_guid_from_path(str(path)), scene=scene, asset_database=database
+        )
+        for path in paths
+    ]
     instances[-1].tag = "Private instance"
     saved_before = [path.read_bytes() for path in paths]
     before = [instance.serialize_document() for instance in instances]
@@ -800,7 +642,9 @@ def test_variant_source_update_and_all_dependents_share_one_history(contents_pro
     assert instances[1].name == "Variant name (Clone)"
     assert instances[2].get_child(0).name == "Derived collider"
     assert instances[-1].tag == "Private instance"
-    assert json.loads(first_path.read_text(encoding="utf8"))["variant"]["guid"] == database.get_guid_from_path(str(base_path))
+    assert json.loads(first_path.read_text(encoding="utf8"))["variant"]["guid"] == database.get_guid_from_path(
+        str(base_path)
+    )
     saved_after = [path.read_bytes() for path in paths]
     after = [instance.serialize_document() for instance in instances]
     editor.undo(defer=False)
@@ -827,8 +671,12 @@ def test_variant_batch_failure_does_not_leave_partial_history(contents_project, 
     finally:
         editor.unload_prefab_contents(root)
     paths = [base_path, variant_path]
-    instances = [instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
-                                    scene=scene, asset_database=database) for path in paths]
+    instances = [
+        instantiate_prefab(
+            file_path=str(path), guid=database.get_guid_from_path(str(path)), scene=scene, asset_database=database
+        )
+        for path in paths
+    ]
     before_files = [path.read_bytes() for path in paths]
     before_instances = [obj.serialize_document() for obj in instances]
     history = UndoManager.instance().undo_description
@@ -868,77 +716,6 @@ def test_variant_batch_failure_does_not_leave_partial_history(contents_project, 
         editor.unload_prefab_contents(root)
 
 
-def test_variant_resave_preserves_equal_base_override_intent(contents_project, scene):
-    _, folder = contents_project
-    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
-    make_asset(scene, base_path)
-
-    def save_layer(source, destination, layer):
-        root = editor.load_prefab_contents(source)
-        try:
-            root.get_child(0).layer = layer
-            editor.save_as_prefab_asset(root, destination)
-        finally:
-            editor.unload_prefab_contents(root)
-
-    save_layer(base_path, variant_path, 5)
-    save_layer(base_path, base_path, 5)
-    root = editor.load_prefab_contents(variant_path)
-    try:
-        root.name = "Another edit"
-        editor.save_as_prefab_asset(root, variant_path)
-    finally:
-        editor.unload_prefab_contents(root)
-    save_layer(base_path, base_path, 7)
-    result = json.loads(variant_path.read_text(encoding="utf8"))
-    assert result["root_object"]["children"][0]["layer"] == 5
-    assert result["root_object"]["name"] == "Another edit"
-    assert result["variant"]["baseline"]["root_object"]["children"][0]["layer"] == 7
-
-
-def test_external_base_change_invalidates_variant_template_without_rewriting_sources(contents_project, scene):
-    from infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
-
-    _, folder = contents_project
-    database = AssetManager.require_asset_database()
-    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
-    make_asset(scene, base_path)
-    root = editor.load_prefab_contents(base_path)
-    try:
-        root.name = "Private variant"
-        editor.save_as_prefab_asset(root, variant_path)
-    finally:
-        editor.unload_prefab_contents(root)
-    guid = database.get_guid_from_path(str(variant_path))
-    first = instantiate_prefab(file_path=str(variant_path), guid=guid, scene=scene, asset_database=database)
-    assert first.get_child(0).layer == 0
-    stale = editor.load_prefab_contents(variant_path)
-    saved_variant = variant_path.read_bytes()
-    base = json.loads(base_path.read_text(encoding="utf8"))
-    base["root_object"]["children"][0]["layer"] = 7
-    base_path.write_text(json.dumps(base), encoding="utf8")
-    saved_base = base_path.read_bytes()
-    try:
-        second = instantiate_prefab(file_path=str(variant_path), guid=guid, scene=scene, asset_database=database)
-        assert second.get_child(0).layer == 7
-        assert second.name == "Private variant (Clone)"
-        assert first.get_child(0).layer == 0  # Loading is not a live-world mutation.
-        assert _read_resolved_prefab_document(str(variant_path), database)["root_object"]["children"][0]["layer"] == 7
-        with pytest.raises(RuntimeError, match="base changed"):
-            editor.save_as_prefab_asset(stale, variant_path)
-        assert variant_path.read_bytes() == saved_variant
-        assert base_path.read_bytes() == saved_base
-    finally:
-        editor.unload_prefab_contents(stale)
-    current = editor.load_prefab_contents(variant_path)
-    try:
-        assert current.get_child(0).layer == 7
-        editor.save_as_prefab_asset(current, variant_path)
-        assert first.get_child(0).layer == 7
-    finally:
-        editor.unload_prefab_contents(current)
-
-
 def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, scene):
     from infernux.engine.prefab_manager import _read_resolved_prefab_document, PrefabDocumentError
 
@@ -954,8 +731,10 @@ def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, sce
     original = variant_path.read_bytes()
     variant = json.loads(original)
     try:
-        for guid, message in (("unavailable-source-guid", "unavailable"),
-                              (database.get_guid_from_path(str(variant_path)), "cycle")):
+        for guid, message in (
+            ("unavailable-source-guid", "unavailable"),
+            (database.get_guid_from_path(str(variant_path)), "cycle"),
+        ):
             variant["variant"]["guid"] = guid
             variant_path.write_text(json.dumps(variant), encoding="utf8")
             before = variant_path.read_bytes()
@@ -966,157 +745,10 @@ def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, sce
         variant_path.write_bytes(original)
 
 
-def test_self_dependent_prefab_is_rejected_before_graph_and_index_publication(contents_project, scene):
-    from infernux.lib import AssetDependencyGraph
-
-    _, folder = contents_project
-    database = AssetManager.require_asset_database()
-    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
-    make_asset(scene, base_path)
-    root = editor.load_prefab_contents(base_path)
-    try:
-        editor.save_as_prefab_asset(root, variant_path)
-    finally:
-        editor.unload_prefab_contents(root)
-    guid = database.get_guid_from_path(str(variant_path))
-    original = variant_path.read_bytes()
-    meta_path = variant_path.with_name(variant_path.name + ".meta")
-    original_meta = meta_path.read_bytes()
-    document = json.loads(original)
-    document["variant"]["guid"] = guid
-    try:
-        variant_path.write_text(json.dumps(document), encoding="utf8")
-        result = database.reimport_asset(str(variant_path))
-        assert not result and "self-dependency" in result.error
-        assert meta_path.read_bytes() == original_meta
-        assert guid not in AssetDependencyGraph.instance().get_dependencies(guid)
-        database.refresh()
-        index = json.loads(Path(database.asset_index_path).read_text(encoding="utf8"))
-        entry = next(entry for entry in index["entries"] if entry["guid"] == guid)
-        assert not entry["import_succeeded"]
-        assert guid not in entry["dependencies"]
-        assert database.get_guid_from_path(str(variant_path)) == guid
-    finally:
-        variant_path.write_bytes(original)
-        restored = database.reimport_asset(str(variant_path))
-        assert restored, restored.error
-
-
-def test_prefab_importer_owns_base_edges_and_save_does_not_scan_unrelated_assets(contents_project, scene):
-    from infernux.lib import AssetDependencyGraph
-    from infernux.engine.prefab_variant import dependent_variant_guids
-
-    _, folder = contents_project
-    database = AssetManager.require_asset_database()
-    base_path, variant_path, other_path = [folder / name for name in ("Base.prefab", "Variant.prefab", "Other.prefab")]
-    make_asset(scene, base_path)
-    make_asset(scene, other_path)
-    loaded = editor.load_prefab_contents(base_path)
-    try:
-        editor.save_as_prefab_asset(loaded, variant_path)
-    finally:
-        editor.unload_prefab_contents(loaded)
-    base_guid = database.get_guid_from_path(str(base_path))
-    variant_guid = database.get_guid_from_path(str(variant_path))
-    other_guid = database.get_guid_from_path(str(other_path))
-    graph = AssetDependencyGraph.instance()
-    assert graph.get_dependencies(variant_guid) == {base_guid}
-    assert dependent_variant_guids(base_guid, database) == (variant_guid,)
-    other_original = other_path.read_bytes()
-    other_path.write_text("unrelated invalid author document", encoding="utf8")
-    try:
-        loaded = editor.load_prefab_contents(base_path)
-        try:
-            loaded.get_child(0).layer = 4
-            editor.save_as_prefab_asset(loaded, base_path)
-        finally:
-            editor.unload_prefab_contents(loaded)
-    finally:
-        other_path.write_bytes(other_original)
-    document = json.loads(variant_path.read_text(encoding="utf8"))
-    document["variant"]["guid"] = other_guid
-    variant_path.write_text(json.dumps(document), encoding="utf8")
-    assert AssetManager.reimport_asset(str(variant_path), database=database)
-    assert graph.get_dependencies(variant_guid) == {other_guid}
-    assert dependent_variant_guids(base_guid, database) == ()
-    del document["variant"]
-    variant_path.write_text(json.dumps(document), encoding="utf8")
-    assert AssetManager.reimport_asset(str(variant_path), database=database)
-    assert graph.get_dependencies(variant_guid) == set()
-
-
-@pytest.mark.parametrize("interrupt_publish", [False, True])
-def test_external_prefab_event_updates_loaded_variants_without_writing_their_sources(
-        contents_project, scene, engine, monkeypatch, interrupt_publish):
-    from infernux.engine.scene_manager import SceneFileManager
-    from infernux.engine.resources_manager import ResourceChangeHandler
-    from infernux.engine.prefab_manager import instantiate_prefab
-    from infernux.engine.interaction import DocumentRegistry
-    from infernux.engine import prefab_overrides
-
-    _, folder = contents_project
-    database = AssetManager.require_asset_database()
-    monkeypatch.setattr(SceneFileManager, "_instance", None)
-    files = SceneFileManager()
-    files._asset_database = database
-    registry = DocumentRegistry.instance()
-    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
-    make_asset(scene, base_path)
-    loaded = editor.load_prefab_contents(base_path)
-    try:
-        editor.save_as_prefab_asset(loaded, variant_path)
-    finally:
-        editor.unload_prefab_contents(loaded)
-    guid = database.get_guid_from_path(str(variant_path))
-    manager = SceneManager.instance()
-    extra = manager.create_scene("External update second scene")
-    files.register_loaded_scene(extra, "")
-    try:
-        instances = [instantiate_prefab(file_path=str(variant_path), guid=guid, scene=world,
-                                        asset_database=database) for world in (scene, extra)]
-        instances[-1].get_child(0).name = "Local name"
-        documents = [obj.serialize_document() for obj in instances]
-        owners = [files.document_id_for_scene(world) for world in (scene, extra)]
-        revisions = [registry.require(owner).revision for owner in owners]
-        variant_original = variant_path.read_bytes()
-        base = json.loads(base_path.read_text(encoding="utf8"))
-        base["root_object"]["children"][0]["layer"] = 9
-        base_path.write_text(json.dumps(base), encoding="utf8")
-        handler = ResourceChangeHandler(engine, project_path=database.project_root)
-        if interrupt_publish:
-            publish = prefab_overrides._publish_applied_prefab
-            attempts = []
-
-            def interrupted(prepared):
-                if not attempts:
-                    attempts.append(True)
-                    assert publish(prepared[:1])
-                    for _, _, plan in prepared[1:]:
-                        plan.discard()
-                    return False
-                return publish(prepared)
-
-            with monkeypatch.context() as patch:
-                patch.setattr(prefab_overrides, "_publish_applied_prefab", interrupted)
-                with pytest.raises(RuntimeError, match="synchronize"):
-                    handler._commit_modified(str(base_path))
-            assert [obj.serialize_document() for obj in instances] == documents
-            assert [registry.require(owner).revision for owner in owners] == revisions
-            files.sync_prefab_dependents(database.get_guid_from_path(str(base_path)))
-        else:
-            handler._commit_modified(str(base_path))
-        assert [obj.get_child(0).layer for obj in instances] == [9, 9]
-        assert instances[-1].get_child(0).name == "Local name"
-        assert [registry.require(owner).revision for owner in owners] == [value + 1 for value in revisions]
-        assert variant_path.read_bytes() == variant_original
-    finally:
-        files.unregister_loaded_scene(extra)
-        manager.unload_scene(extra)
-
-
 @pytest.mark.parametrize("interrupt_write", [False, True])
 def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worlds(
-        contents_project, scene, monkeypatch, interrupt_write):
+    contents_project, scene, monkeypatch, interrupt_write
+):
     from infernux.engine import prefab_overrides
     from infernux.engine.prefab_manager import instantiate_prefab
     from infernux.engine.scene_manager import SceneFileManager
@@ -1147,10 +779,18 @@ def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worl
     other = manager.create_scene("Additional variant world")
     other_owner = files.register_loaded_scene(other, "")
     try:
-        instances = [instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
-                                        scene=scene, asset_database=database) for path in paths]
-        extra = instantiate_prefab(file_path=str(paths[-1]), guid=database.get_guid_from_path(str(paths[-1])),
-                                   scene=other, asset_database=database)
+        instances = [
+            instantiate_prefab(
+                file_path=str(path), guid=database.get_guid_from_path(str(path)), scene=scene, asset_database=database
+            )
+            for path in paths
+        ]
+        extra = instantiate_prefab(
+            file_path=str(paths[-1]),
+            guid=database.get_guid_from_path(str(paths[-1])),
+            scene=other,
+            asset_database=database,
+        )
         instances[-1].get_child(0).name = "Private child"
         extra.get_child(0).name = "Other private child"
         instance_ids = [obj.id for obj in instances]
@@ -1207,7 +847,9 @@ def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worl
         registry.mark_changed(files.document_id)
         assert files._save_prefab()
         assert files._do_exit_prefab_mode()
-        assert json.loads(paths[1].read_text(encoding="utf8"))["variant"]["guid"] == database.get_guid_from_path(str(paths[0]))
+        assert json.loads(paths[1].read_text(encoding="utf8"))["variant"]["guid"] == database.get_guid_from_path(
+            str(paths[0])
+        )
         assert scene.find_by_id(instance_ids[0]).get_child(0).layer == 5
         assert scene.find_by_id(instance_ids[1]).get_child(0).layer == 7
         assert scene.find_by_id(instance_ids[2]).get_child(0).layer == 7

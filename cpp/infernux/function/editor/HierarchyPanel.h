@@ -147,7 +147,7 @@ class HierarchyPanel : public EditorPanel
     static constexpr int STALE_ROOT_THRESHOLD = 128;
 
     // ── Search ───────────────────────────────────────────────────────
-    char m_searchBuf[256] = {};
+    std::string m_searchBuf;
     EditorSearchModel m_search;
     std::unordered_map<uint64_t, bool> m_searchVisCache;
     bool m_focusSearchNextFrame = false;
@@ -198,7 +198,7 @@ class HierarchyPanel : public EditorPanel
 
     // ── Inline rename ────────────────────────────────────────────────
     uint64_t m_renameId = 0;
-    char m_renameBuf[256] = {};
+    std::string m_renameBuf;
     bool m_renameFocus = false;
     // Context-menu dismissal can deactivate the newly opened input before it
     // receives focus. Keep rename alive until the input has settled.

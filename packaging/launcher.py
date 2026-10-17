@@ -24,9 +24,8 @@ if __name__ == "__main__":
     configure_logging()
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QDialog,
-    QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
-    QGraphicsOpacityEffect, QSystemTrayIcon, QMenu, QTabWidget, QLabel,
+    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
+    QGraphicsOpacityEffect, QSystemTrayIcon, QMenu, QTabWidget,
 )
 from PySide6.QtCore import QByteArray, QObject, QRect, QThread, Qt, QTimer, QPropertyAnimation, QEasingCurve, Slot
 from PySide6.QtGui import QIcon, QFontDatabase, QKeySequence, QShortcut
@@ -745,7 +744,7 @@ def _handle_uninstall() -> int:
         pass
 
     # Ask user if they want to remove install files
-    app = _standalone_application()
+    _app = _standalone_application()
     answer = dialogs.question(
         None,
         tr("Uninstall Infernux Hub"),
@@ -776,7 +775,7 @@ def _handle_uninstall_macos() -> int:
     """Remove Infernux Hub from macOS."""
     import shutil as _shutil
 
-    app = _standalone_application()
+    _app = _standalone_application()
 
     # Typical macOS install / config locations
     config_dir = os.path.expanduser("~/.config/Infernux")
@@ -800,7 +799,7 @@ def _handle_uninstall_macos() -> int:
 
 def _handle_uninstall_linux() -> int:
     """Remove the Linux application while preserving Hub user data."""
-    app = _standalone_application()
+    _app = _standalone_application()
 
     desktop_entry = os.path.expanduser("~/.local/share/applications/infernux-hub.desktop")
     install_dir = get_app_dir()

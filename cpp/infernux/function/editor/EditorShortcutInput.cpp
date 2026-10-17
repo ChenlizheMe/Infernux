@@ -1,12 +1,25 @@
 #include "EditorShortcutInput.h"
 
 #include <function/renderer/gui/InxGUIContext.h>
+#include <platform/input/InputManager.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
 
 namespace infernux
 {
+
+void EditorShortcutInput::PrepareFrame(bool gameCursorLocked)
+{
+    if (!gameCursorLocked)
+        return;
+    ImGui::GetIO().ClearInputMouse();
+    auto &events = ImGui::GetCurrentContext()->InputEventsQueue;
+    for (int index = events.Size - 1; index >= 0; --index) {
+        if (events[index].Source == ImGuiInputSource_Mouse)
+            events.erase(events.begin() + index);
+    }
+}
 
 void EditorShortcutInput::OnRender(InxGUIContext *ctx)
 {
@@ -42,6 +55,15 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
         const auto key = static_cast<ImGuiKey>(value);
         if ((key >= ImGuiKey_LeftCtrl && key <= ImGuiKey_RightSuper) || !pressedOnce(key))
             continue;
+        if (key == ImGuiKey_Escape) {
+            auto &input = InputManager::Instance();
+            const int escape = InputManager::NameToScancode("escape");
+            if (input.IsKeyDownConsumed(escape))
+                continue;
+            // Escape unlocks the Editor Game View only when gameplay did not
+            // consume it for an in-game modal.
+            input.SetEditorCursorCaptureAllowed(false);
+        }
         if (key == ImGuiKey_KeypadEnter && pressedOnce(ImGuiKey_Enter))
             continue;
 

@@ -30,7 +30,6 @@ from __future__ import annotations
 import time
 from typing import Optional, Tuple
 
-from infernux.debug import Debug
 from infernux.lib import InxMaterial
 from infernux.core._resource_proxy import ResourceProxy
 
@@ -82,6 +81,7 @@ class Material(ResourceProxy):
         self._disposed = False
         self._last_save_time: float = 0.0
         self._save_pending: bool = False
+        self._save_error_reported: bool = False
 
     # ==========================================================================
     # Factory Methods
@@ -460,25 +460,30 @@ class Material(ResourceProxy):
         file_path = getattr(self._native, "file_path", None)
         if not file_path:
             return
+        self._last_save_time = time.monotonic()
         try:
             ok = self._native.save()
             if ok:
-                self._last_save_time = time.monotonic()
+                self._save_error_reported = False
                 self._save_pending = False
                 Material._pending_saves.pop(id(self), None)
             else:
                 self._save_pending = True
                 Material._pending_saves[id(self)] = self
                 from infernux.debug import Debug
-                Debug.log_warning(
-                    f"Material._auto_save: save() returned False for '{self.name}' "
-                    f"(path={file_path})"
-                )
+                if not self._save_error_reported:
+                    Debug.log_warning(
+                        f"Material._auto_save: save() returned False for '{self.name}' "
+                        f"(path={file_path})"
+                    )
+                    self._save_error_reported = True
         except Exception as e:
             self._save_pending = True
             Material._pending_saves[id(self)] = self
             from infernux.debug import Debug
-            Debug.log_warning(f"Material._auto_save: exception for '{self.name}': {e}")
+            if not self._save_error_reported:
+                Debug.log_warning(f"Material._auto_save: exception for '{self.name}': {e}")
+                self._save_error_reported = True
 
     def _cannot_persist(self) -> bool:
         """Return whether this wrapper no longer owns a writable material."""
@@ -490,8 +495,6 @@ class Material(ResourceProxy):
             return True
         try:
             return bool(self._native.is_deleted())
-        except AttributeError:
-            return False
         except RuntimeError:
             return True
 
@@ -507,8 +510,10 @@ class Material(ResourceProxy):
         Called by the engine at end-of-frame to ensure changes persist
         without blocking every property setter with synchronous I/O.
         """
+        now = time.monotonic()
         for mat in list(Material._pending_saves.values()):
-            mat._flush_save()
+            if now - mat._last_save_time >= mat._AUTOSAVE_MIN_INTERVAL:
+                mat._flush_save()
 
     # ==========================================================================
     # Shader Property Setters (Unity-compatible naming)
@@ -616,43 +621,23 @@ class Material(ResourceProxy):
 
     def get_color(self, name: str) -> Tuple[float, float, float, float]:
         """Get a color shader property as (r, g, b, a)."""
-        val = self._native.get_property(name)
-        if val is None:
-            return (0.0, 0.0, 0.0, 1.0)
-        try:
-            return (float(val[0]), float(val[1]), float(val[2]), float(val[3]))
-        except (TypeError, IndexError):
-            return (0.0, 0.0, 0.0, 1.0)
+        val = self._native.get_color(name)
+        return (val.x, val.y, val.z, val.w)
 
     def get_vector2(self, name: str) -> Tuple[float, float]:
         """Get a vec2 shader property."""
-        val = self._native.get_property(name)
-        if val is None:
-            return (0.0, 0.0)
-        try:
-            return (float(val[0]), float(val[1]))
-        except (TypeError, IndexError):
-            return (0.0, 0.0)
+        val = self._native.get_vector2(name)
+        return (val.x, val.y)
 
     def get_vector3(self, name: str) -> Tuple[float, float, float]:
         """Get a vec3 shader property."""
-        val = self._native.get_property(name)
-        if val is None:
-            return (0.0, 0.0, 0.0)
-        try:
-            return (float(val[0]), float(val[1]), float(val[2]))
-        except (TypeError, IndexError):
-            return (0.0, 0.0, 0.0)
+        val = self._native.get_vector3(name)
+        return (val.x, val.y, val.z)
 
     def get_vector4(self, name: str) -> Tuple[float, float, float, float]:
         """Get a vec4 shader property."""
-        val = self._native.get_property(name)
-        if val is None:
-            return (0.0, 0.0, 0.0, 0.0)
-        try:
-            return (float(val[0]), float(val[1]), float(val[2]), float(val[3]))
-        except (TypeError, IndexError):
-            return (0.0, 0.0, 0.0, 0.0)
+        val = self._native.get_vector4(name)
+        return (val.x, val.y, val.z, val.w)
 
     def get_texture(self, name: str) -> Optional[str]:
         """Get a texture shader property GUID (or None if not set)."""

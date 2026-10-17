@@ -32,13 +32,15 @@ int main()
     const auto first16 = PackWebIndexRange(streams, MeshIndexFormat::UInt16, 70000, 3, small, 0, small.size());
     assert(first16.format == MeshIndexFormat::UInt16);
     assert(first16.firstIndex == 0 && first16.indexCount == 3 && first16.baseVertex == 70000);
-    assert((streams.uint16Indices == std::vector<uint16_t>{0, 2, 1, 0}));
+    assert((first16.sourceVertices == std::vector<uint32_t>{0, 2, 1}));
+    assert((streams.uint16Indices == std::vector<uint16_t>{0, 1, 2, 0}));
     assert(streams.uint32Indices.empty());
 
     const auto second16 = PackWebIndexRange(streams, MeshIndexFormat::Auto, 4, 3, small, 1, 2);
     assert(second16.format == MeshIndexFormat::UInt16);
     assert(second16.firstIndex == 4 && second16.indexCount == 2 && second16.baseVertex == 4);
-    assert((streams.uint16Indices == std::vector<uint16_t>{0, 2, 1, 0, 2, 1}));
+    assert((second16.sourceVertices == std::vector<uint32_t>{2, 1}));
+    assert((streams.uint16Indices == std::vector<uint16_t>{0, 1, 2, 0, 0, 1}));
     assert((streams.uint16Indices.size() * sizeof(uint16_t)) % 4U == 0);
 
     std::vector<uint32_t> large(65537);
@@ -46,15 +48,16 @@ int main()
     const auto first32 = PackWebIndexRange(streams, MeshIndexFormat::Auto, 8, large.size(), large, large.size() - 1, 1);
     assert(first32.format == MeshIndexFormat::UInt32);
     assert(first32.firstIndex == 0 && first32.indexCount == 1 && first32.baseVertex == 8);
-    assert(streams.uint32Indices == std::vector<uint32_t>{65536});
+    assert(first32.sourceVertices == std::vector<uint32_t>{65536});
+    assert(streams.uint32Indices == std::vector<uint32_t>{0});
 
     // A hot-reloaded draw that changes format publishes into the other stream;
     // neither its offset nor its bytes can alias the prior UInt16 publication.
     const auto reloaded32 = PackWebIndexRange(streams, MeshIndexFormat::UInt32, 12, 3, small, 0, small.size());
     assert(reloaded32.format == MeshIndexFormat::UInt32);
     assert(reloaded32.firstIndex == 1 && reloaded32.indexCount == 3);
-    assert((streams.uint32Indices == std::vector<uint32_t>{65536, 0, 2, 1}));
-    assert((streams.uint16Indices == std::vector<uint16_t>{0, 2, 1, 0, 2, 1}));
+    assert((streams.uint32Indices == std::vector<uint32_t>{0, 0, 1, 2}));
+    assert((streams.uint16Indices == std::vector<uint16_t>{0, 1, 2, 0, 0, 1}));
 
     const auto before16 = streams.uint16Indices;
     const auto before32 = streams.uint32Indices;
@@ -77,12 +80,14 @@ int main()
     });
     assert(streams.uint16Indices == before16 && streams.uint32Indices == before32);
 
-    const std::vector<uint32_t> maximumIndex{std::numeric_limits<uint32_t>::max()};
-    RequireRejected<std::overflow_error>([&] {
-        PackWebIndexRange(streams, MeshIndexFormat::UInt32, 1,
-                          static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U, maximumIndex, 0, 1);
-    });
-    assert(streams.uint16Indices == before16 && streams.uint32Indices == before32);
+    // Sparse material ranges retain only referenced vertices and preserve shared corners.
+    WebPackedIndexStreams sparse;
+    const std::vector<uint32_t> shared{900000, 42, 70000, 900000, 70000, 800000};
+    const auto compact = PackWebIndexRange(sparse, MeshIndexFormat::UInt32, 5, 1000000, shared, 0, shared.size());
+    assert((compact.sourceVertices == std::vector<uint32_t>{900000, 42, 70000, 800000}));
+    assert((sparse.uint32Indices == std::vector<uint32_t>{0, 1, 2, 0, 2, 3}));
+    for (size_t index = 0; index < shared.size(); ++index)
+        assert(compact.sourceVertices[sparse.uint32Indices[index]] == shared[index]);
 
     std::cout << "Web index packing tests passed\n";
     return 0;

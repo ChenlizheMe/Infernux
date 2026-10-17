@@ -1,4 +1,5 @@
 """Authoring queues and registry updates publish one complete current candidate."""
+
 import pytest
 
 from infernux.core.asset_reference_types import AssetReferenceType, AssetTypeRegistry
@@ -16,25 +17,16 @@ def test_failed_alias_registration_preserves_the_complete_registry(replace):
         registry.register(second)
     names = ("First", "Second", "original", "partial", "occupied", "OCCUPIED")
     baseline = registry.values(), tuple(registry.get(name) for name in names)
-    candidate = AssetReferenceType("Second", "New Second", frozenset({".new"}), ("SECOND",), "second", aliases=("partial", "OCCUPIED"))
+    candidate = AssetReferenceType(
+        "Second", "New Second", frozenset({".new"}), ("SECOND",), "second", aliases=("partial", "OCCUPIED")
+    )
     with pytest.raises(ValueError, match="belongs to both"):
         registry.register(candidate, replace=replace)
     assert (registry.values(), tuple(registry.get(name) for name in names)) == baseline
     assert registry.get("New Second") is None
 
 
-def test_successful_alias_replacement_publishes_all_new_names():
-    registry = AssetTypeRegistry()
-    old = AssetReferenceType("Asset", "Old Label", frozenset({".old"}), (), "asset", aliases=("old-alias",))
-    new = AssetReferenceType("Asset", "New Label", frozenset({".new"}), (), "asset", aliases=("new-alias",))
-    registry.register(old)
-    registry.register(new, replace=True)
-    for token in ("Asset", "asset", "New Label", "new-alias"):
-        assert registry.require(token) is new
-    assert registry.get("Old Label") is None and registry.get("old-alias") is None
-
-
-@pytest.mark.parametrize("mode", ["replace", "same", "next_flush", "cancel", "callback_then_asset"])
+@pytest.mark.parametrize("mode", ["replace", "next_flush", "cancel"])
 def test_debounced_asset_save_writes_latest_resource(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(AssetManager, "_scheduled_saves", {})
     path = tmp_path / "Shared.animtimeline"

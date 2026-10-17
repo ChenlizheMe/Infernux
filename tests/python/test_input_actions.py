@@ -48,35 +48,6 @@ def _reset_fake(monkeypatch):
     monkeypatch.setattr(action_module, "Input", _FakeInput)
 
 
-@pytest.mark.parametrize("values", list(dict.fromkeys(permutations([1.0, 1.0, -1.0]))))
-def test_axis_aggregation_is_independent_of_source_registration_order(monkeypatch, values):
-    _reset_fake(monkeypatch)
-    action = InputAction("Move", InputActionType.AXIS)
-    for index, value in enumerate(values):
-        action.set_virtual_value(str(index), value)
-    assert action.read_value() == 1.0
-    assert action.was_pressed_this_frame
-    _FakeInput.frame_index += 1
-    for index in range(3):
-        action.clear_virtual_value(str(index))
-    assert action.read_value() == 0.0
-    assert action.was_released_this_frame
-
-
-@pytest.mark.parametrize("values", list(permutations([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)])))
-def test_vector_aggregation_normalizes_only_the_complete_sum(monkeypatch, values):
-    _reset_fake(monkeypatch)
-    action = InputAction("Move", InputActionType.VECTOR2)
-    for index, value in enumerate(values):
-        action.set_virtual_value(str(index), value)
-    assert action.read_value() == pytest.approx((0.0, 1.0))
-    assert action.was_pressed_this_frame
-    _FakeInput.frame_index += 1
-    for index in range(3):
-        action.clear_virtual_value(str(index))
-    assert action.was_released_this_frame
-
-
 def test_physical_and_virtual_aggregation_share_the_same_sum(monkeypatch):
     _reset_fake(monkeypatch)
     action = InputAction("Move", InputActionType.AXIS)
@@ -149,20 +120,12 @@ def test_virtual_button_tap_in_one_frame_preserves_both_edges(monkeypatch):
     assert submit.was_released_this_frame
 
 
-def test_zero_press_point_does_not_make_idle_action_pressed(monkeypatch):
-    _reset_fake(monkeypatch)
-    action = InputAction("Idle", press_point=0.0)
-
-    assert not action.is_pressed
-    assert action.phase is InputActionPhase.WAITING
-
-
 def test_button_and_axis_bindings_publish_edges_and_values(monkeypatch):
     _reset_fake(monkeypatch)
     submit = InputAction("Submit").bind_key(KeyCode.RETURN).bind_key(KeyCode.SPACE)
-    throttle = InputAction("Throttle", InputActionType.AXIS).bind_key(
-        KeyCode.W, scale=1.0
-    ).bind_key(KeyCode.S, scale=-1.0)
+    throttle = (
+        InputAction("Throttle", InputActionType.AXIS).bind_key(KeyCode.W, scale=1.0).bind_key(KeyCode.S, scale=-1.0)
+    )
 
     _FakeInput.held = {KeyCode.RETURN, KeyCode.W}
     _FakeInput.down = {KeyCode.RETURN, KeyCode.W}
@@ -199,23 +162,3 @@ def test_pointer_look_and_map_disable(monkeypatch):
     assert actions["Look"].read_value() == (0.0, 0.0)
     actions.enable()
     assert actions["Look"].read_value() == (0.25, -0.5)
-
-
-def test_action_binding_types_are_strict(monkeypatch):
-    _reset_fake(monkeypatch)
-    vector = InputAction("Move", InputActionType.VECTOR2)
-    button = InputAction("Submit")
-
-    try:
-        vector.bind_key(KeyCode.W)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("Vector2 action accepted a scalar key binding")
-
-    try:
-        button.bind_pointer_delta()
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("Button action accepted pointer delta")

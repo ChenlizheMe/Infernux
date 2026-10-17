@@ -5,10 +5,16 @@ import pytest
 from infernux.lib import CameraProjection, LineAlignment, Vector3
 
 
-@pytest.mark.parametrize('alignment', [LineAlignment.View, LineAlignment.TransformZ])
-@pytest.mark.parametrize('projection', [CameraProjection.Perspective, CameraProjection.Orthographic])
-@pytest.mark.parametrize('rotation', [(0.,0.,0.), (45.,0.,0.), (30.,40.,65.)])
-@pytest.mark.parametrize('custom_view', [False, True])
+@pytest.mark.parametrize('alignment,projection,rotation,custom_view', [
+    (LineAlignment.View, CameraProjection.Perspective, (0., 0., 0.), False),
+    (LineAlignment.View, CameraProjection.Perspective, (30., 40., 65.), True),
+    (LineAlignment.View, CameraProjection.Orthographic, (45., 0., 0.), False),
+    (LineAlignment.View, CameraProjection.Orthographic, (30., 40., 65.), True),
+    (LineAlignment.TransformZ, CameraProjection.Perspective, (45., 0., 0.), False),
+    (LineAlignment.TransformZ, CameraProjection.Perspective, (30., 40., 65.), True),
+    (LineAlignment.TransformZ, CameraProjection.Orthographic, (0., 0., 0.), False),
+    (LineAlignment.TransformZ, CameraProjection.Orthographic, (30., 40., 65.), True),
+])
 def test_baked_ribbon_width_lies_in_the_rendered_plane(scene, alignment, projection, rotation, custom_view):
     line = scene.create_game_object('Ribbon').add_component('LineRenderer')
     line.set_positions([(-2.,0.,0.), (2.,0.,0.)])

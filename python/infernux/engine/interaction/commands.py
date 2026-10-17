@@ -74,6 +74,13 @@ class EditorCommand:
     palette_keywords: tuple[str, ...] = ()
     creates_user_action: bool = True
 
+    @property
+    def localized_name(self) -> str:
+        from infernux.engine.i18n import has_translation, t
+
+        key = f"command.{self.command_id}"
+        return t(key) if has_translation(key) else self.display_name or self.command_id
+
     def __post_init__(self) -> None:
         self.command_id = str(self.command_id or "").strip()
         if not self.command_id:

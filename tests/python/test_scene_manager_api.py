@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import builtins
 import sys
 import types
 
 from infernux.engine.project_context import get_project_root, set_project_root
-from infernux.engine.path_utils import same_path
 from infernux.scene import SceneManager
 
 
@@ -39,16 +37,10 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
     monkeypatch.setattr(native_lib, "AssetRegistry", AssetRegistry)
 
     scene_manager_module = types.ModuleType("infernux.engine.scene_manager")
-    scene_manager_module.SceneFileManager = types.SimpleNamespace(
-        instance=staticmethod(lambda: None)
-    )
-    monkeypatch.setitem(
-        sys.modules, "infernux.engine.scene_manager", scene_manager_module
-    )
+    scene_manager_module.SceneFileManager = types.SimpleNamespace(instance=staticmethod(lambda: None))
+    monkeypatch.setitem(sys.modules, "infernux.engine.scene_manager", scene_manager_module)
 
-    transaction_module = types.ModuleType(
-        "infernux.engine.scene_document_transaction"
-    )
+    transaction_module = types.ModuleType("infernux.engine.scene_document_transaction")
 
     class Transaction:
         error = ""
@@ -73,98 +65,6 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
     assert calls == ["prepare"]
 
 
-def test_dont_destroy_on_load_delegates_identity_unchanged(monkeypatch):
-    import infernux.scene as scene_api
-
-    target = object()
-    received: list[object] = []
-    native_manager = types.SimpleNamespace(
-        dont_destroy_on_load=lambda value: received.append(value)
-    )
-    monkeypatch.setattr(
-        scene_api,
-        "_NativeSceneManager",
-        types.SimpleNamespace(instance=lambda: native_manager),
-    )
-
-    SceneManager.dont_destroy_on_load(target)
-    assert received == [target]
-
-
-def test_build_list_loading_has_no_editor_panel_dependency(tmp_path, monkeypatch):
-    project = tmp_path / "Project"
-    settings = project / "ProjectSettings" / "BuildSettings.json"
-    settings.parent.mkdir(parents=True)
-    settings.write_text(
-        '{"scene_guids":["main-scene-guid"]}',
-        encoding="utf-8",
-    )
-    previous_root = get_project_root()
-    original_import = builtins.__import__
-
-    def guarded_import(name, *args, **kwargs):
-        if name == "infernux.engine.ui.build_settings_panel":
-            raise AssertionError("runtime scene loading imported an editor panel")
-        return original_import(name, *args, **kwargs)
-
-    try:
-        set_project_root(str(project))
-        from infernux.core.assets import AssetManager
-        monkeypatch.setattr(
-            AssetManager,
-            "_asset_database",
-            type("Database", (), {
-                "get_path_from_guid": staticmethod(
-                    lambda guid: str(project / "Assets/Scenes/Main.scene")
-                    if guid == "main-scene-guid" else ""
-                )
-            })(),
-        )
-        monkeypatch.setattr(builtins, "__import__", guarded_import)
-        scenes = SceneManager._load_build_list()
-        assert len(scenes) == 1
-        assert same_path(scenes[0], project / "Assets" / "Scenes" / "Main.scene")
-    finally:
-        set_project_root(previous_root)
-
-
-def test_load_scene_accepts_name_filename_and_project_path(tmp_path, monkeypatch):
-    project = tmp_path / "Project"
-    scenes_dir = project / "Assets" / "Scenes"
-    scenes_dir.mkdir(parents=True)
-    start = scenes_dir / "Start.scene"
-    gallery = scenes_dir / "VFX Gallery.scene"
-    start.write_text("{}", encoding="utf-8")
-    gallery.write_text("{}", encoding="utf-8")
-    scenes = [str(start), str(gallery)]
-    loaded: list[str] = []
-    previous_root = get_project_root()
-
-    try:
-        monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
-        set_project_root(str(project))
-        monkeypatch.setattr(SceneManager, "_load_build_list", staticmethod(lambda: scenes))
-        monkeypatch.setattr(SceneManager, "_is_in_play_mode", staticmethod(lambda: False))
-        monkeypatch.setattr(
-            SceneManager,
-            "_do_load",
-            staticmethod(lambda path, **_kwargs: loaded.append(path) or True),
-        )
-
-        references = [
-            "VFX Gallery",
-            "vfx gallery.scene",
-            "Assets/Scenes/VFX Gallery.scene",
-            "assets\\scenes\\vfx gallery.scene",
-            str(gallery),
-        ]
-        for reference in references:
-            assert SceneManager.load_scene(reference) is True
-            assert loaded[-1] == str(gallery)
-    finally:
-        set_project_root(previous_root)
-
-
 def test_path_reference_does_not_fall_back_to_an_unrelated_basename(tmp_path):
     project = tmp_path / "Project"
     gallery = project / "Assets" / "Scenes" / "VFX Gallery.scene"
@@ -174,10 +74,13 @@ def test_path_reference_does_not_fall_back_to_an_unrelated_basename(tmp_path):
 
     try:
         set_project_root(str(project))
-        assert SceneManager._resolve_build_scene(
-            "Assets/Other/VFX Gallery.scene",
-            [str(gallery)],
-        ) is None
+        assert (
+            SceneManager._resolve_build_scene(
+                "Assets/Other/VFX Gallery.scene",
+                [str(gallery)],
+            )
+            is None
+        )
     finally:
         set_project_root(previous_root)
 

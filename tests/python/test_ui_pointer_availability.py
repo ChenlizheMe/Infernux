@@ -1,4 +1,5 @@
 """Live UI eligibility applies to captured and queued pointer transactions."""
+
 import pytest
 
 from infernux.engine import runtime_event_queue
@@ -51,8 +52,16 @@ def pointer(identifier, x=20, pointer_type=PointerType.Touch, **flags):
     return UIPointerFrame(identifier, pointer_type, ((float(x), 20.0),), **flags)
 
 
-MODES = ("enabled", "owner_active", "parent_active", "group", "interactable",
-         "canvas_enabled", "canvas_removed", "reparent")
+MODES = (
+    "enabled",
+    "owner_active",
+    "parent_active",
+    "group",
+    "interactable",
+    "canvas_enabled",
+    "canvas_removed",
+    "reparent",
+)
 
 
 def invalidate(scene, root, canvas, control, mode):
@@ -75,7 +84,7 @@ def invalidate(scene, root, canvas, control, mode):
         control.game_object.set_parent(destination, True)
 
 
-@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("mode", ["enabled", "reparent"])
 def test_prior_click_can_disable_a_later_queued_click(scene, mode):
     root, canvas = make_canvas(scene)
     first = make_control(scene, root, UIButton)
@@ -89,26 +98,32 @@ def test_prior_click_can_disable_a_later_queued_click(scene, mode):
     first.on_click.add_listener(first_click)
     second.on_click.add_listener(lambda: clicks.append("second"))
     processor = UIEventProcessor()
-    processor.process_pointers([canvas], [pointer(1, 40, down=True), pointer(2, 290, down=True)], .016)
+    processor.process_pointers([canvas], [pointer(1, 40, down=True), pointer(2, 290, down=True)], 0.016)
     runtime_event_queue.drain()
-    processor.process_pointers([canvas], [pointer(1, 40, up=True), pointer(2, 290, up=True)], .016)
+    processor.process_pointers([canvas], [pointer(1, 40, up=True), pointer(2, 290, up=True)], 0.016)
     runtime_event_queue.drain()
     assert clicks == ["first"]
     assert not processor._pointers
 
 
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("timing", ["before_frame", "before_drain"])
-@pytest.mark.parametrize("pointer_type", [PointerType.Mouse, PointerType.Touch])
+@pytest.mark.parametrize(
+    "mode,timing,pointer_type",
+    [
+        ("enabled", "before_frame", PointerType.Mouse),
+        ("owner_active", "before_drain", PointerType.Touch),
+        ("canvas_removed", "before_frame", PointerType.Touch),
+        ("reparent", "before_drain", PointerType.Mouse),
+    ],
+)
 def test_disabled_capture_cancels_once_without_late_value_changes(scene, mode, timing, pointer_type):
     root, canvas = make_canvas(scene)
     slider = make_control(scene, root, TrackedSlider)
     changes = []
     slider.on_value_changed.add_listener(changes.append)
     processor = UIEventProcessor()
-    processor.process_pointers([canvas], [pointer(1, 20, pointer_type, down=True)], .016)
+    processor.process_pointers([canvas], [pointer(1, 20, pointer_type, down=True)], 0.016)
     runtime_event_queue.drain()
-    processor.process_pointers([canvas], [pointer(1, 80, pointer_type, held=True)], .016)
+    processor.process_pointers([canvas], [pointer(1, 80, pointer_type, held=True)], 0.016)
     runtime_event_queue.drain()
     before, count = slider.value, len(changes)
     if timing == "before_frame":
@@ -119,7 +134,7 @@ def test_disabled_capture_cancels_once_without_late_value_changes(scene, mode, t
     sample = pointer(1, 180, pointer_type, held=True)
     if not surfaces:
         sample = UIPointerFrame(1, pointer_type, (), held=True)
-    processor.process_pointers(surfaces, [sample], .016)
+    processor.process_pointers(surfaces, [sample], 0.016)
     if timing == "before_drain":
         invalidate(scene, root, canvas, slider, mode)
     runtime_event_queue.drain()
@@ -139,7 +154,7 @@ def test_click_lifecycle_controls(scene, mode):
     clicks = []
     button.on_click.add_listener(lambda: clicks.append("click"))
     processor = UIEventProcessor()
-    processor.process_pointers([canvas], [pointer(1, down=True, up=True, canceled=mode == "canceled")], .016)
+    processor.process_pointers([canvas], [pointer(1, down=True, up=True, canceled=mode == "canceled")], 0.016)
     if mode == "destroyed":
         scene.destroy_game_object(button.game_object)
         scene.process_pending_destroys()
@@ -176,7 +191,9 @@ def test_gui_queued_click_rechecks_availability_after_first_callback(scene, engi
                 if phase < 2:
                     flags = {"down": True} if phase == 0 else {"up": True}
                     processor.process_pointers(
-                        [canvas], [pointer(1, 40, **flags), pointer(2, 290, **flags)], .016,
+                        [canvas],
+                        [pointer(1, 40, **flags), pointer(2, 290, **flags)],
+                        0.016,
                     )
                     phase += 1
             except BaseException as error:

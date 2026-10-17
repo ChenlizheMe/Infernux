@@ -73,11 +73,7 @@ def _bound_document(
         resource_path=path,
         revision=1,
         saved_revision=0,
-        capabilities=(
-            DocumentCapability.SAVE
-            | DocumentCapability.SAVE_AS
-            | DocumentCapability.DISCARD
-        ),
+        capabilities=(DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD),
         controller=controller,
     )
     return document, controller

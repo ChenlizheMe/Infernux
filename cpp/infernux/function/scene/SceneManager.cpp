@@ -47,50 +47,15 @@ void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaT
     const bool rightDown = captured && input.GetMouseButton(1);
     const bool middleDown = captured && input.GetMouseButton(2);
 
-    static bool previousRightDown = false;
-    static bool previousMiddleDown = false;
-    if (rightDown != previousRightDown) {
-        if (rightDown)
-            controller.OnMouseButtonDown(1, 0.0f, 0.0f);
-        else
-            controller.OnMouseButtonUp(1, 0.0f, 0.0f);
-        previousRightDown = rightDown;
-    }
-    if (middleDown != previousMiddleDown) {
-        if (middleDown)
-            controller.OnMouseButtonDown(2, 0.0f, 0.0f);
-        else
-            controller.OnMouseButtonUp(2, 0.0f, 0.0f);
-        previousMiddleDown = middleDown;
-    }
-
-    if (captured) {
-        const auto [deltaX, deltaY] = input.ConsumeEditorMouseDelta();
-        if (rightDown && (deltaX != 0.0f || deltaY != 0.0f))
-            controller.ApplyRotation(deltaX, deltaY);
-        else if (middleDown && (deltaX != 0.0f || deltaY != 0.0f))
-            controller.ApplyPan(deltaX, deltaY);
-    }
-
-    const auto updateKey = [&](SDL_Scancode scancode, int controllerKey) {
-        if (rightDown && input.GetKey(static_cast<int>(scancode)))
-            controller.OnKeyDown(controllerKey);
-        else
-            controller.OnKeyUp(controllerKey);
+    if (!captured)
+        return;
+    const auto [deltaX, deltaY] = input.ConsumeEditorMouseDelta();
+    const auto key = [&input, rightDown](SDL_Scancode scancode) {
+        return rightDown && input.GetKey(static_cast<int>(scancode));
     };
-    updateKey(SDL_SCANCODE_W, 'W');
-    updateKey(SDL_SCANCODE_A, 'A');
-    updateKey(SDL_SCANCODE_S, 'S');
-    updateKey(SDL_SCANCODE_D, 'D');
-    updateKey(SDL_SCANCODE_Q, 'Q');
-    updateKey(SDL_SCANCODE_E, 'E');
-    const bool shiftDown = rightDown && (input.GetKey(SDL_SCANCODE_LSHIFT) || input.GetKey(SDL_SCANCODE_RSHIFT));
-    if (shiftDown)
-        controller.OnKeyDown(SDL_SCANCODE_LSHIFT);
-    else
-        controller.OnKeyUp(SDL_SCANCODE_LSHIFT);
-
-    controller.Update(std::max(deltaTime, 0.0f));
+    controller.ProcessInput(deltaTime, rightDown, middleDown, deltaX, deltaY, key(SDL_SCANCODE_W), key(SDL_SCANCODE_A),
+                            key(SDL_SCANCODE_S), key(SDL_SCANCODE_D), key(SDL_SCANCODE_Q), key(SDL_SCANCODE_E),
+                            key(SDL_SCANCODE_LSHIFT) || key(SDL_SCANCODE_RSHIFT));
 }
 #endif
 } // namespace
@@ -164,8 +129,8 @@ Scene *SceneManager::CreateScene(const std::string &name)
         ptr->Start();
     }
 
-    if (m_onSceneLoaded) {
-        m_onSceneLoaded(ptr);
+    if (auto callback = m_onSceneLoaded) {
+        callback(ptr);
     }
 
     return ptr;
@@ -243,8 +208,8 @@ void SceneManager::UnloadScene(Scene *scene)
         SetActiveScene(replacement);
     }
 
-    if (m_onSceneUnloaded) {
-        m_onSceneUnloaded(scene);
+    if (auto callback = m_onSceneUnloaded) {
+        callback(scene);
     }
 
     m_loadedSceneSet.erase(scene);
@@ -326,8 +291,8 @@ void SceneManager::UnloadAllScenes()
     SetActiveScene(nullptr);
 
     for (auto &scene : m_scenes) {
-        if (m_onSceneUnloaded) {
-            m_onSceneUnloaded(scene.get());
+        if (auto callback = m_onSceneUnloaded) {
+            callback(scene.get());
         }
     }
 
@@ -413,14 +378,17 @@ void SceneManager::EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const
     // render-facing services (component gizmos, compute pose bindings, UI)
     // to publish against those exact phases.  The Python scheduler already
     // ignores lifecycle consumption when no native execution frame is open.
-    if (m_runtimeFrameBarrier)
-        m_runtimeFrameBarrier(barrier);
+    if (auto callback = m_runtimeFrameBarrier)
+        callback(barrier);
 }
 
 void SceneManager::ClearRuntimeLifecycleCallbacks()
 {
-    if (m_runtimeLifecycleFrameOpen && m_runtimeLifecycleEnd)
-        m_runtimeLifecycleEnd();
+    if (m_runtimeLifecycleFrameOpen) {
+        m_runtimeLifecycleFrameOpen = false;
+        if (auto callback = m_runtimeLifecycleEnd)
+            callback();
+    }
     m_runtimeLifecycleBegin = nullptr;
     m_runtimeLifecycleFixedUpdate = nullptr;
     m_runtimeLifecycleUpdate = nullptr;
@@ -458,8 +426,9 @@ void SceneManager::Update(float deltaTime)
     if (!m_isPlaying && !m_scenes.empty()) {
         const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
         if (useRuntimeScheduler) {
-            m_runtimeLifecycleBegin();
             m_runtimeLifecycleFrameOpen = true;
+            if (auto callback = m_runtimeLifecycleBegin)
+                callback();
         }
 
         t0 = ProfileClock::now();
@@ -468,8 +437,10 @@ void SceneManager::Update(float deltaTime)
                 scene->EditorUpdate(deltaTime);
         m_lastFrameProfile.editorUpdateMs += ProfileMsSince(t0);
 
-        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
-            m_runtimeLifecycleEditorUpdate(deltaTime);
+        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
+            if (auto callback = m_runtimeLifecycleEditorUpdate)
+                callback(deltaTime);
+        }
     }
 
     // Update active scene if playing
@@ -484,8 +455,9 @@ void SceneManager::Update(float deltaTime)
 
         const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
         if (useRuntimeScheduler) {
-            m_runtimeLifecycleBegin();
             m_runtimeLifecycleFrameOpen = true;
+            if (auto callback = m_runtimeLifecycleBegin)
+                callback();
         }
 
         // Keep gameplay and physics on the same scaled clock. The raw frame
@@ -507,8 +479,10 @@ void SceneManager::Update(float deltaTime)
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
 
         t0 = ProfileClock::now();
-        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
-            m_runtimeLifecycleUpdate(m_lastScaledDeltaTime);
+        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
+            if (auto callback = m_runtimeLifecycleUpdate)
+                callback(m_lastScaledDeltaTime);
+        }
         for (const auto &scene : m_scenes)
             if (scene)
                 scene->Update(m_lastScaledDeltaTime);
@@ -532,14 +506,6 @@ void SceneManager::EnsurePhysicsQueriesCurrent()
     SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
 }
 
-void SceneManager::FixedUpdate()
-{
-    // Intentionally empty — fixed update is driven by the accumulator inside
-    // Update() for correct time-step handling.  Exposed in the header so
-    // external code *could* call it manually if needed, but normally it is
-    // not called directly.
-}
-
 void SceneManager::LateUpdate(float deltaTime)
 {
     if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
@@ -553,8 +519,10 @@ void SceneManager::LateUpdate(float deltaTime)
 
         t0 = ProfileClock::now();
         if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable &&
-            m_runtimeLifecycleLateUpdateCount > 0)
-            m_runtimeLifecycleLateUpdate(m_lastScaledDeltaTime);
+            m_runtimeLifecycleLateUpdateCount > 0) {
+            if (auto callback = m_runtimeLifecycleLateUpdate)
+                callback(m_lastScaledDeltaTime);
+        }
         for (const auto &scene : m_scenes)
             if (scene)
                 scene->LateUpdate(m_lastScaledDeltaTime);
@@ -589,9 +557,9 @@ void SceneManager::EndFrame()
         m_lastFrameProfile.endFrameMs += ProfileMsSince(t0);
     }
     if (m_runtimeLifecycleFrameOpen) {
-        if (m_runtimeLifecycleEnd)
-            m_runtimeLifecycleEnd();
         m_runtimeLifecycleFrameOpen = false;
+        if (auto callback = m_runtimeLifecycleEnd)
+            callback();
     }
 }
 
@@ -614,8 +582,8 @@ void SceneManager::Play()
 #endif
 
     // Notify renderer to exit idle mode immediately.
-    if (m_onPlayStateChanged)
-        m_onPlayStateChanged(true);
+    if (auto callback = m_onPlayStateChanged)
+        callback(true);
 
     StartActiveSceneForPlay();
 }
@@ -717,8 +685,8 @@ void SceneManager::Stop()
     m_runtimeFrameCount = 0;
 
     // Notify renderer that play stopped.
-    if (m_onPlayStateChanged)
-        m_onPlayStateChanged(false);
+    if (auto callback = m_onPlayStateChanged)
+        callback(false);
 
     // Runtime persistence ends exactly at the Play boundary. Python restores
     // the authored scene snapshot after this native graph has been destroyed.
@@ -753,15 +721,18 @@ void SceneManager::Step(float deltaTime)
         m_runtimePersistentScene->ProcessPendingStarts();
     const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
     if (useRuntimeScheduler) {
-        m_runtimeLifecycleBegin();
         m_runtimeLifecycleFrameOpen = true;
+        if (auto callback = m_runtimeLifecycleBegin)
+            callback();
     }
 
     RunFixedSimulationStep(useRuntimeScheduler);
     ApplyInterpolatedRigidbodies(1.0f);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
-    if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
-        m_runtimeLifecycleUpdate(deltaTime);
+    if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
+        if (auto callback = m_runtimeLifecycleUpdate)
+            callback(deltaTime);
+    }
     for (const auto &scene : m_scenes)
         if (scene)
             scene->Update(deltaTime);
@@ -774,8 +745,10 @@ void SceneManager::Step(float deltaTime)
             scene->ProcessPendingStarts();
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
-    if (useRuntimeScheduler && m_runtimeLifecycleLateUpdateCount > 0)
-        m_runtimeLifecycleLateUpdate(deltaTime);
+    if (useRuntimeScheduler && m_runtimeLifecycleLateUpdateCount > 0) {
+        if (auto callback = m_runtimeLifecycleLateUpdate)
+            callback(deltaTime);
+    }
     for (const auto &scene : m_scenes)
         if (scene)
             scene->LateUpdate(deltaTime);
@@ -1116,7 +1089,8 @@ void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
             INXLOG_INFO("[RuntimeLifecycle] fixed_update boundary active dt=", m_fixedTimeStep,
                         " callbacks=", m_runtimeLifecycleFixedUpdateCount);
         }
-        m_runtimeLifecycleFixedUpdate(m_fixedTimeStep);
+        if (auto callback = m_runtimeLifecycleFixedUpdate)
+            callback(m_fixedTimeStep);
     }
     for (const auto &scene : m_scenes)
         if (scene)
@@ -1505,7 +1479,7 @@ void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, c
         // otherwise draw extraction rejects the existing scene instance as a
         // stale version until the user assigns the mesh again.
         if (renderer->HasMeshAsset() && renderer->GetMeshAssetGuid() == meshGuid)
-            renderer->OnMeshAssetEvent(AssetEvent::Modified);
+            renderer->OnMeshAssetEvent(meshGuid, AssetEvent::Modified);
         if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer);
             skinned && skinned->ReferencesModelGuid(meshGuid))
             skinned->ReloadSourceModel();

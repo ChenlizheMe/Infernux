@@ -8,7 +8,6 @@ Game captures and hidden Game tabs consume the same current-frame HUD.
 from __future__ import annotations
 
 import weakref
-import math
 import threading
 from infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
@@ -62,50 +61,9 @@ def reset_runtime_ui_state() -> None:
 
 
 def _canvas_metrics(canvas, viewport_width: float, viewport_height: float):
-    """Return scale and logical size for screen UI canvases.
-
-    Player scene publication can briefly retain a Canvas instance created by a
-    previous Python module identity.  Such an object still carries the
-    authored scalar fields but may not expose the newer helper methods.  Keep
-    the metric calculation at the submission boundary so that this
-    compatibility case does not interrupt the render/input frame.
-    """
-    compute_scale = getattr(canvas, "compute_scale", None)
-    compute_logical_size = getattr(canvas, "compute_logical_size", None)
-    if callable(compute_scale) and callable(compute_logical_size):
-        scale_x, scale_y, text_scale = compute_scale(
-            float(viewport_width), float(viewport_height)
-        )
-        logical_width, logical_height = compute_logical_size(
-            float(viewport_width), float(viewport_height)
-        )
-        return (
-            float(scale_x), float(scale_y), float(text_scale),
-            float(logical_width), float(logical_height),
-        )
-
-    ref_w = max(1.0, float(getattr(canvas, "reference_width", 1920.0)))
-    ref_h = max(1.0, float(getattr(canvas, "reference_height", 1080.0)))
-    screen_w = max(1.0, float(viewport_width))
-    screen_h = max(1.0, float(viewport_height))
-    mode = int(getattr(canvas, "ui_scale_mode", 1))
-    if mode in (0, 2):
-        scale = 1.0
-    else:
-        log_w = math.log2(screen_w / ref_w)
-        log_h = math.log2(screen_h / ref_h)
-        match_mode = int(getattr(canvas, "screen_match_mode", 0))
-        if match_mode == 0:
-            match = max(0.0, min(1.0, float(getattr(canvas, "match_width_or_height", 0.5))))
-            scale = 2.0 ** (log_w * (1.0 - match) + log_h * match)
-        elif match_mode == 1:
-            scale = min(screen_w / ref_w, screen_h / ref_h)
-        else:
-            scale = max(screen_w / ref_w, screen_h / ref_h)
-    if bool(getattr(canvas, "pixel_perfect", False)):
-        scale = max(1.0, round(scale))
-    scale_x = scale_y = max(scale, 1.0e-6)
-    return scale_x, scale_y, min(scale_x, scale_y), screen_w / scale_x, screen_h / scale_y
+    """Use the same CanvasScaler metrics for rendering and pointer projection."""
+    return (*canvas.compute_scale(viewport_width, viewport_height),
+            *canvas.compute_logical_size(viewport_width, viewport_height))
 
 
 class WorldUIElementTarget:
@@ -674,7 +632,6 @@ def _collect_world_ui_elements(*scenes):
     """Share one hierarchy snapshot between UI rendering, input and picking."""
     global _world_elements_key, _world_elements
     from infernux.ui import UICanvas
-    from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
 
     key = tuple(
         (scene, int(getattr(scene, "world_id", 0)),
@@ -930,7 +887,7 @@ class RuntimeScreenUISubmission:
         )
 
         elements = canvas_elements(canvas)
-        args = (ui_list, logical_width, logical_height, scale_x, scale_y,
+        args = (canvas, ui_list, logical_width, logical_height, scale_x, scale_y,
                 text_scale, get_texture_id)
         if packets is not None:
             packets.submit_elements(
@@ -946,28 +903,31 @@ class RuntimeScreenUISubmission:
             RuntimeScreenUISubmission._submit_screen_element(element, renderer, *args)
 
     @staticmethod
-    def _submit_screen_element(element, renderer, ui_list, logical_width, logical_height,
+    def _submit_screen_element(element, renderer, canvas, ui_list, logical_width, logical_height,
                                scale_x, scale_y, text_scale, get_texture_id):
         element_object = getattr(element, "game_object", None)
         if element_object is not None and not element_object.active_in_hierarchy:
             return
         if not getattr(element, "enabled", True):
             return
-        x, y, width, height = element.get_rect(logical_width, logical_height)
+        x, y, width, height = canvas.pixel_adjust_rect(
+            element.get_rect(logical_width, logical_height), scale_x, scale_y,
+        )
         begin_object = getattr(renderer, "begin_screen_object", None)
         if callable(begin_object):
-            begin_object(element_object, ui_list, (x + width * 0.5) * scale_x,
-                         (y + height * 0.5) * scale_y, scale_x, scale_y)
+            begin_object(element_object, ui_list, x + width * 0.5, y + height * 0.5, scale_x, scale_y)
         clip = element.get_effective_clip_rect(logical_width, logical_height)
         if clip is not None:
+            left, top, width_clip, height_clip = canvas.pixel_adjust_rect(
+                (clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1]), scale_x, scale_y,
+            )
             renderer.push_clip_rect(
-                ui_list, clip[0] * scale_x, clip[1] * scale_y,
-                clip[2] * scale_x, clip[3] * scale_y,
+                ui_list, left, top, left + width_clip, top + height_clip,
             )
         try:
             _ui_dispatch(
                 element, "runtime", renderer=renderer, ui_list=ui_list,
-                sx=x * scale_x, sy=y * scale_y, sw=width * scale_x, sh=height * scale_y,
+                sx=x, sy=y, sw=width, sh=height,
                 ref_w=logical_width, ref_h=logical_height, scale_x=scale_x,
                 scale_y=scale_y, text_scale=text_scale, get_tex_id=get_texture_id,
             )

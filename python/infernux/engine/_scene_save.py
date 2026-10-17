@@ -22,12 +22,10 @@ import copy
 from typing import Optional
 
 from infernux.debug import Debug
-from infernux.engine.project_context import get_project_root
 from infernux.engine.path_utils import (
     is_path_within,
     path_key,
     resolved_path,
-    safe_path as _safe_path,
     same_path,
 )
 from .scene_manager import (

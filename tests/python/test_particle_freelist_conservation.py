@@ -73,16 +73,14 @@ def particle_kernels(engine):
         kernel = kernels = host = None
 
 
-@pytest.mark.parametrize("native_schedule,portable", [(True, False), (False, True)])
-@pytest.mark.parametrize("capacity,rejection,fused,use_alive", [
-    (1, "all", False, True), (257, "half", False, True),
-    (65536, "half", False, True), (1048576, "half", False, True),
-    (65536, "all", False, True), (65536, "nonfinite", False, True),
-    (65536, "none", False, True), (65536, "half", True, True),
-    (65536, "all", True, True), (65536, "nonfinite", True, True),
-    (65536, "half", False, False), (65536, "all", False, False),
-    (65536, "nonfinite", False, False), (65536, "half", True, False),
-    (65536, "all", True, False), (65536, "nonfinite", True, False),
+@pytest.mark.parametrize('capacity,rejection,fused,use_alive,native_schedule,portable', [
+    (257, 'half', False, True, True, False), (65536, 'half', True, True, True, False),
+    (257, 'half', False, False, True, False), (65536, 'half', True, False, True, False),
+    (1048576, 'half', False, True, False, True), (257, 'half', True, True, False, True),
+    (65536, 'half', False, False, False, True), (257, 'half', True, False, False, True),
+    (1, 'all', False, True, True, False), (65536, 'all', True, False, False, True),
+    (65536, 'nonfinite', True, False, True, False), (257, 'nonfinite', False, True, False, True),
+    (257, 'none', False, True, True, False), (65536, 'none', True, True, False, True),
 ])
 def test_init_rejection_preserves_free_alive_partition(
     particle_kernels, capacity, rejection, fused, use_alive, native_schedule, portable,

@@ -10,8 +10,39 @@ import sys
 import time
 import uuid
 
-from PySide6.QtCore import QIODevice, QSaveFile
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
+
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _open = _kernel.CreateFileW
+    _open.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                      wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    _open.restype = wintypes.HANDLE
+    _close = _kernel.CloseHandle
+    _close.argtypes = [wintypes.HANDLE]
+    _close.restype = wintypes.BOOL
+
+
+def _read_endpoint(path: Path):
+    if sys.platform != "win32":
+        return json.loads(path.read_text(encoding="utf-8"))
+    # A concurrent publisher may own DELETE access during atomic replacement.
+    # CRT open() omits FILE_SHARE_DELETE and rejects that otherwise valid read.
+    handle = _open(str(path), 0x80000000, 0x1 | 0x2 | 0x4, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        _close(handle)
+        raise
+    with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+        return json.load(stream)
 
 
 class HubInstance:
@@ -46,7 +77,7 @@ class HubInstance:
                     raise
                 return True
             try:
-                endpoint = json.loads(self._endpoint.read_text(encoding="utf-8"))
+                endpoint = _read_endpoint(self._endpoint)
             except FileNotFoundError:
                 endpoint = None  # The owner has not published its socket yet.
             if endpoint:
@@ -95,11 +126,15 @@ class HubInstance:
         if not self._server.listen(name):
             raise RuntimeError(f"Cannot listen for Hub activation: {self._server.errorString()}")
         payload = json.dumps({"pid": os.getpid(), "server": name}).encode("utf-8")
-        target = QSaveFile(str(self._endpoint))
-        if not target.open(QIODevice.OpenModeFlag.WriteOnly):
-            raise RuntimeError(f"Cannot publish Hub activation endpoint: {target.errorString()}")
-        if target.write(payload) != len(payload) or not target.commit():
-            raise RuntimeError(f"Cannot publish Hub activation endpoint: {target.errorString()}")
+        target = self._endpoint.with_name(name + ".json.tmp")
+        try:
+            with target.open("xb") as stream:
+                stream.write(payload)
+            # Close the writer before publication: Windows readers must never
+            # see an endpoint still held by the publishing file handle.
+            target.replace(self._endpoint)
+        finally:
+            target.unlink(missing_ok=True)
 
     def set_activation_handler(self, callback) -> None:
         self._activate = callback

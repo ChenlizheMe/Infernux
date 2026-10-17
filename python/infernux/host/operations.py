@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import inspect
 import re
 import threading
 import time
@@ -14,8 +15,11 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Callable, Iterable, Mapping
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
+
 
 OPERATION_SCHEMA_ID = "infernux.operation"
+ENGINE_OPERATION_OWNER = "infernux/engine"
 
 
 class OperationKind(str, Enum):
@@ -135,7 +139,12 @@ class OperationRegistry:
         with self._lock:
             return self._revision
 
-    def register(self, operation: Operation) -> None:
+    def register(self, operation: Operation) -> bool:
+        try:
+            Draft202012Validator.check_schema(_json_value(operation.schema.input_schema))
+            Draft202012Validator.check_schema(_json_value(operation.schema.output_schema))
+        except SchemaError as exc:
+            raise OperationError("operation.invalid_schema", exc.message) from exc
         key = operation.schema.id.casefold()
         with self._lock:
             current = self._operations.get(key)
@@ -143,12 +152,16 @@ class OperationRegistry:
                 # The engine Host is authoritative. Transport plugins may
                 # project older schemas, but can never shadow or replace the
                 # engine handler and its lifetime.
-                if current.owner == "infernux/engine":
-                    return
-                raise OperationError(
-                    "operation.conflict",
-                    f"Operation is already owned by {current.owner}: {operation.schema.id}",
-                )
+                if current.owner == ENGINE_OPERATION_OWNER:
+                    from infernux.debug import Debug
+
+                    Debug.log_warning(f"Operation {operation.schema.id} from {operation.owner} is shadowed by the engine Host")
+                    return False
+                if operation.owner != ENGINE_OPERATION_OWNER:
+                    raise OperationError(
+                        "operation.conflict",
+                        f"Operation is already owned by {current.owner}: {operation.schema.id}",
+                    )
             self._operations[key] = operation
             self._revision += 1
             revision = self._revision
@@ -160,6 +173,7 @@ class OperationRegistry:
                 "owner": operation.owner,
             }
         )
+        return True
 
     def unregister_owner(self, owner: str) -> int:
         with self._lock:
@@ -200,10 +214,12 @@ class OperationRegistry:
         for callback in listeners:
             try:
                 callback(copy.deepcopy(frozen))
-            except Exception:
+            except Exception as exc:
                 # Registry mutation must never be rolled back because an
                 # observer failed; transports can resynchronize by revision.
-                continue
+                from infernux.debug import Debug
+
+                Debug.log_suppressed("OperationRegistry.listener", exc)
 
     def list(
         self, *, kind: OperationKind | str | None = None, capability: str = ""
@@ -274,13 +290,15 @@ class OperationRegistry:
         payload = dict(arguments or {})
         _validate_arguments(payload, operation.schema.input_schema)
         try:
+            inspect.signature(operation.handler).bind(**payload)
+        except TypeError as exc:
+            raise OperationError("operation.invalid_arguments", str(exc)) from exc
+        try:
             result = operation.handler(**payload)
             _validate_result(result, operation.schema.output_schema)
             return result
         except OperationError:
             raise
-        except TypeError as exc:
-            raise OperationError("operation.invalid_arguments", str(exc)) from exc
         except Exception as exc:
             raise OperationError(
                 "operation.failed", f"{type(exc).__name__}: {exc}"
@@ -438,77 +456,30 @@ class OperationJobRegistry:
         return sum(not future.done() for future in futures)
 
 
+def _json_value(value):
+    """Materialize the local tuple/Mapping surface as transport JSON values."""
+    if isinstance(value, Mapping):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
+
+
 def _validate_arguments(arguments: Mapping[str, object], schema: Mapping[str, object]) -> None:
-    properties = schema.get("properties", {})
-    required = schema.get("required", ())
-    if not isinstance(properties, Mapping) or not isinstance(required, (list, tuple)):
-        raise OperationError("operation.invalid_schema", "Operation input schema is malformed")
-    missing = [str(name) for name in required if name not in arguments]
-    if missing:
+    try:
+        Draft202012Validator(_json_value(schema)).validate(_json_value(arguments))
+    except ValidationError as exc:
         raise OperationError(
-            "operation.invalid_arguments",
-            f"Missing required arguments: {', '.join(missing)}",
-        )
-    if schema.get("additionalProperties") is False:
-        unknown = sorted(set(arguments) - set(properties))
-        if unknown:
-            raise OperationError(
-                "operation.invalid_arguments",
-                f"Unknown arguments: {', '.join(unknown)}",
-            )
-    for name, value in arguments.items():
-        expected = properties.get(name)
-        if not isinstance(expected, Mapping) or value is None:
-            continue
-        expected_type = expected.get("type")
-        expected_types = (
-            [str(item) for item in expected_type]
-            if isinstance(expected_type, (list, tuple))
-            else [str(expected_type)]
-        )
-
-        def matches(candidate: str) -> bool:
-            accepted = {
-                "string": str,
-                "integer": int,
-                "number": (int, float),
-                "boolean": bool,
-                "array": (list, tuple),
-                "object": Mapping,
-            }.get(candidate)
-            return accepted is None or (
-                isinstance(value, accepted)
-                and not (candidate in {"integer", "number"} and isinstance(value, bool))
-            )
-
-        if not any(matches(candidate) for candidate in expected_types):
-            expected_label = (
-                "one of " + ", ".join(expected_types)
-                if len(expected_types) > 1
-                else expected_types[0]
-            )
-            raise OperationError(
-                "operation.invalid_arguments",
-                f"Argument {name} must be {expected_label}",
-            )
+            "operation.invalid_arguments", exc.message,
+            details={"path": list(exc.absolute_path)},
+        ) from exc
 
 
 def _validate_result(result: object, schema: Mapping[str, object]) -> None:
-    if schema.get("type") == "object" and not isinstance(result, Mapping):
-        raise OperationError(
-            "operation.invalid_result",
-            f"Operation returned {type(result).__name__}; its schema requires an object",
-        )
-    if not isinstance(result, Mapping):
-        return
     try:
         _validate_arguments(result, schema)
     except OperationError as exc:
-        raise OperationError(
-            "operation.invalid_result",
-            str(exc),
-            details=exc.details,
-        ) from exc
+        raise OperationError("operation.invalid_result", str(exc), details=exc.details) from exc
 
 
 __all__ = [

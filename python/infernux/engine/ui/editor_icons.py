@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 
 import infernux.resources as _resources
+from infernux.debug import Debug
 
 _cache: dict[str, int] = {}
 _submitted: set[str] = set()
@@ -52,66 +53,54 @@ def _resolve_native(native_engine=None):
         return _native
     if _native is not None:
         return _native
-    try:
-        from infernux.engine.ui.editor_services import EditorServices
+    from infernux.engine.ui.editor_services import EditorServices
 
-        svc = EditorServices.instance()
-        eng = svc.native_engine if svc is not None else None
-        if eng is not None:
-            _native = eng
-        return _native
-    except Exception:
-        return None
+    svc = EditorServices.instance()
+    eng = svc.native_engine if svc is not None else None
+    if eng is not None:
+        _native = eng
+    return _native
 
 
 def _live_id(native, name: str) -> int:
-    getter = getattr(native, "get_imgui_texture_id", None)
-    if getter is None:
-        return 0
     try:
-        return int(getter(_tex_name(name)) or 0)
-    except Exception:
+        return int(native.get_imgui_texture_id(_tex_name(name)) or 0)
+    except RuntimeError as exc:
+        Debug.log_suppressed("EditorIcons.live_id", exc)
         return 0
 
 
 def _submit_icon(native, name: str) -> int:
     """Submit a pinned ImGui texture; return the live id (0 while uploading)."""
     tex_name = _tex_name(name)
-    has_tex = getattr(native, "has_imgui_texture", None)
-    if callable(has_tex):
-        try:
-            if has_tex(tex_name):
-                tid = _live_id(native, name)
-                _cache[name] = tid
-                _submitted.add(name)
-                return tid
-        except Exception:
-            pass
+    try:
+        if native.has_imgui_texture(tex_name):
+            tid = _live_id(native, name)
+            _cache[name] = tid
+            _submitted.add(name)
+            return tid
+    except RuntimeError as exc:
+        Debug.log_suppressed("EditorIcons.texture_lookup", exc)
+        return 0
 
     path = os.path.join(_resources.file_type_icons_dir, f"{name}.png")
     if not os.path.isfile(path):
         return 0
 
-    try:
-        from infernux.lib import TextureLoader
-    except Exception:
-        return 0
-
-    submit = getattr(native, "submit_imgui_texture", None)
-    if submit is None:
-        return 0
+    from infernux.lib import TextureLoader
 
     try:
         tex = TextureLoader.load_from_file(path, name)
         if tex is None or not tex.is_valid():
             return 0
         pixels = tex.get_pixels()
-        submit(tex_name, pixels, int(tex.width), int(tex.height), False, True)
+        native.submit_imgui_texture(tex_name, pixels, int(tex.width), int(tex.height), False, True)
         tid = _live_id(native, name)
         _cache[name] = tid
         _submitted.add(name)
         return tid
-    except Exception:
+    except (OSError, RuntimeError) as exc:
+        Debug.log_suppressed("EditorIcons.texture_upload", exc)
         return 0
 
 

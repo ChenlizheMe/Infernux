@@ -63,7 +63,6 @@ from infernux.renderstack._pipeline_common import (
     GBUFFER_MATERIAL_TEXTURE,
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_OBJECT_TEXTURE,
-    GBUFFER_RESOURCES,
     NORMAL_TEXTURE,
     SHADOW_MAP_TEXTURE,
     add_normal_buffer_pass,
@@ -75,7 +74,6 @@ from infernux.renderstack._pipeline_common import (
     create_main_scene_targets,
     opaque_queue_range,
     result_resources,
-    transparent_queue_range,
 )
 
 if TYPE_CHECKING:

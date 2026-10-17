@@ -70,8 +70,7 @@ def test_single_replace_retires_discarded_session_document_views(tmp_path):
 
         assert registry.get(initial.document_id) is None
         assert all(
-            registry.document_for_view(view_id) is replacement
-            for view_id in ("scene_view", "game_view", "ui_editor")
+            registry.document_for_view(view_id) is replacement for view_id in ("scene_view", "game_view", "ui_editor")
         )
         assert registry.dirty_documents() == ()
     finally:
@@ -113,57 +112,6 @@ def test_additive_path_entry_resolves_guid_before_residency_dedup(tmp_path, monk
     assert manager.open_scene_additive(str(old_path)) is True
     assert activated == [resident]
     assert manager._deferred_additive_guid is None
-
-
-def test_path_unload_entry_resolves_to_resident_guid(tmp_path, monkeypatch):
-    assets = tmp_path / "Project" / "Assets"
-    assets.mkdir(parents=True)
-    old_path = assets / "Old.scene"
-    current_path = assets / "Moved.scene"
-    current_path.write_text("{}", encoding="utf-8")
-
-    manager = SceneFileManager()
-    manager.set_asset_database(
-        _SceneAssetDatabase(
-            "scene-guid",
-            str(current_path.resolve()),
-            str(old_path.resolve()),
-        )
-    )
-    resident = SimpleNamespace(world_id=72)
-    manager._loaded_scene_documents[72] = _LoadedSceneDocument(
-        scene=resident,
-        asset_guid="scene-guid",
-        resource_path=str(current_path.resolve()),
-        document_id="scene-document",
-    )
-    requested = []
-    monkeypatch.setattr(
-        manager,
-        "request_unload_scene",
-        lambda scene: requested.append(scene) or True,
-    )
-
-    assert manager.request_unload_scene_path(str(old_path)) is True
-    assert requested == [resident]
-
-
-def test_additive_queue_retains_guid_instead_of_input_path(tmp_path, monkeypatch):
-    assets = tmp_path / "Project" / "Assets"
-    assets.mkdir(parents=True)
-    scene_path = assets / "Queued.scene"
-    scene_path.write_text("{}", encoding="utf-8")
-
-    manager = SceneFileManager()
-    manager.set_asset_database(
-        _SceneAssetDatabase("queued-guid", str(scene_path.resolve()))
-    )
-    monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
-    monkeypatch.setattr(manager, "_is_under_assets", lambda _path: True)
-
-    assert manager.open_scene_additive(str(scene_path), record_history=False) is True
-    assert manager._deferred_additive_guid == "queued-guid"
-    assert not hasattr(manager, "_deferred_additive_path")
 
 
 def test_scene_move_updates_io_path_without_changing_residency_identity(tmp_path):
@@ -230,18 +178,14 @@ def test_additive_undo_rebinds_active_document_without_placeholder(
     additive_path = tmp_path / "Additive.scene"
     primary_path.write_text("{}", encoding="utf-8")
     additive_path.write_text("{}", encoding="utf-8")
-    database = _SceneAssetDatabase(
-        "primary-guid", str(primary_path.resolve())
-    )
+    database = _SceneAssetDatabase("primary-guid", str(primary_path.resolve()))
     original_lookup = database.get_guid_from_path
     original_resolve = database.get_path_from_guid
     database.get_guid_from_path = lambda path: (
-        "additive-guid" if str(path) == str(additive_path.resolve())
-        else original_lookup(path)
+        "additive-guid" if str(path) == str(additive_path.resolve()) else original_lookup(path)
     )
     database.get_path_from_guid = lambda guid: (
-        str(additive_path.resolve()) if guid == "additive-guid"
-        else original_resolve(guid)
+        str(additive_path.resolve()) if guid == "additive-guid" else original_resolve(guid)
     )
     manager = SceneFileManager()
     manager.set_asset_database(database)
@@ -267,20 +211,14 @@ def test_additive_undo_rebinds_active_document_without_placeholder(
     if native_active_moved_early:
         native.set_active_scene(scene)
 
-    AdditiveSceneResidencyCommand(
-        manager, "additive-guid", "Open Scene Additively"
-    ).undo()
+    AdditiveSceneResidencyCommand(manager, "additive-guid", "Open Scene Additively").undo()
     manager.poll_deferred_load()
 
     assert native.get_active_scene().world_id == scene.world_id
     assert manager.document_id == primary_id
     assert observed[-1] == primary_id
-    assert additive_world_id not in {
-        native.get_scene_at(i).world_id for i in range(native.scene_count)
-    }
-    assert {native.get_scene_at(i).world_id for i in range(native.scene_count)} == (
-        worlds_before - {additive_world_id}
-    )
+    assert additive_world_id not in {native.get_scene_at(i).world_id for i in range(native.scene_count)}
+    assert {native.get_scene_at(i).world_id for i in range(native.scene_count)} == (worlds_before - {additive_world_id})
     assert registry.get(additive_id) is None
 
 

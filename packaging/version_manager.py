@@ -25,7 +25,7 @@ from urllib.parse import unquote, urlsplit
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -865,9 +865,7 @@ def _verify_download(path: Path, wheel: EngineWheel) -> None:
             raise ValueError(f"Wheel SHA-256 mismatch for {wheel.filename}: expected {wheel.sha256}, got {actual}")
 
 
-# Hashing a 24-90 MB wheel took most of every Installs/Projects refresh. A
-# verdict stays valid while the file's identity (size, mtime) and the published
-# expectations are unchanged; any rewrite of the file invalidates it.
+# Cache successful verification while file identity and release expectations match.
 _WHEEL_VERDICTS: dict[tuple, str] = {}
 
 
@@ -899,11 +897,7 @@ def _cached_wheel_verdict(path: str, expected: tuple[EngineWheel, ...]) -> str:
             verdict = "invalid"
     if len(_WHEEL_VERDICTS) > 256:
         _WHEEL_VERDICTS.clear()
-    # An invalid file is commonly being replaced in place (for example after
-    # an interrupted download).  Do not retain that negative result: some
-    # filesystems expose coarse timestamp resolution, so a corrected file can
-    # otherwise reuse the stale verdict despite having the same size and
-    # timestamp.  Valid results remain metadata-keyed for the hot path.
+    # Corrected files can retain coarse timestamps; invalid verdicts are not cached.
     if verdict != "invalid":
         _WHEEL_VERDICTS[key] = verdict
     return verdict

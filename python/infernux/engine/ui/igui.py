@@ -30,7 +30,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 from infernux.lib import InxGUIContext
 from infernux.engine.i18n import t
@@ -51,7 +51,7 @@ from infernux.engine.interaction.context_menus import (
     ContextMenuCommand,
 )
 from .editor_icons import EditorIcons
-from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
+from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Constants
@@ -80,7 +80,6 @@ _MINI_ICON_DRAW_SIZE: float = 10.0
 
 # Cache list body heights from previous frame so the fill can be drawn behind
 # the next frame's content while the border uses exact bounds every frame.
-_list_body_heights: dict[str, float] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -639,7 +638,7 @@ class IGUI:
         has_btns = bool(on_add) or (bool(on_remove) and count > 0)
 
         header_open = render_compact_section_header(
-            ctx, header_label, level=level, allow_overlap=has_btns,
+            ctx, header_label, level=level, allow_overlap=has_btns, header_id=f"list:{label}",
         )
 
         # Drop target on the header
@@ -702,43 +701,17 @@ class IGUI:
         )
 
     @staticmethod
-    def list_body_begin(ctx: InxGUIContext, list_id: str) -> tuple:
-        """Begin the list items body using a cached fill plus exact per-frame border."""
-        pad_x = Theme.INSPECTOR_LIST_BODY_PAD_X
-        pad_y = Theme.INSPECTOR_LIST_BODY_PAD_Y
-        start_x = ctx.get_window_pos_x() + ctx.get_cursor_pos_x() - pad_x
-        start_y = ctx.get_window_pos_y() + ctx.get_cursor_pos_y()
-        avail_w = ctx.get_content_region_avail_width() + pad_x * 2.0
-        cached_h = _list_body_heights.get(list_id, 0.0)
-        if cached_h > 0:
-            ctx.draw_filled_rect(
-                start_x, start_y,
-                start_x + avail_w, start_y + cached_h,
-                *Theme.INSPECTOR_LIST_BODY_BG,
-                Theme.INSPECTOR_LIST_BODY_ROUNDING,
-            )
-        ctx.begin_group()
-        ctx.dummy(0.0, pad_y)
-        return (list_id, pad_x, avail_w)
+    def list_body_begin(ctx: InxGUIContext) -> None:
+        """Draw the list background behind this frame's actual content bounds."""
+        ctx.begin_framed_group(
+            Theme.INSPECTOR_LIST_BODY_PAD_X, Theme.INSPECTOR_LIST_BODY_PAD_Y,
+            Theme.INSPECTOR_LIST_BODY_ROUNDING,
+            Theme.INSPECTOR_LIST_BODY_BG, Theme.INSPECTOR_LIST_BODY_BORDER,
+        )
 
     @staticmethod
-    def list_body_end(ctx: InxGUIContext, state: tuple) -> None:
-        """End the list items body, update cached fill height, and draw border."""
-        list_id, pad_x, _avail_w = state
-        pad_y = Theme.INSPECTOR_LIST_BODY_PAD_Y
-        ctx.dummy(0.0, pad_y)
-        ctx.end_group()
-        min_x = ctx.get_item_rect_min_x() - pad_x
-        min_y = ctx.get_item_rect_min_y()
-        max_x = ctx.get_item_rect_max_x() + pad_x
-        max_y = ctx.get_item_rect_max_y()
-        _list_body_heights[list_id] = max_y - min_y
-        ctx.draw_rect(
-            min_x, min_y, max_x, max_y,
-            *Theme.INSPECTOR_LIST_BODY_BORDER,
-            1.0,
-            Theme.INSPECTOR_LIST_BODY_ROUNDING,
-        )
+    def list_body_end(ctx: InxGUIContext) -> None:
+        ctx.end_framed_group()
 
     @staticmethod
     def list_item_remove_button(

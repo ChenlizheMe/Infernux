@@ -11,6 +11,13 @@ from typing import Any, Callable
 from weakref import WeakSet
 
 
+class CommandTimeoutError(TimeoutError):
+    def __init__(self, name: str, *, may_have_applied: bool):
+        self.may_have_applied = may_have_applied
+        state = "while execution continues" if may_have_applied else "before execution"
+        super().__init__(f"Host command timed out {state}: {name}")
+
+
 class CommandFuture:
     def __init__(self, name: str, *, timeout_ms: int = 30000):
         self.name = str(name)
@@ -37,7 +44,7 @@ class CommandFuture:
             self._event.set()
 
     def cancel(self, reason: str = "Host command timed out before execution.") -> bool:
-        return self._cancel(reason, pending_only=False)
+        return self._cancel(reason, pending_only=True)
 
     def _cancel(self, reason: str, *, pending_only: bool) -> bool:
         with self._lock:
@@ -64,15 +71,16 @@ class CommandFuture:
             return False
         if time.monotonic() >= self._deadline:
             self._cancelled = True
-            self._error = TimeoutError(f"Host command expired before execution: {self.name}")
+            self._error = CommandTimeoutError(self.name, may_have_applied=False)
             self._event.set()
             return False
         return True
 
     def result(self, timeout: float | None = None) -> Any:
         if not self._event.wait(timeout):
-            self.cancel()
-            raise TimeoutError(f"Host command timed out: {self.name}")
+            cancelled = self._cancel("Host command timed out before execution.", pending_only=True)
+            if cancelled or not self._event.is_set():
+                raise CommandTimeoutError(self.name, may_have_applied=not cancelled)
         if self._error is not None:
             raise self._error
         return self._result
@@ -81,8 +89,11 @@ class CommandFuture:
 class CommandOwner:
     """A service lifetime owns only the commands submitted in its scope."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, timeout_ms: int = 30000) -> None:
+        if type(timeout_ms) is not int or timeout_ms <= 0:
+            raise ValueError("Host command timeout must be a positive integer")
         self.name = str(name)
+        self.timeout_ms = timeout_ms
         self._lock = threading.Lock()
         self._closed = False
         self._futures: WeakSet[CommandFuture] = WeakSet()
@@ -168,8 +179,11 @@ class MainThreadCommandQueue:
             self._wake_callback = callback
 
     def run_sync(
-        self, name: str, fn: Callable[[], Any], *, timeout_ms: int = 30000
+        self, name: str, fn: Callable[[], Any], *, timeout_ms: int | None = None
     ) -> Any:
+        if timeout_ms is None:
+            owner = _COMMAND_OWNER.get()
+            timeout_ms = owner.timeout_ms if owner is not None else 30000
         return self.submit(name, fn, timeout_ms=timeout_ms).result(
             timeout=max(timeout_ms, 1) / 1000.0
         )

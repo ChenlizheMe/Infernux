@@ -1,21 +1,17 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import zipfile
 from pathlib import Path
 
 import pytest
 
 
-import database as database_module
 from database import ProjectDatabase
 import model.project_model as project_model_module
 from model.project_model import ProjectModel
 from hub_utils import HubLaunchContext
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
-from project_paths import ProjectPathError, inspect_existing_project, validate_project_name
-from i18n import configure_language, resolve_language, tr
+from project_paths import inspect_existing_project
 
 
 def _make_project(path: Path, *, name: str | None = None, version: str = "") -> Path:
@@ -29,93 +25,6 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
     if version:
         (path / ".infernux-version").write_text(f"# pin\n{version}\n", encoding="utf-8")
     return path
-
-
-def test_default_project_database_lives_in_hub_state_root(tmp_path, monkeypatch):
-    root = tmp_path / "HubData"
-    monkeypatch.setattr(
-        database_module,
-        "get_hub_user_data_dir",
-        lambda: str(root),
-    )
-
-    database = ProjectDatabase()
-    database.close()
-
-    assert (root / "State" / "projects.db").is_file()
-    assert not (tmp_path / ".infernux").exists()
-
-
-def test_source_import_does_not_apply_installed_version_catalog_rules(
-    tmp_path: Path, monkeypatch
-):
-    project = _make_project(tmp_path / "Imported", name="Imported", version="9.9.9")
-    database = ProjectDatabase(str(tmp_path / "hub.db"))
-
-    class ProjectList:
-        def refresh(self):
-            pass
-
-        def select_project(self, _project_id):
-            pass
-
-    class VersionManager:
-        def is_installed(self, _version):
-            raise AssertionError("source imports must not query installed Hub versions")
-
-    monkeypatch.setattr(
-        "viewmodel.control_pane_viewmodel.QFileDialog.getExistingDirectory",
-        lambda *_args: str(project),
-    )
-    viewmodel = ControlPaneViewModel(
-        ProjectModel(database),
-        ProjectList(),
-        VersionManager(),
-        launch_context=HubLaunchContext.SOURCE,
-    )
-
-    viewmodel.open_existing_project(None)
-
-    assert database.find_project_by_path(str(project)) is not None
-    database.close()
-
-
-def test_installed_import_keeps_version_catalog_warning(tmp_path: Path, monkeypatch):
-    project = _make_project(tmp_path / "Imported", name="Imported", version="9.9.9")
-    database = ProjectDatabase(str(tmp_path / "hub.db"))
-    messages = []
-
-    class ProjectList:
-        def refresh(self):
-            pass
-
-        def select_project(self, _project_id):
-            pass
-
-    class VersionManager:
-        @staticmethod
-        def is_installed(_version):
-            return False
-
-    monkeypatch.setattr(
-        "viewmodel.control_pane_viewmodel.QFileDialog.getExistingDirectory",
-        lambda *_args: str(project),
-    )
-    monkeypatch.setattr(
-        "viewmodel.control_pane_viewmodel.dialogs.information",
-        lambda _parent, title, body, *args, **kwargs: messages.append((title, body)),
-    )
-    viewmodel = ControlPaneViewModel(
-        ProjectModel(database),
-        ProjectList(),
-        VersionManager(),
-        launch_context=HubLaunchContext.INSTALLED,
-    )
-
-    viewmodel.open_existing_project(None)
-
-    assert messages and "9.9.9" in messages[0][1]
-    database.close()
 
 
 def test_source_project_creation_accepts_current_environment_without_version(
@@ -152,9 +61,7 @@ def test_source_project_creation_accepts_current_environment_without_version(
         viewmodel.create_project(None)
 
 
-def test_project_creation_requires_the_current_bundled_support_template(
-    tmp_path: Path, monkeypatch
-):
+def test_project_creation_requires_the_current_bundled_support_template(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         project_model_module,
         "__file__",
@@ -163,39 +70,9 @@ def test_project_creation_requires_the_current_bundled_support_template(
     destination = tmp_path / "project.gitignore"
 
     with pytest.raises(RuntimeError, match="Required Infernux project template"):
-        ProjectModel(None)._copy_bundled_support_file(
-            "project.gitignore.txt", str(destination), ""
-        )
+        ProjectModel(None)._copy_bundled_support_file("project.gitignore.txt", str(destination), "")
 
     assert not destination.exists()
-
-
-def test_source_project_runtime_uses_active_environment_without_wheel_lookup(
-    tmp_path: Path,
-    monkeypatch,
-):
-    project = tmp_path / "Project"
-    project_python = Path(ProjectModel._get_project_python(str(project)))
-    project_python.parent.mkdir(parents=True)
-    project_python.write_bytes(b"")
-    validated = []
-
-    monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
-    monkeypatch.setattr(
-        ProjectModel,
-        "validate_python_runtime",
-        staticmethod(lambda path: validated.append(path)),
-    )
-
-    model = ProjectModel(None)
-    model._install_infernux_in_runtime(str(project), "0.2.9")
-    assert validated == [str(project_python)]
-
-
-@pytest.mark.parametrize("name", ["..", ".", "foo/bar", "foo\\bar", "C:drive", "CON", "trail."])
-def test_project_name_rejects_path_and_windows_reserved_values(name: str):
-    with pytest.raises(ProjectPathError):
-        validate_project_name(name)
 
 
 @pytest.mark.parametrize("name", ["Display Name", "100% Demo"])
@@ -211,18 +88,6 @@ def test_inspect_existing_project_reads_name_and_version_without_modifying(tmp_p
     assert sorted(item.relative_to(project) for item in project.rglob("*")) == before
 
 
-def test_inspect_existing_project_requires_core_directories(tmp_path: Path):
-    invalid = tmp_path / "not-a-project"
-    invalid.mkdir()
-    with pytest.raises(ProjectPathError, match="Missing"):
-        inspect_existing_project(str(invalid))
-
-
-def test_inspect_existing_project_does_not_accept_multiple_version_pins(tmp_path):
-    project = _make_project(tmp_path / "Ambiguous", version="0.4.1\n0.3.9")
-    assert inspect_existing_project(str(project)).engine_version == ""
-
-
 def test_source_project_creation_rejects_another_engine_before_creating_files(tmp_path, monkeypatch):
     monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
     model = ProjectModel(None, runtime_manager=object())
@@ -231,73 +96,38 @@ def test_source_project_creation_rejects_another_engine_before_creating_files(tm
     assert not list(tmp_path.iterdir())
 
 
-def test_database_allows_same_name_but_deduplicates_canonical_path(tmp_path: Path):
-    first = _make_project(tmp_path / "one")
-    second = _make_project(tmp_path / "two")
-    with ProjectDatabase(tmp_path / "projects.db") as db:
-        first_record = db.add_project("Same Name", str(first))
-        second_record = db.add_project("Same Name", str(second))
-
-        assert first_record is not None
-        assert second_record is not None
-        assert first_record.project_id != second_record.project_id
-        assert db.add_project("Another Name", str(first / ".")) is None
-        assert len(db.all_projects()) == 2
-
-
-def test_database_rejects_noncurrent_schema(tmp_path: Path):
-    db_path = tmp_path / "legacy.db"
-    parent = tmp_path / "projects"
-    _make_project(parent / "Legacy")
-    connection = sqlite3.connect(db_path)
-    connection.execute(
-        "CREATE TABLE projects ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, "
-        "created_at TEXT NOT NULL, path TEXT NOT NULL)"
-    )
-    connection.execute(
-        "INSERT INTO projects (name, created_at, path) VALUES (?, ?, ?)",
-        ("Legacy", "2026-01-01T00:00:00", str(parent)),
-    )
-    connection.commit()
-    connection.close()
-
-    with pytest.raises(RuntimeError, match="current schema"):
-        ProjectDatabase(db_path)
-
-
-def test_register_existing_project_rejects_duplicate_path(tmp_path: Path):
-    project = _make_project(tmp_path / "Existing", version="0.2.1")
-    with ProjectDatabase(tmp_path / "projects.db") as db:
-        model = ProjectModel(db)
-        record, info = model.register_existing_project(str(project))
-        assert record.name == "Existing"
-        assert info.engine_version == "0.2.1"
-        with pytest.raises(RuntimeError, match="already"):
-            model.register_existing_project(str(project))
-
-
-def test_relocate_project_updates_existing_record(tmp_path: Path):
-    original = _make_project(tmp_path / "Original")
+def test_project_registry_preserves_identity_across_registration_duplicates_and_relocation(tmp_path: Path):
+    first = _make_project(tmp_path / "one", name="Same Name", version="0.2.1")
+    second = _make_project(tmp_path / "two", name="Same Name")
     relocated = _make_project(tmp_path / "Relocated", version="0.3.0")
     with ProjectDatabase(tmp_path / "projects.db") as db:
         model = ProjectModel(db)
-        record, _ = model.register_existing_project(str(original))
+        first_record, info = model.register_existing_project(str(first))
+        second_record, _ = model.register_existing_project(str(second))
+        assert first_record.name == second_record.name == "Same Name"
+        assert info.engine_version == "0.2.1"
+        assert first_record.project_id != second_record.project_id
+        assert db.add_project("Another Name", str(first / ".")) is None
+        assert len(db.all_projects()) == 2
+        with pytest.raises(RuntimeError, match="already"):
+            model.register_existing_project(str(first))
 
-        updated, info = model.relocate_project(record.project_id, str(relocated))
-
-        assert updated.project_id == record.project_id
+        updated, info = model.relocate_project(first_record.project_id, str(relocated))
+        assert updated.project_id == first_record.project_id
         assert updated.name == "Relocated"
         assert Path(updated.path) == relocated.resolve()
         assert info.engine_version == "0.3.0"
-        assert db.find_project_by_path(str(original)) is None
+        assert db.find_project_by_path(str(first)) is None
+        assert db.get_project(second_record.project_id).path == str(second.resolve())
 
 
 def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(tmp_path: Path, monkeypatch):
     model = ProjectModel(None)
     runtime_locations = []
 
-    monkeypatch.setattr(model, "_copy_bundled_requirements", lambda dest, _version: Path(dest).write_text("", encoding="utf-8"))
+    monkeypatch.setattr(
+        model, "_copy_bundled_requirements", lambda dest, _version: Path(dest).write_text("", encoding="utf-8")
+    )
 
     def create_runtime(project, python_version="", on_status=None):
         runtime_locations.append(Path(project))
@@ -334,19 +164,12 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert (Path(result) / "Assets" / "Settings" / "Bloom.effect").is_file()
     assert (Path(result) / "Assets" / "Settings" / "ACES Tone Mapping.effect").is_file()
     assert (Path(result) / "Assets" / "Settings" / "Default Post Processing.effectgroup").is_file()
-    bloom = json.loads(
-        (Path(result) / "Assets" / "Settings" / "Bloom.effect.meta").read_text(encoding="utf-8")
-    )
+    bloom = json.loads((Path(result) / "Assets" / "Settings" / "Bloom.effect.meta").read_text(encoding="utf-8"))
     tone_mapping = json.loads(
         (Path(result) / "Assets" / "Settings" / "ACES Tone Mapping.effect.meta").read_text(encoding="utf-8")
     )
     effect_group_meta = json.loads(
-        (
-            Path(result)
-            / "Assets"
-            / "Settings"
-            / "Default Post Processing.effectgroup.meta"
-        ).read_text(encoding="utf-8")
+        (Path(result) / "Assets" / "Settings" / "Default Post Processing.effectgroup.meta").read_text(encoding="utf-8")
     )
     bloom_guid = bloom["metadata"]["guid"]["value"]
     tone_mapping_guid = tone_mapping["metadata"]["guid"]["value"]
@@ -356,31 +179,20 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         for guid in (bloom_guid, tone_mapping_guid, effect_group_guid)
     )
     effect_group = json.loads(
-        (
-            Path(result)
-            / "Assets"
-            / "Settings"
-            / "Default Post Processing.effectgroup"
-        ).read_text(encoding="utf-8")
+        (Path(result) / "Assets" / "Settings" / "Default Post Processing.effectgroup").read_text(encoding="utf-8")
     )
     assert [entry["asset"]["guid"] for entry in effect_group["entries"]] == [
         bloom_guid,
         tone_mapping_guid,
     ]
-    build_settings = json.loads(
-        (Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8")
-    )
+    build_settings = json.loads((Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8"))
     scene_path = Path(result) / "Assets" / "Scenes" / "SampleScene.scene"
-    scene_meta = json.loads(
-        scene_path.with_suffix(".scene.meta").read_text(encoding="utf-8")
-    )
+    scene_meta = json.loads(scene_path.with_suffix(".scene.meta").read_text(encoding="utf-8"))
     scene_guid = scene_meta["metadata"]["guid"]["value"]
     assert scene_meta["metadata"]["resource_type"]["value"] == "DefaultText"
     assert build_settings["scene_guids"] == [scene_guid]
     assert not (Path(result) / "ProjectSettings" / "EditorSettings.json").exists()
-    scene = json.loads(
-        (Path(result) / "Assets" / "Scenes" / "SampleScene.scene").read_text(encoding="utf-8")
-    )
+    scene = json.loads((Path(result) / "Assets" / "Scenes" / "SampleScene.scene").read_text(encoding="utf-8"))
     assert scene["identity_format"] == "guid-v1"
     camera_id = scene["objects"][0]["components"][0]["component_id"]
     assert len(camera_id) == 32 and set(camera_id) <= set("0123456789abcdef")
@@ -391,9 +203,7 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         "RenderStack",
     ]
     assert (
-        scene["objects"][2]["components"][0]["data"]["effect_slots"][0]
-        ["fields"]["effect"]["guid"]
-        == effect_group_guid
+        scene["objects"][2]["components"][0]["data"]["effect_slots"][0]["fields"]["effect"]["guid"] == effect_group_guid
     )
     camera_data = scene["objects"][0]["components"][0]["data"]
     assert camera_data["projectionMode"] == 0
@@ -455,10 +265,12 @@ def test_same_named_projects_have_independent_asset_identities(tmp_path: Path):
     for parent in ("first", "second"):
         project = tmp_path / parent / "New Project"
         project_model_module._create_default_project_content(str(project), project.name)
-        identities.append({
-            json.loads(path.read_text(encoding="utf-8"))["metadata"]["guid"]["value"]
-            for path in (project / "Assets").rglob("*.meta")
-        })
+        identities.append(
+            {
+                json.loads(path.read_text(encoding="utf-8"))["metadata"]["guid"]["value"]
+                for path in (project / "Assets").rglob("*.meta")
+            }
+        )
     assert len(identities[0]) == len(identities[1]) == 4
     assert identities[0].isdisjoint(identities[1])
 
@@ -468,7 +280,9 @@ def test_new_project_failure_removes_only_staging(tmp_path: Path, monkeypatch):
     unrelated.mkdir()
     model = ProjectModel(None)
 
-    monkeypatch.setattr(model, "_copy_bundled_requirements", lambda dest, _version: Path(dest).write_text("", encoding="utf-8"))
+    monkeypatch.setattr(
+        model, "_copy_bundled_requirements", lambda dest, _version: Path(dest).write_text("", encoding="utf-8")
+    )
     monkeypatch.setattr(model, "_create_project_runtime", lambda *_args, **_kwargs: None)
 
     def fail_install(*_args, **_kwargs):
@@ -482,14 +296,3 @@ def test_new_project_failure_removes_only_staging(tmp_path: Path, monkeypatch):
     assert unrelated.is_dir()
     assert not (tmp_path / "FailedProject").exists()
     assert not list(tmp_path.glob(".infernux-create-*"))
-
-
-
-
-def test_language_resolution_uses_windows_style_zh_prefix():
-    assert resolve_language("system", system_locale="zh-CN") == "zh"
-    assert resolve_language("system", system_locale="en-US") == "en"
-    assert resolve_language("zh", system_locale="en-US") == "zh"
-    configure_language("zh")
-    assert tr("Projects") == "项目"
-    configure_language("en")

@@ -21,7 +21,6 @@ from infernux.lib import InxGUIContext
 from infernux.engine.i18n import get_locale, t
 from . import inspector_support as _inspector_support
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
-from .asset_resource_preview import get_resource_preview_texture_id
 from .inspector_utils import (
     max_label_w,
     field_label,
@@ -151,18 +150,13 @@ def _is_material_preview_ready(panel, preview_path, cache_tag) -> bool:
     from .asset_resource_preview import _resolve_native_engine
 
     native = _resolve_native_engine(panel)
-    if native is None or not hasattr(native, "is_material_preview_ready"):
-        # Older native builds have no generation status; preserve their
-        # previous non-zero-texture cache behavior.
-        return True
+    if native is None:
+        return False
 
     embedded = isinstance(preview_path, str) and "::submat:" in preview_path
     norm_path = resolved_path(preview_path or "")
     cache_key = f"mat|{norm_path}"
-    try:
-        return bool(native.is_material_preview_ready(cache_key))
-    except Exception:
-        return False
+    return bool(native.is_material_preview_ready(cache_key))
 
 
 def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, preview_path) -> int:
@@ -193,7 +187,7 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
         try:
             from .asset_resource_preview import _resolve_native_engine
             native = _resolve_native_engine(panel)
-            if native is not None and hasattr(native, "get_material_preview_texture_id"):
+            if native is not None:
                 live_tex = int(native.get_material_preview_texture_id(native_key) or 0)
                 if live_tex:
                     return live_tex
@@ -213,10 +207,10 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
         try:
             from .asset_resource_preview import _resolve_native_engine
             native = _resolve_native_engine(panel)
-            if native is not None and hasattr(native, "request_full_speed_frame"):
+            if native is not None:
                 native.request_full_speed_frame()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            Debug.log_suppressed("material_preview.request_frame", exc)
     return int(tex or 0)
 
 
@@ -231,12 +225,6 @@ def _get_asset_database():
     return AssetManager.require_asset_database()
 
 
-def _resolve_path_to_guid(path_str):
-    """Resolve a filesystem path to an asset GUID."""
-    adb = _get_asset_database()
-    return adb.get_guid_from_path(path_str) or ""
-
-
 def _texture_display_name(database, path):
     if "::subtex:" in path:
         metadata = database.get_meta_by_path(path)
@@ -247,7 +235,6 @@ def _texture_display_name(database, path):
 
 def _resolve_texture_display(prop):
     """Return display text for a texture property's GUID."""
-    import os
     tex_guid = prop.get("guid", "")
     if not isinstance(tex_guid, str) or not tex_guid:
         return t("igui.none")
@@ -561,15 +548,6 @@ def _surface_batch_cache_is_current(entries) -> bool:
         if required_keys is None or any(key not in descriptor for key in required_keys):
             return False
     return True
-
-
-def _ping_shader_reference(value, ext: str) -> None:
-    path = _shader_reference_path(value, ext)
-    if not path:
-        return
-    from ._inspector_references import ping_asset_in_project
-
-    ping_asset_in_project(path)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1271,190 +1249,6 @@ def _get_material_layout_cache(ctx, state):
     return cache
 
 
-def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
-                                default_open_sections, is_embedded_slot):
-    """Render the stable material top area in one native bridge call."""
-    native_renderer = getattr(ctx, "render_material_top", None)
-    if not callable(native_renderer):
-        return None
-
-    layout_cache = _get_material_layout_cache(ctx, state)
-    shaders = mat_data.setdefault("shaders", {})
-    vert_ref = shaders.get("vertex", "")
-    frag_ref = shaders.get("fragment", "")
-    shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
-    vert_items = shader_ui["vertex_items"]
-    frag_items = shader_ui["fragment_items"]
-    vert_display = shader_ui["vertex_display"]
-    frag_display = shader_ui["fragment_display"]
-    shader_lw = layout_cache["shader_label_width"]
-
-    rs = mat_data.setdefault("renderState", {})
-    overrides = int(mat_data.get("renderStateOverrides", 0))
-    surface_lw = layout_cache["surface_label_width"]
-    surface_cache = state.extra.setdefault("_material_surface_batch_cache", {})
-    entries, surface_plan, surface_values, depth_enabled, depth_op = (
-        _prepare_surface_options_batch(ctx, rs, surface_lw, cache=surface_cache)
-    )
-
-    cache_tag = state.extra.get("_material_cache_tag", "")
-    if not cache_tag and not is_embedded_slot:
-        try:
-            cache_tag = state.extra.get("cached_json") or json.dumps(
-                mat_data, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            cache_tag = ""
-        state.extra["_material_cache_tag"] = cache_tag
-
-    now = _time.time()
-    if (state.extra.get("_material_preview_pending", False)
-            and now >= float(state.extra.get("_material_preview_ready_at", 0.0) or 0.0)):
-        try:
-            cache_tag = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
-            state.extra["_material_cache_tag"] = cache_tag
-        except Exception:
-            cache_tag = state.extra.get("_material_cache_tag", cache_tag)
-        state.extra["_material_preview_pending"] = False
-
-    preview_path = getattr(state, "file_path", "")
-    if not preview_path and _native_mat is not None:
-        preview_path = _ensure_material_file_path(panel, _native_mat)
-    previous_preview_path = state.extra.get("_material_preview_path", "")
-    if preview_path != previous_preview_path:
-        if previous_preview_path:
-            from .asset_resource_preview import invalidate_live_material_preview
-            invalidate_live_material_preview(previous_preview_path)
-        state.extra["_material_preview_path"] = preview_path
-    preview_tex_id = 0
-    if preview_path or _native_mat is not None:
-        preview_tex_id = _get_cached_material_preview_tex(
-            panel, _native_mat, mat_data, state, cache_tag, preview_path)
-
-    from .editor_icons import EditorIcons
-    interaction = native_renderer(
-        layout_cache["shader_section_label"], layout_cache["shader_labels"][0], vert_display,
-        layout_cache["shader_labels"][1], frag_display, shader_lw,
-        layout_cache["surface_section_label"], surface_plan, surface_values, surface_lw,
-        int(EditorIcons.get_cached(Theme.ICON_IMG_PICKER) or 0),
-        int(preview_tex_id or 0), "Material preview unavailable.",
-        bool(default_open_sections), bool(section_readonly),
-    )
-    (vert_flags, vert_picker_open, vert_payload, vert_list_open,
-     frag_flags, frag_picker_open, frag_payload, frag_list_open,
-     surface_changes, active_surface_index,
-     deactivated_surface_index) = interaction
-
-    changed = False
-    requires_deserialize = False
-    requires_pipeline_refresh = False
-    change_key = ""
-
-    def apply_shader(shader_key, new_value, other_key):
-        nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
-        old_val = shaders.get(shader_key, "")
-        ext = ".vert" if shader_key == "vertex" else ".frag"
-        new_ref = shader_utils.make_shader_reference(new_value, ext)
-        if not new_ref["guid"] and not new_ref["shader_id"]:
-            return
-        stored_ref = {
-            "guid": str(new_ref.get("guid") or ""),
-            "shader_id": str(new_ref.get("shader_id") or ""),
-        }
-        old_identity = {
-            "guid": str(old_val.get("guid") or "") if isinstance(old_val, dict) else "",
-            "shader_id": shader_utils.shader_ref_id(old_val),
-        }
-        shaders[shader_key] = stored_ref
-        if stored_ref != old_identity:
-            _bump_material_schema_revision(state)
-        changed = True
-        change_key = f"shader.{shader_key}"
-        requires_deserialize = True
-        requires_pipeline_refresh = True
-        if stored_ref != old_identity:
-            other_ref = shaders.get(other_key, "")
-            vert_id, frag_id = ((stored_ref, other_ref) if shader_key == "vertex"
-                                else (other_ref, stored_ref))
-            shader_utils.sync_all_shader_properties(
-                mat_data, vert_id, frag_id, remove_unknown=True)
-            state.extra["shader_sync_key"] = _shader_annotation_key(vert_id, frag_id)
-
-    from .igui import IGUI
-    from infernux.engine.interaction import AssetReferenceFieldModel
-
-    def process_shader_field(field_id, flags, picker_open, list_open,
-                             popup_id, items, selected_id, selected_ref,
-                             reference_path, payload, apply):
-        del list_open, popup_id, items
-        ext = ".vert" if field_id == "mat_vert" else ".frag"
-        asset_type = "Shader.Vertex" if ext == ".vert" else "Shader.Fragment"
-        reference_value = {
-            "asset_type": asset_type,
-            "guid": str(selected_ref.get("guid") or "")
-            if isinstance(selected_ref, dict) else "",
-            "path_hint": reference_path,
-            "builtin": (
-                str(selected_ref.get("shader_id") or "")
-                if isinstance(selected_ref, dict) and not reference_path
-                else ""
-            ),
-        }
-        model = AssetReferenceFieldModel(
-            field_id=field_id,
-            display_text=(vert_display if field_id == "mat_vert" else frag_display),
-            type_hint=asset_type,
-            accept="SHADER_FILE",
-            on_assign=apply,
-            ping_path=reference_path or None,
-            has_value=bool(str(selected_id or "").strip()),
-            reference_value=reference_value,
-            semantic_id=(
-                "asset.material.shader.vertex"
-                if field_id == "mat_vert"
-                else "asset.material.shader.fragment"
-            ),
-        )
-        if payload:
-            model.dispatch_drop(payload)
-        IGUI.process_object_field_interaction(
-            ctx,
-            model,
-            int(flags),
-            picker_open=bool(picker_open),
-            poll_picker=False,
-        )
-
-    process_shader_field(
-        "mat_vert", int(vert_flags), bool(vert_picker_open), bool(vert_list_open),
-        "mat_vert_popup", vert_items, shader_ui["vertex_id"], vert_ref,
-        shader_ui["vertex_path"],
-        vert_payload,
-        lambda value: apply_shader("vertex", value, "fragment"),
-    )
-    process_shader_field(
-        "mat_frag", int(frag_flags), bool(frag_picker_open), bool(frag_list_open),
-        "mat_frag_popup", frag_items, shader_ui["fragment_id"], frag_ref,
-        shader_ui["fragment_path"],
-        frag_payload,
-        lambda value: apply_shader("fragment", value, "vertex"),
-    )
-
-    overrides, surface_change_key = _apply_surface_option_changes(
-        surface_changes, entries, rs, mat_data, overrides, depth_enabled, depth_op)
-    if surface_change_key:
-        changed = True
-        requires_deserialize = True
-        requires_pipeline_refresh = True
-        change_key = surface_change_key
-
-    return (
-        changed,
-        requires_deserialize,
-        requires_pipeline_refresh,
-        change_key,
-        int(active_surface_index) >= 0,
-        int(deactivated_surface_index) >= 0,
-    )
 
 
 def _render_material_top(ctx, panel, state, mat_data, section_readonly,
@@ -1713,18 +1507,6 @@ def render_inline_material_body(ctx: InxGUIContext, panel, native_mat, cache_key
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
-    if path.lower().endswith(required_ext):
-        key = "vertex" if required_ext == ".vert" else "fragment"
-        old = shaders_dict.get(key, "")
-        reference = shader_utils.make_shader_reference(path, required_ext)
-        shaders_dict[key] = reference
-        if reference != old and _cached_data:
-            vert_id = shaders_dict.get("vertex", "")
-            frag_id = shaders_dict.get("fragment", "")
-            shader_utils.sync_all_shader_properties(_cached_data, vert_id, frag_id, remove_unknown=True)
 
 
 def _render_obj_field(ctx: InxGUIContext, fid: str, display: str, type_hint: str,

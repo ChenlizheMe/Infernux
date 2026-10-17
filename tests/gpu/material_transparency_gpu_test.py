@@ -7,7 +7,8 @@ import numpy as np
 from infernux import Engine
 from infernux.core.assets import AssetManager
 from infernux.lib import CameraClearFlags, ConsolePanel, InxMaterial, SceneManager, Vector3, vec4f
-from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline, MSAASamples
+from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from infernux.renderstack.forward_parameters import MSAASamples
 from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 

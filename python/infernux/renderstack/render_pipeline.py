@@ -134,14 +134,14 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         self._standalone_graphs = {}
         self._standalone_desc = None
         # Initialize serialized fields with defaults
-        from infernux.components.fields import get_serialized_fields
+        from infernux.components.fields import copy_serialized_field_default, get_serialized_fields
         for field_name, meta in get_serialized_fields(self.__class__).items():
             # If descriptor already provides the default via __get__, skip.
             # But we need to ensure instance storage is primed.
             if not hasattr(self, f"_sf_{field_name}"):
                 # Trigger descriptor __set__ so instance value is stored
                 try:
-                    setattr(self, field_name, meta.default)
+                    setattr(self, field_name, copy_serialized_field_default(meta))
                 except Exception as e:
                     from infernux.debug import Debug
                     Debug.log_warning(f"RenderPipeline: failed to set default for '{field_name}': {e}")

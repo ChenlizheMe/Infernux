@@ -156,11 +156,7 @@ def test_authoring_window_save_close_and_history_matrix(
         resource_path=source,
         revision=1,
         saved_revision=0,
-        capabilities=(
-            DocumentCapability.SAVE
-            | DocumentCapability.SAVE_AS
-            | DocumentCapability.DISCARD
-        ),
+        capabilities=(DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD),
         controller=controller,
     )
     registry.attach_view(document.document_id, view_id)
@@ -232,4 +228,3 @@ def test_authoring_window_save_close_and_history_matrix(
     assert saved == ["saved"]
     assert close.state is CloseState.IDLE
     assert view.value == 3 and not document.is_dirty
-

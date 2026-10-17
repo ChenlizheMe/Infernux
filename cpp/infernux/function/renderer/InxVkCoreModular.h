@@ -1,38 +1,3 @@
-/**
- * @file InxVkCoreModular.h
- * @brief Modern modular Vulkan core using the new RAII-based architecture
- *
- * This file provides a drop-in replacement for InxVkCore that uses the new
- * modular architecture. It maintains API compatibility with the original
- * InxVkCore while internally using:
- *
- * - VkDeviceContext for device management
- * - VkSwapchainManager for swapchain lifecycle
- * - VkPipelineManager for pipeline/shader management
- * - VkResourceManager for resource creation
- * - RenderGraph for declarative rendering (optional)
- *
- * Migration Guide:
- * 1. Include this header instead of InxVkCore.h
- * 2. Change InxVkCore to InxVkCoreModular
- * 3. Optionally use RenderGraph for declarative rendering
- *
- * Example:
- *   // Old code:
- *   InxVkCore core;
- *   core.Init(...);
- *   core.DrawFrame(...);
- *
- *   // New code:
- *   InxVkCoreModular core;
- *   core.Init(...);
- *   core.DrawFrame(...);  // Same API!
- *
- *   // Or use RenderGraph:
- *   auto& graph = core.GetRenderGraph();
- *   graph.AddPass("MyPass", [](PassBuilder& builder) { ... });
- */
-
 #pragma once
 
 #include "EngineGlobals.h"
@@ -430,7 +395,7 @@ class InxVkCoreModular
     /// not own or advance it, so offscreen views do not depend on swapchain state.
     [[nodiscard]] uint32_t GetCurrentFrameSlot() const noexcept
     {
-        return m_maxFramesInFlight == 0 ? 0 : m_currentFrame % m_maxFramesInFlight;
+        return m_currentFrame % m_maxFramesInFlight;
     }
 
     /// Exact device-wide completion epoch assigned to the most recently
@@ -846,18 +811,6 @@ class InxVkCoreModular
         return m_resourceManager;
     }
 
-    /**
-     * @brief Get the render graph for declarative rendering
-     */
-    [[nodiscard]] vk::RenderGraph &GetRenderGraph()
-    {
-        return m_renderGraph;
-    }
-    [[nodiscard]] const vk::RenderGraph &GetRenderGraph() const
-    {
-        return m_renderGraph;
-    }
-
     /// @brief Get the shader cache (modules, SPIR-V code, annotations)
     [[nodiscard]] VkShaderCache &GetShaderCache()
     {
@@ -1002,9 +955,7 @@ class InxVkCoreModular
 
     /// @brief Resolve the shared shadow pipeline and cached material binding.
     /// @return The material descriptor set used at set 2, or VK_NULL_HANDLE on failure.
-    VkDescriptorSet EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
-                                                 const std::string &vertShaderName, const std::string &fragShaderName,
-                                                 VkFormat depthFormat);
+    VkDescriptorSet EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material, VkFormat depthFormat);
 
     /// Shadow pipeline layout always includes set 2; bind this when a material
     /// has no per-material shadow descriptors (e.g. alpha clip off, no vtx UBO).
@@ -1432,15 +1383,26 @@ class InxVkCoreModular
     // Texture cache (GPU textures keyed by name/GUID, thread-safe)
     vk::VulkanBindlessTextureTable m_bindlessTextureTable;
     VkTextureCache m_textureCache;
+    struct PendingTextureStagingLoad
+    {
+        std::shared_ptr<TextureUploadStagingTicket> ticket;
+        rhi::SamplerDesc sampler;
+    };
     struct PendingTextureGpuUpload
     {
         std::string guid;
         uint64_t runtimeVersion = 0;
         std::shared_ptr<vk::TextureUploadTicket> ticket;
     };
+    struct FailedTextureUpload
+    {
+        std::string guid;
+        uint64_t runtimeVersion;
+    };
     std::unordered_map<std::string, std::shared_ptr<AssetLoadTicket>> m_pendingTextureAssetLoads;
-    std::unordered_map<std::string, std::shared_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
+    std::unordered_map<std::string, PendingTextureStagingLoad> m_pendingTextureStagingLoads;
     std::unordered_map<std::string, PendingTextureGpuUpload> m_pendingTextureGpuUploads;
+    std::unordered_map<std::string, FailedTextureUpload> m_failedTextureUploads;
     std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> m_renderTextureAssetLoader;
     std::unordered_map<std::string, std::weak_ptr<InxMaterial>> m_materialTextureOwners;
     void CollectUnusedMaterialTextureOwners();
@@ -1535,6 +1497,7 @@ class InxVkCoreModular
                                      MeshGeometryView currentView);
     void RetireUnusedRuntimeMeshBuffers();
     void PumpPendingTextureLoads();
+    bool TrySubmitTextureStaging(const std::string &cacheKey, const PendingTextureStagingLoad &pending);
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetTextureGpuResidency() const
     {
         return m_textureCache.GetAssetResidency();
@@ -1914,19 +1877,34 @@ class InxVkCoreModular
     VkSampler m_shadowDepthSampler = VK_NULL_HANDLE;
     bool m_shadowPipelineReady = false;
 
-    /// Cache of shadow pipelines keyed by shader ID (vert|frag).
-    /// Materials sharing the same shader share the same shadow VkPipeline.
-    std::unordered_map<std::string, VkPipeline> m_shadowPipelineCache;
+    struct ShadowPipelineKey
+    {
+        ShaderProgramPublication program;
+        VkCullModeFlags cullMode;
+        VkFormat depthFormat;
+
+        bool operator==(const ShadowPipelineKey &other) const noexcept
+        {
+            return program == other.program && cullMode == other.cullMode && depthFormat == other.depthFormat;
+        }
+    };
+    struct ShadowPipelineKeyHash
+    {
+        size_t operator()(const ShadowPipelineKey &key) const noexcept
+        {
+            return std::hash<const ShaderProgram *>{}(key.program.get()) ^
+                   std::hash<uint64_t>{}((static_cast<uint64_t>(key.depthFormat) << 32u) | key.cullMode);
+        }
+    };
+    std::unordered_map<ShadowPipelineKey, VkPipeline, ShadowPipelineKeyHash> m_shadowPipelineCache;
     uint64_t m_shaderHotReloadRetirementCount = 0;
 
     static constexpr uint32_t kMaxShadowMaterialTextures = 8;
     struct ShadowMaterialBindingEntry
     {
         std::weak_ptr<InxMaterial> owner;
-        std::string materialKey;
-        uint64_t materialVersion = 0;
-        uint64_t artifactRevision = 0;
-        size_t resourceSignature = 0;
+        ShaderProgramPublication program;
+        uint64_t forwardDescriptorId = 0;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         vk::DescriptorLease descriptorLease;
         std::vector<std::shared_ptr<const rhi::TextureGpuView>> textureKeepAlive;
@@ -1955,8 +1933,7 @@ class InxVkCoreModular
     [[nodiscard]] VkDescriptorSet EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
                                                               const MaterialDescriptorSet *forwardMaterialDesc,
                                                               const ShaderProgram *forwardProgram,
-                                                              const ShaderProgram *shadowProgram,
-                                                              uint64_t artifactRevision);
+                                                              const ShaderProgram *shadowProgram);
     void RetireShadowMaterialBinding(ShadowMaterialBindingEntry entry);
     void CollectUnusedShadowMaterialBindings();
     /// @brief Create shadow depth sampler for shadow map sampling.
@@ -2061,10 +2038,6 @@ class InxVkCoreModular
     /// update their descriptor bindings. Must be called before command-buffer
     /// recording begins.
     void PreallocateInstances(size_t requiredInstances);
-
-    /// @brief Write a single instance matrix into the frame's instance SSBO.
-    /// Grows the buffer and refreshes the descriptor if needed.
-    [[nodiscard]] bool WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix);
 
     /// @brief Lazily prepare the optional picking/motion stream for one logical frame.
     void PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances);

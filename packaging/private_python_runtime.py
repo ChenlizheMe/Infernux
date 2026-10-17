@@ -13,7 +13,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
-from publication_directory import create_publication_directory
+from publication_directory import clear_windows_readonly_tree, create_publication_directory
 
 from python_runtime_catalog import (
     DEFAULT_PYTHON_RUNTIME,
@@ -227,6 +227,7 @@ def runtime_publication(destination: str | os.PathLike[str], *, replace_existing
         yield unpacked_runtime
         if not unpacked_runtime.is_dir():
             raise RuntimeError("Runtime publication requires a prepared python/ directory.")
+        clear_windows_readonly_tree(unpacked_runtime)
 
         # Keep the live tree until extraction, its marker, and validation have
         # all succeeded. A failed rename restores the previous tree once;
@@ -234,6 +235,9 @@ def runtime_publication(destination: str | os.PathLike[str], *, replace_existing
         if target.exists():
             if not replace_existing:
                 raise FileExistsError(str(target))
+            # Existing runtimes may predate writable publication. Their files
+            # must be removable once the replacement is committed.
+            clear_windows_readonly_tree(target)
             _replace_runtime_directory(target, backup)
         try:
             _replace_runtime_directory(unpacked_runtime, target)

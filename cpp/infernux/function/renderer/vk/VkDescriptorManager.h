@@ -78,6 +78,7 @@ class VkDescriptorManager
     [[nodiscard]] VkDescriptorPool AcquireExternalPool(DescriptorArena arena);
     void MarkUsed(const DescriptorLease &lease, rhi::SubmissionSerial serial) noexcept;
     void MarkUsed(VkDescriptorSet set, rhi::SubmissionSerial serial) noexcept;
+    void MarkUsed(const VkDescriptorSet *sets, uint32_t count, rhi::SubmissionSerial serial) noexcept;
     void UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
     void Retire(const DescriptorLease &lease, rhi::SubmissionSerial retireAfter = 0) noexcept;
     size_t Collect(rhi::SubmissionSerial completedSerial) noexcept;

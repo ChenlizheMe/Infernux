@@ -5,6 +5,7 @@
 #include <platform/filesystem/InxPath.h>
 
 #include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -1001,14 +1002,11 @@ void InspectorPanel::RenderObjectHeader(InxGUIContext *ctx, uint64_t objId, cons
 
     // Editable name
     ImGui::SetNextItemWidth(-1);
-    char nameBuf[256];
-    std::strncpy(nameBuf, info.name.c_str(), sizeof(nameBuf) - 1);
-    nameBuf[sizeof(nameBuf) - 1] = '\0';
-    const bool nameChanged = ImGui::InputText("##obj_name", nameBuf, sizeof(nameBuf));
+    std::string newName = info.name;
+    const bool nameChanged = ImGui::InputText("##obj_name", &newName);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_name", "Name", true, "inspector.object." + std::to_string(objId) + ".name");
     if (nameChanged) {
-        std::string newName(nameBuf);
         if (newName != info.name &&
             ExecuteEditorCommand("scene.set_object_property", MakeObjectPropertyCommandArgument(objId, "name", newName),
                                  "inline_edit")) {

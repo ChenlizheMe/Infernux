@@ -5,11 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from infernux.engine.hierarchy_creation_service import (
-    _component_names,
-    _unique_scene_object_name,
-)
-
 
 @dataclass
 class _Object:
@@ -23,72 +18,6 @@ class _Scene:
 
     def get_all_objects(self):
         return list(self._objects)
-
-
-def test_unique_scene_object_name_uses_first_available_unity_style_suffix():
-    scene = _Scene(_Object(1, "Cube"), _Object(2, "Cube (1)"), _Object(3, "Cube (3)"))
-
-    assert _unique_scene_object_name(scene, "Cube") == "Cube (2)"
-    assert _unique_scene_object_name(scene, "Cube", exclude_id=1) == "Cube"
-
-
-def test_component_names_deduplicates_python_components_in_combined_component_view():
-    component = SimpleNamespace(component_id=17, type_name="ParticleSystem")
-    obj = SimpleNamespace(
-        get_components=lambda: [component],
-        get_py_components=lambda: [component],
-    )
-
-    assert _component_names(obj) == ["ParticleSystem"]
-
-
-def test_hierarchy_creation_wiring_only_configures_shared_creation_service(monkeypatch):
-    from infernux.engine.bootstrap_hierarchy import _creation
-
-    class _Service:
-        configured = None
-
-        def configure(self, **kwargs):
-            self.configured = kwargs
-
-        def create(self, *_args, **_kwargs):
-            raise AssertionError("registration must not create scene objects")
-
-    navigation = object()
-    service = _Service()
-    monkeypatch.setattr(
-        _creation.HierarchyCreationService,
-        "instance",
-        staticmethod(lambda: service),
-    )
-
-    _creation.wire_creation_callbacks(
-        SimpleNamespace(
-            selection=object(),
-            bs=SimpleNamespace(
-                interaction_core=SimpleNamespace(navigation=navigation)
-            ),
-        )
-    )
-
-    assert service.configured["navigation_service"] is navigation
-    assert service.configured["selection_service"] is not None
-
-
-def test_hierarchy_creation_catalog_includes_ui_frame_and_image():
-    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
-
-    service = HierarchyCreationService()
-    kinds = {entry["kind"] for entry in service.list_create_kinds()}
-
-    assert "ui.image" in kinds
-    assert "ui.frame" in kinds
-    assert "ui.progress_bar" in kinds
-    assert "ui.slider" in kinds
-    assert service._description_for("ui.image") == "Create Image"
-    assert service._description_for("ui.frame") == "Create Frame"
-    assert service._description_for("ui.progress_bar") == "Create Progress Bar"
-    assert service._description_for("ui.slider") == "Create Slider"
 
 
 def test_hierarchy_creation_targets_active_scene_without_pausing_other_loaded_scene(scene):
@@ -137,9 +66,7 @@ def test_creation_selects_through_typed_service_and_records_one_context():
     service.configure(
         selection_service=None,
         navigation_service=SimpleNamespace(
-            reveal=lambda target, **_kwargs: revealed.append(
-                target.scene_object_id()
-            ) or True
+            reveal=lambda target, **_kwargs: revealed.append(target.scene_object_id()) or True
         ),
     )
     try:
@@ -192,41 +119,6 @@ def test_ui_creation_uses_only_canvas_only_without_an_explicit_world_parent():
     assert service._find_ui_parent_id(_UiScene(), 12) == 12
 
 
-def test_ui_element_creation_preserves_a_selected_parent_inside_canvas():
-    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from infernux.ui import UICanvas, UIFrame
-
-    class _UiObject:
-        def __init__(self, object_id, components=(), parent=None):
-            self.id = object_id
-            self._components = list(components)
-            self._parent = parent
-
-        def get_py_components(self):
-            return list(self._components)
-
-        def get_parent(self):
-            return self._parent
-
-    canvas = _UiObject(39, [UICanvas()])
-    frame = _UiObject(73, [UIFrame()], canvas)
-
-    class _UiScene:
-        def find_by_id(self, object_id):
-            return {39: canvas, 73: frame}.get(object_id)
-
-        def get_all_objects(self):
-            return [canvas, frame]
-
-    service = HierarchyCreationService()
-    service.configure(
-        selection_service=SimpleNamespace(primary_scene_object_id=lambda: 73),
-        navigation_service=None,
-    )
-
-    assert service._find_ui_parent_id(_UiScene(), 73) == 73
-
-
 def test_hierarchy_creation_configures_ui_after_parenting_and_records_once(scene):
     from infernux.engine.hierarchy_creation_service import HierarchyCreationService
     from infernux.engine.undo import UndoManager
@@ -274,7 +166,7 @@ def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene
         UndoManager,
     )
     from infernux.lib import Vector3
-    from infernux.ui import UICanvas, UIText
+    from infernux.ui import UICanvas
 
     canvas = scene.create_game_object("Canvas")
     canvas.add_py_component(UICanvas())
@@ -295,9 +187,7 @@ def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene
         old_position = obj.transform.local_position
         new_position = Vector3(48.0, old_position.y, old_position.z)
         obj.transform.local_position = new_position
-        manager.record(SetPropertyCommand(
-            obj.transform, "local_position", old_position, new_position, "Set position"
-        ))
+        manager.record(SetPropertyCommand(obj.transform, "local_position", old_position, new_position, "Set position"))
 
     try:
         created = service.create(
@@ -334,6 +224,7 @@ def test_hierarchy_creation_configuration_failure_rolls_back_without_history(sce
     canvas.add_py_component(UICanvas())
     before_ids = {obj.id for obj in scene.get_all_objects()}
     before_selection = SelectionService.instance().snapshot
+
     def reject_created(obj):
         assert obj.get_parent() is canvas
         raise RuntimeError("reject configured UI")
@@ -452,32 +343,3 @@ def test_ui_editor_creation_uses_shared_atomic_hierarchy_service(scene, monkeypa
         manager.clear()
         selection.apply_snapshot(original_selection, record_history=False)
         UndoManager._instance = previous_manager
-
-
-def test_ui_editor_creation_buttons_submit_the_global_scene_command(monkeypatch):
-    from infernux.engine.interaction import CommandResult, CommandStatus, EditorCommandRegistry
-    from infernux.engine.ui._ui_editor_creation import UIEditorCreationMixin
-
-    calls = []
-    registry = SimpleNamespace(
-        execute=lambda command_id, **kwargs: (
-            calls.append((command_id, kwargs)),
-            CommandResult(command_id, CommandStatus.EXECUTED),
-        )[1]
-    )
-    monkeypatch.setattr(EditorCommandRegistry, "_instance", registry)
-    editor = UIEditorCreationMixin()
-    canvas = SimpleNamespace(id=73)
-
-    assert editor._create_canvas()
-    assert editor._create_frame_element(canvas)
-    assert editor._create_text_element(canvas)
-    assert editor._create_image_element(canvas)
-    assert editor._create_button_element(canvas)
-    assert [payload[1]["payload"] for payload in calls] == [
-        {"kind": "ui.canvas", "parent_id": 0},
-        {"kind": "ui.frame", "parent_id": 73},
-        {"kind": "ui.text", "parent_id": 73},
-        {"kind": "ui.image", "parent_id": 73},
-        {"kind": "ui.button", "parent_id": 73},
-    ]

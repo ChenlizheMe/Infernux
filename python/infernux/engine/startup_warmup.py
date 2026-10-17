@@ -428,14 +428,6 @@ def _source_identity(component: object) -> tuple[str, str]:
     return f"{cls.__module__}.{cls.__qualname__}:{qualname}", source
 
 
-def _type_source(component_type: type) -> str:
-    try:
-        source = inspect.getsourcefile(component_type) or inspect.getfile(component_type) or ""
-    except (OSError, TypeError):
-        source = ""
-    return _canonical_source(source, component_type.__module__) if source else ""
-
-
 def _canonical_source(source: str, module_name: str) -> str:
     """Map stale authored absolute paths to the active project copy."""
     candidate = lexical_path(source) if source else ""

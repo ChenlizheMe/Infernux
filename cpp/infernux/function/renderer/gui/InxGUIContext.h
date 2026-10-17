@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <string>
@@ -83,21 +84,6 @@ struct PropertyBatchPlan
     std::vector<PropertyDesc> descriptors;
 };
 
-struct MaterialTopInteraction
-{
-    uint32_t vertexFlags = 0;
-    bool vertexPickerOpen = false;
-    std::string vertexPayload;
-    bool vertexListPopupOpen = false;
-    uint32_t fragmentFlags = 0;
-    bool fragmentPickerOpen = false;
-    std::string fragmentPayload;
-    bool fragmentListPopupOpen = false;
-    std::vector<PropertyChange> surfaceChanges;
-    int activeSurfaceIndex = -1;
-    int deactivatedSurfaceIndex = -1;
-};
-
 class InxGUIContext
 {
   public:
@@ -125,6 +111,7 @@ class InxGUIContext
     [[nodiscard]] bool IsPointerActivationBlockedByPopup() const;
     /* basic text & labels */
     void Label(const std::string &text);
+    void FieldLabel(const std::string &text, float columnWidth);
     void TextWrapped(const std::string &text);
 
     /* buttons / clickables */
@@ -202,6 +189,9 @@ class InxGUIContext
     /* layout helpers */
     void BeginGroup(const std::string &name = "");
     void EndGroup();
+    void BeginFramedGroup(float paddingX, float paddingY, float rounding, const std::array<float, 4> &background,
+                          const std::array<float, 4> &border);
+    void EndFramedGroup();
 
     void SameLine(float offsetFromStartX = 0.0f, float spacing = -1.0f);
     void AlignTextToFramePadding();
@@ -312,6 +302,7 @@ class InxGUIContext
     float GetItemRectMinY();
     float GetItemRectMaxX();
     float GetItemRectMaxY();
+    std::array<float, 4> GetItemVisibleRect();
 
     // Explicit semantic hooks for raw ImGui widgets that bypass this wrapper.
     // They are inert unless the remote validation capture is enabled.
@@ -470,16 +461,18 @@ class InxGUIContext
                                                                           const std::vector<std::string> &slotLabels,
                                                                           const std::vector<std::string> &slotDisplays,
                                                                           uint64_t pickerTextureId, float labelWidth);
-    MaterialTopInteraction RenderMaterialTop(const std::string &shaderSectionLabel, const std::string &vertexLabel,
-                                             const std::string &vertexDisplay, const std::string &fragmentLabel,
-                                             const std::string &fragmentDisplay, float shaderLabelWidth,
-                                             const std::string &surfaceSectionLabel,
-                                             const PropertyBatchPlan *surfacePlan, float surfaceLabelWidth,
-                                             uint64_t pickerTextureId, uint64_t previewTextureId,
-                                             const std::string &previewUnavailableLabel, bool defaultOpen,
-                                             bool readOnly);
 
   private:
+    struct FramedGroup
+    {
+        ImDrawListSplitter splitter;
+        ImDrawList *drawList = nullptr;
+        float paddingX = 0, paddingY = 0, width = 0, rounding = 0;
+        ImU32 background = 0, border = 0;
+    };
+    std::deque<FramedGroup> m_framedGroups;
+    size_t m_framedGroupDepth = 0;
+
     struct SearchableComboState
     {
         std::array<char, 256> filter{};

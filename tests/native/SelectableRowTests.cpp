@@ -83,9 +83,72 @@ static void CheckRow(float scale, float windowWidth)
     ImGui::DestroyContext();
 }
 
+static void CheckPropertyGroups(float scale, float windowWidth)
+{
+    ImGui::CreateContext();
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = ImVec2(1200, 700);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char *atlas;
+    int atlasWidth, atlasHeight;
+    io.Fonts->GetTexDataAsRGBA32(&atlas, &atlasWidth, &atlasHeight);
+    infernux::InxGUIContext context;
+    for (int frame = 0; frame < 4; ++frame) {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(40, 40));
+        ImGui::SetNextWindowSize(ImVec2(windowWidth, 200));
+        ImGui::SetNextWindowContentSize(ImVec2(0, 700));
+        ImGui::SetNextWindowScroll(ImVec2(0, frame > 0 ? 65.0f : 0.0f));
+        ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::PushFont(ImGui::GetFont(), 13.0f * scale);
+        ImGui::Indent(20);
+        ImGui::BeginGroup();
+        const auto *draw = ImGui::GetWindowDrawList();
+        const int firstVertex = draw->VtxBuffer.Size;
+        const std::array<float, 4> background{0.125f, 0.25f, 0.375f, 1};
+        context.BeginFramedGroup(3, 2, 0, background, {0, 0, 0, 1});
+        for (const auto *label : {"Speed", "A deliberately very long property name"}) {
+            ImGui::PushID(label);
+            const auto origin = ImGui::GetCursorScreenPos();
+            const float available = ImGui::GetContentRegionAvail().x;
+            context.FieldLabel(label, 140);
+            float value = 1;
+            context.DragFloat("##value", &value);
+            const auto minimum = ImGui::GetItemRectMin();
+            assert(std::abs(minimum.x - origin.x - std::min(140.0f, std::max(0.0f, available - 48.0f))) < 0.1f);
+            assert(std::abs(minimum.y - origin.y) < 0.1f);
+            ImGui::PopID();
+        }
+        context.BeginFramedGroup(0, 0, 0, background, {0, 0, 0, 1});
+        ImGui::Dummy(ImVec2(10, frame % 2 ? 60.0f : 10.0f));
+        context.EndFramedGroup();
+        context.EndFramedGroup();
+        const auto minimum = ImGui::GetItemRectMin();
+        const auto maximum = ImGui::GetItemRectMax();
+        InkBounds fill;
+        for (int index = firstVertex; index < draw->VtxBuffer.Size; ++index)
+            if (draw->VtxBuffer[index].col == ImGui::GetColorU32(ImVec4(background[0], background[1], background[2], 1)))
+                fill.Add(draw->VtxBuffer[index].pos);
+        assert(fill.found);
+        assert(std::abs(fill.minX - (minimum.x - 3)) < 0.1f);
+        assert(std::abs(fill.minY - minimum.y) < 0.1f);
+        assert(std::abs(fill.maxY - maximum.y) < 0.1f);
+        ImGui::EndGroup();
+        ImGui::Unindent(20);
+        ImGui::PopFont();
+        ImGui::End();
+        ImGui::Render();
+    }
+    ImGui::DestroyContext();
+}
+
 int main()
 {
     for (float scale : {1.0f, 2.0f})
         for (float width : {320.0f, 480.0f})
+        {
             CheckRow(scale, width);
+            CheckPropertyGroups(scale, width);
+        }
 }

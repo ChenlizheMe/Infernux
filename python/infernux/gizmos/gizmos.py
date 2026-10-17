@@ -36,10 +36,7 @@ from infernux.compute import Buffer, buffer, index, kernel, launch
 from infernux.lib import is_frame_profile_enabled as _is_frame_profile_enabled
 
 from infernux.components._gizmo_ids import (
-    ICON_KIND_CAMERA,
     ICON_KIND_DEFAULT,
-    ICON_KIND_LIGHT,
-    ICON_KIND_PARTICLE,
 )
 
 # Type alias for 3-component tuples

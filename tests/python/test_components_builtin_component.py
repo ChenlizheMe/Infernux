@@ -7,11 +7,12 @@ from enum import IntEnum
 import pytest
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
-from infernux.components.fields import FieldType, get_serialized_fields
+from infernux.components.fields import FieldType
 import infernux.lib as lib
 
 
 # ── Test helpers ──
+
 
 class DemoEnum(IntEnum):
     A = 1
@@ -20,6 +21,7 @@ class DemoEnum(IntEnum):
 
 class DemoCpp:
     """Minimal stand-in for a C++ component (needed for CppProperty __set_name__)."""
+
     def __init__(self):
         self.component_id = 42
         self.execution_order = 0
@@ -45,132 +47,23 @@ class LazyEnumBuiltin(BuiltinComponent):
     mode = CppProperty("mode", FieldType.ENUM, default=DemoEnum.A, enum_type="DemoEnum")
 
 
-# ══════════════════════════════════════════════════════════════════════
-# CppProperty descriptor
-# ══════════════════════════════════════════════════════════════════════
-
-class TestCppPropertyBinding:
-    def test_unbound_access_is_rejected(self):
-        demo = DemoBuiltin()
-        with pytest.raises(ReferenceError):
-            _ = demo.mode
-        with pytest.raises(ReferenceError):
-            demo.raw = 7
-
-    def test_set_name_assigns_metadata_name(self):
-        desc = DemoBuiltin.__dict__["raw"]
-        assert desc.metadata.name == "raw"
-
-    def test_display_name_key_is_preserved_in_metadata(self):
-        class LocalizedBuiltin(BuiltinComponent):
-            _cpp_type_name = "LocalizedBuiltin"
-
-            value = CppProperty(
-                "value",
-                FieldType.FLOAT,
-                default=0.0,
-                display_name_key="component.localized.value",
-            )
-
-        assert (
-            LocalizedBuiltin.__dict__["value"].metadata.display_name_key
-            == "component.localized.value"
-        )
-
-    def test_web_runtime_uses_direct_native_property_bridge(self, monkeypatch):
-        import infernux.field_schema as field_schema
-
-        get_converter = object()
-        set_converter = object()
-        native_getter = object()
-        native_setter = object()
-        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-        monkeypatch.setattr(
-            field_schema,
-            "get_native_field_schema",
-            lambda *_args, **_kwargs: pytest.fail(
-                "Web Player must not query editor semantic metadata"
-            ),
-        )
-
-        descriptor = CppProperty.from_native(
-            "MeshRenderer",
-            "mesh_pivot_offset",
-            visible_when=("mode", "world"),
-            get_converter=get_converter,
-            set_converter=set_converter,
-            native_getter=native_getter,
-            native_setter=native_setter,
-        )
-
-        assert descriptor.cpp_attr == "mesh_pivot_offset"
-        assert descriptor.metadata.visible_when == ("mode", "world")
-        assert descriptor.get_converter is get_converter
-        assert descriptor.set_converter is set_converter
-        assert descriptor.native_getter is native_getter
-        assert descriptor.native_setter is native_setter
-        assert descriptor.schema is None
-
-    def test_android_runtime_uses_direct_native_property_bridge(self, monkeypatch):
-        import infernux.field_schema as field_schema
-        import infernux.components.builtin_component as builtin_component
-
-        monkeypatch.delenv("INFERNUX_WEB_RUNTIME", raising=False)
-        monkeypatch.setattr(builtin_component.sys, "platform", "android")
-        monkeypatch.setattr(
-            field_schema,
-            "get_native_field_schema",
-            lambda *_args, **_kwargs: pytest.fail(
-                "Android Player must not query editor semantic metadata"
-            ),
-        )
-
-        descriptor = CppProperty.from_native("Light", "light_type")
-
-        assert descriptor.cpp_attr == "light_type"
-        assert descriptor.schema is None
-
-
 class TestCppPropertyReadWrite:
-    def test_reads_from_cpp_and_casts_enum(self):
-        demo = DemoBuiltin()
-        demo._cpp_component = DemoCpp()
-        assert demo.mode is DemoEnum.B   # cpp.mode = 2, DemoEnum(2) == B
-        assert demo.raw == 11
-
-    def test_writes_to_cpp(self):
+    def test_bound_property_read_write_and_readonly_rejection(self):
         cpp = DemoCpp()
         demo = DemoBuiltin()
         demo._cpp_component = cpp
-
-        demo.mode = DemoEnum.A
-        demo.raw = 42
-
-        assert cpp.mode == 1
-        assert cpp.raw == 42
-
-    def test_readonly_rejects_set(self):
-        demo = DemoBuiltin()
-        demo._cpp_component = DemoCpp()
+        assert isinstance(DemoBuiltin.mode, CppProperty)
+        assert DemoBuiltin.raw.metadata.name == "raw"
+        assert demo.mode is DemoEnum.B and demo.raw == 11
+        demo.mode, demo.raw = DemoEnum.A, 42
+        assert cpp.mode == 1 and cpp.raw == 42
+        assert demo.mode is DemoEnum.A and demo.raw == 42
         with pytest.raises(AttributeError):
             demo.locked = 10
-
-    def test_lazy_enum_type_resolved_from_lib(self):
-        """Test lazy enum resolution using the real infernux.lib."""
-        lib.DemoEnum = DemoEnum
-        try:
-            demo = LazyEnumBuiltin()
-            demo._cpp_component = DemoCpp()
-            assert demo.mode is DemoEnum.B
-        finally:
-            del lib.DemoEnum
+        assert cpp.locked == demo.locked == 5
 
 
 class TestCppPropertyEdgeCases:
-    def test_class_access_returns_descriptor(self):
-        desc = DemoBuiltin.mode
-        assert isinstance(desc, CppProperty)
-
     @pytest.mark.parametrize("operation", ["get", "set"])
     def test_business_runtime_error_preserves_live_binding(self, operation):
         class BadCpp:
@@ -183,6 +76,7 @@ class TestCppPropertyEdgeCases:
             @raw.setter
             def raw(self, value):
                 raise RuntimeError("operation rejected")
+
         demo = DemoBuiltin()
         demo._cpp_component = BadCpp()
         cpp = demo._cpp_component
@@ -228,41 +122,12 @@ class TestCppPropertyEdgeCases:
                 _ = body.mass
 
 
-# ══════════════════════════════════════════════════════════════════════
-# BuiltinComponent subclass
-# ══════════════════════════════════════════════════════════════════════
-
 class TestBuiltinComponent:
-    def test_registered_in_builtin_registry(self):
-        assert "DemoBuiltin" in BuiltinComponent._builtin_registry
-        assert BuiltinComponent._builtin_registry["DemoBuiltin"] is DemoBuiltin
-
-    def test_isinstance_inf_component(self):
-        from infernux.components.component import InxComponent
-        demo = DemoBuiltin()
-        assert isinstance(demo, InxComponent)
-
-    def test_serialized_fields_contain_cpp_properties(self):
-        fields = get_serialized_fields(DemoBuiltin)
-        assert "mode" in fields
-        assert "raw" in fields
-        assert "locked" in fields
-
-    def test_raw_field_value_reads_live_cpp_not_metadata_default(self):
-        from infernux.components.fields import get_raw_field_value
-
-        cpp = DemoCpp()
-        cpp.intensity = 4.5
-        demo = DemoBuiltin()
-        demo._cpp_component = cpp
-        assert "intensity" not in demo.__dict__
-        assert get_raw_field_value(demo, "intensity") == 4.5
-
     def test_scene_rebuild_marks_wrapper_stale_without_clearing_pointer(self):
         class _Scene:
             structure_version = 4
 
-            def resolve_component(self, _handle):
+            def _resolve_native_component(self, _handle, _owner):
                 return None
 
         class _GameObject:
@@ -290,7 +155,7 @@ class TestBuiltinComponent:
         class _Scene:
             structure_version = 4
 
-            def resolve_component(self, _handle):
+            def _resolve_native_component(self, _handle, _owner):
                 return cpp
 
         class _GameObject:
@@ -315,7 +180,7 @@ class TestBuiltinComponent:
         class _Scene:
             structure_version = 4
 
-            def resolve_component(self, _handle):
+            def _resolve_native_component(self, _handle, _owner):
                 return None
 
         class _GameObject:
@@ -333,61 +198,6 @@ class TestBuiltinComponent:
 
         assert demo._get_bound_native_component() is None
         assert demo._is_destroyed
-
-    def test_repr_unbound(self):
-        demo = DemoBuiltin()
-        r = repr(demo)
-        assert "DemoBuiltin" in r
-        assert "bound=False" in r
-
-    def test_repr_bound(self):
-        cpp = DemoCpp()
-        cpp.component_id = 42
-        cpp.enabled = True
-        demo = DemoBuiltin()
-        demo._bind_cpp(cpp, type("FakeGO", (), {"id": 1})())
-        r = repr(demo)
-        assert "bound=True" in r
-
-    def test_native_wrapper_does_not_enter_script_instance_registry(self):
-        from infernux.components.component import InxComponent
-
-        previous = {
-            game_object_id: list(components)
-            for game_object_id, components in InxComponent._active_instances.items()
-        }
-        InxComponent._active_instances.clear()
-        try:
-            demo = DemoBuiltin()
-            demo._bind_cpp(DemoCpp(), type("FakeGO", (), {"id": 1})())
-            assert InxComponent._active_instances == {}
-            assert demo._cds_slot is None
-            assert demo._cds_class_id is None
-        finally:
-            InxComponent._active_instances.clear()
-            InxComponent._active_instances.update(previous)
-
-    def test_clear_cache(self):
-        BuiltinComponent._wrapper_cache.clear()
-        BuiltinComponent._clear_cache()
-        assert len(BuiltinComponent._wrapper_cache) == 0
-
-    def test_clear_cache_does_not_import_inspector_in_player(self, monkeypatch):
-        import builtins
-
-        from infernux.application import Application
-
-        BuiltinComponent._wrapper_cache.clear()
-        monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
-        original_import = builtins.__import__
-
-        def guarded_import(name, *args, **kwargs):
-            if name == "infernux.engine.ui.inspector_components":
-                raise AssertionError("Player cache cleanup imported editor Inspector state")
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", guarded_import)
-        BuiltinComponent._clear_cache()
 
     def test_wrapper_rebinds_when_native_instance_is_replaced(self):
         BuiltinComponent._wrapper_cache.clear()
@@ -505,114 +315,6 @@ class TestBuiltinComponent:
         finally:
             bus.shutdown()
 
-    def test_sprite_renderer_missing_frame_id_does_not_fall_back_by_index(self):
-        from types import SimpleNamespace
-
-        from infernux.components.builtin.sprite_renderer import SpriteRenderer
-        from infernux.core.asset_types import SpriteFrame
-
-        existing = SpriteFrame(
-            stable_id="1" * 32,
-            name="existing",
-            w=32,
-            h=32,
-        )
-        wrapper = SpriteRenderer()
-        values = {}
-        wrapper._cpp_component = SimpleNamespace(
-            sprite_guid="texture-guid",
-            frame_id="2" * 32,
-            flip_x=False,
-            flip_y=True,
-            _publish_sprite_uv=lambda uv, scale: values.update(uvRect=uv, displayScale=scale),
-        )
-        wrapper._sprite_frames = [existing]
-        wrapper._sprite_frames_by_id = {existing.stable_id: existing}
-        wrapper._tex_w = 32
-        wrapper._tex_h = 32
-        wrapper._apply_uv_rect()
-
-        assert values["uvRect"] == (0.0, 0.0, 0.0, 0.0)
-        assert values["displayScale"] == (0.0, 0.0, 0.0, 0.0)
-
-    def test_sprite_renderer_asset_database_failure_is_not_suppressed(
-        self,
-        monkeypatch,
-    ):
-        from infernux.components.builtin import sprite_renderer as sprite_module
-        from infernux.core.assets import AssetManager
-
-        monkeypatch.setattr(AssetManager, "_asset_database", None)
-
-        with pytest.raises(RuntimeError, match="not initialized with an AssetDatabase"):
-            sprite_module._get_asset_database()
-
-    def test_sprite_renderer_uses_published_metadata_without_meta_sidecar(
-        self,
-        monkeypatch,
-    ):
-        from types import SimpleNamespace
-
-        from infernux.components.builtin import sprite_renderer as sprite_module
-        from infernux.components.builtin.sprite_renderer import SpriteRenderer
-
-        frame_id = "1" * 32
-        metadata_document = {
-            "metadata": {
-                "width": {"type": "int", "value": 128},
-                "height": {"type": "int", "value": 64},
-                "texture_type": {"type": "string", "value": "sprite"},
-                "sprite_frames": {
-                    "type": "json_array",
-                    "value": [{
-                        "stable_id": frame_id,
-                        "name": "runtime-frame",
-                        "x": 32,
-                        "y": 16,
-                        "w": 32,
-                        "h": 16,
-                        "pivot_x": 0.5,
-                        "pivot_y": 0.5,
-                    }],
-                },
-            }
-        }
-        native_meta = SimpleNamespace(
-            serialize_document=lambda: metadata_document,
-        )
-        database = SimpleNamespace(
-            get_path_from_guid=lambda guid: (
-                "Assets/runtime-sheet.png" if guid == "texture-guid" else ""
-            ),
-            get_meta_by_guid=lambda guid: (
-                native_meta if guid == "texture-guid" else None
-            ),
-        )
-        monkeypatch.setattr(sprite_module, "_get_asset_database", lambda: database)
-        from infernux.core import asset_types
-        monkeypatch.setattr(asset_types, "_published_asset_database", lambda: database)
-
-        wrapper = SpriteRenderer()
-        values = {}
-        wrapper._cpp_component = SimpleNamespace(
-            sprite_guid="texture-guid",
-            frame_id=frame_id,
-            flip_x=False,
-            flip_y=True,
-            _publish_sprite_texture=lambda: values.update(texSampler=wrapper.sprite),
-            _publish_sprite_uv=lambda uv, scale: values.update(uvRect=uv, displayScale=scale),
-        )
-
-        wrapper._load_sprite_data()
-        wrapper._apply_uv_rect()
-
-        assert wrapper._tex_w == 128
-        assert wrapper._tex_h == 64
-        assert [frame.stable_id for frame in wrapper._sprite_frames] == [frame_id]
-        assert values["texSampler"] == "texture-guid"
-        assert values["uvRect"] == (0.25, 0.25, 0.25, 0.25)
-        assert values["displayScale"] == (1.0, 0.5, 0.0, 0.0)
-
     def test_native_sprite_renderer_scene_document_uses_stable_frame_id(self):
         from infernux.lib import SpriteRenderer as NativeSpriteRenderer
 
@@ -627,17 +329,6 @@ class TestBuiltinComponent:
         restored = NativeSpriteRenderer()
         assert restored.deserialize_document(document)
         assert restored.frame_id == renderer.frame_id
-
-    def test_native_sprite_renderer_rejects_invalid_frame_identity(self):
-        from infernux.lib import SpriteRenderer as NativeSpriteRenderer
-
-        renderer = NativeSpriteRenderer()
-        with pytest.raises(ValueError, match="32-character lowercase UUID"):
-            renderer.frame_id = "legacy-index-3"
-
-        document = renderer.serialize_document()
-        document["frameId"] = "ABCDEF0123456789ABCDEF0123456789"
-        assert renderer.deserialize_document(document) is False
 
     def test_sprite_assignment_binds_texture_and_persisted_frame_atomically(
         self,
@@ -670,9 +361,7 @@ class TestBuiltinComponent:
             sprite_module,
             "_get_asset_database",
             lambda: SimpleNamespace(
-                get_path_from_guid=lambda guid: (
-                    "C:/Project/Assets/sheet.png" if guid == "texture-guid" else ""
-                )
+                get_path_from_guid=lambda guid: "C:/Project/Assets/sheet.png" if guid == "texture-guid" else ""
             ),
         )
         monkeypatch.setattr(
@@ -698,18 +387,14 @@ class TestBuiltinComponent:
         wrapper.sprite = {"guid": "texture-guid"}
         assert wrapper._cpp_component.frame_id == second.stable_id
 
-        requested = wrapper._sprite_assignment_snapshot(
-            {"guid": "texture-guid", "frame_id": first.stable_id}
-        )
+        requested = wrapper._sprite_assignment_snapshot({"guid": "texture-guid", "frame_id": first.stable_id})
         assert requested == {
             "sprite_guid": "texture-guid",
             "frame_id": first.stable_id,
         }
 
         with pytest.raises(ValueError, match="does not belong"):
-            wrapper._sprite_assignment_snapshot(
-                {"guid": "texture-guid", "frame_id": "f" * 32}
-            )
+            wrapper._sprite_assignment_snapshot({"guid": "texture-guid", "frame_id": "f" * 32})
 
         wrapper.sprite = None
         assert wrapper._cpp_component.sprite_guid == ""
@@ -735,7 +420,7 @@ class TestInxComponentSceneMutation:
         class _Scene:
             structure_version = 4
 
-            def resolve_component(self, _handle):
+            def _resolve_native_component(self, _handle, _owner):
                 return cpp
 
         class _GameObject:

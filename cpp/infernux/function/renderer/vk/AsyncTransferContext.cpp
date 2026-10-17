@@ -6,7 +6,9 @@
 #include "AsyncTransferContext.h"
 #include "VkDeviceContext.h"
 #include "VulkanQueueManager.h"
+#include <algorithm>
 #include <core/log/InxLog.h>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -18,7 +20,7 @@ namespace
 
 constexpr uint64_t kPollTimeoutNs = 50'000'000; // 50 ms
 
-void WaitFence(VkDevice device, VkFence fence)
+VkResult WaitFence(VkDevice device, VkFence fence)
 {
     // Transfers signal in milliseconds; a fence still unsignaled after this
     // budget means the device is lost or the driver is wedged. Bounding the
@@ -27,17 +29,18 @@ void WaitFence(VkDevice device, VkFence fence)
     for (int poll = 0; poll < kMaxPolls; ++poll) {
         VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, kPollTimeoutNs);
         if (result == VK_SUCCESS) {
-            return;
+            return result;
         }
         if (result != VK_TIMEOUT) {
             INXLOG_ERROR("AsyncTransferContext::WaitFence vkWaitForFences failed: ", VkResultToString(result));
-            return;
+            return result;
         }
         // Pumping events here is intentionally omitted — async transfer
         // rarely takes anywhere near 50 ms; if it does, the OS already has
         // the main thread's loop pumping events on its own cadence.
     }
     INXLOG_ERROR("AsyncTransferContext::WaitFence abandoned after 10 s (device lost or driver hang)");
+    return VK_TIMEOUT;
 }
 
 } // namespace
@@ -87,8 +90,11 @@ bool AsyncTransferContext::Initialize(VkDevice device, uint32_t transferQueueFam
         VkSemaphoreCreateInfo semaphoreInfo{};
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         semaphoreInfo.pNext = &timelineInfo;
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m_timelineSemaphore) != VK_SUCCESS)
-            INXLOG_WARN("AsyncTransferContext: timeline semaphore creation failed; fence publication fallback active");
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m_timelineSemaphore) != VK_SUCCESS) {
+            INXLOG_ERROR("AsyncTransferContext: required timeline semaphore creation failed");
+            Destroy();
+            return false;
+        }
     }
 
     INXLOG_INFO("AsyncTransferContext initialized on queue family ", transferQueueFamily,
@@ -102,16 +108,19 @@ void AsyncTransferContext::Destroy() noexcept
         return;
     }
 
-    // Anything still in flight at teardown is a logic bug, but be defensive:
-    // wait on each in-flight fence so we don't try to destroy a fence the
-    // GPU is still signalling.
+    // Teardown requires completed submissions before destroying pool objects.
     {
         std::lock_guard<std::mutex> guard(m_mutex);
         for (const auto &up : m_inFlight) {
             if (up.fence != VK_NULL_HANDLE) {
-                WaitFence(m_device, up.fence);
+                const VkResult result = WaitFence(m_device, up.fence);
+                if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
+                    INXLOG_ERROR("AsyncTransferContext teardown retained pending Vulkan objects after wait failure");
+                    return;
+                }
+                if (result == VK_SUCCESS)
+                    m_queueManager->MarkCompleted(up.ticket);
             }
-            m_queueManager->MarkCompleted(up.ticket);
         }
         m_inFlight.clear();
 
@@ -151,7 +160,8 @@ VkCommandBuffer AsyncTransferContext::AcquireCommandBufferLocked()
     if (!m_freeCmdBuffers.empty()) {
         VkCommandBuffer cmd = m_freeCmdBuffers.back();
         m_freeCmdBuffers.pop_back();
-        vkResetCommandBuffer(cmd, 0);
+        if (vkResetCommandBuffer(cmd, 0) != VK_SUCCESS)
+            throw std::runtime_error("Async upload command buffer reset failed");
         return cmd;
     }
 
@@ -176,7 +186,8 @@ VkFence AsyncTransferContext::AcquireFenceLocked()
     if (!m_freeFences.empty()) {
         VkFence fence = m_freeFences.back();
         m_freeFences.pop_back();
-        vkResetFences(m_device, 1, &fence);
+        if (vkResetFences(m_device, 1, &fence) != VK_SUCCESS)
+            throw std::runtime_error("Async upload fence reset failed");
         return fence;
     }
 
@@ -228,45 +239,6 @@ VkCommandBuffer AsyncTransferContext::Begin()
     return cmd;
 }
 
-void AsyncTransferContext::EndSync(VkCommandBuffer cmd)
-{
-    if (cmd == VK_NULL_HANDLE) {
-        return;
-    }
-
-    vkEndCommandBuffer(cmd);
-
-    VkFence fence = VK_NULL_HANDLE;
-    {
-        std::lock_guard<std::mutex> guard(m_mutex);
-        fence = AcquireFenceLocked();
-    }
-    if (fence == VK_NULL_HANDLE) {
-        return;
-    }
-
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &cmd;
-
-    const auto ticket = m_queueManager->Reserve(m_submissionRole);
-    const VkResult submitResult = m_queueManager->SubmitReserved(ticket, submit, fence);
-    if (submitResult != VK_SUCCESS) {
-        INXLOG_ERROR("AsyncTransferContext::EndSync: vkQueueSubmit failed");
-        std::lock_guard<std::mutex> guard(m_mutex);
-        m_freeFences.push_back(fence);
-        m_freeCmdBuffers.push_back(cmd);
-        return;
-    }
-    WaitFence(m_device, fence);
-    m_queueManager->MarkCompleted(ticket);
-
-    std::lock_guard<std::mutex> guard(m_mutex);
-    m_freeFences.push_back(fence);
-    m_freeCmdBuffers.push_back(cmd);
-}
-
 AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
 {
     AsyncSubmissionHandle handle{};
@@ -274,7 +246,11 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
         return handle;
     }
 
-    vkEndCommandBuffer(cmd);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        m_freeCmdBuffers.push_back(cmd);
+        throw std::runtime_error("Async upload command recording could not finish");
+    }
 
     VkFence fence = VK_NULL_HANDLE;
     {
@@ -282,6 +258,8 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
         fence = AcquireFenceLocked();
     }
     if (fence == VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        m_freeCmdBuffers.push_back(cmd);
         return handle;
     }
 
@@ -292,8 +270,14 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
 
     VkTimelineSemaphoreSubmitInfo timelineSubmit{};
     uint64_t timelineValue = 0;
+    rhi::SubmissionTicket ticket;
+    {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        if (m_timelineSemaphore != VK_NULL_HANDLE)
+            timelineValue = m_nextTimelineValue.fetch_add(1, std::memory_order_relaxed);
+        ticket = m_queueManager->Reserve(m_submissionRole);
+    }
     if (m_timelineSemaphore != VK_NULL_HANDLE) {
-        timelineValue = m_nextTimelineValue.fetch_add(1, std::memory_order_relaxed);
         timelineSubmit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
         timelineSubmit.signalSemaphoreValueCount = 1;
         timelineSubmit.pSignalSemaphoreValues = &timelineValue;
@@ -302,16 +286,9 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
         submit.pSignalSemaphores = &m_timelineSemaphore;
     }
 
-    const auto ticket = m_queueManager->Reserve(m_submissionRole);
     const VkResult submitResult = m_queueManager->SubmitReserved(ticket, submit, fence);
     if (submitResult != VK_SUCCESS) {
-        static int s_asyncSubmitFailLogs = 0;
-        if (s_asyncSubmitFailLogs < 3) {
-            INXLOG_ERROR("AsyncTransferContext::EndAsync: vkQueueSubmit failed");
-        } else if (s_asyncSubmitFailLogs == 3) {
-            INXLOG_ERROR("Further async GPU upload submit failures suppressed (device likely lost)");
-        }
-        ++s_asyncSubmitFailLogs;
+        INXLOG_ERROR("AsyncTransferContext::EndAsync: vkQueueSubmit failed: ", VkResultToString(submitResult));
         std::lock_guard<std::mutex> guard(m_mutex);
         m_freeFences.push_back(fence);
         m_freeCmdBuffers.push_back(cmd);
@@ -334,8 +311,10 @@ void AsyncTransferContext::ReapCompletedLocked()
             m_freeFences.push_back(it->fence);
             m_freeCmdBuffers.push_back(it->cmd);
             it = m_inFlight.erase(it);
-        } else {
+        } else if (result == VK_NOT_READY) {
             ++it;
+        } else {
+            throw std::runtime_error("Async upload fence polling failed");
         }
     }
 }
@@ -377,6 +356,8 @@ bool AsyncTransferContext::IsComplete(AsyncSubmissionHandle handle)
                 }
                 return true;
             }
+            if (result != VK_NOT_READY)
+                throw std::runtime_error("Async upload fence polling failed");
             return false;
         }
     }
@@ -390,30 +371,17 @@ void AsyncTransferContext::Wait(AsyncSubmissionHandle handle)
         return;
     }
 
-    VkFence fence = VK_NULL_HANDLE;
-    rhi::SubmissionTicket ticket{};
-    {
-        std::lock_guard<std::mutex> guard(m_mutex);
-        for (const auto &up : m_inFlight) {
-            if (up.id == handle.id) {
-                fence = up.fence;
-                ticket = up.ticket;
-                break;
-            }
-        }
-    }
-
-    if (fence == VK_NULL_HANDLE) {
-        return; // Already retired.
-    }
-
-    WaitFence(m_device, fence);
-
     std::lock_guard<std::mutex> guard(m_mutex);
+    const auto pending = std::find_if(m_inFlight.begin(), m_inFlight.end(),
+                                      [&](const InFlightUpload &upload) { return upload.id == handle.id; });
+    if (pending == m_inFlight.end())
+        return;
+    if (WaitFence(m_device, pending->fence) != VK_SUCCESS)
+        throw std::runtime_error("Async upload wait failed; submission resources remain pending");
+    m_queueManager->MarkCompleted(pending->ticket);
     VkFence retiredFence = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     RetireLocked(handle.id, retiredFence, cmd);
-    m_queueManager->MarkCompleted(ticket);
     if (retiredFence != VK_NULL_HANDLE) {
         m_freeFences.push_back(retiredFence);
     }

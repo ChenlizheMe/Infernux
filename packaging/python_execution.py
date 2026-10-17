@@ -14,13 +14,18 @@ from pathlib import Path
 import sys
 
 
-def python_executable_path(path: str) -> str:
+def windows_native_path(path: str) -> str:
+    """Use verbatim spelling at a Windows process/filesystem API boundary."""
     if sys.platform != "win32":
         return path
     absolute = os.path.abspath(path)
     if absolute.startswith("\\\\?\\"):
         return absolute
     return "\\\\?\\UNC\\" + absolute[2:] if absolute.startswith("\\\\") else "\\\\?\\" + absolute
+
+
+def python_executable_path(path: str) -> str:
+    return windows_native_path(path)
 
 
 @dataclass(frozen=True)

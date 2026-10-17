@@ -4,6 +4,14 @@ Tools use the same command and shortcut services as the built-in Editor.
 Register contributions from an editor preload, not from gameplay callbacks.
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .engine.ui.editor_panel import EditorPanel
+    from .engine.ui.panel_registry import editor_panel
+    from .engine.interaction.descriptors import PanelInteractionDescriptor
+    from .engine.i18n import t as translate
+
 from .engine.interaction.documents import DocumentActionResult, DocumentActionStatus
 from .engine.prefab_overrides import PropertyModification, StructuralOverride
 

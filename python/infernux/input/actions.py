@@ -8,7 +8,7 @@ the same game script can keep reading the action on desktop, Android, and Web.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
 

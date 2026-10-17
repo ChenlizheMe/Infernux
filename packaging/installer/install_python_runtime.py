@@ -21,7 +21,8 @@ from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 from installer_safety import (
     WINDOWS_ACCESS_LAYOUT, install_marker_path, is_marked_install_dir, write_install_marker,
 )
-from publication_directory import clear_windows_readonly_tree
+from publication_directory import clear_windows_readonly_tree, restore_windows_inherited_access_tree
+from python_execution import windows_native_path
 
 
 def _show_message_box(title: str, message: str, icon: int = 0x40) -> None:
@@ -51,15 +52,16 @@ def prepare_shared_storage(app_dir: str) -> str:
         )
         sid = next(csv.reader(identity.stdout.splitlines()))[1]
         subprocess.run(
-            [str(system / "icacls.exe"), str(shared), "/grant", f"*{sid}:(OI)(CI)M"],
+            [str(system / "icacls.exe"), windows_native_path(str(shared)), "/grant", f"*{sid}:(OI)(CI)M"],
             **options,
         )
+        restore_windows_inherited_access_tree(shared)
         clear_windows_readonly_tree(shared)
     return str(shared)
 
 
 def repair_legacy_windows_permissions(app_dir: str) -> bool:
-    """Repair pre-v4 staging ACLs once after an elevated in-place update.
+    """Repair legacy staging ACLs once after an elevated in-place update.
 
     The old updater restarts the new Hub elevated. Use that existing privilege
     to restore inherited application access and the user's Shared write access;
@@ -72,12 +74,7 @@ def repair_legacy_windows_permissions(app_dir: str) -> bool:
         return False
     if not ctypes.windll.shell32.IsUserAnAdmin():
         return False
-    subprocess.run(
-        [str(Path(os.environ["SystemRoot"]) / "System32/icacls.exe"),
-         str(Path(app_dir).resolve()), "/inheritance:e"],
-        check=True, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", creationflags=0x08000000,
-    )
+    restore_windows_inherited_access_tree(Path(app_dir).resolve())
     prepare_shared_storage(app_dir)
     clear_windows_readonly_tree(Path(app_dir))
     write_install_marker(app_dir)

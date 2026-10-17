@@ -13,11 +13,7 @@ import threading
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from infernux.engine.path_utils import path_key
-
-
-def _path_key(path: str) -> str:
-    return path_key(path)
+from infernux.engine.path_utils import path_key as _path_key
 
 
 def _source_bytes(source: bytes | bytearray | memoryview | str) -> bytes:

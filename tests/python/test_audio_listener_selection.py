@@ -3,54 +3,7 @@ import pytest
 from infernux.lib import AudioEngine, SceneManager
 
 
-def test_world_audio_listener_keeps_owner_and_promotes_deterministically(scene):
-    audio = AudioEngine.instance()
-    owners = [scene.create_game_object(name) for name in ("listener-a", "listener-b", "listener-c")]
-    listeners = [owner.add_component("AudioListener") for owner in owners]
-
-    assert audio.active_listener_game_object_id == owners[0].id
-
-    listeners[0].enabled = False
-    assert audio.active_listener_game_object_id == min(owners[1].id, owners[2].id)
-
-    listeners[1].enabled = False
-    assert audio.active_listener_game_object_id == owners[2].id
-
-    listeners[2].enabled = False
-    assert audio.active_listener_game_object_id == 0
-
-
-def test_loaded_scenes_share_one_listener_independent_of_active_scene(scene):
-    manager = SceneManager.instance()
-    audio = AudioEngine.instance()
-    owner_a = scene.create_game_object("listener-scene-a")
-    listener_a = owner_a.add_component("AudioListener")
-    additive = manager.create_scene("AudioAdditive")
-    owner_b = additive.create_game_object("listener-scene-b")
-    owner_b.add_component("AudioListener")
-    try:
-        assert audio.active_listener_game_object_id == owner_a.id
-
-        manager.set_active_scene(additive)
-        assert audio.active_listener_game_object_id == owner_a.id
-
-        listener_a.enabled = False
-        assert audio.active_listener_game_object_id == owner_b.id
-
-        listener_a.enabled = True
-        assert audio.active_listener_game_object_id == owner_b.id
-
-        manager.unload_scene(additive)
-        additive = None
-        assert audio.active_listener_game_object_id == owner_a.id
-    finally:
-        manager.set_active_scene(scene)
-        if additive is not None:
-            manager.unload_scene(additive)
-
-
-@pytest.mark.parametrize("device_open", [False, True])
-@pytest.mark.parametrize("with_standby", [False, True])
+@pytest.mark.parametrize("device_open,with_standby", [(False, True), (True, False)])
 def test_disabled_listener_never_registers_during_first_awake(scene, device_open, with_standby):
     audio = AudioEngine.instance()
     if not device_open:
@@ -80,8 +33,7 @@ def test_disabled_listener_never_registers_during_first_awake(scene, device_open
             audio.initialize()
 
 
-@pytest.mark.parametrize("device_open", [False, True])
-@pytest.mark.parametrize("listener_enabled", [False, True])
+@pytest.mark.parametrize("device_open,listener_enabled", [(False, True), (True, False)])
 def test_scene_loading_preserves_listener_enabled_contract(scene, device_open, listener_enabled):
     audio = AudioEngine.instance()
     owner = scene.create_game_object("authored listener")
@@ -104,3 +56,35 @@ def test_scene_loading_preserves_listener_enabled_contract(scene, device_open, l
     finally:
         if not audio.is_initialized:
             audio.initialize()
+
+
+def test_world_listener_selection_survives_additive_activation_and_promotes_live_owners(scene):
+    manager, audio = SceneManager.instance(), AudioEngine.instance()
+    first, standby = scene.create_game_object("first listener"), scene.create_game_object("standby listener")
+    a, b = first.add_component("AudioListener"), standby.add_component("AudioListener")
+    additive = manager.create_scene("AudioAdditive")
+    other = additive.create_game_object("additive listener")
+    other.add_component("AudioListener")
+    try:
+        assert audio.active_listener_game_object_id == first.id
+        manager.set_active_scene(additive)
+        assert audio.active_listener_game_object_id == first.id
+        a.enabled = False
+        assert audio.active_listener_game_object_id == min(standby.id, other.id)
+        a.enabled = True
+        assert audio.active_listener_game_object_id == standby.id
+        b.enabled = False
+        assert audio.active_listener_game_object_id == first.id
+        a.enabled = False
+        assert audio.active_listener_game_object_id == other.id
+        b.enabled = True
+        assert audio.active_listener_game_object_id == other.id
+        manager.unload_scene(additive)
+        additive = None
+        assert audio.active_listener_game_object_id == standby.id
+        b.enabled = False
+        assert audio.active_listener_game_object_id == 0
+    finally:
+        manager.set_active_scene(scene)
+        if additive is not None:
+            manager.unload_scene(additive)

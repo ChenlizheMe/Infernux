@@ -126,12 +126,6 @@ class AsyncTransferContext
     [[nodiscard]] VkCommandBuffer Begin();
 
     /**
-     * @brief Submit a recorded command buffer and block until the GPU
-     *        signals completion.
-     */
-    void EndSync(VkCommandBuffer cmd);
-
-    /**
      * @brief Submit asynchronously. Returns a handle that can be polled
      *        via IsComplete() or blocked on via Wait(). The caller is
      *        responsible for keeping any source CPU staging memory alive

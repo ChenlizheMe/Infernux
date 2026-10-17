@@ -3,17 +3,15 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 """
 
 import math
-import os
 import time
-from infernux.lib import InxGUIContext, TextureLoader, InputManager
+from infernux.lib import InxGUIContext
 from infernux.engine.i18n import t
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol, ImGuiStyleVar
-from .viewport_utils import ViewportInfo, capture_viewport_info
+from .theme import Theme
+from .viewport_utils import capture_viewport_info
 from . import imgui_keys as _keys
-import infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants
 _SCENE_VIEWPORT_SEMANTIC_ID = "scene_view.viewport"

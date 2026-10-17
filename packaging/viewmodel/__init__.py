@@ -1,2 +1,2 @@
-from .control_pane_viewmodel import ControlPaneViewModel
-from .new_project_viewmodel import NewProjectViewModel
+from .control_pane_viewmodel import ControlPaneViewModel as ControlPaneViewModel
+from .new_project_viewmodel import NewProjectViewModel as NewProjectViewModel

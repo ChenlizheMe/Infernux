@@ -36,7 +36,7 @@ def player_native_library_filenames(platform_name: str | None = None) -> frozens
             "InfernuxRendererRuntime.dll",
             "InfernuxShaderCompiler.dll",
             "InfernuxVulkanBackend.dll",
-            "assimp-vc143-mt.dll",
+            "assimp.dll",
             "Jolt.dll",
             "SDL3.dll",
         })

@@ -592,10 +592,7 @@ void AssetRegistry::DrainPendingLoads() noexcept
             INXLOG_ERROR("AssetRegistry pending load outlived JobSystem: ", ticket->m_guid);
             continue;
         }
-        try {
-            JobSystem::Get().WaitPassive(ticket->m_job);
-        } catch (...) {
-        }
+        JobSystem::Get().WaitPassiveCompletion(ticket->m_job);
     }
     m_pendingLoads.clear();
     for (const auto &pending : m_pendingTextureStagingLoads) {
@@ -606,10 +603,7 @@ void AssetRegistry::DrainPendingLoads() noexcept
             INXLOG_ERROR("Texture upload staging outlived JobSystem: ", ticket->m_guid);
             continue;
         }
-        try {
-            JobSystem::Get().WaitPassive(ticket->m_job);
-        } catch (...) {
-        }
+        JobSystem::Get().WaitPassiveCompletion(ticket->m_job);
     }
     m_pendingTextureStagingLoads.clear();
 }

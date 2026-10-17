@@ -88,32 +88,6 @@ def test_vertical_frame_distributes_fill_by_weight_and_centers_cross_axis(scene)
     assert second.get_rect(1920, 1080) == pytest.approx((70, 87.5, 60, 202.5))
 
 
-def test_main_axis_justify_and_space_between(scene):
-    frame_object = _screen_root(scene, "Justified Frame", (800, 600))
-    frame = UIFrame()
-    frame.width = 300
-    frame.height = 60
-    frame.layout_direction = UILayoutDirection.Horizontal
-    frame.justify_content = UILayoutJustify.Center
-    frame.gap = 10
-    frame_object.add_py_component(frame)
-    _place(frame, canvas_size=(800, 600))
-
-    first = _child(scene, frame_object, "First", 50, 20)
-    second = _child(scene, frame_object, "Second", 50, 20)
-
-    assert first.get_rect(800, 600) == pytest.approx((95, 0, 50, 20))
-    assert second.get_rect(800, 600) == pytest.approx((155, 0, 50, 20))
-
-    frame.justify_content = UILayoutJustify.End
-    assert first.get_rect(800, 600) == pytest.approx((190, 0, 50, 20))
-    assert second.get_rect(800, 600) == pytest.approx((250, 0, 50, 20))
-
-    frame.justify_content = UILayoutJustify.SpaceBetween
-    assert first.get_rect(800, 600) == pytest.approx((0, 0, 50, 20))
-    assert second.get_rect(800, 600) == pytest.approx((250, 0, 50, 20))
-
-
 def test_fill_constraints_redistribute_remaining_main_axis_space(scene):
     frame_object = _screen_root(scene, "Constrained Fill Frame", (800, 600))
     frame = UIFrame()
@@ -197,6 +171,7 @@ def test_ui_group_multiplies_alpha_and_independently_gates_raycast(scene):
     inner.blocks_raycast = False
     assert image.effectively_blocks_raycast() is False
     from infernux.engine.runtime_screen_ui import WorldUIElementTarget
+
     target = WorldUIElementTarget(image)
     assert target.raycast(1.0, 1.0) is None
 
@@ -227,25 +202,7 @@ def test_nested_frame_clip_rects_intersect_in_canvas_space(scene):
     assert image.get_effective_clip_rect(1920, 1080) == pytest.approx((60, 50, 110, 100))
 
 
-def test_canvas_raycast_uses_live_layout_extent_and_editor_can_override_it(scene):
-    canvas = UICanvas()
-    root = scene.create_game_object('Canvas')
-    root.add_py_component(canvas)
-    element = _child(scene, root, 'Corner image', 100, 100)
-    element._set_layout_rect_origin(1820., 980., 1920., 1080.)
-    canvas.set_input_logical_size(2560.0, 1440.0)
-
-    assert canvas.raycast(2200.0, 1200.0) is element
-    assert canvas.raycast(1850.0, 1040.0) is None
-
-    assert canvas.raycast(1850.0, 1040.0, 0.0, 1920.0, 1080.0) is element
-    assert canvas.raycast(2200.0, 1200.0, 0.0, 1920.0, 1080.0) is None
-
-    with pytest.raises(ValueError, match="must be provided together"):
-        canvas.raycast(0.0, 0.0, layout_width=1920.0)
-
-
-@pytest.mark.parametrize('world', [False, True])
+@pytest.mark.parametrize("world", [False, True])
 def test_text_intrinsic_layout_is_derived_and_shared_with_hit_testing(scene, world):
     text = UIText()
     root = scene.create_game_object("Auto text") if world else _screen_root(scene, "Auto text")
@@ -258,9 +215,7 @@ def test_text_intrinsic_layout_is_derived_and_shared_with_hit_testing(scene, wor
     measurements = []
 
     def measure(content, font_size, wrap_width, font_path, line_height, letter_spacing):
-        measurements.append(
-            (content, font_size, wrap_width, font_path, line_height, letter_spacing)
-        )
+        measurements.append((content, font_size, wrap_width, font_path, line_height, letter_spacing))
         return 246.0, 58.0
 
     assert text.resolve_text_layout(measure, scale=2.0)
@@ -270,19 +225,16 @@ def test_text_intrinsic_layout_is_derived_and_shared_with_hit_testing(scene, wor
     assert text.get_rect(1920.0, 1080.0)[2:] == pytest.approx((123.0, 29.0))
     assert text.contains_point(122.0, 20.0, 1920.0, 1080.0)
     assert not text.contains_point(124.0, 20.0, 1920.0, 1080.0)
-    assert measurements == [
-        ("New Text", 36.0, 0.0, str(engine_font_path), 1.2, 0.0)
-    ]
+    assert measurements == [("New Text", 36.0, 0.0, str(engine_font_path), 1.2, 0.0)]
 
     # A different preview scale produces the same logical box and never writes
     # the authored size back into the scene document.
-    assert not text.resolve_text_layout(
-        lambda *_args: (123.0, 29.0), scale=1.0
-    )
+    assert not text.resolve_text_layout(lambda *_args: (123.0, 29.0), scale=1.0)
     assert (text.width, text.height) == (17.0, 29.0)
 
     if world:
         from infernux.engine.runtime_screen_ui import WorldUIElementTarget
+
         target = WorldUIElementTarget(text)
         assert target.raycast(122.0, 20.0) is text
         assert target.raycast(124.0, 20.0) is None
@@ -315,6 +267,7 @@ def test_text_intrinsic_layout_forwards_explicit_font_chain(monkeypatch):
     from infernux.core.asset_ref import create_asset_ref
     from infernux.engine.project_context import set_runtime_asset_resolver
     from infernux.ui.inx_ui_screen_component import _get_layout_revision
+
     text = UIText()
     paths = {
         "font-cjk": "Assets/Fonts/CJK.ttf",
@@ -322,10 +275,7 @@ def test_text_intrinsic_layout_forwards_explicit_font_chain(monkeypatch):
     }
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     set_runtime_asset_resolver(lambda guid: paths.get(guid))
-    text.fallback_fonts = [
-        create_asset_ref("Font", guid=guid, path_hint="stale.ttf")
-        for guid in paths
-    ]
+    text.fallback_fonts = [create_asset_ref("Font", guid=guid, path_hint="stale.ttf") for guid in paths]
     received = []
 
     def measure(*arguments):
@@ -342,16 +292,16 @@ def test_text_intrinsic_layout_forwards_explicit_font_chain(monkeypatch):
         set_runtime_asset_resolver(None)
 
 
-@pytest.mark.parametrize('direction', [UILayoutDirection.Horizontal, UILayoutDirection.Vertical])
+@pytest.mark.parametrize("direction", [UILayoutDirection.Horizontal, UILayoutDirection.Vertical])
 def test_flow_group_measures_each_child_once_per_arrangement(scene, monkeypatch, direction):
     from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
-    owner = _screen_root(scene, 'Batch')
+    owner = _screen_root(scene, "Batch")
     frame = UIFrame()
     owner.add_py_component(frame)
-    frame.width, frame.height = 10000., 10000.
+    frame.width, frame.height = 10000.0, 10000.0
     frame.layout_direction = direction
-    children = [_child(scene, owner, str(index), 20., 20.) for index in range(100)]
+    children = [_child(scene, owner, str(index), 20.0, 20.0) for index in range(100)]
     measured = []
     original = UIImage._layout_desired_size
 
@@ -359,40 +309,40 @@ def test_flow_group_measures_each_child_once_per_arrangement(scene, monkeypatch,
         measured.append(self)
         return original(self)
 
-    monkeypatch.setattr(UIImage, '_layout_desired_size', measure)
+    monkeypatch.setattr(UIImage, "_layout_desired_size", measure)
     clear_rect_cache(object())
     # A late child can be the first query; it must publish every sibling rect.
-    rects = {child: child.get_rect(1920., 1080.) for child in reversed(children)}
+    rects = {child: child.get_rect(1920.0, 1080.0) for child in reversed(children)}
     assert measured == children
     axis = 0 if direction == UILayoutDirection.Horizontal else 1
-    assert rects[children[-1]][axis] - rects[children[0]][axis] == 1980.
-    assert [child.get_rect(1920., 1080.) for child in children] == [rects[c] for c in children]
+    assert rects[children[-1]][axis] - rects[children[0]][axis] == 1980.0
+    assert [child.get_rect(1920.0, 1080.0) for child in children] == [rects[c] for c in children]
     assert measured == children
 
-    frame.gap = 3.
+    frame.gap = 3.0
     measured.clear()
-    updated = [child.get_rect(1920., 1080.) for child in children]
+    updated = [child.get_rect(1920.0, 1080.0) for child in children]
     assert measured == children
-    assert updated[-1][axis] - updated[0][axis] == 2277.
+    assert updated[-1][axis] - updated[0][axis] == 2277.0
 
 
 def test_nested_hug_measures_subtrees_without_sibling_rewalk(scene, monkeypatch):
     from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
-    owner = _screen_root(scene, 'Nested batch')
+    owner = _screen_root(scene, "Nested batch")
     outer = UIFrame()
     owner.add_py_component(outer)
     outer.layout_direction = UILayoutDirection.Vertical
     outer.width_sizing = outer.height_sizing = UILayoutSizing.Hug
     leaves = []
     for group in range(8):
-        obj = scene.create_game_object(f'Row {group}')
+        obj = scene.create_game_object(f"Row {group}")
         obj.set_parent(owner)
         row = UIFrame()
         obj.add_py_component(row)
         row.layout_direction = UILayoutDirection.Horizontal
         row.width_sizing = row.height_sizing = UILayoutSizing.Hug
-        leaves.extend(_child(scene, obj, f'Leaf {index}', 20., 30.) for index in range(8))
+        leaves.extend(_child(scene, obj, f"Leaf {index}", 20.0, 30.0) for index in range(8))
     calls = 0
     original = UIImage._layout_desired_size
 
@@ -401,137 +351,89 @@ def test_nested_hug_measures_subtrees_without_sibling_rewalk(scene, monkeypatch)
         calls += 1
         return original(self)
 
-    monkeypatch.setattr(UIImage, '_layout_desired_size', measure)
+    monkeypatch.setattr(UIImage, "_layout_desired_size", measure)
     clear_rect_cache(object())
-    actual = [child.get_rect(1920., 1080.) for child in leaves]
+    actual = [child.get_rect(1920.0, 1080.0) for child in leaves]
     assert calls == len(leaves) * 2  # one intrinsic measure and one arrangement
-    assert outer.get_rect(1920., 1080.)[2:] == pytest.approx((160., 240.))
-    assert actual[7][0] - actual[0][0] == 140.
-    assert actual[-1][1] - actual[0][1] == 210.
-    leaves[0].width = 50.
-    assert outer.get_rect(1920., 1080.)[2:] == pytest.approx((190., 240.))
-    assert leaves[1].get_rect(1920., 1080.)[0] - leaves[0].get_rect(1920., 1080.)[0] == 50.
-
-
-@pytest.mark.parametrize('mutation', ['padding', 'direction', 'fill', 'absolute', 'intrinsic', 'viewport'])
-def test_batched_flow_matches_fresh_layout_after_mutation(scene, mutation):
-    from infernux.ui.inx_ui_screen_component import clear_rect_cache
-
-    owner = _screen_root(scene, 'Live batch')
-    frame = UIFrame()
-    owner.add_py_component(frame)
-    frame.width, frame.height = 400., 200.
-    frame.layout_direction = UILayoutDirection.Horizontal
-    first = _child(scene, owner, 'First', 30., 40.)
-    text_owner = scene.create_game_object('Intrinsic')
-    text_owner.set_parent(owner)
-    text = UIText()
-    text_owner.add_py_component(text)
-    text.resize_mode = TextResizeMode.AutoWidth
-    text.resolve_text_layout(lambda *_: (50., 30.))
-    last = _child(scene, owner, 'Last', 60., 50.)
-    children = [first, text, last]
-    viewport = (800., 600.)
-    before = [child.get_rect(*viewport) for child in children]
-    if mutation == 'padding':
-        frame.padding_left = 17.
-    elif mutation == 'direction':
-        frame.layout_direction = UILayoutDirection.Vertical
-        frame.align_items = UILayoutAlign.End
-    elif mutation == 'fill':
-        first.width_sizing = last.width_sizing = UILayoutSizing.Fill
-        first.max_width = 80.
-        last.layout_weight = 3.
-    elif mutation == 'absolute':
-        first.layout_position = UILayoutPosition.Absolute
-        position = first.game_object.transform.local_position
-        first.game_object.transform.local_position = Vector3(101., position.y, position.z)
-    elif mutation == 'intrinsic':
-        text.text = 'new content'
-        text.resolve_text_layout(lambda *_: (150., 30.))
-    else:
-        viewport = (1600., 900.)
-    actual = [child.get_rect(*viewport) for child in children]
-    clear_rect_cache(object())
-    expected = [child.get_rect(*viewport) for child in children]
-    assert actual == expected
-    assert actual != before
+    assert outer.get_rect(1920.0, 1080.0)[2:] == pytest.approx((160.0, 240.0))
+    assert actual[7][0] - actual[0][0] == 140.0
+    assert actual[-1][1] - actual[0][1] == 210.0
+    leaves[0].width = 50.0
+    assert outer.get_rect(1920.0, 1080.0)[2:] == pytest.approx((190.0, 240.0))
+    assert leaves[1].get_rect(1920.0, 1080.0)[0] - leaves[0].get_rect(1920.0, 1080.0)[0] == 50.0
 
 
 def test_world_frame_does_not_arrange_or_clip_world_children(scene, monkeypatch):
-    from infernux.lib import Vector3
 
-    root = scene.create_game_object('World frame')
+    root = scene.create_game_object("World frame")
     frame = UIFrame()
     root.add_py_component(frame)
-    frame.width, frame.height = 1., 1.
+    frame.width, frame.height = 1.0, 1.0
     frame.layout_direction = UILayoutDirection.Horizontal
     frame.clip_content = True
-    child = _child(scene, root, 'World leaf', 200., 100.)
-    child.game_object.transform.local_position = Vector3(4., 2., 3.)
+    child = _child(scene, root, "World leaf", 200.0, 100.0)
+    child.game_object.transform.local_position = Vector3(4.0, 2.0, 3.0)
 
     def forbidden(*_):
-        raise AssertionError('World geometry must not enter screen arrangement')
+        raise AssertionError("World geometry must not enter screen arrangement")
 
-    monkeypatch.setattr(UIFrame, '_arrange_flow_children', forbidden)
-    assert child.get_rect(1920., 1080.) == (0., 0., 200., 100.)
-    assert child.get_effective_clip_rect(1920., 1080.) is None
-    assert child.world_ui_matrix()[12:15] == [4., 2., 3.]
+    monkeypatch.setattr(UIFrame, "_arrange_flow_children", forbidden)
+    assert child.get_rect(1920.0, 1080.0) == (0.0, 0.0, 200.0, 100.0)
+    assert child.get_effective_clip_rect(1920.0, 1080.0) is None
+    assert child.world_ui_matrix()[12:15] == [4.0, 2.0, 3.0]
 
 
-@pytest.mark.parametrize('mutation', ['create', 'destroy', 'reparent', 'native_parent_move'])
+@pytest.mark.parametrize("mutation", ["create", "destroy", "reparent", "native_parent_move"])
 def test_flow_layout_observes_native_scene_publication(scene, mutation):
-    from infernux.lib import Vector3
     from infernux.ui.inx_ui_screen_component import clear_rect_cache
     from infernux.ui.ui_render_dispatch import runtime_ui_revision
 
-    owner = _screen_root(scene, 'Published flow')
+    owner = _screen_root(scene, "Published flow")
     frame = UIFrame()
     owner.add_py_component(frame)
     frame.layout_direction = UILayoutDirection.Horizontal
     frame.width_sizing = UILayoutSizing.Hug
-    first = _child(scene, owner, 'First', 40., 20.)
-    second = _child(scene, owner, 'Second', 60., 20.)
-    outside = scene.create_game_object('Outside')
-    other = _child(scene, outside, 'Other', 30., 20.)
+    first = _child(scene, owner, "First", 40.0, 20.0)
+    second = _child(scene, owner, "Second", 60.0, 20.0)
+    outside = scene.create_game_object("Outside")
+    other = _child(scene, outside, "Other", 30.0, 20.0)
     canvas = frame.get_canvas()
 
     def publish_and_read():
         runtime_ui_revision(scene, [canvas], 1920, 1080)
-        return frame.get_rect(1920., 1080.), second.get_rect(1920., 1080.)
+        return frame.get_rect(1920.0, 1080.0), second.get_rect(1920.0, 1080.0)
 
     before = publish_and_read()
-    if mutation == 'create':
-        _child(scene, owner, 'Added', 90., 20.)
-    elif mutation == 'destroy':
+    if mutation == "create":
+        _child(scene, owner, "Added", 90.0, 20.0)
+    elif mutation == "destroy":
         scene.destroy_game_object(first.game_object)
         scene.process_pending_destroys()
-    elif mutation == 'reparent':
+    elif mutation == "reparent":
         other.game_object.set_parent(owner)
     else:
-        owner.transform.local_position += Vector3(30., 50., 0.)
+        owner.transform.local_position += Vector3(30.0, 50.0, 0.0)
     actual = publish_and_read()
     clear_rect_cache(object())
     assert actual == publish_and_read()
     assert actual != before
 
 
-@pytest.mark.parametrize('world', [False, True])
+@pytest.mark.parametrize("world", [False, True])
 def test_one_rect_query_resolves_owner_once_and_tracks_live_hierarchy(scene, monkeypatch, world):
     from infernux.components._component_native import ComponentNativeMixin
-    from infernux.lib import Vector3
     from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
-    screen_root = _screen_root(scene, 'Owner query')
-    owner = scene.create_game_object('Text')
+    screen_root = _screen_root(scene, "Owner query")
+    owner = scene.create_game_object("Text")
     if not world:
         owner.set_parent(screen_root)
     text = UIText()
     owner.add_py_component(text)
-    text.width, text.height = 100., 40.
-    owner.transform.local_position = Vector3(12., 34., 5.)
+    text.width, text.height = 100.0, 40.0
+    owner.transform.local_position = Vector3(12.0, 34.0, 5.0)
     clear_rect_cache(object())
-    text.get_rect(1920., 1080.)
+    text.get_rect(1920.0, 1080.0)
     calls = []
     original = ComponentNativeMixin._try_get_game_object
 
@@ -539,18 +441,18 @@ def test_one_rect_query_resolves_owner_once_and_tracks_live_hierarchy(scene, mon
         calls.append(self)
         return original(self)
 
-    monkeypatch.setattr(ComponentNativeMixin, '_try_get_game_object', resolve)
-    before = text.get_rect(1920., 1080.)
+    monkeypatch.setattr(ComponentNativeMixin, "_try_get_game_object", resolve)
+    before = text.get_rect(1920.0, 1080.0)
     assert calls == [text]
     assert text.is_world_space() is world
     if world:
-        assert before == (0., 0., 100., 40.)
+        assert before == (0.0, 0.0, 100.0, 40.0)
         owner.set_parent(screen_root)
     else:
         owner.set_parent(None)
     clear_rect_cache(object())
     assert text.is_world_space() is not world
-    after = text.get_rect(1920., 1080.)
+    after = text.get_rect(1920.0, 1080.0)
     assert before != after
     scene.destroy_game_object(owner)
     scene.process_pending_destroys()

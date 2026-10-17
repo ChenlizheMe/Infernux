@@ -59,8 +59,10 @@ struct EngineConfig
     // Rendering — Swapchain
     // ========================================================================
 
-    /// Max frames in flight for the renderer.
-    uint32_t maxFramesInFlight = 2;
+    /// Per-frame resource capacity shared by presentation and scene rendering.
+    static constexpr uint32_t kFrameSlotCapacity = 2;
+    /// Active frames in flight, from 1 through kFrameSlotCapacity.
+    uint32_t maxFramesInFlight = kFrameSlotCapacity;
 
     // ========================================================================
     // Physics — Jolt Configuration

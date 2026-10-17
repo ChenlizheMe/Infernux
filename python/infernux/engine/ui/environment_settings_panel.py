@@ -72,19 +72,15 @@ class EnvironmentSettingsPanel(EditorPanel):
 
     @staticmethod
     def _active_scene():
-        try:
-            from infernux.lib import SceneManager
-            return SceneManager.instance().get_active_scene()
-        except Exception:
-            return None
+        from infernux.lib import SceneManager
+
+        return SceneManager.instance().get_active_scene()
 
     @staticmethod
     def _asset_database():
-        try:
-            from infernux.lib import AssetRegistry
-            return AssetRegistry.instance().get_asset_database()
-        except Exception:
-            return None
+        from infernux.lib import AssetRegistry
+
+        return AssetRegistry.instance().get_asset_database()
 
     def _apply(self, scene, **changes) -> None:
         """Commit a partial environment update through the global journal."""
@@ -109,17 +105,16 @@ class EnvironmentSettingsPanel(EditorPanel):
             return self._mat_cache
         self._mat_cache = None
         self._mat_cache_guid = guid
-        try:
-            from infernux.core.material import Material
-            from infernux.lib import AssetRegistry
-            if guid:
-                native = AssetRegistry.instance().load_material_by_guid(guid)
-            else:
-                native = AssetRegistry.instance().get_builtin_material("SkyboxProcedural")
-            if native is not None:
-                self._mat_cache = Material(native)
-        except Exception:
-            self._mat_cache = None
+        from infernux.core.material import Material
+        from infernux.lib import AssetRegistry
+
+        registry = AssetRegistry.instance()
+        if guid:
+            native = registry.load_material_by_guid(guid)
+        else:
+            native = registry.get_builtin_material("SkyboxProcedural")
+        if native is not None:
+            self._mat_cache = Material(native)
         return self._mat_cache
 
     def _sky_material_controller(self, guid: str, mat):

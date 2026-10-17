@@ -6,7 +6,7 @@ import time
 
 
 INSTALL_MARKER_FILENAME = ".infernux-hub-install.json"
-WINDOWS_ACCESS_LAYOUT = 2
+WINDOWS_ACCESS_LAYOUT = 3
 
 
 def install_marker_path(install_dir: str) -> str:

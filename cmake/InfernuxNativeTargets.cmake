@@ -106,10 +106,14 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
             VK_NO_PROTOTYPES=1
             INFERNUX_USE_VOLK=1
         )
-        target_compile_options(${_infernux_target} PRIVATE
-            "$<$<COMPILE_LANGUAGE:C,CXX>:-include>"
-            "$<$<COMPILE_LANGUAGE:C,CXX>:volk.h>"
-        )
+        if(MSVC)
+            target_compile_options(${_infernux_target} PRIVATE /FIvolk.h)
+        else()
+            target_compile_options(${_infernux_target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:C,CXX>:-include>"
+                "$<$<COMPILE_LANGUAGE:C,CXX>:volk.h>"
+            )
+        endif()
     endforeach()
 endif()
 
@@ -164,12 +168,15 @@ if(MSVC)
             /MP
             /FS
             /bigobj
+            /W4
+            "$<$<CONFIG:RelWithDebInfo>:/UNDEBUG>"
         )
     endforeach()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    foreach(_infernux_target InfernuxRuntime _Infernux)
+    foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
         target_compile_options(${_infernux_target} PRIVATE
-            $<$<CONFIG:Release>:-O2>
+            -Wall -Wextra
+            "$<$<CONFIG:RelWithDebInfo>:-UNDEBUG>"
         )
     endforeach()
 endif()
@@ -255,10 +262,7 @@ foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     target_compile_definitions(${_infernux_target} PRIVATE
         GLM_FORCE_DEPTH_ZERO_TO_ONE
         GLM_FORCE_LEFT_HANDED
-        $<$<CONFIG:Debug>:INFERNUX_FILE_LOGGING=1>
-        $<$<CONFIG:RelWithDebInfo>:INFERNUX_FILE_LOGGING=1>
-        $<$<CONFIG:Release>:INFERNUX_FILE_LOGGING=1>
-        $<$<CONFIG:MinSizeRel>:INFERNUX_FILE_LOGGING=1>
+        INFERNUX_FILE_LOGGING=1
         $<$<CONFIG:Release>:INFERNUX_DEFERRED_FILE_LOGGING=1>
         $<$<CONFIG:MinSizeRel>:INFERNUX_DEFERRED_FILE_LOGGING=1>
         $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:INFERNUX_COMPILE_OUT_DEBUG_LOGS=1>
@@ -320,6 +324,6 @@ endif()
 if(NOT INFERNUX_ZSTD_TARGET)
     message(FATAL_ERROR
         "InfernuxFoundation requires the native InxPack Zstandard target; "
-        "set INFERNUX_ZSTD_SOURCE_DIR or enable INFERNUX_PLAYER_PACK_FETCH_ZSTD")
+        "initialize external/zstd_for_infernux with git submodule update --init --recursive")
 endif()
 target_link_libraries(InfernuxFoundation PRIVATE ${INFERNUX_ZSTD_TARGET})

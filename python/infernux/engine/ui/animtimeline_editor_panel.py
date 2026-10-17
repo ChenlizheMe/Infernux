@@ -992,8 +992,8 @@ class AnimTimelineEditorPanel(EditorPanel):
             elif not active and self._idle_suppressed:
                 native.set_editor_idle_enabled(self._idle_prev)
                 self._idle_suppressed = False
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            Debug.log_suppressed("AnimTimeline.editor_idle", exc)
 
     def _needs_full_speed_frames(self) -> bool:
         """Return whether timeline playback or interaction needs continuous frames."""
@@ -1058,10 +1058,10 @@ class AnimTimelineEditorPanel(EditorPanel):
         try:
             from .asset_resource_preview import _resolve_native_engine
             native = _resolve_native_engine(self)
-            if native is not None and hasattr(native, "pump_preview_tasks"):
+            if native is not None:
                 native.pump_preview_tasks()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            Debug.log_suppressed("AnimTimeline.pump_previews", exc)
 
     def _toggle_play(self):
         # Replaying from the end restarts (the preview plays once, no auto-loop).

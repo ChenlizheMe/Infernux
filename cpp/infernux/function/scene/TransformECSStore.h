@@ -384,7 +384,6 @@ class TransformECSStore
     TransformECSStore() = default;
 
     void SyncAllWorldMatrices();
-    void SyncObjectWorldMatrices(GameObject *obj);
     void EnsureFrameCacheSlot(uint32_t slotIndex);
     void MarkFrameCacheDirty(uint32_t slotIndex, uint8_t bits);
     void MarkWorldMatrixDirty(uint32_t slotIndex);

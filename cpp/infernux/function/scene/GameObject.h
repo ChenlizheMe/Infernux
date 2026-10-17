@@ -357,7 +357,6 @@ class GameObject : public NativeLifetimeOwner
     }
 
     /// @brief Get components sorted by execution order (ascending), then by stable component ID.
-    [[nodiscard]] std::vector<Component *> GetComponentsInExecutionOrder() const;
 
     /// @brief Return the serialized/Inspector component order.
     /// Transform is structurally fixed and is intentionally excluded.
@@ -523,6 +522,8 @@ class GameObject : public NativeLifetimeOwner
     void InvalidateComponentExecutionCache();
     void RefreshLifecycleDispatchFlags();
     [[nodiscard]] const std::vector<Component *> &GetComponentsInExecutionOrderCached() const;
+    [[nodiscard]] std::shared_ptr<const std::vector<ObjectHandle>> GetComponentDispatchSnapshot() const;
+    void DispatchUpdates(float deltaTime, void (Component::*update)(float), bool editMode = false);
 
     void CollectAllDescendants(std::vector<GameObject *> &out) const;
 
@@ -546,6 +547,7 @@ class GameObject : public NativeLifetimeOwner
     std::vector<std::unique_ptr<Component>> m_components;
     std::unordered_set<Component *> m_preparedPythonComponents;
     mutable std::vector<Component *> m_executionOrderCache;
+    mutable std::shared_ptr<const std::vector<ObjectHandle>> m_componentDispatchSnapshot;
     mutable bool m_executionOrderCacheDirty = true;
 
     GameObject *m_parent = nullptr;

@@ -6,7 +6,6 @@
 #include "InxVkCoreModular.h"
 #include "SceneRenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
-#include "vk/TransientResourcePool.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
@@ -397,10 +396,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
             m_graph ? m_graph->GetRenderViewContext().height : 1u, m_gizmoCtx.iconDpiScale);
         if (!iconResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
-        static size_t s_lastSubmittedIconDrawCalls = static_cast<size_t>(-1);
-        if (s_lastSubmittedIconDrawCalls != iconResult.drawCalls.size()) {
-            s_lastSubmittedIconDrawCalls = iconResult.drawCalls.size();
-        }
         for (auto &dc : iconResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
@@ -611,28 +606,6 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
     RenderDomainMask appendedDomains = 0;
     for (const auto &command : m_pendingCommands) {
         switch (command.type) {
-        case RenderCommandType::GetTemporaryRT: {
-            if (m_transientPool) {
-                const auto &params = std::get<GetTemporaryRTParams>(command.data);
-                uint32_t slotId = m_transientPool->Acquire(params.width, params.height, rhi::ToVkFormat(params.format),
-                                                           rhi::ToVkSampleCount(params.samples));
-                m_handleToSlotMap[params.handleId] = slotId;
-            }
-            break;
-        }
-
-        case RenderCommandType::ReleaseTemporaryRT: {
-            if (m_transientPool) {
-                const auto &params = std::get<ReleaseTemporaryRTParams>(command.data);
-                auto it = m_handleToSlotMap.find(params.handleId);
-                if (it != m_handleToSlotMap.end()) {
-                    m_transientPool->Release(it->second);
-                    m_handleToSlotMap.erase(it);
-                }
-            }
-            break;
-        }
-
         case RenderCommandType::DrawMesh: {
             const auto &params = std::get<DrawMeshParams>(command.data);
             if (!params.geometry || !params.material)
@@ -671,6 +644,8 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
         // a stream as a contract violation, never as successful execution.
         case RenderCommandType::ClearRenderTarget:
         case RenderCommandType::SetRenderTarget:
+        case RenderCommandType::GetTemporaryRT:
+        case RenderCommandType::ReleaseTemporaryRT:
             throw std::logic_error("Unsupported CommandBuffer target command reached execution; "
                                    "use RenderGraph pass write_color/write_depth and set_clear");
         }
@@ -682,10 +657,10 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
 bool ScriptableRenderContext::IsCommandImplemented(RenderCommandType type) noexcept
 {
     switch (type) {
-    case RenderCommandType::GetTemporaryRT:
-    case RenderCommandType::ReleaseTemporaryRT:
     case RenderCommandType::DrawMesh:
         return true;
+    case RenderCommandType::GetTemporaryRT:
+    case RenderCommandType::ReleaseTemporaryRT:
     case RenderCommandType::ClearRenderTarget:
     case RenderCommandType::SetRenderTarget:
         return false;

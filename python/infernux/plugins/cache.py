@@ -15,7 +15,7 @@ from typing import Iterable, Mapping
 from urllib.parse import quote
 
 from infernux.engine.path_utils import resolved_path, same_path
-from infernux.engine.user_data import DATA_ROOT_ENV, get_infernux_data_root
+from infernux.engine.user_data import get_infernux_data_root
 
 from infernux.engine.player_package_native import read_entry
 

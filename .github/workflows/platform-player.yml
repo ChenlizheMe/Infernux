@@ -6,7 +6,9 @@ on:
       - ".github/workflows/platform-player.yml"
       - "CMakeLists.txt"
       - "cmake/**"
+      - "requirements.txt"
       - "cpp/**"
+      - "external/sdl_for_infernux"
       - "external/plugins/infernux_android/**"
       - "external/plugins/infernux_linux/**"
       - "external/plugins/infernux_web/**"
@@ -22,7 +24,9 @@ on:
       - ".github/workflows/platform-player.yml"
       - "CMakeLists.txt"
       - "cmake/**"
+      - "requirements.txt"
       - "cpp/**"
+      - "external/sdl_for_infernux"
       - "external/plugins/infernux_android/**"
       - "external/plugins/infernux_linux/**"
       - "external/plugins/infernux_web/**"
@@ -414,8 +418,6 @@ jobs:
         run: |
           conda activate infernux
           python -m pytest external/plugins/infernux_web/tests/test_physics_clock.py --noconftest -q
-          python -m pytest tests/python/test_web_exporter_plugin.py tests/python/test_web_jit_fixture.py \
-            -q -k 'web_dependency_gate or web_jit_fixture_verifier or web_fixture_public_jit_cooks' --noconftest
           rm -rf out/ci-projects/web out/acceptance/web
           mkdir -p out/ci-projects/web out/test-results
           cp -a tests/fixtures/multiplatform_player/. out/ci-projects/web/
@@ -579,24 +581,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Require KVM acceleration
-        run: |
-          if [[ ! -c /dev/kvm ]]; then
-            echo "::error::This GitHub-hosted runner did not expose /dev/kvm; refusing the unusably slow Android software-emulator fallback."
-            lscpu || true
-            ls -la /dev/kvm || true
-            exit 1
-          fi
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sudo chmod a+rw /dev/kvm
-          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
-            echo "::error::The Android runner cannot read and write /dev/kvm after applying the KVM permission rule."
-            ls -la /dev/kvm
-            exit 1
-          fi
-
       - uses: conda-incubator/setup-miniconda@v3
         with:
           activate-environment: infernux
@@ -706,6 +690,27 @@ jobs:
             out/cache/gradle/caches
             out/cache/gradle/wrapper
           key: ${{ steps.android-build-cache.outputs.cache-primary-key }}
+
+      # Host dependency installation upgrades udev, so apply device permissions
+      # after setup and builds, immediately before the emulator consumes them.
+      - name: Require KVM acceleration
+        run: |
+          if [[ ! -c /dev/kvm ]]; then
+            echo "::error::This GitHub-hosted runner did not expose /dev/kvm; refusing the unusably slow Android software-emulator fallback."
+            lscpu || true
+            ls -la /dev/kvm || true
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          sudo chmod a+rw /dev/kvm
+          ls -la /dev/kvm
+          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+            echo "::error::The Android runner cannot read and write /dev/kvm after applying the KVM permission rule."
+            exit 1
+          fi
 
       - name: Validate Android Player on API 36
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d

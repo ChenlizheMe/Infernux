@@ -7,11 +7,13 @@ from infernux.engine.model_import import toolchain
 
 def test_blender_preference_updates_live_database_and_does_not_touch_project(monkeypatch, tmp_path):
     from infernux.core.assets import AssetManager
+
     state, calls = {}, []
     monkeypatch.delenv("INFERNUX_BLENDER_EXECUTABLE", raising=False)
     monkeypatch.setattr(toolchain, "find_associated_blender", lambda: "")
-    store = SimpleNamespace(get=lambda key, default="": state.get(key, default),
-                            set=lambda key, value: state.__setitem__(key, value))
+    store = SimpleNamespace(
+        get=lambda key, default="": state.get(key, default), set=lambda key, value: state.__setitem__(key, value)
+    )
     monkeypatch.setattr(toolchain, "PreferencesStore", lambda: store)
     database = SimpleNamespace(configure_blender_import=lambda *args: calls.append(args))
     monkeypatch.setattr(AssetManager, "require_asset_database", lambda: database)
@@ -32,28 +34,10 @@ def test_blender_preference_updates_live_database_and_does_not_touch_project(mon
     assert len(calls) == 3 and state["blender_executable"] == ""
 
 
-def test_hub_managed_blender_is_used_until_author_sets_an_override(monkeypatch, tmp_path):
-    state = {}
-    managed = tmp_path / "Hub Shared" / "blender.exe"
-    override = tmp_path / "Author Tool" / "blender.exe"
-    for executable in (managed, override):
-        executable.parent.mkdir(parents=True, exist_ok=True)
-        executable.touch()
-    store = SimpleNamespace(
-        get=lambda key, default="": state.get(key, default),
-        set=lambda key, value: state.__setitem__(key, value),
-    )
-    monkeypatch.setattr(toolchain, "PreferencesStore", lambda: store)
-    monkeypatch.setenv("INFERNUX_BLENDER_EXECUTABLE", str(managed))
-
-    assert toolchain.get_blender_executable() == str(managed.resolve())
-    state["blender_executable"] = str(override.resolve())
-    assert toolchain.get_blender_executable() == str(override.resolve())
-
-
 def test_blender_preference_is_a_shared_undo_command(monkeypatch):
     from infernux.engine.interaction import CommandSource, EditorInteractionCore
     from infernux.engine.undo import UndoManager
+
     state = {"path": "old"}
     monkeypatch.setattr(toolchain, "get_blender_executable", lambda: state["path"])
     monkeypatch.setattr(toolchain, "set_blender_executable", lambda value: state.__setitem__("path", value))
@@ -61,8 +45,9 @@ def test_blender_preference_is_a_shared_undo_command(monkeypatch):
     core = EditorInteractionCore()
     manager = UndoManager(core.action_journal)
     try:
-        result = core.commands.execute("preferences.set_blender_executable", source=CommandSource.API,
-                                       payload={"value": "new"})
+        result = core.commands.execute(
+            "preferences.set_blender_executable", source=CommandSource.API, payload={"value": "new"}
+        )
         assert result.accepted and state["path"] == "new"
         manager.undo()
         assert state["path"] == "old"

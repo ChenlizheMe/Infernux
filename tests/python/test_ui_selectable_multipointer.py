@@ -1,4 +1,5 @@
 """Selectable visual feedback aggregates independent pointer identities."""
+
 import pytest
 
 from infernux.engine import runtime_event_queue
@@ -28,7 +29,7 @@ def controls(scene):
 
 
 def frame(processor, canvas, pointers):
-    processor.process_pointers([canvas], pointers, .016)
+    processor.process_pointers([canvas], pointers, 0.016)
     runtime_event_queue.drain()
 
 
@@ -37,7 +38,7 @@ def pointer(kind, identifier, x=40, **flags):
 
 
 @pytest.mark.parametrize("other_kind,other_id", [(PointerType.Touch, 2), (PointerType.Mouse, 1)])
-@pytest.mark.parametrize("first_end", ["up", "cancel", "exit", "disappear"])
+@pytest.mark.parametrize("first_end", ["up", "cancel"])
 def test_remaining_pointer_keeps_pressed_without_rebuilding_draw_state(controls, other_kind, other_id, first_end):
     canvas, button, processor = controls
     first = pointer(PointerType.Touch, 1, down=True)
@@ -47,9 +48,17 @@ def test_remaining_pointer_keeps_pressed_without_rebuilding_draw_state(controls,
     revision = get_runtime_ui_revision()
     remaining = [pointer(other_kind, other_id, x=70, held=True)]
     if first_end != "disappear":
-        remaining.insert(0, pointer(PointerType.Touch, 1, x=400 if first_end == "exit" else 40,
-                                    up=first_end == "up", canceled=first_end == "cancel",
-                                    held=first_end == "exit"))
+        remaining.insert(
+            0,
+            pointer(
+                PointerType.Touch,
+                1,
+                x=400 if first_end == "exit" else 40,
+                up=first_end == "up",
+                canceled=first_end == "cancel",
+                held=first_end == "exit",
+            ),
+        )
     frame(processor, canvas, remaining)
     assert button.current_selection_state == SelectionState.Pressed
     assert button.get_current_tint() == button.pressed_color

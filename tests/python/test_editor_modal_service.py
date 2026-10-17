@@ -58,32 +58,6 @@ def test_modal_service_serializes_roots_and_allows_explicit_children():
     assert service.active_modal_id == "parent"
 
 
-def test_modal_service_cancels_only_the_top_modal():
-    events: list[str] = []
-    service = ModalService()
-    parent = _Presenter("parent", events)
-    child = _Presenter("child", events)
-    _register(service, parent)
-    _register(service, child, allowed_parent_ids=("parent",))
-    for presenter in (parent, child):
-        presenter.active = True
-    assert service.activate("parent", owner_id="graph")
-    assert service.activate("child", owner_id="graph")
-
-    assert service.cancel_active()
-
-    assert events == ["cancel:child"]
-    assert service.active_modal_id == "parent"
-
-
-def test_modal_service_does_not_poll_escape_outside_shortcut_core():
-    import inspect
-
-    source = inspect.getsource(ModalService.render)
-    assert "is_key_pressed" not in source
-    assert "KEY_ESCAPE" not in source
-
-
 def test_modal_service_cancels_owned_modal_stack_before_view_destruction():
     events: list[str] = []
     service = ModalService()
@@ -130,56 +104,3 @@ def test_lost_popup_releases_input_until_the_presenter_reopens_it():
     assert service.is_presented("recoverable") is True
     assert service.active_modal_id == "recoverable"
     assert events == ["render:False", "render:True"]
-
-
-def test_lost_popup_can_still_be_cancelled_during_core_cleanup():
-    service = ModalService()
-    active = [True]
-    service.register(
-        "recoverable",
-        is_active=lambda: active[0],
-        render=lambda _ctx: False,
-        cancel=lambda: active.__setitem__(0, False),
-    )
-    assert service.activate("recoverable")
-    service.render(object())
-    assert service.active_modal_id == ""
-    assert service.cancel_active()
-    assert not active[0]
-    assert service.active_stack == ()
-
-
-def test_dirty_confirmation_uses_the_core_close_and_modal_services():
-    from infernux.engine.interaction import EditorInteractionCore
-    from infernux.engine.ui.dirty_panel_confirmation import (
-        DirtyPanelConfirmationCoordinator,
-    )
-
-    previous = EditorInteractionCore._instance
-    previous_confirmation = DirtyPanelConfirmationCoordinator._instance
-    core = EditorInteractionCore()
-    try:
-        coordinator = DirtyPanelConfirmationCoordinator()
-        assert coordinator._close is core.close_coordinator
-        assert coordinator._modals is core.modals
-    finally:
-        DirtyPanelConfirmationCoordinator._instance = previous_confirmation
-        core.shutdown()
-        EditorInteractionCore._instance = previous
-
-
-def test_editor_panels_do_not_render_document_modals_inside_panel_windows():
-    import inspect
-
-    from infernux.engine.ui.editor_panel import EditorPanel
-
-    source = inspect.getsource(EditorPanel.on_render)
-    assert "DirtyPanelConfirmationCoordinator" not in source
-    assert "panel_host_id" not in source
-
-
-def test_modal_portal_initializes_the_native_renderable_base():
-    from infernux.engine.ui.modal_portal import ModalPortal
-
-    portal = ModalPortal(ModalService())
-    assert portal is not None

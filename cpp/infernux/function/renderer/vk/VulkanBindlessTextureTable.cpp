@@ -197,25 +197,22 @@ rhi::ResourceIndex VulkanBindlessTextureTable::Replace(rhi::ResourceIndex curren
     return replacement;
 }
 
-bool VulkanBindlessTextureTable::MarkUsed(rhi::ResourceIndex resource, rhi::SubmissionSerial serial) noexcept
-{
-    std::lock_guard lock(m_mutex);
-    return m_indices && m_indices->MarkUsed(resource, serial);
-}
-
 bool VulkanBindlessTextureTable::RetireAfter(rhi::ResourceIndex resource, rhi::SubmissionSerial serial) noexcept
 {
     std::lock_guard lock(m_mutex);
     return m_indices && m_indices->RetireAfter(resource, serial);
 }
 
-void VulkanBindlessTextureTable::MarkSetUsed(rhi::SubmissionSerial serial) noexcept
+void VulkanBindlessTextureTable::MarkUsed(const rhi::ResourceIndex *resources, size_t count,
+                                          rhi::SubmissionSerial serial) noexcept
 {
     if (serial == rhi::InvalidSubmissionSerial)
         return;
     std::lock_guard lock(m_mutex);
     if (m_descriptorManager != nullptr)
         m_descriptorManager->MarkUsed(m_descriptorLease, serial);
+    if (m_indices)
+        (void)m_indices->MarkUsed(resources, count, serial);
 }
 
 size_t VulkanBindlessTextureTable::Collect(rhi::SubmissionSerial completedSerial) noexcept

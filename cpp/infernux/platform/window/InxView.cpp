@@ -510,11 +510,29 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
 {
     bool hadInputEvent = false;
     bool forwardToImGui = true;
+    // Mouse releases still reach the SDL backend to clear its held-button
+    // bookkeeping; captured gameplay presses, motion and scroll are exclusive.
+    if (InputManager::Instance().IsCursorLocked() &&
+        (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+         event.type == SDL_EVENT_MOUSE_WHEEL))
+        forwardToImGui = false;
     if (InputManager::Instance().IsEditorMouseCaptureActive() && event.type == SDL_EVENT_MOUSE_MOTION) {
         forwardToImGui = false;
     }
 
     if (forwardToImGui) {
+        // A click after releasing capture may have no preceding motion event.
+        // The synthetic adapter already publishes its screen position separately.
+        if ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+            !InputManager::Instance().IsSyntheticInputFrame()) {
+            SDL_Event position{};
+            position.type = SDL_EVENT_MOUSE_MOTION;
+            position.motion.windowID = event.button.windowID;
+            position.motion.which = event.button.which;
+            position.motion.x = event.button.x;
+            position.motion.y = event.button.y;
+            ImGui_ImplSDL3_ProcessEvent(&position);
+        }
         // Dear ImGui's SDL backend does not consume SDL drop-position/file
         // events. Re-publish the drop coordinates as pointer motion first so
         // docked panels resolve the OS gesture against the actual drop target,
@@ -823,9 +841,8 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
 
 void InxView::NotifyGuiFrameBuilt() noexcept
 {
-    // This is called only after InxGUI::BuildFrameIfDue() returned true. It
-    // therefore marks the exact boundary at which ImGui::NewFrame() and the
-    // Python renderables have consumed the synthetic press state.
+    // ImGui::NewFrame() and the Python renderables have consumed the
+    // synthetic press state at this boundary.
     m_syntheticMouseButtonsReadyForRelease |= m_syntheticMouseButtonsAwaitingGuiFrame;
 }
 

@@ -426,14 +426,17 @@ void AudioEngine::Update(float deltaTime)
     glm::vec3 listenerRight(1.0f, 0.0f, 0.0f);
     bool hasListener = false;
 
-    if (m_activeListener) {
-        auto *listenerGO = m_activeListener->GetGameObject();
-        if (listenerGO) {
-            auto *listenerTr = listenerGO->GetTransform();
-            if (listenerTr) {
-                listenerPos = listenerTr->GetWorldPosition();
-                listenerRight = listenerTr->GetRight();
-                hasListener = true;
+    {
+        std::lock_guard<std::mutex> listenerLock(m_listenersMutex);
+        if (m_activeListener) {
+            auto *listenerGO = m_activeListener->GetGameObject();
+            if (listenerGO) {
+                auto *listenerTr = listenerGO->GetTransform();
+                if (listenerTr) {
+                    listenerPos = listenerTr->GetWorldPosition();
+                    listenerRight = listenerTr->GetRight();
+                    hasListener = true;
+                }
             }
         }
     }

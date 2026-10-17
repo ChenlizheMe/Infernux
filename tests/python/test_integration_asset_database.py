@@ -224,92 +224,70 @@ def test_authored_mesh_cooked_artifact_validates_and_loads_without_source(engine
             Path(f"{source}.meta").unlink(missing_ok=True)
 
 
-def test_mesh_copy_command_undo_redo_restores_identity(engine, tmp_path: Path):
-    from infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
+def test_copying_then_assigning_a_mesh_replays_file_guid_and_renderer_source_together(engine, scene, tmp_path, monkeypatch):
+    from infernux.lib import PrimitiveType
+    from infernux.engine.interaction import ComponentCommandService, EditorActionJournal, ProjectAssetCommandService, SelectionService
     from infernux.engine.undo import UndoManager
-
-    database = engine.get_asset_database()
-    registry = AssetRegistry.instance()
-    assets = tmp_path / "Assets"
+    database, registry = engine.get_asset_database(), AssetRegistry.instance()
+    assets = tmp_path/'Assets'
     assets.mkdir()
-    original = assets / "original.obj"
-    target = assets / "copy.inxmesh"
-    original.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
+    original, target = assets/'original.obj', assets/'copy.inxmesh'
+    original.write_text('v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n',encoding='ascii')
     original_guid = database.import_asset(str(original)).guid
-    _enable_mesh_read_write(database, original)
+    _enable_mesh_read_write(database,original)
+    monkeypatch.setattr(AssetManager,'_asset_database',database)
+    previous = UndoManager._instance
     manager = UndoManager(EditorActionJournal())
-    service = ProjectAssetCommandService(SelectionService())
-    service.configure(str(tmp_path), database)
+    files = ProjectAssetCommandService(SelectionService())
+    files.configure(str(tmp_path),database)
+    components = ComponentCommandService()
+    owner = scene.create_game_object('AssignedRenderer')
+    renderer = owner.add_component('MeshRenderer')
+    renderer.set_primitive_mesh(PrimitiveType.Cube)
+    before = renderer.serialize_document()
     try:
         mesh = registry.load_mesh_by_guid(original_guid)
-        saved = service.save_mesh_copy(mesh, str(target))
-        assert Path(saved) == target
+        assert Path(files.save_mesh_copy(mesh,str(target))) == target
         guid = database.get_guid_from_path(str(target))
         assert guid and guid != original_guid
         content = target.read_bytes()
-        with pytest.raises(FileExistsError):
-            service.save_mesh_copy(mesh, str(target))
+        with pytest.raises(FileExistsError): files.save_mesh_copy(mesh,str(target))
         manager.undo()
-        assert not target.exists()
-        assert not database.contains_guid(guid)
+        assert not target.exists() and not database.contains_guid(guid)
         manager.redo()
-        assert database.get_guid_from_path(str(target)) == guid
-        assert target.read_bytes() == content
-        _enable_mesh_read_write(database, target)
+        assert database.get_guid_from_path(str(target)) == guid and target.read_bytes() == content
+        _enable_mesh_read_write(database,target)
         assert registry.load_mesh_by_guid(guid).serialize_source() == content
-        occupied = assets / "occupied.inxmesh"
-
+        assert components.assign_mesh_asset(renderer,guid)
+        after = renderer.serialize_document()
+        assert after['meshAssetGuid'] == guid and not after.get('useInlineMesh',False)
+        assert not components.assign_mesh_asset(renderer,guid)
+        with pytest.raises(ValueError,match='registered Mesh'):
+            components.assign_mesh_asset(renderer,'missing-guid')
+        assert renderer.serialize_document() == after and len(manager.action_journal.applied_entries()) == 2
+        manager.undo()
+        assert renderer.serialize_document() == before
+        manager.undo()
+        assert not target.exists() and not database.contains_guid(guid)
+        manager.redo()
+        assert database.get_guid_from_path(str(target)) == guid and target.read_bytes() == content
+        manager.redo()
+        assert renderer.serialize_document() == after
+        occupied = assets/'occupied.inxmesh'
         class ConcurrentTarget:
             def serialize_source(self):
                 occupied.write_bytes(b"another author's file")
                 return content
-
-        with pytest.raises(RuntimeError):
-            service.save_mesh_copy(ConcurrentTarget(), str(occupied))
+        with pytest.raises(RuntimeError): files.save_mesh_copy(ConcurrentTarget(),str(occupied))
         assert occupied.read_bytes() == b"another author's file"
     finally:
-        service.shutdown()
-        if database.contains_path(str(target)):
-            database.delete_asset(str(target))
-        database.delete_asset(str(original))
-
-
-def test_mesh_assignment_command_restores_complete_source(engine, scene, tmp_path: Path, monkeypatch):
-    from infernux.lib import PrimitiveType
-    from infernux.engine.interaction import ComponentCommandService, EditorActionJournal
-    from infernux.engine.undo import UndoManager
-
-    database = engine.get_asset_database()
-    source = tmp_path / "assigned.obj"
-    monkeypatch.setattr(AssetManager, "_asset_database", database)
-    source.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
-    guid = database.import_asset(str(source)).guid
-    owner = scene.create_game_object("renderer")
-    renderer = owner.add_component("MeshRenderer")
-    renderer.set_primitive_mesh(PrimitiveType.Cube)
-    before = renderer.serialize_document()
-    previous_manager = UndoManager._instance
-    manager = UndoManager(EditorActionJournal())
-    service = ComponentCommandService()
-    try:
-        assert service.assign_mesh_asset(renderer, guid)
-        after = renderer.serialize_document()
-        assert after["meshAssetGuid"] == guid
-        assert not after.get("useInlineMesh", False)
-        manager.undo()
-        assert renderer.serialize_document() == before
-        manager.redo()
-        assert renderer.serialize_document() == after
-        assert not service.assign_mesh_asset(renderer, guid)
-        with pytest.raises(ValueError, match="registered Mesh"):
-            service.assign_mesh_asset(renderer, "missing-guid")
-        assert renderer.serialize_document() == after
-        assert len(manager.action_journal.applied_entries()) == 1
-    finally:
-        service.shutdown()
-        UndoManager._instance = previous_manager
+        files.shutdown()
+        components.shutdown()
+        manager.clear()
+        UndoManager._instance = previous
         scene.destroy_game_object(owner)
-        database.delete_asset(str(source))
+        if database.contains_path(str(target)): database.delete_asset(str(target))
+        database.delete_asset(str(original))
 
 
 def test_audio_import_rejects_mismatched_metadata_resource_type(engine, tmp_path: Path):
@@ -340,121 +318,32 @@ def test_audio_import_rejects_mismatched_metadata_resource_type(engine, tmp_path
             asset_db.delete_asset(str(source))
 
 
-def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
-    asset_db = engine.get_asset_database()
-    graph = AssetDependencyGraph.instance()
-    bloom = tmp_path / "Bloom.effect"
-    tone = tmp_path / "Tonemapping.effect"
-    group = tmp_path / "Basic Post Processing.effectgroup"
-
-    def effect_document(feature_type: str) -> dict:
-        return {
-            "$schema": "infernux.render_effect",
-            "feature_type": feature_type,
-            "parameters": {},
-            "dependencies": [],
-        }
-
-    bloom.write_text(json.dumps(effect_document("infernux.post.bloom")), encoding="utf-8")
-    tone.write_text(json.dumps(effect_document("infernux.post.tonemapping")), encoding="utf-8")
-
-    imported_paths = []
+def test_effect_group_import_and_reimport_follow_guid_slots_without_authoring_mount_scope(engine, tmp_path):
+    database, graph = engine.get_asset_database(), AssetDependencyGraph.instance()
+    bloom, tone, group = tmp_path/'Bloom.effect', tmp_path/'Tone.effect', tmp_path/'Group.effectgroup'
+    bloom.write_text(json.dumps({'$schema':'infernux.render_effect','feature_type':'infernux.post.bloom',
+        'parameters':{},'dependencies':[],'scope':'final'}),encoding='utf-8')
+    tone.write_text(json.dumps({'$schema':'infernux.render_effect','feature_type':'infernux.post.tonemapping',
+        'parameters':{},'dependencies':[]}),encoding='utf-8')
     try:
-        bloom_result = asset_db.import_asset(str(bloom))
-        tone_result = asset_db.import_asset(str(tone))
-        imported_paths.extend((bloom, tone))
+        bloom_result, tone_result = database.import_asset(str(bloom)), database.import_asset(str(tone))
         assert bloom_result and tone_result
-        assert bloom_result.resource_type == ResourceType.RenderEffect
-        assert tone_result.resource_type == ResourceType.RenderEffect
-
-        group.write_text(
-            json.dumps(
-                {
-                    "$schema": "infernux.render_effect_group",
-                    "entries": [
-                        {
-                            "entry_id": "bloom",
-                            "asset": {"guid": bloom_result.guid},
-                            "enabled": True,
-                            "overrides": {"intensity": 0.8},
-                        },
-                        {
-                            "entry_id": "tonemapping",
-                            "asset": {"guid": tone_result.guid},
-                            "enabled": True,
-                            "overrides": {},
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        group_result = asset_db.import_asset(str(group))
-        imported_paths.append(group)
-
-        assert group_result
-        assert group_result.resource_type == ResourceType.RenderEffect
-        assert set(graph.get_dependencies(group_result.guid)) == {
-            bloom_result.guid,
-            tone_result.guid,
-        }
+        assert bloom_result.resource_type == tone_result.resource_type == ResourceType.RenderEffect
+        assert database.get_guid_from_path(str(bloom)) == bloom_result.guid
+        entry = {'entry_id':'tone','asset':{'guid':'','path_hint':str(tone)},'enabled':True,'overrides':{}}
+        group.write_text(json.dumps({'$schema':'infernux.render_effect_group','entries':[entry]}),encoding='utf-8')
+        imported = database.import_asset(str(group))
+        assert imported and imported.resource_type == ResourceType.RenderEffect
+        assert database.contains_path(str(group)) and graph.get_dependencies(imported.guid) == set()
+        entry['asset'] = {'guid':tone_result.guid}
+        bloom_entry = {'entry_id':'bloom','asset':{'guid':bloom_result.guid},'enabled':True,'overrides':{'intensity':.8}}
+        group.write_text(json.dumps({'$schema':'infernux.render_effect_group','entries':[bloom_entry,entry]}),encoding='utf-8')
+        assert database.reimport_asset(str(group))
+        assert database.get_guid_from_path(str(group)) == imported.guid
+        assert set(graph.get_dependencies(imported.guid)) == {bloom_result.guid,tone_result.guid}
     finally:
-        for path in reversed(imported_paths):
-            if asset_db.contains_path(str(path)):
-                asset_db.delete_asset(str(path))
-
-
-def test_render_effect_import_ignores_path_only_dependency(engine, tmp_path: Path):
-    asset_db = engine.get_asset_database()
-    source = tmp_path / "Path Only.effectgroup"
-    source.write_text(
-        json.dumps(
-            {
-                "$schema": "infernux.render_effect_group",
-                "entries": [
-                    {
-                        "entry_id": "tone",
-                        "asset": {
-                            "guid": "",
-                            "path_hint": "Assets/Rendering/Tone.effect",
-                        },
-                        "enabled": True,
-                        "overrides": {},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = asset_db.import_asset(str(source))
-
-    assert result
-    assert asset_db.contains_path(str(source))
-    assert AssetDependencyGraph.instance().get_dependencies(result.guid) == set()
-
-
-def test_render_effect_import_does_not_consume_mount_scope_in_asset(engine, tmp_path: Path):
-    asset_db = engine.get_asset_database()
-    source = tmp_path / "InvalidScope.effect"
-    source.write_text(
-        json.dumps(
-            {
-                "$schema": "infernux.render_effect",
-                "feature_type": "infernux.route.pixelation",
-                "parameters": {},
-                "dependencies": [],
-                "scope": "final",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = asset_db.import_asset(str(source))
-
-    assert result
-    assert asset_db.contains_path(str(source))
-    assert asset_db.get_guid_from_path(str(source)) == result.guid
+        for path in (group,tone,bloom):
+            if database.contains_path(str(path)): database.delete_asset(str(path))
 
 
 def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path):
@@ -637,8 +526,6 @@ def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engin
         if asset_db.contains_path(str(source)):
             asset_db.delete_asset(str(source))
         ParticleArtifactRegistry.clear()
-
-
 
 
 def test_vector_field_import_exposes_immutable_volume_generations(engine, tmp_path: Path):
@@ -843,37 +730,35 @@ def test_dependency_graph_separates_asset_and_runtime_domains():
         graph.clear_runtime_dependencies_of(runtime_user)
 
 
-def test_asset_database_canonical_crud_preserves_guid(engine, tmp_path: Path):
-    asset_db = engine.get_asset_database()
-    source = tmp_path / "canonical_asset.txt"
-    source.write_text("first", encoding="utf-8")
-
-    import_result = asset_db.import_asset(str(source))
-    assert import_result
-    guid = import_result.guid
-    assert asset_db.get_guid_from_path(str(source)) == guid
-    assert Path(asset_db.get_path_from_guid(guid)).resolve() == source.resolve()
-    assert asset_db.get_meta_by_path(str(source)).get_guid() == guid
-    catalog = asset_db.get_directory_catalog(str(tmp_path))
-    catalog_entry = next(entry for entry in catalog if entry["guid"] == guid)
-    assert Path(catalog_entry["path"]).resolve() == source.resolve()
-    assert catalog_entry["name"] == source.name
-    assert catalog_entry["size"] == len("first")
-    assert asset_db.catalog_generation == asset_db.query_generation
-
-    moved = tmp_path / "canonical_asset_moved.txt"
+def test_asset_database_import_reimport_move_and_delete_keep_one_guid_and_catalog(engine, tmp_path):
+    database = engine.get_asset_database()
+    source = tmp_path / 'canonical_asset.txt'
+    source.write_text('first',encoding='utf-8')
+    imported = database.import_asset(str(source))
+    assert imported
+    guid = imported.guid
+    assert database.get_guid_from_path(str(source)) == guid
+    assert Path(database.get_path_from_guid(guid)).resolve() == source.resolve()
+    assert database.get_meta_by_path(str(source)).get_guid() == guid
+    entry = next(item for item in database.get_directory_catalog(str(tmp_path)) if item['guid'] == guid)
+    assert Path(entry['path']).resolve() == source.resolve()
+    assert entry['name'] == source.name and entry['size'] == len('first')
+    assert database.catalog_generation == database.query_generation
+    source.write_text('second',encoding='utf-8')
+    assert database.reimport_asset(str(source)) and database.get_guid_from_path(str(source)) == guid
+    unregistered = tmp_path / 'unregistered.txt'
+    unregistered.write_text('content',encoding='utf-8')
+    failed = database.reimport_asset(str(unregistered))
+    assert not failed and failed.error_code == AssetMutationErrorCode.NOT_FOUND and failed.error
+    moved = tmp_path / 'canonical_asset_moved.txt'
     source.replace(moved)
-    assert asset_db.move_asset(str(source), str(moved))
-    assert asset_db.get_guid_from_path(str(moved)) == guid
-    assert not asset_db.contains_path(str(source))
-    moved_catalog = asset_db.get_directory_catalog(str(tmp_path))
-    assert next(entry for entry in moved_catalog if entry["guid"] == guid)["name"] == moved.name
-
+    assert database.move_asset(str(source),str(moved))
+    assert database.get_guid_from_path(str(moved)) == guid and not database.contains_path(str(source))
+    assert next(item for item in database.get_directory_catalog(str(tmp_path)) if item['guid'] == guid)['name'] == moved.name
     moved.unlink()
-    assert asset_db.delete_asset(str(moved))
-    assert not asset_db.contains_guid(guid)
-    assert not Path(f"{moved}.meta").exists()
-    assert all(entry["guid"] != guid for entry in asset_db.get_directory_catalog(str(tmp_path)))
+    assert database.delete_asset(str(moved))
+    assert not database.contains_guid(guid) and not Path(str(moved)+'.meta').exists()
+    assert all(item['guid'] != guid for item in database.get_directory_catalog(str(tmp_path)))
 
 
 def test_asset_database_does_not_expose_legacy_resource_crud(engine):
@@ -1189,24 +1074,6 @@ def test_material_import_artifact_commits_metadata_and_dependencies_atomically(
         asset_db.delete_asset(str(fragment))
 
 
-def test_asset_database_explicit_reimport_preserves_guid(engine, tmp_path: Path):
-    asset_db = engine.get_asset_database()
-    source = tmp_path / "reimport.txt"
-    source.write_text("first", encoding="utf-8")
-    guid = asset_db.import_asset(str(source)).guid
-
-    source.write_text("second", encoding="utf-8")
-    assert asset_db.reimport_asset(str(source))
-    assert asset_db.get_guid_from_path(str(source)) == guid
-
-    unregistered = tmp_path / "unregistered.txt"
-    unregistered.write_text("content", encoding="utf-8")
-    missing = asset_db.reimport_asset(str(unregistered))
-    assert not missing
-    assert missing.error_code == AssetMutationErrorCode.NOT_FOUND
-    assert missing.error
-
-
 def test_asset_database_rejects_worker_thread_mutation(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "worker.txt"
@@ -1467,24 +1334,6 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
         asset_db.refresh()
 
 
-def test_asset_database_async_refresh_commits_worker_artifact(engine):
-    asset_db = engine.get_asset_database()
-    asset_db.begin_refresh()
-    assert asset_db.refresh_pending is True
-    with pytest.raises(RuntimeError, match="already pending"):
-        asset_db.begin_refresh()
-
-    asset_db.complete_pending_refresh()
-
-    assert asset_db.refresh_pending is False
-    assert asset_db.last_refresh_scan_on_worker is True
-    if asset_db.last_refresh_imported_count:
-        assert asset_db.last_refresh_query_build_on_worker is True
-
-    with pytest.raises(RuntimeError, match="no pending refresh"):
-        asset_db.complete_pending_refresh()
-
-
 def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
     engine, tmp_path: Path
 ):
@@ -1504,6 +1353,8 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
 
     try:
         asset_db.begin_refresh()
+        with pytest.raises(RuntimeError, match="already pending"):
+            asset_db.begin_refresh()
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             assert asset_db.try_commit_refresh() is False
@@ -1535,6 +1386,17 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
         assert asset_db.contains_path(str(model)) is True
         assert asset_db.get_meta_by_path(str(model)).get_int("mesh_count") == 1
         assert Path(f"{model}.meta").is_file()
+        assert asset_db.last_refresh_scan_on_worker is True
+        assert asset_db.last_refresh_query_build_on_worker is True
+        with pytest.raises(RuntimeError, match="no pending refresh"):
+            asset_db.complete_pending_refresh()
+        asset_db.begin_refresh()
+        assert asset_db.refresh_pending is True
+        asset_db.complete_pending_refresh()
+        assert asset_db.refresh_pending is False
+        assert asset_db.last_refresh_scan_on_worker is True
+        if asset_db.last_refresh_imported_count:
+            assert asset_db.last_refresh_query_build_on_worker is True
     finally:
         if asset_db.refresh_pending:
             deadline = time.monotonic() + 10.0

@@ -141,7 +141,6 @@ class VkShaderCache
     // ── Debug Helpers ──────────────────────────────────────────────────────
 
     /// Dump available shader code keys (for diagnostics).
-    void DumpAvailableKeys(std::string &outVert, std::string &outFrag) const;
 
   private:
     /// Path-aware lookup: tries exact match, filename, then stem.

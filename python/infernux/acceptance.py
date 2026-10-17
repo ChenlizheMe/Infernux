@@ -19,7 +19,6 @@ import time
 from typing import Any, Mapping, Optional
 
 from infernux.application import Application
-from infernux.debug import Debug
 from infernux.engine.path_utils import (
     is_path_within,
     portable_path,

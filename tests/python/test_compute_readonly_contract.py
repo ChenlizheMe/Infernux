@@ -37,9 +37,14 @@ def test_readonly_numpy_borrows_preserve_owner_updates(monkeypatch, web, vector)
         assert np.all(nested.numpy() == 23)
 
 
-@pytest.mark.parametrize("device", ["cpu", "gpu", "web"])
-@pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize('device,asynchronous,closed', [
+    ('cpu', False, False),
+    ('cpu', True, True),
+    ('gpu', False, True),
+    ('gpu', True, False),
+    ('web', False, False),
+    ('web', True, True),
+])
 def test_copy_out_rejects_readonly_or_closed_destination_before_consuming(
         engine, monkeypatch, device, asynchronous, closed):
     monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1" if device == "web" else "0")

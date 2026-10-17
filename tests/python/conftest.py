@@ -253,11 +253,15 @@ def cpp_rigidbody(scene):
 def _reset_input_state():
     """Reset Input focus state between every test."""
     InputManager.instance().reset_all()
+    InputManager.instance().set_editor_cursor_capture_allowed(True)
+    InputManager.instance().set_editor_game_viewport((0, 0, 64, 64), (0, 0, 64, 64))
     Input._game_focused = True
     Input._automation_game_input_depth = 0
     Input._game_viewport_origin = (0.0, 0.0)
     yield
     InputManager.instance().reset_all()
+    InputManager.instance().set_editor_cursor_capture_allowed(True)
+    InputManager.instance().set_editor_game_viewport((0, 0, 64, 64), (0, 0, 64, 64))
     Input._game_focused = True
     Input._automation_game_input_depth = 0
     Input._game_viewport_origin = (0.0, 0.0)

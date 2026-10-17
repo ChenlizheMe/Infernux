@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QApplication,
     QGraphicsOpacityEffect, QComboBox, QLineEdit, QFrame,
 )
-from PySide6.QtCore import Signal, Qt, QPropertyAnimation, Property, QEasingCurve, QRectF, QSize
+from PySide6.QtCore import Signal, Qt, QPropertyAnimation, Property, QEasingCurve, QRectF
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QPixmap, QPen
 
 from style import StyleManager

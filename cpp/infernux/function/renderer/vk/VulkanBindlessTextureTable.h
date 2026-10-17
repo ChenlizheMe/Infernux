@@ -70,9 +70,7 @@ class VulkanBindlessTextureTable final
                                                         VkImageView imageView, VkSampler sampler);
     [[nodiscard]] rhi::ResourceIndex Replace(rhi::ResourceIndex current, VkImageView view, VkSampler sampler,
                                              std::shared_ptr<const void> owner, rhi::SubmissionSerial retireAfter);
-    [[nodiscard]] bool MarkUsed(rhi::ResourceIndex resource, rhi::SubmissionSerial serial) noexcept;
-    /// Mark the shared global descriptor lease used by a submission.
-    void MarkSetUsed(rhi::SubmissionSerial serial) noexcept;
+    void MarkUsed(const rhi::ResourceIndex *resources, size_t count, rhi::SubmissionSerial serial) noexcept;
     [[nodiscard]] bool RetireAfter(rhi::ResourceIndex resource, rhi::SubmissionSerial serial) noexcept;
     [[nodiscard]] size_t Collect(rhi::SubmissionSerial completedSerial) noexcept;
 

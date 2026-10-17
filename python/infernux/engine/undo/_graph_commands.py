@@ -70,8 +70,6 @@ class GraphDiffCommand(UndoCommand):
     def undo(self) -> None:
         self._apply(self._diff.inverted())
 
-    def redo(self) -> None:
-        self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
         left = self._diff.mutations

@@ -35,6 +35,15 @@ inline void TestCompoundColliderPublication()
         sensor->SetIsTrigger(true);
         solid->SetEnabled(false);
         third->SetEnabled(false);
+        if (cycle == 0) {
+            solid->SetComponentID((uint64_t{1} << 40) + 7);
+            auto *sameLowBits = owner->AddComponent<BoxCollider>();
+            sameLowBits->SetComponentID(solid->GetComponentID() + (uint64_t{1} << 32));
+            sameLowBits->SetCenter(glm::vec3(18, 0, 0));
+            expect(18, false, sameLowBits);
+            if (!owner->RemoveComponent(sameLowBits))
+                throw std::runtime_error("64-bit compound member removal failed");
+        }
         expect(6, true, sensor);
         expect(6, false, nullptr);
         solid->SetEnabled(true);

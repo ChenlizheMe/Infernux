@@ -46,120 +46,6 @@ bool InxGUIContext::IsPointerActivationBlockedByPopup() const
     return m_popupOwnedPointerAtFrameStart || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
 }
 
-MaterialTopInteraction
-InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const std::string &vertexLabel,
-                                 const std::string &vertexDisplay, const std::string &fragmentLabel,
-                                 const std::string &fragmentDisplay, float shaderLabelWidth,
-                                 const std::string &surfaceSectionLabel, const PropertyBatchPlan *surfacePlan,
-                                 float surfaceLabelWidth, uint64_t pickerTextureId, uint64_t previewTextureId,
-                                 const std::string &previewUnavailableLabel, bool defaultOpen, bool readOnly)
-{
-    MaterialTopInteraction result;
-    if (!CanRenderWidgets())
-        return result;
-    const float dpi = GetDpiScale();
-
-    auto themeColor = [](const char *name) {
-        const ImVec4 color = EditorThemeRegistry::Color(name);
-        return std::array<float, 4>{color.x, color.y, color.z, color.w};
-    };
-    auto renderSectionHeader = [&](const std::string &label) {
-        const ImVec2 framePad = EditorThemeRegistry::Vec2("INSPECTOR_HEADER_SECONDARY_FRAME_PAD");
-        const ImVec2 itemSpacing = EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC");
-        return RenderCompactSectionHeader(
-            label, 0, defaultOpen, ImGuiCond_FirstUseEver, false, framePad.x * dpi, framePad.y * dpi,
-            itemSpacing.x * dpi, itemSpacing.y * dpi, EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE") * dpi,
-            true, EditorThemeRegistry::Float("INSPECTOR_HEADER_SECONDARY_FONT_SCALE"),
-            EditorThemeRegistry::Float("INSPECTOR_HEADER_RIGHT_MARGIN") * dpi,
-            EditorThemeRegistry::Float("COMPONENT_ICON_SIZE") * dpi, themeColor("INSPECTOR_HEADER_SECONDARY"),
-            themeColor("INSPECTOR_HEADER_SECONDARY_HOVERED"), themeColor("INSPECTOR_HEADER_SECONDARY_ACTIVE"), false,
-            themeColor("TEXT"));
-    };
-
-    const float scaledShaderLabelWidth = shaderLabelWidth * dpi;
-    const float scaledSurfaceLabelWidth = surfaceLabelWidth * dpi;
-    const float totalWidth = (std::max)(1.0f * dpi, GetContentRegionAvailWidth());
-    const float columnPadding = ImGui::GetStyle().CellPadding.x * 4.0f;
-    const float usableWidth = (std::max)(2.0f * dpi, totalWidth - columnPadding);
-    const float controlsMinWidth =
-        (std::max)(260.0f * dpi, (std::max)(scaledShaderLabelWidth, scaledSurfaceLabelWidth) + 170.0f * dpi);
-    const float previewColumnWidth = std::clamp(usableWidth - controlsMinWidth, 10.0f * dpi, 200.0f * dpi);
-    const float controlsColumnWidth = (std::max)(1.0f * dpi, usableWidth - previewColumnWidth);
-    const int tableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-    const bool split = BeginTable("##material_top_split", 2, tableFlags, totalWidth);
-    if (split) {
-        ImGui::TableSetupColumn("##material_controls", ImGuiTableColumnFlags_WidthFixed, controlsColumnWidth);
-        ImGui::TableSetupColumn("##material_preview", ImGuiTableColumnFlags_WidthFixed, previewColumnWidth);
-        TableNextColumn();
-    }
-    if (readOnly)
-        BeginDisabled();
-
-    auto renderShaderField = [&](const char *fieldId, const std::string &label, const std::string &display,
-                                 const char *typeHint, const char *semanticId, uint32_t &flags, bool &popupOpen,
-                                 std::string &payload) {
-        AlignTextToFramePadding();
-        Label(label);
-        SameLine(scaledShaderLabelWidth);
-        SetNextItemWidth(-1.0f);
-        flags = RenderObjectFieldChrome(fieldId, display, typeHint, false, true, true, pickerTextureId, semanticId);
-        PushStyleColor(ImGuiCol_DragDropTarget, 0, 0, 0, 0);
-        if (BeginDragDropTarget()) {
-            AcceptDragDropPayload("SHADER_FILE", &payload);
-            EndDragDropTarget();
-        }
-        PopStyleColor();
-        PushID(fieldId);
-        popupOpen = ImGui::IsPopupOpen("##obj_picker");
-        PopID();
-    };
-
-    if (renderSectionHeader(shaderSectionLabel)) {
-        renderShaderField("mat_vert", vertexLabel, vertexDisplay, "Vert", "asset.material.shader.vertex",
-                          result.vertexFlags, result.vertexPickerOpen, result.vertexPayload);
-        renderShaderField("mat_frag", fragmentLabel, fragmentDisplay, "Frag", "asset.material.shader.fragment",
-                          result.fragmentFlags, result.fragmentPickerOpen, result.fragmentPayload);
-    }
-
-    Separator();
-    if (renderSectionHeader(surfaceSectionLabel) && surfacePlan)
-        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, scaledSurfaceLabelWidth,
-                                                    &result.activeSurfaceIndex, &result.deactivatedSurfaceIndex);
-
-    if (readOnly)
-        EndDisabled();
-
-    if (split) {
-        TableNextColumn();
-        const float availableWidth = (std::max)(1.0f, GetContentRegionAvailWidth());
-        const float previewSize = std::clamp(availableWidth, 1.0f, 200.0f);
-        if (previewTextureId != 0) {
-            const float drawSize = (std::max)(1.0f, (std::min)(availableWidth, previewSize));
-            const float offsetY = (std::max)((previewSize - drawSize) * 0.5f, 0.0f);
-            if (offsetY > 0.0f)
-                Dummy(1.0f, offsetY);
-            const float offsetX = (std::max)((availableWidth - drawSize) * 0.5f, 0.0f);
-            if (offsetX > 0.0f)
-                SetCursorPosX(GetCursorPosX() + offsetX);
-            Image(reinterpret_cast<void *>(static_cast<uintptr_t>(previewTextureId)), drawSize, drawSize);
-            const float remainingY = (std::max)(previewSize - drawSize - offsetY, 0.0f);
-            if (remainingY > 0.0f)
-                Dummy(1.0f, remainingY);
-        } else {
-            const ImVec4 metaText = EditorThemeRegistry::Color("META_TEXT");
-            PushStyleColor(ImGuiCol_Text, metaText.x, metaText.y, metaText.z, metaText.w);
-            Label(previewUnavailableLabel);
-            PopStyleColor();
-        }
-        EndTable();
-    }
-    Separator();
-
-    result.vertexListPopupOpen = ImGui::IsPopupOpen("mat_vert_popup");
-    result.fragmentListPopupOpen = ImGui::IsPopupOpen("mat_frag_popup");
-    return result;
-}
-
 namespace
 {
 ImTextureID ToImTextureID(uint64_t textureId)
@@ -804,6 +690,54 @@ void InxGUIContext::EndGroup()
     ImGui::EndGroup();
 }
 
+void InxGUIContext::FieldLabel(const std::string &text, float columnWidth)
+{
+    const float width = std::min(columnWidth, std::max(0.0f, ImGui::GetContentRegionAvail().x - 48.0f * GetDpiScale()));
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::AlignTextToFramePadding();
+    ImGui::Dummy(ImVec2(width, ImGui::GetFrameHeight()));
+    const ImRect clip(origin, ImVec2(origin.x + width, origin.y + ImGui::GetFrameHeight()));
+    ImGui::RenderTextClipped(clip.Min, clip.Max, text.c_str(), nullptr, nullptr, ImVec2(0, 0.5f), &clip);
+    if (ImGui::IsItemHovered() && ImGui::CalcTextSize(text.c_str()).x > width)
+        ImGui::SetTooltip("%s", text.c_str());
+    ImGui::SameLine(0, 0);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
+void InxGUIContext::BeginFramedGroup(float paddingX, float paddingY, float rounding,
+                                     const std::array<float, 4> &background, const std::array<float, 4> &border)
+{
+    if (m_framedGroupDepth == m_framedGroups.size())
+        m_framedGroups.emplace_back();
+    auto &group = m_framedGroups[m_framedGroupDepth++];
+    group.drawList = ImGui::GetWindowDrawList();
+    group.paddingX = paddingX;
+    group.paddingY = paddingY;
+    group.width = ImGui::GetContentRegionAvail().x + paddingX * 2;
+    group.rounding = rounding;
+    group.background = ImGui::GetColorU32(ImVec4(background[0], background[1], background[2], background[3]));
+    group.border = ImGui::GetColorU32(ImVec4(border[0], border[1], border[2], border[3]));
+    group.splitter.Split(group.drawList, 2);
+    group.splitter.SetCurrentChannel(group.drawList, 1);
+    ImGui::BeginGroup();
+    ImGui::Dummy(ImVec2(0, paddingY));
+}
+
+void InxGUIContext::EndFramedGroup()
+{
+    auto &group = m_framedGroups[--m_framedGroupDepth];
+    ImGui::Dummy(ImVec2(0, group.paddingY));
+    ImGui::EndGroup();
+    ImVec2 minimum = ImGui::GetItemRectMin();
+    const float bottom = ImGui::GetItemRectMax().y;
+    minimum.x -= group.paddingX;
+    const ImVec2 maximum(minimum.x + group.width, bottom);
+    group.splitter.SetCurrentChannel(group.drawList, 0);
+    group.drawList->AddRectFilled(minimum, maximum, group.background, group.rounding);
+    group.drawList->AddRect(minimum, maximum, group.border, group.rounding);
+    group.splitter.Merge(group.drawList);
+}
+
 void InxGUIContext::SameLine(float offsetFromStartX, float spacing)
 {
     ImGui::SameLine(offsetFromStartX, spacing);
@@ -981,12 +915,8 @@ void InxGUIContext::EndTabItem()
 namespace
 {
 // ─── Unity-style popup / menu chrome ─────────────────────────────────────
-// Context menus and utility popups used to inherit the compact global
-// spacing, producing cramped menus with a thin hover band. Every popup
-// opened through InxGUIContext gets consistent, em-based (DPI-proof)
-// padding, taller rows with contiguous hover highlight, and stronger
-// hover/active feedback colors. One stack entry per open popup/menu window
-// keeps Begin/End pairs balanced across nesting.
+// Every popup uses DPI-scaled padding and row spacing. One style stack entry
+// per popup/menu window keeps nested Begin/End pairs balanced.
 struct PopupContentStyle
 {
     int styleVars = 0;
@@ -1463,6 +1393,13 @@ float InxGUIContext::GetItemRectMaxX()
 float InxGUIContext::GetItemRectMaxY()
 {
     return ImGui::GetItemRectMax().y;
+}
+
+std::array<float, 4> InxGUIContext::GetItemVisibleRect()
+{
+    ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    rect.ClipWithFull(ImGui::GetCurrentWindow()->ClipRect);
+    return {rect.Min.x, rect.Min.y, rect.GetWidth(), rect.GetHeight()};
 }
 
 void InxGUIContext::RecordSemanticItem(const std::string &kind, const std::string &label, bool enabled,

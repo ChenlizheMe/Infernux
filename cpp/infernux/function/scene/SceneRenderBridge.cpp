@@ -70,37 +70,6 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
     m_sceneRenderer.m_visibleCount.store(visible, std::memory_order_relaxed);
 }
 
-DrawCallResult SceneRenderBridge::PrepareAndBuildForCamera(Camera *camera)
-{
-    SceneRenderExtractor extractor;
-    SceneRenderer renderer;
-    renderer.SetFrustumCullingEnabled(m_sceneRenderer.IsFrustumCullingEnabled());
-    const size_t visible = extractor.ExtractCameraFrame(renderer.WritableRenderWorld(), camera);
-    renderer.m_visibleCount.store(visible, std::memory_order_relaxed);
-
-    RenderViewData view;
-    if (camera) {
-        view.view = camera->GetViewMatrix();
-        view.projection = camera->GetProjectionMatrix();
-        view.viewProjection = camera->GetViewProjectionMatrix();
-        view.cullingMask = camera->GetCullingMask();
-        view.cameraId = camera->GetComponentID();
-        view.valid = true;
-        const auto cameraToWorld = camera->GetCameraToWorldMatrix();
-        view.position = glm::vec3(cameraToWorld[3]);
-        view.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
-        view.up = glm::normalize(glm::vec3(cameraToWorld[1]));
-    }
-
-    CameraDrawCallResult cameraResult = renderer.BuildDrawCallsForCamera(view, false);
-    DrawCallResult result;
-    if (cameraResult.visibleDrawCallsRef)
-        result.drawCalls = *cameraResult.visibleDrawCallsRef;
-    else
-        result.drawCalls = std::move(cameraResult.visibleDrawCalls);
-    return result;
-}
-
 CameraDrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls)
 {
     RenderViewData view;

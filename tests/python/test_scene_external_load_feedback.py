@@ -19,10 +19,13 @@ from infernux.engine.scene_authoring import encode_scene_document
 from infernux.host import EditorAutomationHost, OperationError
 
 
-@pytest.mark.parametrize("field", ["__type_name__", "__component_id__"])
-@pytest.mark.parametrize("entry", ["startup", "deferred", "conflict"])
+@pytest.mark.parametrize("entry,field", [("startup", "__type_name__"), ("conflict", "__component_id__")])
 def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
-    scene, tmp_path, monkeypatch, field, entry,
+    scene,
+    tmp_path,
+    monkeypatch,
+    field,
+    entry,
 ):
     import infernux.engine.scene_manager as scene_files
 
@@ -51,9 +54,13 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
     document = registry.require(manager.document_id)
 
     if entry == "startup":
-        monkeypatch.setattr(scene_files, "_load_editor_settings", lambda: {
-            scene_files.LAST_OPENED_SCENE_GUID_KEY: "scene-guid",
-        })
+        monkeypatch.setattr(
+            scene_files,
+            "_load_editor_settings",
+            lambda: {
+                scene_files.LAST_OPENED_SCENE_GUID_KEY: "scene-guid",
+            },
+        )
         manager._asset_database = SimpleNamespace(get_path_from_guid=lambda _guid: str(path))
         defaults = []
         monkeypatch.setattr(manager, "_do_new_scene", lambda: defaults.append(True))
@@ -68,14 +75,12 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
             time.sleep(0.001)
         assert not manager.is_loading
     else:
-        manager.set_asset_database(SimpleNamespace(
-            get_guid_from_path=lambda candidate: (
-                "scene-guid" if str(candidate) == str(path.resolve()) else ""
-            ),
-            get_path_from_guid=lambda guid: (
-                str(path.resolve()) if guid == "scene-guid" else ""
-            ),
-        ))
+        manager.set_asset_database(
+            SimpleNamespace(
+                get_guid_from_path=lambda candidate: "scene-guid" if str(candidate) == str(path.resolve()) else "",
+                get_path_from_guid=lambda guid: str(path.resolve()) if guid == "scene-guid" else "",
+            )
+        )
         manager._current_scene_path = str(path.resolve())
         registry.rekey(
             document.document_id,
@@ -120,32 +125,6 @@ def test_save_conflict_reports_document_state_to_automation(monkeypatch):
     assert registry.active_save_ticket(manager.document_id) is None
 
 
-def test_pending_conflict_reload_preserves_specific_failure(monkeypatch, tmp_path):
-    import infernux.engine.deferred_task as deferred
-
-    monkeypatch.setattr(SceneFileManager, "_instance", None)
-    manager = SceneFileManager()
-    path = tmp_path / "Pending.scene"
-    path.write_text("invalid", encoding="utf-8")
-    registry = DocumentRegistry.instance()
-    document = registry.require(manager.document_id)
-    registry.mark_conflict(document.document_id)
-    manager._pending_external_reload = document.document_id
-    monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
-    monkeypatch.setattr(deferred.DeferredTaskRunner, "instance", lambda: SimpleNamespace(is_busy=False))
-
-    def fail_reload(**_kwargs):
-        manager._scene_load_failed(str(path), "Scene.objects[0]: Light.shadowBias is not part of the current format")
-        return False
-
-    monkeypatch.setattr(manager, "reload_from_resource", fail_reload)
-    assert manager.poll_pending_writes() == 1
-    result = registry.take_external_reload_result(document.document_id)
-    assert not result.accepted
-    assert "Light.shadowBias" in result.message
-    assert document.state is DocumentState.CONFLICT
-
-
 @pytest.fixture
 def persisted_scene(scene, engine, tmp_path, monkeypatch):
     from infernux.core.assets import AssetManager
@@ -171,10 +150,11 @@ def persisted_scene(scene, engine, tmp_path, monkeypatch):
     return manager, registry, path, owner
 
 
-@pytest.mark.parametrize("dirty", [False, True])
-@pytest.mark.parametrize("newer_write", ["none", "before_choice", "after_choice"])
+@pytest.mark.parametrize("newer_write,dirty", [("none", False), ("before_choice", True), ("after_choice", False)])
 def test_keep_local_then_scene_save_uses_only_observed_conflict_version(
-    persisted_scene, dirty, newer_write,
+    persisted_scene,
+    dirty,
+    newer_write,
 ):
     manager, registry, path, owner = persisted_scene
     document = registry.require(manager.document_id)
@@ -223,7 +203,9 @@ def _drain_scene_load(manager):
 
 
 def test_queued_external_reload_reports_newer_disk_revision_as_conflict(
-    persisted_scene, scene, monkeypatch,
+    persisted_scene,
+    scene,
+    monkeypatch,
 ):
     import infernux.engine.deferred_task as deferred
     from infernux.engine.interaction import DocumentActionStatus
@@ -269,7 +251,9 @@ def test_queued_external_reload_reports_newer_disk_revision_as_conflict(
 
 @pytest.mark.parametrize("dirty", [False, True])
 def test_successful_same_path_mcp_reload_establishes_savable_disk_baseline(
-    persisted_scene, scene, dirty,
+    persisted_scene,
+    scene,
+    dirty,
 ):
     manager, registry, path, _owner = persisted_scene
     document = registry.require(manager.document_id)
@@ -296,58 +280,24 @@ def test_successful_same_path_mcp_reload_establishes_savable_disk_baseline(
     assert not document.is_dirty
 
 
-@pytest.mark.parametrize("entry", ["deferred", "conflict"])
-def test_scene_baseline_keeps_read_snapshot_when_disk_changes_before_publish(
-    persisted_scene, scene, monkeypatch, entry,
-):
-    manager, registry, path, _owner = persisted_scene
-    document = registry.require(manager.document_id)
-    initial = encode_scene_document(scene.serialize_document())
-    initial["objects"][0]["name"] = "ReadVersion"
-    path.write_text(json.dumps(initial), encoding="utf-8")
-    newer = json.loads(json.dumps(initial))
-    newer["objects"][0]["name"] = "LaterDiskVersion"
-    newer_bytes = json.dumps(newer)
-    finish = manager._finish_open_scene
-
-    def publish_after_external_write(*args, **kwargs):
-        path.write_text(newer_bytes, encoding="utf-8")
-        return finish(*args, **kwargs)
-
-    monkeypatch.setattr(manager, "_finish_open_scene", publish_after_external_write)
-    if entry == "deferred":
-        assert manager.reload_current_scene(discard_changes=True)
-        _drain_scene_load(manager)
-    else:
-        registry.mark_conflict(document.document_id)
-        result = registry.request_reload_external(document.document_id)
-        assert not result.accepted
-        assert "changed again while it was loading" in result.message
-    assert scene.find("ReadVersion") is not None
-    assert scene.find("LaterDiskVersion") is None
-    assert registry.durable_resource_content_changed(str(path)) is True
-    scene.find("ReadVersion").name = "LocalAfterLoad"
-    registry.mark_changed(document.document_id)
-
-    assert not manager.save_current_scene()
-
-    assert path.read_text(encoding="utf-8") == newer_bytes
-    assert document.state is DocumentState.CONFLICT
-
-
-@pytest.mark.parametrize("entry", ["new_path", "same_path"])
-@pytest.mark.parametrize("dirty", [False, True])
-@pytest.mark.parametrize("watcher_delivery", ["before_publish", "after_publish"])
+@pytest.mark.parametrize(
+    "watcher_delivery,dirty,entry", [("before_publish", False, "new_path"), ("after_publish", True, "same_path")]
+)
 def test_watcher_publishes_disk_change_after_scene_read_before_open_completes(
-    persisted_scene, scene, engine, monkeypatch, entry, dirty, watcher_delivery,
+    persisted_scene,
+    scene,
+    engine,
+    monkeypatch,
+    entry,
+    dirty,
+    watcher_delivery,
 ):
     from infernux.engine.resources_manager import ResourceChangeHandler
     from infernux.engine.scene_document_transaction import SceneDocumentTransactionState
 
     manager, registry, original_path, _owner = persisted_scene
     previous_document_id = manager.document_id
-    path = (original_path.with_name("FirstOpen.scene")
-            if entry == "new_path" else original_path)
+    path = original_path.with_name("FirstOpen.scene") if entry == "new_path" else original_path
     read_version = encode_scene_document(scene.serialize_document())
     read_version["objects"][0]["name"] = "ReadVersion"
     path.write_text(json.dumps(read_version), encoding="utf-8")

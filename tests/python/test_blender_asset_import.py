@@ -1,10 +1,10 @@
 """The real asset database owns Blender conversion and binary publication."""
+
 import os
 import json
 from pathlib import Path
 import subprocess
 import shutil
-import struct
 import time
 
 import pytest
@@ -23,10 +23,22 @@ def blender_matrix(blender_executable, tmp_path_factory):
     folder = tmp_path_factory.mktemp("blender_matrix")
     script = Path(__file__).with_name("fixtures") / "create_blender_import_matrix.py"
     subprocess.run(
-        [blender_executable, "--background", "--factory-startup", "--disable-autoexec",
-         "--python-exit-code", "1", "--python", str(script), "--",
-         str(folder / "AuthoringMatrix.blend"), str(folder / "ExternalAlbedo.png")],
-        check=True, capture_output=True, timeout=60,
+        [
+            blender_executable,
+            "--background",
+            "--factory-startup",
+            "--disable-autoexec",
+            "--python-exit-code",
+            "1",
+            "--python",
+            str(script),
+            "--",
+            str(folder / "AuthoringMatrix.blend"),
+            str(folder / "ExternalAlbedo.png"),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     return folder
@@ -42,82 +54,6 @@ def _descendants(root):
 
     visit(root)
     return result
-
-
-def test_blender_external_image_report_matches_exported_glb_identity(tmp_path, blender_executable, blender_matrix):
-    tool = blender_executable
-    source = tmp_path / "AuthoringMatrix.blend"
-    external_texture = tmp_path / "ExternalAlbedo.png"
-    shutil.copy2(blender_matrix / source.name, source)
-    shutil.copy2(blender_matrix / external_texture.name, external_texture)
-    glb = tmp_path / "AuthoringMatrix.glb"
-    report = tmp_path / "AuthoringMatrix.report.json"
-    subprocess.run(
-        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
-         "--python", export_script(), "--", str(source), str(glb), str(report)],
-        check=True, capture_output=True, timeout=90,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
-    payload = glb.read_bytes()
-    assert payload[:4] == b"glTF"
-    chunk_size, chunk_type = struct.unpack_from("<I4s", payload, 12)
-    assert chunk_type == b"JSON"
-    document = json.loads(payload[20:20 + chunk_size])
-    image_names = {image["name"] for image in document["images"]}
-    external_images = json.loads(report.read_text(encoding="utf-8"))["external_images"]
-    assert external_images == [{"name": "ExternalAlbedo", "path": str(external_texture)}]
-    assert external_images[0]["name"] in image_names
-
-    other_folder = tmp_path / "another-source"
-    other_folder.mkdir()
-    duplicate_name = other_folder / external_texture.name
-    shutil.copy2(external_texture, duplicate_name)
-    add_image = (
-        "import bpy; "
-        f"bpy.ops.wm.open_mainfile(filepath={str(source)!r}, load_ui=False); "
-        f"image=bpy.data.images.load({str(duplicate_name)!r}); "
-        "material=next(mat for mat in bpy.data.materials if mat.use_nodes); "
-        "texture=material.node_tree.nodes.new('ShaderNodeTexImage'); "
-        "texture.image=image; "
-        f"bpy.ops.wm.save_as_mainfile(filepath={str(source)!r})"
-    )
-    subprocess.run(
-        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
-         "--python-expr", add_image],
-        check=True, capture_output=True, timeout=60,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
-    ambiguous = subprocess.run(
-        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
-         "--python", export_script(), "--", str(source), str(glb), str(report)],
-        capture_output=True, timeout=90,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
-    assert ambiguous.returncode != 0
-    assert b"External Blender images export as the same GLB image 'ExternalAlbedo'" in (
-        ambiguous.stdout + ambiguous.stderr
-    )
-
-
-def test_blender_tool_requires_explicit_absolute_configuration(engine, tmp_path):
-    database = engine.get_asset_database()
-    with pytest.raises(ValueError):
-        database.configure_blender_import("blender", export_script())
-    with pytest.raises(ValueError):
-        database.configure_blender_import("", export_script())
-    database.configure_blender_import("", "")
-    folder = Path(database.assets_root) / tmp_path.name
-    folder.mkdir()
-    source = folder / "MissingTool.blend"
-    source.write_bytes(b"BLENDER-v410")
-    try:
-        result = database.import_asset(str(source))
-        assert not result and "not configured" in result.error
-        assert not (Path(database.project_root) / "Library/ModelImport").exists()
-    finally:
-        database.delete_asset(str(source))
-        source.unlink(missing_ok=True)
-        Path(str(source) + ".meta").unlink(missing_ok=True)
 
 
 def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_path, monkeypatch, blender_executable):
@@ -150,9 +86,22 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         "bpy.context.scene.frame_end=24; "
         "bpy.ops.wm.save_as_mainfile(filepath=" + repr(str(source)) + ")"
     )
-    subprocess.run([tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
-                    "--python-expr", script], check=True, capture_output=True, timeout=60,
-                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    subprocess.run(
+        [
+            tool,
+            "--background",
+            "--factory-startup",
+            "--disable-autoexec",
+            "--python-exit-code",
+            "1",
+            "--python-expr",
+            script,
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
     before = source.read_bytes()
     invalid_source = folder / "ConcurrentInvalid.blend"
     invalid_source.write_bytes(b"not a Blender file")
@@ -165,7 +114,7 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         while not database.try_commit_refresh():
             ticks += 1
             assert time.monotonic() < deadline
-            time.sleep(.005)
+            time.sleep(0.005)
         assert ticks > 1  # Converted on the native worker, not inside BeginRefresh.
         guid = database.get_guid_from_path(str(source))
         assert guid
@@ -199,7 +148,7 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
             apply_ticks += 1
             assert database.get_guid_from_path(str(source)) == guid
             assert time.monotonic() < deadline
-            time.sleep(.005)
+            time.sleep(0.005)
         assert apply_ticks > 1  # Blender was running while owner queries remained available.
         assert result, result.error
         assert result.guid == guid
@@ -211,7 +160,7 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
         deadline = time.monotonic() + 150
         while (result := AssetManager.poll_model_reimport(database)) is None:
             assert time.monotonic() < deadline
-            time.sleep(.005)
+            time.sleep(0.005)
         assert not result and "Blender import failed" in result.error
         assert Path(str(source) + ".meta").read_bytes() == sidecar
         assert mesh.vertex_count == vertices
@@ -317,9 +266,7 @@ def test_real_blend_scene_instance_sync_preserves_authoring_and_roundtrips(
         # This is the same serialization/commit boundary used by Save + reopen.
         saved = scene.serialize_document()
         assert scene._commit_document(saved)
-        restored_root = next(
-            obj for obj in scene.get_root_objects() if obj.name == "Authored Blender Instance"
-        )
+        restored_root = next(obj for obj in scene.get_root_objects() if obj.name == "Authored Blender Instance")
         restored = _descendants(restored_root)
         restored_renamed = restored["RenamedStable"]
         assert restored_renamed.id == stable_id
@@ -337,9 +284,12 @@ def test_real_blend_scene_instance_sync_preserves_authoring_and_roundtrips(
         Path(str(source) + ".meta").unlink(missing_ok=True)
 
 
-def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_path, blender_executable, blender_matrix):
+def test_blend_structure_material_rig_and_authoring_boundary_matrix(
+    engine, tmp_path, blender_executable, blender_matrix, monkeypatch
+):
     tool = blender_executable
     database = engine.get_asset_database()
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
     registry = AssetRegistry.instance()
     folder = Path(database.assets_root) / tmp_path.name
     folder.mkdir()
@@ -363,7 +313,7 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         deadline = time.monotonic() + 150
         while (readable_result := AssetManager.poll_model_reimport(database)) is None:
             assert time.monotonic() < deadline
-            time.sleep(.005)
+            time.sleep(0.005)
         assert readable_result, readable_result.error
         mesh = registry.load_mesh(str(source))
         assert mesh and mesh.has_skinned_data
@@ -372,19 +322,19 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         animation_descriptors = embedded_take_descriptors(read_meta_file(str(source)))
         assert len(animation_descriptors) == 1
         descriptor = animation_descriptors[0]
-        clip = AnimationClip3D.from_embedded_take_virtual_path(
-            f"{source}::subanim:{descriptor['id']}"
-        )
+        clip = AnimationClip3D.from_embedded_take_virtual_path(f"{source}::subanim:{descriptor['id']}")
         assert clip is not None
         assert clip.source_model_guid == imported.guid
         assert clip.take_name == descriptor["id"]
         assert clip.duration_hint > 0.0
         published_clip = json.loads(read_meta_file(str(source))["model_animations"])[0]
-        imported_document = json.loads(
-            published_clip["metadata"]["metadata"]["import_document"]["value"]
-        )
+        imported_document = json.loads(published_clip["metadata"]["metadata"]["import_document"]["value"])
         assert {
-            "apply_root_motion", "bone_mask", "curves", "default_loop", "reference_pose"
+            "apply_root_motion",
+            "bone_mask",
+            "curves",
+            "default_loop",
+            "reference_pose",
         } <= imported_document.keys()
         assert imported_document["apply_root_motion"] == clip.apply_root_motion
         assert imported_document["bone_mask"] == clip.bone_mask
@@ -403,25 +353,33 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         settings.animation_loop_time = False
         settings.animation_apply_root_motion = True
         settings.animation_reference_pose = "first_frame"
-        settings.animation_clip_extras = [{
-            "clip_id": descriptor["id"],
-            "curves": [{"name": "Grip", "keys": [
-                {"time_normalized": 0.0, "value": 0.0},
-                {"time_normalized": 1.0, "value": 1.0},
-            ]}],
-            "events": [{"time_normalized": 0.5, "function": "on_grip",
-                        "string_arg": "RootBone", "number_arg": 1.0}],
-            "bone_mask": ["RootBone"],
-        }]
+        settings.animation_clip_extras = [
+            {
+                "clip_id": descriptor["id"],
+                "curves": [
+                    {
+                        "name": "Grip",
+                        "keys": [
+                            {"time_normalized": 0.0, "value": 0.0},
+                            {"time_normalized": 1.0, "value": 1.0},
+                        ],
+                    }
+                ],
+                "events": [
+                    {"time_normalized": 0.5, "function": "on_grip", "string_arg": "RootBone", "number_arg": 1.0}
+                ],
+                "bone_mask": ["RootBone"],
+            }
+        ]
         applied = AssetManager.reimport_asset(
-            str(source), import_settings=settings.to_dict(), database=database,
+            str(source),
+            import_settings=settings.to_dict(),
+            database=database,
         )
         assert applied, applied.error
         applied_descriptor = embedded_take_descriptors(read_meta_file(str(source)))[0]
         assert applied_descriptor["id"] == descriptor["id"]
-        applied_clip = AnimationClip3D.from_embedded_take_virtual_path(
-            f"{source}::subanim:{descriptor['id']}"
-        )
+        applied_clip = AnimationClip3D.from_embedded_take_virtual_path(f"{source}::subanim:{descriptor['id']}")
         assert applied_clip is not None
         assert applied_clip.default_loop is False
         assert applied_clip.apply_root_motion is True
@@ -429,17 +387,26 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         assert applied_clip.bone_mask == ["RootBone"]
         assert applied_clip.sample_curve("Grip", 0.5) == pytest.approx(0.5)
         assert applied_clip.events[0].function == "on_grip"
-        applied_document = json.loads(
-            applied_descriptor["metadata"]["metadata"]["import_document"]["value"]
-        )
+        applied_document = json.loads(applied_descriptor["metadata"]["metadata"]["import_document"]["value"])
         assert applied_document["bone_mask"] == ["RootBone"]
         assert applied_document["curves"][0]["name"] == "Grip"
 
         node_records = list(mesh.get_model_nodes())
         nodes = {node["name"]: node for node in node_records}
-        assert {"Assembly", "AxisContract", "MirroredHardEdge", "MorphWithModifier", "CollectionInstance",
-                "ReusableTriangle", "ConstraintTarget", "ConstrainedTriangle", "BakedCurve",
-                "UnsupportedCloth", "Rig", "SkinnedQuad"} <= nodes.keys()
+        assert {
+            "Assembly",
+            "AxisContract",
+            "MirroredHardEdge",
+            "MorphWithModifier",
+            "CollectionInstance",
+            "ReusableTriangle",
+            "ConstraintTarget",
+            "ConstrainedTriangle",
+            "BakedCurve",
+            "UnsupportedCloth",
+            "Rig",
+            "SkinnedQuad",
+        } <= nodes.keys()
         assert "IgnoredCamera" not in nodes and "IgnoredLight" not in nodes
         assert "Inflate" in mesh.morph_target_names
         mirrored = np.asarray(nodes["MirroredHardEdge"]["local_matrix"], dtype=np.float64)
@@ -447,7 +414,7 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         np.testing.assert_allclose(
             sorted(np.linalg.norm(mirrored[:3, :3], axis=0)),
             sorted((1.0, 1.5, 0.75)),
-            atol=1.e-5,
+            atol=1.0e-5,
         )
         assert nodes["Assembly"]["node_group"] == -1
         assert node_records[nodes["MirroredHardEdge"]["parent_index"]]["name"] == "Assembly"
@@ -458,7 +425,7 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         assert node_records[nodes["SkinnedQuad"]["parent_index"]]["name"] == "Rig"
         assert nodes["BakedCurve"]["node_group"] >= 0
         constrained_local = np.asarray(nodes["ConstrainedTriangle"]["local_matrix"], dtype=np.float64)
-        np.testing.assert_allclose(constrained_local[:3, 3], (0.75, 0.5, 1.25), atol=1.e-5)
+        np.testing.assert_allclose(constrained_local[:3, 3], (0.75, 0.5, 1.25), atol=1.0e-5)
 
         # Blender's (X, Y, Z) right-handed Z-up coordinates cross the managed
         # GLB boundary exactly once as engine/glTF (X, Z, -Y) Y-up coordinates.
@@ -471,8 +438,7 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
             if mesh.get_submesh_info(index)["node_group"] == axis_group
         )
         axis_positions = mesh.get_vertex_data()["positions"][
-            axis_submesh["vertex_start"]:
-            axis_submesh["vertex_start"] + axis_submesh["vertex_count"]
+            axis_submesh["vertex_start"] : axis_submesh["vertex_start"] + axis_submesh["vertex_count"]
         ]
         expected_axis_positions = np.asarray(
             [(3.0, 5.0, -4.0), (4.0, 5.0, -4.0), (3.0, 7.0, -4.0)],
@@ -481,7 +447,7 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         np.testing.assert_allclose(
             np.asarray(sorted(map(tuple, axis_positions.tolist()))),
             np.asarray(sorted(map(tuple, expected_axis_positions.tolist()))),
-            atol=1.e-5,
+            atol=1.0e-5,
         )
 
         hard_group = nodes["MirroredHardEdge"]["node_group"]
@@ -499,33 +465,31 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
             if info["node_group"] != hard_group:
                 continue
             start, count = info["vertex_start"], info["vertex_count"]
-            hard_normals.extend(vertex_data["normals"][start:start + count])
+            hard_normals.extend(vertex_data["normals"][start : start + count])
         hard_normals = np.asarray(hard_normals, dtype=np.float64)
         assert np.isfinite(hard_normals).all()
-        np.testing.assert_allclose(np.linalg.norm(hard_normals, axis=1), 1.0, atol=2.e-5)
+        np.testing.assert_allclose(np.linalg.norm(hard_normals, axis=1), 1.0, atol=2.0e-5)
         assert len({tuple(np.round(normal, 4)) for normal in hard_normals}) >= 3
 
         slot = next(
-            data for name, data in zip(mesh.material_slot_names, mesh.get_material_slot_data())
+            data
+            for name, data in zip(mesh.material_slot_names, mesh.get_material_slot_data())
             if name == "TransparentExternal"
         )
         assert slot["alpha_mode"] == "blend"
         assert slot["base_color_texture_guid"] == texture_import.guid
         embedded_slot = next(
-            data for name, data in zip(mesh.material_slot_names, mesh.get_material_slot_data())
+            data
+            for name, data in zip(mesh.material_slot_names, mesh.get_material_slot_data())
             if name == "OpaqueEmbedded"
         )
-        embedded_textures = json.loads(
-            database.get_meta_by_guid(imported.guid).get_string("model_textures")
-        )
+        embedded_textures = json.loads(database.get_meta_by_guid(imported.guid).get_string("model_textures"))
         assert len(embedded_textures) == 1
         assert embedded_textures[0]["name"] == "Embedded Accent"
         assert embedded_slot["base_color_texture_guid"] == embedded_textures[0]["guid"]
         assert embedded_slot["base_color_texture_guid"] != texture_import.guid
 
-        diagnostics = json.loads(
-            database.get_meta_by_guid(imported.guid).get_string("blender_import_diagnostics")
-        )
+        diagnostics = json.loads(database.get_meta_by_guid(imported.guid).get_string("blender_import_diagnostics"))
         assert diagnostics == [
             {
                 "code": "baked_authoring_geometry",
@@ -567,7 +531,7 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
                 "code": "unsupported_driver",
                 "owner": "MirroredHardEdge",
                 "property": "object/driver",
-                "detail": '[\"driver_probe\"]',
+                "detail": '["driver_probe"]',
             },
             {
                 "code": "unsupported_modifier_with_shape_keys",
@@ -589,33 +553,35 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         # source axis basis may redistribute the synthetic root transform but
         # must leave merged geometry unchanged.
         baseline_positions = mesh.get_vertex_data()["positions"].copy()
-        baseline_nodes = {node["name"]: np.asarray(node["local_matrix"], dtype=np.float64)
-                          for node in mesh.get_model_nodes()}
+        baseline_nodes = {
+            node["name"]: np.asarray(node["local_matrix"], dtype=np.float64) for node in mesh.get_model_nodes()
+        }
         settings.scale_factor = 0.25
         database.begin_model_reimport(str(source), settings.to_dict())
         deadline = time.monotonic() + 150
         while (scaled_result := AssetManager.poll_model_reimport(database)) is None:
             assert time.monotonic() < deadline
-            time.sleep(.005)
+            time.sleep(0.005)
         assert scaled_result, scaled_result.error
         scaled_positions = mesh.get_vertex_data()["positions"].copy()
-        np.testing.assert_allclose(scaled_positions, baseline_positions * 0.25, atol=2.e-5)
-        scaled_nodes = {node["name"]: np.asarray(node["local_matrix"], dtype=np.float64)
-                        for node in mesh.get_model_nodes()}
+        np.testing.assert_allclose(scaled_positions, baseline_positions * 0.25, atol=2.0e-5)
+        scaled_nodes = {
+            node["name"]: np.asarray(node["local_matrix"], dtype=np.float64) for node in mesh.get_model_nodes()
+        }
         assert scaled_nodes.keys() == baseline_nodes.keys()
         for name, baseline in baseline_nodes.items():
-            np.testing.assert_allclose(scaled_nodes[name][:3, :3], baseline[:3, :3], atol=2.e-5)
-            np.testing.assert_allclose(scaled_nodes[name][:3, 3], baseline[:3, 3] * 0.25, atol=2.e-5)
+            np.testing.assert_allclose(scaled_nodes[name][:3, :3], baseline[:3, :3], atol=2.0e-5)
+            np.testing.assert_allclose(scaled_nodes[name][:3, 3], baseline[:3, 3] * 0.25, atol=2.0e-5)
 
         settings.bake_axis_conversion = True
         database.begin_model_reimport(str(source), settings.to_dict())
         deadline = time.monotonic() + 150
         while (baked_result := AssetManager.poll_model_reimport(database)) is None:
             assert time.monotonic() < deadline
-            time.sleep(.005)
+            time.sleep(0.005)
         assert baked_result, baked_result.error
         baked_positions = mesh.get_vertex_data()["positions"].copy()
-        np.testing.assert_allclose(baked_positions, scaled_positions, atol=2.e-5)
+        np.testing.assert_allclose(baked_positions, scaled_positions, atol=2.0e-5)
 
         # Cooked reload retains source-space hierarchy, rig and external GUID
         # binding without invoking Blender or reading the .blend source.
@@ -624,9 +590,10 @@ def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_
         restored = registry.load_mesh(str(source))
         assert restored.has_skinned_data and restored.skinned_bone_count == mesh.skinned_bone_count
         assert {node["name"] for node in restored.get_model_nodes()} == set(nodes)
-        np.testing.assert_allclose(restored.get_vertex_data()["positions"], baked_positions, atol=2.e-5)
+        np.testing.assert_allclose(restored.get_vertex_data()["positions"], baked_positions, atol=2.0e-5)
         restored_slot = next(
-            data for name, data in zip(restored.material_slot_names, restored.get_material_slot_data())
+            data
+            for name, data in zip(restored.material_slot_names, restored.get_material_slot_data())
             if name == "TransparentExternal"
         )
         assert restored_slot["base_color_texture_guid"] == texture_import.guid

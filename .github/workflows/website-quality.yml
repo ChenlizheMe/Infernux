@@ -31,7 +31,8 @@ concurrency:
 jobs:
   verify:
     name: Verify API, downloads, and release information
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository

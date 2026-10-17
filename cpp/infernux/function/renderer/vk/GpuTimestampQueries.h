@@ -1,5 +1,6 @@
 #pragma once
 
+#include <function/renderer/ProfileConfig.h>
 #include <function/renderer/rhi/RhiQuery.h>
 
 #include <array>
@@ -37,6 +38,9 @@ class GpuTimestampQueries
     void FinishFrame(uint32_t frameIndex) noexcept;
     void MarkSubmitted(uint32_t frameIndex) noexcept;
     bool CollectCompletedFrame(uint32_t frameIndex);
+#if INFERNUX_FRAME_PROFILE
+    [[nodiscard]] static GpuTimestampQueries *CurrentRecording() noexcept;
+#endif
 
     [[nodiscard]] const rhi::TimestampQueryCapabilities &Capabilities() const noexcept
     {

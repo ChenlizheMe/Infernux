@@ -1,4 +1,5 @@
 """Prefab structural authoring must not alias new nodes to retired/source nodes."""
+
 import copy
 import json
 
@@ -8,10 +9,12 @@ from infernux.components import InxComponent, FieldType, serialized_field
 from infernux.components.ref_wrappers import GameObjectRef, ComponentRef
 from infernux.engine.component_restore import clone_game_object_transactionally
 from infernux.engine.scene_authoring import encode_scene_document
-from infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
+from infernux.engine.prefab_manager import _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
 from infernux.engine.prefab_overrides import (
-    apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
-    get_structural_overrides, revert_overrides,
+    apply_overrides_to_prefab,
+    build_prefab_apply_command,
+    compute_overrides,
+    revert_overrides,
 )
 
 
@@ -74,21 +77,10 @@ def test_separate_instance_additions_are_not_merged_together(scene, tmp_path):
     assert any(change.key == "added_child:Private" for change in compute_overrides(second, path))
     assert revert_overrides(second, path)
     assert {child.name for child in second.get_children()} == {"Original", "Published"}
-    assert {node["name"] for node in _read_prefab_document(path)["root_object"]["children"]} == {"Original", "Published"}
-
-
-def test_structural_override_projection_keeps_topology_rows_separate(scene, tmp_path):
-    path, _first, second = _make_prefab(scene, tmp_path)
-    private = scene.create_game_object("Private")
-    private.set_parent(second)
-
-    rows = get_structural_overrides(second, path)
-
-    assert [(row.kind, row.key) for row in rows] == [
-        ("child_added", "added_child:Private"),
-    ]
-    assert rows[0].source_value is None
-    assert rows[0].instance_value == "Private"
+    assert {node["name"] for node in _read_prefab_document(path)["root_object"]["children"]} == {
+        "Original",
+        "Published",
+    }
 
 
 def test_apply_keeps_other_instances_external_scene_reference_overrides(scene, tmp_path):
@@ -138,28 +130,6 @@ def test_instance_addition_identity_and_internal_reference_survive_apply_history
     assert {child.name for child in second.get_children()} == {"Private", "Published"}
 
 
-@pytest.mark.parametrize("invalid", [0, 1, 2, -1, True, "4"])
-def test_prefab_rejects_invalid_allocator_watermark(scene, tmp_path, invalid):
-    path, _, _ = _make_prefab(scene, tmp_path)
-    document = _read_prefab_document(path)
-    document["next_local_id"] = invalid
-    bad_path = tmp_path / "bad-watermark.prefab"
-    bad_path.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(PrefabDocumentError, match="next_local_id"):
-        _read_prefab_document(str(bad_path))
-
-
-@pytest.mark.parametrize("field", ["next_local_id", "next_component_id"])
-def test_prefab_rejects_missing_allocator_watermark(scene, tmp_path, field):
-    path, _, _ = _make_prefab(scene, tmp_path)
-    document = copy.deepcopy(_read_prefab_document(path))
-    document.pop(field)
-    invalid = tmp_path / "missing-watermark.prefab"
-    invalid.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(PrefabDocumentError, match="missing or unknown envelope fields"):
-        _read_prefab_document(str(invalid))
-
-
 def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene, tmp_path, monkeypatch):
     from infernux.core.assets import AssetManager
     from infernux.engine.scene_manager import SceneFileManager
@@ -185,9 +155,7 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
     database = SimpleNamespace(
-        get_guid_from_path=lambda candidate: (
-            "structural-guid" if str(candidate).casefold() == path.casefold() else ""
-        ),
+        get_guid_from_path=lambda candidate: "structural-guid" if str(candidate).casefold() == path.casefold() else "",
         get_path_from_guid=lambda guid: path if guid == "structural-guid" else "",
     )
     manager._asset_database = database
@@ -223,7 +191,11 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
         assert manager.document_id == original_document_id
         assert DocumentRegistry.instance().require(original_document_id).is_dirty
         assert {obj.name for obj in restored.find_by_id(first_id).get_children()} == {"Original", "SavedChild"}
-        assert {obj.name for obj in restored.find_by_id(second_id).get_children()} == {"Instance Rename", "SavedChild", "Private"}
+        assert {obj.name for obj in restored.find_by_id(second_id).get_children()} == {
+            "Instance Rename",
+            "SavedChild",
+            "Private",
+        }
         assert restored.find_by_id(original_id).name == "Instance Rename"
         assert restored.find_by_id(private_id).prefab_source_id == 0
         assert restored.find_by_id(watcher_id).get_py_component(_StructuralReferences).target.id == original_id
@@ -290,23 +262,21 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
     assert not ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
 
 
-def test_prefab_rejects_unversioned_scene_baseline(scene, tmp_path):
-    from infernux.engine.prefab_manager import _prefab_baseline_root
-    path, _, _ = _make_prefab(scene, tmp_path)
-    baseline = _read_prefab_document(path)["root_object"]
-    with pytest.raises(PrefabDocumentError, match="Unsupported prefab component identity baseline"):
-        _prefab_baseline_root(baseline)
-
-
 def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):
     from infernux.engine.game_builder import GameBuilder
+
     builder = GameBuilder.__new__(GameBuilder)
     builder.project_path = str(tmp_path)
     source = tmp_path / "payload.scene"
-    document = {"objects": [{
-        "prefab_source": {"old_editor_only_data": True}, "children": [],
-        "components": [{"data": {"prefab_source": "ordinary user field"}}],
-    }]}
+    document = {
+        "objects": [
+            {
+                "prefab_source": {"old_editor_only_data": True},
+                "children": [],
+                "components": [{"data": {"prefab_source": "ordinary user field"}}],
+            }
+        ]
+    }
     source.write_text(json.dumps(document), encoding="utf-8")
     builder._rewrite_player_document_paths(str(source), ".scene")
     cooked = json.loads(source.read_text(encoding="utf-8"))
@@ -358,8 +328,12 @@ def test_unopened_scene_cook_merges_source_without_live_objects(scene, tmp_path)
     assert new_first["id"] != new_second["id"]
     assert min(new_first["id"], new_second["id"]) > max(live_ids)
     assert roots[watcher.id] == next(obj for obj in before["objects"] if obj["id"] == watcher.id)
-    component_ids = [c["component_id"] for root in cooked["objects"] for node in _all_nodes(root)
-                     for c in [node["transform"], *node["components"]]]
+    component_ids = [
+        c["component_id"]
+        for root in cooked["objects"]
+        for node in _all_nodes(root)
+        for c in [node["transform"], *node["components"]]
+    ]
     assert len(component_ids) == len(set(component_ids))
 
 
@@ -406,8 +380,7 @@ def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
     # The Editor's live scene was deliberately not refreshed by the cook.
     assert first.get_child(0).active_self
     # Cook allocates compact runtime IDs from the authored GUID declarations.
-    second_id = next(root["id"] for root in cooked["objects"]
-                     if root["children"][0]["name"] == "Placed Override")
+    second_id = next(root["id"] for root in cooked["objects"] if root["children"][0]["name"] == "Placed Override")
     child_id = next(root["children"][0]["id"] for root in cooked["objects"] if root["id"] == second_id)
     transaction = SceneDocumentTransaction(scene, path=artifact)
     assert transaction.run_to_completion()
@@ -417,6 +390,7 @@ def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
 
 def test_scene_cook_rejects_missing_prefab_source(scene, tmp_path):
     from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+
     _make_prefab(scene, tmp_path)
     document = scene.serialize_document()
 

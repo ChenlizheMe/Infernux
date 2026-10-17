@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
+import numpy as np
+from numpy.typing import NDArray
 from infernux.lib import Vector3, quatf
 
 from infernux.components.builtin.mesh_renderer import MeshRenderer
@@ -28,6 +30,9 @@ class SkinnedMeshRenderer(MeshRenderer):
     def runtime_animation_normalized_time(self) -> float: ...
 
     def get_animation_take_names(self) -> List[str]: ...
+    def get_skeleton_node_names(self) -> List[str]: ...
+    def get_skeleton_node_world_matrices(self, node_names: Sequence[str]) -> NDArray[np.float32]: ...
+    def submit_pose_stack(self, layers: Sequence[dict]) -> None: ...
     def set_source_model_guid(self, guid: str) -> None: ...
     def get_root_motion_delta(
         self, take_name: str, from_seconds: float, to_seconds: float,

@@ -101,8 +101,6 @@ class TimelinePropertyCommand(_TimelineCommand):
     def undo(self) -> None:
         self._apply(self._old_value, self._before_revision)
 
-    def redo(self) -> None:
-        self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
         return (

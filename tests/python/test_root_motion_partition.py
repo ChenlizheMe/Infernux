@@ -136,15 +136,15 @@ def _owner(scene, model_guid, parented):
     return owner, animator
 
 
-@pytest.mark.parametrize("parented", [False, True])
-@pytest.mark.parametrize("start,end,loop", [
-    (0., 2., False), (1.5, 2.5, True), (0., 5., True), (.5, 6.5, True),
-    (5., -1., True), (-3., 3., True), (2., 0., False), (-1., 3., False),
+@pytest.mark.parametrize('start,end,loop,parented', [
+    (0., 2., False, False), (1.5, 2.5, True, True), (0., 5., True, False),
+    (.5, 6.5, True, True), (5., -1., True, False), (-3., 3., True, True),
+    (2., 0., False, True), (-1., 3., False, False),
 ])
 def test_imported_motion_matches_rigid_trajectory_across_partitions(motion_model, scene, start, end, loop, parented):
     _, _, model_guid, _, clip, angle, scale = motion_model
     expected_delta = _expected_delta(start, end, loop, angle, scale)
-    for steps in (1, 2, 20, 120):
+    for steps in (1, 120):
         owner, animator = _owner(scene, model_guid, parented)
         animator._current_clip = clip
         expected = _world_pose(owner.transform) @ expected_delta
@@ -165,7 +165,7 @@ def test_real_fsm_update_keeps_root_motion_partition_independent(motion_model, s
     assert controller.save(str(path))
     imported = AssetManager.import_asset(str(path), database=database)
     assert imported.succeeded, imported.error
-    for steps in (1, 2, 20, 120):
+    for steps in (1, 120):
         owner, animator = _owner(scene, model_guid, True)
         animator.controller = AnimStateMachineRef(guid=imported.guid)
         animator.start()

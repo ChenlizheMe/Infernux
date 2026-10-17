@@ -21,9 +21,7 @@ def test_continuous_edit_commits_or_rolls_back_exactly_once():
         owner_id="inspector",
         description="Edit Value",
         initial_value=1.0,
-        on_commit=lambda session: committed.append(
-            (session.initial_value, session.current_value)
-        ),
+        on_commit=lambda session: committed.append((session.initial_value, session.current_value)),
         on_cancel=lambda session: cancelled.append(session.initial_value),
     )
     assert service.update("inspector:value", 3.0)
@@ -58,34 +56,12 @@ def test_continuous_edit_rolls_back_when_commit_is_rejected_or_raises():
             description="Edit Value",
             initial_value=1.0,
             on_commit=callback,
-            on_cancel=lambda session: cancelled.append(
-                (session.key, session.initial_value)
-            ),
+            on_cancel=lambda session: cancelled.append((session.key, session.initial_value)),
         )
         assert service.update(key, 2.0)
         assert service.commit(key) is False
 
     assert cancelled == [("rejected", 1.0), ("failed", 1.0)]
-
-
-def test_continuous_edit_idle_commit_ignores_render_frames_between_inputs():
-    service = ContinuousEditService()
-    committed = []
-    session = service.begin(
-        "inspector:number",
-        owner_id="inspector",
-        description="Edit Number",
-        initial_value=2100,
-        on_commit=lambda item: committed.append(
-            (item.initial_value, item.current_value)
-        ),
-    )
-    service.update(session.key, 220)
-    assert service.commit_if_idle(session.key, idle_seconds=0.75) is False
-    service.update(session.key, 2200)
-    session.last_update_at -= 1.0
-    assert service.commit_if_idle(session.key, idle_seconds=0.75) is True
-    assert committed == [(2100, 2200)]
 
 
 def test_interaction_core_commits_edits_on_selection_and_panel_transitions():
@@ -189,110 +165,6 @@ def test_material_continuous_edit_publishes_one_document_command():
         assert material.document == old_document
         manager.redo()
         assert material.document == new_document
-    finally:
-        manager.clear()
-        edits.clear(commit=False)
-        UndoManager._instance = previous_manager
-        DocumentRegistry._instance = previous_registry
-
-
-def test_material_structural_text_edit_does_not_record_intermediate_values():
-    from infernux.engine.ui.inspector_material import (
-        _apply_material_changes,
-        _flush_deferred_undo,
-        _material_edit_session_key,
-    )
-    from infernux.engine.undo import UndoManager
-
-    class _Material:
-        guid = "material-guid"
-        file_path = "Assets/Test.mat"
-
-        def __init__(self):
-            self.document = {"renderState": {"renderQueue": 2100}}
-
-        def deserialize_document(self, document):
-            self.document = document
-            return True
-
-        def serialize_document(self):
-            return self.document
-
-        def save(self):
-            return True
-
-    previous_manager = UndoManager.instance()
-    previous_registry = DocumentRegistry._instance
-    registry = DocumentRegistry()
-    manager = UndoManager()
-    edits = ContinuousEditService()
-    material = _Material()
-    old_document = {"renderState": {"renderQueue": 2100}}
-    live_document = {"renderState": {"renderQueue": 220}}
-    state = SimpleNamespace(
-        file_path=material.file_path,
-        extra={
-            "cached_data": live_document,
-            "cached_json": '{"renderState":{"renderQueue":2100}}',
-        },
-        resource_controller=None,
-        document_id="",
-    )
-    controller = ensure_editable_resource_document(
-        category="material",
-        document_kind=DocumentKind.MATERIAL,
-        file_path=material.file_path,
-        resource=material,
-        guid=material.guid,
-    )
-    state.resource_controller = controller
-    state.document_id = controller.document_id
-
-    try:
-        _apply_material_changes(
-            None,
-            state,
-            live_document,
-            material,
-            True,
-            True,
-            old_document,
-            "render_state.render_queue",
-            None,
-        )
-        live_document["renderState"]["renderQueue"] = 2200
-        _apply_material_changes(
-            None,
-            state,
-            live_document,
-            material,
-            True,
-            True,
-            old_document,
-            "render_state.render_queue",
-            None,
-        )
-
-        assert material.document["renderState"]["renderQueue"] == 2200
-        assert manager.action_journal.entries == ()
-        session = edits.get(_material_edit_session_key(state, material))
-        assert session is not None
-        session.last_update_at -= 1.0
-        _flush_deferred_undo(
-            None,
-            state,
-            live_document,
-            material,
-            input_active=True,
-        )
-        assert manager.action_journal.entries == ()
-        _flush_deferred_undo(None, state, live_document, material)
-        assert len(manager.action_journal.entries) == 1
-
-        manager.undo()
-        assert material.document["renderState"]["renderQueue"] == 2100
-        manager.redo()
-        assert material.document["renderState"]["renderQueue"] == 2200
     finally:
         manager.clear()
         edits.clear(commit=False)

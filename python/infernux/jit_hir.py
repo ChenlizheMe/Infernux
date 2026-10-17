@@ -18,9 +18,9 @@ import inspect
 import json
 import math
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 class _StrEnum(str, Enum):

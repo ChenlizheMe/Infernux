@@ -34,10 +34,10 @@ FSM_STATE_NODE_DEF = NodeDef(
             "in",
             PortDirection.INPUT,
             PortKind.EXEC,
-            display_name="In",
+            display_name="animfsm_editor.port_in",
             max_connections=-1,
         ),
-        PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="Out"),
+        PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="animfsm_editor.port_out"),
     ),
     presentation=NodePresentation(
         header_color=(0.20, 0.20, 0.22, 1.0),
@@ -50,9 +50,9 @@ FSM_STATE_NODE_DEF = NodeDef(
 
 FSM_ENTRY_NODE_DEF = NodeDef(
     type_id=FSM_ENTRY_NODE_TYPE_ID,
-    display_name="Entry",
+    display_name="animfsm_editor.entry",
     ports=(
-        PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="Start"),
+        PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="animfsm_editor.port_start"),
     ),
     presentation=NodePresentation(
         header_color=(0.22, 0.21, 0.23, 1.0),
@@ -119,7 +119,7 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
             canvas_x=float(fsm.entry_position[0]),
             canvas_y=float(fsm.entry_position[1]),
             uid=FSM_ENTRY_NODE_ID,
-            label="Entry",
+            label="animfsm_editor.entry",
         )
         y_offset = 0.0
         names: dict[str, str] = {}

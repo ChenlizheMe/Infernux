@@ -18,6 +18,7 @@ class EditorShortcutInput final : public InxGUIRenderable
   public:
     std::function<bool(const std::string &, bool, bool)> routeShortcut;
 
+    static void PrepareFrame(bool gameCursorLocked);
     void OnRender(InxGUIContext *ctx) override;
 
   private:

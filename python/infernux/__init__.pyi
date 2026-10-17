@@ -125,7 +125,7 @@ from infernux.components import SliderJoint as SliderJoint
 from infernux.components import AudioSource as AudioSource
 from infernux.components import AudioListener as AudioListener
 from infernux.components import SpriteRenderer as SpriteRenderer
-from infernux.components import SpiritAnimator as SpiritAnimator
+from infernux.components import SpriteAnimator as SpriteAnimator
 from infernux.components import SkeletalAnimator as SkeletalAnimator
 from infernux.components import RuntimeAcceptanceRunner as RuntimeAcceptanceRunner
 from infernux.lifecycle import InxPreload as InxPreload
@@ -158,6 +158,7 @@ from infernux.core import AnimationClip as AnimationClip
 from infernux.core import AnimationFrame as AnimationFrame
 from infernux.core import AnimStateMachine as AnimStateMachine
 from infernux.core import AnimState as AnimState
+from infernux.core import AnimClipEntry as AnimClipEntry
 from infernux.core import AnimTransition as AnimTransition
 from infernux.core import AnimCondition as AnimCondition
 from infernux.core import AnimParameter as AnimParameter

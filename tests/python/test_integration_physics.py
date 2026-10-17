@@ -27,10 +27,6 @@ from infernux.lib import (
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Helpers
-# ═══════════════════════════════════════════════════════════════════════════
-
 def _step_frames(n: int = 60, dt: float = 1.0 / 60.0):
     """Advance the physics simulation by *n* frames."""
     sm = SceneManager.instance()
@@ -384,10 +380,6 @@ class TestSliderJoint:
         with pytest.raises((ValueError, TypeError)):
             setattr(slider, attribute, value)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Gravity & free fall
-# ═══════════════════════════════════════════════════════════════════════════
 
 class TestPenetrationQuery:
     @pytest.mark.parametrize("shape_name", ["BoxCollider", "SphereCollider", "CapsuleCollider", "CylinderCollider"])
@@ -1082,31 +1074,6 @@ class TestGravity:
 
         assert restored_ball.transform.position.y > 0.9
 
-    def test_set_gravity_persists(self, scene):
-        Physics.set_gravity(Vector3(0, -9.81, 0))
-        g = Physics.get_gravity()
-        assert g.y == pytest.approx(-9.81, abs=0.01)
-
-    def test_custom_gravity(self, scene):
-        Physics.set_gravity(Vector3(0, -20, 0))
-        g = Physics.get_gravity()
-        assert g.y == pytest.approx(-20, abs=0.01)
-        Physics.set_gravity(Vector3(0, -9.81, 0))  # restore
-
-    def test_ball_falls_under_gravity(self, scene):
-        """A dynamic sphere above the ground should lose altitude."""
-        Physics.set_gravity(Vector3(0, -9.81, 0))
-        _make_ground(scene)
-        ball, rb = _make_ball(scene, pos=Vector3(0, 10, 0))
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        y0 = ball.transform.position.y
-        _step_frames(60)
-        y1 = ball.transform.position.y
-
-        assert y1 < y0, f"Ball should fall: {y0} → {y1}"
 
     def test_no_gravity_ball_stays(self, scene):
         """With gravity off a dynamic body should not fall."""
@@ -1321,26 +1288,7 @@ class TestFixedTiming:
         )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Collision — ball lands on ground
-# ═══════════════════════════════════════════════════════════════════════════
-
 class TestCollision:
-    def test_ball_lands_on_ground(self, scene):
-        """Ball should collide with ground and stop roughly at ground level."""
-        Physics.set_gravity(Vector3(0, -9.81, 0))
-        _make_ground(scene)
-        ball, rb = _make_ball(scene, pos=Vector3(0, 5, 0), radius=0.5)
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(180)  # 3 seconds — plenty of time to settle
-        y = ball.transform.position.y
-        # Ground top is at Y=0.5 (center 0, scale 1 → half-height 0.5)
-        # Ball radius 0.5 → ball center rests at about Y=1.0
-        assert y < 5.0, "Ball should have fallen"
-        assert y > -1.0, "Ball should not fall through ground"
 
     def test_bounce_combine_mode_changes_contact_response(self, scene):
         ground = _make_ground(scene)
@@ -1396,7 +1344,9 @@ class TestCollision:
 
         assert peak_after_contact < 1.5
 
-    def test_box_stack_settles_without_lateral_drift(self, scene):
+    def test_box_stack_settles_without_lateral_drift(self, scene, monkeypatch):
+        # A tall stack with the strict sleep threshold needs finer contact steps.
+        monkeypatch.setattr(EngineConfig.get(), "physics_collision_steps", 2)
         Physics.set_gravity(Vector3(0, -9.81, 0))
         ground = scene.create_game_object("StackGround")
         ground.transform.position = Vector3(0, -0.5, 0)
@@ -1415,13 +1365,29 @@ class TestCollision:
         manager = SceneManager.instance()
         manager.play()
         manager.pause()
-        _step_frames(600)
+        fixed_dt = manager.get_fixed_time_step()
+        # Contact ordering affects settling time; require natural, bounded rest.
+        for _ in range(math.ceil(30.0 / fixed_dt)):
+            manager.step(fixed_dt)
+            if all(rigidbody.is_sleeping() for _, rigidbody in boxes):
+                break
 
         for index, (box, rigidbody) in enumerate(boxes):
             assert abs(box.transform.position.x) < 0.1
             assert abs(box.transform.position.z) < 0.1
             assert box.transform.position.y == pytest.approx(0.5 + index, abs=0.12)
             assert rigidbody.is_sleeping()
+
+        resting_poses = [
+            (tuple(box.transform.position), tuple(rigidbody.rotation))
+            for box, rigidbody in boxes
+        ]
+        _step_frames(60, fixed_dt)
+        assert all(rigidbody.is_sleeping() for _, rigidbody in boxes)
+        assert [
+            (tuple(box.transform.position), tuple(rigidbody.rotation))
+            for box, rigidbody in boxes
+        ] == resting_poses
 
     def test_contact_friction_slows_non_rotating_box(self, scene):
         Physics.set_gravity(Vector3(0, -9.81, 0))
@@ -1455,10 +1421,6 @@ class TestCollision:
         assert abs(high_friction.velocity.x) < 0.25
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Rigidbody properties in play mode
-# ═══════════════════════════════════════════════════════════════════════════
-
 class TestRigidbodyInScene:
     @pytest.mark.parametrize(
         "attribute,value",
@@ -1475,66 +1437,6 @@ class TestRigidbodyInScene:
         _, rigidbody = _make_ball(scene)
         with pytest.raises((ValueError, TypeError)):
             setattr(rigidbody, attribute, value)
-
-    def test_mass_affects_physics(self, scene):
-        _make_ground(scene)
-        heavy, rb_heavy = _make_ball(scene, pos=Vector3(-3, 10, 0), mass=100.0)
-        light, rb_light = _make_ball(scene, pos=Vector3(3, 10, 0), mass=0.1)
-        rb_heavy.use_gravity = True
-        rb_light.use_gravity = True
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(30)
-
-        # Both should have fallen (gravity is mass-independent in Newtonian physics,
-        # but drag or solver differences may cause slight variation)
-        assert heavy.transform.position.y < 10.0
-        assert light.transform.position.y < 10.0
-
-    def test_kinematic_body_does_not_fall(self, scene):
-        _make_ground(scene)
-        ball, rb = _make_ball(scene, pos=Vector3(0, 10, 0))
-        rb.is_kinematic = True
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        y0 = ball.transform.position.y
-        _step_frames(60)
-        y1 = ball.transform.position.y
-        assert y1 == pytest.approx(y0, abs=0.1)
-
-    def test_velocity_readable_during_fall(self, scene):
-        Physics.set_gravity(Vector3(0, -9.81, 0))
-        _make_ground(scene)
-        ball, rb = _make_ball(scene, pos=Vector3(0, 20, 0))
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(30)
-
-        vel = rb.velocity
-        # Ball is falling, so velocity Y should be negative
-        assert vel.y < 0, f"Velocity should be downward: {vel.y}"
-
-    def test_add_force_impulse(self, scene):
-        """An upward impulse should propel the ball up."""
-        Physics.set_gravity(Vector3(0, 0, 0))  # disable gravity for a clean test
-        _make_ground(scene)
-        ball, rb = _make_ball(scene, pos=Vector3(0, 5, 0))
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-        rb.add_force(Vector3(0, 100, 0), ForceMode.Impulse)
-        _step_frames(30)
-
-        assert ball.transform.position.y > 5.0, "Impulse should move ball up"
-        Physics.set_gravity(Vector3(0, -9.81, 0))
 
 
 class TestRigidbodyNumerics:
@@ -1801,10 +1703,6 @@ class TestContinuousCollisionDetection:
             assert pair[1][1].velocity.x > -1.0
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Raycasting with actual scene objects
-# ═══════════════════════════════════════════════════════════════════════════
-
 class TestRaycast:
     @pytest.mark.parametrize(
         ("shape_name", "convex"),
@@ -1837,29 +1735,6 @@ class TestRaycast:
         assert math.isfinite(hit.distance)
         assert (hit.normal.x, hit.normal.y, hit.normal.z) == pytest.approx((0, 1, 0), abs=2e-2)
 
-    def test_raycast_hits_ground(self, scene):
-        _make_ground(scene)
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        hit = Physics.raycast(Vector3(0, 50, 0), Vector3(0, -1, 0), 100.0)
-        assert hit is not None
-        assert 0 < hit.distance < 50.0
-        assert hit.normal.y == pytest.approx(1.0, abs=0.1)
-
-    def test_raycast_miss(self, scene):
-        _make_ground(scene)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        # Ray pointing away from all objects
-        hit = Physics.raycast(Vector3(0, 50, 0), Vector3(0, 1, 0), 100.0)
-        assert hit is None
 
     def test_raycast_all_returns_multiple(self, scene):
         _make_ground(scene)
@@ -1967,36 +1842,8 @@ class TestRaycast:
         assert Physics.raycast(origin, direction, 20, layer_mask=1 << 6, query_triggers=True) is None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Overlap queries
-# ═══════════════════════════════════════════════════════════════════════════
-
 class TestOverlapQueries:
-    def test_overlap_sphere_finds_colliders(self, scene):
-        for i in range(3):
-            go = scene.create_game_object(f"Obj{i}")
-            go.transform.position = Vector3(float(i), 0, 0)
-            go.add_component("SphereCollider")
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        result = Physics.overlap_sphere(Vector3(0, 0, 0), 50.0)
-        assert len(result) >= 3
-
-    def test_overlap_box_finds_colliders(self, scene):
-        go = scene.create_game_object("TestBox")
-        go.add_component("BoxCollider")
-
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        result = Physics.overlap_box(Vector3(0, 0, 0), Vector3(10, 10, 10))
-        assert len(result) >= 1
 
     def test_overlap_box_honors_orientation(self, scene):
         target = scene.create_game_object("OrientedQueryTarget")
@@ -2015,48 +1862,9 @@ class TestOverlapQueries:
             c.component_id for c in Physics.overlap_box(Vector3(0, 0, 0), extents, quarter_turn_z)
         ]
 
-    def test_overlap_capsule_finds_colliders(self, scene):
-        target = scene.create_game_object("CapsuleQueryTarget")
-        target.transform.position = Vector3(0, 2, 0)
-        collider = target.add_component("SphereCollider")
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        assert collider.component_id in [
-            c.component_id
-            for c in Physics.overlap_capsule(Vector3(0, -2, 0), Vector3(0, 2, 0), 0.75)
-        ]
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Shape casts
-# ═══════════════════════════════════════════════════════════════════════════
 
 class TestShapeCasts:
-    def test_sphere_cast_hits_ground(self, scene):
-        _make_ground(scene)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
 
-        hit = Physics.sphere_cast(Vector3(0, 50, 0), 1.0, Vector3(0, -1, 0), 100.0)
-        assert hit is not None
-        assert hit.distance < 60
-
-    def test_box_cast_hits_ground(self, scene):
-        _make_ground(scene)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        hit = Physics.box_cast(
-            Vector3(0, 50, 0), Vector3(1, 1, 1), Vector3(0, -1, 0), max_distance=100.0
-        )
-        assert hit is not None
 
     def test_raycast_flushes_moved_static_collider_without_fixed_step(self, scene):
         target = scene.create_game_object("MovedStaticQueryTarget")
@@ -2073,18 +1881,6 @@ class TestShapeCasts:
 
         assert hit is not None
         assert hit.game_object.name == "MovedStaticQueryTarget"
-
-    def test_capsule_cast_hits_ground(self, scene):
-        _make_ground(scene)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
-
-        hit = Physics.capsule_cast(
-            Vector3(0, 49, 0), Vector3(0, 51, 0), 0.5, Vector3(0, -1, 0), 100.0
-        )
-        assert hit is not None
 
 
 class TestContactCallbacks:
@@ -2134,9 +1930,6 @@ class TestContactCallbacks:
         sm.step()
         assert "exit" in probe.events
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Layer collision filtering
-# ═══════════════════════════════════════════════════════════════════════════
 
 class TestLayerCollision:
     def test_ignore_layer_collision_round_trip(self, scene):

@@ -249,7 +249,6 @@ class SceneDocumentTransaction:
             ),
             "Audio": getattr(registry, "begin_load_audio_by_guid", None),
             "Mesh": getattr(registry, "begin_load_mesh_by_guid", None),
-            "Texture": getattr(registry, "begin_load_texture_by_guid", None),
         }
         tickets: list[Any] = []
         for guid, resource_type in self._resource_dependencies:

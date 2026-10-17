@@ -35,7 +35,6 @@ from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
 from .fields import FieldMetadata, FieldType
 from .component import InxComponent
-from infernux.debug import Debug
 
 if TYPE_CHECKING:
     from infernux.lib import Component as CppComponent, GameObject

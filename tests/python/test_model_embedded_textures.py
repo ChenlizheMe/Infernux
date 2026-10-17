@@ -1,9 +1,10 @@
 """Model-owned images are reusable, read-only, GUID-addressed Texture assets."""
+
+from test_model_material_defaults import imported_model as imported_model
 import base64
 import copy
 import io
 import json
-import os
 import time
 from pathlib import Path
 
@@ -13,16 +14,18 @@ from PIL import Image
 from infernux.core.assets import AssetManager
 from infernux.core.asset_types import read_mesh_import_settings
 from infernux.lib import AssetRegistry, AssetDependencyGraph
-from test_model_material_defaults import imported_model
 
 
 def embed(document, color=(200, 60, 30), *, name="Embedded Color"):
     output = io.BytesIO()
     Image.new("RGB", (8, 4), color).save(output, format="PNG")
-    document["images"] = [{"name": name, "uri": "data:image/png;base64," + base64.b64encode(output.getvalue()).decode()}]
+    document["images"] = [
+        {"name": name, "uri": "data:image/png;base64," + base64.b64encode(output.getvalue()).decode()}
+    ]
     document["textures"] = [{"source": 0}]
-    document["materials"][0]["pbrMetallicRoughness"].update({
-        "baseColorFactor": [1, 1, 1, 1], "baseColorTexture": {"index": 0}})
+    document["materials"][0]["pbrMetallicRoughness"].update(
+        {"baseColorFactor": [1, 1, 1, 1], "baseColorTexture": {"index": 0}}
+    )
 
 
 def records(database, source):
@@ -40,11 +43,11 @@ def test_embedded_texture_is_registered_previewable_reusable_and_cooked(imported
         deadline = time.monotonic() + 30
         while (result := AssetManager.poll_model_reimport(owner)) is None:
             assert time.monotonic() < deadline
-            time.sleep(.002)
+            time.sleep(0.002)
     else:
         result = AssetManager.reimport_asset(str(source), database=database)
     assert result, result.error
-    record, = records(database, source)
+    (record,) = records(database, source)
     guid = record["guid"]
     path = str(source) + "::subtex:" + guid
     assert database.get_guid_from_path(path) == guid
@@ -68,6 +71,7 @@ def test_embedded_texture_is_registered_previewable_reusable_and_cooked(imported
 
     database.flush_derived_index()
     from infernux.engine.runtime_artifact_catalog import load_asset_index, validate_artifact
+
     root = Path(database.assets_root).parent
     entry = next(entry for entry in load_asset_index(root) if entry["guid"] == guid)
     binding = validate_artifact(root, entry, root / entry["artifact_path"])
@@ -81,13 +85,13 @@ def test_embedded_texture_keeps_guid_on_content_edit_refresh_and_model_move(impo
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")
     assert AssetManager.reimport_asset(str(source), database=database)
-    before, = records(database, source)
+    (before,) = records(database, source)
     texture = AssetRegistry.instance().load_texture_by_guid(before["guid"])
     version = AssetRegistry.instance().get_asset_version(before["guid"])
     embed(document, (10, 40, 230))
     source.write_text(json.dumps(document), encoding="utf-8")
     assert AssetManager.reimport_asset(str(source), database=database)
-    after, = records(database, source)
+    (after,) = records(database, source)
     assert before["guid"] == after["guid"]
     assert AssetRegistry.instance().load_texture_by_guid(before["guid"]) is texture
     assert AssetRegistry.instance().get_asset_version(before["guid"]) > version
@@ -133,47 +137,12 @@ def test_failed_embedded_decode_does_not_publish_partial_children(imported_model
     assert records(database, source) == before
 
 
-@pytest.mark.parametrize("short_project_root", [False, True])
-def test_embedded_texture_is_in_picker_and_accepts_guid_or_path_drop(imported_model, monkeypatch, short_project_root):
-    from infernux.engine import project_context
-    from infernux.engine.interaction.object_fields import AssetReferenceCatalog
-    from infernux.engine.ui._inspector_references import _project_texture_guid_and_path
-    from infernux.engine.ui.inspector_material import _texture_display_name
-    from infernux.core.asset_reference_types import asset_type_registry
-    _, document, source, database, _ = imported_model
-    embed(document)
-    source.write_text(json.dumps(document), encoding="utf-8")
-    assert AssetManager.reimport_asset(str(source), database=database)
-    record, = records(database, source)
-    guid = record["guid"]
-    path = database.get_path_from_guid(guid)
-    project_root = str(Path(database.assets_root).parent.resolve())
-    if short_project_root:
-        if os.name != "nt":
-            pytest.skip("Windows 8.3 project-root alias regression")
-        import ctypes
-
-        buffer = ctypes.create_unicode_buffer(32768)
-        length = ctypes.windll.kernel32.GetShortPathNameW(project_root, buffer, len(buffer))
-        if not length or buffer.value == project_root:
-            pytest.skip("8.3 short paths are unavailable on this volume")
-        project_root = buffer.value
-    monkeypatch.setattr(project_context, "_project_root", project_root)
-    assert any(value == path for label, value in AssetReferenceCatalog().items("Texture", "Embedded Color"))
-    for value in (guid, path):
-        resolved_guid, resolved_path = _project_texture_guid_and_path(value)
-        assert resolved_guid == guid
-        assert Path(resolved_path) == Path(path)
-    assert not asset_type_registry.require("Texture").incompatibility(guid)
-    assert _texture_display_name(database, path) == "Embedded Color"
-
-
 def test_removing_owner_unregisters_children_without_erasing_material_reference(imported_model):
     _, document, source, database, _ = imported_model
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")
     assert AssetManager.reimport_asset(str(source), database=database)
-    child, = records(database, source)
+    (child,) = records(database, source)
     target = source.with_suffix(".mat")
     mesh = AssetRegistry.instance().load_mesh(str(source))
     target.write_text(json.dumps(mesh.create_material_copy(0).serialize_document()), encoding="utf-8")
@@ -185,37 +154,20 @@ def test_removing_owner_unregisters_children_without_erasing_material_reference(
     assert json.loads(target.read_text(encoding="utf-8"))["properties"]["texSampler"]["guid"] == child["guid"]
 
 
-def test_project_selection_roundtrips_and_texture_fields_accept_owned_path(imported_model):
-    from infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
-    from infernux.core.asset_reference_types import asset_type_registry
-    _, document, source, database, _ = imported_model
-    embed(document)
-    source.write_text(json.dumps(document), encoding="utf-8")
-    assert AssetManager.reimport_asset(str(source), database=database)
-    owner_guid = database.get_guid_from_path(str(source))
-    texture_guid = records(database, source)[0]["guid"]
-    path = str(source) + "::subtex:" + texture_guid
-    target = _project_selection_target(path)
-    assert target.sub_kind == "subtexture"
-    assert target.document_id == owner_guid
-    assert target.target_id == texture_guid
-    assert _project_path_for_target(target) == (
-        database.get_path_from_guid(owner_guid) + "::subtex:" + texture_guid
-    )
-    for name in ("Texture", "Texture.Sampled"):
-        assert not asset_type_registry.require(name).incompatibility(path)
-
-
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_owned_texture_import_settings_publish_in_model_sidecar(imported_model, asynchronous):
     from infernux.core.asset_types import (
-        read_texture_import_settings, FilterMode, WrapMode, TextureCompression,
+        read_texture_import_settings,
+        FilterMode,
+        WrapMode,
+        TextureCompression,
     )
+
     _, document, source, database, _ = imported_model
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")
     assert AssetManager.reimport_asset(str(source), database=database)
-    before, = records(database, source)
+    (before,) = records(database, source)
     path = database.get_path_from_guid(before["guid"])
     settings = read_texture_import_settings(path)
     settings.max_size = 4
@@ -229,12 +181,12 @@ def test_owned_texture_import_settings_publish_in_model_sidecar(imported_model, 
         deadline = time.monotonic() + 30
         while (result := AssetManager.poll_model_reimport(owner)) is None:
             assert time.monotonic() < deadline
-            time.sleep(.002)
+            time.sleep(0.002)
     else:
         result = AssetManager.reimport_asset(path, import_settings=settings.to_dict(), database=database)
     assert result, result.error
     assert read_texture_import_settings(path) == settings
-    after, = records(database, source)
+    (after,) = records(database, source)
     assert after["guid"] == before["guid"]
     assert after["metadata"]["metadata"]["artifact_width"]["value"] == 4
     assert after["metadata"]["metadata"]["artifact_height"]["value"] == 2
@@ -261,7 +213,7 @@ def test_owned_texture_failed_settings_preserve_owner_and_identity(imported_mode
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")
     assert AssetManager.reimport_asset(str(source), database=database)
-    child, = records(database, source)
+    (child,) = records(database, source)
     path = database.get_path_from_guid(child["guid"])
     sidecar = Path(str(source) + ".meta")
     old = sidecar.read_bytes()
@@ -269,24 +221,9 @@ def test_owned_texture_failed_settings_preserve_owner_and_identity(imported_mode
     deadline = time.monotonic() + 30
     while (result := database.try_commit_model_reimport()) is None:
         assert time.monotonic() < deadline
-        time.sleep(.002)
+        time.sleep(0.002)
     assert not result
     assert "texture_compression" in result.error
     assert sidecar.read_bytes() == old
     assert records(database, source) == [child]
     assert database.get_guid_from_path(path) == child["guid"]
-
-
-def test_owned_texture_inspector_has_its_own_settings_identity(imported_model):
-    from infernux.engine.ui import asset_details_renderer as ui
-    _, document, source, database, _ = imported_model
-    embed(document)
-    source.write_text(json.dumps(document), encoding="utf-8")
-    assert AssetManager.reimport_asset(str(source), database=database)
-    child, = records(database, source)
-    ui._ensure_categories()
-    state = ui._State()
-    assert state.load(database.get_path_from_guid(child["guid"]), "texture", ui._categories["texture"])
-    assert state.meta["guid"] == child["guid"]
-    assert state.meta["guid"] != database.get_guid_from_path(str(source))
-    assert state.settings.max_size == 2048

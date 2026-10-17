@@ -15,6 +15,7 @@ endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(INFERNUX_PYTHON_SYNC_DIR "${CMAKE_BINARY_DIR}/python-sync" CACHE PATH
     "Build-tree directory that receives the native Python runtime")

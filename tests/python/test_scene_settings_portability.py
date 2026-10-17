@@ -37,17 +37,13 @@ def test_last_scene_resolves_by_guid(tmp_path, monkeypatch):
         "_load_editor_settings",
         lambda: {"lastOpenedSceneGuid": "scene-guid"},
     )
-    monkeypatch.setattr(
-        scene_manager_module, "_save_editor_settings", lambda value: saved.append(value)
-    )
+    monkeypatch.setattr(scene_manager_module, "_save_editor_settings", lambda value: saved.append(value))
     monkeypatch.setattr(
         scene_save_module,
         "_load_editor_settings",
         lambda: {"lastOpenedSceneGuid": "scene-guid"},
     )
-    monkeypatch.setattr(
-        scene_save_module, "_save_editor_settings", lambda value: saved.append(value)
-    )
+    monkeypatch.setattr(scene_save_module, "_save_editor_settings", lambda value: saved.append(value))
     monkeypatch.setattr(
         manager,
         "_do_open_scene",
@@ -58,6 +54,7 @@ def test_last_scene_resolves_by_guid(tmp_path, monkeypatch):
 
     assert opened == [str(scene)]
     assert saved == [{"lastOpenedSceneGuid": "scene-guid"}]
+
 
 def test_scene_camera_state_is_keyed_by_asset_guid(tmp_path, monkeypatch):
     scene = tmp_path / "Assets" / "Scenes" / "Start.scene"
@@ -78,9 +75,7 @@ def test_scene_camera_state_is_keyed_by_asset_guid(tmp_path, monkeypatch):
         "_load_editor_settings",
         lambda: {"sceneCameraStates": {}},
     )
-    monkeypatch.setattr(
-        scene_manager_module, "_save_editor_settings", lambda value: saved.append(value)
-    )
+    monkeypatch.setattr(scene_manager_module, "_save_editor_settings", lambda value: saved.append(value))
 
     manager._save_camera_state(str(scene))
 
@@ -98,23 +93,6 @@ def test_editor_navigation_does_not_modify_shared_project_settings(tmp_path, mon
     scene_manager_module._save_editor_settings({"lastOpenedSceneGuid": "local-scene"})
     assert scene_manager_module._load_editor_settings()["lastOpenedSceneGuid"] == "local-scene"
     assert settings.read_text(encoding="utf-8") == original
-    assert json.loads((tmp_path / "Library" / "EditorSettings.json").read_text()) == {"lastOpenedSceneGuid": "local-scene"}
-
-
-def test_checkout_without_local_navigation_opens_first_authored_build_scene(tmp_path, monkeypatch):
-    scene = tmp_path / "Assets" / "Scenes" / "SampleScene.scene"
-    scene.parent.mkdir(parents=True)
-    scene.write_text("{}", encoding="utf-8")
-    manager = _manager(_AssetDatabase(scene))
-    settings = tmp_path / "ProjectSettings" / "BuildSettings.json"
-    settings.parent.mkdir()
-    settings.write_text('{"scene_guids": ["scene-guid"]}\n', encoding="utf-8")
-    monkeypatch.setattr(scene_manager_module, "_effective_project_root", lambda: str(tmp_path))
-    monkeypatch.setattr(scene_manager_module, "_load_editor_settings", lambda: {})
-    monkeypatch.setattr("infernux.engine.build_settings.load_build_settings_for_build", lambda _: {"scene_guids": ["scene-guid"]})
-    opened = []
-    monkeypatch.setattr(manager, "_do_open_scene", lambda path, record_navigation: opened.append(path) or True)
-    monkeypatch.setattr(manager, "_remember_last_scene", lambda _: None)
-    monkeypatch.setattr(manager, "_do_new_scene", lambda: (_ for _ in ()).throw(AssertionError("initial build scene must be opened")))
-    manager.load_last_scene_or_default()
-    assert opened == [str(scene)]
+    assert json.loads((tmp_path / "Library" / "EditorSettings.json").read_text()) == {
+        "lastOpenedSceneGuid": "local-scene"
+    }

@@ -158,6 +158,10 @@ class RuntimeChangeJournal:
         self._publish_count = 0
         self._coalesced_count = 0
         self._flush_count = 0
+        # Detailed field tracking is paid for only when a cursor subscribes to
+        # the field/value domains (the Inspector does; the Player scheduler
+        # does not).
+        self._field_tracking = False
 
     @property
     def revision(self) -> int:
@@ -223,6 +227,35 @@ class RuntimeChangeJournal:
         broad: bool = False,
     ) -> None:
         """Queue one typed mutation for coalescing at the next barrier."""
+        # Structural notifications publish exactly one stable identity. This is
+        # the scene-load path: skip temporary sets and hashability probes.
+        if (
+            field is None
+            and not fields
+            and not broad
+            and stable_id is not None
+            and not stable_ids
+        ):
+            typed_domain = RuntimeChangeDomain(domain)
+            stack = self._transaction_stack()
+            if stack:
+                changes = stack[-1].get(typed_domain)
+                if changes is None:
+                    changes = _MutableDomainChanges()
+                    stack[-1][typed_domain] = changes
+                changes.stable_ids.add(stable_id)
+                self._publish_count += 1
+                self._coalesced_count += 1
+                return
+            with self._lock:
+                changes = self._pending.get(typed_domain)
+                if changes is None:
+                    changes = _MutableDomainChanges()
+                    self._pending[typed_domain] = changes
+                changes.stable_ids.add(stable_id)
+                self._publish_count += 1
+                self._coalesced_count += 1
+            return
         typed_domain = RuntimeChangeDomain(domain)
         ids = set(stable_ids)
         if stable_id is not None:
@@ -268,10 +301,81 @@ class RuntimeChangeJournal:
         component_id: Hashable,
         field_id: Hashable,
     ) -> None:
+        if not self._field_tracking:
+            return
         self.publish(
             RuntimeChangeDomain.COMPONENT_FIELD,
             field=RuntimeFieldKey(type_id, component_id, field_id),
         )
+
+    def publish_component_field_value(
+        self,
+        type_id: Hashable,
+        component_id: Hashable,
+        field_id: Hashable,
+    ) -> None:
+        """Coalesce one field write and its value revision.
+
+        This is the steady-state gameplay path. Inside a phase transaction the
+        journal already owns the target sets, so the generic ``publish``
+        validation (hashability probes, temporary sets, domain conversion) is
+        redundant. The fallback keeps identical behaviour outside a phase.
+        """
+        stack = self._transaction_stack()
+        if not stack:
+            if not self._field_tracking:
+                return
+            self.publish_component_field(type_id, component_id, field_id)
+            self.publish(RuntimeChangeDomain.SCRIPT_VALUE, stable_id=component_id)
+            return
+        if not self._field_tracking:
+            return
+        target = stack[-1]
+        field_changes = target.get(RuntimeChangeDomain.COMPONENT_FIELD)
+        if field_changes is None:
+            field_changes = _MutableDomainChanges()
+            target[RuntimeChangeDomain.COMPONENT_FIELD] = field_changes
+        field_changes.fields.add(RuntimeFieldKey(type_id, component_id, field_id))
+        value_changes = target.get(RuntimeChangeDomain.SCRIPT_VALUE)
+        if value_changes is None:
+            value_changes = _MutableDomainChanges()
+            target[RuntimeChangeDomain.SCRIPT_VALUE] = value_changes
+        value_changes.stable_ids.add(component_id)
+        self._publish_count += 2
+        self._coalesced_count += 2
+
+    def publish_component_fields(
+        self,
+        type_id: Hashable,
+        component_ids: Iterable[Hashable],
+        field_id: Hashable,
+    ) -> None:
+        """Coalesce a homogeneous batch field write in one pass."""
+        if not self._field_tracking:
+            return
+        stack = self._transaction_stack()
+        if not stack:
+            for component_id in component_ids:
+                self.publish_component_field_value(type_id, component_id, field_id)
+            return
+        target = stack[-1]
+        field_changes = target.get(RuntimeChangeDomain.COMPONENT_FIELD)
+        if field_changes is None:
+            field_changes = _MutableDomainChanges()
+            target[RuntimeChangeDomain.COMPONENT_FIELD] = field_changes
+        value_changes = target.get(RuntimeChangeDomain.SCRIPT_VALUE)
+        if value_changes is None:
+            value_changes = _MutableDomainChanges()
+            target[RuntimeChangeDomain.SCRIPT_VALUE] = value_changes
+        add_field = field_changes.fields.add
+        add_value = value_changes.stable_ids.add
+        published = 0
+        for component_id in component_ids:
+            add_field(RuntimeFieldKey(type_id, component_id, field_id))
+            add_value(component_id)
+            published += 1
+        self._publish_count += published * 2
+        self._coalesced_count += published * 2
 
     def _flush_locked(self) -> int:
         if not self._pending:
@@ -309,6 +413,11 @@ class RuntimeChangeJournal:
             if domains is None
             else frozenset(RuntimeChangeDomain(domain) for domain in domains)
         )
+        if (
+            RuntimeChangeDomain.COMPONENT_FIELD in selected
+            or RuntimeChangeDomain.SCRIPT_VALUE in selected
+        ):
+            self._field_tracking = True
         with self._lock:
             revision = self._revision if start_at_current else 0
             revisions = {

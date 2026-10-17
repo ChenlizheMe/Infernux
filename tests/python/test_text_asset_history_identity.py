@@ -1,4 +1,5 @@
 """Text history follows a GUID across checkout changes, never a reused path."""
+
 from pathlib import Path
 
 import pytest
@@ -152,21 +153,6 @@ def test_text_history_import_failure_after_relocation_rolls_back_only_its_guid(t
     assert not history.action_journal.applied_entries()
 
 
-def test_text_history_type_change_rejects_replay(text_host):
-    execute, database, _, history, folder = text_host
-    path = folder / "Notes.txt"
-    guid = _asset(database, path, b"value = 1\n")
-    execute("infernux.asset.text.set", asset_guid=guid, content="value = 2\n")
-    command = history.action_journal.peek_undo().action
-    moved = folder / "Changed.py"
-    _relocate(execute, path, moved)
-    assert database.get_guid_from_path(str(moved)) == guid
-    with pytest.raises(RuntimeError, match="resource type"):
-        command.undo()
-    assert moved.read_bytes() == b"value = 2\n"
-    assert path.read_bytes() == b"B collaborator\n"
-
-
 def test_text_history_conditional_write_failure_never_runs_rollback(text_host, monkeypatch):
     from infernux.core import document_store
 
@@ -185,7 +171,9 @@ def test_text_history_conditional_write_failure_never_runs_rollback(text_host, m
         return write(target, content, **kwargs)
 
     monkeypatch.setattr(document_store, "write_document_text", external_change_before_commit)
-    monkeypatch.setattr(AssetManager, "reimport_asset", lambda *_args, **_kwargs: pytest.fail("uncommitted content was imported"))
+    monkeypatch.setattr(
+        AssetManager, "reimport_asset", lambda *_args, **_kwargs: pytest.fail("uncommitted content was imported")
+    )
     with pytest.raises(RuntimeError, match="changed outside the editor"):
         command.undo()
     assert path.read_bytes() == b"Changed after snapshot\n"

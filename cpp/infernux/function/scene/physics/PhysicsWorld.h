@@ -5,7 +5,7 @@
  * @brief Singleton physics world backed by Jolt Physics.
  *
  * Manages Jolt initialisation/shutdown, stepping, body management,
- * and raycast queries. Integrated with SceneManager::FixedUpdate.
+ * and raycast queries. Stepped by SceneManager's fixed-time accumulator.
  */
 
 #include "PhysicsConstraintOwner.h"
@@ -547,6 +547,7 @@ class PhysicsWorld
         GameObject *gameObject = nullptr;
         uint64_t colliderId = 0;
         uint64_t gameObjectId = 0;
+        uint32_t memberIndex = UINT32_MAX;
         PhysicsTargetReference target;
         bool isTrigger = false;
     };

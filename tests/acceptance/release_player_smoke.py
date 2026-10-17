@@ -89,7 +89,7 @@ def run(player: Path, artifacts: Path, timeout: float) -> dict:
     evidence = json.loads((persistent / 'release-acceptance.json').read_text(encoding='utf-8'))
     verify_evidence(evidence, persistent / 'release-acceptance.png')
     fatal_patterns = ('Validation Error', 'VUID-', 'Traceback (most recent call last)',
-                      '[ERROR]', 'VK_ERROR_DEVICE_LOST', 'Segmentation fault')
+                      '[Error]', 'VK_ERROR_DEVICE_LOST', 'Segmentation fault')
     errors = []
     for log in artifacts.rglob('*.log'):
         for line in log.read_text(encoding='utf-8', errors='replace').splitlines():

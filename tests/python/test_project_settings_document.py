@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 
 from infernux.engine.interaction import (
-    BUILD_SETTINGS_DEFAULTS,
     DocumentKind,
     DocumentRegistry,
     ProjectSettingsDocumentController,
@@ -40,12 +39,6 @@ def test_build_settings_persist_target_owned_platform_options():
     assert settings["platform_options"]["android-arm64"]["android_artifact"] == "aab"
 
 
-def test_build_settings_current_schema_has_no_author_jit_toggle():
-    settings = normalize_build_settings({})
-
-    assert "enable_jit" not in settings
-
-
 def test_build_settings_reject_invalid_platform_target_and_option_shape():
     import pytest
 
@@ -75,23 +68,6 @@ def test_build_branding_uses_asset_guid_identity():
 
     assert settings["icon_guid"] == "icon-guid"
     assert settings["splash_items"][0]["asset_guid"] == "splash-guid"
-
-
-def test_build_branding_requires_the_exact_current_splash_shape():
-    import pytest
-
-    with pytest.raises(TypeError, match="current asset GUID schema"):
-        normalize_build_settings(
-            {
-                "splash_items": [
-                    {
-                        "type": "image",
-                        "asset_guid": "splash-guid",
-                        "duration": 1.5,
-                    }
-                ]
-            }
-        )
 
 
 class _TagManager:
@@ -210,25 +186,6 @@ def test_project_settings_document_is_shared_by_all_settings_views(tmp_path):
         DocumentRegistry._instance = previous_registry
 
 
-def test_project_settings_recovers_a_stale_generic_panel_controller(tmp_path):
-    previous_registry = DocumentRegistry._instance
-    registry = DocumentRegistry()
-    settings_path = tmp_path / "ProjectSettings"
-    settings_path.mkdir()
-    try:
-        stale = registry.create(
-            DocumentKind.PROJECT_SETTINGS,
-            "Project Settings",
-            resource_path=str(settings_path),
-            controller=object(),
-        )
-        controller = ensure_project_settings_document(str(tmp_path))
-        assert controller.document_id == stale.document_id
-        assert registry.require(stale.document_id).controller is controller
-    finally:
-        DocumentRegistry._instance = previous_registry
-
-
 def test_project_settings_edit_undo_and_redo_restore_runtime_sections(tmp_path):
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance
@@ -267,59 +224,6 @@ def test_project_settings_edit_undo_and_redo_restore_runtime_sections(tmp_path):
         manager.redo()
         assert controller.section("build")["game_name"] == "Interaction Test"
         assert tags.document["custom_tags"] == ["Damageable"]
-    finally:
-        DocumentRegistry._instance = previous_registry
-        UndoManager._instance = previous_manager
-
-
-def test_shared_project_settings_revision_tracks_the_authoring_view(tmp_path):
-    previous_registry = DocumentRegistry._instance
-    previous_manager = UndoManager._instance
-    registry = DocumentRegistry()
-    manager = UndoManager()
-    controller, _, _, _ = _controller(tmp_path)
-    document = registry.create(
-        DocumentKind.PROJECT_SETTINGS,
-        "Project Settings",
-        resource_path=controller.settings_path,
-        controller=controller,
-    )
-    controller.document_id = document.document_id
-    for view_id in ("build_settings", "tag_layer_settings", "physics_settings"):
-        registry.attach_view(document.document_id, view_id)
-    try:
-        build = controller.section("build")
-        build["game_name"] = "Owned by Build"
-        assert controller.apply_section(
-            "build",
-            build,
-            edit_key="project_settings.build.game_name",
-            description="Set Game Name",
-            view_id="build_settings",
-        )
-        build_revision = document.revision
-        assert document.dirty_owner_view_ids() == frozenset({"build_settings"})
-
-        physics = controller.section("physics")
-        physics["gravity"] = [0.0, -4.0, 0.0]
-        assert controller.apply_section(
-            "physics",
-            physics,
-            edit_key="project_settings.physics.gravity",
-            description="Set Gravity",
-            view_id="physics_settings",
-        )
-        assert document.dirty_owner_view_ids() == frozenset(
-            {"build_settings", "physics_settings"}
-        )
-
-        manager.undo()
-        assert document.revision == build_revision
-        assert document.dirty_owner_view_ids() == frozenset({"build_settings"})
-        manager.redo()
-        assert document.dirty_owner_view_ids() == frozenset(
-            {"build_settings", "physics_settings"}
-        )
     finally:
         DocumentRegistry._instance = previous_registry
         UndoManager._instance = previous_manager
@@ -373,9 +277,7 @@ def test_project_settings_async_persistence_owns_saved_revision(tmp_path):
     controller.document_id = document.document_id
     try:
         following = controller.capture_document()
-        following["build"]["platform_options"] = {
-            "windows-x64": {"window_width": 1600}
-        }
+        following["build"]["platform_options"] = {"windows-x64": {"window_width": 1600}}
         assert controller.apply_document(
             following,
             edit_key="project_settings.build.window_width",

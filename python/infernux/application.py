@@ -65,8 +65,7 @@ class Application:
         """Return the active project root, or an empty string before startup."""
         from infernux.engine.project_context import get_project_root
 
-        root = get_project_root()
-        return resolved_path(root) if root else ""
+        return get_project_root() or ""
 
     @staticmethod
     def persistent_data_path() -> str:

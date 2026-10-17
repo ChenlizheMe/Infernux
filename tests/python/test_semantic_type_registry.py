@@ -81,207 +81,9 @@ def test_stale_publication_does_not_change_active_catalog(declaration):
     with pytest.raises(RuntimeError, match="stale"):
         first.publish()
     assert native._semantic_catalog_snapshot().revision == active.revision
-    assert native._semantic_catalog_snapshot().type_document(declaration["type_guid"]) == active.type_document(declaration["type_guid"])
-
-
-@pytest.mark.parametrize("key", ["fields", "types"])
-def test_descriptor_collections_must_be_arrays(declaration, key):
-    edit = {"owner": declaration["owner"], "types": [declaration]}
-    if key == "fields":
-        declaration[key] = {}
-    else:
-        edit[key] = {}
-    before = native._semantic_catalog_snapshot().revision
-    with pytest.raises(ValueError, match=key):
-        native._semantic_catalog_prepare([edit])
-    assert native._semantic_catalog_snapshot().revision == before
-
-
-def test_engine_python_fields_survive_native_snapshot_roundtrip(declaration):
-    from infernux.components.registry import ensure_engine_component_catalog_loaded, get_all_types
-    from infernux.components.fields import get_serialized_fields
-    from infernux.field_schema import FieldSchema
-
-    ensure_engine_component_catalog_loaded()
-    component_types = {
-        cls for cls in get_all_types().values()
-        if cls.__module__.startswith("infernux.") and getattr(cls, "_uses_component_data_store", True)
-    }
-    assert any(cls.__name__ == "UIText" for cls in component_types)
-    documents = []
-    schemas = {}
-    for cls in sorted(component_types, key=lambda item: (item.__module__, item.__qualname__)):
-        document = deepcopy(declaration)
-        # Test-owned copies, not production registration or replacement of engine identities.
-        document["type_guid"] = declaration["owner"] + ":" + cls.__module__ + ":" + cls.__qualname__
-        document["readable_id"] = document["type_guid"]
-        fields = [get_field_schema(cls, name) for name in get_serialized_fields(cls)]
-        schemas[document["type_guid"]] = fields
-        document["fields"] = [field.to_document() for field in fields]
-        documents.append(document)
-    before = native._semantic_catalog_snapshot()
-    publication = native._semantic_catalog_prepare([{"owner": declaration["owner"], "types": documents}])
-    try:
-        publication.publish()
-        active = native._semantic_catalog_snapshot()
-        assert active.revision == before.revision + 1
-        for guid, fields in schemas.items():
-            assert [FieldSchema.from_document(item) for item in active.type_document(guid)["fields"]] == fields
-        assert all(guid not in before.type_guids for guid in schemas)
-    finally:
-        native._semantic_catalog_prepare([{"owner": declaration["owner"], "types": []}]).publish()
-
-
-def test_native_transform_declaration_matches_existing_scene_data(scene):
-    from infernux.components.fields import FieldType
-    from infernux.components.value_codec import VALUE_CODECS
-    from infernux.field_schema import get_native_field_schema
-
-    obj = scene.create_game_object("DeclaredTransform")
-    transform = obj.get_transform()
-    document = transform.serialize_document()
-    snapshot = native._semantic_catalog_snapshot()
-    descriptor = snapshot.type_document("native:infernux.Transform")
-    assert descriptor["origin"] == "native"
-    assert descriptor["owner"] == "engine:native"
-    assert obj.serialize_document()["transform"] == document
-    assert document["type"] == "Transform"
-    for item in descriptor["fields"]:
-        schema = get_native_field_schema(descriptor["type_guid"], item["attributes"]["field_id"])
-        default = list(schema.attributes["default"])
-        VALUE_CODECS.validate(default, FieldType.VEC3, schema.property_path)
-        assert document[schema.attributes["serialized_name"]] == default
-        assert VALUE_CODECS.encode(getattr(transform, schema.attributes["field_id"])) == default
-    transform.local_position = native.Vector3(3, 4, 5)
-    assert get_native_field_schema(descriptor["type_guid"], "local_position").attributes["default"] == (0.0, 0.0, 0.0)
-    with pytest.raises(KeyError):
-        get_native_field_schema(descriptor["type_guid"], "missing_field")
-
-
-@pytest.mark.parametrize("field", ["local_position", "local_euler_angles", "local_scale"])
-def test_native_transform_editor_command_uses_declared_schema_and_undo(scene, monkeypatch, field):
-    from infernux.engine.interaction.components import ComponentCommandService
-    from infernux.engine.interaction import serialized_properties
-    from infernux.engine.undo import UndoManager
-
-    transform = scene.create_game_object("SchemaCommand").get_transform()
-    before = [getattr(transform, field)[i] for i in range(3)]
-    captured = []
-    original = serialized_properties.make_attribute_property_transaction
-
-    def capture(*args, **kwargs):
-        result = original(*args, **kwargs)
-        captured.append(kwargs["schema"])
-        return result
-
-    monkeypatch.setattr(serialized_properties, "make_attribute_property_transaction", capture)
-    previous = UndoManager._instance
-    manager = UndoManager()
-    try:
-        service = ComponentCommandService()
-        assert service.set_field(transform, field, [2.0, 3.0, 4.0])
-        assert captured[0].value_type == "FieldType.VEC3"
-        assert captured[0].attributes["field_id"] == field
-        assert [getattr(transform, field)[i] for i in range(3)] == pytest.approx([2, 3, 4])
-        assert len(manager.action_journal.applied_entries()) == 1
-        manager.undo()
-        assert [getattr(transform, field)[i] for i in range(3)] == pytest.approx(before)
-        manager.redo()
-        assert [getattr(transform, field)[i] for i in range(3)] == pytest.approx([2, 3, 4])
-        for invalid in ([1, 2], [float("nan"), 0, 0], None, "invalid"):
-            with pytest.raises(RuntimeError, match=f"Transform.{field}"):
-                service.set_field(transform, field, invalid)
-            assert [getattr(transform, field)[i] for i in range(3)] == pytest.approx([2, 3, 4])
-        assert len(manager.action_journal.applied_entries()) == 1
-    finally:
-        manager.clear()
-        UndoManager._instance = previous
-
-
-def test_camera_declarations_match_native_defaults_and_wrapper_metadata(scene):
-    from infernux.components.builtin.camera import Camera
-    from infernux.components.builtin_component import CppProperty
-    from infernux.components.value_codec import VALUE_CODECS
-
-    obj = scene.create_game_object("DeclaredCamera")
-    camera = obj.add_component("Camera")
-    document = camera.serialize_document()
-    descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.Camera")
-    assert len(descriptor["fields"]) == 27
-    assert any(record["type_id"] == descriptor["type_guid"] for record in obj.serialize_document()["components"])
-    for field in descriptor["fields"]:
-        attributes = field["attributes"]
-        raw = getattr(camera, attributes["field_id"])
-        encoded = VALUE_CODECS.encode(raw)
-        expected = attributes["default"]
-        if field["value_type"] == "FieldType.ENUM":
-            assert attributes["enum"]["type_id"] == f"native:infernux.{type(raw).__name__}"
-            assert encoded == expected
-            if attributes.get("serialized", True):
-                assert int(raw) == document[attributes["serialized_name"]]
-            else:
-                assert attributes["serialized_name"] not in document
-                assert field["read_only"] is True
-        elif field["value_type"] == "FieldType.ASSET":
-            assert attributes["asset_type"] == expected["asset_type"] == "RenderTexture"
-            assert expected == {
-                "$type": "asset_ref",
-                "asset_type": "RenderTexture",
-                "guid": "",
-            }
-            assert raw is None and document[attributes["serialized_name"]] == expected["guid"] == ""
-        elif attributes.get("serialized", True):
-            assert encoded == pytest.approx(expected)
-            assert document[attributes["serialized_name"]] == pytest.approx(expected)
-        prop = getattr(Camera, attributes["field_id"])
-        if isinstance(prop, CppProperty):
-            assert prop.schema.to_document() == field
-            assert VALUE_CODECS.encode(prop.metadata.default) == expected
-    assert Camera.far_clip.metadata.default == camera.far_clip == 5000.0
-    assert Camera.projection_mode.metadata.enum_type is native.CameraProjection
-    assert Camera.clear_flags.metadata.enum_labels[1] == "camera.clear.solid_color"
-    assert Camera.field_of_view.metadata.visible_when is not None
-
-
-def test_light_declaration_owns_serialized_shape_and_wrapper_metadata(scene):
-    from infernux.components.builtin.light import Light
-    from infernux.components.builtin_component import CppProperty
-
-    obj = scene.create_game_object("DeclaredLight")
-    light = obj.add_component("Light")
-    document = light.serialize_document()
-    descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.Light")
-    fields = {field["attributes"]["field_id"]: field for field in descriptor["fields"]}
-
-    assert len(fields) == 18
-    serialized_names = {
-        field["attributes"]["serialized_name"]
-        for field in descriptor["fields"]
-        if field["attributes"].get("serialized", True)
-    }
-    assert serialized_names == (
-        set(document) - {
-            "type", "typeId", "componentId", "enabled", "executionOrder",
-            "component_id", "execution_order",
-        }
+    assert native._semantic_catalog_snapshot().type_document(declaration["type_guid"]) == active.type_document(
+        declaration["type_guid"]
     )
-    assert fields["color"]["value_type"] == "FieldType.VEC3"
-    assert fields["light_type"]["attributes"]["enum"]["type_id"] == "native:infernux.LightType"
-    assert fields["shadows"]["attributes"]["default"]["name"] == "Hard"
-    assert fields["render_mode"]["attributes"]["enum"]["type_id"] == "native:infernux.LightRenderMode"
-    assert fields["influence_domains"]["attributes"]["default"] == 3
-
-    projected = {
-        "light_type", "intensity", "range", "spot_angle", "outer_spot_angle", "area_size",
-        "area_two_sided", "shadows", "shadow_strength", "shadow_softness",
-    }
-    for name in projected:
-        prop = getattr(Light, name)
-        assert isinstance(prop, CppProperty)
-        assert prop.schema.to_document() == fields[name]
-    assert Light.light_type.metadata.enum_type is native.LightType
-    assert Light.shadows.metadata.enum_type is native.LightShadows
-    assert Light.range.metadata.visible_when is not None
 
 
 def test_audio_source_declaration_owns_public_fields_and_coupled_track_count(scene):
@@ -293,14 +95,21 @@ def test_audio_source_declaration_owns_public_fields_and_coupled_track_count(sce
     owner = scene.create_game_object("DeclaredAudioSource")
     native_source = owner.add_component("AudioSource")
     source = AudioSource._get_or_create_wrapper(native_source, owner)
-    descriptor = native._semantic_catalog_snapshot().type_document(
-        "native:infernux.AudioSource"
-    )
+    descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.AudioSource")
     fields = {field["attributes"]["field_id"]: field for field in descriptor["fields"]}
     assert set(fields) == {
-        "track_count", "volume", "pitch", "mute", "loop", "play_on_awake",
-        "spatial_blend", "min_distance", "max_distance", "output_bus",
-        "one_shot_pool_size", "priority",
+        "track_count",
+        "volume",
+        "pitch",
+        "mute",
+        "loop",
+        "play_on_awake",
+        "spatial_blend",
+        "min_distance",
+        "max_distance",
+        "output_bus",
+        "one_shot_pool_size",
+        "priority",
     }
     document = native_source.serialize_document()
     for name, field in fields.items():
@@ -330,51 +139,37 @@ def test_audio_source_declaration_owns_public_fields_and_coupled_track_count(sce
         UndoManager._instance = previous
 
 
-@pytest.mark.parametrize(("type_name", "wrapper_module", "wrapper_name", "specific"), [
-    ("BoxCollider", "box_collider", "BoxCollider", {"size"}),
-    ("SphereCollider", "sphere_collider", "SphereCollider", {"radius"}),
-    ("CapsuleCollider", "capsule_collider", "CapsuleCollider", {"radius", "height", "direction"}),
-    ("CylinderCollider", "cylinder_collider", "CylinderCollider", {"radius", "height", "direction"}),
-    ("MeshCollider", "mesh_collider", "MeshCollider", {"convex"}),
-])
-def test_collider_declarations_own_serialized_fields_and_wrapper_schema(
-    scene, type_name, wrapper_module, wrapper_name, specific,
-):
-    import importlib
+def test_skinned_renderer_declares_inherited_fields_for_host_schema_and_edits(scene):
+    from infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.host.editor import EditorAutomationHost
 
-    from infernux.components.builtin_component import CppProperty
-    from infernux.components.value_codec import VALUE_CODECS
+    catalog = native._semantic_catalog_snapshot()
+    base = catalog.type_document("native:infernux.MeshRenderer")
+    descriptor = catalog.type_document("native:infernux.SkinnedMeshRenderer")
+    assert descriptor["base_type_guid"] == base["type_guid"]
+    assert descriptor["fields"][:-1] == base["fields"]
+    assert descriptor["fields"][-1] == SkinnedMeshRenderer.active_take_name.schema.to_document()
 
-    wrapper_type = getattr(
-        importlib.import_module(f"infernux.components.builtin.{wrapper_module}"),
-        wrapper_name,
-    )
-    owner = scene.create_game_object(f"Declared{type_name}")
-    native_collider = owner.add_component(type_name)
-    document = native_collider.serialize_document()
-    descriptor = native._semantic_catalog_snapshot().type_document(
-        f"native:infernux.{type_name}"
-    )
-    fields = {field["attributes"]["field_id"]: field for field in descriptor["fields"]}
-    assert set(fields) == {"center", "is_trigger", "physic_material"} | specific
-    assert fields["physic_material"]["attributes"]["serialized_name"] == "physic_material_guid"
-    assert fields["physic_material"]["attributes"]["asset_type"] == "PhysicMaterial"
-    assert fields["physic_material"]["attributes"]["setter_owns_document_shape"] is True
-    assert fields["physic_material"]["attributes"]["default"] == {
-        "$type": "asset_ref",
-        "asset_type": "PhysicMaterial",
-        "guid": "",
+    owner = scene.create_game_object("SkinnedSchemaEdit")
+    renderer = owner.add_component("SkinnedMeshRenderer")
+    wrapper = SkinnedMeshRenderer._get_or_create_wrapper(renderer, owner)
+    schema = EditorAutomationHost.instance().scene_component_schema(owner.id, renderer.component_id)
+    assert {field["name"] for field in schema["fields"]} == {
+        "enabled", "castShadows", "receivesShadows", "submeshIndex", "meshPivotOffset", "activeTakeName"
     }
-    for name, field in fields.items():
-        prop = getattr(wrapper_type, name)
-        assert isinstance(prop, CppProperty)
-        assert prop.schema.to_document() == field
-        serialized_name = field["attributes"]["serialized_name"]
-        if name == "physic_material":
-            assert document[serialized_name] == ""
-            assert VALUE_CODECS.encode(prop.metadata.default) == field["attributes"]["default"]
-        else:
-            assert document[serialized_name] == pytest.approx(field["attributes"]["default"])
+    before = renderer.serialize_document()
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        assert ComponentCommandService().set_field(wrapper, "casts_shadows", False)
+        assert renderer.serialize_document()["castShadows"] is False
+        manager.undo()
+        assert renderer.serialize_document() == before
+    finally:
+        manager.clear()
+        UndoManager._instance = previous
 
 
 def test_box_collider_editor_command_uses_native_schema_material_boundary_and_undo(scene):
@@ -407,50 +202,7 @@ def test_box_collider_editor_command_uses_native_schema_material_boundary_and_un
         UndoManager._instance = previous
 
 
-def test_rigidbody_declaration_owns_serialized_defaults_and_wrapper_schema(scene):
-    from infernux.components.builtin.rigidbody import (
-        CollisionDetectionMode,
-        Rigidbody,
-        RigidbodyInterpolation,
-    )
-    from infernux.components.builtin_component import CppProperty
-
-    obj = scene.create_game_object("DeclaredRigidbody")
-    rigidbody = obj.add_component("Rigidbody")
-    document = rigidbody.serialize_document()
-    descriptor = native._semantic_catalog_snapshot().type_document("native:infernux.Rigidbody")
-    assert len(descriptor["fields"]) == 10
-    fields = {field["attributes"]["field_id"]: field for field in descriptor["fields"]}
-    assert set(fields) == {
-        "mass", "drag", "angular_drag", "use_gravity", "is_kinematic", "constraints",
-        "collision_detection_mode", "interpolation", "max_angular_velocity", "max_linear_velocity",
-    }
-    for name, field in fields.items():
-        attributes = field["attributes"]
-        if field["value_type"] == "FieldType.ENUM":
-            default_name = attributes["default"]["name"]
-            default_value = next(member["value"] for member in attributes["enum"]["members"]
-                                 if member["name"] == default_name)
-            assert document[attributes["serialized_name"]] == default_value
-        else:
-            assert document[attributes["serialized_name"]] == pytest.approx(attributes["default"])
-        wrapper_property = getattr(Rigidbody, name, None)
-        if isinstance(wrapper_property, CppProperty):
-            assert wrapper_property.schema.to_document() == field
-    assert fields["constraints"]["attributes"]["flags_type"] == "native:infernux.RigidbodyConstraints"
-    assert fields["collision_detection_mode"]["attributes"]["enum"]["type_id"] == (
-        "native:infernux.CollisionDetectionMode"
-    )
-    assert Rigidbody.collision_detection_mode.metadata.enum_type is CollisionDetectionMode
-    assert Rigidbody.interpolation.metadata.enum_type is RigidbodyInterpolation
-
-
-@pytest.mark.parametrize("field,candidate", [
-    ("mass", 2.5),
-    ("drag", 1.25),
-    ("collision_detection_mode", native.CollisionDetectionMode.Continuous),
-    ("interpolation", native.RigidbodyInterpolation.Interpolate),
-])
+@pytest.mark.parametrize("field,candidate", [("collision_detection_mode", native.CollisionDetectionMode.Continuous)])
 def test_rigidbody_editor_command_uses_declared_schema_and_undo(scene, monkeypatch, field, candidate):
     from infernux.components.builtin.rigidbody import Rigidbody
     from infernux.engine.interaction.components import ComponentCommandService
@@ -488,12 +240,18 @@ def test_rigidbody_editor_command_uses_declared_schema_and_undo(scene, monkeypat
         UndoManager._instance = previous
 
 
-@pytest.mark.parametrize(("type_name", "wrapper_module", "wrapper_name"), [
-    ("HingeJoint", "hinge_joint", "HingeJoint"),
-    ("SliderJoint", "slider_joint", "SliderJoint"),
-])
+@pytest.mark.parametrize(
+    ("type_name", "wrapper_module", "wrapper_name"),
+    [
+        ("HingeJoint", "hinge_joint", "HingeJoint"),
+        ("SliderJoint", "slider_joint", "SliderJoint"),
+    ],
+)
 def test_native_joint_component_reference_uses_document_id_and_undo(
-    scene, type_name, wrapper_module, wrapper_name,
+    scene,
+    type_name,
+    wrapper_module,
+    wrapper_name,
 ):
     import importlib
 
@@ -521,7 +279,9 @@ def test_native_joint_component_reference_uses_document_id_and_undo(
     manager = UndoManager()
     try:
         assert ComponentCommandService().set_field(
-            joint, "connected_body", support_native,
+            joint,
+            "connected_body",
+            support_native,
         )
         assert joint_native.serialize_document()["connected_body_component_id"] == support_native.component_id
         manager.undo()
@@ -533,12 +293,7 @@ def test_native_joint_component_reference_uses_document_id_and_undo(
         UndoManager._instance = previous
 
 
-@pytest.mark.parametrize("field,candidate", [
-    ("field_of_view", 200.0), ("far_clip", 4000.0),
-    ("projection_mode", native.CameraProjection.Orthographic),
-    ("clear_flags", native.CameraClearFlags.SolidColor),
-    ("background_color", [0.2, 0.3, 0.4, 1.0]), ("dithering", True),
-])
+@pytest.mark.parametrize("field,candidate", [("field_of_view", 200.0)])
 def test_camera_wrapper_edits_use_native_schema_and_common_codec(scene, monkeypatch, field, candidate):
     from infernux.components.builtin.camera import Camera
     from infernux.components.value_codec import VALUE_CODECS

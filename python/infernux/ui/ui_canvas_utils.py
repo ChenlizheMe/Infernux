@@ -6,10 +6,8 @@ UIEditorPanel and GameViewPanel.
 
 from __future__ import annotations
 
-from typing import List, Tuple, TYPE_CHECKING
+from typing import List, Tuple
 
-if TYPE_CHECKING:
-    pass  # avoid circular imports at runtime
 
 def _sort_key(canvas):
     # Older Web component overlays may not carry newly added serialized
@@ -124,7 +122,7 @@ def _rebuild_cache(scene) -> None:
     _canvas_cache_membership_revision = _canvas_membership_revision
 
 
-def _ensure_cache(scene, *, allow_stale_empty: bool = False) -> None:
+def _ensure_cache(scene) -> None:
     global _canvas_cache_scene, _canvas_cache_scene_key
     global _canvas_cache_membership_revision
     if scene is None:
@@ -160,8 +158,7 @@ def invalidate_canvas_cache() -> None:
 def collect_canvases_with_go(scene) -> List[Tuple]:
     """Return ``[(GameObject, UICanvas), ...]`` for every canvas in *scene*.
 
-    Walks the full scene hierarchy.  Used by UIEditorPanel which needs
-    both the owning GameObject and the canvas component.
+    Uses the live component registry for owning GameObjects and their canvases.
     """
     if scene is None:
         return []
@@ -169,22 +166,22 @@ def collect_canvases_with_go(scene) -> List[Tuple]:
     return _canvas_with_go_cache
 
 
-def collect_canvases(scene, *, allow_stale_empty: bool = False) -> list:
+def collect_canvases(scene) -> list:
     """Return ``[UICanvas, ...]`` for every canvas in *scene*.
 
     Lighter variant used by GameViewPanel which only needs the component.
     """
     if scene is None:
         return []
-    _ensure_cache(scene, allow_stale_empty=allow_stale_empty)
+    _ensure_cache(scene)
     return _canvas_cache
 
 
-def collect_sorted_canvases(scene, *, allow_stale_empty: bool = False) -> list:
+def collect_sorted_canvases(scene) -> list:
     """Return ``[UICanvas, ...]`` sorted by ``sort_order`` (cached)."""
     if scene is None:
         return []
-    _ensure_cache(scene, allow_stale_empty=allow_stale_empty)
+    _ensure_cache(scene)
     return _canvas_sorted_cache
 
 
@@ -202,10 +199,7 @@ def runtime_ui_scenes(scene_manager) -> tuple:
     return scenes + (persistent,) if persistent is not None else scenes
 
 
-def collect_sorted_runtime_canvases(
-    *scenes,
-    allow_stale_empty: bool = False,
-) -> list:
+def collect_sorted_runtime_canvases(*scenes) -> list:
     """Return one sorted snapshot for the supplied resident UI worlds."""
     global _runtime_canvas_cache, _runtime_canvas_cache_key
     global _runtime_canvas_with_go_cache
@@ -239,17 +233,11 @@ def collect_sorted_runtime_canvases(
     return _runtime_canvas_cache
 
 
-def collect_runtime_canvases_with_go(
-    *scenes,
-    allow_stale_empty: bool = False,
-) -> List[Tuple]:
+def collect_runtime_canvases_with_go(*scenes) -> List[Tuple]:
     """Return canvases from the complete runtime world with their owners.
 
     The editor and player share one UI domain even though
     ``DontDestroyOnLoad`` roots live in a separate native Scene.
     """
-    collect_sorted_runtime_canvases(
-        *scenes,
-        allow_stale_empty=allow_stale_empty,
-    )
+    collect_sorted_runtime_canvases(*scenes)
     return _runtime_canvas_with_go_cache

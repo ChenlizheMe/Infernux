@@ -8,7 +8,6 @@ Docked alongside Scene / Game views.
 
 import configparser
 import math
-import os
 from contextlib import nullcontext as _nullcontext
 from time import perf_counter as _pc
 
@@ -22,7 +21,6 @@ from infernux.engine.project_view_settings import (
     project_view_settings_path,
     write_project_view_settings_section,
 )
-from infernux.ui.enums import TextResizeMode
 from infernux.ui.inx_ui_screen_component import clear_rect_cache
 from infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
@@ -31,7 +29,7 @@ from .editor_panel import EditorPanel
 from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .editor_icons import EditorIcons
-from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiMouseCursor
+from .theme import Theme, ImGuiMouseCursor
 from .ui_editor_shortcuts import UIEditorInput
 from infernux.debug import Debug
 from ._ui_editor_canvas_ops import UIEditorCanvasOps

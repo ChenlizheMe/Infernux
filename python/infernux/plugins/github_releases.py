@@ -8,7 +8,6 @@ import os
 import shutil
 import tarfile
 import urllib.request
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -19,6 +18,7 @@ from packaging.version import InvalidVersion, Version
 
 from infernux.version import ENGINE_VERSION
 
+from ._download import download_file
 from .package import InxPackage, PACKAGE_EXTENSION, validate_reference
 RELEASE_MANIFEST_NAME = "infernux-plugin-release.json"
 RELEASE_MANIFEST_SCHEMA = "infernux.plugin_release"
@@ -142,95 +142,6 @@ def _validated_candidate(
     return version, normalized, assets[name]
 
 
-def _download_asset(
-    asset: Mapping[str, object],
-    destination: str,
-    *,
-    progress: _Progress | None,
-) -> None:
-    request = urllib.request.Request(
-        str(asset.get("browser_download_url", "")),
-        headers={
-            "Accept": "application/octet-stream",
-            "User-Agent": f"infernux/{ENGINE_VERSION}",
-        },
-    )
-    partial = destination + f".{uuid.uuid4().hex}.part"
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response, open(partial, "wb") as stream:
-            total = int(response.headers.get("Content-Length", "0") or 0)
-            received = 0
-            while True:
-                chunk = response.read(_CHUNK_BYTES)
-                if not chunk:
-                    break
-                stream.write(chunk)
-                received += len(chunk)
-                fraction = min(1.0, received / total) if total else 0.0
-                if progress is not None:
-                    progress(
-                        "download_package",
-                        0.08 + 0.22 * fraction,
-                        _download_size_text(received, total),
-                    )
-        os.replace(partial, destination)
-    finally:
-        try:
-            os.remove(partial)
-        except FileNotFoundError:
-            pass
-
-
-def _download_size_text(received: int, total: int) -> str:
-    def size(value: int) -> str:
-        amount = float(value)
-        for unit in ("B", "KiB", "MiB", "GiB"):
-            if amount < 1024.0 or unit == "GiB":
-                return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
-            amount /= 1024.0
-        raise AssertionError("unreachable")
-
-    return f"{size(received)} / {size(total)}" if total else size(received)
-
-
-def _download_file(
-    url: str,
-    destination: str,
-    *,
-    progress: _Progress | None,
-    start: float,
-    end: float,
-) -> None:
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": f"infernux/{ENGINE_VERSION}"},
-    )
-    partial = destination + f".{uuid.uuid4().hex}.part"
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response, open(partial, "wb") as stream:
-            total = int(response.headers.get("Content-Length", "0") or 0)
-            received = 0
-            while True:
-                chunk = response.read(_CHUNK_BYTES)
-                if not chunk:
-                    break
-                stream.write(chunk)
-                received += len(chunk)
-                fraction = min(1.0, received / total) if total else 0.0
-                if progress is not None:
-                    progress(
-                        "download_source",
-                        start + (end - start) * fraction,
-                        _download_size_text(received, total),
-                    )
-        os.replace(partial, destination)
-    finally:
-        try:
-            os.remove(partial)
-        except FileNotFoundError:
-            pass
-
-
 def _source_path_parts(value: str, *, directory: bool = False) -> tuple[str, ...]:
     """Accept canonical POSIX archive names that keep their identity on Windows."""
     if directory and value.endswith("/"):
@@ -274,10 +185,11 @@ def download_github_source(
     destination = Path(destination_root)
     destination.mkdir(parents=True, exist_ok=True)
     archive_path = str(destination / "source.tar.gz")
-    _download_file(
+    download_file(
         f"https://codeload.github.com/{owner}/{repository}/tar.gz/{commit}",
         archive_path,
         progress=progress,
+        phase="download_source",
         start=0.08,
         end=0.24,
     )
@@ -496,10 +408,11 @@ def resolve_github_release(
     version, selected, asset, release = candidates[0]
     Path(destination_root).mkdir(parents=True, exist_ok=True)
     destination = str(Path(destination_root) / str(selected["artifact_name"]))
-    _download_asset(
-        asset,
+    download_file(
+        str(asset["browser_download_url"]),
         destination,
         progress=progress,
+        headers={"Accept": "application/octet-stream"},
     )
     preview = InxPackage.inspect(destination)
     metadata = preview.metadata

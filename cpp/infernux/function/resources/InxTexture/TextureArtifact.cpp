@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <core/serialization/BinaryCodec.h>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -20,35 +21,13 @@ constexpr uint32_t MaximumMipLevels = 32;
 constexpr uint64_t MaximumPayloadBytes = 1ULL << 30;
 constexpr uint32_t MaximumHashBytes = 1024;
 
-uint64_t Fnv1a64(std::string_view bytes)
-{
-    uint64_t hash = 14695981039346656037ULL;
-    for (const unsigned char byte : bytes) {
-        hash ^= byte;
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
+using binary_codec::Fnv1a64;
 
-void AppendU32(std::string &out, uint32_t value)
-{
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        out.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
+using binary_codec::AppendU32;
 
-void AppendU64(std::string &out, uint64_t value)
-{
-    for (unsigned shift = 0; shift < 64; shift += 8)
-        out.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
+using binary_codec::AppendU64;
 
-void AppendFloat(std::string &out, float value)
-{
-    uint32_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value));
-    std::memcpy(&bits, &value, sizeof(bits));
-    AppendU32(out, bits);
-}
+using binary_codec::AppendFloat;
 
 void AppendString(std::string &out, std::string_view value)
 {
@@ -58,76 +37,7 @@ void AppendString(std::string &out, std::string_view value)
     out.append(value);
 }
 
-class Reader final
-{
-  public:
-    explicit Reader(std::string_view bytes) : m_bytes(bytes)
-    {
-    }
-
-    uint32_t ReadU32()
-    {
-        Require(sizeof(uint32_t));
-        uint32_t value = 0;
-        for (unsigned shift = 0; shift < 32; shift += 8)
-            value |= static_cast<uint32_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
-        return value;
-    }
-
-    uint64_t ReadU64()
-    {
-        Require(sizeof(uint64_t));
-        uint64_t value = 0;
-        for (unsigned shift = 0; shift < 64; shift += 8)
-            value |= static_cast<uint64_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
-        return value;
-    }
-
-    float ReadFloat()
-    {
-        const uint32_t bits = ReadU32();
-        float value = 0.0f;
-        static_assert(sizeof(bits) == sizeof(value));
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-
-    std::string ReadString()
-    {
-        const uint32_t size = ReadU32();
-        if (size == 0 || size > MaximumHashBytes)
-            throw std::invalid_argument("texture artifact has an invalid source hash size");
-        Require(size);
-        std::string value(m_bytes.substr(m_cursor, size));
-        m_cursor += size;
-        return value;
-    }
-
-    std::string_view ReadBytes(uint64_t size)
-    {
-        if (size > std::numeric_limits<size_t>::max())
-            throw std::invalid_argument("texture artifact payload exceeds addressable memory");
-        Require(static_cast<size_t>(size));
-        const auto value = m_bytes.substr(m_cursor, static_cast<size_t>(size));
-        m_cursor += static_cast<size_t>(size);
-        return value;
-    }
-
-    bool AtEnd() const noexcept
-    {
-        return m_cursor == m_bytes.size();
-    }
-
-  private:
-    void Require(size_t size) const
-    {
-        if (size > m_bytes.size() - m_cursor)
-            throw std::invalid_argument("texture artifact is truncated");
-    }
-
-    std::string_view m_bytes;
-    size_t m_cursor = 0;
-};
+using Reader = binary_codec::Reader<MaximumHashBytes, false>;
 
 bool IsValidDimension(TextureDimension dimension)
 {

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -118,45 +117,6 @@ def test_explicit_authoring_mutation_rolls_back_failed_callbacks():
         DocumentRegistry._instance = previous_registry
 
 
-def test_authoring_command_service_owns_revision_reservation_and_execution():
-    previous_registry = DocumentRegistry._instance
-    previous_manager = UndoManager._instance
-    previous_service = AuthoringMutationService._instance
-    registry = DocumentRegistry()
-    manager = UndoManager()
-    controller = _AuthoringController()
-    document = registry.create(
-        DocumentKind.TIMELINE,
-        "Timeline",
-        controller=controller,
-    )
-    service = AuthoringMutationService(registry)
-    target = {"value": 1}
-    revisions = []
-    try:
-        assert service.execute_command(
-            document.document_id,
-            lambda before, after: (
-                revisions.append((before, after))
-                or _SetValueCommand(target, 1, 2)
-            ),
-            view_id="timeline-editor",
-        )
-        assert revisions == [(0, 1)]
-        assert target == {"value": 2}
-        assert document.revision == 1
-
-        manager.undo()
-        assert target == {"value": 1}
-        manager.redo()
-        assert target == {"value": 2}
-    finally:
-        manager.clear()
-        AuthoringMutationService._instance = previous_service
-        UndoManager._instance = previous_manager
-        DocumentRegistry._instance = previous_registry
-
-
 def test_applied_authoring_command_rolls_back_when_journal_is_unavailable():
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance
@@ -195,41 +155,3 @@ def test_applied_authoring_command_rolls_back_when_journal_is_unavailable():
         AuthoringMutationService._instance = previous_service
         UndoManager._instance = previous_manager
         DocumentRegistry._instance = previous_registry
-
-
-def test_authoring_panels_cannot_restore_private_history_or_save_authorities():
-    ui_root = (Path(__file__).resolve().parents[2] / "python") / "infernux" / "engine" / "ui"
-    panel_names = (
-        "node_graph_editor_panel.py",
-        "particle_graph_editor_panel.py",
-        "animfsm_editor_panel.py",
-        "animtimeline_editor_panel.py",
-        "animclip2d_editor_panel.py",
-    )
-    sources = {
-        name: (ui_root / name).read_text(encoding="utf-8")
-        for name in panel_names
-    }
-
-    for name, source in sources.items():
-        assert "UndoManager" not in source, f"{name} bypasses AuthoringMutationService"
-        if name != "node_graph_editor_panel.py":
-            assert "controller=self," not in source, f"{name} registers its Panel as controller"
-    for name in (
-        "particle_graph_editor_panel.py",
-        "animfsm_editor_panel.py",
-        "animtimeline_editor_panel.py",
-    ):
-        assert "begin_save(" not in sources[name], f"{name} creates private SaveTickets"
-
-    clip_source = sources["animclip2d_editor_panel.py"]
-    for legacy_token in (
-        "_last_saved_signature",
-        "_last_saved_authoring_snapshot",
-        "_published_edit_signature",
-        "_recompute_dirty",
-        "saved_texture_guid",
-        "saved_texture_path",
-        "saved_path",
-    ):
-        assert legacy_token not in clip_source

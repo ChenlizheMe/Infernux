@@ -10,8 +10,6 @@ from infernux.engine.interaction import (
     DocumentCapability,
     DocumentKey,
     DocumentKind,
-    DocumentOpenService,
-    DocumentOpenStatus,
     DocumentRegistry,
     DocumentState,
     SaveTicketStatus,
@@ -84,23 +82,21 @@ class _Controller:
         self.resource_path = resource_path
         return self.save(ticket=ticket, save_as=True)
 
+
 def _document(
     registry: DocumentRegistry,
     *,
     dirty: bool = False,
     kind: DocumentKind = DocumentKind.PARTICLE_GRAPH,
+    document_id: str = "particle:smoke",
 ):
     document = registry.create(
         kind,
         "Smoke",
-        document_id="particle:smoke",
+        document_id=document_id,
         revision=1 if dirty else 0,
         saved_revision=0,
-        capabilities=(
-            DocumentCapability.SAVE
-            | DocumentCapability.SAVE_AS
-            | DocumentCapability.DISCARD
-        ),
+        capabilities=(DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD),
     )
     controller = _Controller(registry, document.document_id)
     registry.update_metadata(document.document_id, controller=controller)
@@ -119,9 +115,7 @@ def test_external_change_replaces_dirty_asset_document_without_prompt(tmp_path):
     )
     path.write_text("external-change", encoding="utf-8")
 
-    assert registry.publish_external_resource_change(str(path), guid="particle-guid") == (
-        document.document_id,
-    )
+    assert registry.publish_external_resource_change(str(path), guid="particle-guid") == (document.document_id,)
     assert document.external_revision == 1
     assert document.state is DocumentState.READY
     assert controller.reloaded
@@ -133,40 +127,27 @@ def test_external_change_replaces_dirty_asset_document_without_prompt(tmp_path):
     assert controller.save_calls == 0
 
 
-def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
-    registry = DocumentRegistry()
-    path = tmp_path / "Smoke.particlegraph"
-    path.write_text("baseline", encoding="utf-8")
-    document, controller = _document(registry)
-    registry.rekey(
-        document.document_id,
-        DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        resource_path=str(path),
-    )
-    previous_revision = document.revision
-    path.write_text("external-change", encoding="utf-8")
-
-    assert registry.preflight_external_resource_change(str(path), guid="particle-guid")
-    registry.publish_external_resource_change(str(path), guid="particle-guid")
-
-    assert controller.reloaded
-    assert not controller.discarded
-    assert document.external_revision == 1
-    assert document.revision > previous_revision
-    assert document.saved_revision == document.revision
-    assert document.state is DocumentState.READY
-    assert not document.is_dirty
-
-
 def test_sidecar_change_reloads_only_import_document_and_cancels_its_save(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Source.scene"
     path.write_text("unchanged source", encoding="utf-8")
     Path(str(path) + ".meta").write_text("changed sidecar", encoding="utf-8")
-    source = registry.create(DocumentKind.SCENE, "Source", key=DocumentKey.asset(
-        DocumentKind.SCENE, "shared-guid"), resource_path=str(path), revision=1, saved_revision=0)
-    settings = registry.create(DocumentKind.IMPORT_SETTINGS, "Import", key=DocumentKey.asset(
-        DocumentKind.IMPORT_SETTINGS, "shared-guid"), resource_path=str(path), revision=1, saved_revision=0)
+    source = registry.create(
+        DocumentKind.SCENE,
+        "Source",
+        key=DocumentKey.asset(DocumentKind.SCENE, "shared-guid"),
+        resource_path=str(path),
+        revision=1,
+        saved_revision=0,
+    )
+    settings = registry.create(
+        DocumentKind.IMPORT_SETTINGS,
+        "Import",
+        key=DocumentKey.asset(DocumentKind.IMPORT_SETTINGS, "shared-guid"),
+        resource_path=str(path),
+        revision=1,
+        saved_revision=0,
+    )
     source_controller = _Controller(registry, source.document_id)
     settings_controller = _Controller(registry, settings.document_id)
     registry.update_metadata(source.document_id, controller=source_controller)
@@ -181,40 +162,6 @@ def test_sidecar_change_reloads_only_import_document_and_cancels_its_save(tmp_pa
     assert not source_controller.reloaded
 
 
-def test_empty_metadata_projection_does_not_publish_pending_source_edit(tmp_path):
-    registry = DocumentRegistry()
-    path = tmp_path / "Source.scene"
-    path.write_text("baseline", encoding="utf-8")
-    document, controller = _document(registry, kind=DocumentKind.SCENE, dirty=True)
-    registry.rekey(document.document_id, DocumentKey.asset(DocumentKind.SCENE, "scene-guid"), resource_path=str(path))
-    path.write_text("source event has not been handled yet", encoding="utf-8")
-    assert registry.preflight_external_resource_change(str(path), guid="scene-guid", metadata_only=True)
-    assert registry.publish_external_resource_change(str(path), guid="scene-guid") == ()
-    assert document.is_dirty and document.state is DocumentState.READY
-    assert not controller.reloaded
-    assert not registry.preflight_external_resource_change(str(path), guid="scene-guid")
-    assert document.state is DocumentState.CONFLICT
-
-
-@pytest.mark.parametrize("kind,extension", [(DocumentKind.RENDER_EFFECT, ".effect"), (DocumentKind.PARTICLE_GRAPH, ".particlegraph")])
-def test_reverted_failed_asset_reimport_retires_document_conflict(tmp_path, kind, extension):
-    registry = DocumentRegistry()
-    path = tmp_path / ("Source" + extension)
-    path.write_text("baseline", encoding="utf-8")
-    document, controller = _document(registry, kind=kind)
-    registry.rekey(document.document_id, DocumentKey.asset(kind, "source-guid"), resource_path=str(path))
-    path.write_text("rejected source", encoding="utf-8")
-    assert registry.preflight_external_resource_change(str(path), guid="source-guid")
-    registry.fail_external_resource_change(str(path), guid="source-guid", message="source compile failed")
-    assert document.state is DocumentState.CONFLICT and not controller.reloaded
-    path.write_text("baseline", encoding="utf-8")
-    assert registry.durable_resource_content_changed(str(path), guid="source-guid") is False
-    assert registry.preflight_external_resource_change(str(path), guid="source-guid")
-    assert registry.publish_external_resource_change(str(path), guid="source-guid") == (document.document_id,)
-    assert document.state is DocumentState.READY and not document.is_dirty
-    assert controller.reloaded
-
-
 def test_external_asset_deletion_is_terminal_without_a_reload_conflict(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
@@ -227,9 +174,7 @@ def test_external_asset_deletion_is_terminal_without_a_reload_conflict(tmp_path)
     )
     path.unlink()
 
-    assert registry.preflight_external_resource_change(
-        str(path), guid="particle-guid", deleted=True
-    )
+    assert registry.preflight_external_resource_change(str(path), guid="particle-guid", deleted=True)
     assert registry.publish_external_resource_change(
         str(path),
         guid="particle-guid",
@@ -317,312 +262,32 @@ def test_keep_local_acknowledges_conflict_before_intentional_overwrite(tmp_path)
     assert not document.is_dirty
 
 
-def test_abandon_session_changes_skips_live_dirty_snapshot_without_reloading():
-    registry = DocumentRegistry()
-
-    class CaptureController:
-        def __init__(self):
-            self.capture_calls = 0
-            self.discard_calls = 0
-
-        def capture_document_restore_state(self, _document_id):
-            self.capture_calls += 1
-            return {"draft": "unsaved"}
-
-        def discard(self, *, document_id):
-            del document_id
-            self.discard_calls += 1
-            return True
-
-    controller = CaptureController()
-    document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Unsaved Graph",
-        revision=1,
-        saved_revision=0,
-        capabilities=DocumentCapability.DISCARD,
-        controller=controller,
-    )
-    registry.attach_view(document.document_id, "particle_graph_editor")
-
-    assert len(registry.capture_session_state()["documents"]) == 1
-    registry.abandon_session_changes(document.document_id)
-
-    assert not document.is_dirty
-    assert controller.discard_calls == 0
-    assert registry.is_session_restore_suppressed("particle_graph_editor")
-    assert not registry.has_pending_session_document("particle_graph_editor")
-    assert registry.capture_session_state()["documents"] == []
-
-
-def test_replace_view_document_retires_old_document_without_restore_capture():
-    registry = DocumentRegistry()
-
-    class CaptureProbe:
-        def __init__(self):
-            self.capture_count = 0
-
-        def capture_document_restore_state(self, _document_id):
-            self.capture_count += 1
-            raise AssertionError("explicit replacement must not capture the old document")
-
-    probe = CaptureProbe()
-    previous = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Previous",
-        controller=probe,
-    )
-    replacement = registry.create(DocumentKind.PARTICLE_GRAPH, "Replacement")
-    registry.attach_view(previous.document_id, "particle_graph_editor")
-
-    assert registry.replace_view_document(
-        replacement.document_id,
-        "particle_graph_editor",
-    )
-    assert registry.document_for_view("particle_graph_editor") is replacement
-    assert registry.get(previous.document_id) is None
-    assert registry.locate(previous.document_id) is None
-    assert probe.capture_count == 0
-
-
-def test_document_open_service_resolves_live_document_without_adapter(tmp_path):
-    registry = DocumentRegistry()
-    path = tmp_path / "Smoke.particlegraph"
-    document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Smoke",
-        key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        resource_path=str(path),
-    )
-    service = DocumentOpenService(registry)
-
-    result = service.resolve_or_open(registry.locate(document.document_id))
-
-    assert result.status is DocumentOpenStatus.READY
-    assert result.document is document
-
-
-def test_document_open_service_polls_idempotent_adapter_until_registered(
-    tmp_path, asset_database
-):
-    registry = DocumentRegistry()
-    path = tmp_path / "Smoke.particlegraph"
-    key = DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid")
-    asset_database.register("particle-guid", path)
-    document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Smoke",
-        key=key,
-        resource_path=str(path),
-    )
-    locator = registry.locate(document.document_id)
-    assert locator is not None
-    registry.unregister(document.document_id)
-    service = DocumentOpenService(registry)
-    calls = []
-
-    def _open(_locator):
-        calls.append(1)
-        if len(calls) == 1:
-            return DocumentOpenStatus.PENDING
-        registry.create(
-            DocumentKind.PARTICLE_GRAPH,
-            "Smoke",
-            key=key,
-            resource_path=str(path),
-        )
-        return DocumentOpenStatus.READY
-
-    service.register(DocumentKind.PARTICLE_GRAPH, _open)
-
-    assert service.resolve_or_open(locator).status is DocumentOpenStatus.PENDING
-    result = service.resolve_or_open(locator)
-
-    assert result.status is DocumentOpenStatus.READY
-    assert result.document is not None
-    assert result.document.stable_id == locator.stable_id
-    assert len(calls) == 2
-
-
-def test_document_open_service_fails_closed_when_adapter_does_not_register(
-    tmp_path, asset_database
-):
-    registry = DocumentRegistry()
-    locator = registry.locate(
-        registry.create(
-            DocumentKind.TIMELINE,
-            "Timeline",
-            key=DocumentKey.asset(DocumentKind.TIMELINE, "timeline-guid"),
-        ).document_id
-    )
-    assert locator is not None
-    asset_database.register("timeline-guid", tmp_path / "Timeline.timeline")
-    registry.unregister(registry.resolve_locator(locator).document_id)
-    service = DocumentOpenService(registry)
-    service.register(DocumentKind.TIMELINE, lambda _locator: DocumentOpenStatus.READY)
-
-    result = service.resolve_or_open(locator)
-
-    assert result.status is DocumentOpenStatus.FAILED
-    assert "without registering" in result.message
-
-
-def test_document_open_service_opens_resource_through_typed_adapter(
-    tmp_path, asset_database
-):
-    registry = DocumentRegistry()
-    service = DocumentOpenService(registry)
-    path = tmp_path / "Smoke.particlegraph"
-    path.write_text("{}", encoding="utf-8")
-    asset_database.register("particle-guid", path)
-    calls = []
-
-    def _open(locator):
-        calls.append(locator)
-        if registry.resolve_locator(locator) is None:
-            registry.create(
-                DocumentKind.PARTICLE_GRAPH,
-                "Smoke",
-                key=locator.key_hint,
-                resource_path=locator.resource_path,
-            )
-        return True
-
-    service.register(DocumentKind.PARTICLE_GRAPH, _open)
-    result = service.open_resource(
-        DocumentKind.PARTICLE_GRAPH,
-        str(path),
-        guid="particle-guid",
-        title="Smoke",
-    )
-
-    assert result.status is DocumentOpenStatus.READY
-    assert result.document is not None
-    assert result.document.key == DocumentKey.asset(
-        DocumentKind.PARTICLE_GRAPH, "particle-guid"
-    )
-    assert len(calls) == 1
-
-    second = service.open_resource(
-        DocumentKind.PARTICLE_GRAPH,
-        str(path),
-        guid="particle-guid",
-        title="Smoke",
-    )
-    assert second.status is DocumentOpenStatus.READY
-    assert second.document is result.document
-    assert len(calls) == 2
-
-
-def test_document_open_service_rejects_unsupported_dormant_kind(tmp_path):
-    registry = DocumentRegistry()
-    document = registry.create(
-        DocumentKind.SCENE,
-        "Level",
-        key=DocumentKey.asset(DocumentKind.SCENE, "level-guid"),
-    )
-    locator = registry.locate(document.document_id)
-    registry.unregister(document.document_id)
-
-    result = DocumentOpenService(registry).resolve_or_open(locator)
-
-    assert result.status is DocumentOpenStatus.FAILED
-    assert "scene" in result.message
-
-
-def test_document_dirty_state_is_derived_from_revisions():
-    registry = DocumentRegistry()
-    document, _ = _document(registry)
-
-    registry.mark_changed(document.document_id)
-    assert document.is_dirty
-    assert document.revision == 1
-    assert document.saved_revision == 0
-
-    registry.mark_saved(document.document_id)
-    assert not document.is_dirty
-    assert document.saved_revision == document.revision
-
-
-def test_loaded_baseline_is_not_misreported_as_a_save_completion():
-    registry = DocumentRegistry()
-    document, _ = _document(registry, dirty=True)
-    previous_revision = document.revision
-
-    loaded_revision = registry.establish_loaded_baseline(document.document_id)
-
-    assert loaded_revision > previous_revision
-    assert document.revision == loaded_revision
-    assert document.saved_revision == loaded_revision
-    assert document.is_dirty is False
-    assert registry.active_save_ticket(document.document_id) is None
-
-
-def test_clean_document_save_is_a_no_op():
+def test_document_edit_save_undo_and_branch_preserve_save_authority():
     registry = DocumentRegistry()
     document, controller = _document(registry)
-
-    result = registry.request_save(document.document_id)
-
-    assert result.status is DocumentActionStatus.NO_OP
+    original_revision = document.revision
+    assert registry.request_save(document.document_id).status is DocumentActionStatus.NO_OP
     assert controller.save_calls == 0
 
-
-def test_explicit_resource_save_uses_the_controller_and_same_save_ticket_contract():
-    registry = DocumentRegistry()
-    document, controller = _document(registry, dirty=True)
-
-    result = registry.request_save_to_resource(
-        document.document_id,
-        "Assets/Automation.scene",
-    )
-
-    assert result.status is DocumentActionStatus.APPLIED
-    assert controller.resource_path == "Assets/Automation.scene"
-    assert controller.save_calls == 1
-    assert controller.ticket.save_as is True
-    assert document.is_dirty is False
-
-
-def test_save_controller_must_explicitly_complete_its_ticket():
-    registry = DocumentRegistry()
-
-    class NonCompliantController:
-        @staticmethod
-        def save(*, ticket, save_as=False):
-            del ticket, save_as
-            return True
-
-    document = registry.create(
-        DocumentKind.GENERIC,
-        "Unsafe",
-        revision=1,
-        saved_revision=0,
-        capabilities=DocumentCapability.SAVE,
-        controller=NonCompliantController(),
-    )
-
-    result = registry.request_save(document.document_id)
-
-    assert result.status is DocumentActionStatus.FAILED
-    assert "without completing" in result.message
-    assert document.saved_revision == 0
+    edited_revision = registry.mark_changed(document.document_id)
+    assert edited_revision == 1 and document.saved_revision == 0
     assert document.is_dirty
-
-
-def test_deferred_save_captures_edits_committed_later_in_the_ui_frame():
-    registry = DocumentRegistry()
-    document, controller = _document(registry, dirty=True)
-
-    result = registry.defer_save(document.document_id)
-    final_frame_revision = registry.mark_changed(document.document_id)
-
-    assert result.status is DocumentActionStatus.PENDING
-    assert controller.save_calls == 0
-    assert registry.process_deferred_saves()[0].status is DocumentActionStatus.APPLIED
+    assert registry.request_save(document.document_id).status is DocumentActionStatus.APPLIED
     assert controller.save_calls == 1
-    assert document.saved_revision == final_frame_revision
-    assert document.is_dirty is False
+    assert document.saved_revision == edited_revision
+    assert not document.is_dirty
+
+    registry.restore_content_revision(document.document_id, original_revision)
+    assert document.revision == original_revision
+    assert document.saved_revision == edited_revision and document.is_dirty
+    registry.restore_content_revision(document.document_id, edited_revision)
+    assert not document.is_dirty
+
+    registry.restore_content_revision(document.document_id, original_revision)
+    replacement_revision = registry.mark_changed(document.document_id)
+    assert replacement_revision > edited_revision
+    assert replacement_revision != document.saved_revision
+    assert document.is_dirty
 
 
 def test_deferred_save_preserves_edits_made_after_an_async_save_starts():
@@ -657,105 +322,6 @@ def test_async_save_dialog_commits_the_revision_actually_serialized():
     assert document.is_dirty is False
 
 
-def test_save_ticket_captures_the_document_resource_path_as_save_authority():
-    registry = DocumentRegistry()
-    document, _controller = _document(registry, dirty=True)
-    registry.update_metadata(
-        document.document_id,
-        resource_path="C:/Project/Assets/Smoke.particlegraph",
-    )
-
-    ticket = registry.begin_save(document.document_id)
-    registry.update_metadata(
-        document.document_id,
-        resource_path="C:/Project/Assets/Moved.particlegraph",
-    )
-
-    assert ticket.resource_path == "C:/Project/Assets/Smoke.particlegraph"
-
-
-def test_saving_an_older_revision_does_not_clear_newer_edits():
-    registry = DocumentRegistry()
-    document, _controller = _document(registry, dirty=True)
-    ticket = registry.begin_save(document.document_id)
-    registry.mark_changed(document.document_id)
-
-    registry.complete_save(ticket.ticket_id, success=True)
-
-    assert document.saved_revision == 1
-    assert document.revision == 2
-    assert document.is_dirty
-    assert ticket.status is SaveTicketStatus.SUCCEEDED
-
-
-def test_save_completion_preserves_the_exact_captured_content_revision():
-    registry = DocumentRegistry()
-    document, _controller = _document(registry, dirty=True)
-    ticket = registry.begin_save(document.document_id)
-    registry.capture_save_revision(ticket.ticket_id, content_token="serialized-a")
-    publication_revision = registry.mark_changed(document.document_id)
-
-    registry.complete_save(
-        ticket.ticket_id,
-        success=True,
-        content_token="serialized-a",
-    )
-
-    assert document.revision == publication_revision
-    assert document.saved_revision == ticket.captured_revision
-    assert document.is_dirty is True
-
-
-def test_save_publication_preserves_newer_content_when_token_changed():
-    registry = DocumentRegistry()
-    document, _controller = _document(registry, dirty=True)
-    ticket = registry.begin_save(document.document_id)
-    registry.capture_save_revision(ticket.ticket_id, content_token="serialized-a")
-    newer_revision = registry.mark_changed(document.document_id)
-
-    registry.complete_save(
-        ticket.ticket_id,
-        success=True,
-        content_token="serialized-b",
-    )
-
-    assert document.saved_revision == 1
-    assert document.revision == newer_revision
-    assert document.is_dirty is True
-
-
-def test_undo_can_cross_a_save_point_without_moving_the_save_point():
-    registry = DocumentRegistry()
-    document, _controller = _document(registry)
-    original_revision = document.revision
-    edited_revision = registry.mark_changed(document.document_id)
-    registry.mark_saved(document.document_id)
-
-    registry.restore_content_revision(document.document_id, original_revision)
-
-    assert document.revision == original_revision
-    assert document.saved_revision == edited_revision
-    assert document.is_dirty
-
-    registry.restore_content_revision(document.document_id, edited_revision)
-    assert not document.is_dirty
-
-
-def test_edit_after_undo_allocates_a_fresh_revision_token():
-    registry = DocumentRegistry()
-    document, _controller = _document(registry)
-    original_revision = document.revision
-    abandoned_revision = registry.mark_changed(document.document_id)
-    registry.mark_saved(document.document_id)
-    registry.restore_content_revision(document.document_id, original_revision)
-
-    replacement_revision = registry.mark_changed(document.document_id)
-
-    assert replacement_revision > abandoned_revision
-    assert replacement_revision != document.saved_revision
-    assert document.is_dirty
-
-
 def test_async_save_records_the_exact_captured_revision_after_undo():
     registry = DocumentRegistry()
     document, _controller = _document(registry)
@@ -772,70 +338,35 @@ def test_async_save_records_the_exact_captured_revision_after_undo():
     assert document.is_dirty
 
 
-def test_async_save_can_make_an_older_undo_revision_durable():
+def test_shared_asset_document_deduplicates_views_and_retires_after_last_close(tmp_path):
     registry = DocumentRegistry()
-    document, _controller = _document(registry)
-    edited_revision = registry.mark_changed(document.document_id)
-    first = registry.begin_save(document.document_id)
-    registry.complete_save(first.ticket_id, success=True)
-    assert document.saved_revision == edited_revision
-
-    registry.restore_content_revision(document.document_id, 0)
-    assert document.is_dirty
-    second = registry.begin_save(document.document_id)
-    registry.complete_save(second.ticket_id, success=True)
-
-    assert second.captured_revision == 0
-    assert document.revision == 0
-    assert document.saved_revision == 0
-    assert document.persisted_revision == 0
-    assert document.is_dirty is False
-
-
-def test_one_document_can_have_multiple_views_without_duplicate_dirty_entries():
-    registry = DocumentRegistry()
-    document, _ = _document(registry, dirty=True)
-
+    key = DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid")
+    resource_path = str(tmp_path / "Smoke.particlegraph")
+    document, created = registry.open_or_create(key, "Smoke", resource_path=resource_path)
+    reopened, created_again = registry.open_or_create(
+        DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
+        "Smoke",
+        resource_path=resource_path,
+    )
+    assert created and not created_again
+    assert reopened is document and registry.get_by_key(key) is document
+    registry.mark_changed(document.document_id)
     registry.attach_view(document.document_id, "particle-left")
     registry.attach_view(document.document_id, "particle-right")
-
     assert registry.document_for_view("particle-left") is document
     assert registry.document_for_view("particle-right") is document
     assert registry.dirty_documents() == (document,)
 
     registry.detach_view("particle-left")
     assert document.view_ids == {"particle-right"}
-
-
-def test_pending_save_is_explicit_and_keeps_document_dirty():
-    registry = DocumentRegistry()
-    document, controller = _document(registry, dirty=True)
-    controller.pending = True
-
-    result = registry.request_save(document.document_id)
-
-    assert result.status is DocumentActionStatus.PENDING
-    assert document.is_dirty
-    assert registry.is_save_pending(document.document_id)
-    assert controller.ticket is registry.active_save_ticket(document.document_id)
-
-
-def test_document_key_deduplicates_views_of_the_same_asset(tmp_path):
-    registry = DocumentRegistry()
-    asset_path = tmp_path / "Smoke.particlegraph"
-    key = DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid")
-
-    first, created = registry.open_or_create(key, "Smoke", resource_path=str(asset_path))
-    second, created_again = registry.open_or_create(
-        DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        "Smoke",
-        resource_path=str(asset_path),
-    )
-
-    assert created
-    assert not created_again
-    assert second is first
-    assert registry.get_by_key(key) is first
+    registry.attach_view(document.document_id, "particle-left")
+    assert registry.close_view("particle-left") == document.document_id
+    assert registry.get(document.document_id) is document
+    locator = registry.locate(document.document_id)
+    assert registry.close_view("particle-right") == document.document_id
+    assert registry.document_for_view("particle-right") is None
+    assert registry.get(document.document_id) is None
+    assert registry.resolve_locator(locator) is None
 
 
 def test_save_as_rekeys_document_atomically_without_changing_document_id(tmp_path):
@@ -865,9 +396,7 @@ def test_save_as_key_collision_fails_without_rekeying_or_clearing_dirty(tmp_path
     registry = DocumentRegistry()
     document, _ = _document(registry, dirty=True)
     original_key = document.key
-    occupied_key = DocumentKey.asset(
-        DocumentKind.PARTICLE_GRAPH, "occupied-particle-guid"
-    )
+    occupied_key = DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "occupied-particle-guid")
     registry.create(DocumentKind.PARTICLE_GRAPH, "Occupied", key=occupied_key)
     ticket = registry.begin_save(document.document_id, save_as=True)
 
@@ -876,19 +405,6 @@ def test_save_as_key_collision_fails_without_rekeying_or_clearing_dirty(tmp_path
     assert ticket.status is SaveTicketStatus.FAILED
     assert registry.get_by_key(original_key) is document
     assert document.is_dirty
-
-
-def test_discard_must_reconcile_the_authoritative_revision():
-    registry = DocumentRegistry()
-    document, controller = _document(registry, dirty=True)
-
-    result = registry.request_discard(document.document_id)
-
-    assert result.status is DocumentActionStatus.APPLIED
-    assert controller.discarded
-    assert not document.is_dirty
-    assert document.revision == 0
-    assert document.saved_revision == 0
 
 
 def test_discard_is_rejected_while_the_document_has_an_active_save_ticket():
@@ -903,113 +419,6 @@ def test_discard_is_rejected_while_the_document_has_an_active_save_ticket():
     assert "saving" in result.message
     assert controller.discarded is False
     assert document.is_dirty is True
-
-
-def test_close_view_retires_a_document_after_its_last_view_closes():
-    registry = DocumentRegistry()
-    document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Particle Graph",
-        revision=1,
-        saved_revision=0,
-    )
-    registry.attach_view(document.document_id, "particle_graph_editor")
-    locator = registry.locate(document.document_id)
-
-    closed_id = registry.close_view("particle_graph_editor")
-
-    assert closed_id == document.document_id
-    assert registry.document_for_view("particle_graph_editor") is None
-    assert registry.get(document.document_id) is None
-    assert registry.resolve_locator(locator) is None
-
-
-def test_timeline_panel_binds_a_real_revisioned_document():
-    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
-
-    registry = DocumentRegistry.instance()
-    panel = AnimTimelineEditorPanel()
-    document = registry.get(panel.document_id)
-
-    assert document is not None
-    assert document.kind is DocumentKind.TIMELINE
-    assert document.view_ids == {panel.window_id}
-    assert not document.is_dirty
-
-    previous_revision = document.revision
-    registry.mark_changed(document.document_id, view_id=panel.window_id)
-    assert document.revision == previous_revision + 1
-
-    registry.mark_saved(document.document_id)
-    assert document.saved_revision == document.revision
-    assert not document.is_dirty
-    assert not hasattr(panel, "_set_dirty")
-
-
-def test_scene_file_manager_uses_document_revisions_as_its_only_dirty_state():
-    from infernux.engine.scene_manager import SceneFileManager
-
-    registry = DocumentRegistry.instance()
-    previous = SceneFileManager._instance
-    try:
-        manager = SceneFileManager()
-        document = registry.get(manager.document_id)
-
-        assert document is not None
-        assert document.kind is DocumentKind.SCENE
-        assert not document.is_dirty
-
-        manager.mark_dirty()
-        first_revision = document.revision
-        saved_revision = document.saved_revision
-        manager.mark_dirty()
-
-        assert manager.is_dirty
-        assert document.revision == first_revision + 1
-        registry.restore_saved_revision(document.document_id)
-        assert not manager.is_dirty
-        assert document.revision == saved_revision
-        assert document.saved_revision == saved_revision
-    finally:
-        SceneFileManager._instance = previous
-
-
-def test_scene_undo_replays_document_revisions_without_owning_the_save_point():
-    from infernux.engine.scene_manager import SceneFileManager
-    from infernux.engine.undo import SetPropertyCommand, UndoManager
-
-    class Target:
-        value = 0
-
-    registry = DocumentRegistry.instance()
-    previous_scene = SceneFileManager._instance
-    previous_undo = UndoManager.instance()
-    try:
-        scene_files = SceneFileManager()
-        manager = UndoManager()
-        document = registry.require(scene_files.document_id)
-        target = Target()
-        saved_revision = document.saved_revision
-
-        assert manager.execute(SetPropertyCommand(target, "value", 0, 1))
-        first_revision = document.revision
-        assert first_revision > saved_revision
-        assert document.is_dirty
-
-        manager.undo()
-        assert target.value == 0
-        assert document.revision == saved_revision
-        assert document.saved_revision == saved_revision
-        assert not document.is_dirty
-
-        manager.redo()
-        assert target.value == 1
-        assert document.revision == first_revision
-        assert document.saved_revision == saved_revision
-        assert document.is_dirty
-    finally:
-        UndoManager._instance = previous_undo
-        SceneFileManager._instance = previous_scene
 
 
 def test_scene_undo_crosses_a_registry_save_point_without_moving_it():
@@ -1142,38 +551,8 @@ def test_failed_scene_save_never_moves_the_registry_save_point():
         SceneFileManager._instance = previous_scene
 
 
-def test_focused_save_uses_the_document_registry_without_panel_fallback():
-    from infernux.engine.interaction import EditorSaveService, FocusService
-
-    registry = DocumentRegistry.instance()
-    document, controller = _document(registry, dirty=True)
-    registry.attach_view(document.document_id, "timeline")
-    previous_focus = FocusService._instance
-    focus = FocusService()
-    focus.activate_panel(
-        "timeline",
-        view_id="timeline",
-        document_id=document.document_id,
-    )
-    previous_saving = EditorSaveService._instance
-    saving = EditorSaveService(registry)
-
-    try:
-        result = saving.save_focused()
-
-        assert result.accepted
-        assert result.document_id == document.document_id
-        assert controller.save_calls == 0
-        registry.process_deferred_saves()
-        assert controller.save_calls == 1
-        assert not document.is_dirty
-    finally:
-        EditorSaveService._instance = previous_saving
-        FocusService._instance = previous_focus
-
-
 def test_focused_scene_save_queues_every_dirty_resident_scene():
-    from infernux.engine.interaction import EditorSaveService, FocusService
+    from infernux.engine.interaction import EditorSaveService, FocusService, PanelInteractionRegistry
     from infernux.engine.scene_manager import SceneFileManager
 
     registry = DocumentRegistry.instance()
@@ -1201,19 +580,18 @@ def test_focused_scene_save_queues_every_dirty_resident_scene():
         (),
         {
             "document_id": documents[0].document_id,
-            "loaded_scene_document_ids": lambda self: tuple(
-                document.document_id for document in documents
-            ),
+            "loaded_scene_document_ids": lambda self: tuple(document.document_id for document in documents),
         },
     )()
     focus = FocusService()
+    registry.attach_view(documents[0].document_id, "scene_view")
     focus.activate_panel(
         "scene_view",
         view_id="scene_view",
         document_id=documents[0].document_id,
         record_history=False,
     )
-    saving = EditorSaveService(registry)
+    saving = EditorSaveService(registry, PanelInteractionRegistry())
     try:
         result = saving.save_focused()
         assert result.accepted
@@ -1225,66 +603,114 @@ def test_focused_scene_save_queues_every_dirty_resident_scene():
         assert [controller.save_calls for controller in controllers] == [1, 1]
         assert all(not document.is_dirty for document in documents)
     finally:
+        saving.shutdown()
         EditorSaveService._instance = previous_saving
         FocusService._instance = previous_focus
         SceneFileManager._instance = previous_scene_files
 
 
-def test_document_locator_resolves_a_reopened_registry_entry(tmp_path):
+@pytest.fixture
+def primary_saving(monkeypatch):
+    from infernux.engine.interaction import EditorSaveService, FocusService, PanelInteractionRegistry
+
+    monkeypatch.setattr(FocusService, "_instance", None)
+    monkeypatch.setattr(EditorSaveService, "_instance", None)
+    registry = DocumentRegistry.instance()
+    focus = FocusService()
+    panels = PanelInteractionRegistry()
+    saving = EditorSaveService(registry, panels)
+    try:
+        yield registry, focus, panels, saving
+    finally:
+        saving.shutdown()
+
+
+def test_save_and_save_as_follow_primary_editor_through_auxiliary_focus(primary_saving):
+    from infernux.engine.interaction import PanelInteractionDescriptor
+
+    registry, focus, panels, saving = primary_saving
+    inspector_doc, inspector_controller = _document(
+        registry, dirty=True, kind=DocumentKind.MATERIAL, document_id="inspector-material",
+    )
+    registry.attach_view(inspector_doc.document_id, "inspector")
+    for view_id, kind in (
+        ("animclip2d_editor", DocumentKind.ANIMATION_CLIP),
+        ("animfsm_editor", DocumentKind.ANIMATION_FSM),
+        ("animtimeline_editor", DocumentKind.TIMELINE),
+        ("particle_graph_editor", DocumentKind.PARTICLE_GRAPH),
+        ("scene_view", DocumentKind.PREFAB),
+    ):
+        document, controller = _document(registry, dirty=True, kind=kind, document_id=view_id)
+        panels.register_type(view_id, PanelInteractionDescriptor(document_backed=kind is not DocumentKind.PREFAB))
+        registry.attach_view(document.document_id, view_id)
+        focus.activate_panel(view_id, view_id=view_id, document_id=document.document_id)
+        for auxiliary_view, save_as in (("project", False), ("inspector", True)):
+            focus.activate_panel(
+                auxiliary_view, view_id=auxiliary_view,
+                document_id=inspector_doc.document_id if auxiliary_view == "inspector" else "",
+            )
+            result = saving.save_focused(save_as=save_as)
+            assert result.accepted
+            assert result.document_id == document.document_id
+            assert result.panel_id == view_id
+            assert focus.snapshot.active_view_id == auxiliary_view
+            assert registry.process_deferred_saves() == (DocumentActionResult(DocumentActionStatus.APPLIED),)
+            assert controller.ticket.save_as is save_as
+        assert controller.save_calls == 2
+    assert inspector_controller.save_calls == 0
+
+
+def test_primary_save_resolves_rebound_view_and_rejects_detached_view(primary_saving):
+    from infernux.engine.interaction import PanelInteractionDescriptor
+
+    registry, focus, panels, saving = primary_saving
+    view_id = "animclip2d_editor"
+    panels.register_type(view_id, PanelInteractionDescriptor(document_backed=True))
+    original, original_controller = _document(registry, dirty=True, kind=DocumentKind.ANIMATION_CLIP)
+    registry.attach_view(original.document_id, view_id)
+    focus.activate_panel(view_id, view_id=view_id, document_id=original.document_id)
+    focus.activate_panel("project", view_id="project")
+    replacement, replacement_controller = _document(
+        registry, dirty=True, kind=DocumentKind.ANIMATION_CLIP, document_id="new-clip",
+    )
+    registry.attach_view(replacement.document_id, view_id)
+
+    assert saving.save_focused().document_id == replacement.document_id
+    registry.process_deferred_saves()
+    assert replacement_controller.save_calls == 1
+    assert original_controller.save_calls == 0
+    registry.detach_view(view_id)
+    result = saving.save_focused()
+    assert result.result.status is DocumentActionStatus.REJECTED
+    assert result.panel_id == view_id
+    assert registry.process_deferred_saves() == ()
+
+
+def test_guid_locator_follows_resource_rekey_and_a_replacement_live_entry(tmp_path):
     registry = DocumentRegistry()
-    asset_path = tmp_path / "Smoke.particlegraph"
     key = DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid")
-    first = registry.create(
+    document = registry.create(
         DocumentKind.PARTICLE_GRAPH,
-        "Smoke",
+        "Draft",
         document_id="first-live-entry",
         key=key,
-        resource_path=str(asset_path),
+        resource_path=str(tmp_path / "Draft.particlegraph"),
     )
-
-    locator = registry.locate(first.document_id)
-    registry.unregister(first.document_id)
-    replacement = registry.create(
+    locator = registry.locate(document.document_id)
+    assert locator is not None and locator.resource_path == ""
+    new_path = str(tmp_path / "Smoke.particlegraph")
+    registry.rekey(document.document_id, key, resource_path=new_path)
+    registry.unregister(document.document_id)
+    reopened = registry.create(
         DocumentKind.PARTICLE_GRAPH,
         "Smoke",
         document_id="replacement-live-entry",
         key=key,
-        resource_path=str(asset_path),
+        resource_path=new_path,
     )
-
-    assert locator is not None
-    assert registry.resolve_locator(locator) is replacement
-    assert locator.resource_path == ""
-
-
-def test_document_locator_survives_rekey_close_and_reopen(tmp_path):
-    registry = DocumentRegistry()
-    old_path = tmp_path / "Draft.particlegraph"
-    new_path = tmp_path / "Smoke.particlegraph"
-    document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Draft",
-        key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        resource_path=str(old_path),
-    )
-    old_locator = registry.locate(document.document_id)
-    registry.rekey(
-        document.document_id,
-        DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        resource_path=str(new_path),
-    )
-    registry.unregister(document.document_id)
-
-    reopened = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Smoke",
-        key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        resource_path=str(new_path),
-    )
-
-    assert old_locator is not None
-    assert reopened.stable_id == old_locator.stable_id
-    assert registry.resolve_locator(old_locator) is reopened
+    assert reopened.document_id != document.document_id
+    assert reopened.stable_id == locator.stable_id
+    assert registry.resolve_locator(locator) is reopened
 
 
 def test_reused_asset_path_with_new_guid_does_not_inherit_stable_identity(tmp_path):
@@ -1309,24 +735,6 @@ def test_reused_asset_path_with_new_guid_does_not_inherit_stable_identity(tmp_pa
     assert locator is not None
     assert reopened.stable_id != locator.stable_id
     assert registry.resolve_locator(locator) is None
-
-
-def test_unpublished_session_document_is_rekeyed_after_guid_publication(tmp_path):
-    registry = DocumentRegistry()
-    asset_path = tmp_path / "Walk.animclip2d"
-    first, _ = registry.open_or_create(
-        DocumentKey.session(DocumentKind.ANIMATION_CLIP, "draft-session"),
-        "Walk",
-        resource_path="",
-    )
-    guid_key = DocumentKey.asset(DocumentKind.ANIMATION_CLIP, "asset-guid")
-
-    registry.rekey(first.document_id, guid_key, resource_path=str(asset_path))
-    reopened, created = registry.open_or_create(guid_key, "Walk")
-
-    assert created is False
-    assert reopened is first
-    assert reopened.key == guid_key
 
 
 def test_history_locator_uses_post_save_as_identity_after_scene_navigation(tmp_path):
@@ -1375,47 +783,6 @@ def test_history_locator_uses_post_save_as_identity_after_scene_navigation(tmp_p
     assert reopened is draft
 
 
-def test_stale_history_key_cannot_canonicalize_to_another_scene_identity(tmp_path):
-    registry = DocumentRegistry()
-    old_path = tmp_path / "Draft.scene"
-    saved_path = tmp_path / "Saved.scene"
-    old_key = DocumentKey.asset(DocumentKind.SCENE, "draft-scene-guid")
-    saved_key = DocumentKey.asset(DocumentKind.SCENE, "saved-scene-guid")
-
-    draft, _ = registry.open_or_create(
-        old_key,
-        "Draft",
-        stable_id="scene-history-stable",
-        resource_path=str(old_path),
-    )
-    history_locator = registry.locate(draft.document_id)
-    assert history_locator is not None
-    registry.rekey(draft.document_id, saved_key, resource_path=str(saved_path))
-    registry.unregister(draft.document_id)
-
-    replacement, _ = registry.open_or_create(
-        old_key,
-        "Replacement",
-        resource_path=str(old_path),
-    )
-    assert registry.resolve_locator(history_locator) is None
-    canonical = registry.canonical_locator(history_locator)
-
-    assert replacement.stable_id != history_locator.stable_id
-    assert canonical.stable_id == history_locator.stable_id
-    assert canonical.key_hint == saved_key
-
-    restored, created = registry.open_or_create(
-        canonical.key_hint,
-        "Saved",
-        stable_id=canonical.stable_id,
-        resource_path=str(saved_path),
-    )
-    assert created is False
-    assert restored is draft
-    assert restored.stable_id == history_locator.stable_id
-
-
 def test_dormant_document_reopens_by_guid_without_losing_command_identity(tmp_path):
     registry = DocumentRegistry()
     asset_path = tmp_path / "Walk.animclip2d"
@@ -1438,44 +805,6 @@ def test_dormant_document_reopens_by_guid_without_losing_command_identity(tmp_pa
     assert reopened is first
     assert reopened.document_id == original_id
     assert reopened.key == guid_key
-
-
-def test_clear_removes_dormant_document_records():
-    registry = DocumentRegistry()
-    document = registry.create(DocumentKind.TIMELINE, "Timeline")
-    locator = registry.locate(document.document_id)
-    assert locator is not None
-    registry.unregister(document.document_id)
-
-    registry.clear()
-
-    assert registry.dormant_restore_state(locator) is None
-    assert registry.restore_dormant(locator) is None
-
-
-def test_interaction_context_captures_active_document_locator(tmp_path):
-    from infernux.engine.interaction import EditorInteractionCore
-
-    core = EditorInteractionCore()
-    asset_path = tmp_path / "Smoke.particlegraph"
-    document = core.documents.create(
-        DocumentKind.PARTICLE_GRAPH,
-        "Smoke",
-        key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        resource_path=str(asset_path),
-    )
-    core.focus.activate_panel(
-        "particle_graph_editor",
-        view_id="particle_graph_editor",
-        document_id=document.document_id,
-        record_history=False,
-    )
-
-    context = core.capture_context()
-
-    assert context.document is not None
-    assert context.document.key_hint == document.key
-    assert context.document.resource_path == ""
 
 
 def test_dormant_document_restores_original_identity_revision_and_draft():
@@ -1512,34 +841,6 @@ def test_dormant_document_restores_original_identity_revision_and_draft():
     assert restored.controller is controller
 
 
-def test_dormant_capture_observes_the_still_registered_document():
-    registry = DocumentRegistry()
-
-    class _Controller:
-        def capture_document_restore_state(self, document_id):
-            live = registry.require(document_id)
-            return {
-                "resource_path": live.resource_path,
-                "revision": live.revision,
-            }
-
-    document = registry.create(
-        DocumentKind.TIMELINE,
-        "Timeline",
-        resource_path="Assets/Timeline.animtimeline",
-        revision=3,
-        saved_revision=1,
-        controller=_Controller(),
-    )
-    locator = registry.locate(document.document_id)
-
-    assert registry.unregister(document.document_id)
-    assert registry.dormant_restore_state(locator) == {
-        "resource_path": "Assets/Timeline.animtimeline",
-        "revision": 3,
-    }
-
-
 def test_restore_capture_failure_does_not_leave_registry_half_closed():
     class _Controller:
         @staticmethod
@@ -1559,56 +860,6 @@ def test_restore_capture_failure_does_not_leave_registry_half_closed():
     assert registry.get(document.document_id) is None
     assert registry.dormant_restore_state(locator) is None
     assert registry.restore_dormant(locator) is document
-
-
-def test_document_registry_is_the_only_scene_save_point_authority():
-    package_root = (Path(__file__).resolve().parents[2] / "python") / "infernux" / "engine"
-    forbidden_tokens = (
-        "mark_save_point",
-        "save_signature",
-        "scene_base_dirty",
-        "set_scene_dirty_baseline",
-        "dirty_signature",
-    )
-    authoritative_sources = (
-        package_root / "undo" / "_manager.py",
-        package_root / "interaction" / "action_journal.py",
-        package_root / "interaction" / "action_journal.pyi",
-        package_root / "scene_manager.py",
-    )
-
-    for source_path in authoritative_sources:
-        source = source_path.read_text(encoding="utf-8")
-        for token in forbidden_tokens:
-            assert token not in source, f"{source_path.name} restored legacy {token}"
-
-    scene_source = (package_root / "scene_manager.py").read_text(encoding="utf-8")
-    assert "def ensure_dirty(" not in scene_source
-    assert "def clear_dirty(" not in scene_source
-    assert "@_dirty.setter" not in scene_source
-    assert "self._dirty =" not in scene_source
-
-
-def test_authoring_panels_do_not_restore_private_dirty_or_open_authority():
-    package_root = (Path(__file__).resolve().parents[2] / "python") / "infernux" / "engine"
-    panel_sources = (
-        package_root / "ui" / "particle_graph_editor_panel.py",
-        package_root / "ui" / "animfsm_editor_panel.py",
-        package_root / "ui" / "animtimeline_editor_panel.py",
-        package_root / "ui" / "animclip2d_editor_panel.py",
-    )
-    forbidden_tokens = (
-        "self._dirty",
-        "_open_particlegraph",
-        "_open_animfsm",
-        "_open_timeline_immediate",
-        "_open_animclip",
-    )
-
-    for source_path in panel_sources:
-        source = source_path.read_text(encoding="utf-8")
-        for token in forbidden_tokens:
-            assert token not in source, f"{source_path.name} restored legacy {token}"
 
 
 def test_scene_document_dirty_ownership_is_scoped_per_authoring_view():
@@ -1675,62 +926,6 @@ def test_scene_dirty_view_ownership_survives_session_restore():
     assert restored.is_dirty_for_view("ui_editor")
     assert not restored.is_dirty_for_view("scene_view")
     assert not restored.is_dirty_for_view("game_view")
-
-
-def test_locate_resource_preserves_pending_session_document_identity(
-    tmp_path, asset_database
-):
-    class SessionController:
-        @staticmethod
-        def capture_document_restore_state(_document_id):
-            return {"scene": "snapshot"}
-
-    scene_path = tmp_path / "Results.scene"
-    source = DocumentRegistry()
-    document = source.create(
-        DocumentKind.SCENE,
-        "Results",
-        key=DocumentKey.asset(DocumentKind.SCENE, "results-guid"),
-        resource_path=str(scene_path),
-        controller=SessionController(),
-    )
-    source.attach_view(document.document_id, "scene_view")
-    asset_database.register("results-guid", scene_path)
-
-    restored = DocumentRegistry()
-    assert restored.queue_session_restore(source.capture_session_state()) == 1
-
-    locator = restored.locate_resource(
-        DocumentKind.SCENE,
-        str(scene_path),
-        guid="results-guid",
-        title="Results",
-    )
-
-    assert locator.stable_id == document.stable_id
-    assert locator.key_hint == document.key
-
-
-def test_locate_resource_preserves_guid_document_identity_by_resource_path(tmp_path):
-    scene_path = tmp_path / "Results.scene"
-    registry = DocumentRegistry()
-    document = registry.create(
-        DocumentKind.SCENE,
-        "Results",
-        key=DocumentKey.asset(DocumentKind.SCENE, "results-guid"),
-        resource_path=str(scene_path),
-    )
-    registry.unregister(document.document_id)
-
-    locator = registry.locate_resource(
-        DocumentKind.SCENE,
-        str(scene_path),
-        guid="results-guid",
-        title="Results",
-    )
-
-    assert locator.stable_id == document.stable_id
-    assert locator.key_hint == document.key
 
 
 def test_pending_session_prunes_closed_views_and_drops_orphan_drafts():

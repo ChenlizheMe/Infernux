@@ -25,6 +25,7 @@ RUNTIME_PHASE_NAMES = (
     "physics_post_step",
 )
 _MISSING = object()
+_PHASE_INDEX = {name: index for index, name in enumerate(RUNTIME_PHASE_NAMES)}
 
 
 def _missing_runtime_phase(*_args: Any) -> None:
@@ -132,11 +133,15 @@ class RuntimeTypeDispatchDescriptor:
     methods: Mapping[str, RuntimeMethodDescriptor]
     _phase_dispatch: tuple[tuple[Any, bool], ...] = field(init=False, repr=False, compare=False)
     _phase_invokers: tuple[Any, ...] = field(init=False, repr=False, compare=False)
+    _phase_presence: tuple[bool, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if len(self.phase_methods) != len(RUNTIME_PHASE_NAMES):
             raise ValueError("runtime phase descriptor has an invalid phase count")
         object.__setattr__(self, "methods", MappingProxyType(dict(self.methods)))
+        object.__setattr__(
+            self, "_phase_presence", tuple(method is not None for method in self.phase_methods)
+        )
         dispatch = []
         invokers = []
         for method in self.phase_methods:
@@ -146,9 +151,12 @@ class RuntimeTypeDispatchDescriptor:
                 continue
 
             dispatch.append((method.raw, method.bind_instance))
+            if method.bind_instance:
+                invokers.append(method.raw)
+                continue
 
-            def invoke(instance: Any, value: Any, _method=method) -> Any:
-                return _method.invoke(instance, value)
+            def invoke(instance: Any, value: Any, _raw=method.raw) -> Any:
+                return _raw(value)
 
             invokers.append(invoke)
         object.__setattr__(self, "_phase_dispatch", tuple(dispatch))
@@ -161,17 +169,16 @@ class RuntimeTypeDispatchDescriptor:
     @property
     def phase_presence(self) -> tuple[bool, ...]:
         """Whether each authoritative runtime phase exists in this descriptor."""
-        return tuple(method is not None for method in self.phase_methods)  # type: ignore[return-value]
+        return self._phase_presence
 
     @property
     def phase_invokers(self) -> tuple[Any, ...]:
         return self._phase_invokers
 
     def has_phase(self, phase: str) -> bool:
-        try:
-            index = RUNTIME_PHASE_NAMES.index(phase)
-        except ValueError:
-            raise ValueError(f"unknown runtime phase: {phase}") from None
+        index = _PHASE_INDEX.get(phase)
+        if index is None:
+            raise ValueError(f"unknown runtime phase: {phase}")
         return self.phase_methods[index] is not None
 
     def resolve_method(self, instance: Any, name: str) -> Any:
@@ -605,10 +612,11 @@ class RuntimeDispatchPublication:
                         component_type,
                         phase_presence_changed=phase_presence_changed,
                     )
-                except Exception:
+                except Exception as exc:
                     # Epoch publication is already restored. Scheduler
                     # invalidation is an observer and cannot own rollback.
-                    pass
+                    from infernux.debug import Debug
+                    Debug.log_suppressed("RuntimeDispatch.scheduler_rollback", exc)
             self._scheduler_notified = False
         self._committed = False
         self._rolled_back = True
@@ -626,17 +634,25 @@ def current_runtime_epoch() -> RuntimeRevisionEpoch:
         return _current_epoch
 
 
+def bind_runtime_dispatch_owner() -> None:
+    """Bind publication explicitly when the Engine/Player owner starts."""
+    global _owner_thread_id
+    current = threading.get_ident()
+    with _EPOCH_LOCK:
+        if _owner_thread_id is not None and _owner_thread_id != current:
+            raise RuntimeError("runtime dispatch already belongs to another owner thread")
+        _owner_thread_id = current
+
+
 def assert_runtime_dispatch_safe_point() -> None:
     """Reject publication while any scheduler still owns an execution frame."""
-    global _owner_thread_id
     current_thread_id = threading.get_ident()
     with _EPOCH_LOCK:
-        if _owner_thread_id is None:
-            _owner_thread_id = current_thread_id
-        elif _owner_thread_id != current_thread_id:
+        owner = _owner_thread_id if _owner_thread_id is not None else threading.main_thread().ident
+        if owner != current_thread_id:
             raise RuntimeError(
                 "runtime dispatch publication requires the owner thread; "
-                f"owner={_owner_thread_id}, current={current_thread_id}"
+                f"owner={owner}, current={current_thread_id}"
             )
     try:
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
@@ -724,10 +740,11 @@ def _notify_coroutine_epoch(epoch: RuntimeRevisionEpoch) -> None:
         from infernux.coroutine import notify_runtime_epoch_published
 
         notify_runtime_epoch_published(epoch)
-    except Exception:
+    except Exception as exc:
         # Coroutine epoch observation is diagnostic/cache state, not the
         # publication authority.  It must never make commit/rollback partial.
-        pass
+        from infernux.debug import Debug
+        Debug.log_suppressed("RuntimeDispatch.coroutine_epoch", exc)
 
 
 def ensure_runtime_dispatch_types(component_types: Iterable[type]) -> RuntimeRevisionEpoch:
@@ -833,13 +850,52 @@ def resolve_runtime_method(
 
 
 def has_runtime_phase(component_type: type, phase: str) -> bool:
+    """Return whether *component_type* overrides one runtime phase."""
+    index = _PHASE_INDEX.get(phase)
+    if index is None:
+        raise ValueError(f"unknown runtime phase: {phase}")
+    return runtime_phase_presence(component_type)[index]
+
+
+_NO_PHASES = (False,) * len(RUNTIME_PHASE_NAMES)
+_PRESENCE_CACHE: dict[tuple[type, int], tuple[bool, ...]] = {}
+
+
+def _declared_phase_presence(component_type: type) -> tuple[bool, ...]:
+    presence = []
+    for phase in RUNTIME_PHASE_NAMES:
+        raw = _find_raw_method(component_type, phase)
+        if raw is _MISSING:
+            presence.append(False)
+        elif isinstance(raw, (staticmethod, classmethod)):
+            presence.append(True)
+        else:
+            presence.append(callable(raw))
+    return tuple(presence)
+
+
+def runtime_phase_presence(component_type: type) -> tuple[bool, ...]:
+    """Return the immutable phase-presence tuple for this type and epoch.
+
+    Plan builds and registration ask for all phases at once; resolving them per
+    phase multiplied an epoch lock and descriptor lookup by five.
+    """
     epoch = current_runtime_epoch()
+    key = (component_type, epoch.epoch_id)
+    cached = _PRESENCE_CACHE.get(key)
+    if cached is not None:
+        return cached
     descriptor = epoch.descriptor_for(component_type)
     if descriptor is not None:
-        return descriptor.has_phase(phase)
-    if component_type in epoch.retired_types:
-        return False
-    return build_type_dispatch_descriptor(component_type).has_phase(phase)
+        presence = descriptor.phase_presence
+    elif component_type in epoch.retired_types:
+        presence = _NO_PHASES
+    else:
+        presence = _declared_phase_presence(component_type)
+    if len(_PRESENCE_CACHE) >= 4096:
+        _PRESENCE_CACHE.clear()
+    _PRESENCE_CACHE[key] = presence
+    return presence
 
 
 def runtime_descriptor_diagnostic(component_type: type) -> dict[str, Any]:

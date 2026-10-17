@@ -457,6 +457,7 @@ class Component : public NativeLifetimeOwner
     uint64_t m_lifetimeGeneration = 0;
 
   private:
+    void UnregisterIfOwner();
     static uint64_t GenerateComponentID();
     static void EnsureNextComponentID(uint64_t id);
 

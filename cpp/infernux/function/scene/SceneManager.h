@@ -157,9 +157,6 @@ class SceneManager
     /// have no dynamics or contacts to simulate.
     void EnsurePhysicsQueriesCurrent();
 
-    /// @brief Called at a fixed time step (physics / deterministic logic)
-    void FixedUpdate();
-
     /// @brief Call every frame after Update
     void LateUpdate(float deltaTime);
 

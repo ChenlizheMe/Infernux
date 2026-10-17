@@ -751,6 +751,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!VerifyTransientBufferIsolation(resources))
         return false;
+    if (!VerifyRebuildReusesGraphicsImages(resources))
+        return false;
 
     const VkDevice device = resources.context.GetDevice();
     resources.pipelines.Initialize(device);

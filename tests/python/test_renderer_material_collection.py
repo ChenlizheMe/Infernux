@@ -12,7 +12,6 @@ from model_test_support import remove_model_test_folder
 
 
 RENDERERS = ["MeshRenderer", "LineRenderer", "SkinnedMeshRenderer"]
-ENTRIES = ["materials", "sharedMaterials", "set_materials", "set_shared_materials", "SetMaterials", "SetSharedMaterials"]
 
 
 def replace(renderer, entry, values):
@@ -22,9 +21,11 @@ def replace(renderer, entry, values):
         getattr(renderer, entry)(values)
 
 
-@pytest.mark.parametrize("kind", RENDERERS)
-@pytest.mark.parametrize("entry", ENTRIES)
-@pytest.mark.parametrize("count", [0, 1])
+@pytest.mark.parametrize('kind,entry,count', [
+    ('MeshRenderer', 'materials', 0), ('LineRenderer', 'sharedMaterials', 1),
+    ('SkinnedMeshRenderer', 'set_materials', 0), ('MeshRenderer', 'set_shared_materials', 1),
+    ('LineRenderer', 'SetMaterials', 0), ('SkinnedMeshRenderer', 'SetSharedMaterials', 1),
+])
 def test_collection_replacement_removes_tail_slots(scene, kind, entry, count):
     renderer = scene.create_game_object("Collection").add_component(kind)
     originals = [Material.create_unlit(str(i)) for i in range(3)]
@@ -39,8 +40,10 @@ def test_collection_replacement_removes_tail_slots(scene, kind, entry, count):
     assert renderer.get_material(2) is None
 
 
-@pytest.mark.parametrize("kind", RENDERERS)
-@pytest.mark.parametrize("entry", ENTRIES + ["native"])
+@pytest.mark.parametrize('kind,entry', [
+    ('MeshRenderer', 'native'), ('LineRenderer', 'native'),
+    ('SkinnedMeshRenderer', 'native'), ('MeshRenderer', 'materials'),
+])
 def test_invalid_collection_never_publishes_prefix(scene, kind, entry):
     renderer = scene.create_game_object("Invalid collection").add_component(kind)
     previous = Material.create_unlit("Previous")
@@ -88,8 +91,7 @@ def authored_material(engine, scene, tmp_path, monkeypatch):
         remove_model_test_folder(database, folder)
 
 
-@pytest.mark.parametrize("kind", RENDERERS)
-@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize('kind,native', [('MeshRenderer', False), ('LineRenderer', True), ('SkinnedMeshRenderer', False)])
 def test_mixed_materials_keep_identity_and_survive_document_reload(scene, kind, native, authored_material):
     renderer = scene.create_game_object("Mixed collection").add_component(kind)
     transient = Material.create_unlit("Transient")

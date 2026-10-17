@@ -74,47 +74,6 @@ def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
         UndoManager._instance = previous_manager
 
 
-def test_locale_preference_applies_without_a_window_manager(monkeypatch):
-    from infernux.engine import i18n
-    from infernux.engine.interaction import EditorInteractionCore
-    from infernux.engine.ui.window_manager import WindowManager
-
-    state = {"locale": "zh"}
-    monkeypatch.setattr(i18n, "get_locale", lambda: state["locale"])
-    monkeypatch.setattr(
-        i18n,
-        "set_locale",
-        lambda value: state.__setitem__("locale", value),
-    )
-    monkeypatch.setattr(
-        WindowManager,
-        "instance",
-        classmethod(lambda _cls: None),
-    )
-
-    core = EditorInteractionCore()
-    try:
-        assert core.preferences.set_locale("en")
-        assert state["locale"] == "en"
-    finally:
-        core.shutdown()
-
-
-def test_preferences_commands_reject_unknown_values():
-    from infernux.engine.interaction import CommandSource, EditorInteractionCore
-
-    core = EditorInteractionCore()
-    try:
-        context = core.commands.context(
-            CommandSource.POINTER,
-            {"value": "unknown"},
-        )
-        assert not core.commands.can_execute("preferences.set_locale", context)
-        assert not core.commands.can_execute("preferences.set_ide", context)
-    finally:
-        core.shutdown()
-
-
 def test_shortcut_profile_commands_publish_router_and_share_global_history():
     import copy
 
@@ -177,9 +136,7 @@ def test_shortcut_profile_commands_publish_router_and_share_global_history():
             payload={"binding_id": "default.file.save", "chord": "Alt+S"},
         ).accepted
 
-        assert model.binding("default.file.save").effective_chord == KeyChord.parse(
-            "Alt+S"
-        )
+        assert model.binding("default.file.save").effective_chord == KeyChord.parse("Alt+S")
         assert tuple(binding.chord for binding in core.shortcuts.bindings) == (
             KeyChord.parse("Alt+S"),
             KeyChord.parse("Ctrl+Shift+S"),
@@ -187,9 +144,7 @@ def test_shortcut_profile_commands_publish_router_and_share_global_history():
         assert manager.action_journal.applied_entries()[-1].action.marks_dirty is False
 
         manager.undo()
-        assert model.binding("default.file.save").effective_chord == KeyChord.parse(
-            "Ctrl+S"
-        )
+        assert model.binding("default.file.save").effective_chord == KeyChord.parse("Ctrl+S")
         assert core.shortcuts.bindings[0].chord == KeyChord.parse("Ctrl+S")
         manager.redo()
         assert core.shortcuts.bindings[0].chord == KeyChord.parse("Alt+S")

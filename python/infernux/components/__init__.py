@@ -112,7 +112,7 @@ from .transform_authoring import (
     drives_transform,
     DrivesTransform,
 )
-from .spirit_animator import SpiritAnimator
+from .sprite_animator import SpriteAnimator
 from .skeletal_animator import SkeletalAnimator
 from .timeline_action import TimelineAction
 from .particle_system import ParticleBoundsMode, ParticleOffscreenPolicy, ParticleSystem
@@ -217,7 +217,7 @@ __all__ = [
     "ParticleSystem",
     "ParticleBoundsMode",
     "ParticleOffscreenPolicy",
-    "SpiritAnimator",
+    "SpriteAnimator",
     "SkeletalAnimator",
     "TimelineAction",
     "RuntimeAcceptanceRunner",

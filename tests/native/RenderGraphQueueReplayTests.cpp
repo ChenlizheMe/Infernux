@@ -209,9 +209,9 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     rhi::SubmissionSerial rendererRetirementSerial = 40;
     GpuRetirementQueue rendererRetirement;
     rendererRetirement.BindSerialSource([&] { return rendererRetirementSerial; });
+    descriptors.SetRetirementQueue(&rendererRetirement);
     descriptors.Initialize(context.GetVmaAllocator(), context.GetDevice(), context.GetPhysicalDevice(),
                            &descriptorAllocator);
-    descriptors.SetRetirementQueue(&rendererRetirement);
     descriptors.SetBufferResolver([&device](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
         if (!buffer || buffer->GetBuffer().Device() != device.GetDeviceId())
             return VkDescriptorBufferInfo{};

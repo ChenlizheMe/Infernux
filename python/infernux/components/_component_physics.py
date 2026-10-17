@@ -1,32 +1,9 @@
 """ComponentPhysicsMixin — extracted from InxComponent."""
 from __future__ import annotations
 
-"""
-InxComponent - Base class for all Python-defined components.
 
-Provides Unity-style lifecycle methods and property injection.
-Users inherit from this class to create custom game logic.
 
-Example:
-    from infernux.components import InxComponent, serialized_field
-    
-    class PlayerController(InxComponent):
-        speed: float = serialized_field(default=5.0)
-        
-        def start(self):
-            print("Player started!")
-        
-        def update(self, delta_time: float):
-            pos = self.transform.position
-            self.transform.position = Vector3(pos.x + self.speed * delta_time, pos.y, pos.z)
-"""
-
-from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
-import copy
-import threading
-import weakref
-
-from infernux.lib import GameObject, _wrap_native_builtin_component
+from infernux.lib import _wrap_native_builtin_component
 from infernux.engine.runtime_dispatch import current_runtime_epoch
 
 

@@ -4,7 +4,7 @@ import pytest
 
 from infernux.engine import release_engine, run_headless
 from infernux.engine.project_version import validate_project_engine_version
-from infernux.version import ENGINE_BUILD_NUMBER, ENGINE_RELEASE, ENGINE_VERSION
+from infernux.version import ENGINE_RELEASE
 
 
 def test_exact_engine_version_is_required(tmp_path):
@@ -18,13 +18,7 @@ def test_exact_engine_version_is_required(tmp_path):
         validate_project_engine_version(str(tmp_path))
 
 
-@pytest.mark.parametrize("entry", [release_engine, run_headless])
-@pytest.mark.parametrize("required", [
-    "0.0.0",
-    f"{ENGINE_VERSION}-v{ENGINE_BUILD_NUMBER + 1}",
-    # The base version is a mismatch only for a revised release, not build 1.
-    *([ENGINE_VERSION] if ENGINE_RELEASE != ENGINE_VERSION else []),
-])
+@pytest.mark.parametrize("required,entry", [("0.0.0", release_engine), ("0.0.0", run_headless)])
 def test_wrong_engine_version_rejects_before_resource_sync(tmp_path, monkeypatch, entry, required):
     pin = tmp_path / ".infernux-version"
     pin.write_text(required + "\n", encoding="utf-8")

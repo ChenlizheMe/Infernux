@@ -26,7 +26,6 @@ class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
 class InxMaterial;
-class TransientResourcePool;
 
 // ============================================================================
 // CullingResults
@@ -221,22 +220,6 @@ class ScriptableRenderContext
         return m_scene;
     }
 
-    // ====================================================================
-    // TransientResourcePool access
-    // ====================================================================
-
-    /// @brief Set the transient resource pool (called by InxRenderer during setup).
-    void SetTransientResourcePool(TransientResourcePool *pool)
-    {
-        m_transientPool = pool;
-    }
-
-    /// @brief Get the transient resource pool.
-    [[nodiscard]] TransientResourcePool *GetTransientResourcePool() const
-    {
-        return m_transientPool;
-    }
-
   private:
     InxVkCoreModular *m_vkCore;
     SceneRenderGraph *m_graph;
@@ -254,13 +237,9 @@ class ScriptableRenderContext
     bool m_submitted = false;
 
     // Deferred CommandBuffer execution state
-    TransientResourcePool *m_transientPool = nullptr;
     // ExecuteCommandBuffer captures commands immediately; the Python/local
     // CommandBuffer may be cleared or destroyed before this context submits.
     std::vector<RenderCommand> m_pendingCommands;
-
-    // Handle → pool slot mapping for transient RT resolution
-    std::unordered_map<uint32_t, uint32_t> m_handleToSlotMap; // RenderTargetHandle.id → pool slot
 
     /// @brief Process all pending CommandBuffers' commands (RT management, globals).
     RenderDomainMask ProcessPendingCommandBuffers();

@@ -1,21 +1,11 @@
 """SceneViewPickingMixin — extracted from SceneViewPanel."""
 from __future__ import annotations
 
-"""
-Unity-style Scene View panel with 3D viewport and camera controls.
-"""
 
-import math
-import os
-from infernux.lib import InxGUIContext, TextureLoader, InputManager
-from infernux.engine.i18n import t
-from .editor_panel import EditorPanel
-from .closable_panel import ClosablePanel
-from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol, ImGuiStyleVar
-from .viewport_utils import ViewportInfo, capture_viewport_info
+from infernux.lib import InxGUIContext
+from .theme import Theme
+from .viewport_utils import ViewportInfo
 from . import imgui_keys as _keys
-import infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants.
 # Defined locally to avoid a circular import with scene_view_panel.

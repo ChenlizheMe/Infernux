@@ -6,7 +6,10 @@ import json
 import os
 from typing import Any
 
-from infernux.engine.path_utils import VERSION_CONTROL_DIRECTORIES, is_path_within, path_key, resolved_path
+from infernux.engine.path_utils import (
+    VERSION_CONTROL_DIRECTORIES, is_lexical_path_within, lexical_path,
+    lexical_path_key, path_key, resolved_path,
+)
 
 
 _SKIPPED_DIRECTORIES = VERSION_CONTROL_DIRECTORIES | {"__pycache__", ".venv", "venv"}
@@ -32,20 +35,21 @@ def project_guid_paths(
     database = _asset_database(engine)
     if database is not None:
         database_root = resolved_path(str(database.project_root or ""))
-        if database_root and path_key(database_root) == path_key(project):
+        if database_root and lexical_path_key(database_root) == lexical_path_key(project):
             result: dict[str, str] = {}
             for raw_guid in database.get_all_guids():
                 guid = str(raw_guid).strip().casefold()
                 raw_path = str(database.get_path_from_guid(raw_guid) or "").strip()
-                if not guid or not raw_path:
+                if not guid or not raw_path or "::" in raw_path:
                     continue
-                path = resolved_path(
+                # Native catalog paths already passed canonical import publication.
+                path = lexical_path(
                     raw_path if os.path.isabs(raw_path) else os.path.join(project, raw_path)
                 )
                 if not _active_project_path(path, project) or not os.path.isfile(path):
                     continue
                 other = result.get(guid)
-                if other is not None and path_key(other) != path_key(path):
+                if other is not None and lexical_path_key(other) != lexical_path_key(path):
                     raise ValueError(f"Project contains duplicate GUID {guid}: {other}, {path}")
                 result[guid] = path
             return result, True
@@ -96,7 +100,7 @@ def _scan_guid_paths(project_root: str) -> dict[str, str]:
 
 def _active_project_path(path: str, project_root: str) -> bool:
     return any(
-        is_path_within(
+        is_lexical_path_within(
             path,
             os.path.join(project_root, root_name),
             allow_root=False,

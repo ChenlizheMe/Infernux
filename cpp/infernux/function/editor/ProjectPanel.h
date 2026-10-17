@@ -376,7 +376,7 @@ class ProjectPanel : public EditorPanel
     std::string m_breadcrumbText;
 
     // Project-wide search (Unity-style box on the Path bar)
-    char m_searchBuf[256] = {};
+    std::string m_searchBuf;
     EditorSearchModel m_search;
     bool m_focusSearchNextFrame = false;
     EditorSearchToken m_searchResultToken;
@@ -412,7 +412,7 @@ class ProjectPanel : public EditorPanel
 
     // Rename
     std::string m_renamingPath;
-    char m_renameBuf[256] = {};
+    std::string m_renameBuf;
     bool m_renameFocusRequested = false;
     // Skip IsItemDeactivated commit for the frame that opens rename (F2/context menu),
     // otherwise the new InputText can deactivate immediately and cancel the rename UI.

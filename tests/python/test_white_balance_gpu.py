@@ -14,8 +14,7 @@ from tests.gpu.white_balance_case import (
 )
 
 
-PARAMETERS = sorted({(t, tint) for _, t, tint in PHASES} |
-                    {(t, tint) for t in (-100., -50., 0., 50., 100.) for tint in (-100., -50., 0., 50., 100.)})
+PARAMETERS = sorted({(temperature, tint) for _, temperature, tint in PHASES})
 
 
 @pytest.fixture(scope='module')

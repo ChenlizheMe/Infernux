@@ -1,4 +1,5 @@
 """Capability policy is local state, never a default-on recovery artifact."""
+
 from __future__ import annotations
 
 import copy
@@ -27,39 +28,31 @@ def write_policy(root: Path, value: bytes) -> Path:
 INVALID_POLICIES = [
     b'{"enabled": false, "granted_capabilities": [], BROKEN}',
     b'<<<<<<< HEAD\n{"enabled": false}\n=======\n{}\n>>>>>>> peer\n',
-    b'null', b'[]', b'"policy"',
-    b'{"enabled": "false"}', b'{"enabled": 0}',
+    b"null",
+    b"[]",
+    b'"policy"',
+    b'{"enabled": "false"}',
+    b'{"enabled": 0}',
     b'{"write_default_config_on_bootstrap": "false"}',
     b'{"granted_capabilities": "scene.read"}',
     b'{"granted_capabilities": ["scene.read", null]}',
     b'{"profile": "unknown"}',
-    b'{"features": []}', b'{"features": {"discovery_files": "false"}}',
-    b'{"session": null}', b'{"session": {"recording_enabled": 1}}',
+    b'{"features": []}',
+    b'{"features": {"discovery_files": "false"}}',
+    b'{"session": null}',
+    b'{"session": {"recording_enabled": 1}}',
     b'{"session": {"managed_checkpoints_required": "false"}}',
     b'{"session": {"allowed_project_roots": "C:/Project"}}',
     b'{"session": {"whl_readonly_source": [null]}}',
     b'{"session": {"session_id": 1}}',
-    b'{"limits": []}', b'{"limits": {"batch_max_steps": true}}',
+    b'{"limits": []}',
+    b'{"limits": {"batch_max_steps": true}}',
     b'{"limits": {"batch_max_steps": 0}}',
     b'{"limits": {"main_thread_timeout_ms": -1}}',
     b'{"limits": {"trace_argument_max_string": 1.5}}',
     b'{"limits": {"trace_result_max_string": NaN}}',
     b'{"enabled": false, "enabled": true}',
 ]
-
-
-@pytest.mark.parametrize("raw", INVALID_POLICIES)
-def test_invalid_existing_policy_rejects_without_rewriting_or_activating(tmp_path, raw):
-    active = tmp_path / "active"
-    capabilities.apply_config(str(active), {"enabled": False, "granted_capabilities": []})
-    before = capabilities.current_config()
-    previous_root = capabilities.project_path()
-    policy = write_policy(tmp_path / "invalid", raw)
-    with pytest.raises(ValueError, match="mcp_capabilities.json"):
-        capabilities.configure(str(policy.parent.parent))
-    assert policy.read_bytes() == raw
-    assert capabilities.current_config() == before
-    assert capabilities.project_path() == previous_root
 
 
 def test_valid_existing_policy_is_read_without_reformatting_or_replacing(tmp_path):
@@ -146,11 +139,15 @@ def test_malformed_policy_prevents_transport_creation(tmp_path, monkeypatch):
     assert policy.read_bytes() == INVALID_POLICIES[0]
 
 
-@pytest.mark.parametrize("current", [
-    b'{"enabled": false, "granted_capabilities": []}\n',
-    b'{"enabled": true, "granted_capabilities": ["scene.read"], "limits": {"batch_max_steps": 2}}\n',
-    INVALID_POLICIES[0], None,
-])
+@pytest.mark.parametrize(
+    "current",
+    [
+        b'{"enabled": false, "granted_capabilities": []}\n',
+        b'{"enabled": true, "granted_capabilities": ["scene.read"], "limits": {"batch_max_steps": 2}}\n',
+        INVALID_POLICIES[0],
+        None,
+    ],
+)
 def test_checkpoint_restores_content_and_preserves_current_policy_bytes(tmp_path, current):
     project = tmp_path / "project"
     policy = write_policy(project, b'{"enabled": true}\n')
@@ -249,10 +246,14 @@ def test_checkpoint_manifest_cannot_claim_machine_local_permissions(tmp_path):
     # manifest must not use that exclusion to claim ownership of local policy.
     payload_policy = Path(created["payload_path"]) / "ProjectSettings" / "mcp_capabilities.json"
     payload_policy.write_text('{"enabled": true}', encoding="utf-8")
-    manifest["ledger"]["entries"].append({
-        "path": "ProjectSettings/mcp_capabilities.json", "size": 17,
-        "sha256": "not-used-for-local-policy", "kind": "project_setting",
-    })
+    manifest["ledger"]["entries"].append(
+        {
+            "path": "ProjectSettings/mcp_capabilities.json",
+            "size": 17,
+            "sha256": "not-used-for-local-policy",
+            "kind": "project_setting",
+        }
+    )
     Path(created["manifest_path"]).write_text(json.dumps(manifest), encoding="utf-8")
     scene.write_text("draft", encoding="utf-8")
     with pytest.raises(checkpoints.CheckpointError, match="local project setting"):

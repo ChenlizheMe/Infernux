@@ -30,6 +30,7 @@ dependencies = [
     "Pillow>=10.4.0",
     "imageio>=2.34.0",
     "av>=12.0.0",
+    "jsonschema>=4.23,<5",
 ]
 
 [project.urls]
@@ -47,6 +48,14 @@ launcher = ["PySide6>=6.5.0"]
 [tool.infernux.hub]
 build-number = 4
 
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+extend-exclude = ["*.pyi"]
+
+[tool.ruff.lint]
+select = ["E9", "F601", "F821", "F822", "F823"]
+
 [tool.setuptools]
 py-modules = ["infernux_project_lock"]
 packages = {find = {where = ["python"], exclude = ["test", "test.*", "*.test", "*.test.*", "*.tests", "*.tests.*", "*.__pycache__", "*.__pycache__.*"]}}
@@ -63,6 +72,7 @@ infernux = [
     "*.so",
     "*.dylib",
     "lib/PlayerNativeContract.json",
+    "lib/InfernuxEditorProgress*",
     "**/_Infernux*.pyd",
     "**/_Infernux*.so",
     "**/_Infernux*.dylib",

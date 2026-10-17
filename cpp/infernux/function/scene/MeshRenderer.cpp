@@ -98,21 +98,6 @@ bool RendererParameterEquals(const MaterialProperty &left, const MaterialPropert
            RendererParameterValueEquals(left.value, right.value);
 }
 
-bool MeshDataEquals(const std::shared_ptr<InxMesh> &mesh, const std::vector<Vertex> &vertices,
-                    const std::vector<uint32_t> &indices)
-{
-    if (!mesh)
-        return false;
-    if (mesh->GetVertices().size() != vertices.size() || mesh->GetIndices().size() != indices.size())
-        return false;
-
-    const bool sameVertices = vertices.empty() || std::memcmp(mesh->GetVertices().data(), vertices.data(),
-                                                              vertices.size() * sizeof(Vertex)) == 0;
-    const bool sameIndices = indices.empty() || std::memcmp(mesh->GetIndices().data(), indices.data(),
-                                                            indices.size() * sizeof(uint32_t)) == 0;
-    return sameVertices && sameIndices;
-}
-
 std::vector<std::string> ResolveModelNodePathBySubresourceId(const std::string &meshGuid,
                                                              const std::string &subresourceId,
                                                              std::vector<std::string> serializedPath)
@@ -127,46 +112,6 @@ std::vector<std::string> ResolveModelNodePathBySubresourceId(const std::string &
 
     const auto manifest = nlohmann::json::parse(meta->GetDataAs<std::string>("model_meshes"));
     return ResolveModelMeshIdentityPath(manifest, subresourceId);
-}
-
-std::string FindMatchingMeshAssetGuid(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
-                                      const std::string &preferredName)
-{
-    if (vertices.empty() || indices.empty())
-        return {};
-
-    auto &registry = AssetRegistry::Instance();
-    auto *assetDb = registry.GetAssetDatabase();
-    if (!assetDb)
-        return {};
-
-    auto tryFind = [&](bool requirePreferredName) -> std::string {
-        for (const auto &guid : assetDb->GetAllGuids()) {
-            const auto meta = assetDb->GetMetaByGuid(guid);
-            if (!meta || meta->GetResourceType() != ResourceType::Mesh)
-                continue;
-
-            if (requirePreferredName) {
-                if (preferredName.empty() || meta->GetResourceName() != preferredName)
-                    continue;
-            }
-
-            auto mesh = registry.GetAsset<InxMesh>(guid);
-            if (!mesh)
-                mesh = registry.LoadAsset<InxMesh>(guid, ResourceType::Mesh);
-            if (!MeshDataEquals(mesh, vertices, indices))
-                continue;
-            return guid;
-        }
-        return {};
-    };
-
-    if (!preferredName.empty()) {
-        if (auto guid = tryFind(true); !guid.empty())
-            return guid;
-    }
-
-    return tryFind(false);
 }
 
 bool GetBuiltinPrimitiveMeshData(const std::string &name, const std::vector<Vertex> *&vertices,
@@ -474,9 +419,7 @@ void RecalculateMeshTangents(std::vector<Vertex> &vertices, const std::vector<ui
     }
 }
 
-namespace
-{
-SemanticTypeDescriptor DescribeMeshRenderer()
+SemanticTypeDescriptor MeshRenderer::DescribeSemanticType()
 {
     SemanticTypeDescriptor type;
     type.typeGuid = "native:infernux.MeshRenderer";
@@ -502,15 +445,18 @@ SemanticTypeDescriptor DescribeMeshRenderer()
     add("casts_shadows", "castShadows", "BOOL", true)["tooltip"] = "Whether this renderer casts shadows";
     add("receives_shadows", "receivesShadows", "BOOL", true)["tooltip"] = "Whether this renderer receives shadows";
     auto &submesh = add("submesh_index", "submeshIndex", "INT", -1, true);
+    submesh["document_required"] = false;
     submesh["range"] = {-1, std::numeric_limits<int32_t>::max()};
     submesh["setter_owns_document_shape"] = true; // -1 omits the serialized selector.
-    add("mesh_pivot_offset", "meshPivotOffset", "VEC3", {0.0, 0.0, 0.0}, true);
+    add("mesh_pivot_offset", "meshPivotOffset", "VEC3", {0.0, 0.0, 0.0}, true)["document_required"] = false;
     return type;
 }
 
+namespace
+{
 const bool registeredMeshRenderer = ComponentFactory::Register(
     "MeshRenderer", [] { return std::make_unique<MeshRenderer>(); }, MeshRenderer::ValidateSerializedDocument,
-    MeshRenderer::GetTypeConstraints(), DescribeMeshRenderer);
+    MeshRenderer::GetTypeConstraints(), MeshRenderer::DescribeSemanticType);
 } // namespace
 
 MeshRenderer::~MeshRenderer()
@@ -787,9 +733,9 @@ void MeshRenderer::ClearMeshAsset()
     NotifyCollisionGeometryChanged(this);
 }
 
-void MeshRenderer::OnMeshAssetEvent(AssetEvent event)
+void MeshRenderer::OnMeshAssetEvent(const std::string &meshGuid, AssetEvent event)
 {
-    if (!m_meshAsset.HasGuid())
+    if (!m_meshAsset.HasGuid() || m_meshAsset.GetGuid() != meshGuid)
         return;
 
     if (event == AssetEvent::Deleted) {
@@ -1592,11 +1538,7 @@ nlohmann::json MeshRenderer::SerializeDocument() const
     const bool builtinPrimitive =
         persistInlineMesh && m_useInlineMesh && !m_inlineMeshName.empty() &&
         MatchesBuiltinPrimitiveMesh(m_inlineMeshName, GetInlineVertices(), GetInlineIndices());
-    const std::string matchedInlineMeshGuid =
-        (persistInlineMesh && !HasMeshAsset() && m_useInlineMesh && !builtinPrimitive)
-            ? FindMatchingMeshAssetGuid(GetInlineVertices(), GetInlineIndices(), m_inlineMeshName)
-            : std::string();
-    const std::string serializedMeshGuid = HasMeshAsset() ? m_meshAsset.GetGuid() : matchedInlineMeshGuid;
+    const std::string serializedMeshGuid = HasMeshAsset() ? m_meshAsset.GetGuid() : std::string{};
 
     // Mesh asset GUID (for model-file meshes managed by AssetRegistry)
     if (!serializedMeshGuid.empty()) {
@@ -1733,6 +1675,8 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
         throw std::invalid_argument("unsupported MeshRenderer document type: " + std::string(expectedType));
     }
     ValidateComponentDocumentFields(j, expectedType, required, optional);
+    static const auto declaration = DescribeSemanticType();
+    ValidateDeclaredFields(j, expectedType, declaration);
 
     RequireUnsignedInteger(j, "meshId", expectedType);
     const auto &materials = j["materials"];
@@ -1772,8 +1716,6 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
         }
     }
 
-    RequireBoolean(j, "castShadows", expectedType);
-    RequireBoolean(j, "receivesShadows", expectedType);
     RequireFiniteVector(j, "boundsMin", 3, expectedType);
     RequireFiniteVector(j, "boundsMax", 3, expectedType);
     RequireBoolean(j, "useInlineMesh", expectedType);
@@ -1799,8 +1741,6 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     }
     if (j.contains("modelSubresourceId") && RequireString(j, "modelSubresourceId", expectedType).empty())
         throw std::invalid_argument(std::string(expectedType) + ".modelSubresourceId must not be empty");
-    if (j.contains("meshPivotOffset"))
-        RequireFiniteVector(j, "meshPivotOffset", 3, expectedType);
     if (j.contains("inlineMeshName"))
         RequireString(j, "inlineMeshName", expectedType);
     if (j.contains("inlineMeshBuiltin"))

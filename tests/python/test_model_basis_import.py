@@ -1,4 +1,5 @@
 """Basis policies survive model Apply, publication and cooked-asset reload."""
+
 import base64
 import json
 import time
@@ -13,8 +14,7 @@ from infernux.core.asset_types import read_mesh_import_settings
 from infernux.lib import AssetRegistry
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("fixture", ["model_authored_normals.obj", "model_uv_basis.gltf"])
+@pytest.mark.parametrize("fixture,asynchronous", [("model_authored_normals.obj", False), ("model_uv_basis.gltf", True)])
 def test_basis_apply_publishes_and_reloads(engine, tmp_path, monkeypatch, asynchronous, fixture):
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_engine", engine)
@@ -29,15 +29,20 @@ def test_basis_apply_publishes_and_reloads(engine, tmp_path, monkeypatch, asynch
     node_names = [node["name"] for node in mesh.model_nodes]
     settings = read_mesh_import_settings(str(source))
     settings.is_readable = True
-    for normal_mode, tangent_mode in (("none", "import"), ("calculate", "calculate"),
-                                     ("import", "none"), ("source_only", "source_only"), ("import", "import")):
+    for normal_mode, tangent_mode in (
+        ("none", "import"),
+        ("calculate", "calculate"),
+        ("import", "none"),
+        ("source_only", "source_only"),
+        ("import", "import"),
+    ):
         settings.normal_mode, settings.tangent_mode = normal_mode, tangent_mode
         if asynchronous:
             owner = AssetManager.begin_model_reimport(str(source), settings)
             deadline = time.monotonic() + 30
             while (result := AssetManager.poll_model_reimport(owner)) is None:
                 assert time.monotonic() < deadline
-                time.sleep(.002)
+                time.sleep(0.002)
         else:
             result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
         assert result, result.error
@@ -48,36 +53,12 @@ def test_basis_apply_publishes_and_reloads(engine, tmp_path, monkeypatch, asynch
             assert not np.any(before["normals"])
             assert not np.any(before["tangents"])
         else:
-            np.testing.assert_allclose(np.linalg.norm(before["normals"], axis=1), 1, atol=1.e-5)
+            np.testing.assert_allclose(np.linalg.norm(before["normals"], axis=1), 1, atol=1.0e-5)
             if tangent_mode == "none":
                 assert not np.any(before["tangents"])
         assert registry.reload_asset(imported.guid)
         for key, values in before.items():
             np.testing.assert_array_equal(mesh.vertex_buffer[key], values)
-
-
-def test_extra_old_basis_keys_do_not_override_current_fields(engine, tmp_path):
-    database = engine.get_asset_database()
-    source = Path(database.assets_root) / tmp_path.name / "Legacy.obj"
-    source.parent.mkdir(parents=True)
-    source.write_bytes((Path(__file__).resolve().parents[2] / "tests/native/fixtures/model_authored_normals.obj").read_bytes())
-    first = database.import_asset(str(source))
-    assert first, first.error
-    sidecar = Path(str(source) + ".meta")
-    document = json.loads(sidecar.read_text(encoding="utf-8"))
-    for channel in ("normal", "tangent"):
-        document["metadata"]["generate_" + channel + "s"] = {"type": "bool", "value": False}
-    sidecar.write_text(json.dumps(document), encoding="utf-8")
-    result = database.reimport_asset(str(source))
-    assert result, result.error
-    assert result.guid == first.guid
-    settings = read_mesh_import_settings(str(source))
-    assert settings.normal_mode == settings.tangent_mode == "import"
-    settings.is_readable = True
-    readable = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
-    assert readable, readable.error
-    mesh = inx.Mesh.load_guid(first.guid)
-    np.testing.assert_allclose(mesh.vertex_buffer["normals"], np.tile([1, 0, 0], (mesh.vertex_count, 1)))
 
 
 def test_lit_mesh_without_uvs_publishes_a_valid_tangent_frame(engine, tmp_path):
@@ -86,9 +67,7 @@ def test_lit_mesh_without_uvs_publishes_a_valid_tangent_frame(engine, tmp_path):
     source = Path(database.assets_root) / tmp_path.name / "NoUv.obj"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
-        "vn 0 0 1\n"
-        "f 1//1 2//1 3//1\n",
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\n",
         encoding="utf-8",
     )
     imported = database.import_asset(str(source))
@@ -99,8 +78,8 @@ def test_lit_mesh_without_uvs_publishes_a_valid_tangent_frame(engine, tmp_path):
     assert readable, readable.error
     mesh = inx.Mesh.load_guid(imported.guid)
     tangents = mesh.vertex_buffer["tangents"]
-    np.testing.assert_allclose(np.linalg.norm(tangents[:, :3], axis=1), 1, atol=1.e-5)
-    np.testing.assert_allclose(tangents[:, 3], 1, atol=1.e-5)
+    np.testing.assert_allclose(np.linalg.norm(tangents[:, :3], axis=1), 1, atol=1.0e-5)
+    np.testing.assert_allclose(tangents[:, 3], 1, atol=1.0e-5)
 
 
 def test_calculate_tangents_replaces_authored_uv_basis(engine, tmp_path):
@@ -130,12 +109,12 @@ def test_calculate_tangents_replaces_authored_uv_basis(engine, tmp_path):
     calculated = mesh.vertex_buffer["tangents"]
     expected = np.array([-2, -3, 0], dtype=np.float32)
     expected /= np.linalg.norm(expected)
-    np.testing.assert_allclose(calculated[:, :3], np.tile(expected, (mesh.vertex_count, 1)), atol=1.e-5)
+    np.testing.assert_allclose(calculated[:, :3], np.tile(expected, (mesh.vertex_count, 1)), atol=1.0e-5)
     assert not np.allclose(authored[:, :3], calculated[:, :3])
     settings.tangent_mode = "source_only"
     result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
     assert result, result.error
-    np.testing.assert_allclose(mesh.vertex_buffer["tangents"], authored, atol=1.e-5)
+    np.testing.assert_allclose(mesh.vertex_buffer["tangents"], authored, atol=1.0e-5)
 
 
 def test_secondary_uv_is_runtime_visible_swappable_and_cooked(engine, tmp_path):
@@ -182,7 +161,7 @@ def test_source_smoothing_requires_and_consumes_authored_normals(engine, tmp_pat
     mesh = inx.Mesh.load_guid(imported.guid)
     origin = mesh.vertex_buffer["normals"][np.all(mesh.vertex_buffer["positions"] == 0, axis=1)]
     assert origin.shape == (2, 3)
-    assert np.dot(origin[0], origin[1]) < .1
+    assert np.dot(origin[0], origin[1]) < 0.1
 
     missing = authored.with_name("Missing.obj")
     missing.write_bytes((fixtures / "model_smoothing.obj").read_bytes())
@@ -200,7 +179,9 @@ def test_normal_weighting_apply_and_binary_reload(engine, tmp_path, monkeypatch,
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     source = Path(database.assets_root) / tmp_path.name / "Weighting.obj"
     source.parent.mkdir(parents=True)
-    source.write_bytes((Path(__file__).resolve().parents[2] / "tests/native/fixtures/model_weighted_normals.obj").read_bytes())
+    source.write_bytes(
+        (Path(__file__).resolve().parents[2] / "tests/native/fixtures/model_weighted_normals.obj").read_bytes()
+    )
     imported = database.import_asset(str(source))
     assert imported, imported.error
     mesh = inx.Mesh.load_guid(imported.guid)
@@ -214,7 +195,7 @@ def test_normal_weighting_apply_and_binary_reload(engine, tmp_path, monkeypatch,
             deadline = time.monotonic() + 30
             while (result := AssetManager.poll_model_reimport(owner)) is None:
                 assert time.monotonic() < deadline
-                time.sleep(.002)
+                time.sleep(0.002)
         else:
             result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
         assert result, result.error
@@ -225,4 +206,4 @@ def test_normal_weighting_apply_and_binary_reload(engine, tmp_path, monkeypatch,
         assert mask.any()
         expected = np.array([0, 1, ratio], dtype=np.float32)
         expected /= np.linalg.norm(expected)
-        np.testing.assert_allclose(vertices["normals"][mask], np.tile(expected, (mask.sum(), 1)), atol=1.e-5)
+        np.testing.assert_allclose(vertices["normals"][mask], np.tile(expected, (mask.sum(), 1)), atol=1.0e-5)

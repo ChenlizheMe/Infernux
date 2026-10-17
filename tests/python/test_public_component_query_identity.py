@@ -43,6 +43,8 @@ def test_untyped_enumeration_reuses_script_instances_and_builtin_wrappers(scene)
     assert any(component is collider for component in components)
     assert any(component is owner.transform for component in components)
     assert len(components) == 3
+    assert scene._resolve_native_component(script._native_handle, collider) is None
+    assert script._get_bound_native_component() is script._cpp_component
 
 
 @pytest.mark.parametrize('direction', ['children', 'parent'])

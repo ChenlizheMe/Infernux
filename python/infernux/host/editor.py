@@ -651,8 +651,6 @@ class EditorAutomationHost:
                 ParticleArtifactRegistry.save_graph_asset(graph, path, guid=guid)
                 result = AssetManager.reimport_asset(path)
                 if not result:
-                    result = AssetManager.import_asset(path)
-                if not result:
                     raise RuntimeError(
                         str(getattr(result, "error", "Particle Graph import failed"))
                     )
@@ -660,11 +658,18 @@ class EditorAutomationHost:
             def _apply(command_self, graph, rollback):
                 try:
                     command_self._publish(graph)
-                except Exception:
+                except Exception as publication_error:
                     try:
                         command_self._publish(rollback)
-                    except Exception:
-                        pass
+                    except Exception as rollback_error:
+                        raise OperationError(
+                            "particle.rollback_failed",
+                            "Particle Graph publication and rollback both failed.",
+                            details={
+                                "publication": str(publication_error),
+                                "rollback": str(rollback_error),
+                            },
+                        ) from rollback_error
                     raise
 
             def execute(command_self):
@@ -833,13 +838,68 @@ class EditorAutomationHost:
                         for member_name, member in members.items()
                     ]
                 fields.append(entry)
-        return {
+        result = {
             "object_id": int(object_id),
             "component_id": int(component_id),
             "component_type": type_name,
             "python_type": f"{type(value).__module__}.{type(value).__qualname__}",
             "fields": fields,
         }
+        from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+
+        if isinstance(value, InxUIScreenComponent):
+            from infernux.engine.ui.ui_rect_manipulation import describe_ui_layout
+
+            result["ui_layout"] = describe_ui_layout(value, render_size=self.scene_ui_render_size())
+        return result
+
+    def scene_ui_render_size(self) -> tuple[int, int] | None:
+        """Read actual Game target pixels; an unopened viewport has no live basis."""
+        from infernux.engine.bootstrap import EditorBootstrap
+
+        bootstrap = EditorBootstrap.instance()
+        if bootstrap is None or bootstrap.window_manager is None:
+            return None
+        view = bootstrap.window_manager.get_window_instance("game_view")
+        if view is None:
+            return None
+        width, height = view.render_target_size
+        return (width, height) if width > 0 and height > 0 else None
+
+    def _scene_ui_component(self, object_id: int, component_id: int):
+        from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+
+        component = self.scene_component(object_id, component_id)
+        if not isinstance(component, InxUIScreenComponent):
+            raise OperationError("scene.not_ui_element", "The component does not own a UI rectangle.")
+        return component
+
+    def scene_ui_layout(self, object_id: int, component_id: int) -> dict[str, object]:
+        """Describe authored and resolved UI geometry in its actual layout domain."""
+        from infernux.engine.ui.ui_rect_manipulation import describe_ui_layout
+
+        return describe_ui_layout(
+            self._scene_ui_component(object_id, component_id), render_size=self.scene_ui_render_size(),
+        )
+
+    def set_scene_ui_rect(
+        self, object_id: int, component_id: int, rect: Iterable[float],
+        *, detach_from_layout: bool = False,
+    ) -> dict[str, object]:
+        """Edit a canvas rectangle with the same property history as UI gestures."""
+        from infernux.engine.ui.ui_rect_manipulation import edit_layout_rect
+
+        component = self._scene_ui_component(object_id, component_id)
+        try:
+            applied = edit_layout_rect(
+                component, rect, self.interaction_core().components,
+                render_size=self.scene_ui_render_size(), detach_from_layout=detach_from_layout,
+            )
+        except ValueError as exc:
+            raise OperationError("scene.ui_rect_rejected", str(exc)) from exc
+        if not applied:
+            raise OperationError("scene.edit_rejected", "UI rectangle edit was rejected.")
+        return self.scene_ui_layout(object_id, component_id)
 
     def delete_scene_objects(self, object_ids: Iterable[int]) -> list[int]:
         values = [int(value) for value in object_ids]

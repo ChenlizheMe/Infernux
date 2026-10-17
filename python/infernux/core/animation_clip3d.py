@@ -17,7 +17,7 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from infernux.core.animation_event import AnimationEvent, events_from_list
 from infernux.engine.path_utils import resolved_path
@@ -95,13 +95,9 @@ def resolve_model_disk_path_from_virtual_base(base: str) -> Optional[str]:
     if not b:
         return None
     if is_asset_guid_string(b):
-        try:
-            from infernux.core.assets import AssetManager
-            adb = getattr(AssetManager, "_asset_database", None)
-            p = resolve_disk_path_for_guid_string(adb, b)
-            return p
-        except Exception:
-            return None
+        from infernux.core.assets import AssetManager
+
+        return resolve_disk_path_for_guid_string(AssetManager._asset_database, b)
     p = resolved_path(b)
     return p if os.path.isfile(p) else None
 
@@ -146,6 +142,7 @@ class AnimationClip3D:
     events: List[AnimationEvent] = field(default_factory=list)
 
     file_path: str = field(default="", repr=False, compare=False)
+    _publication_revision: int = field(default=-1, init=False, repr=False, compare=False)
 
     # ── Serialization ───────────────────────────────────────────────
 
@@ -311,69 +308,30 @@ class AnimationClip3D:
             return None
 
     @classmethod
-    def from_embedded_take_virtual_path(cls, virtual_path: str) -> Optional["AnimationClip3D"]:
-        """Resolve one published clip by its stable imported identity."""
-        token = "::subanim:"
-        if token not in virtual_path:
+    def _load_imported_guid(cls, guid: str, virtual_path: str, database) -> Optional["AnimationClip3D"]:
+        metadata = database.get_meta_by_guid(guid)
+        if metadata is None:
             return None
-        base, _, rest = virtual_path.partition(token)
-        base = base.strip()
-        if not base:
-            return None
-        from infernux.core.asset_types import read_asset_metadata
-
-        metadata = read_asset_metadata(virtual_path)
-        if metadata and "import_document" in metadata:
-            clip = cls.from_dict(json.loads(metadata["import_document"]))
-            clip.file_path = virtual_path
-            return clip
-        model_disk = resolve_model_disk_path_from_virtual_base(base)
-        if not model_disk:
-            return None
-
-        from infernux.core.asset_types import read_meta_file
-
-        meta = read_meta_file(model_disk) or {}
-        identifier = rest.strip()
-        published = embedded_take_descriptors(meta)
-        selected = next((item for item in published if item["id"] == identifier), None)
-        if selected is None:
-            return None
-        take_name = selected["id"]
-        meta_guid = _read_asset_guid_from_meta_sidecar(model_disk)
-        if is_asset_guid_string(base):
-            source_guid = base
-        else:
-            source_guid = meta_guid
-        if not is_asset_guid_string(source_guid):
-            return None
-        bind_csv = (meta.get("bone_names_csv") or "")
-        if isinstance(bind_csv, str):
-            bind_names = [p.strip() for p in bind_csv.split(",") if p.strip()]
-        else:
-            bind_names = []
-
-        try:
-            clip = cls.from_dict({
-                "name": selected["name"],
-                "source_model_guid": source_guid,
-                "take_name": take_name,
-                "bind_pose_bone_names": bind_names,
-                "duration_hint": selected["duration"],
-                "default_loop": selected["default_loop"],
-                "apply_root_motion": selected["apply_root_motion"],
-                "reference_pose": selected["reference_pose"],
-                "curves": selected["curves"],
-                "events": selected["events"],
-                "bone_mask": selected["bone_mask"],
-            })
-        except (KeyError, TypeError, ValueError):
-            return None
+        clip = cls.from_dict(json.loads(metadata.get_string("import_document")))
         clip.file_path = virtual_path
+        from infernux.lib import AssetDependencyGraph
+
+        clip._publication_revision = AssetDependencyGraph.instance().get_content_revision(guid)
         return clip
 
+    @classmethod
+    def from_embedded_take_virtual_path(cls, virtual_path: str) -> Optional["AnimationClip3D"]:
+        """Resolve an imported virtual path through its published clip GUID."""
+        from infernux.core.assets import AssetManager
 
-def _read_asset_guid_from_meta_sidecar(asset_path: str) -> str:
-    """Return the canonical GUID from a ``.meta`` sidecar."""
-    from infernux.core.asset_types import read_meta_guid
-    return read_meta_guid(asset_path)
+        base, separator, identifier = virtual_path.partition("::subanim:")
+        if not separator or not base or not identifier:
+            return None
+        database = AssetManager.require_asset_database()
+        if is_asset_guid_string(base):
+            model_path = database.get_path_from_guid(base)
+            if not model_path:
+                return None
+            virtual_path = model_path + separator + identifier
+        guid = database.get_guid_from_catalog_path(virtual_path)
+        return AssetManager.load_by_guid(guid, cls) if guid else None

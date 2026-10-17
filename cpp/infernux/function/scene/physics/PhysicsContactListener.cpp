@@ -1,13 +1,12 @@
 #include "PhysicsContactListener.h"
 
 #include "../Collider.h"
-#include "../GameObject.h"
+#include "PhysicsWorld.h"
 
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
-#include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <algorithm>
 #include <glm/glm.hpp>
 #include <stdexcept>
@@ -33,30 +32,8 @@ bool IsTriggerEvent(ContactEventType type)
 
 Collider *ResolveContactCollider(const JPH::Body &body, const JPH::SubShapeID &subShapeId)
 {
-    auto *fallback = reinterpret_cast<Collider *>(body.GetUserData());
-    if (!fallback)
-        return fallback;
-
-    const JPH::Shape *shape = body.GetShape();
-    if (!shape || shape->GetType() != JPH::EShapeType::Compound)
-        return fallback;
-
-    const auto *compound = static_cast<const JPH::CompoundShape *>(shape);
-    if (!compound->IsSubShapeIDValid(subShapeId))
-        return fallback;
-
-    JPH::SubShapeID remainder;
-    uint32_t index = compound->GetSubShapeIndexFromID(subShapeId, remainder);
-    uint32_t componentId = compound->GetCompoundUserData(index);
-    auto *gameObject = fallback->GetGameObject();
-    if (!gameObject || componentId == 0)
-        return fallback;
-
-    for (auto *collider : gameObject->GetComponents<Collider>()) {
-        if (collider && static_cast<uint32_t>(collider->GetComponentID()) == componentId)
-            return collider;
-    }
-    return fallback;
+    return PhysicsWorld::Instance().ResolveColliderForSubShape(body, body.GetID().GetIndexAndSequenceNumber(),
+                                                               subShapeId.GetValue());
 }
 
 bool IsTriggerContact(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &manifold)

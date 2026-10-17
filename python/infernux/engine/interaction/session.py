@@ -100,7 +100,7 @@ class EditorInteractionCore:
         self.view_commands = ViewCommandService()
         self.tree_views = TreeViewStateService(self.view_commands)
         self.preferences = PreferencesCommandService()
-        self.saving = EditorSaveService(self.documents)
+        self.saving = EditorSaveService(self.documents, self.panels)
         self.close_coordinator = CloseCoordinator(self.documents)
         self.action_journal = EditorActionJournal()
         self.history = HistoryModel(self.action_journal)

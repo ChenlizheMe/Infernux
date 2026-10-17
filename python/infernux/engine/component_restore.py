@@ -2,7 +2,6 @@
 Prepared Python component graph transactions for Scene and GameObject documents.
 """
 
-import json
 import os
 import copy
 from dataclasses import dataclass
@@ -1226,8 +1225,9 @@ def instantiate_prepared_game_object_documents(
                 prepared.discard()
         try:
             scene.take_pending_py_components()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            from infernux.debug import Debug
+            Debug.log_suppressed("component_restore.clear_pending", exc)
         for instance in reversed(created):
             scene.destroy_game_object(instance)
         if created:

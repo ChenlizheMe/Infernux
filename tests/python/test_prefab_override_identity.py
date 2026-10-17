@@ -15,7 +15,8 @@ def test_authored_list_fields_are_not_mistaken_for_prefab_child_identity():
     local[1]["value"] = 21
     remote[0]["value"] = 11
     assert _three_way_merge_prefab(base, local, remote) == [
-        {"local_id": 1, "value": 11}, {"local_id": 1, "value": 21},
+        {"local_id": 1, "value": 11},
+        {"local_id": 1, "value": 21},
     ]
 
 

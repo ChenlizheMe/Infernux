@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <imgui.h>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -130,6 +131,14 @@ class EditorPanel : public InxGUIRenderable
 
         bool requestedOpen = m_isOpen;
         bool visible = ImGui::Begin(label.c_str(), &requestedOpen, GetWindowFlags());
+        struct WindowScope
+        {
+            ~WindowScope()
+            {
+                ImGui::End();
+            }
+        };
+        std::optional<WindowScope> windowScope{std::in_place};
         const bool closeRequested = m_isOpen && !requestedOpen;
         m_contentVisiblePreviousFrame = m_contentVisible;
         const bool contentPresented = m_isOpen && ctx->IsCurrentWindowContentPresented();
@@ -163,6 +172,14 @@ class EditorPanel : public InxGUIRenderable
         m_contentVisible = contentPresented;
 
         if (visible) {
+            struct InteractionBridgeScope
+            {
+                InxGUIContext *context;
+                ~InteractionBridgeScope()
+                {
+                    context->ClearTransientInteractionBridge();
+                }
+            } bridgeScope{ctx};
             ctx->SetTransientInteractionBridge(
                 [this](const std::string &token, const std::string &kind, int priority, std::function<bool()> cancel) {
                     BeginTransientInteraction(token, kind, priority, std::move(cancel));
@@ -170,10 +187,9 @@ class EditorPanel : public InxGUIRenderable
                 [this](const std::string &token) { EndTransientInteraction(token); });
             VisiblePreRender(ctx);
             OnRenderContent(ctx);
-            ctx->ClearTransientInteractionBridge();
         }
 
-        ImGui::End();
+        windowScope.reset();
 
         if (closeRequested) {
             if (onRequestClose)

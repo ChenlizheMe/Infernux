@@ -1,5 +1,6 @@
 """Every executed gateway operation must survive in its owning saved attempt."""
 import json
+import inspect
 from threading import Event
 import time
 
@@ -16,7 +17,7 @@ class GatewayRecorder:
 
     def tool(self, *, name):
         def register(fn):
-            self.tools[name] = fn
+            self.tools[name] = fn.__wrapped__ if inspect.iscoroutinefunction(fn) else fn
             return fn
         return register
 

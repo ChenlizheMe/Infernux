@@ -1,4 +1,5 @@
 """The rendering lesson edits one asset shared by scene renderer slots."""
+
 from __future__ import annotations
 
 import json

@@ -40,7 +40,6 @@ from infernux.graph.registry import (
     PortDirection,
     PortKind,
 )
-from infernux.graph.expression_ir import ExpressionCompiler
 from infernux.graph.parameters import (
     GraphParameterAuthoringPolicy,
     GraphParameterCollection,
@@ -59,7 +58,6 @@ from infernux.graph.types import (
 from infernux.lib import InxGUIContext
 from infernux.particle.asset import (
     EmitterSettings,
-    EmitterShape,
     EmitterShapeKind,
     MeshEmissionMode,
     SdfEmissionMode,
@@ -79,11 +77,8 @@ from infernux.particle.artifact import (
     PreparedParticleGraphArtifact,
 )
 from infernux.particle.data_interface import (
-    SdfFilter,
     SdfVolume,
     VectorField,
-    VectorFieldBoundary,
-    VectorFieldFilter,
     particle_data_interface_from_dict,
 )
 from infernux.particle.nodes import (
@@ -93,10 +88,7 @@ from infernux.particle.nodes import (
 )
 
 from .asset_save_dialog import AssetSaveAsDialog
-from .graph_document_authoring import (
-    ParticleEmitterGraphAuthoringModel,
-    particle_stage_definition_filter,
-)
+from .graph_document_authoring import ParticleEmitterGraphAuthoringModel
 from .graph_details import GraphDetailContributor
 from .floating_workspace_panel import (
     render_compact_tab_bar,
@@ -1246,184 +1238,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     def on_graph_diff_applied(self, _diff: GraphActionDiff) -> None:
         self._graph_selection.refresh()
 
-    def authoring_document_state(self) -> dict:
-        """Return identity/dirty state without serializing the live graph model."""
-        return {
-            "file_path": str(self._file_path),
-            "dirty": self._document_is_dirty(),
-        }
-
-    def authoring_snapshot(self, *, include_registered_types: bool = False) -> dict:
-        """Return the currently open editor document, not a disk reparse."""
-        self._sync_model_to_asset()
-        nodes = []
-        links = []
-        if self._model is not None:
-            for node in self._model.nodes:
-                nodes.append(
-                    {
-                        "uid": str(node.uid),
-                        "type_id": str(node.type_id),
-                        "stage": str(self._model.stage_for_uid(node.uid) or ""),
-                        "position": [float(node.pos_x), float(node.pos_y)],
-                        "properties": copy.deepcopy(node.data),
-                    }
-                )
-            for link in self._model.links:
-                links.append(
-                    {
-                        "uid": str(link.uid),
-                        "source_node": str(link.source_node),
-                        "source_port": str(link.source_pin),
-                        "target_node": str(link.target_node),
-                        "target_port": str(link.target_pin),
-                    }
-                )
-        return {
-            "panel_id": self.window_id,
-            "file_path": str(self._file_path),
-            "dirty": self._document_is_dirty(),
-            "emitter_index": int(self._emitter_index),
-            "selected_node_uid": str(self._selected_node_uid),
-            "emitters": [
-                {
-                    "stable_id": emitter.stable_id,
-                    "name": emitter.name,
-                    "settings": emitter.settings.to_dict(),
-                    "data_interfaces": [
-                        interface.to_dict() for interface in emitter.data_interfaces
-                    ],
-                }
-                for emitter in self._asset.emitters
-            ],
-            "parameters": [value.to_dict() for value in self._asset.parameters],
-            "event_types": [value.to_dict() for value in self._asset.event_types],
-            "attribute_entries": (
-                [
-                    {"name": name, "stable_id": stable_id}
-                    for name, stable_id in self._model.attribute_entries()
-                ]
-                if self._model is not None
-                else []
-            ),
-            "registered_types": (
-                [
-                    self._authoring_definition_snapshot(
-                        definition.type_id, canvas_definition=definition
-                    )
-                    for definition in (
-                        self._model.registered_types()
-                        if self._model is not None
-                        else ()
-                    )
-                ]
-                if include_registered_types
-                else []
-            ),
-            "nodes": nodes,
-            "links": links,
-        }
-
-    def authoring_type_catalog(
-        self,
-        *,
-        query: str = "",
-        offset: int = 0,
-        limit: int = 100,
-    ) -> dict:
-        """Return a searchable page of node definitions for the selected emitter."""
-        needle = str(query).strip().casefold()
-        definitions = (
-            self._model.registered_types() if self._model is not None else ()
-        )
-        matches = [
-            definition
-            for definition in definitions
-            if definition.type_id not in self._HIDDEN_INTERNAL_RESOURCE_NODE_TYPES
-            and (
-                not needle
-                or needle in str(definition.type_id).casefold()
-                or needle in str(definition.label).casefold()
-            )
-        ]
-        start = max(0, int(offset))
-        page_size = min(200, max(1, int(limit)))
-        end = min(len(matches), start + page_size)
-        return {
-            "query": str(query),
-            "offset": start,
-            "limit": page_size,
-            "total": len(matches),
-            "has_more": end < len(matches),
-            "types": [
-                self._authoring_definition_snapshot(
-                    definition.type_id, canvas_definition=definition
-                )
-                for definition in matches[start:end]
-            ],
-        }
-
-    def _authoring_definition_snapshot(
-        self, type_id: str, *, canvas_definition=None
-    ) -> dict:
-        definition = self._definition_for_type(type_id)
-        if definition is None:
-            raise RuntimeError(
-                f"Particle Graph node type is not registered: {type_id!r}"
-            )
-        canvas_fields = {
-            field.id: field
-            for field in getattr(canvas_definition, "inline_fields", ())
-        }
-
-        def property_choices(field):
-            canvas_field = canvas_fields.get(field.id)
-            values = tuple(getattr(canvas_field, "enum_values", ()))
-            if not values:
-                return field.choices
-            labels = tuple(getattr(canvas_field, "enum_labels", ())) or values
-            return tuple(zip(labels, values))
-
-        return {
-            "type_id": definition.type_id,
-            "display_name": (
-                str(canvas_definition.label)
-                if canvas_definition is not None
-                else definition.display_name
-            ),
-            "ports": [
-                {
-                    "id": port.id,
-                    "display_name": port.display_name,
-                    "direction": port.direction.value,
-                    "kind": port.kind.value,
-                    "type": (
-                        port.value_type.to_dict()
-                        if port.value_type is not None
-                        else None
-                    ),
-                    "type_variable": port.type_variable,
-                    "type_property": port.type_property,
-                    "dimension_policy": port.dimension_policy.value,
-                    "required": bool(port.required),
-                    "default": copy.deepcopy(port.default),
-                }
-                for port in definition.ports
-            ],
-            "properties": [
-                {
-                    "id": field.id,
-                    "type": field.value_type.to_dict(),
-                    "default": copy.deepcopy(field.default),
-                    "choices": [
-                        {"label": label, "value": copy.deepcopy(value)}
-                        for label, value in property_choices(field)
-                    ],
-                }
-                for field in definition.properties
-            ],
-        }
-
     def _on_node_asset_reference(
         self, node_uid: str, field_id: str, asset_type: str, reference
     ) -> None:
@@ -1547,191 +1361,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             self._select_stage(stage)
         return copy.deepcopy(reference)
 
-    def add_authoring_node(
-        self, stage: str, type_id: str, x: float = 0.0, y: float = 0.0
-    ) -> dict:
-        """Create a node through the same model and Undo path as the canvas."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        stage = str(stage)
-        type_id = str(type_id)
-        if type_id in self._HIDDEN_INTERNAL_RESOURCE_NODE_TYPES:
-            raise ValueError(
-                "Vector Field and SDF authoring are not available in this release"
-            )
-        valid_stages = set(_STAGES) | {
-            f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
-        }
-        if stage not in valid_stages:
-            raise ValueError(f"Unknown Particle Graph stage: {stage!r}")
-        if not math.isfinite(float(x)) or not math.isfinite(float(y)):
-            raise ValueError("Particle Graph node position must be finite")
-        definition = self._definition_for_type(type_id)
-        collision_root = type_id in {
-            "particle.root.collision_enter",
-            "particle.root.collision_stay",
-            "particle.root.collision_exit",
-        }
-        if definition is None or (
-            type_id.startswith("particle.root.") and not collision_root
-        ):
-            raise ValueError(f"Particle Graph node type cannot be created: {type_id!r}")
-        if collision_root and type_id != f"particle.root.{stage}":
-            raise ValueError(
-                "Collision lifecycle roots must be created in their matching lifecycle stage"
-            )
-        domain = "particle.event" if stage.startswith("event.") else f"particle.{stage}"
-        if not particle_stage_definition_filter(domain)(definition):
-            raise ValueError(
-                f"Particle Graph node type {type_id!r} is not valid in {stage!r}"
-            )
-
-        self._stage = stage
-        self._model.set_authoring_stage(stage)
-        self._model.prepare_node_creation(stage)
-        node = self._on_node_add(type_id, float(x), float(y))
-        if node is None or self._model.stage_for_uid(node.uid) != stage:
-            raise RuntimeError(f"Particle Graph could not create {type_id!r} in {stage!r}")
-        self._select_canvas_node(node.uid)
-        result = {
-            "uid": str(node.uid),
-            "type_id": str(node.type_id),
-            "stage": stage,
-            "properties": copy.deepcopy(node.data),
-        }
-        attribute_id = self._model.attribute_id_for_cache_node(node.uid)
-        if attribute_id:
-            result["attribute_id"] = attribute_id
-        return result
-
-    def set_node_property(self, node_uid: str, property_name: str, value) -> dict:
-        """Set a typed field currently editable in the node Inspector."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        node = self._model.find_node(str(node_uid))
-        if node is None:
-            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        definition = self._definition_for_node(node)
-        if definition is None:
-            raise RuntimeError(
-                f"Particle Graph node type is not registered: {node.type_id!r}"
-        )
-        key = str(property_name)
-        field = next((item for item in definition.properties if item.id == key), None)
-        field_value_type = field.value_type if field is not None else None
-        if field is None:
-            port = next(
-                (
-                    item
-                    for item in definition.ports
-                    if item.id == key
-                    and item.direction is PortDirection.INPUT
-                    and item.kind is PortKind.VALUE
-                    and not item.required
-                    and (item.value_type is not None or item.type_property)
-                ),
-                None,
-            )
-            if port is None:
-                raise KeyError(
-                    f"Particle Graph node {node_uid!r} has no editable property {key!r}"
-                )
-            if any(
-                link.target_node == node.uid and link.target_pin == key
-                for link in self._model.links
-            ):
-                raise ValueError(
-                    f"Particle Graph node {node_uid!r}.{key} is driven by a value link"
-                )
-            field = port
-            field_value_type = self._model._effective_port_type(node, port)
-        if field_value_type is None:
-            raise ValueError(
-                f"Particle Graph node {node_uid!r}.{key} has no resolved value type"
-            )
-        if field_value_type.value_type in {
-            ValueType.ASSET_REF,
-            ValueType.TEXTURE2D,
-            ValueType.MESH,
-        }:
-            raise ValueError(
-                "Asset-valued inputs must use particle_graph_set_node_asset"
-            )
-        if key == "attribute":
-            entries = self._model.attribute_entries()
-            valid_attributes = {attribute_id for _label, attribute_id in entries}
-            if str(value) not in valid_attributes:
-                raise ValueError(
-                    f"Particle Graph node {node_uid!r} references unknown attribute "
-                    f"{value!r}"
-                )
-        if key == "event":
-            valid_events = {event_id for _label, event_id in self._model.event_entries()}
-            if str(value) not in valid_events:
-                raise ValueError(
-                    f"Particle Graph node {node_uid!r} references unknown event {value!r}"
-                )
-        if (
-            node.type_id == "particle.output.ribbon"
-            and key == "sort"
-            and str(value) != "none"
-        ):
-            raise ValueError(
-                "Ribbon Output uses stable strip topology ordering and requires sort='none'"
-            )
-        if key == "interface":
-            expected = self._data_interface_type_for_node(node.type_id)
-            if expected is not None and str(value):
-                interface = next(
-                    (
-                        item
-                        for item in self._selected_emitter().data_interfaces
-                        if item.stable_id == str(value)
-                    ),
-                    None,
-                )
-                if not isinstance(interface, expected):
-                    raise ValueError(
-                        f"Particle Graph node {node_uid!r} requires a {expected.__name__} Data Interface"
-                    )
-        error = ExpressionCompiler._literal_error(field_value_type, value)
-        if error:
-            raise ValueError(
-                f"Particle Graph node {node_uid!r}.{key} {error}"
-            )
-        previous = copy.deepcopy(node.data.get(key, field.default))
-        next_value = copy.deepcopy(value)
-        self._on_node_data_changed(node.uid, key, previous, next_value)
-        self._select_canvas_node(node.uid)
-        stage = self._model.stage_for_uid(node.uid)
-        if stage:
-            self._select_stage(stage)
-        return {
-            "node_uid": str(node.uid),
-            "property_name": key,
-            "value": copy.deepcopy(node.data.get(key)),
-            "changed": previous != next_value,
-        }
-
-    def remove_authoring_node(self, node_uid: str) -> dict:
-        """Delete one user node through the same model and Undo path as the canvas."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        node = self._model.find_node(str(node_uid))
-        if node is None:
-            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        stage = str(self._model.stage_for_uid(node.uid) or "")
-        type_id = str(node.type_id)
-        self._on_nodes_deleted((node.uid,))
-        if self._model.find_node(node.uid) is not None:
-            raise ValueError(f"Particle Graph node cannot be deleted: {node_uid!r}")
-        return {
-            "node_uid": str(node_uid),
-            "type_id": type_id,
-            "stage": stage,
-            "changed": True,
-        }
-
     @staticmethod
     def _data_interface_type_for_node(type_id: str):
         if type_id in {
@@ -1765,32 +1394,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             "Vector Field and SDF authoring are not available in this release"
         )
 
-    def add_authoring_data_interface(
-        self, emitter_id: str, kind: str, name: str = ""
-    ) -> dict:
-        """Add a typed Data Interface through the live document and Undo stack."""
-        self._sync_model_to_asset()
-        index = self._emitter_index_for_id(emitter_id)
-        interface = self._new_data_interface(kind, name)
-        ref = GraphElementRef(
-            GraphElementKind.DATA_INTERFACE,
-            self._particle_element_id(emitter_id, interface.stable_id),
-        )
-        if not self._execute_graph_mutations(
-            "Add Particle Graph Data Interface",
-            (
-                GraphMutation(
-                    GraphMutationKind.INSERT,
-                    ref,
-                    after=interface.to_dict(),
-                    after_index=len(self._asset.emitters[index].data_interfaces),
-                ),
-            ),
-            selection_after=(ref,),
-        ):
-            raise RuntimeError("Particle Data Interface could not be created")
-        return interface.to_dict()
-
     @staticmethod
     def _data_interface_reference(interface):
         return interface.texture
@@ -1802,320 +1405,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if isinstance(interface, VectorField):
             return "Texture.VectorField"
         raise TypeError("unsupported Particle Data Interface")
-
-    def _replace_authoring_data_interface(
-        self,
-        emitter_index: int,
-        interface_id: str,
-        replacement,
-        description: str,
-    ) -> bool:
-        emitter = self._asset.emitters[emitter_index]
-        interface_index = next(
-            (
-                index
-                for index, interface in enumerate(emitter.data_interfaces)
-                if interface.stable_id == str(interface_id)
-            ),
-            -1,
-        )
-        if interface_index < 0:
-            raise KeyError(f"Particle Data Interface not found: {interface_id!r}")
-        current = emitter.data_interfaces[interface_index]
-        if replacement == current:
-            return False
-        ref = GraphElementRef(
-            GraphElementKind.DATA_INTERFACE,
-            self._particle_element_id(emitter.stable_id, interface_id),
-        )
-        return self._execute_graph_mutations(
-            description,
-            (
-                GraphMutation(
-                    GraphMutationKind.UPDATE,
-                    ref,
-                    before=current.to_dict(),
-                    after=replacement.to_dict(),
-                    before_index=interface_index,
-                    after_index=interface_index,
-                ),
-            ),
-            selection_after=(ref,),
-        )
-
-    def set_authoring_data_interface_asset(
-        self, emitter_id: str, interface_id: str, file_path: str
-    ) -> dict:
-        """Set an imported source asset on a typed Data Interface."""
-        self._sync_model_to_asset()
-        emitter_index = self._emitter_index_for_id(emitter_id)
-        emitter = self._asset.emitters[emitter_index]
-        interface = next(
-            (
-                item
-                for item in emitter.data_interfaces
-                if item.stable_id == str(interface_id)
-            ),
-            None,
-        )
-        if interface is None:
-            raise KeyError(f"Particle Data Interface not found: {interface_id!r}")
-        asset_type = self._data_interface_asset_contract(interface)
-        reference = _particle_asset_reference(asset_type, file_path)
-        replacement = replace(
-            interface,
-            texture=reference,
-        )
-        changed = self._replace_authoring_data_interface(
-            emitter_index,
-            interface_id,
-            replacement,
-            "Set Particle Graph Data Interface asset",
-        )
-        return {**replacement.to_dict(), "changed": changed}
-
-    def patch_authoring_data_interface(
-        self, emitter_id: str, interface_id: str, values: dict
-    ) -> dict:
-        """Patch non-identity Data Interface fields through the strict decoder."""
-        if type(values) is not dict or not values:
-            raise ValueError("Particle Data Interface patch must be a non-empty object")
-        self._sync_model_to_asset()
-        emitter_index = self._emitter_index_for_id(emitter_id)
-        emitter = self._asset.emitters[emitter_index]
-        interface = next(
-            (
-                item
-                for item in emitter.data_interfaces
-                if item.stable_id == str(interface_id)
-            ),
-            None,
-        )
-        if interface is None:
-            raise KeyError(f"Particle Data Interface not found: {interface_id!r}")
-        payload = interface.to_dict()
-        immutable = {"kind", "stable_id", "texture", "mesh", "cache"}
-        allowed = set(payload) - immutable
-        unknown = sorted(set(values) - allowed)
-        if unknown:
-            raise ValueError(f"unsupported Particle Data Interface fields: {unknown}")
-        for key, value in values.items():
-            payload[key] = copy.deepcopy(value)
-        replacement = particle_data_interface_from_dict(payload)
-        changed = self._replace_authoring_data_interface(
-            emitter_index,
-            interface_id,
-            replacement,
-            "Edit Particle Graph Data Interface",
-        )
-        return {**replacement.to_dict(), "changed": changed}
-
-    def remove_authoring_data_interface(
-        self, emitter_id: str, interface_id: str
-    ) -> dict:
-        """Remove an unreferenced Data Interface from one emitter."""
-        self._sync_model_to_asset()
-        emitter_index = self._emitter_index_for_id(emitter_id)
-        emitter = self._asset.emitters[emitter_index]
-        interface = next(
-            (
-                item
-                for item in emitter.data_interfaces
-                if item.stable_id == str(interface_id)
-            ),
-            None,
-        )
-        if interface is None:
-            raise KeyError(f"Particle Data Interface not found: {interface_id!r}")
-        referenced_by = [
-            node.uid
-            for stage in _STAGES
-            for document in (getattr(emitter, stage),)
-            if document is not None
-            for node in document.nodes
-            if node.properties.get("interface") == interface.stable_id
-        ]
-        if (
-            emitter.settings.shape.kind is EmitterShapeKind.SDF
-            and emitter.settings.shape.sdf_interface == interface.stable_id
-        ):
-            referenced_by.append("Emitter Settings / Emission Shape")
-        if referenced_by:
-            raise ValueError(
-                f"Particle Data Interface {interface.stable_id!r} is still referenced by nodes {referenced_by}"
-            )
-        ref = GraphElementRef(
-            GraphElementKind.DATA_INTERFACE,
-            self._particle_element_id(emitter.stable_id, interface.stable_id),
-        )
-        if not self._execute_graph_mutations(
-            "Remove Particle Graph Data Interface",
-            (
-                GraphMutation(
-                    GraphMutationKind.REMOVE,
-                    ref,
-                    before=interface.to_dict(),
-                    before_index=emitter.data_interfaces.index(interface),
-                ),
-            ),
-            selection_after=(),
-        ):
-            raise RuntimeError("Particle Data Interface could not be removed")
-        return {**interface.to_dict(), "changed": True}
-
-    def connect_exec(
-        self,
-        source_node_uid: str,
-        target_node_uid: str,
-        source_port: str = "out",
-        target_port: str = "in",
-    ) -> dict:
-        """Connect two Exec endpoints through the strict graph model."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        source_uid = str(source_node_uid)
-        target_uid = str(target_node_uid)
-        source_port = str(source_port)
-        target_port = str(target_port)
-        source = self._model.find_node(source_uid)
-        target = self._model.find_node(target_uid)
-        if source is None or target is None:
-            raise KeyError(
-                f"Particle Graph Exec endpoint not found: {source_uid!r} -> {target_uid!r}"
-            )
-        for link in self._model.links:
-            if (
-                link.source_node == source_uid
-                and link.source_pin == source_port
-                and link.target_node == target_uid
-                and link.target_pin == target_port
-            ):
-                return {"link_uid": str(link.uid), "changed": False}
-        validation = self._model.validate_link(
-            source_uid, source_port, target_uid, target_port
-        )
-        if not validation:
-            raise ValueError(
-                f"Particle Graph Exec connection is invalid ({validation.code}): "
-                f"{validation.message}"
-            )
-        created = self._on_link_created(source_uid, source_port, target_uid, target_port)
-        if created is None:
-            raise RuntimeError(
-                f"Particle Graph could not connect {source_uid!r} to {target_uid!r}"
-            )
-        self._select_canvas_node(created.target_node)
-        stage = self._model.stage_for_uid(created.target_node)
-        if stage:
-            self._select_stage(stage)
-        return {
-            "link_uid": str(created.uid),
-            "source_port": source_port,
-            "target_port": target_port,
-            "changed": True,
-        }
-
-    def disconnect_link(self, link_uid: str) -> dict:
-        """Disconnect one Exec or value link through the strict graph model."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        link_uid = str(link_uid)
-        link = next(
-            (item for item in self._model.links if str(item.uid) == link_uid),
-            None,
-        )
-        if link is None:
-            raise KeyError(f"Particle Graph link not found: {link_uid!r}")
-        self._on_link_deleted(link_uid)
-        if self._model.find_link(link_uid) is not None:
-            raise RuntimeError(
-                f"Particle Graph could not disconnect link {link_uid!r}"
-            )
-        return {
-            "link_uid": link_uid,
-            "source_node_uid": str(link.source_node),
-            "source_port": str(link.source_pin),
-            "target_node_uid": str(link.target_node),
-            "target_port": str(link.target_pin),
-            "changed": True,
-        }
-
-    def connect_value(
-        self,
-        source_node_uid: str,
-        source_port: str,
-        target_node_uid: str,
-        target_port: str,
-    ) -> dict:
-        """Connect one typed value through the same replacement path as the canvas."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        endpoints = (str(source_node_uid), str(target_node_uid))
-        if any(self._model.find_node(uid) is None for uid in endpoints):
-            raise KeyError(f"Particle Graph value endpoint not found: {endpoints!r}")
-        source_port = str(source_port)
-        target_port = str(target_port)
-        existing = next(
-            (
-                link
-                for link in self._model.links
-                if link.target_node == endpoints[1]
-                and link.target_pin == target_port
-            ),
-            None,
-        )
-        if (
-            existing is not None
-            and existing.source_node == endpoints[0]
-            and existing.source_pin == source_port
-        ):
-            return {"link_uid": str(existing.uid), "changed": False}
-        validation = self._model.validate_link(
-            endpoints[0],
-            source_port,
-            endpoints[1],
-            target_port,
-            ignore_link_uid=existing.uid if existing is not None else "",
-        )
-        if not validation:
-            raise ValueError(
-                f"Particle Graph value connection is invalid ({validation.code}): "
-                f"{validation.message}"
-            )
-        if existing is not None:
-            created = self._on_link_replaced(
-                existing.uid,
-                endpoints[0],
-                source_port,
-                endpoints[1],
-                target_port,
-            )
-        else:
-            created = self._on_link_created(
-                endpoints[0], source_port, endpoints[1], target_port
-            )
-        if created is None:
-            raise RuntimeError("Particle Graph could not connect the value ports")
-        self._select_canvas_node(created.target_node)
-        stage = self._model.stage_for_uid(created.target_node)
-        if stage:
-            self._select_stage(stage)
-        return {"link_uid": str(created.uid), "changed": True}
-
-    def select_authoring_emitter(self, emitter_id: str) -> dict:
-        emitter_id = str(emitter_id)
-        index = next(
-            (
-                index
-                for index, emitter in enumerate(self._asset.emitters)
-                if emitter.stable_id == emitter_id
-            ),
-            -1,
-        )
-        if index < 0:
-            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
-        self._select_emitter(index)
-        return {"stable_id": emitter_id, "index": index}
 
     def add_authoring_emitter(self, name: str) -> dict:
         """Add an emitter through one undoable live-document transaction."""
@@ -2487,80 +1776,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             raise ValueError("event field stable IDs must be unique")
         return tuple(decoded_fields)
 
-    def set_authoring_emitter_settings(
-        self, emitter_id: str, settings: dict
-    ) -> dict:
-        """Replace the complete current EmitterSettings schema atomically."""
-        emitter_id = str(emitter_id)
-        index = next(
-            (
-                index
-                for index, emitter in enumerate(self._asset.emitters)
-                if emitter.stable_id == emitter_id
-            ),
-            -1,
-        )
-        if index < 0:
-            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
-        decoded = EmitterSettings.from_dict(settings, "$.settings")
-        emitter = self._asset.emitters[index]
-        if (
-            decoded.shape.kind is EmitterShapeKind.SDF
-            and emitter.settings.shape.kind is not EmitterShapeKind.SDF
-        ):
-            raise ValueError("SDF authoring is not available in this release")
-        if decoded == emitter.settings:
-            return {
-                "stable_id": emitter_id,
-                "settings": emitter.settings.to_dict(),
-                "changed": False,
-            }
-        selected = GraphElementRef(GraphElementKind.EMITTER, emitter_id)
-        if not self._execute_graph_mutations(
-            "Edit emitter settings",
-            (
-                GraphMutation(
-                    GraphMutationKind.UPDATE,
-                    selected,
-                    before={"settings": emitter.settings.to_dict()},
-                    after={"settings": decoded.to_dict()},
-                ),
-            ),
-            merge_key=f"particle_emitter_settings:{emitter_id}",
-            selection_after=(selected,),
-        ):
-            raise RuntimeError("Particle emitter settings could not be updated")
-        return {
-            "stable_id": emitter_id,
-            "settings": decoded.to_dict(),
-            "changed": True,
-        }
-
-    def patch_authoring_emitter_settings(
-        self, emitter_id: str, values: dict
-    ) -> dict:
-        """Patch current emitter settings through the same strict decoder."""
-        if type(values) is not dict or not values:
-            raise ValueError("emitter settings patch must be a non-empty object")
-        emitter_id = str(emitter_id)
-        emitter = next(
-            (
-                value
-                for value in self._asset.emitters
-                if value.stable_id == emitter_id
-            ),
-            None,
-        )
-        if emitter is None:
-            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
-        settings = emitter.settings.to_dict()
-        unknown = sorted(set(values) - set(settings))
-        if unknown:
-            raise ValueError(f"unknown emitter settings: {unknown}")
-        for key, value in values.items():
-            settings[key] = copy.deepcopy(value)
-        return self.set_authoring_emitter_settings(emitter_id, settings)
-
     def add_event_type(
         self,
         name: str,
@@ -2838,64 +2053,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             raise RuntimeError("Particle Graph event type could not be removed")
         return event_type.to_dict()
 
-    def set_rendering_output(self, node_uid: str) -> dict:
-        """Route the Rendering root Exec output through the authoring model."""
-        if self._model is None:
-            raise RuntimeError("Particle Graph editor has no active authoring model")
-        node = self._model.find_node(str(node_uid))
-        if node is None:
-            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        if (
-            self._model.stage_for_uid(node.uid) != "rendering"
-            or not str(node.type_id).startswith("particle.output.")
-        ):
-            raise ValueError(
-                f"Particle Graph node {node_uid!r} is not a Rendering output"
-            )
-
-        root_uid = "rendering::root.rendering"
-        output_links = [
-            link
-            for link in self._model.links
-            if link.source_node == root_uid and link.source_pin == "out"
-        ]
-        if (
-            len(output_links) == 1
-            and output_links[0].target_node == node.uid
-            and output_links[0].target_pin == "in"
-        ):
-            return {
-                "node_uid": node.uid,
-                "link_uid": output_links[0].uid,
-                "changed": False,
-            }
-
-        before = self._model.capture_authoring_state()
-        for link in output_links:
-            self._model.remove_link(link.uid)
-        created = self._model.add_link(root_uid, "out", node.uid, "in")
-        if created is None:
-            self._model.apply_authoring_mutations(
-                NodeGraph.invert_authoring_mutations(
-                    NodeGraph.diff_authoring_states(
-                        before,
-                        self._model.capture_authoring_state(),
-                    )
-                )
-            )
-            raise RuntimeError(
-                f"Particle Graph could not route Rendering to output {node_uid!r}"
-            )
-        self._select_stage("rendering")
-        selected = self._graph_element_from_view(GraphElementKind.NODE, node.uid)
-        if not self._commit_node_graph_change(
-            "Set Particle Graph rendering output",
-            before,
-            selection_after=(selected,),
-        ):
-            raise RuntimeError("Particle Graph Rendering output could not be changed")
-        return {"node_uid": node.uid, "link_uid": created.uid, "changed": True}
-
     def reload_from_disk(self) -> bool:
         """Reload the current document after it has been saved cleanly."""
         document = self._particle_document()
@@ -2908,40 +2065,8 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             self._persist_panel_state()
         return reloaded
 
-    def discard_unsaved_changes(self) -> dict:
-        """Explicitly discard the live document through the Editor contract."""
-        from infernux.engine.interaction import (
-            DocumentActionStatus,
-            DocumentRegistry,
-        )
-
-        previous_path = self._file_path
-        document = self._particle_document()
-        was_dirty = bool(document and document.is_dirty)
-        if was_dirty:
-            result = DocumentRegistry.instance().request_discard(document.document_id)
-            if result.status not in {
-                DocumentActionStatus.APPLIED,
-                DocumentActionStatus.NO_OP,
-            }:
-                raise RuntimeError(
-                    result.message or "Particle Graph could not discard unsaved changes"
-                )
-        document = self._particle_document()
-        return {
-            "discarded": bool(was_dirty),
-            "previous_file_path": previous_path,
-            "file_path": self._file_path,
-            "dirty": bool(document and document.is_dirty),
-        }
-
     def _selected_emitter(self) -> ParticleEmitterAsset:
         return self._asset.emitters[self._emitter_index]
-
-    def _definition_for_type(self, type_id: str):
-        if self._model is not None:
-            return self._model.definition_for_type(type_id)
-        return COMMON_NODE_REGISTRY.get(type_id)
 
     def _definition_for_node(self, node):
         if self._model is not None:
@@ -3892,10 +3017,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
             ping_path = str(reference.path_hint or "").strip()
             if ping_path:
-                try:
-                    ping_path = resolved_path(ping_path) or ping_path
-                except Exception:
-                    pass
+                ping_path = _resolve_project_asset_path(ping_path)
             render_asset_reference_field(
                 ctx,
                 f"particle_parameter_default_{kind.value}",
@@ -4276,10 +3398,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
             _mesh_ping = str(mesh.path_hint or "").strip()
             if _mesh_ping:
-                try:
-                    _mesh_ping = resolved_path(_mesh_ping) or _mesh_ping
-                except Exception:
-                    pass
+                _mesh_ping = _resolve_project_asset_path(_mesh_ping)
             render_asset_reference_field(
                 ctx,
                 "particle_emitter_shape_mesh",
@@ -4441,234 +3560,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         ctx.end_popup()
         return mask & 0xFFFFFFFF
 
-    def _render_data_interfaces(self, ctx: InxGUIContext) -> None:
-        ctx.separator()
-        ctx.label(t("particle_graph_editor.data_interfaces"))
-        emitter = self._selected_emitter()
-        interfaces = list(emitter.data_interfaces)
-        changed = False
-        remove_index = -1
-
-        for index, interface in enumerate(interfaces):
-            ctx.separator()
-            kind_label = t(f"particle_graph_editor.interface_{interface.kind}")
-            ctx.label(f"{kind_label} {index + 1}")
-            replacement = interface
-
-            name = ctx.text_input(
-                f"{t('particle_graph_editor.name')}##particle_interface_name_{interface.stable_id}",
-                interface.name,
-                128,
-            ).strip()
-            if name and name != replacement.name:
-                replacement = replace(replacement, name=name)
-
-            reference = self._data_interface_reference(replacement)
-            path_hint = str(reference.path_hint or "")
-            selected_references: list[AssetReference] = []
-            asset_type = self._data_interface_asset_contract(replacement)
-            descriptor = asset_type_registry.require(asset_type)
-
-            def _select_asset(value):
-                try:
-                    selected_references.append(
-                        _particle_asset_reference(asset_type, value)
-                    )
-                except (KeyError, TypeError, ValueError) as exc:
-                    Debug.log_error(
-                        f"Particle Data Interface assignment rejected: {exc}"
-                    )
-
-            _iface_ping = str(path_hint or "").strip()
-            if _iface_ping:
-                try:
-                    _iface_ping = resolved_path(_iface_ping) or _iface_ping
-                except Exception:
-                    pass
-            render_asset_reference_field(
-                ctx,
-                f"particle_interface_asset_{interface.stable_id}",
-                os.path.basename(path_hint) if path_hint else t("igui.none"),
-                descriptor.display_name,
-                accept_drag_type=descriptor.drag_types,
-                on_assign=_select_asset,
-                on_clear=lambda: selected_references.append(AssetReference()),
-                ping_path=_iface_ping or None,
-                has_value=bool(reference.guid or reference.path_hint),
-                asset_type=descriptor.type_id,
-                reference_value=_particle_reference_value(asset_type, reference),
-                semantic_id=f"particle_graph.interface.{interface.stable_id}.asset",
-            )
-            if selected_references:
-                selected = selected_references[-1]
-                replacement = replace(
-                    replacement,
-                    texture=selected,
-                )
-
-            spaces = [CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD]
-            space_index = ctx.combo(
-                f"{t('particle_graph_editor.interface_space')}##particle_interface_space_{interface.stable_id}",
-                spaces.index(replacement.space),
-                [t(f"particle_graph_editor.shape_space_{item.value}") for item in spaces],
-                -1,
-            )
-            replacement = replace(
-                replacement,
-                space=spaces[max(0, min(space_index, len(spaces) - 1))],
-            )
-
-            matrix_name = "field_to_space"
-            matrix = list(getattr(replacement, matrix_name))
-            for row in range(4):
-                values = []
-                for column in range(4):
-                    offset = row * 4 + column
-                    values.append(
-                        float(
-                            ctx.drag_float(
-                                f"{t('particle_graph_editor.interface_transform')} {row + 1}.{column + 1}"
-                                f"##particle_interface_matrix_{interface.stable_id}_{offset}",
-                                matrix[offset],
-                                0.02,
-                                -1.0e7,
-                                1.0e7,
-                            )
-                        )
-                    )
-                matrix[row * 4 : row * 4 + 4] = values
-            replacement = replace(replacement, **{matrix_name: tuple(matrix)})
-
-            if isinstance(replacement, SdfVolume):
-                distance_scale = max(
-                    1.0e-6,
-                    float(
-                        ctx.drag_float(
-                            f"{t('particle_graph_editor.distance_scale')}##particle_interface_distance_{interface.stable_id}",
-                            replacement.distance_scale,
-                            0.02,
-                            1.0e-6,
-                            1.0e7,
-                        )
-                    ),
-                )
-                filters = list(SdfFilter)
-                filter_index = ctx.combo(
-                    f"{t('particle_graph_editor.filtering')}##particle_interface_filter_{interface.stable_id}",
-                    filters.index(replacement.filtering),
-                    [t(f"particle_graph_editor.filter_{item.value}") for item in filters],
-                    -1,
-                )
-                replacement = replace(
-                    replacement,
-                    distance_scale=distance_scale,
-                    filtering=filters[max(0, min(filter_index, len(filters) - 1))],
-                )
-            elif isinstance(replacement, VectorField):
-                boundaries = list(VectorFieldBoundary)
-                boundary_index = ctx.combo(
-                    f"{t('particle_graph_editor.boundary')}##particle_interface_boundary_{interface.stable_id}",
-                    boundaries.index(replacement.boundary),
-                    [t(f"particle_graph_editor.boundary_{item.value}") for item in boundaries],
-                    -1,
-                )
-                filters = list(VectorFieldFilter)
-                filter_index = ctx.combo(
-                    f"{t('particle_graph_editor.filtering')}##particle_interface_filter_{interface.stable_id}",
-                    filters.index(replacement.filtering),
-                    [t(f"particle_graph_editor.filter_{item.value}") for item in filters],
-                    -1,
-                )
-                replacement = replace(
-                    replacement,
-                    vector_scale=float(
-                        ctx.drag_float(
-                            f"{t('particle_graph_editor.vector_scale')}##particle_interface_scale_{interface.stable_id}",
-                            replacement.vector_scale,
-                            0.02,
-                            -1.0e7,
-                            1.0e7,
-                        )
-                    ),
-                    boundary=boundaries[
-                        max(0, min(boundary_index, len(boundaries) - 1))
-                    ],
-                    filtering=filters[max(0, min(filter_index, len(filters) - 1))],
-                )
-            replacement = preserve_ui_float_precision(replacement, interface)
-            if replacement != interface:
-                interfaces[index] = replacement
-                changed = True
-            if ctx.button(
-                f"{t('particle_graph_editor.remove_interface')}##particle_interface_remove_{interface.stable_id}"
-            ):
-                remove_index = index
-
-        if remove_index >= 0:
-            interface = interfaces[remove_index]
-            referenced = any(
-                node.properties.get("interface") == interface.stable_id
-                for stage in _STAGES
-                for document in (getattr(emitter, stage),)
-                if document is not None
-                for node in document.nodes
-            )
-            if referenced:
-                Debug.log_warning(
-                    f"Particle Data Interface {interface.name!r} is still used by a node"
-                )
-            else:
-                del interfaces[remove_index]
-                changed = True
-
-        if changed:
-            emitter_id = emitter.stable_id
-            old_by_id = {
-                item.stable_id: (index, item)
-                for index, item in enumerate(emitter.data_interfaces)
-            }
-            new_by_id = {
-                item.stable_id: (index, item)
-                for index, item in enumerate(interfaces)
-            }
-            mutations = []
-            for stable_id, (index, item) in old_by_id.items():
-                ref = GraphElementRef(
-                    GraphElementKind.DATA_INTERFACE,
-                    self._particle_element_id(emitter_id, stable_id),
-                )
-                if stable_id not in new_by_id:
-                    mutations.append(
-                        GraphMutation(
-                            GraphMutationKind.REMOVE,
-                            ref,
-                            before=item.to_dict(),
-                            before_index=index,
-                        )
-                    )
-                    continue
-                new_index, replacement = new_by_id[stable_id]
-                if replacement != item or new_index != index:
-                    mutations.append(
-                        GraphMutation(
-                            GraphMutationKind.UPDATE,
-                            ref,
-                            before=item.to_dict(),
-                            after=replacement.to_dict(),
-                            before_index=index,
-                            after_index=new_index,
-                        )
-                    )
-            if mutations:
-                self._execute_graph_mutations(
-                    "Edit Particle Graph Data Interfaces",
-                    tuple(mutations),
-                )
-
-        if ctx.button(t("particle_graph_editor.add_vector_field")):
-            self.add_authoring_data_interface(
-                self._selected_emitter().stable_id, VectorField.kind
-            )
     def _render_node_properties(self, ctx: InxGUIContext) -> None:
         if self._model is None or not self._selected_node_uid:
             return
@@ -4799,19 +3690,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                         )
 
                 def _clear_texture():
-                    nonlocal reference_committed
-                    self.set_node_asset_reference(node.uid, key, None)
-                    reference_committed = True
+                    _select_texture(None)
 
                 ping_path = str(reference.path_hint or "").strip()
                 if ping_path:
-                    try:
-                        ping_path = _resolve_project_asset_path(ping_path) or ping_path
-                    except Exception:
-                        pass
+                    ping_path = _resolve_project_asset_path(ping_path)
                 render_asset_reference_field(
                     ctx,
-                    f"particle_node_{key}",
+                    f"particle_node_{node.uid}_{key}",
                     os.path.basename(reference.path_hint)
                     if reference.path_hint
                     else (reference.guid or t("igui.none")),
@@ -4857,19 +3743,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                         )
 
                 def _clear_asset():
-                    nonlocal reference_committed
-                    self.set_node_asset_reference(node.uid, key, None)
-                    reference_committed = True
+                    _select_asset(None)
 
                 _node_ping = str(path_hint or "").strip()
                 if _node_ping:
-                    try:
-                        _node_ping = resolved_path(_node_ping) or _node_ping
-                    except Exception:
-                        pass
+                    _node_ping = _resolve_project_asset_path(_node_ping)
                 render_asset_reference_field(
                     ctx,
-                    f"particle_node_{key}",
+                    f"particle_node_{node.uid}_{key}",
                     display,
                     descriptor.display_name,
                     asset_type=descriptor.type_id,

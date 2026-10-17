@@ -1,48 +1,12 @@
 """BuildSplashMixin — extracted from GameBuilder."""
 from __future__ import annotations
 
-"""
-GameBuilder — packages a standalone native game from an Infernux project.
-
-Uses **Nuitka** to compile the Python entry script into a native EXE.
-All engine code, dependencies, and the CPython runtime are bundled into
-a self-contained directory.  User scripts (.py in Assets/) are compiled
-to .pyc with ``py_compile`` for source protection.
-
-Output layout::
-
-    <OutputDir>/
-        <GameName>.exe          ← Nuitka-compiled native executable
-        python313.dll           ← CPython runtime (required by Nuitka)
-        SDL3.dll, imgui.dll … ← engine native DLLs (also in infernux/lib/)
-        Infernux/              ← engine package
-            lib/
-                _Infernux.*.pyd ← pybind11 extension module
-                SDL3.dll …       ← DLLs (for os.add_dll_directory)
-        Data/
-            Assets/             ← game scenes, scripts(.pyc), textures, models
-            ProjectSettings/    ← build & tag-layer settings
-            materials/
-            Splash/             ← splash images + .infsplash video data
-            BuildManifest.json  ← display mode, window size, splash config
-"""
 
 
-import json
 import os
-import py_compile
-import re
 import shutil
 import struct
-import subprocess
-import sys
-import threading
-import time
-from typing import Callable, Dict, List, Optional
 
-import infernux._jit_kernels as _jit_kernels
-from infernux.engine.i18n import t
-from infernux.engine.nuitka_builder import NuitkaBuilder
 
 
 class BuildSplashMixin:

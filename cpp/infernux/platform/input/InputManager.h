@@ -209,6 +209,14 @@ class InputManager
     /// @brief Returns true during the frame any key was pressed down.
     [[nodiscard]] bool AnyKeyDown() const;
 
+    /// @brief Consume one key-down edge before Editor shortcut routing.
+    ///
+    /// Gameplay UI uses this for modal keys such as Escape. The key remains
+    /// visible to gameplay queries, but the Editor does not execute the same
+    /// edge as a global shortcut.
+    void ConsumeKeyDown(int scancode);
+    [[nodiscard]] bool IsKeyDownConsumed(int scancode) const;
+
     // ---- Mouse button queries (Unity: Input.GetMouseButton / Down / Up) ----
     // button: 0 = left, 1 = right, 2 = middle, 3/4 = side buttons
 
@@ -220,6 +228,11 @@ class InputManager
 
     /// @brief Returns true during the frame the mouse button was released.
     [[nodiscard]] bool GetMouseButtonUp(int button) const;
+
+    [[nodiscard]] bool GetGameMouseButton(int button) const;
+    [[nodiscard]] bool GetGameMouseButtonDown(int button) const;
+    [[nodiscard]] std::tuple<float, float, float, float, bool, bool, bool> GetGameMouseFrameState(int button) const;
+    void SetEditorGameViewport(const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect);
 
     /// @brief Returns a batched snapshot for a mouse button this frame.
     /// Tuple layout: (mouseX, mouseY, scrollX, scrollY, held, down, up).
@@ -360,6 +373,14 @@ class InputManager
     ///        When locked the cursor is hidden and mouse deltas are captured.
     void SetCursorLocked(bool locked);
 
+    /// Editor capture is allowed only after a Game View click. Releasing
+    /// capture preserves the game's requested lock for the next click.
+    void SetEditorCursorCaptureAllowed(bool allowed);
+    [[nodiscard]] bool IsEditorCursorCaptureAllowed() const
+    {
+        return m_editorCursorCaptureAllowed;
+    }
+
     /// @brief Control cursor visibility independently from relative mouse mode.
     void SetCursorVisible(bool visible);
 
@@ -395,7 +416,7 @@ class InputManager
     /// @brief Returns true when cursor lock is active.
     [[nodiscard]] bool IsCursorLocked() const
     {
-        return m_cursorLocked;
+        return m_cursorLocked && (!m_editorCursorCaptureManaged || m_editorCursorCaptureAllowed);
     }
 
     /// @brief Returns true when editor Scene view mouse capture is active.
@@ -426,6 +447,7 @@ class InputManager
     std::array<uint8_t, INPUT_MAX_KEYS> m_keys{};
     std::array<uint8_t, INPUT_MAX_KEYS> m_keyDown{};
     std::array<uint8_t, INPUT_MAX_KEYS> m_keyUp{};
+    std::array<uint8_t, INPUT_MAX_KEYS> m_keyDownConsumed{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtons{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtonDown{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtonUp{};
@@ -468,6 +490,11 @@ class InputManager
 
     SDL_Window *m_window = nullptr;
     bool m_cursorLocked = false;
+    bool m_editorCursorCaptureManaged = false;
+    bool m_editorCursorCaptureAllowed = false;
+    std::array<float, 4> m_editorGameViewport{};
+    std::array<float, 4> m_editorGameInputRect{};
+    uint32_t m_gameMouseButtonOwnership = 0;
     bool m_cursorVisible = true;
     bool m_cursorConfined = false;
     bool m_warpMotionPending = false;
@@ -487,6 +514,8 @@ class InputManager
     void CancelActiveTouches(const std::string &reason);
     void RefreshScreenState();
     void ApplyCursorState();
+    [[nodiscard]] bool IsGameMouseButtonOwned(int button) const;
+    [[nodiscard]] std::pair<float, float> CursorLockPosition(bool gameLocked) const;
 };
 
 } // namespace infernux

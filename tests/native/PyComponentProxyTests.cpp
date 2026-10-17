@@ -21,10 +21,22 @@ namespace
 class TeardownQueryProbe final : public infernux::Component
 {
   public:
-    explicit TeardownQueryProbe(std::function<void(infernux::GameObject *)> check) : m_check(std::move(check)) {}
-    void OnDestroy() override { m_check(GetGameObject()); }
-    const char *GetTypeName() const override { return "TeardownQueryProbe"; }
-    std::string GetConstraintTypeId() const override { return "test:teardown-query-probe"; }
+    explicit TeardownQueryProbe(std::function<void(infernux::GameObject *)> check) : m_check(std::move(check))
+    {
+    }
+    void OnDestroy() override
+    {
+        m_check(GetGameObject());
+    }
+    const char *GetTypeName() const override
+    {
+        return "TeardownQueryProbe";
+    }
+    std::string GetConstraintTypeId() const override
+    {
+        return "test:teardown-query-probe";
+    }
+
   private:
     std::function<void(infernux::GameObject *)> m_check;
 };
@@ -33,8 +45,8 @@ void TestSceneTeardownQueries()
 {
     auto &manager = infernux::SceneManager::Instance();
     for (int mode = 0; mode < 5; ++mode) {
-        auto *scene = mode == 4 ? manager.CreatePreviewScene("TeardownQueries")
-                                : manager.CreateScene("TeardownQueries");
+        auto *scene =
+            mode == 4 ? manager.CreatePreviewScene("TeardownQueries") : manager.CreateScene("TeardownQueries");
         const auto worldId = scene->GetWorldId();
         const auto emptyDocument = scene->SerializeDocument();
         std::shared_ptr<infernux::SceneCommitToken> token;
@@ -101,7 +113,7 @@ void TestSubtreeReplacementTeardown()
     auto *parent = scene.CreateGameObject("Parent");
     const auto emptyDocument = parent->SerializeDocument();
     assert(parent->AddComponent<infernux::BoxCollider>() != nullptr);
-    assert(parent->GetComponentsInExecutionOrder().size() == 1);
+    assert(parent->GetAllComponents().size() == 1);
     auto *first = scene.CreateGameObject("EarlierChild");
     first->SetParent(parent, false);
     auto *second = scene.CreateGameObject("LaterChild");
@@ -112,7 +124,6 @@ void TestSubtreeReplacementTeardown()
         assert(owner->GetParent() == parent);
         assert(parent->GetChildren().empty());
         assert(parent->GetAllComponents().empty());
-        assert(parent->GetComponentsInExecutionOrder().empty());
         const auto objects = scene.GetAllObjects();
         assert(objects.size() == 1 && objects.front() == parent);
     })) != nullptr);

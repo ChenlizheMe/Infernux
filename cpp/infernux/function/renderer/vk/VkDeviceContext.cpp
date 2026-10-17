@@ -17,8 +17,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -465,12 +467,30 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
     return true;
 }
 
-void VkDeviceContext::WaitIdle() const
+VkResult VkDeviceContext::WaitIdleResult() const noexcept
 {
     if (m_device != VK_NULL_HANDLE && !m_shuttingDown) {
         ++m_waitIdleCount;
-        vkDeviceWaitIdle(m_device);
+        return vkDeviceWaitIdle(m_device);
     }
+    return VK_SUCCESS;
+}
+
+void VkDeviceContext::WaitIdle() const
+{
+    const VkResult result = WaitIdleResult();
+    if (result != VK_SUCCESS)
+        throw std::runtime_error("Vulkan device idle wait failed with VkResult " + std::to_string(result));
+}
+
+void VkDeviceContext::WaitIdleForShutdown() const noexcept
+{
+    const VkResult result = WaitIdleResult();
+    if (result == VK_SUCCESS)
+        return;
+    INXLOG_ERROR("Vulkan shutdown idle wait failed with VkResult ", result);
+    if (result != VK_ERROR_DEVICE_LOST)
+        std::terminate(); // Pending GPU references cannot be safely dismantled.
 }
 
 rhi::DeviceId VkDeviceContext::GetDeviceId() const noexcept
@@ -482,7 +502,7 @@ void VkDeviceContext::Destroy() noexcept
 {
     // Wait for device to be idle before cleanup (skip if already drained)
     if (!m_shuttingDown) {
-        WaitIdle();
+        WaitIdleForShutdown();
     }
     m_rhiDevice.reset();
 

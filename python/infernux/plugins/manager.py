@@ -16,7 +16,7 @@ import uuid
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
 from packaging.specifiers import SpecifierSet
@@ -66,8 +66,10 @@ from .project_index import _asset_database, project_guid_paths
 from .registry import PluginRegistry
 from .source_content import same_source_content
 
+if TYPE_CHECKING:
+    from .preload import PreloadState
 
-_URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
+
 _InstallProgress = Callable[[str, float, str], None]
 _GIT_PROGRESS_PERCENT = re.compile(r"(?<!\d)(\d{1,3})%(?!\d)")
 _SOURCE_DESCRIPTOR_FIELDS = frozenset(
@@ -1481,7 +1483,8 @@ class PluginManager:
                 try:
                     name = canonicalize_name(str(distribution.metadata["Name"] or ""))
                     version = str(distribution.version or "")
-                except Exception:
+                except (OSError, ValueError) as exc:
+                    Debug.log_suppressed("PluginManager.distribution_metadata", exc)
                     continue
                 if name and version and name not in snapshot:
                     snapshot[name] = version
@@ -1788,13 +1791,12 @@ class PluginManager:
             )
             return self._materialize_local(local, descriptor, workspace, progress)
         if source_type == "url":
+            from ._download import download_file
+
             target = os.path.join(workspace, "download.inxpkg")
             _report_progress(progress, "download_package", 0.08)
             try:
-                if progress is None:
-                    _download_url_package(location, target)
-                else:
-                    _download_url_package(location, target, progress=progress)
+                download_file(location, target, progress=progress)
             except OSError:
                 repository = str(descriptor.get("repository", "")).strip()
                 reference = str(descriptor.get("reference", "")).strip()
@@ -2814,60 +2816,6 @@ def _python_environment_changes(
         for name in sorted(set(before) | set(after))
         if before.get(name, "") != after.get(name, "")
     )
-
-
-def _download_url_package(
-    location: str,
-    destination: str,
-    *,
-    progress: _InstallProgress | None = None,
-) -> None:
-    # Repository acquisition is an Editor/package-manager concern.  Keep the
-    # HTTP client out of the module import closure so cooked runtimes can use
-    # PluginManager startup/preload without shipping urllib.request.
-    import urllib.request
-
-    request = urllib.request.Request(
-        str(location),
-        headers={"User-Agent": f"infernux/{ENGINE_VERSION}"},
-    )
-    partial = f"{destination}.{uuid.uuid4().hex}.part"
-    try:
-        with urllib.request.urlopen(request) as response:
-            total = int(response.headers.get("Content-Length", "0") or 0)
-            received = 0
-            with open(partial, "wb") as stream:
-                while True:
-                    chunk = response.read(_URL_PACKAGE_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    stream.write(chunk)
-                    received += len(chunk)
-                    fraction = min(1.0, received / total) if total else 0.0
-                    _report_progress(
-                        progress,
-                        "download_package",
-                        0.08 + 0.22 * fraction,
-                        _download_size_text(received, total),
-                    )
-        os.replace(partial, destination)
-    finally:
-        try:
-            os.remove(partial)
-        except FileNotFoundError:
-            pass
-
-
-def _download_size_text(received: int, total: int) -> str:
-    def size(value: int) -> str:
-        amount = float(value)
-        for unit in ("B", "KiB", "MiB", "GiB"):
-            if amount < 1024.0 or unit == "GiB":
-                return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
-            amount /= 1024.0
-        raise AssertionError("unreachable")
-
-    return f"{size(received)} / {size(total)}" if total else size(received)
 
 
 def _pip_requirement_targets(

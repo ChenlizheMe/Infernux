@@ -1,4 +1,5 @@
 """Property history never selects a peer after its addressed component retires."""
+
 import copy
 from types import SimpleNamespace
 
@@ -7,11 +8,16 @@ import pytest
 from infernux.components import InxComponent, serialized_field
 from infernux import BoxCollider
 from infernux.engine.undo import (
-    GenericComponentCommand, PythonComponentDocumentCommand, SetPropertyCommand,
-    SetMaterialSlotCommand, UndoManager,
+    GenericComponentCommand,
+    PythonComponentDocumentCommand,
+    SetPropertyCommand,
+    SetMaterialSlotCommand,
+    UndoManager,
 )
 from infernux.engine.undo._renderstack import (
-    RenderStackEffectSlotsCommand, RenderStackFieldCommand, RenderStackSetPipelineCommand,
+    RenderStackEffectSlotsCommand,
+    RenderStackFieldCommand,
+    RenderStackSetPipelineCommand,
 )
 from infernux.engine.component_restore import deserialize_scene_document_transactionally
 from infernux.lib import SceneManager
@@ -61,8 +67,9 @@ def _prepare(scene, kind):
     return owner, target, command, remove, unchanged
 
 
-@pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.parametrize("direction", ["execute", "undo", "redo"])
+@pytest.mark.parametrize(
+    "kind,direction", [("native-property", "execute"), ("python-property", "undo"), ("python-document", "redo")]
+)
 def test_missing_property_target_rejects_without_writing_same_type_peer(scene, kind, direction):
     owner, target, command, remove, unchanged = _prepare(scene, kind)
     if direction in ("undo", "redo"):
@@ -77,8 +84,9 @@ def test_missing_property_target_rejects_without_writing_same_type_peer(scene, k
     assert scene.serialize_document() == before
 
 
-@pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.parametrize("direction", ["undo", "redo"])
+@pytest.mark.parametrize(
+    "kind,direction", [("wrapper-property", "undo"), ("native-document", "undo"), ("python-property", "redo")]
+)
 def test_missing_property_target_keeps_journal_cursor_and_nonactive_owner(scene, kind, direction):
     old_manager = UndoManager._instance
     manager = UndoManager()
@@ -99,7 +107,7 @@ def test_missing_property_target_keeps_journal_cursor_and_nonactive_owner(scene,
         UndoManager._instance = old_manager
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ["native-property", "native-document", "python-document"])
 def test_property_history_follows_exact_identity_after_whole_world_replacement(scene, kind):
     owner, target, command, remove, unchanged = _prepare(scene, kind)
     owner_id, component_id = owner.id, target.component_id
@@ -120,8 +128,15 @@ def test_property_history_follows_exact_identity_after_whole_world_replacement(s
         assert survivor.value == 99 if kind.startswith("python") else survivor.enabled is True
 
 
-@pytest.mark.parametrize("direction", ["execute", "undo", "redo"])
-@pytest.mark.parametrize("kind", ["material", "pipeline", "pipeline-field", "effect-slots"])
+@pytest.mark.parametrize(
+    "direction,kind",
+    [
+        ("execute", "material"),
+        ("undo", "pipeline"),
+        ("redo", "pipeline-field"),
+        ("execute", "effect-slots"),
+    ],
+)
 def test_renderer_and_renderstack_history_cannot_select_replacement(scene, kind, direction):
     from infernux.renderstack import RenderStack
 

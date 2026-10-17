@@ -127,6 +127,7 @@ class AudioEngine
     /// @brief Get the currently active listener
     [[nodiscard]] AudioListener *GetActiveListener() const
     {
+        std::lock_guard<std::mutex> lock(m_listenersMutex);
         return m_activeListener;
     }
 

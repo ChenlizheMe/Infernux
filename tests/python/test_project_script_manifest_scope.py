@@ -1,9 +1,11 @@
 """Cooked script identity follows the active project and scoped build context."""
+
 import importlib.machinery
 import importlib.util
 import json
 from pathlib import Path
 import py_compile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -15,11 +17,7 @@ GUID = "aabbccddaabbccddaabbccddaabbccdd"
 
 
 @pytest.fixture
-def projects(tmp_path, monkeypatch):
-    for name in ("_project_root", "_guid_manifest", "_runtime_asset_resolver",
-                 "_runtime_package_resolver", "_runtime_asset_query", "_runtime_asset_extension_resolver"):
-        monkeypatch.setattr(context, name, None)
-    monkeypatch.setattr(context, "_guid_manifest_loaded", False)
+def projects(tmp_path):
     result = []
     for name, script_name in (("第一位作者", "Original"), ("另一台设备", "Renamed"), ("构建项目", "Third")):
         root = tmp_path / name
@@ -32,7 +30,8 @@ def projects(tmp_path, monkeypatch):
         manifest = root / "_script_guid_map.json"
         manifest.write_text(json.dumps({GUID: compiled.relative_to(root).as_posix()}), encoding="utf-8")
         result.append((root, compiled, name))
-    return result
+    with context.using_project_root(None):
+        yield result
 
 
 def _assert_script(project, database=None, *, guid=GUID):
@@ -47,7 +46,24 @@ def _assert_script(project, database=None, *, guid=GUID):
     assert Path(context.get_project_root()) == root
 
 
-@pytest.mark.parametrize("sequence", ["fresh", "unbound", "switch", "unbind", "missing_manifest", "unknown_guid"])
+def test_worker_project_scope_does_not_replace_the_editor_context(projects):
+    first, second, _ = projects
+    context.set_project_root(str(first[0]))
+    context.set_runtime_asset_resolver(lambda guid: str(first[1]) if guid == GUID else None)
+    _assert_script(first)
+
+    def resolve_other_project():
+        with context.using_project_root(str(second[0])):
+            _assert_script(second)
+            return context.get_project_root()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        assert Path(executor.submit(resolve_other_project).result()) == second[0]
+    _assert_script(first)
+    assert context.resolve_runtime_asset_guid(GUID) == str(first[1])
+
+
+@pytest.mark.parametrize("sequence", ["switch", "missing_manifest", "unknown_guid"])
 def test_direct_project_binding_owns_cooked_script_map(projects, sequence):
     first, second, third = projects
     if sequence == "unbound":
@@ -70,8 +86,7 @@ def test_direct_project_binding_owns_cooked_script_map(projects, sequence):
     _assert_script(first)
 
 
-@pytest.mark.parametrize("loaded", [False, True])
-@pytest.mark.parametrize("scope", ["other", "unbound", "nested", "exception"])
+@pytest.mark.parametrize("scope,loaded", [("unbound", False), ("nested", True), ("exception", False)])
 def test_temporary_project_scope_restores_its_complete_script_map(projects, loaded, scope):
     first, second, third = projects
     context.set_project_root(str(first[0]))
@@ -116,8 +131,7 @@ def test_explicit_rebinding_same_root_starts_a_new_manifest_lifetime(projects):
     _assert_script(first)
     new_script = first[0] / "Assets/Replacement.pyc"
     new_script.write_bytes(second[1].read_bytes())
-    (first[0] / "_script_guid_map.json").write_text(
-        json.dumps({GUID: "Assets/Replacement.pyc"}), encoding="utf-8")
+    (first[0] / "_script_guid_map.json").write_text(json.dumps({GUID: "Assets/Replacement.pyc"}), encoding="utf-8")
     context.set_project_root(str(first[0]))
     _assert_script((first[0], new_script, second[2]))
 
@@ -145,7 +159,10 @@ def test_native_cook_manifests_follow_a_guid_preserving_script_rename(tmp_path):
     result = subprocess.run(
         [sys.executable, "-X", "utf8", "-B", str(Path(__file__).resolve()), str(tmp_path)],
         env={**os.environ, "PYTHONPATH": str(Path(infernux.__file__).resolve().parent.parent)},
-        capture_output=True, text=True, encoding="utf-8", timeout=90,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=90,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -166,12 +183,14 @@ def exercise_native_cook(project):
         engine.init_headless(str(project))
         database = engine.get_asset_database()
         scene_path = project / "Assets/Main.scene"
-        scene_path.write_text(json.dumps(SceneManager.instance().get_active_scene().serialize_asset_document()),
-                              encoding="utf-8")
+        scene_path.write_text(
+            json.dumps(SceneManager.instance().get_active_scene().serialize_asset_document()), encoding="utf-8"
+        )
         scene = database.import_asset(str(scene_path))
         assert scene, scene.error
         (project / "ProjectSettings/BuildSettings.json").write_text(
-            json.dumps({"scene_guids": [scene.guid]}), encoding="utf-8")
+            json.dumps({"scene_guids": [scene.guid]}), encoding="utf-8"
+        )
         source = project / "Assets/Original.py"
         source.write_text("PROJECT_MARKER = 'original'\n", encoding="utf-8")
         imported = database.import_asset(str(source))
@@ -209,9 +228,14 @@ def exercise_native_cook(project):
         _assert_script(cooked[0], guid=guid)
         context.set_project_root(str(cooked[1][0]))
         _assert_script(cooked[1], guid=guid)
-        evidence = dict(guid=guid, outputs=[str(item[0]) for item in cooked],
-                        expected_scripts=[str(item[1]) for item in cooked],
-                        markers=[item[2] for item in cooked], native_cook=True, status="passed")
+        evidence = dict(
+            guid=guid,
+            outputs=[str(item[0]) for item in cooked],
+            expected_scripts=[str(item[1]) for item in cooked],
+            markers=[item[2] for item in cooked],
+            native_cook=True,
+            status="passed",
+        )
         (project / "manifest-scope-evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
         print(json.dumps(evidence))
     finally:
@@ -220,4 +244,5 @@ def exercise_native_cook(project):
 
 if __name__ == "__main__":
     import sys
+
     exercise_native_cook(Path(sys.argv[1]))

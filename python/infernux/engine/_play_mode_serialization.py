@@ -1,27 +1,11 @@
 """PlayModeSerializationMixin — extracted from PlayModeManager."""
 from __future__ import annotations
 
-"""
-PlayMode - Runtime/Editor mode manager for infernux.
 
-Manages the play mode state machine:
-- Edit Mode: Normal editor state, scene changes are persistent
-- Play Mode: Runtime simulation, scene changes are temporary
-- Pause Mode: Runtime paused, can step frame by frame
+from typing import Dict, Any, TYPE_CHECKING
 
-Handles:
-- Scene state save/restore for play mode isolation (Unity-style)
-- Delta time management
-- Python component recreation after scene restore
-"""
-
-import time
-import os
-from enum import Enum, auto
-from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
-from dataclasses import dataclass
-from infernux.debug import Debug, LogType
-from infernux.engine.project_context import resolve_script_path
+if TYPE_CHECKING:
+    from infernux.components.component import InxComponent
 
 
 class PlayModeSerializationMixin:
@@ -36,6 +20,7 @@ class PlayModeSerializationMixin:
         from infernux.components.missing_script import MissingScript
         from infernux.components.fields import get_raw_field_value, get_serialized_fields
 
+        field_ids = {}
         if isinstance(component, MissingScript):
             preserved = component._serialize_fields_document()
             data = {
@@ -48,6 +33,7 @@ class PlayModeSerializationMixin:
             for name, meta in fields.items():
                 raw = get_raw_field_value(component, name)
                 data[name] = component._serialize_value(raw)
+                field_ids[name] = meta.field_id or name
 
         script_guid = getattr(component, "_script_guid", None)
         type_guid = component.__class__._get_type_guid()
@@ -61,6 +47,7 @@ class PlayModeSerializationMixin:
             "qualified_name": component.__class__.__qualname__,
             "enabled": getattr(component, "enabled", True),
             "fields": data,
+            "field_ids": field_ids,
         }
 
     def _apply_py_component_state(self, component: 'InxComponent', state: Dict[str, Any]):
@@ -76,34 +63,28 @@ class PlayModeSerializationMixin:
         live_script_guid = getattr(component, "_script_guid", "") or ""
         if state_script_guid and live_script_guid and state_script_guid != live_script_guid:
             raise ValueError("Play Mode component script GUID changed during state restore")
-        # type_guid may change after a class rename; script GUID is authoritative.
-        component.enabled = bool(state.get("enabled", True))
+        from infernux.components.fields import get_serialized_fields
+        from infernux.components.missing_script import MissingScript
+
+        if isinstance(component, MissingScript):
+            document = dict(state.get("fields", {}))
+            document["__type_name__"] = state["type_name"]
+        else:
+            fields_by_id = {
+                meta.field_id or name: name
+                for name, meta in get_serialized_fields(type(component)).items()
+            }
+            saved_ids = state.get("field_ids", {})
+            document = {
+                fields_by_id[saved_ids.get(name, name)]: value
+                for name, value in state.get("fields", {}).items()
+                if saved_ids.get(name, name) in fields_by_id
+            }
         component_id = state.get("component_id")
         if type(component_id) is int and component_id > 0:
-            component._component_id = component_id
-            from infernux.components.component import InxComponent
-            with InxComponent._id_lock:
-                if InxComponent._next_component_id <= component_id:
-                    InxComponent._next_component_id = component_id + 1
-
-        fields = state.get("fields", {})
-        
-        # Get the new class's serialized fields - only restore fields that still exist
-        from infernux.components.fields import get_serialized_fields
-        new_serialized_fields = get_serialized_fields(component.__class__)
-
-        previous_deserializing = getattr(component, '_inf_deserializing', False)
-        component._inf_deserializing = True
-        try:
-            for name, value in fields.items():
-                # Only restore if the field still exists in the new class definition
-                if name not in new_serialized_fields:
-                    continue
-                meta = new_serialized_fields[name]
-                value = component._deserialize_value(value, meta)
-                setattr(component, name, value)
-        finally:
-            component._inf_deserializing = previous_deserializing
+            document["__component_id__"] = component_id
+        component._deserialize_fields_document(document, _skip_on_after_deserialize=True)
+        component.enabled = bool(state.get("enabled", True))
 
         if state.get("script_guid"):
             component._script_guid = state.get("script_guid")

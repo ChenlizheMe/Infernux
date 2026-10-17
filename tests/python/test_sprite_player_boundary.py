@@ -5,7 +5,7 @@ import pytest
 
 from infernux.application import Application
 from infernux.components.builtin.sprite_renderer import SpriteRenderer
-from infernux.components.spirit_animator import SpiritAnimator
+from infernux.components.sprite_animator import SpriteAnimator
 
 
 @pytest.fixture
@@ -31,10 +31,10 @@ def test_sprite_native_binding_is_valid_without_editor_asset_services(scene, pla
     renderer._invalidate_native_binding()
 
 
-def test_spirit_animation_lifecycle_does_not_attempt_authoring_imports(scene, player_without_authoring):
+def test_sprite_animation_lifecycle_does_not_attempt_authoring_imports(scene, player_without_authoring):
     owner = scene.create_game_object("Player Animation")
     owner.add_component(SpriteRenderer)
-    animator = owner.add_component(SpiritAnimator)
+    animator = owner.add_component(SpriteAnimator)
     animator.awake()
     animator.start()
     assert isinstance(animator._sprite_renderer, SpriteRenderer)

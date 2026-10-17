@@ -77,8 +77,8 @@ int main(int argc, char **argv)
                                                      views[index], sampler, 4, std::make_shared<int>(1),
                                                      rhi::PixelFormat::RGBA8UNorm);
     };
-    std::array<std::shared_ptr<const rhi::TextureGpuView>, 4> gpuViews = {
-        publication(0), publication(1), publication(2), publication(3)};
+    std::array<std::shared_ptr<const rhi::TextureGpuView>, 4> gpuViews = {publication(0), publication(1),
+                                                                          publication(2), publication(3)};
 
     vk::VkDescriptorManager descriptorAllocator(context.GetDevice(), context.GetDeviceId());
     GpuRetirementQueue retirement;
@@ -86,9 +86,9 @@ int main(int argc, char **argv)
     retirement.BindSerialSource([&] { return serial; });
     descriptorAllocator.UseSubmissionSerials([&] { return serial; });
     MaterialDescriptorManager descriptors;
+    descriptors.SetRetirementQueue(&retirement);
     descriptors.Initialize(context.GetVmaAllocator(), context.GetDevice(), context.GetPhysicalDevice(),
                            &descriptorAllocator);
-    descriptors.SetRetirementQueue(&retirement);
     descriptors.SetDefaultTexture(device.Resolve(views[0]), device.Resolve(sampler), gpuViews[0]);
     descriptors.SetDefaultNormalTexture(device.Resolve(views[1]), device.Resolve(sampler), gpuViews[1]);
     descriptors.SetDefaultBlackTexture(device.Resolve(views[3]), device.Resolve(sampler), gpuViews[3]);
@@ -189,13 +189,11 @@ int main(int argc, char **argv)
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     assert(defaultMaterial.SerializeDocument()["properties"]["detailTex"]["guid"] == "");
     auto parameters = std::make_shared<RendererParameterBlock>();
-    parameters->properties["detailTex"] =
-        MaterialProperty{"detailTex", MaterialPropertyType::Texture2D, std::string{}};
+    parameters->properties["detailTex"] = MaterialProperty{"detailTex", MaterialPropertyType::Texture2D, std::string{}};
     parameters->properties["texSampler"] =
         MaterialProperty{"texSampler", MaterialPropertyType::Texture2D, std::string{"normal"}};
     auto *rendererDescriptor = descriptors.GetOrCreateRendererDescriptorSet(defaultMaterial, program, parameters);
-    assert(rendererDescriptor &&
-           rendererDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
+    assert(rendererDescriptor && rendererDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     assert(rendererDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
     assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
 

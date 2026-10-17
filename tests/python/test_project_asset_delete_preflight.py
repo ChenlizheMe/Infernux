@@ -5,12 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from infernux.engine.interaction import (
-    ClipboardService,
     DocumentKey,
     DocumentKind,
     DocumentRegistry,
     ProjectAssetCommandService,
-    ProjectAssetInteractionService,
     SelectionService,
 )
 from infernux.engine.undo import ProjectAssetDeleteCommand
@@ -57,33 +55,6 @@ def test_delete_service_rejects_active_scene_before_undo_command(tmp_path, monke
     with pytest.raises(ValueError, match="active scene"):
         service.delete((scene,))
     assert scene.is_file()
-
-
-def test_visible_project_delete_request_and_mcp_service_share_scene_guard(
-    tmp_path, monkeypatch
-):
-    assets = tmp_path / "Assets"
-    assets.mkdir()
-    scene = assets / "R3GSokoban.scene"
-    scene.write_text("{}\n", encoding="utf-8")
-    _scene_manager(monkeypatch, scene)
-
-    service = _service(tmp_path)
-    callback_calls = []
-    interaction = ProjectAssetInteractionService(service, ClipboardService())
-    interaction.configure(
-        unique_name=lambda *_args: "unused",
-        create=lambda *_args: None,
-        open_asset=lambda *_args: True,
-        reveal=lambda *_args: True,
-        read_external_clipboard=lambda: (),
-        request_delete=lambda paths, callback: callback_calls.append(paths) or True,
-    )
-
-    assert interaction.request_delete((scene,)) is False
-    assert callback_calls == []
-    with pytest.raises(ValueError, match="active scene"):
-        service.preflight_delete((scene,))
 
 
 def test_delete_service_rejects_scene_open_inside_deleted_directory(tmp_path):

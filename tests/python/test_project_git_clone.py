@@ -9,10 +9,23 @@ from pathlib import Path
 
 
 def _git(project, *args):
-    result = subprocess.run([
-        "git", "-c", "user.name=Clone Test", "-c", "user.email=clone@example.invalid",
-        "-c", "commit.gpgsign=false", "-C", str(project), *args,
-    ], capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Clone Test",
+            "-c",
+            "user.email=clone@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-C",
+            str(project),
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
@@ -34,25 +47,33 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     package.write_text("authored package\n", encoding="utf-8")
     project_model._write_asset_identity_meta(str(package), "1" * 32, "DefaultText", project_root=str(source))
     for relative in (
-        "Assets/Settings/.gitattributes", "Assets/Settings/.gitmodules",
-        "Assets/Settings/.gitkeep", "Packages/shared/.gitignore",
+        "Assets/Settings/.gitattributes",
+        "Assets/Settings/.gitmodules",
+        "Assets/Settings/.gitkeep",
+        "Packages/shared/.gitignore",
     ):
         (source / relative).write_text("# shared Git control file\n", encoding="utf-8")
     for relative in (
-        "Library/cache.bin", ".runtime/python313/python.exe", "Packages/.cache/download.inxpkg",
+        "Library/cache.bin",
+        ".runtime/python313/python.exe",
+        "Packages/.cache/download.inxpkg",
         ".infernux/mcp_sessions/session/review/frame.png",
         ".infernux/mcp_sessions/session/recordings/run.jsonl",
         ".infernux/mcp_traces/trace.json",
-        "mcp.json", ".mcp.json", ".cursor/mcp.json", ".trae/mcp.json", ".gemini/settings.json",
+        "mcp.json",
+        ".mcp.json",
+        ".cursor/mcp.json",
+        ".trae/mcp.json",
+        ".gemini/settings.json",
     ):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"private state")
-    rule = source / '.cursor/rules/team.mdc'
+    rule = source / ".cursor/rules/team.mdc"
     rule.parent.mkdir(parents=True)
-    rule.write_text('Shared authoring conventions\n', encoding='utf-8')
-    capabilities = source / 'ProjectSettings/mcp_capabilities.json'
-    capabilities.write_text('{"enabled": true}\n', encoding='utf-8')
+    rule.write_text("Shared authoring conventions\n", encoding="utf-8")
+    capabilities = source / "ProjectSettings/mcp_capabilities.json"
+    capabilities.write_text('{"enabled": true}\n', encoding="utf-8")
 
     _git(source, "init", "-b", "main")
     _git(source, "add", ".")
@@ -67,22 +88,24 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     assert not (clone / "Packages" / ".cache").exists()
     assert not (clone / ".infernux" / "mcp_sessions").exists()
     assert not (clone / ".infernux" / "mcp_traces").exists()
-    for relative in ('mcp.json', '.mcp.json', '.cursor/mcp.json', '.trae/mcp.json', '.gemini/settings.json'):
+    for relative in ("mcp.json", ".mcp.json", ".cursor/mcp.json", ".trae/mcp.json", ".gemini/settings.json"):
         assert not (clone / relative).exists()
-    assert (clone / '.cursor/rules/team.mdc').read_text() == 'Shared authoring conventions\n'
-    assert json.loads((clone / 'ProjectSettings/mcp_capabilities.json').read_text()) == {"enabled": True}
+    assert (clone / ".cursor/rules/team.mdc").read_text() == "Shared authoring conventions\n"
+    assert json.loads((clone / "ProjectSettings/mcp_capabilities.json").read_text()) == {"enabled": True}
     assert (clone / "Packages" / "shared" / "Ships.txt").read_text() == "authored package\n"
     model._create_vscode_workspace(str(clone))
     settings = json.loads((clone / ".vscode" / "settings.json").read_text(encoding="utf-8"))
     assert all(str(source) not in path for path in settings["python.analysis.extraPaths"])
     assert settings["python.defaultInterpreterPath"] == sys.executable.replace("\\", "/")
-    assert settings["python.analysis.extraPaths"] == [
-        project_model.sysconfig.get_path("purelib").replace("\\", "/")
-    ]
+    assert settings["python.analysis.extraPaths"] == [project_model.sysconfig.get_path("purelib").replace("\\", "/")]
 
-    assets = {path: path.read_bytes() for directory in (clone / "Assets", clone / "Packages")
-              for path in directory.rglob("*") if path.is_file()}
-    probe = '''
+    assets = {
+        path: path.read_bytes()
+        for directory in (clone / "Assets", clone / "Packages")
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    probe = """
 import json, pathlib, sys
 from infernux.engine.engine import Engine
 from infernux.lib import LogLevel, RuntimeMode
@@ -97,8 +120,10 @@ try:
         assert database.get_guid_from_path(str(meta)[:-5]) == document["metadata"]["guid"]["value"]
 finally:
     engine.exit()
-'''
-    result = subprocess.run([sys.executable, "-c", probe, str(clone)], capture_output=True, text=True, encoding="utf-8", timeout=120)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(clone)], capture_output=True, text=True, encoding="utf-8", timeout=120
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     changed = [str(path.relative_to(clone)) for path, before in assets.items() if path.read_bytes() != before]
     assert not changed, changed
@@ -119,7 +144,8 @@ def test_installed_package_preloads_on_a_new_device_without_the_authors_cache(tm
     runtime = package_source / "runtime"
     runtime.mkdir(parents=True)
     (package_source / "inx_package.json").write_text(
-        '{"reference":"team/longships","version":"1.0.0"}\n', encoding="utf-8",
+        '{"reference":"team/longships","version":"1.0.0"}\n',
+        encoding="utf-8",
     )
     (runtime / "lifecycle.py").write_text(
         "from pathlib import Path\n"
@@ -131,7 +157,7 @@ def test_installed_package_preloads_on_a_new_device_without_the_authors_cache(tm
     )
     archive = tmp_path / "longships.inxpkg"
     InxPackage.export_source(str(package_source), str(archive))
-    probe = '''
+    probe = """
 import pathlib, sys
 from infernux.engine.engine import Engine
 from infernux.lib import LogLevel, RuntimeMode
@@ -157,7 +183,7 @@ try:
 finally:
     if manager is not None: manager.shutdown()
     engine.exit()
-'''
+"""
     for mode in ("install", "open"):
         if mode == "install":
             checkout = project
@@ -174,7 +200,13 @@ finally:
             # Its publisher's archive and Hub cache are unavailable on this device.
             archive.unlink()
         env = dict(os.environ, INFERNUX_PACKAGE_CACHE_ROOT=str(tmp_path / (mode + "-cache")))
-        result = subprocess.run([sys.executable, "-c", probe, str(checkout), mode, str(archive)],
-                                env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(checkout), mode, str(archive)],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
         assert result.returncode == 0, result.stdout + result.stderr
     assert _git(checkout, "status", "--porcelain") == ""

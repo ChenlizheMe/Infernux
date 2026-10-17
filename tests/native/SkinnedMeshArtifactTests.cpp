@@ -6,6 +6,7 @@
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/scene/SkinPoseHistory.h>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
 #include <cassert>
@@ -72,10 +73,118 @@ bool NearlyEqual(float left, float right)
 {
     return std::abs(left - right) < 1.0e-6f;
 }
+
+void CheckSkeletonPoseQueries()
+{
+    using namespace infernux;
+    InxSkinnedMesh model;
+    model.scaleFactor = 0.25f;
+    const auto translation = [](glm::vec3 value) { return glm::translate(glm::mat4(1), value); };
+    model.skeleton.nodes = {{"Root", -1, translation({2, 0, 0}), translation({2, 0, 0})},
+                            {"Socket", 0, translation({0, 3, 0}), translation({2, 3, 0})}};
+    model.skeleton.nodeByName = {{"Root", 0}, {"Socket", 1}};
+    model.skeleton.bones = {{"Root", 0, translation({-2, 0, 0})}};
+    model.skeleton.boneByName = {{"Root", 0}};
+    for (const auto &[name, offset] : {std::pair{"A", 0.0f}, std::pair{"B", 8.0f}}) {
+        SkinnedRuntimeAnimation animation;
+        animation.name = name;
+        animation.durationTicks = animation.ticksPerSecond = 1;
+        animation.trackByNodeIndex = {0, 1};
+        SkinnedRuntimeTrack root;
+        root.nodeIndex = 0;
+        root.positions = {{0, {2 + offset, 0, 0}}, {1, {6 + offset, 0, 0}}};
+        SkinnedRuntimeTrack socket;
+        socket.nodeIndex = 1;
+        socket.positions = {{0, {0, 3 + offset * 0.5f, 0}}, {1, {0, 5 + offset * 0.5f, 0}}};
+        animation.tracks = {root, socket};
+        model.animations.push_back(animation);
+    }
+    const glm::mat4 drawWorld = translation({7, 11, 13}) *
+        glm::rotate(glm::mat4(1), 0.3f, glm::vec3(0, 1, 0)) *
+        glm::scale(glm::mat4(1), glm::vec3(-2, 3, 4)) * translation({0.5f, -0.25f, 0.75f});
+    const auto check = [&](const EvaluatedSkinPose &pose, float rootX, float socketY) {
+        const auto matrices = model.GetSkeletonNodeWorldMatrices(pose, {"Socket", "Root"}, drawWorld);
+        const std::array expected = {drawWorld * translation({rootX * 0.25f, socketY * 0.25f, 0}),
+                                     drawWorld * translation({rootX * 0.25f, 0, 0})};
+        for (size_t index = 0; index < matrices.size(); ++index)
+            for (int column = 0; column < 4; ++column)
+                for (int row = 0; row < 4; ++row)
+                    assert(std::abs(matrices[index][column][row] - expected[index][column][row]) < 1.0e-5f);
+        const glm::vec4 bonePoint(0.1f, 0.2f, 0.3f, 1);
+        const glm::vec4 bindPoint = translation({2, 0, 0}) * bonePoint;
+        const auto skinWorld = drawWorld * pose.palette[0] * bindPoint;
+        const auto boneWorld = matrices[1] * glm::vec4(glm::vec3(bonePoint) * 0.25f, 1);
+        assert(glm::length(skinWorld - boneWorld) < 1.0e-5f);
+    };
+    const SkinnedSampleRequest request{"A", 0.5f, false, "B", 0.5f, 0.25f};
+    const auto blend = model.GetOrBuildEvaluatedPose(request);
+    assert(model.GetOrBuildEvaluatedPose(request) == blend);
+    assert(model.GetOrBuildGpuBonePalette(request).get() == &blend->palette);
+    check(*blend, 6, 5);
+    RequireInvalid([&] { (void)model.GetSkeletonNodeWorldMatrices(*blend, {"Missing"}, drawWorld); });
+
+    PoseStackLayer first;
+    first.takeName = "A";
+    first.timeSeconds = 1;
+    first.loop = false;
+    first.boneMask = {"Root"};
+    PoseStackLayer upper = first;
+    upper.takeName = "B";
+    upper.timeSeconds = 0;
+    upper.boneMask = {"Socket"};
+    check(model.EvaluatePoseStack({first, upper}), 6, 7);
+    PoseStackLayer third = upper;
+    third.takeName = "A";
+    third.timeSeconds = 1;
+    third.weight = 0.75f;
+    upper.weight = 0.25f;
+    check(model.EvaluatePoseStack({first, upper, third}), 6, 5.5f);
+
+    for (auto *layer : {&first, &upper, &third}) {
+        layer->weight = 1;
+        layer->blendGroup = "outgoing";
+        layer->groupWeight = 0.5f;
+    }
+    PoseStackLayer incoming = first;
+    incoming.blendGroup = "incoming";
+    incoming.boneMask.clear();
+    check(model.EvaluatePoseStack({first, upper, third, incoming}), 6, 5.5f);
+    // Three overlapping outgoing clips still account for half of the result.
+    upper.boneMask.clear();
+    third.boneMask.clear();
+    first.boneMask.clear();
+    incoming.takeName = "B";
+    incoming.timeSeconds = 0;
+    check(model.EvaluatePoseStack({first, upper, third, incoming}), 26.0f / 3.0f, 19.0f / 3.0f);
+
+    first = {};
+    first.takeName = "A";
+    first.timeSeconds = 1;
+    first.weight = 0.5f;
+    first.loop = false;
+    PoseStackLayer second = first;
+    second.takeName = "B";
+    second.timeSeconds = 0;
+    PoseStackLayer additive = first;
+    additive.additive = true;
+    additive.boneMask = {"Socket"};
+    const auto stack = std::make_shared<const EvaluatedSkinPose>(model.EvaluatePoseStack({first, second, additive}));
+    SkinPoseHistory history;
+    history.Publish(blend, true);
+    const auto retained = history.Acquire();
+    history.Publish(stack, false);
+    check(*history.Acquire()->evaluated, 8, 7);
+    check(*retained->evaluated, 6, 5);
+    assert(history.Acquire()->previous.get() == &blend->palette);
+    assert(history.CommitFrame());
+    assert(history.Acquire()->evaluated == stack);
+    assert(history.Acquire()->current.get() == &stack->palette);
+}
 } // namespace
 
 int main()
 {
+    CheckSkeletonPoseQueries();
     infernux::InxSkinnedMesh source;
     source.scaleFactor = 0.01f;
 
@@ -541,14 +650,14 @@ int main()
 
     infernux::SkinPoseHistory poseHistory;
     auto firstPose = restored->GetOrBuildGpuBonePalette({"Move", 0.0f});
-    poseHistory.Publish(firstPose, true);
+    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.0f}), true);
     const auto firstSnapshot = poseHistory.Acquire();
     assert(firstSnapshot && firstSnapshot->IsValid());
     assert(firstSnapshot->current == firstPose);
     assert(firstSnapshot->previous == firstPose);
 
     auto secondPose = restored->GetOrBuildGpuBonePalette({"Move", 0.25f});
-    poseHistory.Publish(secondPose, false);
+    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.25f}), false);
     const auto secondSnapshot = poseHistory.Acquire();
     assert(secondSnapshot && secondSnapshot->IsValid());
     assert(secondSnapshot->current == secondPose);
@@ -556,7 +665,7 @@ int main()
     assert(secondSnapshot->revision > firstSnapshot->revision);
 
     auto thirdPose = restored->GetOrBuildGpuBonePalette({"Move", 0.4f});
-    poseHistory.Publish(thirdPose, false);
+    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.4f}), false);
     const auto thirdSnapshot = poseHistory.Acquire();
     assert(thirdSnapshot->current == thirdPose);
     assert(thirdSnapshot->previous == firstPose); // Two submissions, one frame.
@@ -568,15 +677,17 @@ int main()
     assert(secondSnapshot->previous == firstPose); // In-flight snapshots stay immutable.
     assert(!poseHistory.CommitFrame());
     assert(poseHistory.Acquire() == committedSnapshot); // A stopped pose stays stable.
-    poseHistory.Publish(secondPose, false);
+    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.25f}), false);
     assert(poseHistory.Acquire()->previous == thirdPose);
 
-    auto differentSkeleton = std::make_shared<const infernux::SkinPoseHistory::Palette>(2, glm::mat4(1.0f));
+    auto differentSkeleton = std::make_shared<infernux::EvaluatedSkinPose>();
+    differentSkeleton->palette.resize(2, glm::mat4(1.0f));
+    differentSkeleton->nodeGlobals.resize(2, glm::mat4(1.0f));
     poseHistory.Publish(differentSkeleton, false);
     const auto resizedSnapshot = poseHistory.Acquire();
     assert(resizedSnapshot && resizedSnapshot->IsValid());
-    assert(resizedSnapshot->current == differentSkeleton);
-    assert(resizedSnapshot->previous == differentSkeleton);
+    assert(resizedSnapshot->current.get() == &differentSkeleton->palette);
+    assert(resizedSnapshot->previous.get() == &differentSkeleton->palette);
     assert(resizedSnapshot->revision > secondSnapshot->revision);
 
     poseHistory.Reset();

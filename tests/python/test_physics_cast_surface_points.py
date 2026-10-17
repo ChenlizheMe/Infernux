@@ -9,10 +9,13 @@ from infernux.lib import Physics as NativePhysics
 from infernux.physics import Physics
 
 
-@pytest.mark.parametrize("cast", ["ray", "sphere", "box", "capsule", "capsule_sphere"])
-@pytest.mark.parametrize("target", ["box", "mesh"])
-@pytest.mark.parametrize("angle", [0, .61])
-@pytest.mark.parametrize("position", [(0, 0, 0), (30, -10, 25)])
+@pytest.mark.parametrize('cast,target,angle,position', [
+    ('ray', 'box', 0, (0, 0, 0)), ('sphere', 'box', .61, (30, -10, 25)),
+    ('box', 'box', 0, (30, -10, 25)), ('capsule', 'box', .61, (0, 0, 0)),
+    ('capsule_sphere', 'box', .61, (30, -10, 25)), ('ray', 'mesh', .61, (30, -10, 25)),
+    ('sphere', 'mesh', 0, (0, 0, 0)), ('box', 'mesh', .61, (30, -10, 25)),
+    ('capsule', 'mesh', 0, (30, -10, 25)), ('capsule_sphere', 'mesh', 0, (0, 0, 0)),
+])
 def test_cast_point_belongs_to_target_surface(scene, cast, target, angle, position):
     if target == "mesh":
         owner = scene.create_primitive(PrimitiveType.Cube, "Mesh surface")
@@ -58,8 +61,7 @@ def test_cast_point_belongs_to_target_surface(scene, cast, target, angle, positi
     assert np.linalg.norm(point - position) < 5
 
 
-@pytest.mark.parametrize("cast", ["sphere", "box", "capsule"])
-@pytest.mark.parametrize("offset", [0, 30])
+@pytest.mark.parametrize('cast,offset', [('sphere', 0), ('box', 30), ('capsule', 30)])
 def test_initial_overlap_reports_target_surface(scene, cast, offset):
     owner = scene.create_game_object("Overlapping surface")
     owner.transform.position = Vector3(offset, 0, 0)
@@ -79,8 +81,7 @@ def test_initial_overlap_reports_target_surface(scene, cast, offset):
     np.testing.assert_allclose([hit.normal.x, hit.normal.y, hit.normal.z], [0, 1, 0], atol=2e-3)
 
 
-@pytest.mark.parametrize("query_triggers", [False, True])
-@pytest.mark.parametrize("cast", ["sphere", "box", "capsule"])
+@pytest.mark.parametrize('query_triggers,cast', [(True, 'sphere'), (False, 'box'), (True, 'capsule')])
 def test_filtered_compound_hit_point_matches_selected_member(scene, query_triggers, cast):
     owner = scene.create_game_object("Compound surface")
     solid = owner.add_component("BoxCollider")

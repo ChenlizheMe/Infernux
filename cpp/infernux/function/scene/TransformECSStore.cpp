@@ -338,40 +338,6 @@ void TransformECSStore::SyncAllWorldMatrices()
     m_anyWorldMatrixDirty = false;
 }
 
-void TransformECSStore::SyncObjectWorldMatrices(GameObject *obj)
-{
-    if (!obj) {
-        return;
-    }
-
-    Transform *t = obj->GetTransform();
-    if (t) {
-        auto handle = t->GetECSHandle();
-        if (IsValid(handle)) {
-            uint32_t idx = handle.index;
-            if (m_worldMatrixDirty[idx]) {
-                glm::mat4 local = glm::translate(glm::mat4(1.0f), m_localPositions[idx]) *
-                                  glm::mat4_cast(m_localRotations[idx]) *
-                                  glm::scale(glm::mat4(1.0f), m_localScales[idx]);
-
-                GameObject *parent = obj->GetParent();
-                if (!parent) {
-                    m_cachedWorldMatrices[idx] = local;
-                } else if (Transform *pt = parent->GetTransform()) {
-                    m_cachedWorldMatrices[idx] = pt->GetWorldMatrix() * local;
-                } else {
-                    m_cachedWorldMatrices[idx] = local;
-                }
-                m_worldMatrixDirty[idx] = 0;
-            }
-        }
-    }
-
-    for (size_t i = 0; i < obj->GetChildCount(); ++i) {
-        SyncObjectWorldMatrices(obj->GetChild(i));
-    }
-}
-
 // ── batch gather/scatter ─────────────────────────────────────────────
 
 void TransformECSStore::GatherLocalPositions(Transform *const *transforms, float *out, size_t count) const

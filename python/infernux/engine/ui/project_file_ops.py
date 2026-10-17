@@ -925,112 +925,52 @@ def create_prefab_from_gameobject(game_object, current_path: str,
         return AssetCreationResult(False, str(exc), file_path)
 
 
-def create_animclip(current_path: str, clip_name: str, asset_database=None):
-    """Create a ``.animclip2d`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
-    if not clip_name or not current_path:
-        return AssetCreationResult(False, "Invalid animation clip name")
-
-    clip_name = clip_name.strip()
-    if error := _asset_name_error(clip_name):
+def _create_document_asset(current_path, asset_name, extension, label, document_factory, asset_database):
+    """One portable name/write/import path for ordinary serialized asset templates."""
+    if not asset_name or not current_path:
+        return AssetCreationResult(False, f"Invalid {label.lower()} name")
+    name = asset_name.strip()
+    if error := _asset_name_error(name):
         return AssetCreationResult(False, error)
-    if not clip_name:
-        return AssetCreationResult(False, "Animation clip name cannot be empty")
-
-    if clip_name.endswith('.animclip2d'):
-        clip_name = clip_name[:-11]
-
-    file_name = clip_name + '.animclip2d'
+    if name.endswith(extension):
+        name = name[:-len(extension)]
+    file_name = name + extension
     file_path = os.path.join(current_path, file_name)
-
     if os.path.exists(file_path):
         return AssetCreationResult(False, f"'{file_name}' already exists")
-
-    from infernux.core.animation_clip import AnimationClip
-
-    content = _document_text(AnimationClip(name=clip_name).to_dict())
-    written, error = _write_new_text_asset(file_path, content)
+    written, error = _write_new_text_asset(file_path, _document_text(document_factory(name)))
     if not written:
         return AssetCreationResult(False, error)
-
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
             return AssetCreationResult(False, str(exc), file_path)
-
     return AssetCreationResult(True, "", file_path)
+
+
+def create_animclip(current_path: str, clip_name: str, asset_database=None):
+    """Create and import one strict ``.animclip2d`` asset."""
+    from infernux.core.animation_clip import AnimationClip
+
+    return _create_document_asset(current_path, clip_name, '.animclip2d', 'Animation clip',
+                                  lambda name: AnimationClip(name=name).to_dict(), asset_database)
 
 
 def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
-    """Create a ``.animclip3d`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
-    if not clip_name or not current_path:
-        return AssetCreationResult(False, "Invalid 3D animation clip name")
-
-    clip_name = clip_name.strip()
-    if error := _asset_name_error(clip_name):
-        return AssetCreationResult(False, error)
-    if not clip_name:
-        return AssetCreationResult(False, "3D animation clip name cannot be empty")
-
-    if clip_name.endswith('.animclip3d'):
-        clip_name = clip_name[:-11]
-
-    file_name = clip_name + '.animclip3d'
-    file_path = os.path.join(current_path, file_name)
-
-    if os.path.exists(file_path):
-        return AssetCreationResult(False, f"'{file_name}' already exists")
-
+    """Create and import one strict ``.animclip3d`` asset."""
     from infernux.core.animation_clip3d import AnimationClip3D
 
-    content = _document_text(AnimationClip3D(name=clip_name).to_dict())
-    written, error = _write_new_text_asset(file_path, content)
-    if not written:
-        return AssetCreationResult(False, error)
-
-    if asset_database:
-        try:
-            _import_new_asset(file_path, asset_database)
-        except Exception as exc:
-            return AssetCreationResult(False, str(exc), file_path)
-
-    return AssetCreationResult(True, "", file_path)
+    return _create_document_asset(current_path, clip_name, '.animclip3d', '3D animation clip',
+                                  lambda name: AnimationClip3D(name=name).to_dict(), asset_database)
 
 
 def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
-    """Create a ``.animfsm`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
-    if not fsm_name or not current_path:
-        return AssetCreationResult(False, "Invalid state machine name")
-
-    fsm_name = fsm_name.strip()
-    if error := _asset_name_error(fsm_name):
-        return AssetCreationResult(False, error)
-    if not fsm_name:
-        return AssetCreationResult(False, "State machine name cannot be empty")
-
-    if fsm_name.endswith('.animfsm'):
-        fsm_name = fsm_name[:-8]
-
-    file_name = fsm_name + '.animfsm'
-    file_path = os.path.join(current_path, file_name)
-
-    if os.path.exists(file_path):
-        return AssetCreationResult(False, f"'{file_name}' already exists")
-
+    """Create and import one strict ``.animfsm`` asset."""
     from infernux.core.anim_state_machine import AnimStateMachine
 
-    content = _document_text(AnimStateMachine(name=fsm_name).to_dict())
-    written, error = _write_new_text_asset(file_path, content)
-    if not written:
-        return AssetCreationResult(False, error)
-
-    if asset_database:
-        try:
-            _import_new_asset(file_path, asset_database)
-        except Exception as exc:
-            return AssetCreationResult(False, str(exc), file_path)
-
-    return AssetCreationResult(True, "", file_path)
+    return _create_document_asset(current_path, fsm_name, '.animfsm', 'State machine',
+                                  lambda name: AnimStateMachine(name=name).to_dict(), asset_database)
 
 
 def create_particlegraph(current_path: str, graph_name: str, asset_database=None):
@@ -1145,75 +1085,19 @@ def create_render_effect_group(current_path: str, group_name: str, asset_databas
 
 
 def create_animtimeline(current_path: str, timeline_name: str, asset_database=None):
-    """Create a ``.animtimeline`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
-    if not timeline_name or not current_path:
-        return AssetCreationResult(False, "Invalid timeline name")
-
-    timeline_name = timeline_name.strip()
-    if error := _asset_name_error(timeline_name):
-        return AssetCreationResult(False, error)
-    if not timeline_name:
-        return AssetCreationResult(False, "Timeline name cannot be empty")
-
-    if timeline_name.endswith('.animtimeline'):
-        timeline_name = timeline_name[:-13]
-
-    file_name = timeline_name + '.animtimeline'
-    file_path = os.path.join(current_path, file_name)
-
-    if os.path.exists(file_path):
-        return AssetCreationResult(False, f"'{file_name}' already exists")
-
+    """Create and import one strict ``.animtimeline`` asset."""
     from infernux.core.animation_timeline import AnimationTimeline
 
-    content = _document_text(AnimationTimeline(name=timeline_name).to_dict())
-    written, error = _write_new_text_asset(file_path, content)
-    if not written:
-        return AssetCreationResult(False, error)
-
-    if asset_database:
-        try:
-            _import_new_asset(file_path, asset_database)
-        except Exception as exc:
-            return AssetCreationResult(False, str(exc), file_path)
-
-    return AssetCreationResult(True, "", file_path)
+    return _create_document_asset(current_path, timeline_name, '.animtimeline', 'Timeline',
+                                  lambda name: AnimationTimeline(name=name).to_dict(), asset_database)
 
 
 def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
-    """Create a ``.timelinefsm`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
-    if not fsm_name or not current_path:
-        return AssetCreationResult(False, "Invalid timeline FSM name")
-
-    fsm_name = fsm_name.strip()
-    if error := _asset_name_error(fsm_name):
-        return AssetCreationResult(False, error)
-    if not fsm_name:
-        return AssetCreationResult(False, "Timeline FSM name cannot be empty")
-
-    if fsm_name.endswith('.timelinefsm'):
-        fsm_name = fsm_name[:-12]
-
-    file_name = fsm_name + '.timelinefsm'
-    file_path = os.path.join(current_path, file_name)
-
-    if os.path.exists(file_path):
-        return AssetCreationResult(False, f"'{file_name}' already exists")
-
+    """Create and import one strict ``.timelinefsm`` asset."""
     from infernux.core.anim_state_machine import AnimStateMachine
 
-    content = _document_text(AnimStateMachine(name=fsm_name, mode="timeline").to_dict())
-    written, error = _write_new_text_asset(file_path, content)
-    if not written:
-        return AssetCreationResult(False, error)
-
-    if asset_database:
-        try:
-            _import_new_asset(file_path, asset_database)
-        except Exception as exc:
-            return AssetCreationResult(False, str(exc), file_path)
-
-    return AssetCreationResult(True, "", file_path)
+    return _create_document_asset(current_path, fsm_name, '.timelinefsm', 'Timeline FSM',
+                                  lambda name: AnimStateMachine(name=name, mode='timeline').to_dict(), asset_database)
 
 
 # ---------------------------------------------------------------------------

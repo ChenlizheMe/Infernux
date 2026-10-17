@@ -173,7 +173,8 @@ class TaskGroup
     JobPriority m_priority = JobPriority::Normal;
 };
 
-/** Engine-wide worker pool singleton. */
+/** Engine-wide worker pool. Shutdown joins all owned workers and rejects executing-job reentry.
+ * References returned by Get remain valid only within that engine lifetime. */
 class JobSystem
 {
   public:
@@ -226,6 +227,8 @@ class JobSystem
     /** Wait without executing work; a worker temporarily releases its permit. */
     void WaitPassive(const JobHandle &handle);
     void WaitPassive(TaskGroup &group);
+    /** Wait for completion; the owner reads failure/cancellation from its result ticket. */
+    void WaitPassiveCompletion(const JobHandle &handle);
 
     /** 0 means unlimited. Changes affect tasks not yet dequeued. */
     void SetDomainConcurrency(JobDomain domain, uint32_t maxConcurrency);
@@ -263,6 +266,7 @@ class JobSystem
 
   private:
     JobSystem() = default;
+    void WaitForCompletion(const JobHandle &handle, bool executePendingWork);
     ~JobSystem();
 
     struct ProfilerState

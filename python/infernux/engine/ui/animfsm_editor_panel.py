@@ -13,8 +13,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import threading
-import uuid
 from typing import Dict, List, Optional, Tuple
 
 from infernux.engine.path_utils import path_key, resolved_path, same_path
@@ -24,8 +22,12 @@ from infernux.core.anim_state_machine import (
     AnimTransition,
     AnimCondition,
     AnimParameter,
+    AnimClipEntry,
 )
+from infernux.components.fields import serialized_field, list_field, FieldType, get_serialized_fields, get_raw_field_value
+from infernux.components.serializable_object import SerializableObject
 from infernux.core.asset_ref import AnimationClipRef, AnimationClip3DRef
+from infernux.core.assets import AssetManager
 from infernux.core.asset_reference_types import (
     AssetReferenceCodec,
     asset_type_registry,
@@ -33,9 +35,6 @@ from infernux.core.asset_reference_types import (
 )
 from infernux.core.node_graph import (
     GraphLink,
-    GraphNode,
-    NodeGraph,
-    NodeGraphAuthoringState,
     NodeGraphElementKind,
     NodeGraphMutation,
     NodeGraphMutationKind,
@@ -67,7 +66,6 @@ from infernux.lib import InxGUIContext
 from .asset_save_dialog import AssetSaveAsDialog
 from .animfsm_graph_authoring import (
     AnimFSMGraphAuthoringModel,
-    FSM_ENTRY_NODE_TYPE_ID,
     FSM_STATE_NODE_TYPE_ID,
 )
 from .graph_details import GraphDetailContributor
@@ -85,6 +83,16 @@ from .inspector_utils import field_label, max_label_w
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, Theme
 from .igui import IGUI
+
+
+def _clip_path_from_guid(guid: str) -> str:
+    if not guid:
+        return ""
+    try:
+        return AssetManager._get_path_from_guid(guid) or ""
+    except RuntimeError as exc:
+        Debug.log_suppressed("AnimFSM.clip_path", exc)
+        return ""
 
 
 def _bind_animfsm_panel(panel: object) -> PanelCommandAdapter:
@@ -145,6 +153,20 @@ _FSM_GRAPH_ID = "animfsm.graph"
 
 
 _OPS = ["<", ">", "<=", ">=", "==", "!="]
+
+
+class _ClipGroupItem(SerializableObject):
+    clip: AnimationClip3DRef = serialized_field(
+        default=AnimationClip3DRef(), asset_type="AnimationClip3D",
+        display_name_key="animfsm_editor.clip_ref",
+    )
+    weight: float = serialized_field(
+        default=1.0, range=(0.0, 1.0), display_name_key="animfsm_editor.clip_weight",
+    )
+
+
+class _ClipGroupFields(SerializableObject):
+    clips: list = list_field(element_type=FieldType.SERIALIZABLE_OBJECT, element_class=_ClipGroupItem)
 
 
 def _sanitize_animation_parameter_name(raw: str) -> str:
@@ -989,14 +1011,14 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def on_graph_diff_applied(self, _diff: GraphActionDiff) -> None:
         self._graph_selection.refresh()
 
-    def open_document_resource_immediate(self, file_path: str):
+    def open_document_resource_immediate(self, file_path: str) -> bool:
         """Load an .animfsm file into the editor."""
         normalized_path = self._normalize_fsm_path(file_path)
         target_path = normalized_path or file_path
         fsm = AnimStateMachine.load(target_path)
         if fsm is None:
             Debug.log_warning(f"Failed to load animfsm: {target_path}")
-            return
+            return False
         if self.document_id:
             self.unbind_document()
         self._fsm = fsm
@@ -1004,6 +1026,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._sync_graph_from_fsm()
         self._replace_fsm_document(resource_path=target_path, dirty=False)
         self._graph_selection.clear(record_history=False)
+        return True
 
     def can_new_fsm(self) -> bool:
         from infernux.engine.interaction import (
@@ -1071,23 +1094,17 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def on_enable(self) -> None:
         super().on_enable()
-        try:
-            from infernux.engine.play_mode import PlayModeManager
-            pmm = PlayModeManager.instance()
-            if pmm:
-                pmm.add_state_change_listener(self._on_play_mode_changed)
-        except Exception:
-            pass
+        from infernux.engine.play_mode import PlayModeManager
+        pmm = PlayModeManager.instance()
+        if pmm:
+            pmm.add_state_change_listener(self._on_play_mode_changed)
 
     def on_disable(self) -> None:
         super().on_disable()
-        try:
-            from infernux.engine.play_mode import PlayModeManager
-            pmm = PlayModeManager.instance()
-            if pmm:
-                pmm.remove_state_change_listener(self._on_play_mode_changed)
-        except Exception:
-            pass
+        from infernux.engine.play_mode import PlayModeManager
+        pmm = PlayModeManager.instance()
+        if pmm:
+            pmm.remove_state_change_listener(self._on_play_mode_changed)
 
     # ── State persistence ──────────────────────────────────────────────
 
@@ -1167,35 +1184,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     # ── Toolbar ───────────────────────────────────────────────────────
 
-    def _clip_ext_flags(self):
-        """Return (has_2d_clip, has_3d_clip) from resolved state clip paths."""
-        has_2d = False
-        has_3d = False
-        if not self._fsm:
-            return has_2d, has_3d
-        for state in self._fsm.states:
-            path = self._resolved_clip_path_for_state(state)
-            if not path:
-                continue
-            ext = os.path.splitext(path)[1].lower()
-            if ext == ".animclip2d":
-                has_2d = True
-            elif ext == ".animclip3d":
-                has_3d = True
-        return has_2d, has_3d
-
     @staticmethod
     def _resolved_clip_path_for_state(state: AnimState) -> str:
-        path = ""
-        if state.clip_guid:
-            try:
-                from infernux.core.assets import AssetManager
-
-                adb = getattr(AssetManager, "_asset_database", None)
-                if adb:
-                    path = adb.get_path_from_guid(state.clip_guid) or ""
-            except Exception:
-                pass
+        path = _clip_path_from_guid(state.clip_guid)
         return path.replace("\\", "/") if path else ""
 
     def _render_toolbar(self, ctx: InxGUIContext):
@@ -1306,10 +1297,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     ) -> None:
         """Crossfade/blend duration (seconds) for this transition into its target."""
         dur = float(lk.data.get("duration", 0.0) or 0.0)
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
-        ctx.label(t("animfsm_editor.transition_duration"))
-        ctx.pop_style_color(1)
-        ctx.set_next_item_width(-1)
+        lw = max_label_w(ctx, [t("animfsm_editor.transition_duration"), t("animfsm_editor.synchronize_normalized_time")])
+        field_label(ctx, t("animfsm_editor.transition_duration"), lw)
         new_dur = ctx.drag_float("##trdur", dur, 0.01, 0.0, 60.0)
         if semantic_prefix:
             ctx.record_semantic_item(
@@ -1326,21 +1315,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 merge_key=f"transition:{lk.uid}:duration",
                 duration=new_dur,
             )
-        ctx.dummy(0, 4)
-
         synchronize = bool(lk.data.get("synchronize_normalized_time", False))
-        synchronized = ctx.checkbox(
-            f"{t('animfsm_editor.synchronize_normalized_time')}##trsync",
-            synchronize,
+        synchronized = self._detail_checkbox_row_right(
+            ctx, lw, "animfsm_editor.synchronize_normalized_time", "##trsync", synchronize,
+            f"{semantic_prefix}.synchronize_normalized_time",
         )
-        if semantic_prefix:
-            ctx.record_semantic_item(
-                "checkbox",
-                t("animfsm_editor.synchronize_normalized_time"),
-                True,
-                f"{semantic_prefix}.synchronize_normalized_time",
-                bool(synchronized),
-            )
         if synchronized != synchronize:
             self._update_transition_fields(
                 lk.uid,
@@ -1424,7 +1403,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             if parameter_id not in parameter_ids:
                 parameter_id = parameter_ids[0]
             pi = parameter_ids.index(parameter_id)
-            ctx.set_next_item_width(88)
+            available = ctx.get_content_region_avail_width()
+            ctx.set_next_item_width(available - 48.0 - min(80.0, available * 0.28) - 8.0)
             new_pi = ctx.combo("##pn", pi, names, len(names))
             if semantic_prefix:
                 ctx.record_semantic_item(
@@ -1483,9 +1463,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             self._apply_condition_model(lk, nt)
         ctx.same_line(0, 6)
         can_remove = len(terms) > 1
-        remove_clicked = can_remove and IGUI._mini_icon_button(
-            ctx, "##rmrow", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS
-        )
+        ctx.begin_disabled(not can_remove)
+        remove_clicked = IGUI._mini_icon_button(ctx, "##rmrow", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS)
+        ctx.end_disabled()
         if semantic_prefix:
             ctx.record_semantic_item(
                 "button",
@@ -1626,55 +1606,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         fsm = self._fsm
         return getattr(fsm, "mode", "2d") == "timeline" if fsm is not None else False
 
-    @staticmethod
-    def _embedded_clip3d_picker_items(filter_text: str) -> List[Tuple[str, str]]:
-        """List model-embedded takes alongside standalone ``.animclip3d`` assets.
-
-        The Project panel exposes a take as ``<model-path>::subanim:<clip-id>``.
-        Returning that same public virtual reference keeps object-picker assignment,
-        drag-and-drop assignment, and runtime loading on one contract.
-        """
-        from infernux.core.asset_types import read_meta_file
-        from infernux.engine.interaction import asset_reference_catalog
-
-        filt = (filter_text or "").strip().lower()
-        items: List[Tuple[str, str]] = []
-        seen: set[str] = set()
-        for _label, model_path in asset_reference_catalog.items("Mesh", ""):
-            normalized = path_key(model_path)
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            meta = read_meta_file(model_path) or {}
-            from infernux.core.animation_clip3d import embedded_take_descriptors
-            takes = embedded_take_descriptors(meta)
-            model_name = os.path.splitext(os.path.basename(model_path))[0]
-            for take in takes:
-                take_name = take["name"]
-                display = f"{model_name} | {take_name}"
-                if filt and filt not in display.lower():
-                    continue
-                virtual_path = f"{model_path}::subanim:{take['id']}"
-                items.append((display, {
-                    "asset_type": "AnimationClip3D",
-                    "guid": take.get("guid", ""),
-                    "path_hint": virtual_path,
-                    "builtin": "",
-                }))
-        return items
-
     def _clip_ref_for_state(self, state: AnimState):
         """Build a clip ref (2D/3D) with path hint resolved for Inspector-style labels."""
-        path = ""
-        if not path and state.clip_guid:
-            try:
-                from infernux.core.assets import AssetManager
-
-                adb = getattr(AssetManager, "_asset_database", None)
-                if adb:
-                    path = adb.get_path_from_guid(state.clip_guid) or ""
-            except Exception:
-                pass
+        path = _clip_path_from_guid(state.clip_guid)
         if self._fsm_clip_asset_type() == "AnimationClip3D":
             return AnimationClip3DRef(guid=state.clip_guid or "", path_hint=path)
         return AnimationClipRef(guid=state.clip_guid or "", path_hint=path)
@@ -1691,7 +1625,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         """Label left, checkbox square aligned to the right (inspector-style row)."""
         label = t(label_key)
         field_label(ctx, label, lw)
-        ctx.same_line(0, 8)
         dx = ctx.get_content_region_avail_width() - Theme.INSPECTOR_CHECKBOX_SLOT_W
         if dx > 0:
             ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + dx)
@@ -1701,117 +1634,39 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         )
         return new_value
 
-    def _clip_b_ref_for_state(self, state: AnimState):
-        """Build a clip ref for the blend node's second clip (B)."""
-        path = ""
-        guid = getattr(state, "clip_b_guid", "") or ""
-        if guid:
-            try:
-                from infernux.core.assets import AssetManager
-                adb = getattr(AssetManager, "_asset_database", None)
-                if adb:
-                    path = adb.get_path_from_guid(guid) or ""
-            except Exception:
-                pass
-        if self._fsm_clip_asset_type() == "AnimationClip3D":
-            return AnimationClip3DRef(guid=guid, path_hint=path)
-        return AnimationClipRef(guid=guid, path_hint=path)
+    def _group_item_for_path(self, payload):
+        path = resolve_asset_reference_path("AnimationClip3D", payload)
+        guid = self._resolve_guid(path) if path else ""
+        return _ClipGroupItem(clip=AnimationClip3DRef(guid=guid, path_hint=path), weight=1.0) if guid else None
 
-    def _clip_b_display_name(self, state: AnimState, ref=None) -> str:
-        guid = str(getattr(state, "clip_b_guid", "") or "")
-        path = ""
-        cache = getattr(self, "_clip_name_cache", None)
-        if cache is None:
-            cache = {}
-            self._clip_name_cache = cache
-        ckey = ("B", guid, path)
-        if ckey in cache:
-            return cache[ckey]
-        resolved = path
-        if (not resolved or "::subanim:" not in resolved) and guid:
-            try:
-                from infernux.core.assets import AssetManager
-                adb = getattr(AssetManager, "_asset_database", None)
-                if adb:
-                    resolved = adb.get_path_from_guid(guid) or resolved
-            except Exception:
-                pass
-        name = self._clip_name_from(
-            guid, path, resolved, lambda: (ref or self._clip_b_ref_for_state(state)))
-        cache[ckey] = name
-        return name
+    def _render_clip_group(self, ctx, state):
+        from ._inspector_list_field import _render_list_field
 
-    def _assign_clip_b_to_state(self, state: AnimState, clip_path, node=None, *, record_undo: bool = True):
+        items = [
+            _ClipGroupItem(
+                clip=AnimationClip3DRef(guid=entry.clip_guid, path_hint=_clip_path_from_guid(entry.clip_guid)),
+                weight=entry.weight,
+            )
+            for entry in state.clips
+        ]
+
+        def commit(_owner, _field, _before, after):
+            clips = [AnimClipEntry(get_raw_field_value(item, "clip").guid, item.weight).to_dict()
+                     for item in after]
+            self._update_state_fields(state, "Edit animation clip group",
+                                      merge_key=f"state:{state.stable_id}:clips", clips=clips)
+
+        ctx.push_id_str(state.stable_id)
         try:
-            p = resolve_asset_reference_path(self._fsm_clip_asset_type(), clip_path)
-        except (KeyError, TypeError, ValueError) as exc:
-            Debug.log_error(f"Animation state clip B assignment rejected: {exc}")
-            return
-        guid = self._resolve_guid(p) if p else ""
-        if not guid:
-            Debug.log_error("Animation state clip B assignment requires a registered asset GUID")
-            return
-        if record_undo:
-            self._update_state_fields(
-                state,
-                "Assign blend clip B",
-                merge_key=f"state:{state.stable_id}:clip_b",
-                clip_b_guid=guid,
+            _render_list_field(
+                ctx, state, "clips", get_serialized_fields(_ClipGroupFields)["clips"], items, 0.0,
+                display_name=t("animfsm_editor.node_kind_group"),
+                header_drop_type=asset_type_registry.require("AnimationClip3D").drag_types,
+                header_drop_factory=self._group_item_for_path,
+                item_label=lambda item, index: f"{index + 1}", on_change=commit,
             )
-        else:
-            state.clip_b_guid = guid
-        self._clip_name_cache = {}
-
-    def _clear_clip_b_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
-        if record_undo:
-            self._update_state_fields(
-                state,
-                "Clear blend clip B",
-                merge_key=f"state:{state.stable_id}:clip_b",
-                clip_b_guid="",
-            )
-        else:
-            state.clip_b_guid = ""
-        self._clip_name_cache = {}
-
-    def _render_clip_b_reference_row(self, ctx: InxGUIContext, state: AnimState, node, lw: float) -> None:
-        descriptor = asset_type_registry.require(self._fsm_clip_asset_type())
-        type_hint = descriptor.display_name
-        drag_type = descriptor.drag_types
-        prefix = descriptor.widget_prefix
-        ref = self._clip_b_ref_for_state(state)
-        display = self._clip_b_display_name(state, ref)
-
-        field_label(ctx, t("animfsm_editor.clip_b"), lw)
-        clip_b_ping = str(getattr(ref, "path_hint", "") or "").strip()
-        if not clip_b_ping:
-            try:
-                from infernux.core.assets import AssetManager
-                adb = getattr(AssetManager, "_asset_database", None)
-                guid_b = str(getattr(state, "clip_b_guid", "") or "")
-                if adb and guid_b:
-                    clip_b_ping = adb.get_path_from_guid(guid_b) or ""
-            except Exception:
-                pass
-        render_asset_reference_field(
-            ctx,
-            f"{prefix}_fsm_clipb_{node.uid}",
-            display,
-            type_hint,
-            accept_drag_type=drag_type,
-            asset_type=descriptor.type_id,
-            on_assign=lambda p, _st=state, _nd=node: self._assign_clip_b_to_state(_st, p, _nd),
-            additional_asset_items=(
-                self._embedded_clip3d_picker_items
-                if self._fsm_clip_asset_type() == "AnimationClip3D"
-                else None
-            ),
-            on_clear=lambda _st=state, _nd=node: self._clear_clip_b_from_state(_st, _nd),
-            ping_path=clip_b_ping or None,
-            has_value=bool(state.clip_b_guid),
-            reference_value=AssetReferenceCodec.normalize(descriptor.type_id, ref),
-            semantic_id="animfsm.state.clip_b",
-        )
+        finally:
+            ctx.pop_id()
 
     def _clip_display_name(self, state: AnimState, ref=None) -> str:
         """Human-readable clip name (take/file name) instead of a raw GUID."""
@@ -1843,22 +1698,22 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 ec = AnimationClip3D.from_embedded_take_virtual_path(emb)
                 if ec is not None and getattr(ec, "take_name", ""):
                     return str(ec.name)
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as exc:
+                Debug.log_suppressed("AnimFSM.embedded_clip_name", exc)
         try:
             obj = ref_factory().resolve()
             if obj is not None:
                 nm = str(getattr(obj, "take_name", "") or getattr(obj, "name", "") or "")
                 if nm:
                     return nm
-        except Exception:
-            pass
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_suppressed("AnimFSM.clip_name", exc)
         p = resolved or path
         if p and "::subanim:" not in p:
             base = os.path.basename(p)
             dot = base.rfind(".")
             return base[:dot] if dot > 0 else base
-        return f"GUID:{guid[:8]}\u2026" if guid else "None"
+        return t("asset.missing") if guid else t("igui.none")
 
     def _render_clip_reference_row(
         self,
@@ -1892,11 +1747,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             accept_drag_type=drag_type,
             on_assign=lambda p, _st=state, _nd=node: self._assign_clip_to_state(
                 _st, p, _nd,
-            ),
-            additional_asset_items=(
-                self._embedded_clip3d_picker_items
-                if self._fsm_clip_asset_type() == "AnimationClip3D"
-                else None
             ),
             on_clear=_on_clear,
             ping_path=clip_ping or None,
@@ -1965,7 +1815,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         ctx.dummy(0, 4)
 
         field_label(ctx, t("animfsm_editor.state_name"), lw)
-        ctx.same_line(0, 8)
         ctx.set_next_item_width(-1)
         new_name = ctx.text_input("##state_name_edit", state.name, 128)
         ctx.record_semantic_item(
@@ -1989,7 +1838,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         ctx.separator()
         ctx.dummy(0, 4)
 
-        # The node kind (plain Clip / A↔B Blend / Timeline) is fixed at creation
+        # The node kind (Clip / Clip Group / Timeline) is fixed at creation
         # time (via the drag-to-create menu or by dropping an asset) and is
         # intentionally not editable here.
         kind = getattr(state, "kind", "clip")
@@ -1997,25 +1846,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             "status", f"State Kind: {kind}", False, "animfsm.state.kind",
         )
 
-        if kind == "blend":
-            # Symmetric A/B naming for blend nodes.
-            self._render_clip_reference_row(
-                ctx, state, node, lw,
-                label=t("animfsm_editor.clip_a"),
-                semantic_id="animfsm.state.clip_a",
-            )
-            self._render_clip_b_reference_row(ctx, state, node, lw)
-            field_label(ctx, t("animfsm_editor.blend_lerp"), lw)
-            ctx.same_line(0, 8)
-            ctx.set_next_item_width(-1)
-            new_lerp = ctx.drag_float("##blend_lerp", float(state.blend_value), 0.005, 0.0, 1.0)
-            if new_lerp != state.blend_value:
-                self._update_state_fields(
-                    state,
-                    "Change blend lerp",
-                    merge_key=f"state:{state.stable_id}:blend_value",
-                    blend_value=max(0.0, min(1.0, float(new_lerp))),
-                )
+        if kind == "group":
+            self._render_clip_group(ctx, state)
         elif kind == "timeline":
             self._render_timeline_reference_row(ctx, state, node, lw)
         else:
@@ -2029,7 +1861,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         ctx.dummy(0, 4)
 
         field_label(ctx, t("animfsm_editor.speed"), lw)
-        ctx.same_line(0, 8)
         ctx.set_next_item_width(-1)
         new_speed = ctx.drag_float("##speed", state.speed, 0.01, 0.0, 10.0)
         ctx.record_semantic_item(
@@ -2046,7 +1877,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
         exit_pct = state.exit_time_normalized * 100.0
         field_label(ctx, t("animfsm_editor.exit_time"), lw)
-        ctx.same_line(0, 8)
         ctx.set_next_item_width(-1)
         new_exit_pct = ctx.drag_float("##exit_time", exit_pct, 0.5, 0.0, 100.0)
         ctx.record_semantic_item(
@@ -2098,16 +1928,20 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                and lk.target_pin == "in"
         ]
         remove_link_uid = ""
-        for i, lk in enumerate(outgoing_links):
+        for lk in outgoing_links:
             target_name = self._uid_to_name.get(lk.target_node, "?")
-            ctx.push_id(i)
+            ctx.push_id_str(lk.uid)
             ctx.begin_group()
-            ctx.label(f"→ {target_name}")
-            ctx.same_line()
+            start_x = ctx.get_cursor_pos_x()
+            row_width = ctx.get_content_region_avail_width()
+            field_label(ctx, f"→ {target_name}", row_width - 28.0)
+            ctx.set_cursor_pos_x(start_x + row_width - 20.0)
             if IGUI._mini_icon_button(ctx, "##del", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
                 remove_link_uid = lk.uid
+            prefix = f"animfsm.transition.{lk.uid}"
+            ctx.record_semantic_item("button", t("animfsm_editor.delete_transition"), True, f"{prefix}.delete")
 
-            self._render_transition_condition_block(ctx, lk)
+            self._render_transition_condition_block(ctx, lk, prefix)
             ctx.end_group()
             ctx.dummy(0, 6)
             ctx.pop_id()
@@ -2150,7 +1984,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             self._graph_selection.clear(record_history=False)
             return False
 
-        source_name = self._uid_to_name.get(lk.source_node, "Entry")
+        source_name = self._uid_to_name.get(lk.source_node, t("animfsm_editor.entry"))
         target_name = self._uid_to_name.get(lk.target_node, "?")
         route_label = f"{source_name} -> {target_name}"
         ctx.record_semantic_item(
@@ -2466,10 +2300,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         if self._is_timeline_mode():
             options = ((t("animfsm_editor.node_kind_timeline"), "timeline"),)
         else:
-            options = (
-                (t("animfsm_editor.node_kind_clip"), "clip"),
-                (t("animfsm_editor.node_kind_blend"), "blend"),
-            )
+            options = [(t("animfsm_editor.node_kind_clip"), "clip")]
+            if self._fsm.mode == "3d":
+                options.append((t("animfsm_editor.node_kind_group"), "group"))
         category = t("animfsm_editor.create_node_title")
         return [
             NodeCreationEntry(key=kind, label=label, category=category)
@@ -2491,10 +2324,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         from_entry = (src_node == self._entry_uid)
         src_name = "" if from_entry else self._graph_state_name(src_node)
 
-        base_name = "Timeline" if kind == "timeline" else "State"
+        base_name = t("animfsm_editor.node_kind_" + kind)
         state = AnimState(name=self._unique_state_name(base_name))
         state.position = [gx, gy]
-        if kind in ("blend", "timeline"):
+        if kind in ("group", "timeline"):
             state.kind = kind
         before = self._graph.capture_authoring_state()
         self._graph.add_node(
@@ -2642,36 +2475,18 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _timeline_display_name(self, state: AnimState) -> str:
         guid = str(getattr(state, "timeline_guid", "") or "")
-        path = ""
-        resolved = path
-        if not resolved and guid:
-            try:
-                from infernux.core.assets import AssetManager
-                adb = getattr(AssetManager, "_asset_database", None)
-                if adb:
-                    resolved = adb.get_path_from_guid(guid) or ""
-            except Exception:
-                resolved = path
+        resolved = _clip_path_from_guid(guid)
         if resolved:
             base = os.path.basename(resolved)
             dot = base.rfind(".")
             return base[:dot] if dot > 0 else base
-        return f"GUID:{guid[:8]}\u2026" if guid else "None"
+        return t("asset.missing") if guid else t("igui.none")
 
     def _render_timeline_reference_row(self, ctx: InxGUIContext, state: AnimState, node, lw: float) -> None:
         display = self._timeline_display_name(state)
 
         field_label(ctx, t("animfsm_editor.timeline_ref"), lw)
-        tl_ping = ""
-        if not tl_ping:
-            try:
-                from infernux.core.assets import AssetManager
-                adb = getattr(AssetManager, "_asset_database", None)
-                tl_guid = str(getattr(state, "timeline_guid", "") or "")
-                if adb and tl_guid:
-                    tl_ping = adb.get_path_from_guid(tl_guid) or ""
-            except Exception:
-                pass
+        tl_ping = _clip_path_from_guid(state.timeline_guid)
         render_asset_reference_field(
             ctx,
             f"atl_fsm_tl_{node.uid}",
@@ -2908,11 +2723,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             scene = SceneManager.instance().get_active_scene()
             if not scene:
                 return
-            from infernux.components.spirit_animator import SpiritAnimator
+            from infernux.components.sprite_animator import SpriteAnimator
             from infernux.components.skeletal_animator import SkeletalAnimator
             from infernux.components.timeline_action import TimelineAction
             for go in scene.get_all_objects():
-                animator = go.get_component(SpiritAnimator)
+                animator = go.get_component(SpriteAnimator)
                 if animator and animator._fsm and same_path(
                         animator._fsm.file_path or "", fsm_path):
                     animator.reload_controller()
@@ -2927,5 +2742,5 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     if fsm_obj is not None and same_path(
                             getattr(fsm_obj, "file_path", "") or "", fsm_path):
                         ta.reload_controller()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            Debug.log_suppressed("AnimFSM.notify_running_animators", exc)

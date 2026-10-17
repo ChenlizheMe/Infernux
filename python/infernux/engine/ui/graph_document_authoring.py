@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 
 from infernux.core.node_graph import (
     LinkValidationResult,

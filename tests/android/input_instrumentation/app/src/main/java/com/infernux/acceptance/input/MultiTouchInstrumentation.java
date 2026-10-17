@@ -168,6 +168,10 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                 throw new IllegalStateException(
                         "Android IME is visible without an SDL text editor focus");
             }
+            waitForLogMarker(
+                    automation,
+                    "INFERNUX_PLATFORM_FIXTURE_IME_VISIBLE",
+                    waitMilliseconds);
             stage = "text-commit";
             commitText(targetActivity, EXPECTED_TEXT);
             stage = "ime-hidden";

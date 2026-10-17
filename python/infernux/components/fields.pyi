@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING, TypeVar, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Type, TYPE_CHECKING, TypeVar, Union
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
@@ -130,6 +130,11 @@ class FieldMetadata:
 class SerializedFieldDescriptor:
     """Descriptor that handles get/set for serialized fields."""
     metadata: FieldMetadata
+    @property
+    def default(self) -> Any:
+        """Return an independent copy of the declared default."""
+        ...
+    def default_value(self) -> Any: ...
     def __init__(self, metadata: FieldMetadata) -> None: ...
     def __set_name__(self, owner: Type, name: str) -> None: ...
     def get_raw(self, instance: InxComponent) -> Any:
@@ -342,7 +347,7 @@ def component_list_field(
     ...
 
 
-def get_serialized_fields(component_class: Type[InxComponent]) -> Dict[str, FieldMetadata]:
+def get_serialized_fields(component_class: Type[InxComponent]) -> Mapping[str, FieldMetadata]:
     """Get all serialized fields from a component class (including inherited)."""
     ...
 

@@ -16,7 +16,7 @@ from hub_utils import is_frozen, is_project_open
 from i18n import tr
 from project_python_runtime import read_project_python_version
 from version_manager import VersionManager, display_release
-from view.forge import Monogram, StatusLed, chip, fmt_age, mono_label, repolish, toast, track
+from view.forge import Monogram, StatusLed, chip, fmt_age, mono_label, toast, track
 from view.hover_widgets import AnimatedSurfaceFrame
 from model.project_model import source_engine_version
 

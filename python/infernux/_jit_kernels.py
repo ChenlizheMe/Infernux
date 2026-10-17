@@ -35,6 +35,7 @@ from infernux.jit_runtime import (
 
 _HAS_NUMBA = False
 _real_njit = None
+_NUMBA_IMPORT_ERROR = None
 try:
     from infernux._jit_compat import prepare_cpu_backend
 
@@ -44,6 +45,7 @@ try:
     _real_njit = compile_cpu
     _HAS_NUMBA = True
 except Exception as _exc:
+    _NUMBA_IMPORT_ERROR = _exc
     if hasattr(_sys, '_INFERNUX_DEBUG'):
         print(f"[_jit_kernels] numba unavailable: {type(_exc).__name__}: {_exc}",
               flush=True)
@@ -176,30 +178,6 @@ def _jit_compile_decorator_names(module_ast) -> set[str]:
     return names
 
 
-def _jit_warmup_names(module_ast) -> set[str]:
-    """Resolve public ``inx.jit.warmup`` aliases without importing a module."""
-    names = set()
-    for node in module_ast.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in ("infernux", "infernux"):
-                    names.add(f"{alias.asname or alias.name}.jit.warmup")
-                elif alias.name in ("infernux.jit", "infernux.jit"):
-                    names.add(
-                        f"{alias.asname}.warmup"
-                        if alias.asname
-                        else f"{alias.name}.warmup"
-                    )
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            for alias in node.names:
-                if node.module in ("infernux", "infernux") and alias.name == "jit":
-                    names.add(f"{alias.asname or alias.name}.warmup")
-                elif (
-                    node.module in ("infernux.jit", "infernux.jit")
-                    and alias.name == "warmup"
-                ):
-                    names.add(alias.asname or alias.name)
-    return names
 
 
 def _is_jit_compile_decorator(node, compile_names) -> bool:
@@ -1202,7 +1180,7 @@ def njit(*args, **kwargs):
     if not _HAS_NUMBA:
         raise RuntimeError(
             "Infernux CPU compilation requires the bundled Numba/llvmlite JIT runtime"
-        )
+        ) from _NUMBA_IMPORT_ERROR
 
     if auto_parallel:
         serial_kwargs = dict(kwargs)
@@ -1305,7 +1283,7 @@ def warmup(fn, *args, **kwargs):
     if not _HAS_NUMBA:
         raise RuntimeError(
             "Infernux CPU compilation requires the bundled Numba/llvmlite JIT runtime"
-        )
+        ) from _NUMBA_IMPORT_ERROR
     prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
     fn(*prepared_args, **prepared_kwargs)
 

@@ -29,20 +29,15 @@ class ScriptCandidatePolicyIssue:
 @dataclass(frozen=True, slots=True)
 class ScriptCandidatePolicyReport:
     blocked: tuple[ScriptCandidatePolicyIssue, ...] = ()
-    runtime_guard_required: tuple[ScriptCandidatePolicyIssue, ...] = ()
 
     @property
     def is_blocked(self) -> bool:
         return bool(self.blocked)
 
     @property
-    def requires_runtime_guard(self) -> bool:
-        return bool(self.runtime_guard_required)
-
-    @property
     def is_rejected(self) -> bool:
         """Whether candidate loading must stop before any import/execute step."""
-        return self.is_blocked or self.requires_runtime_guard
+        return self.is_blocked
 
 
 _BLOCKED_MODULE_WRITE = "NX-R1-STATIC-MODULE-WRITE"
@@ -152,14 +147,14 @@ class _PolicyVisitor(ast.NodeVisitor):
         self.imported_members: dict[str, tuple[str, str]] = {}
         self.path_bindings: set[str] = set()
         self.blocked: list[ScriptCandidatePolicyIssue] = []
-        self.runtime_guard_required: list[ScriptCandidatePolicyIssue] = []
 
     def _blocked(self, node: ast.AST, code: str, operation: str, message: str) -> None:
         self.blocked.append(_issue(node, code, operation, message))
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            self.imported_modules[alias.asname or alias.name.split(".", 1)[0]] = alias.name
+            bound = alias.asname or alias.name.split(".", 1)[0]
+            self.imported_modules[bound] = alias.name if alias.asname else bound
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = "." * node.level + (node.module or "")
@@ -370,6 +365,7 @@ class _PolicyVisitor(ast.NodeVisitor):
                     "top-level process/thread/timer/socket/atexit operation is not allowed",
                 )
 
+        self.visit(node.func)
         for argument in node.args:
             self.visit(argument)
         for keyword in node.keywords:
@@ -379,7 +375,6 @@ class _PolicyVisitor(ast.NodeVisitor):
         key = lambda item: (item.line, item.column, item.code, item.operation)
         return ScriptCandidatePolicyReport(
             blocked=tuple(sorted(self.blocked, key=key)),
-            runtime_guard_required=tuple(sorted(self.runtime_guard_required, key=key)),
         )
 
 

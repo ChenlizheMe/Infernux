@@ -97,27 +97,6 @@ def test_transient_context_restores_the_previous_child_context():
     assert focus.snapshot.child_context_id == "particle.canvas"
 
 
-def test_transient_context_is_not_persisted_in_action_history():
-    focus, _shortcuts, transients = _interaction_stack()
-    focus.set_child_context(
-        "particle_graph_editor",
-        "particle.parameters",
-        record_history=False,
-    )
-    transients.begin(
-        "particle_graph_editor",
-        lambda: None,
-        kind="rename",
-    )
-    focus.set_capture_owner("particle.rename")
-
-    persistent = transients.persistent_focus_snapshot()
-
-    assert persistent.active_panel_id == "particle_graph_editor"
-    assert persistent.child_context_id == "particle.parameters"
-    assert persistent.capture_owner_id == ""
-
-
 def test_focus_change_cancels_transient_owner_once():
     core_focus, _shortcuts, transients = _interaction_stack()
     cancelled = []

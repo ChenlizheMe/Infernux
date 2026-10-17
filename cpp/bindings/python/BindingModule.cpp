@@ -1,8 +1,14 @@
 #include "BindingRegistration.h"
+#include <core/log/InxLog.h>
 #include <function/renderer/ProfileConfig.h>
 
 PYBIND11_MODULE(_Infernux, module)
 {
+    module.def("_format_log_message", [](int level, const std::string &sourceFile, int sourceLine,
+                                         const std::string &message, const std::string &projectRoot) {
+        return infernux::FormatDiagnosticMessage(static_cast<infernux::LogLevel>(level), sourceFile, sourceLine,
+                                                 message, projectRoot);
+    });
     pybind11::register_exception<infernux::InvalidNativeObjectError>(module, "InvalidNativeObjectError",
                                                                      PyExc_RuntimeError);
     module.def(

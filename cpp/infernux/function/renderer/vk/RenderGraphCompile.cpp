@@ -1005,6 +1005,9 @@ bool RenderGraph::AllocateResources()
                 return false;
             }
 
+            if (ClaimReusableImage(ri, imageInfo))
+                continue;
+            resource.allocatedUsage = imageInfo.usage;
             if (vkCreateImage(device, &imageInfo, nullptr, &resource.allocatedImage) != VK_SUCCESS) {
                 INXLOG_ERROR("Failed to create image for resource: ", resource.name);
                 return false;
@@ -1091,6 +1094,55 @@ bool RenderGraph::AllocateResources()
             m_rhiDevice ? m_rhiDevice->RegisterTexture(resource.allocatedImage) : rhi::TextureHandle{};
     }
 
+    RetireReusableImages();
+    return true;
+}
+
+bool RenderGraph::ClaimReusableImage(uint32_t resourceIndex, const VkImageCreateInfo &info)
+{
+    if (m_reusableImages.empty())
+        return false;
+    // The previous owner's work is ordered only on the graphics queue. Every
+    // pass that touches the image in this generation must record there too.
+    const auto touches = [resourceIndex](const ResourceAccess &access) { return access.handle.id == resourceIndex; };
+    for (const auto &pass : m_passes) {
+        if (!pass.culled && pass.queue != rhi::QueueRole::Graphics &&
+            (std::any_of(pass.reads.begin(), pass.reads.end(), touches) ||
+             std::any_of(pass.writes.begin(), pass.writes.end(), touches)))
+            return false;
+    }
+    const NativeQueueBinding graphics = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)];
+    const auto match = std::find_if(m_reusableImages.begin(), m_reusableImages.end(), [&](const ReusableImage &image) {
+        return image.graphicsLane == graphics.lane && image.format == info.format &&
+               image.width == info.extent.width && image.height == info.extent.height &&
+               image.mipLevels == info.mipLevels && image.arrayLayers == info.arrayLayers &&
+               image.samples == info.samples && image.usage == info.usage;
+    });
+    if (match == m_reusableImages.end())
+        return false;
+    const ReusableImage claimed = *match;
+    *match = m_reusableImages.back();
+    m_reusableImages.pop_back();
+
+    auto &resource = m_resources[resourceIndex];
+    resource.allocatedImage = claimed.image;
+    resource.allocatedView = claimed.view;
+    resource.allocatedMemory = claimed.memory;
+    resource.allocatedUsage = claimed.usage;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(claimed.view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(claimed.image) : rhi::TextureHandle{};
+
+    // Contents are discarded (Undefined), but the first transition waits for
+    // every earlier graphics-queue access, including frames still in flight.
+    ResourceState state{};
+    state.layout = rhi::TextureLayout::Undefined;
+    state.accessMask = rhi::Access::MemoryWrite;
+    state.stages = rhi::PipelineStage::AllCommands;
+    state.queue = rhi::QueueRole::Graphics;
+    state.queueFamily = graphics.family;
+    state.nativeQueueLane = graphics.lane;
+    m_initialResourceStates[resourceIndex] = state;
+    m_resourceStates[resourceIndex] = state;
     return true;
 }
 
@@ -1329,6 +1381,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             return;
 
         const auto &prevState = m_resourceStates[access.handle.id];
+        const bool currentWrite = (access.usage & ResourceUsage::Write) != ResourceUsage::None;
         const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
         const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : recordingQueue;
         const NativeQueueBinding targetBinding = bindingFor(targetQueue);
@@ -1338,6 +1391,9 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         const bool familyChange = hasPreviousOwner && prevState.queueFamily != targetBinding.family;
         const bool ownershipTransfer =
             m_recordingSubmissionBatches && laneChange && familyChange && !resource.concurrentQueueSharing;
+        const bool readAlreadyVisible = !currentWrite && !laneChange &&
+                                        (prevState.visibleReadAccess & access.access) == access.access &&
+                                        (prevState.visibleReadStages & access.stages) == access.stages;
 
         VkAccessFlags srcAccessMask = ToVkAccessFlags(prevState.accessMask);
         VkAccessFlags dstAccessMask = ToVkAccessFlags(access.access);
@@ -1366,8 +1422,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             const bool previousWrite =
                 rhi::HasAny(prevState.accessMask, rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
                                                       rhi::Access::MemoryWrite | rhi::Access::HostWrite);
-            const bool currentWrite = (static_cast<int>(access.usage & ResourceUsage::Write) != 0);
-            if (!previousWrite && !currentWrite && !laneChange)
+            if ((!previousWrite && !currentWrite && !laneChange) || readAlreadyVisible)
                 return;
 
             VkBufferMemoryBarrier barrier{};
@@ -1393,10 +1448,11 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         const VkImageLayout newLayout = ToVkImageLayout(access.layout);
 
         // Skip barrier if layout is already correct and no write hazard
-        if (oldLayout == newLayout && (static_cast<int>(access.usage & ResourceUsage::Write) == 0) && !laneChange &&
-            !rhi::HasAny(prevState.accessMask, rhi::Access::ColorWrite | rhi::Access::DepthWrite |
-                                                   rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
-                                                   rhi::Access::MemoryWrite | rhi::Access::HostWrite)) {
+        if (oldLayout == newLayout && !currentWrite && !laneChange &&
+            (readAlreadyVisible ||
+             !rhi::HasAny(prevState.accessMask, rhi::Access::ColorWrite | rhi::Access::DepthWrite |
+                                                    rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
+                                                    rhi::Access::MemoryWrite | rhi::Access::HostWrite))) {
             return;
         }
 
@@ -1409,9 +1465,9 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         barrier.image = image;
         barrier.subresourceRange.aspectMask = aspectMaskFor(resource, isDepthInput);
         barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.levelCount = resource.textureDesc.mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.layerCount = resource.textureDesc.arrayLayers;
         barrier.srcAccessMask = srcAccessMask;
         barrier.dstAccessMask = dstAccessMask;
 
@@ -1428,8 +1484,18 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         const NativeQueueBinding targetBinding = bindingFor(targetQueue);
         auto &state = m_resourceStates[access.handle.id];
         state.layout = layout;
-        state.accessMask = access.access;
-        state.stages = access.stages;
+        const bool write = (access.usage & ResourceUsage::Write) != ResourceUsage::None;
+        if (write || state.nativeQueueLane != targetBinding.lane) {
+            state.accessMask = access.access;
+            state.stages = access.stages;
+        } else {
+            // Keep the producing write until every subsequent read stage has
+            // acquired it; a compute read cannot stand in for vertex/indirect visibility.
+            state.accessMask = state.accessMask | access.access;
+            state.stages = state.stages | access.stages;
+        }
+        state.visibleReadAccess = write ? rhi::Access::None : access.access;
+        state.visibleReadStages = write ? rhi::PipelineStage::None : access.stages;
         state.writerPassId = passIndex;
         state.queue = targetQueue;
         state.queueFamily = targetBinding.family;
@@ -1450,8 +1516,18 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             });
         if (duplicateTransition)
             continue;
-        bool isDepthInput = (static_cast<int>(read.usage & ResourceUsage::DepthRead) != 0);
-        addBarrier(read, isDepthInput);
+        ResourceAccess combinedRead = read;
+        for (size_t later = readIndex + 1; later < pass.reads.size(); ++later) {
+            const auto &other = pass.reads[later];
+            if (other.handle.id == read.handle.id && other.layout == read.layout &&
+                (other.usage & ResourceUsage::VersionDependency) == ResourceUsage::None) {
+                combinedRead.access = combinedRead.access | other.access;
+                combinedRead.stages = combinedRead.stages | other.stages;
+                combinedRead.usage = combinedRead.usage | other.usage;
+            }
+        }
+        const bool isDepthInput = (combinedRead.usage & ResourceUsage::DepthRead) != ResourceUsage::None;
+        addBarrier(combinedRead, isDepthInput);
     }
 
     // Check read-write overlap without heap allocation
@@ -1512,11 +1588,11 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     }
 
     // Read-only depth remains in its declared sampled attachment layout.
-    if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid()) {
+    if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid() && pass.depthInput.id < m_resourceStates.size()) {
         auto &state = m_resourceStates[pass.depthInput.id];
         state.layout = rhi::TextureLayout::DepthStencilReadOnly;
-        state.accessMask = rhi::Access::DepthRead;
-        state.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+        state.accessMask = state.accessMask | rhi::Access::DepthRead;
+        state.stages = state.stages | rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
     }
 }
 
@@ -1594,9 +1670,9 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
         barrier.image = image;
         barrier.subresourceRange.aspectMask = aspectMaskFor(resource);
         barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.levelCount = resource.textureDesc.mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.layerCount = resource.textureDesc.arrayLayers;
         m_barrierScratch.push_back(barrier);
     }
 
@@ -1616,8 +1692,6 @@ void RenderGraph::FreeResources()
     if (!m_context) {
         return;
     }
-
-    VkDevice device = m_context->GetDevice();
 
     // RHI registrations are graph-resource lifetime aliases, including
     // external resources. Release them before the no-transient early-out and
@@ -1674,7 +1748,55 @@ void RenderGraph::FreeResources()
         }
     }
 
-    std::vector<VmaAllocation> allocations(allocationSet.begin(), allocationSet.end());
+    RetireNativeResources(std::move(imageViews), std::move(images), std::move(buffers),
+                          std::vector<VmaAllocation>(allocationSet.begin(), allocationSet.end()));
+}
+
+void RenderGraph::RetainReusableImages()
+{
+    if (!m_context)
+        return;
+    const uint32_t graphicsLane = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)].lane;
+    for (size_t index = 0; index < m_resources.size(); ++index) {
+        auto &resource = m_resources[index];
+        if (resource.isExternal || resource.allocatedImage == VK_NULL_HANDLE ||
+            resource.allocatedView == VK_NULL_HANDLE || resource.allocatedMemory == VK_NULL_HANDLE)
+            continue;
+        // UINT32_MAX: never recorded, so no GPU work references the image.
+        const uint32_t lane = index < m_resourceStates.size() ? m_resourceStates[index].nativeQueueLane : UINT32_MAX;
+        if (lane != UINT32_MAX && lane != graphicsLane)
+            continue;
+        const auto &desc = resource.textureDesc;
+        m_reusableImages.push_back({desc.format, desc.width, desc.height, desc.mipLevels, desc.arrayLayers,
+                                    desc.samples, resource.allocatedUsage, graphicsLane, resource.allocatedImage,
+                                    resource.allocatedView, resource.allocatedMemory});
+        // FreeResources() still releases the RHI registrations of this generation.
+        resource.allocatedImage = VK_NULL_HANDLE;
+        resource.allocatedView = VK_NULL_HANDLE;
+        resource.allocatedMemory = VK_NULL_HANDLE;
+    }
+}
+
+void RenderGraph::RetireReusableImages()
+{
+    if (m_reusableImages.empty() || !m_context)
+        return;
+    std::vector<VkImageView> views;
+    std::vector<VkImage> images;
+    std::vector<VmaAllocation> allocations;
+    for (const auto &image : m_reusableImages) {
+        views.push_back(image.view);
+        images.push_back(image.image);
+        allocations.push_back(image.memory);
+    }
+    m_reusableImages.clear();
+    RetireNativeResources(std::move(views), std::move(images), {}, std::move(allocations));
+}
+
+void RenderGraph::RetireNativeResources(std::vector<VkImageView> imageViews, std::vector<VkImage> images,
+                                        std::vector<VkBuffer> buffers, std::vector<VmaAllocation> allocations)
+{
+    VkDevice device = m_context->GetDevice();
     const VmaAllocator allocator = m_context->GetVmaAllocator();
     auto destroyRetired = [device, allocator, imageViews = std::move(imageViews), images = std::move(images),
                            buffers = std::move(buffers), allocations = std::move(allocations)]() mutable {

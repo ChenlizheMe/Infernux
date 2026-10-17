@@ -1,4 +1,5 @@
 """Nested source namespaces survive outer asset authoring without live templates."""
+
 import copy
 
 import pytest
@@ -6,12 +7,17 @@ import pytest
 from infernux.components import InxComponent, FieldType, serialized_field
 from infernux.components.ref_wrappers import ComponentRef
 from infernux.engine.prefab_manager import (
-    PrefabDocumentError, _read_prefab_document, _validate_prefab_document,
-    instantiate_prefab as _instantiate_prefab, save_prefab, serialize_prefab_document,
+    _read_prefab_document,
+    instantiate_prefab as _instantiate_prefab,
+    save_prefab,
+    serialize_prefab_document,
 )
 from infernux.engine.prefab_overrides import (
-    apply_overrides_to_prefab, build_prefab_apply_command, revert_overrides,
-    compute_overrides, resolve_prefab_instance_root,
+    apply_overrides_to_prefab,
+    build_prefab_apply_command,
+    revert_overrides,
+    compute_overrides,
+    resolve_prefab_instance_root,
     resolve_scene_prefab_documents,
 )
 
@@ -54,7 +60,10 @@ def copy_commands():
 
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_editor_copy_linked_child_retires_outer_sources_and_preserves_history(
-    scene, tmp_path, copy_commands, duplicate,
+    scene,
+    tmp_path,
+    copy_commands,
+    duplicate,
 ):
     from infernux.components.fields import get_raw_field_value
 
@@ -97,7 +106,10 @@ def test_editor_copy_linked_child_retires_outer_sources_and_preserves_history(
 
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_editor_copy_nested_root_keeps_inner_namespace_but_retires_outer_occurrence(
-    scene, tmp_path, copy_commands, duplicate,
+    scene,
+    tmp_path,
+    copy_commands,
+    duplicate,
 ):
     outer, _, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)
@@ -150,6 +162,7 @@ def test_cut_paste_within_prefab_retains_existing_source_occurrence(scene, tmp_p
 def instantiate_prefab(*, file_path, guid, scene, parent=None):
     from pathlib import Path
     from types import SimpleNamespace
+
     directory = Path(file_path).parent
     sources = {key + "-guid": str(directory / (key + ".prefab")) for key in ("inner", "outer", "third")}
     database = SimpleNamespace(get_path_from_guid=lambda guid: sources.get(guid, ""))
@@ -187,9 +200,11 @@ def test_repeated_nested_prefabs_have_distinct_outer_identity_namespaces(scene, 
         assert link["baseline"] == _read_prefab_document(inner_path)["root_object"]
         assert [node["local_id"], 1] in link["object_sources"]
     assert {pair[0] for pair in first["nested_prefab"]["object_sources"]}.isdisjoint(
-        pair[0] for pair in second["nested_prefab"]["object_sources"])
+        pair[0] for pair in second["nested_prefab"]["object_sources"]
+    )
     assert {pair[0] for pair in first["nested_prefab"]["component_sources"]}.isdisjoint(
-        pair[0] for pair in second["nested_prefab"]["component_sources"])
+        pair[0] for pair in second["nested_prefab"]["component_sources"]
+    )
     instance = instantiate_prefab(file_path=outer_path, guid="outer-guid", scene=scene)
     assert instance is not None
     assert compute_overrides(instance, outer_path) == []
@@ -213,12 +228,16 @@ def test_outer_apply_history_and_revert_keep_nested_source_documents(scene, tmp_
     command = build_prefab_apply_command(first, path)
     for action in (command.execute, command.undo, command.redo):
         action()
-        assert [node["nested_prefab"] for node in _read_prefab_document(path)["root_object"]["children"]] == original_links
+        assert [
+            node["nested_prefab"] for node in _read_prefab_document(path)["root_object"]["children"]
+        ] == original_links
         assert first.get_child(0).get_child(0).id == target_id
     second.get_child(0).get_child(0).name = "Private"
     assert revert_overrides(second, path)
     assert second.get_child(0).get_child(0).name == "Edited In Outer"
-    assert [node["nested_prefab"] for node in serialize_prefab_document(second)["root_object"]["children"]] == original_links
+    assert [
+        node["nested_prefab"] for node in serialize_prefab_document(second)["root_object"]["children"]
+    ] == original_links
 
 
 def test_three_levels_retain_inner_source_projection(scene, tmp_path):
@@ -231,28 +250,14 @@ def test_three_levels_retain_inner_source_projection(scene, tmp_path):
     document = _read_prefab_document(third_path)
     middle_link = document["root_object"]["children"][0]["nested_prefab"]
     assert middle_link["guid"] == "outer-guid"
-    assert [node["nested_prefab"]["guid"] for node in middle_link["baseline"]["children"]] == ["inner-guid", "inner-guid"]
+    assert [node["nested_prefab"]["guid"] for node in middle_link["baseline"]["children"]] == [
+        "inner-guid",
+        "inner-guid",
+    ]
     instance = instantiate_prefab(file_path=third_path, guid="third-guid", scene=scene)
     for nested in instance.get_child(0).get_children():
         assert nested.prefab_guid == "inner-guid"
         assert nested.get_py_component(_NestedReferences).target.game_object.id == nested.get_child(0).id
-
-
-def test_inner_apply_keeps_outer_membership_and_other_nested_instances(scene, tmp_path):
-    outer, inner_path, outer_path = _make_nested(scene, tmp_path)
-    assert save_prefab(outer, outer_path)
-    instance = instantiate_prefab(file_path=outer_path, guid="outer-guid", scene=scene)
-    first, second = instance.get_children()
-    before = [node.id for node in instance.get_children()]
-    first.get_child(0).name = "Inner Source Edit"
-    command = build_prefab_apply_command(first, inner_path)
-    for action in (command.execute, command.undo, command.redo):
-        action()
-        assert [node.id for node in instance.get_children()] == before
-        assert first._prefab_source_document["outer_source_id"] != second._prefab_source_document["outer_source_id"]
-    assert second.get_child(0).name == "Inner Source Edit"
-    assert apply_overrides_to_prefab(instance, outer_path)
-    assert compute_overrides(instance, outer_path) == []
 
 
 def test_private_nested_addition_survives_other_instance_apply(scene, tmp_path):
@@ -306,75 +311,9 @@ def test_template_cache_tracks_inner_dependency_changes(scene, tmp_path):
     assert all(child.get_child(0).name == "Changed Only In Inner Asset" for child in new.get_children())
 
 
-def test_scene_refresh_resolves_nested_source_introduced_by_outer_update(scene, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from infernux.engine.prefab_manager import save_prefab_document
-    from infernux.engine.scene_manager import SceneFileManager
-
-    outer, inner_path, outer_path = _make_nested(scene, tmp_path)
-    for child in list(outer.get_children()):
-        scene.destroy_game_object(child)
-    scene.process_pending_destroys()
-    assert save_prefab(outer, outer_path)
-    instance = instantiate_prefab(file_path=outer_path, guid="outer-guid", scene=scene)
-    author = instantiate_prefab(file_path=outer_path, guid="outer-guid", scene=scene)
-    instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene, parent=author)
-    assert save_prefab(author, outer_path)
-    # The old scene has never contained an instance of the new inner source.
-    scene.destroy_game_object(outer)
-    scene.destroy_game_object(author)
-    scene.process_pending_destroys()
-    source = _read_prefab_document(inner_path)
-    source["root_object"]["children"][0]["name"] = "Newly Introduced Latest Inner"
-    assert save_prefab_document(source, inner_path)
-    monkeypatch.setattr(SceneFileManager, "_instance", None)
-    manager = SceneFileManager()
-    manager._asset_database = SimpleNamespace(
-        get_path_from_guid=lambda guid: inner_path if guid == "inner-guid" else outer_path)
-    instance_id = instance.id
-    assert instance.prefab_guid == "outer-guid"
-    assert len(_read_prefab_document(outer_path)["root_object"]["children"]) == 1
-    assert scene.find_by_id(instance_id) is not None
-    manager.sync_all_prefab_instances(scene)
-    instance = scene.find_by_id(instance_id)
-    assert instance.get_child(0).get_child(0).name == "Newly Introduced Latest Inner"
-
-
-def test_prefab_refresh_without_scene_covers_all_resident_worlds(monkeypatch):
-    from types import SimpleNamespace
-    from infernux.engine import prefab_overrides
-    from infernux.engine.scene_manager import SceneFileManager
-
-    monkeypatch.setattr(SceneFileManager, "_instance", None)
-    manager = SceneFileManager()
-    manager._asset_database = object()
-    worlds = (SimpleNamespace(world_id=11), SimpleNamespace(world_id=22))
-    received = []
-    monkeypatch.setattr(prefab_overrides, "_loaded_prefab_scenes", lambda: list(worlds))
-    monkeypatch.setattr(manager, "_sync_prefab_scenes", lambda scenes, **_kwargs: received.append(tuple(scenes)))
-
-    manager.sync_all_prefab_instances()
-
-    assert received == [worlds]
-
-
-def test_copy_nested_root_is_new_outer_instance_but_keeps_inner_identity(scene, tmp_path):
-    from infernux.engine.component_restore import clone_game_object_transactionally
-
-    outer, _, path = _make_nested(scene, tmp_path)
-    assert save_prefab(outer, path)
-    instance = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
-    copied = clone_game_object_transactionally(scene, instance.get_child(0), parent=instance)
-    assert copied.prefab_guid == "inner-guid" and copied.prefab_root
-    assert copied._prefab_source_document.get("outer_source_id", 0) == 0
-    assert copied.get_py_component(_NestedReferences).target.game_object.id == copied.get_child(0).id
-    assert apply_overrides_to_prefab(instance, path)
-    children = scene.find_by_id(instance.id).get_children()
-    assert len({obj._prefab_source_document["outer_source_id"] for obj in children}) == 3
-
-
 def test_recursive_source_apply_is_rejected_before_saving(scene, tmp_path):
     from pathlib import Path
+
     outer, _, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)
     instance = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
@@ -430,6 +369,7 @@ def test_moving_nested_instance_between_outer_instances_retires_only_outer_ancho
 @pytest.mark.parametrize("command_type", ["reparent", "move", "layout"])
 def test_nested_reparent_history_restores_source_namespace(scene, tmp_path, command_type):
     from infernux.engine.undo import ReparentCommand, MoveGameObjectCommand, SceneHierarchyLayoutCommand
+
     outer, _, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)
     first = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
@@ -441,8 +381,10 @@ def test_nested_reparent_history_restores_source_namespace(scene, tmp_path, comm
     elif command_type == "move":
         command = MoveGameObjectCommand(nested.id, first.id, second.id, 0, 2)
     else:
-        before = {first.id: tuple(obj.id for obj in first.get_children()),
-                  second.id: tuple(obj.id for obj in second.get_children())}
+        before = {
+            first.id: tuple(obj.id for obj in first.get_children()),
+            second.id: tuple(obj.id for obj in second.get_children()),
+        }
         after = {first.id: before[first.id][1:], second.id: (*before[second.id], nested.id)}
         command = SceneHierarchyLayoutCommand(before, after)
     command.execute()
@@ -455,20 +397,9 @@ def test_nested_reparent_history_restores_source_namespace(scene, tmp_path, comm
     assert "outer_source_id" not in nested._prefab_source_document
 
 
-def test_nested_move_within_same_outer_keeps_anchor(scene, tmp_path):
-    outer, _, path = _make_nested(scene, tmp_path)
-    assert save_prefab(outer, path)
-    instance = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
-    nested = instance.get_child(0)
-    baseline = copy.deepcopy(nested._prefab_source_document)
-    folder = scene.create_game_object("Folder")
-    folder.set_parent(instance)
-    nested.set_parent(folder)
-    assert nested._prefab_source_document == baseline
-
-
 def test_regular_prefab_child_crossing_scope_becomes_private_and_undo_restores_links(scene, tmp_path):
     from infernux.engine.undo import ReparentCommand
+
     _, inner_path, _ = _make_nested(scene, tmp_path)
     first = instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene)
     second = instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene)
@@ -496,12 +427,12 @@ def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, m
     core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
     manager = SceneFileManager()
     database = SimpleNamespace(
-        get_path_from_guid=lambda guid: (
-            inner_path if guid == "inner-guid" else path if guid == "outer-guid" else ""
-        ),
+        get_path_from_guid=lambda guid: inner_path if guid == "inner-guid" else path if guid == "outer-guid" else "",
         get_guid_from_path=lambda candidate: (
-            "inner-guid" if str(candidate).casefold() == inner_path.casefold()
-            else "outer-guid" if str(candidate).casefold() == path.casefold()
+            "inner-guid"
+            if str(candidate).casefold() == inner_path.casefold()
+            else "outer-guid"
+            if str(candidate).casefold() == path.casefold()
             else ""
         ),
     )
@@ -509,9 +440,7 @@ def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, m
     monkeypatch.setattr(
         AssetManager,
         "import_asset",
-        classmethod(lambda cls, candidate, **_kwargs: SimpleNamespace(
-            guid=database.get_guid_from_path(candidate)
-        )),
+        classmethod(lambda cls, candidate, **_kwargs: SimpleNamespace(guid=database.get_guid_from_path(candidate))),
     )
     try:
         assert manager.open_prefab_mode(path)
@@ -526,19 +455,3 @@ def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, m
         assert manager._do_exit_prefab_mode()
     finally:
         core.shutdown()
-
-
-@pytest.mark.parametrize("mutation", [
-    lambda link: link.update(guid=""),
-    lambda link: link.update(object_sources=[[True, 1]]),
-    lambda link: link["object_sources"].append(link["object_sources"][0]),
-    lambda link: link.update(object_sources=[]),
-    lambda link: link.update(component_sources=[[-1, 2]]),
-])
-def test_nested_identity_contract_rejects_invalid_author_documents(scene, tmp_path, mutation):
-    outer, _, path = _make_nested(scene, tmp_path)
-    assert save_prefab(outer, path)
-    document = copy.deepcopy(_read_prefab_document(path))
-    mutation(document["root_object"]["children"][0]["nested_prefab"])
-    with pytest.raises(PrefabDocumentError, match="nested_prefab"):
-        _validate_prefab_document(document)

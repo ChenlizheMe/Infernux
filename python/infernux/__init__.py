@@ -55,7 +55,12 @@ from infernux.coroutine import (
     WaitUntil,
     WaitWhile,
 )
-from infernux.batch import batch_read, batch_write, create_batch_handle
+from infernux.batch import (
+    batch_read,
+    batch_write,
+    create_batch_handle,
+    create_component_batch_handle,
+)
 from infernux.instantiate import Instantiate, Destroy
 from infernux.lifecycle import InxPreload, PreloadContext
 
@@ -186,7 +191,7 @@ __all__ = [
     "AudioListener",
     "AudioEngine",
     "SpriteRenderer",
-    "SpiritAnimator",
+    "SpriteAnimator",
     "SkeletalAnimator",
     "RuntimeAcceptanceRunner",
     # UI components
@@ -233,6 +238,7 @@ __all__ = [
     "AnimationFrame",
     "AnimStateMachine",
     "AnimState",
+    "AnimClipEntry",
     "AnimTransition",
     "AnimCondition",
     "AnimParameter",
@@ -279,6 +285,7 @@ __all__ = [
     # Batch processing
     "batch_read",
     "batch_write",
+    "create_component_batch_handle",
     # Object lifecycle
     "Instantiate",
     "Destroy",

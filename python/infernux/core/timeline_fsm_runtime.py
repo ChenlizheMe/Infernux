@@ -49,6 +49,7 @@ class TimelineFSMRuntime:
         self._timeline: Optional[AnimationTimeline] = None
         self._elapsed: float = 0.0
         self._playing: bool = False
+        self._playback_revision: int = 0
         self._base = None
         self.playback_speed: float = 1.0
         # ── Per-frame caches (refreshed on state entry) ─────────────────
@@ -168,13 +169,14 @@ class TimelineFSMRuntime:
         if state is None:
             raise RuntimeError("timeline runtime has no active state")
         loop = state.loop
+        playback_revision = self._playback_revision
         speed = self.playback_speed * state.speed
         self._elapsed += delta_time * speed
         dur = self._duration
         if self._elapsed >= dur:
             self._apply_timeline(tl, dur, transform)
             self._try_transition(transform)
-            if self._timeline is tl and self._playing:
+            if self._playback_revision == playback_revision and self._playing:
                 if loop:
                     self._elapsed = self._elapsed % dur
                 else:
@@ -208,6 +210,7 @@ class TimelineFSMRuntime:
             if self._playing and self._state_name == state_name:
                 return True
         tl = self._resolve_timeline(state)
+        self._playback_revision += 1
         self._state_name = state_name
         self._state = state
         self._timeline = tl

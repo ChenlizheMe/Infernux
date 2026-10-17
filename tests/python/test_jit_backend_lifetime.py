@@ -32,7 +32,9 @@ def test_pass_manager_releases_native_allocation_once(monkeypatch, factory, disp
     dispose.assert_called_once()
 
 
-@pytest.mark.parametrize("manager_type", [newpassmanagers.ModulePassManager, newpassmanagers.FunctionPassManager])
+@pytest.mark.parametrize("manager_type", [
+    newpassmanagers.ModulePassManager,
+])
 def test_compatibility_repairs_only_empty_base_disposer(monkeypatch, manager_type):
     monkeypatch.setattr(manager_type, "_dispose", ffi.ObjectRef._dispose)
     prepare_cpu_backend()

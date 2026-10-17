@@ -134,16 +134,7 @@ add_subdirectory(svg)
 # ------------------------------------------------------------------------------
 # InxPack codec — the only codec available to exported Player containers.
 # ------------------------------------------------------------------------------
-# A source override keeps offline and air-gapped builds deterministic.  When it
-# is not supplied, FetchContent uses a pinned upstream release.  There is no
-# silent fallback to zlib/Deflate or to the removed Python LZMA container.
-option(INFERNUX_PLAYER_PACK_FETCH_ZSTD
-    "Fetch the pinned Zstandard source when INFERNUX_ZSTD_SOURCE_DIR is empty"
-    ON
-)
-set(INFERNUX_ZSTD_SOURCE_DIR "" CACHE PATH
-    "Pinned local Zstandard source tree for offline Player package builds"
-)
+# Dependency revisions are pinned by the superproject's submodule gitlinks.
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
@@ -151,33 +142,7 @@ set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
 set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
-if(INFERNUX_ZSTD_SOURCE_DIR)
-    if(NOT EXISTS "${INFERNUX_ZSTD_SOURCE_DIR}/build/cmake/CMakeLists.txt")
-        message(FATAL_ERROR
-            "INFERNUX_ZSTD_SOURCE_DIR must point to a Zstandard source tree containing build/cmake/CMakeLists.txt"
-        )
-    endif()
-    add_subdirectory(
-        "${INFERNUX_ZSTD_SOURCE_DIR}/build/cmake"
-        "${CMAKE_BINARY_DIR}/_deps/infernux-zstd-local"
-        EXCLUDE_FROM_ALL
-    )
-elseif(INFERNUX_PLAYER_PACK_FETCH_ZSTD)
-    include(FetchContent)
-    FetchContent_Declare(
-        infernux_zstd
-        GIT_REPOSITORY https://github.com/facebook/zstd.git
-        # Full commit pin: v1.5.6 (do not replace this with a moving tag).
-        GIT_TAG 794ea1b0afca0f020f4e57b6732332231fb23c70
-        SOURCE_SUBDIR build/cmake
-    )
-    FetchContent_MakeAvailable(infernux_zstd)
-else()
-    message(FATAL_ERROR
-        "Player InxPack requires Zstandard. Set INFERNUX_ZSTD_SOURCE_DIR to a pinned local checkout "
-        "or enable INFERNUX_PLAYER_PACK_FETCH_ZSTD; no Deflate/LZMA fallback exists."
-    )
-endif()
+add_subdirectory(zstd_for_infernux/build/cmake zstd EXCLUDE_FROM_ALL)
 if(TARGET libzstd_static)
     set(INFERNUX_ZSTD_TARGET libzstd_static PARENT_SCOPE)
 elseif(TARGET zstd::libzstd_static)
@@ -199,9 +164,6 @@ option(INFERNUX_BUILD_TARGET_SPIRV_CROSS
     "Build pinned SPIRV-Cross sources for the current target"
     ${_infernux_spirv_cross_default}
 )
-set(INFERNUX_SPIRV_CROSS_SOURCE_DIR "" CACHE PATH
-    "Pinned local SPIRV-Cross source tree for offline cross builds"
-)
 if(INFERNUX_BUILD_TARGET_SPIRV_CROSS)
     set(SPIRV_CROSS_SHARED OFF CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
@@ -216,25 +178,7 @@ if(INFERNUX_BUILD_TARGET_SPIRV_CROSS)
     set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_FORCE_PIC ON CACHE BOOL "" FORCE)
-    if(INFERNUX_SPIRV_CROSS_SOURCE_DIR)
-        if(NOT EXISTS "${INFERNUX_SPIRV_CROSS_SOURCE_DIR}/CMakeLists.txt")
-            message(FATAL_ERROR
-                "INFERNUX_SPIRV_CROSS_SOURCE_DIR must contain CMakeLists.txt")
-        endif()
-        add_subdirectory(
-            "${INFERNUX_SPIRV_CROSS_SOURCE_DIR}"
-            "${CMAKE_BINARY_DIR}/_deps/infernux-spirv-cross-local"
-            EXCLUDE_FROM_ALL
-        )
-    else()
-        include(FetchContent)
-        FetchContent_Declare(
-            infernux_spirv_cross
-            GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
-            GIT_TAG 9c3c8e2cefdd8194b193bb8ed2fdff4d5527e382
-        )
-        FetchContent_MakeAvailable(infernux_spirv_cross)
-    endif()
+    add_subdirectory(spirv_cross_for_infernux EXCLUDE_FROM_ALL)
     if(NOT TARGET spirv-cross-core OR NOT TARGET spirv-cross-glsl)
         message(FATAL_ERROR "Pinned SPIRV-Cross did not provide core and GLSL targets")
     endif()
@@ -252,31 +196,9 @@ option(INFERNUX_BUILD_TARGET_VOLK
     "Build the pinned Volk Vulkan meta-loader for the current target"
     ${_infernux_spirv_cross_default}
 )
-set(INFERNUX_VOLK_SOURCE_DIR "" CACHE PATH
-    "Pinned local Volk source tree for offline cross builds"
-)
 if(INFERNUX_BUILD_TARGET_VOLK)
     set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
-    if(INFERNUX_VOLK_SOURCE_DIR)
-        if(NOT EXISTS "${INFERNUX_VOLK_SOURCE_DIR}/volk.h" OR
-           NOT EXISTS "${INFERNUX_VOLK_SOURCE_DIR}/CMakeLists.txt")
-            message(FATAL_ERROR
-                "INFERNUX_VOLK_SOURCE_DIR must contain volk.h and CMakeLists.txt")
-        endif()
-        add_subdirectory(
-            "${INFERNUX_VOLK_SOURCE_DIR}"
-            "${CMAKE_BINARY_DIR}/_deps/infernux-volk-local"
-            EXCLUDE_FROM_ALL
-        )
-    else()
-        include(FetchContent)
-        FetchContent_Declare(
-            infernux_volk
-            GIT_REPOSITORY https://github.com/zeux/volk.git
-            GIT_TAG 2e19a77ce9b5bd8df0106f66b91032c0e5c776a1
-        )
-        FetchContent_MakeAvailable(infernux_volk)
-    endif()
+    add_subdirectory(volk_for_infernux EXCLUDE_FROM_ALL)
     if(NOT TARGET volk)
         message(FATAL_ERROR "Pinned Volk source did not provide the volk target")
     endif()
@@ -317,6 +239,10 @@ endif()
 
 # assimp
 add_subdirectory(assimp)
+if(WIN32)
+    # Bundled runtime names must not depend on the MSVC toolset version.
+    set_target_properties(assimp PROPERTIES OUTPUT_NAME assimp DEBUG_POSTFIX "")
+endif()
 
 # glslang
 # Keep glslang static even though most runtime dependencies are shared.
@@ -344,6 +270,11 @@ add_subdirectory(sdl_for_infernux)
 
 # Jolt Physics (CMakeLists.txt is in Build/ subdirectory)
 add_subdirectory(joltphysics_for_infernux/Build joltphysics_for_infernux)
+# Jolt's optimized builds omit debug-only members. Keep that header ABI for
+# every consumer even when first-party code enables C assertions with -UNDEBUG.
+target_compile_definitions(Jolt PUBLIC
+    "$<$<CONFIG:Release,RelWithDebInfo,MinSizeRel,Distribution,ReleaseASAN,ReleaseUBSAN,ReleaseTSAN,ReleaseCoverage>:JPH_NO_DEBUG>"
+)
 
 # Vulkan
 find_package(Vulkan REQUIRED)

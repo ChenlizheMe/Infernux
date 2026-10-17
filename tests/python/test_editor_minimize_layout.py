@@ -1,4 +1,5 @@
 """Minimized windows must retain their last drawable editor layout."""
+
 import ctypes
 from ctypes import wintypes
 import os
@@ -67,11 +68,11 @@ def test_minimize_keeps_agent_gui_usable_and_preserves_docked_widths(engine):
             deadline = time.monotonic() + 5
             while not user32.IsIconic(window):
                 assert time.monotonic() < deadline, "Window did not minimize"
-                time.sleep(.01)
+                time.sleep(0.01)
             # Let SDL consume the OS event, then demand a real synthetic UI
             # frame. Ordinary presentation already suspends on minimization;
             # this exercises the automation path that used to build at 0x0.
-            time.sleep(.05)
+            time.sleep(0.05)
             observed["initial_minimized_frames"] = probe.frames
             engine.queue_synthetic_mouse_motion_input(100, 100, 0, 0)
             engine.queue_synthetic_mouse_button_input(0, True, 100, 100)
@@ -79,8 +80,8 @@ def test_minimize_keeps_agent_gui_usable_and_preserves_docked_widths(engine):
             deadline = time.monotonic() + 5
             while engine.last_processed_synthetic_input_sequence < release:
                 assert time.monotonic() < deadline, "Minimized GUI did not consume the complete input gesture"
-                time.sleep(.01)
-            time.sleep(.05)
+                time.sleep(0.01)
+            time.sleep(0.05)
             assert user32.IsIconic(window)
             observed["minimized_frames"] = probe.frames
             observed["during"] = dict(probe.widths)

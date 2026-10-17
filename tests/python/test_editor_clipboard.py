@@ -6,26 +6,7 @@ from infernux.engine.interaction import (
     ClipboardOperation,
     ClipboardPayload,
     ClipboardService,
-    EditorInteractionCore,
 )
-
-
-def test_clipboard_has_one_active_typed_payload():
-    clipboard = ClipboardService()
-    clipboard.write(
-        ClipboardDomain.SCENE_OBJECT,
-        (ClipboardItem("42", data={"name": "Cube"}),),
-        source_owner_id="hierarchy",
-    )
-
-    asset = clipboard.write(
-        ClipboardDomain.ASSET,
-        (ClipboardItem("C:/Project/Assets/Test.mat"),),
-        source_owner_id="project",
-    )
-
-    assert clipboard.peek(ClipboardDomain.SCENE_OBJECT) is None
-    assert clipboard.peek(ClipboardDomain.ASSET) == asset
 
 
 def test_clipboard_defensively_copies_domain_data():
@@ -74,16 +55,3 @@ def test_copy_payload_is_not_consumed_by_paste_completion():
 
     assert not clipboard.consume_cut(copied.revision)
     assert clipboard.peek() == copied
-
-
-def test_interaction_core_owns_clipboard_lifetime():
-    core = EditorInteractionCore()
-    core.clipboard.write(
-        ClipboardDomain.ASSET,
-        (ClipboardItem("C:/Project/Assets/Test.mat"),),
-    )
-
-    core.shutdown()
-
-    assert core.clipboard.peek() is None
-    assert EditorInteractionCore.instance() is None

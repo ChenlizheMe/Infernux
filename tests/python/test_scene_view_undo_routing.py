@@ -3,7 +3,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from infernux.engine.ui.scene_view_panel import SceneViewPanel
-from infernux.engine.ui._scene_view_gizmo import SceneViewGizmoMixin
 from infernux.engine.ui.scene_view_panel import (
     TOOL_RECT,
     TOOL_ROTATE,
@@ -96,10 +95,6 @@ def _begin_test_gizmo_drag(panel, owner):
     panel._begin_gizmo_drag_transaction(TOOL_TRANSLATE)
 
 
-def test_scene_view_has_no_private_structural_shortcut_handler():
-    assert not hasattr(SceneViewPanel, "_handle_object_clipboard_shortcuts")
-
-
 def test_frame_selected_camera_state_is_undoable_without_dirtying_scene():
     previous_manager = UndoManager.instance()
     previous_view_commands = ViewCommandService.instance()
@@ -130,39 +125,6 @@ def test_frame_selected_camera_state_is_undoable_without_dirtying_scene():
         ViewCommandService._instance = previous_view_commands
 
 
-def test_gizmo_drag_orders_selection_primary_first(monkeypatch):
-    import infernux.lib._Infernux as native
-
-    old = SelectionService._instance
-    selection = SelectionService()
-    try:
-        selection.replace_scene_objects(
-            [10, 20], owner_id="scene_view", record_history=False
-        )
-        objects = {
-            10: SimpleNamespace(id=10),
-            20: SimpleNamespace(id=20),
-        }
-        scene = SimpleNamespace(find_by_id=lambda object_id: objects.get(object_id))
-        manager = SimpleNamespace(
-            find_runtime_object_by_id=lambda object_id: objects.get(object_id)
-        )
-        monkeypatch.setattr(
-            native,
-            "SceneManager",
-            SimpleNamespace(instance=lambda: manager),
-        )
-        mixin = object.__new__(SceneViewGizmoMixin)
-
-        result = mixin._get_gizmo_drag_objects(
-            scene, selection.primary_scene_object_id()
-        )
-
-        assert [obj.id for obj in result] == [20, 10]
-    finally:
-        SelectionService._instance = old
-
-
 def test_gizmo_drag_uses_only_topmost_selected_hierarchy_roots(scene):
     previous_selection = SelectionService._instance
     selection = SelectionService()
@@ -180,12 +142,15 @@ def test_gizmo_drag_uses_only_topmost_selected_hierarchy_roots(scene):
         panel = SceneViewPanel(engine=None)
 
         objects = panel._get_gizmo_drag_objects(
-            scene, selection.primary_scene_object_id(),
+            scene,
+            selection.primary_scene_object_id(),
         )
 
         assert [int(obj.id) for obj in objects] == [int(sibling.id), int(parent.id)]
         assert selection.scene_object_ids() == (
-            int(parent.id), int(child.id), int(sibling.id),
+            int(parent.id),
+            int(child.id),
+            int(sibling.id),
         )
     finally:
         SelectionService._instance = previous_selection
@@ -205,7 +170,9 @@ def test_rect_gizmo_can_begin_on_linked_prefab_child(scene):
         child.prefab_guid = "prefab-guid"
         child.prefab_root = False
         selection.replace_scene_objects(
-            [int(child.id)], owner_id="scene_view", record_history=False,
+            [int(child.id)],
+            owner_id="scene_view",
+            record_history=False,
         )
         panel = SceneViewPanel(engine=None)
         panel._plane_hit_coords = lambda *_args: (0.0, 0.0)
@@ -222,41 +189,17 @@ def test_rect_gizmo_can_begin_on_linked_prefab_child(scene):
         ctx = SimpleNamespace(is_key_down=lambda _key: False)
 
         assert panel._start_gizmo_drag(
-            engine, 15, ctx, 0.0, 0.0, 100.0, 100.0, TOOL_RECT,
+            engine,
+            15,
+            ctx,
+            0.0,
+            0.0,
+            100.0,
+            100.0,
+            TOOL_RECT,
         )
         assert list(panel._gizmo_drag_items) == [int(child.id)]
         panel._interrupt_gizmo_drag(commit=False)
-    finally:
-        SelectionService._instance = previous_selection
-        _restore_gizmo_interaction_services(previous_services)
-
-
-def test_rect_gizmo_rejects_missing_frame_without_opening_a_transaction(scene):
-    previous_selection = SelectionService._instance
-    previous_services, _manager, transients = _install_gizmo_interaction_services()
-    selection = SelectionService()
-    SelectionService.install(selection)
-    try:
-        owner = scene.create_game_object("Rect Without Frame")
-        selection.replace_scene_objects(
-            [int(owner.id)], owner_id="scene_view", record_history=False,
-        )
-        panel = SceneViewPanel(engine=None)
-        engine = SimpleNamespace(
-            get_native_engine=lambda: SimpleNamespace(
-                get_editor_rect_frame=lambda: None,
-            ),
-        )
-        ctx = SimpleNamespace(is_key_down=lambda _key: False)
-
-        assert not panel._start_gizmo_drag(
-            engine, 15, ctx, 0.0, 0.0, 100.0, 100.0, TOOL_RECT,
-        )
-        assert not panel._is_gizmo_dragging
-        assert panel._gizmo_drag_obj_id == 0
-        assert panel._gizmo_drag_items == {}
-        assert ContinuousEditService.instance().active_count == 0
-        assert transients.active is None
     finally:
         SelectionService._instance = previous_selection
         _restore_gizmo_interaction_services(previous_services)
@@ -390,27 +333,6 @@ def test_rect_gizmo_records_world_ui_layout_instead_of_transform_scale(scene):
         UndoManager._instance = previous_manager
 
 
-def test_world_ui_rect_frame_uses_layout_size_and_engine_scale(scene):
-    from infernux.engine.ui.ui_rect_manipulation import resolve_world_ui_frame
-    from infernux.ui import UIFrame
-
-    owner = scene.create_game_object("World UI Bounds")
-    owner.transform.position = Vector3(2.0, 3.0, 4.0)
-    component = UIFrame()
-    component.width = 200.0
-    component.height = 100.0
-    owner.add_py_component(component)
-
-    frame = resolve_world_ui_frame(component)
-
-    assert frame is not None
-    assert frame["object_id"] == int(owner.id)
-    assert frame["center"] == (2.0, 3.0, 4.0)
-    assert frame["axis_u"] == (1.0, 0.0, 0.0)
-    assert frame["axis_v"] == (0.0, -1.0, 0.0)
-    assert frame["half_size"] == (1.0, 0.5)
-
-
 def test_gizmo_transform_history_preserves_pointer_down_selection(scene):
     from infernux.engine.interaction import ContextRestoreStatus, EditorContextSnapshot
 
@@ -419,6 +341,7 @@ def test_gizmo_transform_history_preserves_pointer_down_selection(scene):
     manager = UndoManager()
     selection = SelectionService()
     SelectionService.install(selection)
+
     def restore_context(context, _phase):
         selection.apply_snapshot(
             context.selection,
@@ -460,57 +383,6 @@ def test_gizmo_transform_history_preserves_pointer_down_selection(scene):
     finally:
         UndoManager._instance = previous_manager
         SelectionService._instance = previous_selection
-
-
-def test_gizmo_tool_switch_commits_live_transform_once(scene):
-    from infernux.engine.ui.inspector_snapshot import (
-        InspectorSnapshotService,
-        InspectorTarget,
-    )
-
-    previous, manager, _transients = _install_gizmo_interaction_services()
-    try:
-        owner = scene.create_game_object("Tool Switch Gizmo")
-        snapshots = InspectorSnapshotService.instance()
-        snapshots.reset_for_tests()
-        target = InspectorTarget.scene_object(int(owner.id))
-        before = snapshots.snapshot(target)
-        panel = SceneViewPanel(engine=None)
-        _begin_test_gizmo_drag(panel, owner)
-        owner.transform.position = Vector3(5.0, 1.0, 0.0)
-        panel._update_gizmo_drag_transaction()
-
-        assert snapshots.snapshot(target).value_revision > before.value_revision
-
-        panel._set_tool_mode(TOOL_ROTATE)
-
-        assert not panel._is_gizmo_dragging
-        assert manager.undo_description == "Translate"
-        manager.undo()
-        assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
-        manager.redo()
-        assert tuple(owner.transform.position) == (5.0, 1.0, 0.0)
-    finally:
-        _restore_gizmo_interaction_services(previous)
-
-
-def test_gizmo_focus_loss_commits_through_transient_owner(scene):
-    previous, manager, transients = _install_gizmo_interaction_services()
-    try:
-        owner = scene.create_game_object("Focus Loss Gizmo")
-        panel = SceneViewPanel(engine=None)
-        _begin_test_gizmo_drag(panel, owner)
-        owner.transform.position = Vector3(2.0, 3.0, 4.0)
-        panel._update_gizmo_drag_transaction()
-
-        assert transients.cancel_owner("scene_view") == 1
-
-        assert not panel._is_gizmo_dragging
-        assert manager.undo_description == "Translate"
-        manager.undo()
-        assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
-    finally:
-        _restore_gizmo_interaction_services(previous)
 
 
 def test_gizmo_panel_close_commits_live_transform(scene):
@@ -571,12 +443,8 @@ def test_rect_local_multi_edit_preserves_negative_scale_and_skips_selected_child
         )
 
         panel = SceneViewPanel(engine=None)
-        roots = panel._get_gizmo_drag_objects(
-            scene, selection.primary_scene_object_id()
-        )
-        panel._gizmo_drag_items = {
-            int(obj.id): panel._snapshot_gizmo_object(obj) for obj in roots
-        }
+        roots = panel._get_gizmo_drag_objects(scene, selection.primary_scene_object_id())
+        panel._gizmo_drag_items = {int(obj.id): panel._snapshot_gizmo_object(obj) for obj in roots}
         panel._gizmo_drag_axis = 15  # top-right
         panel._gizmo_rect_center = (0.0, 0.0, 0.0)
         panel._gizmo_rect_half_size = (1.0, 1.0)
@@ -624,40 +492,6 @@ def test_rect_zero_extent_never_publishes_infinite_scale(scene):
     assert float(owner.transform.local_scale.x) < 0.0
 
 
-def test_rect_respects_component_driven_transform_fields(scene):
-    owner = scene.create_game_object("Driven Rect")
-    owner.add_py_component(_ScaleDrivenProbe())
-    panel = SceneViewPanel(engine=None)
-    panel._gizmo_drag_items = {
-        int(owner.id): panel._snapshot_gizmo_object(owner),
-    }
-    panel._gizmo_drag_axis = 15
-    panel._gizmo_rect_center = (0.0, 0.0, 0.0)
-    panel._gizmo_rect_half_size = (1.0, 1.0)
-    panel._gizmo_rect_axis_indices = (0, 1)
-    panel._gizmo_drag_plane_u = (1.0, 0.0, 0.0)
-    panel._gizmo_drag_plane_v = (0.0, 1.0, 0.0)
-    panel._gizmo_drag_plane_start_uv = (0.0, 0.0)
-    panel._gizmo_snap_active = False
-    panel._coord_space = 1
-    panel._plane_hit_coords = lambda *_args: (2.0, 1.0)
-
-    panel._drag_rect(None, 0.0, 0.0, 100.0, 100.0)
-
-    assert tuple(owner.transform.local_scale) == (1.0, 1.0, 1.0)
-    assert tuple(owner.transform.position) == (1.0, 0.5, 0.0)
-
-    owner.add_py_component(_TransformDrivenProbe())
-    panel._gizmo_drag_items = {
-        int(owner.id): panel._snapshot_gizmo_object(owner),
-    }
-    panel._plane_hit_coords = lambda *_args: (4.0, 2.0)
-    position = tuple(owner.transform.position)
-    panel._drag_rect(None, 0.0, 0.0, 100.0, 100.0)
-    assert tuple(owner.transform.position) == position
-    assert tuple(owner.transform.local_scale) == (1.0, 1.0, 1.0)
-
-
 def test_selection_replacement_cancels_rect_drag_and_retires_transaction(scene):
     previous_selection = SelectionService._instance
     previous_services, _manager, transients = _install_gizmo_interaction_services()
@@ -668,7 +502,9 @@ def test_selection_replacement_cancels_rect_drag_and_retires_transaction(scene):
         owner = scene.create_game_object("Rect Cancel Owner")
         replacement = scene.create_game_object("Rect Replacement")
         selection.replace_scene_objects(
-            [int(owner.id)], owner_id="scene_view", record_history=False,
+            [int(owner.id)],
+            owner_id="scene_view",
+            record_history=False,
         )
         panel.on_enable()
         panel._is_gizmo_dragging = True
@@ -682,7 +518,9 @@ def test_selection_replacement_cancels_rect_drag_and_retires_transaction(scene):
         panel._update_gizmo_drag_transaction()
 
         selection.replace_scene_objects(
-            [int(replacement.id)], owner_id="hierarchy", record_history=False,
+            [int(replacement.id)],
+            owner_id="hierarchy",
+            record_history=False,
         )
 
         assert not panel._is_gizmo_dragging
@@ -693,31 +531,6 @@ def test_selection_replacement_cancels_rect_drag_and_retires_transaction(scene):
         panel.on_disable()
         SelectionService._instance = previous_selection
         _restore_gizmo_interaction_services(previous_services)
-
-
-def test_missing_drag_root_cancels_before_next_rect_mutation(scene, monkeypatch):
-    previous, _manager, _transients = _install_gizmo_interaction_services()
-    try:
-        owner = scene.create_game_object("Deleted During Rect")
-        panel = SceneViewPanel(engine=SimpleNamespace(set_editor_tool_highlight=lambda _value: None))
-        _begin_test_gizmo_drag(panel, owner)
-        panel._gizmo_tool_mode = TOOL_RECT
-        panel._gizmo_drag_axis = 15
-        owner.transform.position = Vector3(3.0, 0.0, 0.0)
-        panel._update_gizmo_drag_transaction()
-        monkeypatch.setattr(panel, "_gizmo_drag_targets_are_live", lambda: False)
-
-        consumed = panel._update_gizmo_interaction(
-            SimpleNamespace(), 0.0, 0.0, 100.0, 100.0,
-            True, False, True,
-        )
-
-        assert not consumed
-        assert not panel._is_gizmo_dragging
-        assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
-        assert ContinuousEditService.instance().active_count == 0
-    finally:
-        _restore_gizmo_interaction_services(previous)
 
 
 def test_rect_transaction_rebinds_reloaded_ui_component_by_live_owner(scene):

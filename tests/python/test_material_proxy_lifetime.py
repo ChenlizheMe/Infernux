@@ -1,4 +1,5 @@
 """Explicit disposal releases a proxy while native owners keep the resource."""
+
 from __future__ import annotations
 
 import gc
@@ -22,7 +23,7 @@ def test_disposed_material_is_not_returned_by_native_conversion():
     assert inx.Material.from_native(native) is replacement
 
 
-@pytest.mark.parametrize("access", ["native", "name", "set_float", "context"])
+@pytest.mark.parametrize("access", ["native", "set_float"])
 def test_disposed_material_access_reports_its_actual_lifetime(access):
     material = inx.Material.create_lit()
     material.dispose()

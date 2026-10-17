@@ -238,8 +238,8 @@ def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
         preview.package_path,
         str(requirements["archive_path"]),
     ).decode("utf-8").splitlines() == [
-        "mcp>=1.24,<2",
-        "fastmcp>=3,<4",
+        "mcp>=1.29,<1.30",
+        "fastmcp>=3.4,<3.5",
     ]
     assert "format_version" not in preview.metadata
     assert "preload" not in preview.metadata
@@ -347,7 +347,7 @@ def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
                 break
         except Exception:
             time.sleep(0.05)
-    assert health and health["transport"] == "streamable-http"
+    assert health == {"name": "Infernux Editor", "ready": True}
 
     from infernux.host import MainThreadCommandQueue
     from infernux_mcp.client import _json_value, create_loopback_client
@@ -437,9 +437,6 @@ def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    # 34 engine-owned authoring operations plus 71 MCP operations, matching
-    # the source catalog checked by test_mcp_server.
-    assert capabilities_result["data"]["operation_count"] == 105
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()

@@ -50,7 +50,7 @@ class AssetRefBase:
 
     @property
     def path_hint(self) -> str:
-        """Current editor path when known, otherwise the serialized fallback."""
+        """Current editor path when known, otherwise the authoring hint."""
         if self._guid:
             try:
                 from infernux.engine.interaction import AssetMutationService
@@ -107,13 +107,12 @@ class AssetRefBase:
     @classmethod
     def from_dict(cls, d: dict) -> "AssetRefBase":
         if type(d) is not dict:
-            return cls()
-        # Old path-only fields and unrelated legacy keys carry no runtime
-        # identity.  A persisted hint without its GUID is ignored rather than
-        # becoming a stale display value or a recovery request.
-        guid = d.get("guid", "")
-        guid = guid if type(guid) is str else ""
-        return cls(guid=guid)
+            raise TypeError("asset reference document must be an object")
+        if "guid" not in d:
+            raise ValueError("asset reference document requires guid")
+        if type(d["guid"]) is not str:
+            raise TypeError("asset reference guid must be a string")
+        return cls(guid=d["guid"])
 
     # ── Display ────────────────────────────────────────────────────────
 
@@ -138,6 +137,8 @@ class AssetRefBase:
 
     def __eq__(self, other):
         if isinstance(other, AssetRefBase):
+            if not self._guid and not other._guid:
+                return type(self) is type(other)
             return self._guid == other._guid
         return NotImplemented
 
@@ -372,12 +373,10 @@ class AnimationClip3DRef(AssetRefBase):
         return self._do_resolve() if self._guid else None
 
     def _do_resolve(self):
-        db = _get_asset_database()
-        path = db.get_path_from_guid(self._guid) if db else ""
-        if not path:
-            return None
+        from infernux.core.assets import AssetManager
         from infernux.core.animation_clip3d import AnimationClip3D
-        return AnimationClip3D.load(path)
+
+        return AssetManager.load_by_guid(self._guid, AnimationClip3D)
 
 
 class AnimationTimelineRef(AssetRefBase):
@@ -603,8 +602,9 @@ class MaterialRef(AssetRefBase):
             try:
                 native = getattr(mat, "native", mat)
                 return native.name or "(Runtime Material)"
-            except Exception:
-                pass
+            except RuntimeError as exc:
+                from infernux.debug import Debug
+                Debug.log_suppressed("MaterialRef.display_name", exc)
         return "None"
 
     def __getattr__(self, name: str) -> Any:
@@ -617,10 +617,10 @@ class MaterialRef(AssetRefBase):
         return getattr(mat, name)
 
     def __copy__(self):
-        return type(self)(guid=self._guid)
+        return type(self)(guid=self._guid) if self._guid else type(self)(self._cached)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(guid=self._guid)
+        copied = self.__copy__()
         memo[id(self)] = copied
         return copied
 
@@ -628,5 +628,12 @@ class MaterialRef(AssetRefBase):
         if other is None:
             return not self._guid and self._cached is None
         if isinstance(other, AssetRefBase):
-            return self._guid == other._guid
+            if self._guid or other._guid:
+                return self._guid == other._guid
+            return isinstance(other, MaterialRef) and self._cached is other._cached
         return NotImplemented
+
+    def __hash__(self):
+        if self._guid:
+            return hash(self._guid)
+        return hash(None) if self._cached is None else hash(id(self._cached))

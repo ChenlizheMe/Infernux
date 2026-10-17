@@ -96,6 +96,14 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
                            [object](const DrawCall &draw) { return draw.objectId == object->GetID(); });
     };
     auto check = [&](bool near) {
+        glm::vec3 localMin, localMax, repeatedMin, repeatedMax, translatedMin, translatedMax;
+        renderer->ComputeWorldBounds(glm::mat4(1), localMin, localMax);
+        renderer->ComputeWorldBounds(glm::mat4(1), repeatedMin, repeatedMax);
+        assert(localMin == repeatedMin && localMax == repeatedMax);
+        const glm::vec3 offset(3, -4, 2);
+        renderer->ComputeWorldBounds(glm::translate(glm::mat4(1), offset), translatedMin, translatedMax);
+        assert(glm::length(translatedMin - localMin - offset) < 1.0e-5f);
+        assert(glm::length(translatedMax - localMax - offset) < 1.0e-5f);
         bridge.PrepareFrame(false);
         const auto nearResult = bridge.CullAndBuildForCamera(nearCamera, false);
         const auto farResult = bridge.CullAndBuildForCamera(farCamera, false);

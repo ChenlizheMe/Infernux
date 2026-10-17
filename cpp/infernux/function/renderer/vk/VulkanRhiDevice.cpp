@@ -1850,14 +1850,11 @@ void VulkanRhiDevice::RetireNativeResource(std::function<void()> deleter) noexce
         return;
     }
 
-    // The completion-epoch source is installed immediately after queue setup.
-    // Preserve a fallback copy so an unexpected source exception cannot leak
-    // the Vulkan object during teardown or a partial initialization failure.
-    auto fallback = deleter;
     try {
         m_resourceRetirementQueue.Retire(std::move(deleter));
-    } catch (...) {
-        fallback();
+    } catch (const std::exception &error) {
+        INXLOG_ERROR("GPU resource retirement failed; native allocation retained until device teardown: ",
+                     error.what());
     }
 }
 

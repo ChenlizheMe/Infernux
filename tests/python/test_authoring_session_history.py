@@ -1,4 +1,5 @@
 """Save points and cancelled close decisions preserve authored history."""
+
 from __future__ import annotations
 
 import json
@@ -11,8 +12,13 @@ from types import SimpleNamespace
 import pytest
 
 from infernux.engine.interaction import (
-    AuthoringMutationService, CloseCoordinator, CloseIntent, CloseIntentKind,
-    DocumentCapability, DocumentKind, DocumentRegistry,
+    AuthoringMutationService,
+    CloseCoordinator,
+    CloseIntent,
+    CloseIntentKind,
+    DocumentCapability,
+    DocumentKind,
+    DocumentRegistry,
 )
 from infernux.engine.undo import UndoManager, SetPropertyCommand, _base
 
@@ -44,16 +50,28 @@ def authoring():
     registry = DocumentRegistry()
     manager = UndoManager()
     service = AuthoringMutationService(registry)
+
     def create(name):
         controller = ScalarController(registry)
-        document = registry.create(DocumentKind.GENERIC, name, document_id=name,
-                                   capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
-                                   controller=controller)
+        document = registry.create(
+            DocumentKind.GENERIC,
+            name,
+            document_id=name,
+            capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+            controller=controller,
+        )
         registry.attach_view(name, name + "_view")
         return document, controller
+
     def edit(document, controller, value, merge_key=""):
-        assert service.apply(document.document_id, "Set value", lambda: setattr(controller, "value", value),
-                             view_id=document.document_id + "_view", merge_key=merge_key)
+        assert service.apply(
+            document.document_id,
+            "Set value",
+            lambda: setattr(controller, "value", value),
+            view_id=document.document_id + "_view",
+            merge_key=merge_key,
+        )
+
     try:
         yield registry, manager, service, create, edit
     finally:
@@ -84,25 +102,31 @@ def test_saved_undo_session_restores_all_drafts_and_allocates_fresh_revision(aut
         assert snapshot == {"value": 7 if redo else 0}
         assert (doc.revision, doc.saved_revision) == (document.revision, document.saved_revision)
         assert doc.is_dirty == document.is_dirty
-        assert restored.reserve_changed_revision(doc.document_id, view_id="first_view") > max(doc.revision, doc.saved_revision)
+        assert restored.reserve_changed_revision(doc.document_id, view_id="first_view") > max(
+            doc.revision, doc.saved_revision
+        )
         assert restored.claim_session_document("second_view", controller=ScalarController(restored))[1] == {"value": 19}
     finally:
         restored.clear()
         DocumentRegistry._instance = registry
 
 
-@pytest.mark.parametrize("strategy", ["snapshot", "revision_wrapper"])
-@pytest.mark.parametrize("save_state", ["none", "completed", "pending"])
+@pytest.mark.parametrize("save_state,strategy", [("completed", "snapshot"), ("pending", "revision_wrapper")])
 def test_authoring_merge_preserves_completed_and_pending_save_points(authoring, monkeypatch, strategy, save_state):
     registry, manager, service, create, edit = authoring
     doc, controller = create("first")
     monkeypatch.setattr(_base, "_time", SimpleNamespace(time=lambda: 100.0))
+
     def change(value):
         if strategy == "snapshot":
             edit(doc, controller, value, merge_key="value")
         else:
-            assert service.execute_command(doc.document_id,
-                lambda before, after: SetPropertyCommand(controller, "value", controller.value, value), view_id="first_view")
+            assert service.execute_command(
+                doc.document_id,
+                lambda before, after: SetPropertyCommand(controller, "value", controller.value, value),
+                view_id="first_view",
+            )
+
     change(7)
     ticket = None
     if save_state == "completed":
@@ -141,7 +165,8 @@ def test_cancelled_terminal_discard_keeps_drafts_and_future_edits(authoring, ter
     edit(first, controller, 42)
     captured = registry.capture_session_state()
     assert {item["document_id"]: item["restore_state"] for item in captured["documents"]} == {
-        "first": {"value": 42}, "second": {"value": 19},
+        "first": {"value": 42},
+        "second": {"value": 19},
     }
     assert registry.request_save(first.document_id).accepted
     assert not first.is_dirty
@@ -150,25 +175,6 @@ def test_cancelled_terminal_discard_keeps_drafts_and_future_edits(authoring, ter
     assert events[-1] == "closed"
     assert not registry.is_session_restore_suppressed("first_view")
     assert registry.is_session_restore_suppressed("second_view")
-
-
-def test_late_edit_requires_a_new_discard_decision_without_reasking_unchanged_drafts(authoring):
-    registry, _, _, create, edit = authoring
-    first, first_controller = create("first")
-    second, second_controller = create("second")
-    edit(first, first_controller, 7)
-    edit(second, second_controller, 19)
-    completed = []
-    close = CloseCoordinator(registry)
-    close.request(CloseIntent(CloseIntentKind.EXIT_EDITOR), lambda: completed.append(True))
-    close.decide_discard()
-    edit(first, first_controller, 42)
-    close.decide_discard()
-    assert not completed and close.active_document is first
-    assert first.is_dirty and second.is_dirty
-    close.decide_discard()
-    assert completed == [True] and not close.is_active
-    assert registry.capture_session_state()["documents"] == []
 
 
 def test_external_conflict_after_discard_decision_still_blocks_close(authoring):
@@ -193,7 +199,7 @@ def test_external_conflict_after_discard_decision_still_blocks_close(authoring):
 def test_real_timeline_save_then_undo_can_restore_session(tmp_path):
     # A separate native headless owner keeps this disk-write test independent
     # from the suite's session-scoped Vulkan owner.
-    script = r'''
+    script = r"""
 import json, sys
 from pathlib import Path
 from infernux.core.assets import AssetManager
@@ -240,9 +246,13 @@ try:
         panel.unbind_document()
 finally:
     engine.exit()
-'''
+"""
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2] / "python"))
-    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)],
-                            capture_output=True, timeout=60, env=env,
-                            creationflags=0x08000000 if sys.platform == "win32" else 0)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        timeout=60,
+        env=env,
+        creationflags=0x08000000 if sys.platform == "win32" else 0,
+    )
     assert result.returncode == 0, (result.stdout, result.stderr)

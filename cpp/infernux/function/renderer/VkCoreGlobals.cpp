@@ -474,37 +474,6 @@ void InxVkCoreModular::PreallocateInstances(size_t requiredInstances)
         (void)PublishGlobalsDescriptorRevision(frameIndex);
 }
 
-bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix)
-{
-    if (frameIndex >= m_instanceBuffers.size())
-        return false;
-
-    const size_t requiredCount = static_cast<size_t>(instanceIndex) + 1;
-    const VkBuffer previousBuffer =
-        m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
-
-    EnsureInstanceBufferCapacity(frameIndex, requiredCount);
-
-    auto &frame = m_instanceBuffers[frameIndex];
-    if (!frame.buffer)
-        return false;
-
-    if (previousBuffer != frame.buffer->GetBuffer())
-        UpdateInstanceBufferDescriptor(frameIndex);
-
-    void *mapped = frame.mapped;
-    if (!mapped) {
-        mapped = frame.buffer->Map();
-        frame.mapped = mapped;
-    }
-    if (!mapped)
-        return false;
-
-    auto *matrices = static_cast<glm::mat4 *>(mapped);
-    matrices[instanceIndex] = matrix;
-    return true;
-}
-
 void InxVkCoreModular::UpdateInstanceBufferDescriptor(uint32_t frameIndex)
 {
     (void)PublishGlobalsDescriptorRevision(frameIndex);

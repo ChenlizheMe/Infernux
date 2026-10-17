@@ -189,6 +189,7 @@ void InputManager::BeginFrame()
     m_droppedFiles.clear();
     m_syntheticInputThisFrame = false;
     m_syntheticKeyDown.fill(0);
+    m_keyDownConsumed.fill(0);
 
     // Re-apply relative mouse mode for the current window/focus state without
     // disturbing persistent capture flags. Editor capture is released on
@@ -221,8 +222,15 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed)
         return;
     const size_t index = static_cast<size_t>(button);
     if (pressed) {
-        if (m_mouseButtons[index] == 0)
+        if (m_mouseButtons[index] == 0) {
+            const auto &[x, y, width, height] = m_editorGameInputRect;
+            const bool inGameView = m_mouseX >= x && m_mouseY >= y && m_mouseX < x + width && m_mouseY < y + height;
+            if (!m_editorCursorCaptureManaged || IsCursorLocked() || inGameView || m_syntheticMouseButtons[index] != 0)
+                m_gameMouseButtonOwnership |= 1u << button;
+            else
+                m_gameMouseButtonOwnership &= ~(1u << button);
             m_mouseButtonDown[index] = 1;
+        }
         m_mouseButtons[index] = 1;
     } else {
         if (m_mouseButtons[index] != 0)
@@ -397,6 +405,8 @@ void InputManager::ProcessFocusEvent(bool focused)
     }
     StopTextInput();
     m_editorMouseCaptured = false;
+    if (m_editorCursorCaptureManaged)
+        SetEditorCursorCaptureAllowed(false);
     ResetPhysicalInputForFocusLoss();
     if (m_screenState.focused) {
         m_screenState.focused = false;
@@ -524,12 +534,14 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         if (event.button.which == SDL_TOUCH_MOUSEID)
             break;
+        ProcessPointerMotionEvent(event.button.x, event.button.y, 0.0f, 0.0f);
         ProcessPointerButtonEvent(remapButton(event.button.button), true);
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP: {
         if (event.button.which == SDL_TOUCH_MOUSEID)
             break;
+        ProcessPointerMotionEvent(event.button.x, event.button.y, 0.0f, 0.0f);
         ProcessPointerButtonEvent(remapButton(event.button.button), false);
         break;
     }
@@ -762,6 +774,18 @@ bool InputManager::AnyKeyDown() const
     return false;
 }
 
+void InputManager::ConsumeKeyDown(int scancode)
+{
+    if (scancode < 0 || scancode >= INPUT_MAX_KEYS || m_keyDown[static_cast<size_t>(scancode)] == 0)
+        return;
+    m_keyDownConsumed[static_cast<size_t>(scancode)] = 1;
+}
+
+bool InputManager::IsKeyDownConsumed(int scancode) const
+{
+    return scancode >= 0 && scancode < INPUT_MAX_KEYS && m_keyDownConsumed[static_cast<size_t>(scancode)] != 0;
+}
+
 // ============================================================================
 // Mouse button queries
 // ============================================================================
@@ -787,6 +811,47 @@ bool InputManager::GetMouseButtonUp(int button) const
     return m_mouseButtonUp[button] != 0;
 }
 
+bool InputManager::GetGameMouseButton(int button) const
+{
+    return IsGameMouseButtonOwned(button) && GetMouseButton(button);
+}
+
+bool InputManager::GetGameMouseButtonDown(int button) const
+{
+    return IsGameMouseButtonOwned(button) && GetMouseButtonDown(button);
+}
+
+std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetGameMouseFrameState(int button) const
+{
+    auto state = GetMouseFrameState(button);
+    if (IsCursorLocked()) {
+        const auto [x, y] = CursorLockPosition(true);
+        std::get<0>(state) = x;
+        std::get<1>(state) = y;
+    }
+    if (!IsGameMouseButtonOwned(button))
+        std::get<4>(state) = std::get<5>(state) = false;
+    return state;
+}
+
+bool InputManager::IsGameMouseButtonOwned(int button) const
+{
+    return button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS &&
+           (!m_editorCursorCaptureManaged || (m_gameMouseButtonOwnership & (1u << button)) != 0);
+}
+
+void InputManager::SetEditorGameViewport(const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect)
+{
+    if (imageRect == m_editorGameViewport && inputRect == m_editorGameInputRect)
+        return;
+    m_editorGameViewport = imageRect;
+    m_editorGameInputRect = inputRect;
+    if (inputRect[2] <= 0 || inputRect[3] <= 0)
+        SetEditorCursorCaptureAllowed(false);
+    else
+        ApplyCursorState();
+}
+
 std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseFrameState(int button) const
 {
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS) {
@@ -805,9 +870,11 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseF
 
 void InputManager::ResetAll()
 {
+    m_gameMouseButtonOwnership = 0;
     m_keys.fill(0);
     m_keyDown.fill(0);
     m_keyUp.fill(0);
+    m_keyDownConsumed.fill(0);
     m_mouseButtons.fill(0);
     m_mouseButtonDown.fill(0);
     m_mouseButtonUp.fill(0);
@@ -837,6 +904,7 @@ void InputManager::ResetPhysicalInputForFocusLoss()
     // the shared query arrays from it after clearing physical input.
     const auto syntheticKeys = m_syntheticKeys;
     const auto syntheticMouseButtons = m_syntheticMouseButtons;
+    const uint32_t gameMouseButtonOwnership = m_gameMouseButtonOwnership;
     const uint32_t syntheticHeldCount = m_syntheticHeldCount;
     auto interruptedTouches = std::move(m_touches);
     ResetAll();
@@ -855,8 +923,11 @@ void InputManager::ResetPhysicalInputForFocusLoss()
     m_syntheticInputThisFrame = syntheticHeldCount != 0;
     for (size_t index = 0; index < m_syntheticKeys.size(); ++index)
         m_keys[index] = m_syntheticKeys[index];
-    for (size_t index = 0; index < m_syntheticMouseButtons.size(); ++index)
+    for (size_t index = 0; index < m_syntheticMouseButtons.size(); ++index) {
         m_mouseButtons[index] = m_syntheticMouseButtons[index];
+        if (m_syntheticMouseButtons[index] != 0)
+            m_gameMouseButtonOwnership |= gameMouseButtonOwnership & (1u << index);
+    }
 }
 
 void InputManager::CancelActiveTouches(const std::string &reason)
@@ -929,7 +1000,18 @@ const char *InputManager::ScancodeToName(int scancode)
 void InputManager::SetWindow(SDL_Window *window)
 {
     m_window = window;
+    if (window == nullptr) {
+        m_editorCursorCaptureManaged = false;
+        m_editorCursorCaptureAllowed = false;
+        m_editorGameViewport = {};
+        m_editorGameInputRect = {};
+        m_gameMouseButtonOwnership = 0;
+    }
     m_warpMotionPending = false;
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    if (window != nullptr)
+        SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_MODE_CENTER, "0");
+#endif
     RefreshScreenState();
     ApplyCursorState();
 }
@@ -993,6 +1075,16 @@ void InputManager::SetCursorVisible(bool visible)
     ApplyCursorState();
 }
 
+void InputManager::SetEditorCursorCaptureAllowed(bool allowed)
+{
+    if (m_editorCursorCaptureManaged && allowed == m_editorCursorCaptureAllowed)
+        return;
+    m_editorCursorCaptureManaged = true;
+    m_editorCursorCaptureAllowed = allowed;
+    m_mouseDX = m_mouseDY = m_scrollX = m_scrollY = 0.0f;
+    ApplyCursorState();
+}
+
 void InputManager::SetCursorConfined(bool confined)
 {
     if (confined == m_cursorConfined)
@@ -1047,6 +1139,15 @@ std::pair<float, float> InputManager::ConsumeEditorMouseDelta()
     return delta;
 }
 
+std::pair<float, float> InputManager::CursorLockPosition(bool gameLocked) const
+{
+    if (gameLocked && m_editorCursorCaptureManaged) {
+        const auto &[x, y, width, height] = m_editorGameViewport;
+        return {x + width * 0.5f, y + height * 0.5f};
+    }
+    return {m_screenState.logicalWidth * 0.5f, m_screenState.logicalHeight * 0.5f};
+}
+
 void InputManager::ApplyCursorState()
 {
 #if defined(INFERNUX_INPUT_SEMANTIC_HOST)
@@ -1055,7 +1156,8 @@ void InputManager::ApplyCursorState()
     // logical state for that adapter.
     return;
 #else
-    const bool relativeMouseEnabled = m_cursorLocked || m_editorMouseCaptured;
+    const bool relativeMouseEnabled = IsCursorLocked() || m_editorMouseCaptured;
+    const bool editorReleased = m_editorCursorCaptureManaged && !m_editorCursorCaptureAllowed;
 
     if (!m_window) {
         return;
@@ -1065,14 +1167,31 @@ void InputManager::ApplyCursorState()
     const bool focused = (windowFlags & SDL_WINDOW_INPUT_FOCUS) != 0;
     if (!focused) {
         SDL_SetWindowRelativeMouseMode(m_window, false);
+        SDL_SetWindowMouseRect(m_window, nullptr);
         SDL_SetWindowMouseGrab(m_window, false);
         SDL_ShowCursor();
         return;
     }
 
-    SDL_SetWindowRelativeMouseMode(m_window, relativeMouseEnabled);
-    SDL_SetWindowMouseGrab(m_window, relativeMouseEnabled || m_cursorConfined);
-    if (relativeMouseEnabled || !m_cursorVisible)
+    if (relativeMouseEnabled) {
+        const auto [x, y] = CursorLockPosition(IsCursorLocked());
+        const SDL_Rect lockPoint{static_cast<int>(std::round(x)), static_cast<int>(std::round(y)), 1, 1};
+        SDL_SetWindowMouseRect(m_window, &lockPoint);
+        SDL_WarpMouseInWindow(m_window, x, y);
+        SDL_SetWindowRelativeMouseMode(m_window, true);
+    } else {
+        if (SDL_GetWindowRelativeMouseMode(m_window)) {
+            if (const SDL_Rect *lockPoint = SDL_GetWindowMouseRect(m_window)) {
+                m_mouseX = static_cast<float>(lockPoint->x);
+                m_mouseY = static_cast<float>(lockPoint->y);
+                SDL_WarpMouseInWindow(m_window, m_mouseX, m_mouseY);
+            }
+        }
+        SDL_SetWindowRelativeMouseMode(m_window, false);
+        SDL_SetWindowMouseRect(m_window, nullptr);
+    }
+    SDL_SetWindowMouseGrab(m_window, relativeMouseEnabled || (!editorReleased && m_cursorConfined));
+    if (relativeMouseEnabled || (!editorReleased && !m_cursorVisible))
         SDL_HideCursor();
     else
         SDL_ShowCursor();

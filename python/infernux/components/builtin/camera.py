@@ -22,7 +22,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
 from infernux.components._gizmo_ids import ICON_KIND_CAMERA

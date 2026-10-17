@@ -86,11 +86,11 @@ def test_unwarmed_source_edit_fails_before_replacing_previous_build(tmp_path, mo
     assert sys.modules["Scripts.Work"] is old_module
 
 
-@pytest.mark.parametrize("import_line", [
-    "from infernux import compute as gpu", "import infernux.compute as gpu",
-    "import infernux as owner\ngpu = owner.compute",
+@pytest.mark.parametrize('import_line,receiver', [
+    ('from infernux import compute as gpu', False),
+    ('import infernux.compute as gpu', True),
+    ('import infernux as owner\ngpu = owner.compute', True),
 ])
-@pytest.mark.parametrize("receiver", [False, True])
 def test_cooked_source_less_public_prepare_and_launch(tmp_path, engine, monkeypatch, import_line, receiver):
     # The last form keeps a supported explicit root decorator spelling.
     decorator = "owner.compute" if "gpu =" in import_line else "gpu"

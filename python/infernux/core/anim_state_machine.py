@@ -26,7 +26,7 @@ from infernux.graph.parameters import (
     GraphParameterCollection,
     GraphParameterDefinition,
 )
-from infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from infernux.graph.types import CoordinateSpace, ValueType
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -101,7 +101,7 @@ def _anim_as_number(value: Any) -> float:
 
 
 # Parsed-AST cache: transition conditions are authored once and evaluated every
-# frame by every animator (Spirit / Skeletal / Timeline FSM).  Re-parsing the
+# frame by every animator (Sprite / Skeletal / Timeline FSM).  Re-parsing the
 # source each frame dominated the runtime cost, so we memoize the parsed body
 # keyed on the (stripped) condition string.  ``None`` marks a string that failed
 # to parse so we don't re-attempt (and keep raising) every frame.
@@ -324,23 +324,35 @@ class AnimTransition:
 
 
 @dataclass
-class AnimState:
-    """A single state inside the FSM, referencing a clip and holding outgoing transitions.
+class AnimClipEntry:
+    """One weighted clip in an animation clip group."""
 
-    A state is normally a single clip (``kind="clip"``).  A *blend* state
-    (``kind="blend"``) is a single-in/single-out node that linearly blends two
-    clips A and B by its own ``blend_value`` (0..1, "Lerp") — A uses
-    ``clip_guid``; B uses ``clip_b_guid``. Each
-    blend state owns its Lerp (not shared across nodes).
-    """
+    clip_guid: str = ""
+    weight: float = 1.0
+
+    def to_dict(self) -> dict:
+        return {"clip_guid": self.clip_guid, "weight": self.weight}
+
+    @classmethod
+    def from_dict(cls, value: dict) -> AnimClipEntry:
+        _require_exact_fields(value, {"clip_guid", "weight"}, "animation group clip")
+        if type(value["clip_guid"]) is not str:
+            raise TypeError("animation group clip reference must be a string")
+        weight = _finite_number(value["weight"], "animation group clip weight")
+        if not 0.0 <= weight <= 1.0:
+            raise ValueError("animation group clip weight must be in [0, 1]")
+        return cls(value["clip_guid"], weight)
+
+
+@dataclass
+class AnimState:
+    """An animation clip, weighted clip group, or timeline with outgoing transitions."""
 
     stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "New State"
-    kind: str = "clip"        # "clip" | "blend" | "timeline"
-    clip_guid: str = ""       # GUID of the referenced .animclip2d / .animclip3d (clip A)
-    # Blend-state second clip (B) + per-node Lerp (0..1) when kind == "blend".
-    clip_b_guid: str = ""
-    blend_value: float = 0.5
+    kind: str = "clip"        # "clip" | "group" | "timeline"
+    clip_guid: str = ""
+    clips: List[AnimClipEntry] = field(default_factory=list)
     # Timeline-state reference when kind == "timeline" (.animtimeline asset).
     timeline_guid: str = ""
     speed: float = 1.0
@@ -348,7 +360,7 @@ class AnimState:
     # 1.0 = must reach end of current clip segment (default; matches "play full clip then transition").
     exit_time_normalized: float = 1.0
     loop: bool = True         # whether to loop the clip in this state
-    # If True, SpiritAnimator.play(state) restarts the clip when already in that state.
+    # If True, SpriteAnimator.play(state) restarts the clip when already in that state.
     # If False, play() is a no-op while that state is already playing (e.g. safe to call every frame).
     restart_same_clip: bool = False
     transitions: List[AnimTransition] = field(default_factory=list)
@@ -367,8 +379,7 @@ class AnimState:
             "name": self.name,
             "kind": self.kind,
             "clip_guid": self.clip_guid,
-            "clip_b_guid": self.clip_b_guid,
-            "blend_value": float(self.blend_value),
+            "clips": [clip.to_dict() for clip in self.clips],
             "timeline_guid": self.timeline_guid,
             "speed": self.speed,
             "exit_time_normalized": self.exit_time_normalized,
@@ -382,8 +393,7 @@ class AnimState:
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
         expected = {
-            "stable_id", "name", "kind", "clip_guid", "clip_b_guid",
-            "blend_value", "timeline_guid", "speed",
+            "stable_id", "name", "kind", "clip_guid", "clips", "timeline_guid", "speed",
             "exit_time_normalized", "loop", "restart_same_clip", "transitions",
             "position", "header_color",
         }
@@ -395,16 +405,17 @@ class AnimState:
             )
         document = {name: d[name] for name in expected}
         string_fields = (
-            "stable_id", "name", "kind", "clip_guid", "clip_b_guid", "timeline_guid",
+            "stable_id", "name", "kind", "clip_guid", "timeline_guid",
         )
         if any(type(document[field]) is not str for field in string_fields) or not document["stable_id"]:
             raise TypeError("animation state identity and asset fields must be strings")
-        if document["kind"] not in {"clip", "blend", "timeline"}:
-            raise ValueError("animation state kind must be clip, blend, or timeline")
-        blend_value = _finite_number(document["blend_value"], "animation state blend_value")
+        if document["kind"] not in {"clip", "group", "timeline"}:
+            raise ValueError("animation state kind must be clip, group, or timeline")
+        if type(document["clips"]) is not list:
+            raise TypeError("animation group clips must be an array")
         exit_time = _finite_number(document["exit_time_normalized"], "animation state exit_time_normalized")
         speed = _finite_number(document["speed"], "animation state speed")
-        if not 0.0 <= blend_value <= 1.0 or not 0.0 <= exit_time <= 1.0:
+        if not 0.0 <= exit_time <= 1.0:
             raise ValueError("animation state normalized values must be in [0, 1]")
         if type(document["loop"]) is not bool or type(document["restart_same_clip"]) is not bool:
             raise TypeError("animation state loop fields must be bools")
@@ -424,8 +435,7 @@ class AnimState:
             name=document["name"],
             kind=document["kind"],
             clip_guid=document["clip_guid"],
-            clip_b_guid=document["clip_b_guid"],
-            blend_value=blend_value,
+            clips=[AnimClipEntry.from_dict(clip) for clip in document["clips"]],
             timeline_guid=document["timeline_guid"],
             speed=speed,
             exit_time_normalized=exit_time,

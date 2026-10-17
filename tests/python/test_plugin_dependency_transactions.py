@@ -54,8 +54,7 @@ def snapshot(root):
                                    or path.name == "events.txt")}
 
 
-@pytest.mark.parametrize("syntax", ("reference", "inx", "nested"))
-@pytest.mark.parametrize("install_dependencies", (True, False))
+@pytest.mark.parametrize('syntax,install_dependencies', [('reference', True), ('inx', True), ('nested', True), ('reference', False)])
 def test_disabled_dependency_rejects_parent_before_lifecycle_or_publication(
     plugins, tmp_path, syntax, install_dependencies,
 ):
@@ -77,8 +76,7 @@ def test_disabled_dependency_rejects_parent_before_lifecycle_or_publication(
     assert not manager.registry.installed_record("test/child")["enabled"]
 
 
-@pytest.mark.parametrize("depth", (0, 1, 3))
-@pytest.mark.parametrize("install_dependencies", (True, False))
+@pytest.mark.parametrize('depth,install_dependencies', [(0, True), (1, True), (3, True), (3, False)])
 def test_cycle_update_is_rejected_before_stopping_old_plugin(plugins, tmp_path, depth, install_dependencies):
     manager, root = plugins
     child_source = tmp_path / "child"

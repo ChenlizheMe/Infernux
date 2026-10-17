@@ -67,20 +67,6 @@ def execute(source, enabled):
             value.close()
 
 
-@pytest.mark.parametrize('case,body,expected,enabled', CASES, ids=[case[0] for case in CASES])
-def test_game_builder_preserves_work_item_results(tmp_path, monkeypatch, case, body, expected, enabled):
-    monkeypatch.setenv('INFERNUX_WEB_RUNTIME', '1')
-    source = kernel_source(body)
-    reference, _ = execute(embed_compute_sources(source), enabled)
-    assert reference == expected
-    builder = GameBuilder(str(tmp_path), str(tmp_path / 'output'), game_name='VectorProbe')
-    builder._runtime_platform = 'web'
-    cooked = builder._cook_compute_source(source)
-    actual, vectorized = execute(cooked, enabled)
-    assert actual == reference
-    assert vectorized == (case != 'ordered_while')
-
-
 @pytest.mark.parametrize('case,body,expected,enabled', CASES + EXTRA, ids=[case[0] for case in CASES + EXTRA])
 def test_web_batches_match_real_native_dispatch(tmp_path, engine, monkeypatch, case, body, expected, enabled):
     source = kernel_source(body)

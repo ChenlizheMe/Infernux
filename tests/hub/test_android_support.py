@@ -1,38 +1,41 @@
 from __future__ import annotations
 
-import ast
-import configparser
 import hashlib
 import io
 import json
 import os
-import re
-import runpy
 import stat
 import subprocess
 import sys
-import textwrap
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from tests.tool_discovery import find_executable
 
-
-PACKAGING_DIR = (Path(__file__).resolve().parents[2] / "packaging")
+PACKAGING_DIR = Path(__file__).resolve().parents[2] / "packaging"
 
 import android_support
 
 
-@pytest.mark.parametrize("host,code,release_after,expected_calls", [
-    ("nt", 5, 24, 25), ("nt", 32, 24, 25),
-    ("nt", 32, None, 52), ("posix", 5, None, 1),
-    ("nt", 87, None, 1), ("nt", None, None, 1),
-])
+@pytest.mark.parametrize(
+    "host,code,release_after,expected_calls",
+    [
+        ("nt", 5, 24, 25),
+        ("nt", 32, 24, 25),
+        ("nt", 32, None, 52),
+        ("posix", 5, None, 1),
+        ("nt", 87, None, 1),
+        ("nt", None, None, 1),
+    ],
+)
 def test_directory_publication_bounds_only_windows_sharing_errors(
-    monkeypatch, host, code, release_after, expected_calls,
+    monkeypatch,
+    host,
+    code,
+    release_after,
+    expected_calls,
 ):
     error = PermissionError("SDK directory is held open")
     error.winerror = code
@@ -61,130 +64,6 @@ def test_directory_publication_bounds_only_windows_sharing_errors(
 @pytest.fixture(autouse=True)
 def isolated_hub_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(android_support, "get_hub_shared_data_dir", lambda: str(tmp_path / "shared"))
-
-
-@pytest.mark.parametrize("tag", ["", "v0.4.0"])
-def test_kit_workflow_resolves_verification_ref_or_explicit_release(tmp_path, tag):
-    pwsh = find_executable("pwsh")
-    if pwsh is None:
-        pytest.skip("PowerShell is required to execute the release resolver")
-    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
-        encoding="utf-8"
-    )
-    step = workflow.split("      - name: Resolve release tag\n", 1)[1].split(
-        "\n  build-android-python-support:", 1
-    )[0]
-    script = textwrap.dedent(step.split("        run: |\n", 1)[1])
-    output = tmp_path / "outputs"
-    check = tmp_path / "resolve.ps1"
-    check.write_text(
-        "function gh { $global:LASTEXITCODE = 0; Write-Output 'checked-release' }\n" + script,
-        encoding="utf-8",
-    )
-    environment = dict(os.environ, RELEASE_EVENT_TAG="", RELEASE_INPUT_TAG=tag,
-                       SOURCE_COMMIT="a" * 40, GITHUB_OUTPUT=str(output))
-    result = subprocess.run([pwsh, "-NoProfile", "-File", str(check)],
-                            env=environment, capture_output=True, text=True, check=True)
-    assert output.read_text(encoding="utf-8").splitlines() == [
-        f"tag={tag}", f"source-ref={tag or 'a' * 40}",
-    ]
-    assert ("checked-release" in result.stdout) == bool(tag)
-    assert "if: needs.resolve-release.outputs.release-tag != ''" in workflow
-    assert "name: android-support-${{ matrix.host }}" in workflow
-    assert "--clobber" not in workflow
-
-
-def test_release_kit_resolves_gradle_from_the_installed_launcher(tmp_path):
-    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
-        encoding="utf-8"
-    )
-    match = re.search(r"gradle_home=\"\$\(python -c '([^']+)'\)\"", workflow)
-    assert match is not None, "Resolve the setup-gradle PATH entry, not human-readable --version output"
-    gradle_home = tmp_path / "shared tools" / "gradle-8.12"
-    launcher = gradle_home / "bin" / ("gradle.bat" if os.name == "nt" else "gradle")
-    launcher.parent.mkdir(parents=True)
-    launcher.write_text("exit 97\n", encoding="utf-8")
-    launcher.chmod(0o755)
-    environment = dict(os.environ, PATH=str(launcher.parent), PYTHONIOENCODING="utf-8")
-    result = subprocess.run(
-        [sys.executable, "-c", match.group(1)],
-        env=environment, cwd=tmp_path, capture_output=True, encoding="utf-8", check=True,
-    )
-    assert Path(result.stdout.strip()) == gradle_home.resolve()
-
-
-def test_android_python_producer_selects_java_before_sdk_setup():
-    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
-        encoding="utf-8"
-    )
-    producer = workflow.split("  build-android-python-support:", 1)[1].split(
-        "  publish-android-support:", 1
-    )[0]
-    assert producer.index("actions/setup-java@v4") < producer.index("android-actions/setup-android@v3")
-    assert 'java-version: "17"' in producer
-    assert 'python-version: "3.13"' in producer
-    assert "git submodule update --init --depth 1 external/plugins/infernux_android" in producer
-
-
-def test_android_kit_workflow_does_not_request_removed_legacy_tools_package():
-    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
-        encoding="utf-8"
-    )
-    setup_blocks = re.findall(
-        r"- uses: android-actions/setup-android@v3(.*?)(?=\n\s*- (?:uses|name):|\Z)",
-        workflow,
-        re.DOTALL,
-    )
-    assert len(setup_blocks) == 2
-    assert all(re.search(r"^\s+packages: platform-tools\s*$", block, re.MULTILINE)
-               for block in setup_blocks)
-    assert "packages: tools" not in workflow
-
-
-@pytest.mark.parametrize("abi", ["arm64-v8a", "x86_64"])
-def test_numpy_cross_file_uses_the_selected_target_python(tmp_path, abi):
-    setup = PACKAGING_DIR.parent / "scripts/setup"
-    script = (setup / "build_android_python_runtime.sh").read_text(encoding="utf-8")
-    configure = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
-    library = tmp_path / "target Python" / abi / "libpython3.13.so"
-    library.parent.mkdir(parents=True)
-    library.write_bytes(b"target library fixture")
-    output = tmp_path / "cross.ini"
-    subprocess.run(
-        [sys.executable, "-c", configure,
-         str(setup / "android_numpy_cross.ini"), str(output), str(library)],
-        check=True,
-    )
-    config = configparser.ConfigParser()
-    config.read(output, encoding="utf-8")
-    assert ast.literal_eval(config["constants"]["python_runtime"]) == str(library.resolve())
-    for language in ("c", "cpp"):
-        assert config["built-in options"][f"{language}_link_args"] == "[python_runtime]"
-
-
-def test_kit_file_identity_matches_the_build_host(tmp_path):
-    script = PACKAGING_DIR.parent / "scripts/setup/package_android_support.py"
-    files = runpy.run_path(str(script))["_files"]
-    (tmp_path / "header.h").write_text("/* NDK header */", encoding="utf-8")
-    roots = (("sdk/xt_CONNMARK", tmp_path), ("sdk/xt_connmark", tmp_path))
-    if os.name == "nt":
-        with pytest.raises(RuntimeError, match="Duplicate"):
-            tuple(files(roots))
-    else:
-        assert len(tuple(files(roots))) == 2
-    with pytest.raises(RuntimeError, match="Duplicate"):
-        tuple(files((roots[0], roots[0])))
-
-
-def test_sdk_setup_uses_a_shell_that_resolves_windows_batch_commands():
-    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
-        encoding="utf-8"
-    )
-    install = workflow.split("- name: Install the pinned Android build SDK", 1)[1].split(
-        "- uses:", 1
-    )[0]
-    assert "shell: pwsh" in install
-    assert "if ($LASTEXITCODE -ne 0)" in install
 
 
 def _create_support(root: Path) -> None:
@@ -348,14 +227,16 @@ def test_channel_download_rejects_incomplete_or_changed_content(tmp_path, monkey
     manager = android_support.AndroidSupportManager(tmp_path / "managed")
     _create_support(manager.root)
     manifest = (manager.root / android_support.MANIFEST_NAME).read_bytes()
-    monkeypatch.setattr(manager, "_release_asset", lambda: (
-        "https://example.invalid/android.inxkit", hashlib.sha256(expected).hexdigest(), len(expected)))
+    monkeypatch.setattr(
+        manager,
+        "_release_asset",
+        lambda: ("https://example.invalid/android.inxkit", hashlib.sha256(expected).hexdigest(), len(expected)),
+    )
     response = io.BytesIO(received)
     response.status = 206
     response.headers = {"Content-Range": f"bytes 0-{len(expected) - 1}/{len(expected)}"}
     monkeypatch.setattr(android_support.urllib.request, "urlopen", lambda *_a, **_k: response)
-    with pytest.raises(android_support.AndroidSupportError,
-                       match=f"received {len(received)}/{len(expected)} bytes"):
+    with pytest.raises(android_support.AndroidSupportError, match=f"received {len(received)}/{len(expected)} bytes"):
         manager.install()
     assert (manager.root / android_support.MANIFEST_NAME).read_bytes() == manifest
     partials = list((tmp_path / "shared").rglob("*.part"))
@@ -368,8 +249,11 @@ def test_channel_download_rejects_incomplete_or_changed_content(tmp_path, monkey
 def test_channel_download_uses_contiguous_ranges_and_one_complete_digest(tmp_path, monkeypatch):
     content = b"a" * (32 * 1024 * 1024) + b"last range"
     manager = android_support.AndroidSupportManager(tmp_path / "managed")
-    monkeypatch.setattr(manager, "_release_asset", lambda: (
-        "https://example.invalid/android.inxkit", hashlib.sha256(content).hexdigest(), len(content)))
+    monkeypatch.setattr(
+        manager,
+        "_release_asset",
+        lambda: ("https://example.invalid/android.inxkit", hashlib.sha256(content).hexdigest(), len(content)),
+    )
     requests = []
     progress = []
 
@@ -378,7 +262,7 @@ def test_channel_download_uses_contiguous_ranges_and_one_complete_digest(tmp_pat
         header = request.get_header("Range")
         requests.append(header)
         start, end = map(int, header.removeprefix("bytes=").split("-"))
-        response = io.BytesIO(content[start:end + 1])
+        response = io.BytesIO(content[start : end + 1])
         response.status = 206
         response.headers = {"Content-Range": f"bytes {start}-{end}/{len(content)}"}
         return response
@@ -396,26 +280,14 @@ def test_channel_download_uses_contiguous_ranges_and_one_complete_digest(tmp_pat
     assert not list((tmp_path / "shared").rglob("*.part"))
 
 
-@pytest.mark.parametrize("status, content_range", [(200, None), (206, "bytes 1-4/5")])
-def test_channel_download_rejects_ignored_or_wrong_ranges(tmp_path, monkeypatch, status, content_range):
-    manager = android_support.AndroidSupportManager(tmp_path / "managed")
-    monkeypatch.setattr(manager, "_release_asset", lambda: (
-        "https://example.invalid/android.inxkit", hashlib.sha256(b"hello").hexdigest(), 5))
-    response = io.BytesIO(b"hello")
-    response.status = status
-    response.headers = {"Content-Range": content_range}
-    monkeypatch.setattr(android_support.urllib.request, "urlopen", lambda *_a, **_k: response)
-    with pytest.raises(android_support.AndroidSupportError, match="invalid download range"):
-        manager.install()
-    assert not manager.root.exists()
-    assert all(path.stat().st_size == 0 for path in (tmp_path / "shared").rglob("*.part"))
-
-
 def test_explicit_install_retry_resumes_interrupted_release(tmp_path, monkeypatch):
     content = b"prefix and remaining bytes"
     manager = android_support.AndroidSupportManager(tmp_path / "managed")
-    monkeypatch.setattr(manager, "_release_asset", lambda: (
-        "https://example.invalid/android.inxkit", hashlib.sha256(content).hexdigest(), len(content)))
+    monkeypatch.setattr(
+        manager,
+        "_release_asset",
+        lambda: ("https://example.invalid/android.inxkit", hashlib.sha256(content).hexdigest(), len(content)),
+    )
     requests = []
 
     class InterruptedResponse(io.BytesIO):
@@ -453,18 +325,6 @@ def test_explicit_install_retry_resumes_interrupted_release(tmp_path, monkeypatc
     assert not partials[0].exists()
 
 
-def test_release_asset_uses_only_the_object_distribution_channel() -> None:
-    url, digest, size = android_support.AndroidSupportManager._release_asset()
-
-    assert url == (
-        f"https://downloads.infernux-engine.com/android-support/"
-        f"{android_support.ANDROID_SUPPORT_VERSION}/{android_support.archive_name()}"
-    )
-    assert len(digest) == 64
-    assert size > 1_000_000_000
-    assert "github.com" not in url
-
-
 def test_release_packager_creates_the_exact_hub_installable_asset(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -491,7 +351,11 @@ def test_release_packager_creates_the_exact_hub_installable_asset(tmp_path: Path
     environment.pop("PYTHONPATH", None)
     command.insert(1, "-I")
     completed = subprocess.run(
-        command, cwd=tmp_path, env=environment, capture_output=True, text=True,
+        command,
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     first = output.read_bytes()

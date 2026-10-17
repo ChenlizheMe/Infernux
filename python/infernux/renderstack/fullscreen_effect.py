@@ -111,10 +111,10 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
     def __init__(self, enabled: bool = True) -> None:
         super().__init__(enabled=enabled)
         # Prime instance storage for serialized fields
-        from infernux.components.fields import get_serialized_fields
+        from infernux.components.fields import copy_serialized_field_default, get_serialized_fields
         for field_name, meta in get_serialized_fields(self.__class__).items():
             if not hasattr(self, f"_sf_{field_name}"):
-                setattr(self, field_name, meta.default)
+                setattr(self, field_name, copy_serialized_field_default(meta))
 
     # ==================================================================
     # Texture helper — eliminates per-effect _tex() boilerplate

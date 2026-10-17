@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InxGUIContext.h"
+#include <function/scene/NativeLifetime.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -79,7 +80,7 @@ class IResourcePreviewer
  * Maintains a registry of previewers and provides a unified interface
  * for loading and rendering resource previews.
  */
-class ResourcePreviewManager
+class ResourcePreviewManager : public NativeLifetimeOwner
 {
   public:
     ResourcePreviewManager();

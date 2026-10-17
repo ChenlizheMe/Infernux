@@ -150,3 +150,30 @@ bool VerifyTransientBufferIsolation(TestResources &resources)
     return Require(owner.graph.GetTransientAllocationCount() == 0 && owner.graph.GetTransientResidentBytes() == 0,
                    "Transient buffer allocations remained resident after graph reset");
 }
+
+// A rebuild with an identical graphics-only image keeps the previous allocation
+// instead of holding two generations while the old one is still in flight.
+bool VerifyRebuildReusesGraphicsImages(TestResources &resources)
+{
+    using namespace infernux;
+    RenderGraph graph;
+    graph.Initialize(&resources.context);
+    const auto build = [&graph](uint32_t width) {
+        graph.Reset();
+        ResourceHandle color;
+        graph.AddPass("Color", [&color, width](PassBuilder &builder) {
+            color = builder.WriteColor(builder.CreateTexture("Color", width, 4, VK_FORMAT_R8G8B8A8_UNORM));
+            builder.SetRenderArea(width, 4);
+            return [](RenderContext &) {};
+        });
+        graph.SetOutput(color);
+        return graph.Compile() ? graph.ResolveTextureView(color) : VkImageView{VK_NULL_HANDLE};
+    };
+    const VkImageView first = build(4);
+    const VkImageView rebuilt = build(4);
+    const VkImageView resized = build(8);
+    const bool reused = first != VK_NULL_HANDLE && rebuilt == first && resized != VK_NULL_HANDLE &&
+                        resized != first && graph.GetTransientAllocationCount() == 1;
+    graph.Destroy();
+    return Require(reused, "RenderGraph rebuild did not reuse an identical graphics image exactly once");
+}

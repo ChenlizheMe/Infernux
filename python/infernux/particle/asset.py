@@ -168,10 +168,14 @@ class EmitterShape:
         object.__setattr__(self, "sdf_mode", SdfEmissionMode(self.sdf_mode))
         if self.space not in {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD}:
             raise ParticleGraphSchemaError("emitter shape space must be emitter_local or world")
-        if not math.isfinite(float(self.radius)) or float(self.radius) < 0.0:
+        radius = float(self.radius)
+        angle_degrees = float(self.angle_degrees)
+        if not math.isfinite(radius) or radius < 0.0:
             raise ParticleGraphSchemaError("emitter shape radius must be finite and non-negative")
-        if not math.isfinite(float(self.angle_degrees)) or not 0.0 <= float(self.angle_degrees) <= 180.0:
+        if not math.isfinite(angle_degrees) or not 0.0 <= angle_degrees <= 180.0:
             raise ParticleGraphSchemaError("emitter cone angle must be between 0 and 180 degrees")
+        object.__setattr__(self, "radius", radius)
+        object.__setattr__(self, "angle_degrees", angle_degrees)
         if len(self.dimensions) != 3 or any(
             not math.isfinite(float(value)) or float(value) < 0.0 for value in self.dimensions
         ):

@@ -895,8 +895,8 @@ class PreloadManager:
                     contribution_owner,
                     runtime=self.runtime,
                 )
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                Debug.log_suppressed("InxPreload.remove_failed_contribution", cleanup_error)
             self.failures[path_key(path)] = f"{type(exc).__name__}: {exc}"
             Debug.log_error(f"InxPreload import failed [{path}]: {exc}")
             if package_reference and not any(

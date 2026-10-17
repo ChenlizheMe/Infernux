@@ -1,30 +1,13 @@
 """ScenePrefabMixin — extracted from SceneFileManager."""
 from __future__ import annotations
 
-"""
-Scene file management for infernux.
-
-Handles:
-- Tracking the current scene file path (.scene)
-- Saving / loading scene files (delegates to C++ Scene::SaveToFile / LoadFromFile)
-- Python component serialization during save, recreation during load
-- Remembering last opened scene per project (EditorSettings.json)
-- Default scene fallback when a scene file is missing
-- File-dialog for "Save As" when the scene has no file yet
-- Enforcing that scenes must be saved under Assets/
-
-The C++ layer already provides ``Scene.serialize / deserialize / save_to_file /
-load_from_file`` and ``PendingPyComponent`` for Python component recreation.
-This module orchestrates those primitives into a complete workflow.
-"""
 
 import os
 import copy
 from typing import Optional, Callable
 
 from infernux.debug import Debug
-from infernux.engine.project_context import get_project_root
-from infernux.engine.path_utils import resolved_path, safe_path as _safe_path
+from infernux.engine.path_utils import resolved_path
 from .scene_manager import (
     DEFAULT_SCENE_NAME,
     PREFAB_MODE_SCENE_NAME,

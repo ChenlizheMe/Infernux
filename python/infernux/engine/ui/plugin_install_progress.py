@@ -204,7 +204,7 @@ class PluginInstallProgressService:
                     transaction.worker.join()
                 self._drain_reports(transaction)
                 if transaction.worker_error is not None:
-                    raise transaction.worker_error
+                    raise RuntimeError("Plugin installation worker failed") from transaction.worker_error
                 transaction.phase = "complete"
                 transaction.stage = "complete"
                 transaction.progress = 1.0

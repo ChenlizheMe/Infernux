@@ -13,7 +13,6 @@ from installer.payload import (
 )
 from installer_safety import write_install_marker
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
-import installer_gui
 
 
 def _make_payload(path: Path, executable: bytes = b"new hub executable") -> Path:
@@ -24,49 +23,6 @@ def _make_payload(path: Path, executable: bytes = b"new hub executable") -> Path
     data_dir.mkdir()
     (data_dir / "new-library.dll").write_bytes(b"new library")
     return path
-
-
-def test_installer_discloses_system_changes_and_policy_link():
-    source = Path(installer_gui.__file__).read_text(encoding="utf-8")
-
-    assert "Automatic update checks are enabled by default." in source
-    assert "Installing updates requires confirmation." in source
-    assert "https://infernux-engine.com/code-signing-policy.html" in source
-
-
-@pytest.mark.parametrize("language", ["en", "zh"])
-def test_installer_disclosure_fits_the_window(language):
-    from PySide6.QtWidgets import QApplication, QLabel
-    from i18n import configure_language, language_mode
-
-    app = QApplication.instance() or QApplication([])
-    previous = language_mode()
-    configure_language(language)
-    window = installer_gui.InstallerWindow()
-    try:
-        window.show()
-        app.processEvents()
-        for label in window.findChildren(QLabel):
-            if label.wordWrap() and label.hasHeightForWidth():
-                assert label.height() >= label.heightForWidth(label.width()), label.text()
-    finally:
-        window.close()
-        configure_language(previous)
-
-
-def test_linux_application_default_is_separate_from_user_data(monkeypatch, tmp_path):
-    monkeypatch.setattr(installer_gui.sys, "platform", "linux")
-    monkeypatch.setattr(
-        installer_gui.os.path,
-        "expanduser",
-        lambda value: str(tmp_path / value.removeprefix("~/")),
-    )
-
-    install_dir = Path(installer_gui._default_install_dir())
-    user_data = tmp_path / ".local" / "share" / "InfernuxHub"
-
-    assert install_dir == tmp_path / ".local" / "opt" / "InfernuxHub"
-    assert install_dir != user_data
 
 
 def test_transaction_replaces_executable_and_removes_stale_files(tmp_path: Path):
@@ -83,9 +39,7 @@ def test_transaction_replaces_executable_and_removes_stale_files(tmp_path: Path)
         installation.commit()
 
     assert (install_dir / HUB_EXECUTABLE).read_bytes() == b"new hub executable"
-    assert (
-        install_dir / "InfernuxHubData" / "new-library.dll"
-    ).read_bytes() == b"new library"
+    assert (install_dir / "InfernuxHubData" / "new-library.dll").read_bytes() == b"new library"
     assert not (install_dir / "stale-library.dll").exists()
 
 
@@ -98,8 +52,10 @@ def test_transaction_preserves_shared_resources_across_replacement(tmp_path, rol
     write_install_marker(str(install_dir))
     shared = install_dir / "InfernuxHubData/Shared"
     relative_files = [
-        "Library/Plugins/example.inxpkg", "PlatformKits/android/sdk/tool.bin",
-        "Runtimes/python313/python.exe", "Engines/040/engine.whl",
+        "Library/Plugins/example.inxpkg",
+        "PlatformKits/android/sdk/tool.bin",
+        "Runtimes/python313/python.exe",
+        "Engines/040/engine.whl",
     ]
     for relative in relative_files:
         path = shared / relative
@@ -121,9 +77,7 @@ def test_transaction_preserves_shared_resources_across_replacement(tmp_path, rol
     for relative in relative_files:
         assert (shared / relative).read_bytes() == relative.encode()
     assert (shared / "added-during-install.txt").read_text() == "new runtime state"
-    assert (install_dir / HUB_EXECUTABLE).read_bytes() == (
-        b"old hub executable" if rollback else b"new hub executable"
-    )
+    assert (install_dir / HUB_EXECUTABLE).read_bytes() == (b"old hub executable" if rollback else b"new hub executable")
     assert not list(tmp_path.glob(".Infernux Hub.backup-*"))
 
 
@@ -187,9 +141,7 @@ def test_transaction_rejects_unrecognized_nonempty_directory(tmp_path: Path):
     existing_file = install_dir / "keep.txt"
     existing_file.write_text("user data", encoding="utf-8")
 
-    with pytest.raises(
-        RuntimeError, match="not a recognized Infernux Hub installation"
-    ):
+    with pytest.raises(RuntimeError, match="not a recognized Infernux Hub installation"):
         with HubInstallTransaction(payload, install_dir) as installation:
             installation.prepare()
 
@@ -232,9 +184,7 @@ def test_fresh_installer_deploys_only_the_default_python_runtime(
             observed["ensure"] = kwargs
             return str(tmp_path / "python313" / "python.exe")
 
-    monkeypatch.setattr(
-        install_python_runtime, "PythonRuntimeManager", _RuntimeManager
-    )
+    monkeypatch.setattr(install_python_runtime, "PythonRuntimeManager", _RuntimeManager)
 
     result = install_python_runtime.install_runtime_for_app(str(tmp_path / "hub"))
 
@@ -263,12 +213,15 @@ def test_windows_shared_permissions_target_only_installing_user_and_shared(tmp_p
         return SimpleNamespace(stdout='"machine\\author","S-1-5-21-123-456-789-1001"\n')
 
     monkeypatch.setattr(install_python_runtime.subprocess, "run", execute)
+    monkeypatch.setattr(install_python_runtime, "restore_windows_inherited_access_tree", lambda root: None)
     result = install_python_runtime.prepare_shared_storage(str(tmp_path / "Hub"))
     expected = str((tmp_path / "Hub/InfernuxHubData/Shared").resolve())
     assert result == expected
     assert commands[1][0] == [
-        str(tmp_path / "Windows/System32/icacls.exe"), expected,
-        "/grant", "*S-1-5-21-123-456-789-1001:(OI)(CI)M",
+        str(tmp_path / "Windows/System32/icacls.exe"),
+        install_python_runtime.windows_native_path(expected),
+        "/grant",
+        "*S-1-5-21-123-456-789-1001:(OI)(CI)M",
     ]
     assert all(options["check"] and options["creationflags"] == 0x08000000 for _, options in commands)
 

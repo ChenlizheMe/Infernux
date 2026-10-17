@@ -34,6 +34,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include <core/config/EngineConfig.h>
 #include <function/renderer/rhi/RhiHandles.h>
 #include <functional>
 #include <vector>
@@ -81,9 +82,6 @@ class VkSwapchainManager
         PFN_vkDestroyImageView destroyImageView;
         PFN_vkDestroySemaphore destroySemaphore;
     };
-
-    /// @brief Maximum number of frames that can be processed concurrently
-    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
     VkSwapchainManager() = default;
     ~VkSwapchainManager();

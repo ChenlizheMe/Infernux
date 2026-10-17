@@ -30,3 +30,27 @@ def test_graphical_tick_rejects_invalid_delta(engine):
         engine.tick(-0.1)
     with pytest.raises(ValueError):
         engine.tick(float("nan"))
+
+
+def test_frame_callback_can_replace_itself_and_rejects_engine_reentry(engine):
+    observed = []
+
+    def second(delta_time):
+        observed.append("second")
+        engine.set_pre_scene_update_callback(None)
+
+    def first(delta_time):
+        observed.append("first")
+        engine.set_pre_scene_update_callback(second)
+        with pytest.raises(RuntimeError, match="active frame callback"):
+            engine.cleanup()
+        with pytest.raises(RuntimeError, match="active frame callback"):
+            engine.tick(delta_time)
+
+    engine.set_pre_scene_update_callback(first)
+    try:
+        for _ in range(3):
+            engine.tick(1.0 / 60.0)
+    finally:
+        engine.set_pre_scene_update_callback(None)
+    assert observed == ["first", "second"]

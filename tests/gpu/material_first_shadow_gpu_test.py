@@ -7,7 +7,8 @@ from pathlib import Path
 from infernux import Engine
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, InxMaterial, LightShadows, SceneManager, Vector3
-from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline, MSAASamples
+from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from infernux.renderstack.forward_parameters import MSAASamples
 
 
 def main() -> int:

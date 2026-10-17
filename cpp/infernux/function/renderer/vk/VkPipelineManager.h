@@ -332,13 +332,6 @@ class VkPipelineManager
      */
     [[nodiscard]] static VertexInputConfig GetStandardMeshVertexInput();
 
-    /**
-     * @brief Get vertex input for 2D UI rendering
-     *
-     * Layout: position (vec2), texCoord (vec2), color (vec4)
-     */
-    [[nodiscard]] static VertexInputConfig GetUIVertexInput();
-
   private:
     // ========================================================================
     // Internal Methods

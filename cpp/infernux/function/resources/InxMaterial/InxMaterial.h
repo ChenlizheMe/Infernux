@@ -656,13 +656,13 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     }
 
     /// @brief Get a unique key for this material (for pipeline/render-data caching)
-    [[nodiscard]] std::string GetMaterialKey() const
+    [[nodiscard]] const std::string &GetMaterialKey() const
     {
         if (!m_guid.empty())
             return m_guid;
         // A source path is provenance, not identity: separate embedded/runtime
         // material instances can originate from the same model and slot.
-        return "runtime-material:" + std::to_string(m_runtimeId);
+        return m_runtimeKey;
     }
 
     // ========================================================================
@@ -828,6 +828,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
     std::string m_name;
     uint64_t m_runtimeId = AllocateRuntimeId();
+    const std::string m_runtimeKey = "runtime-material:" + std::to_string(m_runtimeId);
     std::string m_guid;
     std::string m_filePath; // File path for saving
     bool m_builtin = false; // Built-in materials cannot have shader changed

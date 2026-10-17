@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <bindings/python/JsonPyBridge.h>
 #include <core/log/InxLog.h>
-#include <cstdio>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -13,24 +12,13 @@ using json = nlohmann::json;
 namespace infernux
 {
 
-namespace
-{
-thread_local bool g_pythonLifecyclePhaseActive = false;
-}
-
 PyComponentProxy::PythonLifecyclePhaseScope::PythonLifecyclePhaseScope()
 {
-    if (!g_pythonLifecyclePhaseActive && Py_IsInitialized()) {
+    if (Py_IsInitialized() && !PyGILState_Check())
         m_acquire.emplace();
-        g_pythonLifecyclePhaseActive = true;
-    }
 }
 
-PyComponentProxy::PythonLifecyclePhaseScope::~PythonLifecyclePhaseScope()
-{
-    if (m_acquire.has_value())
-        g_pythonLifecyclePhaseActive = false;
-}
+PyComponentProxy::PythonLifecyclePhaseScope::~PythonLifecyclePhaseScope() = default;
 
 namespace
 {
@@ -60,21 +48,11 @@ void SyncEnabledFromPython(const py::object &pyComponent, bool &enabled)
     pyComponent.attr("enabled") = py::bool_(enabled);
 }
 
-void CallPythonLifecycleNoArg(const py::object &pyComponent, const std::string &typeName, const char *entryPoint,
+void CallPythonLifecycleNoArg(py::object pyComponent, std::string typeName, const char *entryPoint,
                               const char *displayName)
 {
     try {
         pyComponent.attr(entryPoint)();
-    } catch (const py::error_already_set &e) {
-        INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
-    }
-}
-
-void CallPythonLifecycleFloatArg(const py::object &pyComponent, const std::string &typeName, const char *entryPoint,
-                                 const char *displayName, float value)
-{
-    try {
-        pyComponent.attr(entryPoint)(value);
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
     }
@@ -188,19 +166,19 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
 PyComponentProxy::~PyComponentProxy()
 {
     py::gil_scoped_acquire acquire;
-    // Note: OnDestroy is called explicitly before destruction by GameObject
-    // Clear reference to allow Python GC
-    m_callAwake = py::none();
-    m_callStart = py::none();
-    m_callOnEnable = py::none();
-    m_callOnDisable = py::none();
-    m_callOnDestroy = py::none();
-    m_callOnValidate = py::none();
-    m_callReset = py::none();
-    m_pyComponent = py::none();
+    // Release Python owners before the GIL scope ends. Member destructors
+    // run afterwards and must not retain even a reference to None.
+    m_callAwake = py::object();
+    m_callStart = py::object();
+    m_callOnEnable = py::object();
+    m_callOnDisable = py::object();
+    m_callOnDestroy = py::object();
+    m_callOnValidate = py::object();
+    m_callReset = py::object();
+    m_pyComponent = py::object();
 }
 
-void CallCachedLifecycleNoArg(const py::object &callable, const std::string &typeName, const char *displayName)
+void CallCachedLifecycleNoArg(py::object callable, std::string typeName, const char *displayName)
 {
     try {
         callable();
@@ -209,8 +187,8 @@ void CallCachedLifecycleNoArg(const py::object &callable, const std::string &typ
     }
 }
 
-void CallCachedLifecycleCleanup(const py::object &pyComponent, const py::object &callable, Component *nativeComponent,
-                                const std::string &typeName, const char *displayName)
+void CallCachedLifecycleCleanup(py::object pyComponent, py::object callable, Component *nativeComponent,
+                                std::string typeName, const char *displayName)
 {
     try {
         pyComponent.attr("_invoke_native_cleanup")(
@@ -443,10 +421,12 @@ void PyComponentProxy::Awake()
         m_pyComponent.attr("enabled") = py::bool_(authoredEnabled);
 
         // Call Python awake
+        const ObjectHandle identity = GetHandle();
         CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
-        SyncPythonMirror();
+        auto *current = Component::FindByComponentId(identity.id);
+        if (current == this && current->GetLifetimeGeneration() == identity.generation)
+            SyncPythonMirror();
     } catch (const py::error_already_set &e) {
-        std::fprintf(stderr, "[Infernux Player] %s.awake failed: %s\\n", m_typeName.c_str(), e.what());
         INXLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
     }
 }
@@ -467,8 +447,11 @@ void PyComponentProxy::Start()
     if (m_pyComponent.is_none())
         return;
 
+    const ObjectHandle identity = GetHandle();
     CallCachedLifecycleNoArg(m_callStart, m_typeName, "start");
-    SyncPythonMirror();
+    auto *current = Component::FindByComponentId(identity.id);
+    if (current == this && current->GetLifetimeGeneration() == identity.generation)
+        SyncPythonMirror();
 }
 
 void PyComponentProxy::OnDisable()

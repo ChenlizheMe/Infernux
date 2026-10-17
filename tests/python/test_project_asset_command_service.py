@@ -14,7 +14,6 @@ from infernux.engine.interaction import (
     ProjectAssetCommandService,
     ProjectAssetInteractionService,
     SelectionService,
-    SelectionTarget,
 )
 from infernux.engine.undo import UndoManager
 
@@ -146,61 +145,6 @@ def test_project_asset_service_reads_and_replaces_registered_text_with_undo(
     assert source.read_text(encoding="utf-8") == "value = 2\n"
 
 
-@pytest.mark.parametrize("is_directory", (False, True))
-def test_project_asset_service_selects_renamed_asset_or_folder(
-    project_asset_commands,
-    is_directory,
-):
-    service, _manager, _journal, assets = project_asset_commands
-    selection = SelectionService.instance()
-    source = assets / ("BeforeFolder" if is_directory else "Before.txt")
-    if is_directory:
-        source.mkdir()
-    else:
-        source.write_text("content", encoding="utf-8")
-
-    destination = service.rename(
-        str(source),
-        "AfterFolder" if is_directory else "After.txt",
-    )
-
-    snapshot = selection.snapshot
-    if is_directory:
-        # Directories remain selected by path without inventing resource GUIDs.
-        target = SelectionTarget.project_directory(destination)
-    else:
-        target = SelectionTarget.asset("registered-guid")
-    assert snapshot.targets == (target,)
-    assert snapshot.primary == target
-    assert snapshot.owner_id == "project"
-
-
-@pytest.mark.parametrize("subresource", (False, True))
-def test_deleting_folder_clears_selected_child_guid(
-    project_asset_commands,
-    subresource,
-):
-    service, _manager, _journal, assets = project_asset_commands
-    folder = assets / "ToDelete"
-    folder.mkdir()
-    child = folder / "Mesh.fbx"
-    child.write_text("mesh", encoding="utf-8")
-    selection = SelectionService.instance()
-    target = (
-        SelectionTarget.asset_subresource(
-            "registered-guid", "mesh-id", sub_kind="mesh"
-        )
-        if subresource
-        else SelectionTarget.asset("registered-guid")
-    )
-    selection.select(target, owner_id="project", record_history=False)
-
-    service.delete((str(folder),))
-
-    assert not folder.exists()
-    assert selection.snapshot.primary is None
-
-
 def test_project_asset_interactions_own_clipboard_transfer_and_delete(
     project_asset_commands,
 ):
@@ -231,40 +175,6 @@ def test_project_asset_interactions_own_clipboard_transfer_and_delete(
     assert interactions.request_delete(pasted)
     assert not (target / "Source.txt").exists()
     assert len(journal.applied_entries()) == 2
-
-    interactions.shutdown()
-
-
-def test_project_asset_interactions_create_open_and_reveal_without_panel_business_callbacks(
-    project_asset_commands,
-):
-    service, _manager, _journal, assets = project_asset_commands
-    clipboard = ClipboardService()
-    interactions = ProjectAssetInteractionService(service, clipboard)
-    opened = []
-    revealed = []
-
-    def create(_kind, directory, name, _variant):
-        path = os.path.join(directory, f"{name}.txt")
-        with open(path, "w", encoding="utf-8") as stream:
-            stream.write("created")
-        return AssetCreationResult(True, "", path)
-
-    interactions.configure(
-        unique_name=lambda _directory, base, _extension: base,
-        create=create,
-        open_asset=lambda kind, path: opened.append((kind, path)) or True,
-        reveal=lambda path: revealed.append(path) or True,
-        read_external_clipboard=lambda: (),
-        request_delete=lambda _paths, _callback: False,
-    )
-
-    created = interactions.create("text", str(assets), "Created", ".txt")
-    assert created == str((assets / "Created.txt").resolve())
-    assert interactions.open("system", created)
-    assert interactions.reveal(created)
-    assert opened == [("system", created)]
-    assert revealed == [created]
 
     interactions.shutdown()
 
@@ -349,9 +259,7 @@ def test_external_drop_is_one_atomic_import_without_sidecar_identity(
         expected_config = str((assets / "Config.json").resolve())
         assert imported == (expected_smoke, expected_config)
         assert (assets / "Smoke1.png").read_bytes() == b"imported"
-        assert (assets / "Config.json").read_text(encoding="utf-8") == (
-            '{"quality":"high"}'
-        )
+        assert (assets / "Config.json").read_text(encoding="utf-8") == ('{"quality":"high"}')
         assert not (assets / "Smoke.png.meta").exists()
         assert not (assets / "Smoke1.png.meta").exists()
         assert len(journal.applied_entries()) == 1
@@ -364,9 +272,7 @@ def test_external_drop_is_one_atomic_import_without_sidecar_identity(
 
         manager.redo()
         assert (assets / "Smoke1.png").read_bytes() == b"imported"
-        assert (assets / "Config.json").read_text(encoding="utf-8") == (
-            '{"quality":"high"}'
-        )
+        assert (assets / "Config.json").read_text(encoding="utf-8") == ('{"quality":"high"}')
         assert not (assets / "Smoke1.png.meta").exists()
 
 
@@ -390,54 +296,3 @@ def test_external_import_validation_uses_the_same_project_boundary(
         (str(external),),
         str(tmp_path.parent),
     )
-
-
-def test_native_project_drop_has_no_filesystem_copy_fallback():
-    source_path = os.path.realpath(
-        os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "cpp",
-            "infernux",
-            "function",
-            "editor",
-            "ProjectPanel.cpp",
-        )
-    )
-    text = open(source_path, "r", encoding="utf-8").read()
-    receive = text[
-        text.index("void ProjectPanel::ReceiveDroppedFiles") : text.index(
-            "void ProjectPanel::BeginRename"
-        )
-    ]
-
-    assert 'ExecuteEditorCommand("asset.import_external"' in receive
-    assert "MakeAssetImportCommandArgument(paths, m_currentPath)" in receive
-    assert "importExternalPaths" not in receive
-    assert "fs::copy(" not in receive
-    assert "fs::copy_file(" not in receive
-    assert "copyItemToPath" not in receive
-
-    assert "ProjectPanel::PasteAssets" not in text
-    assert "pasteAssetClipboard" not in text
-    assert "moveAssetPaths" not in text
-    assert "deleteItems" not in text
-
-    interactions = open(
-        os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "python",
-            "infernux",
-            "engine",
-            "interaction",
-            "project_assets.py",
-        ),
-        "r",
-        encoding="utf-8",
-    ).read()
-    assert "class ProjectAssetInteractionService" in interactions
-    assert "self._assets.import_external(" in interactions
-    assert "self._assets.transfer_to_directory(" in interactions

@@ -8,9 +8,7 @@ Split into sub-modules for maintainability:
 """
 
 import json
-import math
 import time as _time
-from dataclasses import replace
 from infernux.components.component import InxComponent
 from infernux.debug import Debug
 from infernux.lib import InxGUIContext
@@ -18,19 +16,13 @@ from infernux.engine.i18n import t
 from . import inspector_support as _inspector_support
 from .inspector_utils import (
     max_label_w, field_label, render_serialized_field, has_field_changed,
-    render_compact_section_header, render_info_text, render_component_header,
-    render_inspector_checkbox, pretty_field_name,
+    render_compact_section_header, render_info_text, pretty_field_name,
     float_close as _float_close,
     get_enum_members as _get_enum_members,
-    get_enum_member_name as _get_enum_member_name,
-    get_enum_member_value as _get_enum_member_value,
     find_enum_index as _find_enum_index,
-    DRAG_SPEED_DEFAULT, DRAG_SPEED_FINE, DRAG_SPEED_INT,
-    build_scalar_desc, is_batch_renderable,
-    semantic_capture_enabled, inspector_component_semantic_id,
+    DRAG_SPEED_DEFAULT, DRAG_SPEED_FINE, build_scalar_desc, semantic_capture_enabled, inspector_component_semantic_id,
     record_inspector_component_item,
 )
-from .theme import Theme, ImGuiCol
 
 # ── Sub-module imports (re-exported for backward compatibility) ──
 from ._inspector_undo import (  # noqa: F401
@@ -233,12 +225,6 @@ def _get_cached_component_value(cache_entry, refresh_values: bool, field_key, ge
         values[field_key] = getter()
         field_revisions[field_key] = field_revision
     return values[field_key]
-
-
-def _invalidate_component_value_cache(cache_entry) -> None:
-    cache_entry["refreshed_at"] = _time.monotonic()
-    cache_entry["values"] = {}
-    cache_entry["field_revisions"] = {}
 
 
 def _invalidate_component_render_cache(cache_entry) -> None:
@@ -785,7 +771,7 @@ def _multi_value_equal(a, b) -> bool:
     if hasattr(a, "x") and hasattr(b, "x"):
         try:
             return _multi_value_equal((a[0], a[1], a[2]), (b[0], b[1], b[2]))
-        except Exception:
+        except (IndexError, TypeError):
             pass
     return a == b
 
@@ -813,8 +799,8 @@ def _format_multi_value(value) -> str:
             name = value.name
             if name:
                 return str(name)
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            Debug.log_suppressed("Inspector.format_multi_value.name", exc)
     try:
         if len(value) in (2, 3, 4):
             parts = []
@@ -822,11 +808,11 @@ def _format_multi_value(value) -> str:
                 v = value[i]
                 parts.append(f"{float(v):.3f}" if isinstance(v, (float, int)) else str(v))
             return "(" + ", ".join(parts) + ")"
-    except Exception:
+    except (IndexError, TypeError, ValueError):
         pass
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except Exception:
+    except (TypeError, ValueError):
         return str(value)
 
 
@@ -1024,14 +1010,16 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
                 try:
                     if not all(meta.visible_when(comp) for comp in wrapped):
                         continue
-                except Exception:
-                    pass
-            values = []
-            for comp in wrapped:
-                try:
-                    values.append(getattr(comp, cpp_prop.cpp_attr))
-                except Exception:
-                    values.append(None)
+                except Exception as exc:
+                    Debug.log_suppressed("Inspector.builtin_visible_when", exc)
+                    rows.append((_serialized_field_label(py_name, meta), f"Error: {exc}"))
+                    continue
+            try:
+                values = [getattr(comp, cpp_prop.cpp_attr) for comp in wrapped]
+            except (AttributeError, RuntimeError) as exc:
+                Debug.log_suppressed("Inspector.builtin_field_read", exc)
+                rows.append((_serialized_field_label(py_name, meta), f"Error: {exc}"))
+                continue
             mixed = not _all_multi_values_equal(values)
             if meta.readonly:
                 display = _format_multi_value(values[0]) if not mixed else "--"
@@ -1066,14 +1054,16 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
                 try:
                     if not all(metadata.visible_when(comp) for comp in comps):
                         continue
-                except Exception:
-                    pass
-            values = []
-            for comp in comps:
-                try:
-                    values.append(getattr(comp, field_name, metadata.default))
-                except Exception:
-                    values.append(metadata.default)
+                except Exception as exc:
+                    Debug.log_suppressed("Inspector.python_visible_when", exc)
+                    rows.append((pretty_field_name(field_name), f"Error: {exc}"))
+                    continue
+            try:
+                values = [getattr(comp, field_name) for comp in comps]
+            except Exception as exc:
+                Debug.log_suppressed("Inspector.python_field_read", exc)
+                rows.append((pretty_field_name(field_name), f"Error: {exc}"))
+                continue
             mixed = not _all_multi_values_equal(values)
             if metadata.readonly:
                 display = _format_multi_value(values[0]) if not mixed else "--"
@@ -1230,7 +1220,6 @@ def render_builtin_via_setters(
             declaration position. The property's visibility predicate remains
             authoritative and the generic widget is replaced.
     """
-    from infernux.components.fields import FieldType
     from infernux.components.builtin_component import BuiltinComponent
 
     # Ensure we have a Python wrapper for correct CppProperty behavior
@@ -1331,13 +1320,12 @@ def _apply_batch_changes_py(py_comp, changes: dict, batch_info: list):
 
 def render_cpp_component_generic(ctx: InxGUIContext, comp):
     """Render only fields declared by the native semantic catalog."""
+    declared = _declared_native_fields(comp)
+    if not declared:
+        return
     original_document = comp.serialize_document()
     data = dict(original_document)
     changed = False
-    declared = _declared_native_fields(comp)
-    if not declared:
-        ctx.label("No declared editable fields")
-        return
     lw = max_label_w(ctx, [pretty_field_name(name) for name, *_rest in declared])
     for key, schema, metadata, value in declared:
         if schema.read_only:
@@ -1595,5 +1583,5 @@ register_component_extra_renderer("SkinnedMeshRenderer", _render_mesh_renderer_m
 register_py_component_extra_renderer("ParticleSystem", _render_particle_system_parameters)
 
 # Registers UI component inspectors.
-from . import inspector_ui_components
-from . import inspector_renderstack
+from . import inspector_ui_components as inspector_ui_components
+from . import inspector_renderstack as inspector_renderstack

@@ -1,4 +1,5 @@
 #include "Component.h"
+#include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "GameObject.h"
 #include "Scene.h"
@@ -7,6 +8,7 @@
 #include <atomic>
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <limits>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -41,6 +43,11 @@ Component::Component()
 
 Component::~Component()
 {
+    UnregisterIfOwner();
+}
+
+void Component::UnregisterIfOwner()
+{
     auto &registry = GetInstanceRegistry();
     const auto entry = registry.find(m_componentId);
     if (entry != registry.end() && entry->second == this)
@@ -62,7 +69,7 @@ Component::Component(Component &&other) noexcept
 Component &Component::operator=(Component &&other) noexcept
 {
     if (this != &other) {
-        GetInstanceRegistry().erase(m_componentId);
+        UnregisterIfOwner();
         m_gameObject = other.m_gameObject;
         m_enabled = other.m_enabled;
         m_wasEnabled = other.m_wasEnabled;
@@ -123,7 +130,11 @@ void Component::CallAwake()
         return;
     }
     m_hasAwake = true;
+    const auto identity = GetHandle();
     Awake();
+    const auto *current = FindByComponentId(identity.id);
+    if (current != this || current->GetLifetimeGeneration() != identity.generation)
+        return;
     // After awake, if enabled AND active in hierarchy, call OnEnable.
     if (m_enabled && m_gameObject && m_gameObject->IsActiveInHierarchy()) {
         CallOnEnable();
@@ -161,7 +172,7 @@ void Component::CallOnDisable()
 
 void Component::CallOnDestroy()
 {
-    if (m_hasDestroyed) {
+    if (m_hasDestroyed || m_isBeingDestroyed) {
         return;
     }
 
@@ -220,7 +231,11 @@ void Component::SetEnabled(bool enabled)
 
     const bool effectiveActive = m_enabled && m_gameObject->IsActiveInHierarchy();
     if (effectiveActive) {
+        const auto identity = GetHandle();
         CallOnEnable();
+        const auto *current = FindByComponentId(identity.id);
+        if (current != this || current->GetLifetimeGeneration() != identity.generation)
+            return;
         if (scene->IsPlaying() && scene->HasStarted()) {
             scene->QueueComponentStart(this);
         }
@@ -231,12 +246,16 @@ void Component::SetEnabled(bool enabled)
 
 void Component::SetComponentID(uint64_t id)
 {
+    if (id == 0 || id == std::numeric_limits<uint64_t>::max())
+        throw std::invalid_argument("Component ID must be non-zero and leave space for the next ID");
+    if (m_gameObject && m_gameObject->GetScene())
+        m_gameObject->GetScene()->RekeyAuthoringComponent(m_componentId, id);
     AssetDependencyGraph::Instance().RekeyRuntimeDependencies(GetInstanceGuid(), std::to_string(id));
-    // Re-key the registry
-    GetInstanceRegistry().erase(m_componentId);
+    UnregisterIfOwner();
     m_componentId = id;
     EnsureNextComponentID(id);
     GetInstanceRegistry()[m_componentId] = this;
+    InvalidateGameObjectLifecycleCaches(m_gameObject);
 }
 
 void Component::ReserveRegistry(size_t n)
@@ -297,35 +316,16 @@ bool Component::Deserialize(const std::string &jsonStr)
 bool Component::DeserializeDocument(const nlohmann::json &j)
 {
     try {
-        if (!j.is_object()) {
-            INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': expected an object document");
-            return false;
-        }
-
-        if (!j.contains("type") || !j["type"].is_string() || j["type"].get<std::string>() != GetTypeName()) {
-            INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': document type does not match");
-            return false;
-        }
-        if (!j.contains("enabled") || !j["enabled"].is_boolean() || !j.contains("execution_order") ||
-            !j["execution_order"].is_number_integer()) {
-            INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': missing or invalid base fields");
-            return false;
-        }
-        if (j.contains("prefab_source_id") &&
-            (!j["prefab_source_id"].is_number_unsigned() || j["prefab_source_id"].get<uint64_t>() == 0)) {
-            INXLOG_ERROR("Component prefab_source_id must be a non-zero unsigned integer");
-            return false;
-        }
-        m_prefabSourceId = j.value("prefab_source_id", uint64_t{0});
-        m_enabled = j["enabled"].get<bool>();
-        m_executionOrder = j["execution_order"].get<int>();
-        if (j.contains("component_id")) {
-            if (!j["component_id"].is_number_unsigned()) {
-                INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': component_id must be unsigned");
-                return false;
-            }
+        using namespace component_document_validation;
+        ValidateComponentDocument(j, GetTypeName(), {});
+        const uint64_t prefabSourceId = j.value("prefab_source_id", uint64_t{0});
+        const bool enabled = RequireBoolean(j, "enabled", GetTypeName());
+        const int executionOrder = RequireInteger(j, "execution_order", GetTypeName());
+        if (j.contains("component_id"))
             SetComponentID(j["component_id"].get<uint64_t>());
-        }
+        m_prefabSourceId = prefabSourceId;
+        m_enabled = enabled;
+        m_executionOrder = executionOrder;
         return true;
     } catch (const std::exception &e) {
         INXLOG_ERROR("Component::Deserialize failed for '", GetTypeName(), "' (id=", m_componentId, "): ", e.what());
@@ -335,8 +335,7 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
 
 std::unique_ptr<Component> Component::Clone() const
 {
-    // Base implementation — should be overridden by every concrete component.
-    // Falls back to factory + Serialize/Deserialize for unrecognized types.
+    // Concrete components override this to copy type-specific state.
     auto clone = ComponentFactory::Create(GetTypeName());
     if (!clone)
         return nullptr;

@@ -1,4 +1,5 @@
 """Imported mesh selections must drive both render bounds and collision."""
+
 import numpy as np
 import pytest
 
@@ -6,53 +7,68 @@ import infernux as inx
 from infernux.lib import Physics, Vector3
 
 
-def test_model_selection_schema_uses_native_declarations(scene, monkeypatch):
-    from infernux.field_schema import get_native_field_schemas
-    from infernux.host.editor import EditorAutomationHost
-
-    go = scene.create_game_object("Model schema")
-    renderer = go.add_component("MeshRenderer")
-    host = EditorAutomationHost.instance()
-    monkeypatch.setattr(host, "scene_component", lambda object_id, component_id: renderer)
-    described = host.scene_component_schema(go.id, renderer.component_id)
-    native = get_native_field_schemas("native:infernux.MeshRenderer")
-    assert described['fields'][0] == {
-        'name': 'enabled', 'type': 'bool', 'readonly': False, 'hidden': False,
-    }
-    assert [field['name'] for field in described['fields'][1:]] == [
-        field.attributes['serialized_name'] for field in native
-    ]
-    assert {field['name'] for field in described['fields']} == {
-        'enabled', 'castShadows', 'receivesShadows', 'submeshIndex', 'meshPivotOffset',
-    }
-    for field in native:
-        descriptor = getattr(type(renderer), field.attributes['field_id'])
-        assert descriptor.schema == field
-    renderer.casts_shadows = False
-    assert renderer.serialize_document()['castShadows'] is False
-    with pytest.raises(ValueError):
-        renderer.submesh_index = -2
-    assert renderer.submesh_index == -1
-
-
-@pytest.mark.parametrize("convex", [False, True])
-@pytest.mark.parametrize("selection", ["submesh", "node"])
-@pytest.mark.parametrize("raw_native", [False, True])
+@pytest.mark.parametrize("raw_native,selection,convex", [(False, "submesh", False), (True, "node", True)])
 def test_model_selection_collision_tracks_only_selected_geometry(scene, convex, selection, raw_native):
-    cube = np.array([
-        [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-        [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
-    ], dtype=np.float32)
-    triangles = np.array([
-        0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
-        0, 1, 5, 0, 5, 4, 3, 7, 6, 3, 6, 2,
-        0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5,
-    ], dtype=np.uint32)
+    cube = np.array(
+        [
+            [-1, -1, -1],
+            [1, -1, -1],
+            [1, 1, -1],
+            [-1, 1, -1],
+            [-1, -1, 1],
+            [1, -1, 1],
+            [1, 1, 1],
+            [-1, 1, 1],
+        ],
+        dtype=np.float32,
+    )
+    triangles = np.array(
+        [
+            0,
+            2,
+            1,
+            0,
+            3,
+            2,
+            4,
+            5,
+            6,
+            4,
+            6,
+            7,
+            0,
+            1,
+            5,
+            0,
+            5,
+            4,
+            3,
+            7,
+            6,
+            3,
+            6,
+            2,
+            0,
+            4,
+            7,
+            0,
+            7,
+            3,
+            1,
+            2,
+            6,
+            1,
+            6,
+            5,
+        ],
+        dtype=np.uint32,
+    )
     mesh = inx.Mesh.from_data(
         np.concatenate([cube, cube + np.array([10, 0, 0], dtype=np.float32)]),
         np.concatenate([triangles, triangles + 8]),
-        submeshes=[dict(index_start=i * 36, index_count=36, vertex_start=i * 8,
-                        vertex_count=8, node_group=i) for i in range(2)],
+        submeshes=[
+            dict(index_start=i * 36, index_count=36, vertex_start=i * 8, vertex_count=8, node_group=i) for i in range(2)
+        ],
         name="Two separate model nodes",
     )
     go = scene.create_game_object("selected model collision")

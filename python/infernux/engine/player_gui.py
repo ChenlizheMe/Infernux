@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional
 
 from infernux.debug import Debug
 from infernux.lib import InxGUIRenderable, InxGUIContext
-from infernux.input import Input, KeyCode, TouchPhase
+from infernux.input import Input, TouchPhase
 from infernux.engine.ui.viewport_utils import capture_viewport_info
 from infernux.ui.ui_event_data import PointerType
 from infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
@@ -135,6 +135,7 @@ class PlayerGUI(InxGUIRenderable):
         self._activate_play = activate_play
         self._play_started = False
         self._play_start_failed = False
+        self._initial_image_pending = True
         self._profile_frames = os.environ.get(
             "_INFERNUX_PLAYER_PROFILE_FRAMES", ""
         ).strip() == "1"
@@ -290,23 +291,21 @@ class PlayerGUI(InxGUIRenderable):
         display_h = max(1, int(vp_h))
         self._prepare_game_target(vp_w, vp_h)
         target_w, target_h = self._last_w, self._last_h
+        Input.set_game_viewport_size(float(display_w), float(display_h))
 
         game_tex = self._engine.get_game_texture_id()
         if game_tex == 0:
             ctx.label("Waiting for camera...")
             return
 
+        if self._initial_image_pending:
+            if not self._engine.get_native_engine().game_presentation_ready:
+                return
+            self._initial_image_pending = False
+
         ctx.image(game_tex, float(display_w), float(display_h), 0.0, 0.0, 1.0, 1.0)
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
-        Input.set_game_viewport_size(float(display_w), float(display_h))
-
-        # ESC safety: allow user to unlock cursor even if scripts forgot
-        cursor_locked = Input.is_cursor_locked()
-        if cursor_locked:
-            if Input.get_key_down(KeyCode.ESCAPE):
-                Input.set_cursor_locked(False)
-                cursor_locked = False
 
         # The standalone Player owns the entire window. Touchscreen contacts
         # do not define an ImGui mouse-hover state, so UI dispatch must not be

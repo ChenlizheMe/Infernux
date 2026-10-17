@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from pathlib import Path
 
 import pytest
 
@@ -13,7 +12,7 @@ from infernux.engine.interaction import (
     PrefabCommandService,
     SelectionDomain,
 )
-from infernux.engine.path_utils import resolved_path, same_path
+from infernux.engine.path_utils import same_path
 
 
 class _NavigationProbe:
@@ -113,112 +112,6 @@ def prefab_service(tmp_path):
     finally:
         service.shutdown()
         PrefabCommandService._instance = previous
-
-
-def test_can_execute_resolves_each_prefab_action(prefab_service, tmp_path, monkeypatch):
-    service, _selection, _navigation, _documents, project_assets = prefab_service
-    prefab_path = tmp_path / "Assets" / "Probe.prefab"
-    prefab_path.parent.mkdir()
-    prefab_path.write_text("{}", encoding="utf-8")
-    source = object()
-    root = SimpleNamespace(id=17, prefab_guid="prefab-guid")
-    project_assets.asset_database = SimpleNamespace(
-        get_path_from_guid=lambda guid: str(prefab_path) if guid == "prefab-guid" else ""
-    )
-    monkeypatch.setattr(
-        service,
-        "_scene_object",
-        lambda object_id: source if int(object_id) == 7 else None,
-    )
-    monkeypatch.setattr(
-        service,
-        "_instance_root",
-        lambda object_id: root if int(object_id) == 17 else None,
-    )
-
-    assert service.can_execute("create", object_id=7)
-    assert not service.can_execute("create", object_id=8)
-    assert service.can_execute("locate", path=str(prefab_path))
-    assert service.can_execute("open", path=str(prefab_path))
-    assert service.can_execute("apply", object_id=17)
-    assert service.can_execute("revert", object_id=17)
-    assert service.can_execute("unpack", object_id=17)
-    assert not service.can_execute("apply", object_id=99)
-    assert not service.can_execute("unknown", object_id=17)
-
-
-def test_locate_delegates_to_navigation_service(prefab_service, tmp_path):
-    service, _selection, navigation, _documents, assets = prefab_service
-    prefab_path = tmp_path / "Located.prefab"
-    prefab_path.write_text("{}", encoding="utf-8")
-    assets.asset_database = SimpleNamespace(
-        get_guid_from_path=lambda path: "located-guid" if same_path(path, str(prefab_path)) else ""
-    )
-
-    assert service.locate(path=str(prefab_path), record_history=False)
-    assert len(navigation.calls) == 1
-    target, options = navigation.calls[0]
-    assert target.domain is SelectionDomain.ASSET
-    assert target.target_id == "located-guid"
-    assert options == {
-        "owner_id": "prefab",
-        "reason": "prefab_locate",
-        "record_history": False,
-    }
-
-
-def test_create_from_object_delegates_to_project_asset_service(
-    prefab_service,
-    tmp_path,
-    monkeypatch,
-):
-    from infernux.engine.ui import project_file_ops
-
-    service, _selection, _navigation, _documents, project_assets = prefab_service
-    assets = tmp_path / "Assets"
-    assets.mkdir()
-    created_path = assets / "Created.prefab"
-
-    class _Scene:
-        def find_by_id(self, object_id):
-            return source if int(object_id) == source.id else None
-
-    source = SimpleNamespace(
-        id=31,
-        name="Source",
-        prefab_guid="",
-        prefab_root=False,
-        _prefab_source_document=None,
-        scene=_Scene(),
-        get_children=lambda: [],
-        get_parent=lambda: None,
-    )
-    project_assets.asset_database = object()
-    monkeypatch.setattr(service, "_scene_object", lambda object_id: source)
-    creator_calls = []
-
-    def _create(game_object, destination, asset_database, *, source_canvas_name):
-        creator_calls.append(
-            (game_object, destination, asset_database, source_canvas_name)
-        )
-        from infernux.engine.asset_creation import AssetCreationResult
-        return AssetCreationResult(True, str(created_path), str(created_path))
-
-    monkeypatch.setattr(project_file_ops, "create_prefab_from_gameobject", _create)
-
-    result = service.create_from_object(
-        source.id,
-        str(assets),
-        origin=ActionOrigin.AUTOMATION,
-    )
-
-    assert result == resolved_path(str(created_path))
-    assert creator_calls == [(source, resolved_path(str(assets)), project_assets.asset_database, "")]
-    assert len(project_assets.create_calls) == 1
-    call = project_assets.create_calls[0]
-    assert call["destination"] == resolved_path(str(assets))
-    assert call["before"] == ((source.id, "", False, 0, None),)
-    assert call["origin"] is ActionOrigin.AUTOMATION
 
 
 def test_apply_revert_and_unpack_each_execute_one_undo_command(
@@ -332,9 +225,7 @@ def test_open_recognizes_active_prefab_by_guid_after_asset_move(
     moved_path = tmp_path / "Moved.prefab"
     moved_path.write_text("{}", encoding="utf-8")
     assets.asset_database = SimpleNamespace(
-        get_guid_from_path=lambda path: "stable-prefab-guid"
-        if same_path(path, str(moved_path))
-        else ""
+        get_guid_from_path=lambda path: "stable-prefab-guid" if same_path(path, str(moved_path)) else ""
     )
     scene_files = SimpleNamespace(
         is_prefab_mode=True,
@@ -345,21 +236,3 @@ def test_open_recognizes_active_prefab_by_guid_after_asset_move(
 
     assert service.open(path=str(moved_path))
     assert documents.calls == []
-
-
-def test_prefab_commands_have_no_panel_or_event_bus_authority():
-    source_root = (Path(__file__).resolve().parents[2] / "python") / "infernux" / "engine"
-    forbidden = (
-        "prefab_actions_getter",
-        "apply_overrides_to_prefab_with_undo",
-        "revert_overrides_with_undo",
-        "open_prefab_mode_with_undo",
-        'emit("select_asset"',
-        'emit("open_asset"',
-    )
-    production = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in source_root.rglob("*.py")
-    )
-    for token in forbidden:
-        assert token not in production

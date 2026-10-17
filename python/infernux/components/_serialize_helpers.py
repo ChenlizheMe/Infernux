@@ -8,10 +8,8 @@ serializable_object.py.
 
 from __future__ import annotations
 
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional
 
-if TYPE_CHECKING:
-    from .fields import FieldMetadata
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -60,7 +58,7 @@ def serialize_vec(value: Any) -> Optional[list]:
 # Typed value-document deserialization dispatch
 # ──────────────────────────────────────────────────────────────────────
 
-def deserialize_dict_ref(value: dict, *, fallback_asset_type: str = "") -> Any:
+def deserialize_dict_ref(value: dict) -> Any:
     """Attempt to deserialize a dict into the appropriate ref wrapper.
 
     Returns the deserialized ref object, or *value* unchanged if no
@@ -82,24 +80,8 @@ def deserialize_dict_ref(value: dict, *, fallback_asset_type: str = "") -> Any:
         from .ref_wrappers import ComponentRef
         return ComponentRef._from_dict(value)
     if document_type == ASSET_REF:
-        # Persistence consumes only the current identity fields. Extra keys do
-        # not become identities, and a path-only payload remains an empty
-        # reference rather than a recovery request.
-        asset_type = value.get("asset_type")
-        from infernux.core.asset_reference_types import asset_type_registry
-
-        # A retired type tag cannot override the current field declaration.
-        # Validation already checks that any recognized tag is compatible.
-        if (
-            type(asset_type) is not str
-            or not asset_type
-            or asset_type_registry.get(asset_type) is None
-        ):
-            asset_type = fallback_asset_type
-        guid = value.get("guid", "")
-        guid = guid if type(guid) is str else ""
-        if not asset_type:
-            return value
+        asset_type = value["asset_type"]
+        guid = value["guid"]
         if asset_type == "Prefab":
             from .ref_wrappers import PrefabRef
             return PrefabRef(guid=guid)

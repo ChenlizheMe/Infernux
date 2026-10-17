@@ -1,38 +1,11 @@
 """UIEditorResizeMixin — extracted from UIEditorPanel."""
 from __future__ import annotations
 
-"""UI Editor panel — Figma-style 2D canvas editor for screen-space UI layout.
 
-Displays the selected UICanvas at its reference resolution and lets users
-visually position UI elements via drag.  Max zoom is 100% (1:1 pixels).
-
-Docked alongside Scene / Game views.
-"""
-
-import configparser
 import math
-import os
-from contextlib import nullcontext as _nullcontext
-from time import perf_counter as _pc
 
-from typing import Optional
-from infernux.lib import InxGUIContext
-from infernux.engine.i18n import t
-from infernux.engine.project_context import get_project_root
 from .ui_rect_manipulation import apply_layout_size, prepare_layout_resize
-from infernux.ui.inx_ui_screen_component import clear_rect_cache
-from infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
-from infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
-from infernux.ui.ui_canvas_utils import collect_canvases_with_go
-from .editor_panel import EditorPanel
-from .panel_registry import editor_panel
-from .editor_icons import EditorIcons
-from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiMouseCursor
-from .ui_editor_shortcuts import UIEditorInput
-from infernux.debug import Debug
-from .imgui_keys import (
-    KEY_LEFT_ARROW, KEY_RIGHT_ARROW, KEY_UP_ARROW, KEY_DOWN_ARROW,
-)
+from .theme import Theme
 
 
 class UIEditorResizeMixin:

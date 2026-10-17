@@ -40,11 +40,8 @@ struct MeshGeometry;
 // ============================================================================
 
 /**
- * @brief Opaque handle to a temporary or persistent render target.
- *
- * Created by CommandBuffer::GetTemporaryRT() or
- * ScriptableRenderContext::CreateRenderTarget().
- * Internally maps to a TransientResourcePool slot.
+ * @brief Handle type for currently unsupported CommandBuffer target commands.
+ * Declare render targets through RenderGraphDescription instead.
  */
 struct RenderTargetHandle
 {
@@ -171,12 +168,11 @@ class CommandBuffer
     // Render Target Management
     // ====================================================================
 
-    /// @brief Allocate a temporary render target.
-    /// The actual GPU resource is created at execution time by TransientResourcePool.
+    /// @brief Unsupported: throws std::logic_error; use RenderGraph attachments.
     RenderTargetHandle GetTemporaryRT(int width, int height, rhi::PixelFormat format = rhi::PixelFormat::RGBA8UNorm,
                                       rhi::SampleCount samples = rhi::SampleCount::One);
 
-    /// @brief Mark a temporary RT for release (returned to pool at frame end).
+    /// @brief Unsupported: throws std::logic_error; use RenderGraph attachments.
     void ReleaseTemporaryRT(RenderTargetHandle handle);
 
     /// @brief Unsupported: throws std::logic_error; use RenderGraph attachments.
@@ -221,7 +217,6 @@ class CommandBuffer
   private:
     std::string m_name;
     std::vector<RenderCommand> m_commands;
-    uint32_t m_nextHandleId = 1; // 0 is reserved, 0xFFFFFFFE = camera target
 };
 
 } // namespace infernux

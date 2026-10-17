@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import copy
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from infernux.engine.undo._base import CompoundCommand, UndoCommand
 from infernux.field_schema import FieldSchema

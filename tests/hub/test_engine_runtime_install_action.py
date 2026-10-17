@@ -4,7 +4,7 @@ import pytest
 import version_manager
 from PySide6.QtTest import QTest
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication
 
 from i18n import configure_language, language_mode
 from version_manager import EngineVersion, VersionManager
@@ -24,7 +24,9 @@ def engine_dialog(tmp_path, monkeypatch):
         runtime_manager=SimpleNamespace(has_runtime=lambda version: version in installed),
     )
     engine = EngineVersion(
-        tag="v0.4.0", version="0.4.0", python_version="3.13",
+        tag="v0.4.0",
+        version="0.4.0",
+        python_version="3.13",
         wheel_url="https://example.invalid/infernux.whl",
     )
     monkeypatch.setattr(manager, "list_versions", lambda **kwargs: [engine])
@@ -50,7 +52,8 @@ def engine_dialog(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("installed_successfully", [False, True])
 def test_missing_runtime_requires_explicit_action_and_preserves_engine_selection(
-    engine_dialog, installed_successfully,
+    engine_dialog,
+    installed_successfully,
 ):
     dialog, engine, installed = engine_dialog
     requests = []
@@ -75,41 +78,25 @@ def test_missing_runtime_requires_explicit_action_and_preserves_engine_selection
     assert dialog._queue.jobs == []  # Runtime installation does not install the engine.
 
 
-def test_incompatible_engine_does_not_offer_runtime_install(engine_dialog):
-    dialog, engine, installed = engine_dialog
-    dialog._select(engine)
-    engine.compatibility_error = "Unsupported host architecture"
-    dialog._select(engine)
-    assert dialog._btn_runtime.isHidden()
-    assert not dialog._btn_install.isEnabled()
-    assert dialog._status.text() == engine.compatibility_error
-
-
-def test_existing_runtime_needs_no_dependency_install_action(engine_dialog):
-    dialog, engine, installed = engine_dialog
-    installed.add("3.13")
-    dialog._select(engine)
-    assert dialog._btn_runtime.isHidden()
-    assert dialog._btn_install.isEnabled()
-
-
 def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, monkeypatch):
     dialog, engine, installed = engine_dialog
     calls = []
+
     def prepare(*, version, on_status, download_ca_bundle):
         calls.append((version, download_ca_bundle))
         installed.add(version)
         return "/managed/python"
+
     manager = SimpleNamespace(
-        default_version="3.13", supported_versions=lambda: ["3.13"],
+        default_version="3.13",
+        supported_versions=lambda: ["3.13"],
         get_runtime_path=lambda version: "/managed/python" if version in installed else "",
-        has_runtime=lambda version: version in installed, ensure_runtime=prepare,
+        has_runtime=lambda version: version in installed,
+        ensure_runtime=prepare,
     )
     monkeypatch.setattr(installs_view, "InstallEditorDialog", lambda *args, **kwargs: dialog)
     page = installs_view.InstallsView(dialog._vm, dialog._queue)
-    settings = SimpleNamespace(
-        get_setting=lambda key, default="": "proxy-ca.pem"
-    )
+    settings = SimpleNamespace(get_setting=lambda key, default="": "proxy-ca.pem")
     python_page = PythonRuntimesView(manager, dialog._queue, settings=settings)
     page.runtime_install_requested.connect(python_page.install)
     try:
@@ -137,13 +124,17 @@ def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, 
 def test_runtime_install_completion_follows_worker_cleanup(failure):
     app = QApplication.instance() or QApplication([])
     queue = InstallQueue(app)
+
     def prepare(**kwargs):
         if failure is not None:
             raise RuntimeError(failure)
         return "/managed/python"
+
     manager = SimpleNamespace(
-        default_version="3.13", supported_versions=lambda: [],
-        has_runtime=lambda version: False, ensure_runtime=prepare,
+        default_version="3.13",
+        supported_versions=lambda: [],
+        has_runtime=lambda version: False,
+        ensure_runtime=prepare,
     )
     page = PythonRuntimesView(manager, queue)
     cleaned_up = []

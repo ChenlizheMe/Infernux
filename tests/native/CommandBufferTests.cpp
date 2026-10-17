@@ -16,34 +16,6 @@ using namespace infernux;
 
 int main()
 {
-    // Unsupported target changes fail at recording, preserving the already
-    // accepted stream and leaving subsequent supported commands usable.
-    CommandBuffer targets("target-contract");
-    const auto target = targets.GetTemporaryRT(64, 64);
-    assert(target.IsValid() && targets.GetCommandCount() == 1);
-    for (int entry = 0; entry < 3; ++entry) {
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            bool rejected = false;
-            try {
-                if (entry == 0)
-                    targets.SetRenderTarget(target);
-                else if (entry == 1)
-                    targets.SetRenderTarget(target, CAMERA_TARGET_HANDLE);
-                else
-                    targets.ClearRenderTarget(true, true, 1, 0, 0, 1);
-            } catch (const std::logic_error &error) {
-                rejected = std::string(error.what()).find("RenderGraph") != std::string::npos;
-            }
-            assert(rejected && targets.GetCommandCount() == 1);
-            assert(std::get<GetTemporaryRTParams>(targets.GetCommands().front().data).handleId == target.id);
-        }
-    }
-    targets.ReleaseTemporaryRT(target);
-    assert(targets.GetCommandCount() == 2);
-    assert(std::get<ReleaseTemporaryRTParams>(targets.GetCommands().back().data).handleId == target.id);
-    targets.Clear();
-    assert(targets.GetCommandCount() == 0);
-
     auto mesh = std::make_shared<InxMesh>("draw-capture");
     std::vector<Vertex> vertices(3);
     vertices[0].pos = {0.0F, 0.0F, 0.0F};
@@ -62,6 +34,34 @@ int main()
     material->SetTextureGuid("_Albedo", "white");
     material->SetFloatArray("_Curve", {0.0F, 0.5F, 1.0F});
     material->SetVector4Array("_Palette", {{1.0F, 0.0F, 0.0F, 1.0F}, {0.0F, 1.0F, 0.0F, 1.0F}});
+
+    // Unsupported target changes fail at recording, preserving the already
+    // accepted stream and leaving subsequent supported commands usable.
+    CommandBuffer targets("target-contract");
+    const auto target = CAMERA_TARGET_HANDLE;
+    targets.DrawMesh(mesh, glm::mat4(1.0F), material);
+    for (int entry = 0; entry < 5; ++entry) {
+        bool rejected = false;
+        try {
+            if (entry == 0)
+                targets.SetRenderTarget(target);
+            else if (entry == 1)
+                targets.SetRenderTarget(target, CAMERA_TARGET_HANDLE);
+            else if (entry == 2)
+                targets.ClearRenderTarget(true, true, 1, 0, 0, 1);
+            else if (entry == 3)
+                targets.GetTemporaryRT(64, 64);
+            else
+                targets.ReleaseTemporaryRT(target);
+        } catch (const std::logic_error &error) {
+            rejected = std::string(error.what()).find("RenderGraph") != std::string::npos;
+        }
+        assert(rejected && targets.GetCommandCount() == 1);
+    }
+    targets.DrawMesh(mesh, glm::mat4(1.0F), material);
+    assert(targets.GetCommandCount() == 2);
+    targets.Clear();
+    assert(targets.GetCommandCount() == 0);
 
     DrawParameterBlock parameters;
     parameters.SetColor("_BaseColor", {1.0F, 0.0F, 0.0F, 1.0F});

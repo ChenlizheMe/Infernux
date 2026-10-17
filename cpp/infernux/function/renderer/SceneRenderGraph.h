@@ -16,6 +16,8 @@
 
 #pragma once
 #include "RenderViewSchedule.h"
+#include <core/config/EngineConfig.h>
+#include <function/scene/NativeLifetime.h>
 
 #include "FullscreenRenderer.h"
 #include "InxRenderStruct.h"
@@ -131,7 +133,7 @@ using ScenePassRenderCallback = std::function<void(vk::RenderContext &ctx, uint3
  * All rendering is handled through RenderGraph passes with automatic
  * resource management and barrier handling.
  */
-class SceneRenderGraph
+class SceneRenderGraph : public NativeLifetimeOwner
 {
   public:
     SceneRenderGraph();
@@ -980,7 +982,6 @@ class SceneRenderGraph
     // Per-graph shadow descriptor sets (set 1) — multi-camera shadow isolation.
     // One set per frame-in-flight to prevent host-side vkUpdateDescriptorSets
     // from stomping a set the GPU is still sampling in the previous frame.
-    static constexpr uint32_t kMaxFramesInFlight = 2;
     struct PerViewBufferBindingState
     {
         VkBuffer canonicalLights = VK_NULL_HANDLE;
@@ -1033,7 +1034,7 @@ class SceneRenderGraph
         }
     };
 
-    std::array<PerViewFrameState, kMaxFramesInFlight> m_perViewFrames{};
+    std::array<PerViewFrameState, EngineConfig::kFrameSlotCapacity> m_perViewFrames{};
     rhi::BindingLayoutHandle m_perViewLayout;
     lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
     SceneLightCollector m_cameraLightCollector;

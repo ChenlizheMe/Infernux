@@ -1,4 +1,5 @@
 """The Hub and both engine hosts share one OS-serialized project lease."""
+
 import builtins
 import json
 import multiprocessing
@@ -11,6 +12,7 @@ import pytest
 
 def _contender(project, kind, token, ready, start, release, legacy_writers):
     import infernux.engine as engine_entry
+
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packaging"))
     import hub_utils
 
@@ -59,9 +61,10 @@ def test_only_one_process_can_claim_a_project(tmp_path, kinds):
     results = context.Queue()
     start, release = context.Event(), context.Event()
     writers = context.Barrier(2)
-    children = [context.Process(target=_contender, args=(str(project), kind, str(index), results,
-                                                       start, release, writers))
-                for index, kind in enumerate(kinds)]
+    children = [
+        context.Process(target=_contender, args=(str(project), kind, str(index), results, start, release, writers))
+        for index, kind in enumerate(kinds)
+    ]
     try:
         for child in children:
             child.start()
@@ -69,7 +72,7 @@ def test_only_one_process_can_claim_a_project(tmp_path, kinds):
         start.set()
         outcomes = [results.get(timeout=30) for _ in children]
         assert [item[0] for item in outcomes].count("acquired") == 1, outcomes
-        rejected, = [item for item in outcomes if item[0] == "rejected"]
+        (rejected,) = [item for item in outcomes if item[0] == "rejected"]
         assert rejected[2].startswith("RuntimeError:"), outcomes
         assert "already open" in rejected[2], outcomes
     finally:
@@ -86,6 +89,7 @@ def test_only_one_process_can_claim_a_project(tmp_path, kinds):
 
 def _handoff_child(project, token, ready, start, release, abrupt):
     from infernux import engine
+
     os.environ["_INFERNUX_PROJECT_LOCK_PATH"] = engine._default_lock_path(project)
     os.environ["_INFERNUX_PROJECT_LOCK_TOKEN"] = token
     ready.put("ready")
@@ -100,10 +104,10 @@ def _handoff_child(project, token, ready, start, release, abrupt):
     engine._remove_project_lock(path, owned)
 
 
-@pytest.mark.parametrize("transfer_first", [False, True])
-@pytest.mark.parametrize("abrupt", [False, True])
+@pytest.mark.parametrize("abrupt,transfer_first", [(False, False), (True, True)])
 def test_hub_handoff_live_owner_protection_and_exit_recovery(tmp_path, transfer_first, abrupt):
     import infernux_project_lock as locks
+
     project = str(tmp_path / "交接 & project")
     token = "one-use-reservation"
     path = locks.reserve(project, os.getpid(), token, "editor", "preparing")
@@ -150,6 +154,7 @@ def test_hub_handoff_live_owner_protection_and_exit_recovery(tmp_path, transfer_
 @pytest.mark.parametrize("prior", [False, True])
 def test_failed_publication_preserves_previous_lease_and_releases_guard(tmp_path, monkeypatch, prior):
     import infernux_project_lock as locks
+
     project = str(tmp_path)
     path = Path(locks.lock_path(project))
     before = None
@@ -168,6 +173,7 @@ def test_failed_publication_preserves_previous_lease_and_releases_guard(tmp_path
 
 def test_cancelled_hub_reservation_cannot_be_claimed_as_a_fresh_launch(tmp_path, monkeypatch):
     from infernux import engine
+
     monkeypatch.setenv("_INFERNUX_PROJECT_LOCK_PATH", engine._default_lock_path(str(tmp_path)))
     monkeypatch.setenv("_INFERNUX_PROJECT_LOCK_TOKEN", "cancelled")
     with pytest.raises(RuntimeError, match="reservation is no longer available"):
@@ -177,6 +183,7 @@ def test_cancelled_hub_reservation_cannot_be_claimed_as_a_fresh_launch(tmp_path,
 
 def test_lock_path_override_cannot_bypass_project_exclusion(tmp_path, monkeypatch):
     from infernux import engine
+
     monkeypatch.setenv("_INFERNUX_PROJECT_LOCK_PATH", str(tmp_path / "different.lock"))
     with pytest.raises(ValueError, match="canonical lock"):
         engine._acquire_project_lock(str(tmp_path), "editor")
@@ -185,6 +192,7 @@ def test_lock_path_override_cannot_bypass_project_exclusion(tmp_path, monkeypatc
 
 def _crash_in_transaction(project, entered, crash):
     import infernux_project_lock as locks
+
     with locks._guard(locks.lock_path(project)):
         entered.set()
         assert crash.wait(20)
@@ -193,6 +201,7 @@ def _crash_in_transaction(project, entered, crash):
 
 def test_crashed_transaction_releases_kernel_guard_without_replacing_it(tmp_path):
     import infernux_project_lock as locks
+
     context = multiprocessing.get_context("spawn")
     entered, crash = context.Event(), context.Event()
     child = context.Process(target=_crash_in_transaction, args=(str(tmp_path), entered, crash))

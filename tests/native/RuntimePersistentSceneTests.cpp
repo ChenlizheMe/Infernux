@@ -82,13 +82,33 @@ int main()
     Light *light = root->AddComponent<Light>();
     assert(probe && light);
 
-    const uint64_t rootId = root->GetID();
-    const uint64_t childId = child->GetID();
-    const uint64_t probeId = probe->GetComponentID();
     manager.Play();
     assert(LifecycleProbe::awakeCount == 1);
     assert(LifecycleProbe::enableCount == 1);
     assert(LifecycleProbe::startCount == 1);
+
+    // Identity changes must keep an already-dispatched component receiving
+    // updates, through both the direct setter and the document boundary.
+    root->Update(0.0f);
+    assert(LifecycleProbe::updateCount == 1);
+    const uint64_t originalProbeId = probe->GetComponentID();
+    const uint64_t rekeyedProbeId = originalProbeId + 1000;
+    probe->SetComponentID(rekeyedProbeId);
+    root->Update(0.0f);
+    assert(LifecycleProbe::updateCount == 2);
+    assert(Component::FindByComponentId(originalProbeId) == nullptr);
+    auto rekeyedDocument = probe->SerializeDocument();
+    rekeyedDocument["component_id"] = rekeyedProbeId + 1000;
+    assert(probe->DeserializeDocument(rekeyedDocument));
+    root->Update(0.0f);
+    assert(LifecycleProbe::updateCount == 3);
+    assert(Component::FindByComponentId(rekeyedProbeId) == nullptr);
+    assert(Component::FindByComponentId(probe->GetComponentID()) == probe);
+    LifecycleProbe::updateCount = 0;
+
+    const uint64_t rootId = root->GetID();
+    const uint64_t childId = child->GetID();
+    const uint64_t probeId = probe->GetComponentID();
     const size_t lightCount = manager.GetActiveLights().size();
 
     // A child request promotes the complete root hierarchy at a safe point.

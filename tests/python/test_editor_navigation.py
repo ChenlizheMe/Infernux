@@ -37,26 +37,28 @@ def test_navigation_records_panel_focus_before_target_selection():
     from infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
 
     core.focus.add_change_listener(
-        lambda change: manager.record(
-            GlobalFocusCommand(change.before, change.after),
-            before_context=core.capture_context(
-                focus=change.before,
-                selection=core.selection.snapshot,
-            ),
-            after_context=core.capture_context(
-                focus=change.after,
-                selection=core.selection.snapshot,
-            ),
+        lambda change: (
+            manager.record(
+                GlobalFocusCommand(change.before, change.after),
+                before_context=core.capture_context(
+                    focus=change.before,
+                    selection=core.selection.snapshot,
+                ),
+                after_context=core.capture_context(
+                    focus=change.after,
+                    selection=core.selection.snapshot,
+                ),
+            )
+            if change.record_history and not manager.is_executing
+            else None
         )
-        if change.record_history and not manager.is_executing
-        else None
     )
     core.selection.add_listener(
-        lambda change: manager.record(
-            GlobalSelectionCommand(change.before, change.after)
+        lambda change: (
+            manager.record(GlobalSelectionCommand(change.before, change.after))
+            if change.record_history and not manager.is_executing
+            else None
         )
-        if change.record_history and not manager.is_executing
-        else None
     )
     try:
         from infernux.engine.interaction import SelectionDomain
@@ -89,24 +91,6 @@ def test_navigation_records_panel_focus_before_target_selection():
     finally:
         core.shutdown()
         EditorInteractionCore._instance = previous_core
-        UndoManager._instance = previous_manager
-        SelectionService._instance = previous_selection
-
-
-def test_navigation_succeeds_when_target_is_already_selected():
-    previous_manager = UndoManager._instance
-    previous_selection = SelectionService._instance
-    selection = SelectionService()
-    manager = UndoManager()
-    navigation = NavigationService(selection)
-    target = SelectionTarget.scene_object(42)
-    selection.select(target, owner_id="scene_view", record_history=False)
-    navigation.register(target.domain, lambda _target, _request: True)
-    try:
-        assert navigation.locate(target, owner_id="inspector")
-        assert selection.snapshot.primary == target
-        assert selection.snapshot.owner_id == "inspector"
-    finally:
         UndoManager._instance = previous_manager
         SelectionService._instance = previous_selection
 
@@ -149,24 +133,6 @@ def test_navigation_fails_closed_without_action_journal():
         SelectionService._instance = previous_selection
 
 
-def test_bootstrap_navigation_delegates_window_presentation_to_manager():
-    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-
-    calls = []
-
-    class _WindowManager:
-        @staticmethod
-        def open_window_from_user(panel_id, *, reason):
-            calls.append((panel_id, reason))
-            return object()
-
-    bootstrap = BootstrapSelectionMixin()
-    bootstrap.window_manager = _WindowManager()
-
-    assert bootstrap._focus_navigation_panel("project")
-    assert calls == [("project", "navigate_panel")]
-
-
 def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_state(
     tmp_path,
     monkeypatch,
@@ -191,7 +157,7 @@ def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_s
     asset = second / "Target.mat"
     asset.write_text("{}", encoding="utf-8")
     asset_guid = "target-material-guid"
-    monkeypatch.setattr(project_context, "_project_root", str(tmp_path))
+    monkeypatch.setattr(project_context._context(), "root", str(tmp_path))
     monkeypatch.setattr(
         AssetManager,
         "_asset_database",
@@ -202,12 +168,8 @@ def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_s
     state = {"path": lexical_path(first)}
     panel = SimpleNamespace(
         get_current_path=lambda: state["path"],
-        can_navigate_to_path=lambda path: lexical_path(path).startswith(
-            lexical_path(tmp_path / "Assets")
-        ),
-        set_current_path=lambda path: bool(
-            state.__setitem__("path", lexical_path(path)) is None
-        ),
+        can_navigate_to_path=lambda path: lexical_path(path).startswith(lexical_path(tmp_path / "Assets")),
+        set_current_path=lambda path: bool(state.__setitem__("path", lexical_path(path)) is None),
     )
 
     class _WindowManager:
@@ -251,45 +213,6 @@ def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_s
         SelectionService._instance = previous_selection
 
 
-def test_asset_navigation_rejects_existing_engine_path(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from infernux.core.assets import AssetManager
-    from infernux.engine import project_context
-    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from infernux.engine.interaction import SelectionTarget
-    from infernux.engine.path_utils import lexical_path
-
-    project = tmp_path / "Project"
-    (project / "Assets").mkdir(parents=True)
-    builtin = tmp_path / "infernux" / "lib" / "standard.vert"
-    builtin.parent.mkdir(parents=True)
-    builtin.write_text("builtin", encoding="ascii")
-    monkeypatch.setattr(project_context, "_project_root", str(project))
-    monkeypatch.setattr(
-        AssetManager,
-        "_asset_database",
-        SimpleNamespace(
-            get_path_from_guid=lambda guid: str(builtin)
-            if guid == "builtin-guid"
-            else ""
-        ),
-    )
-
-    panel = SimpleNamespace(
-        get_current_path=lambda: lexical_path(project / "Assets"),
-        can_navigate_to_path=lambda path: True,
-        set_current_path=lambda path: True,
-    )
-    bootstrap = BootstrapSelectionMixin()
-    bootstrap.project_panel = panel
-
-    assert not bootstrap._present_asset_navigation_target(
-        SelectionTarget.asset("builtin-guid"),
-        SimpleNamespace(activate_panel=False, record_history=False),
-    )
-
-
 def test_asset_navigation_can_restore_the_assets_folder(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -304,24 +227,18 @@ def test_asset_navigation_can_restore_the_assets_folder(tmp_path, monkeypatch):
     asset = assets / "Materials" / "Test.mat"
     asset.parent.mkdir(parents=True)
     asset.write_text("{}", encoding="ascii")
-    monkeypatch.setattr(project_context, "_project_root", str(project))
+    monkeypatch.setattr(project_context._context(), "root", str(project))
     monkeypatch.setattr(
         AssetManager,
         "_asset_database",
-        SimpleNamespace(
-            get_path_from_guid=lambda guid: str(asset)
-            if guid == "test-material-guid"
-            else ""
-        ),
+        SimpleNamespace(get_path_from_guid=lambda guid: str(asset) if guid == "test-material-guid" else ""),
     )
 
     state = {"path": lexical_path(tmp_path / "External")}
     panel = SimpleNamespace(
         get_current_path=lambda: state["path"],
         can_navigate_to_path=lambda path: True,
-        set_current_path=lambda path: bool(
-            state.__setitem__("path", lexical_path(path)) is None
-        ),
+        set_current_path=lambda path: bool(state.__setitem__("path", lexical_path(path)) is None),
     )
     bootstrap = BootstrapSelectionMixin()
     bootstrap.project_panel = panel

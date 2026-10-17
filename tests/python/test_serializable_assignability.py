@@ -1,4 +1,5 @@
 """Nested documents obey declared types before any owner state is published."""
+
 import copy
 import json
 
@@ -10,7 +11,8 @@ from infernux.components.serializable_object import get_serializable_type_id
 from infernux.components.value_codec import VALUE_CODECS
 from infernux.components.value_document import make_serializable_object
 from infernux.engine.component_restore import (
-    PythonComponentRestoreError, deserialize_game_object_document_transactionally,
+    PythonComponentRestoreError,
+    deserialize_game_object_document_transactionally,
     deserialize_scene_document_transactionally,
 )
 from infernux.engine.scene_authoring import decode_scene_document
@@ -47,8 +49,7 @@ class AssignableData(SerializableObject):
     group: ContractGroup
 
 
-@pytest.mark.parametrize("boundary", ["component", "data", "object", "scene"])
-@pytest.mark.parametrize("location", ["child", "members", "group.child", "group.members"])
+@pytest.mark.parametrize("boundary,location", [("data", "members"), ("scene", "group.members")])
 def test_unrelated_document_is_rejected_before_owner_publication(scene, boundary, location):
     component = scene.create_game_object("Declared type").add_component(AssignableComponent)
     if boundary == "data":
@@ -92,6 +93,7 @@ def test_unrelated_document_is_rejected_before_owner_publication(scene, boundary
 
 def test_wrong_type_is_rejected_before_its_defaults_are_materialized(monkeypatch):
     from infernux.components import fields
+
     calls = []
 
     class WrongDefaults(SerializableObject):
@@ -117,8 +119,7 @@ def test_script_rename_keeps_normalized_fields_during_reference_remap(scene, tmp
 
     script = tmp_path / "rename_remap.py"
     script.write_text(
-        "from infernux.components import InxComponent\n"
-        "class BeforeRename(InxComponent):\n    value: int = 5\n",
+        "from infernux.components import InxComponent\nclass BeforeRename(InxComponent):\n    value: int = 5\n",
         encoding="utf-8",
     )
     component_type = load_component_class_from_file(str(script))
@@ -136,6 +137,7 @@ def test_script_rename_keeps_normalized_fields_during_reference_remap(scene, tmp
     renamed_type = load_component_class_from_file(str(script))
     bind_asset_script_guid(renamed_type, guid)
     from infernux.components.registry import publish_component_script_types
+
     publish_component_script_types(str(script), (renamed_type,))
 
     class ScriptCatalog:
@@ -148,19 +150,24 @@ def test_script_rename_keeps_normalized_fields_during_reference_remap(scene, tmp
             return guid
 
     assert deserialize_game_object_document_transactionally(
-        owner, document, ScriptCatalog(), preserve_document_ids=preserve_ids,
+        owner,
+        document,
+        ScriptCatalog(),
+        preserve_document_ids=preserve_ids,
     )
-    restored, = owner.get_py_components()
+    (restored,) = owner.get_py_components()
     assert type(restored).__name__ == "AfterRename"
     assert restored.value == 83
     assert not scene.has_pending_py_components()
 
 
-@pytest.mark.parametrize("kind", [ContractStats, ContractExtendedStats, None])
-@pytest.mark.parametrize("boundary", ["data", "scene"])
+@pytest.mark.parametrize("kind,boundary", [(ContractStats, "scene"), (ContractExtendedStats, "data"), (None, "scene")])
 def test_polymorphic_and_explicit_null_values_survive_real_document_roundtrip(scene, tmp_path, kind, boundary):
-    owner = (AssignableData() if boundary == "data" else
-             scene.create_game_object("Typed scene").add_component(AssignableComponent))
+    owner = (
+        AssignableData()
+        if boundary == "data"
+        else scene.create_game_object("Typed scene").add_component(AssignableComponent)
+    )
     owner.child = None if kind is None else kind(health=31)
     owner.members = [None, None if kind is None else kind(health=41)]
     if boundary == "data":

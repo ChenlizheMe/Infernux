@@ -20,7 +20,7 @@ def invalidate_canvas_cache() -> None:
 def collect_canvases_with_go(scene: Any) -> List[Tuple[Any, UICanvas]]:
     """Return ``[(GameObject, UICanvas), ...]`` for every canvas in *scene*.
 
-    Walks the full scene hierarchy.
+    Uses the live component registry.
 
     Args:
         scene: The active Scene object.
@@ -28,12 +28,12 @@ def collect_canvases_with_go(scene: Any) -> List[Tuple[Any, UICanvas]]:
     ...
 
 
-def collect_canvases(scene: Any, *, allow_stale_empty: bool = False) -> List[UICanvas]:
+def collect_canvases(scene: Any) -> List[UICanvas]:
     """Return ``[UICanvas, ...]`` for every canvas in *scene*."""
     ...
 
 
-def collect_sorted_canvases(scene: Any, *, allow_stale_empty: bool = False) -> List[UICanvas]:
+def collect_sorted_canvases(scene: Any) -> List[UICanvas]:
     """Return ``[UICanvas, ...]`` sorted by ``sort_order`` (cached)."""
     ...
 
@@ -43,12 +43,12 @@ def runtime_ui_scenes(scene_manager: Any) -> tuple[Any, ...]:
     ...
 
 
-def collect_sorted_runtime_canvases(*scenes: Any, allow_stale_empty: bool = False) -> List[UICanvas]:
+def collect_sorted_runtime_canvases(*scenes: Any) -> List[UICanvas]:
     """Return sorted canvases from the supplied resident worlds."""
     ...
 
 
-def collect_runtime_canvases_with_go(*scenes: Any, allow_stale_empty: bool = False) -> List[Tuple[Any, UICanvas]]:
+def collect_runtime_canvases_with_go(*scenes: Any) -> List[Tuple[Any, UICanvas]]:
     """Return the resident Canvas snapshot with owning GameObjects."""
     ...
 

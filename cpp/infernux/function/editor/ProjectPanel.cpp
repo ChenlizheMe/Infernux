@@ -1103,38 +1103,9 @@ ProjectPanel::DirTreeMeta *ProjectPanel::GetDirTreeMeta(const std::string &path)
 
 namespace
 {
-std::string TryGetMetaString(const infernux::InxResourceMeta *meta, const std::string &key)
+std::string GetOptionalMetaString(const infernux::InxResourceMeta &meta, const std::string &key)
 {
-    if (!meta || key.empty())
-        return {};
-    if (!meta->HasKey(key))
-        return {};
-    try {
-        return meta->GetStringData(key);
-    } catch (...) {
-    }
-    return {};
-}
-
-int TryGetMetaInt(const infernux::InxResourceMeta *meta, const std::string &key, int defaultValue)
-{
-    if (!meta || key.empty())
-        return defaultValue;
-    const auto &map = meta->GetMetadata();
-    auto it = map.find(key);
-    if (it == map.end())
-        return defaultValue;
-    const auto &typeName = it->second.first;
-    try {
-        if (typeName == "int")
-            return meta->GetIntData(key);
-        if (typeName == "size_t")
-            return static_cast<int>(meta->GetSizeData(key));
-        if (typeName == "float")
-            return static_cast<int>(std::lround(meta->GetFloatData(key)));
-    } catch (...) {
-    }
-    return defaultValue;
+    return meta.HasKey(key) ? meta.GetStringData(key) : std::string{};
 }
 } // namespace
 
@@ -1144,10 +1115,12 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
     std::shared_ptr<const infernux::InxResourceMeta> meta;
     if (adb)
         meta = adb->GetMetaByPath(modelPath);
+    if (!meta)
+        return;
 
     const uint64_t childMtime = modelItem.mtimeNs;
 
-    const auto textureManifest = TryGetMetaString(meta.get(), "model_textures");
+    const auto textureManifest = GetOptionalMetaString(*meta, "model_textures");
     if (!textureManifest.empty()) {
         for (const auto &entry : nlohmann::json::parse(textureManifest)) {
             FileItem sub{};
@@ -1161,7 +1134,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
         }
     }
 
-    const auto meshManifest = TryGetMetaString(meta.get(), "model_meshes");
+    const auto meshManifest = GetOptionalMetaString(*meta, "model_meshes");
     if (!meshManifest.empty()) {
         for (const auto &entry : nlohmann::json::parse(meshManifest)) {
             FileItem sub{};
@@ -1176,9 +1149,9 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
     }
 
     // ── Materials (material slots) ────────────────────────────────────
-    const bool importMaterials = TryGetMetaString(meta.get(), "material_import_mode") != "none";
-    std::vector<std::string> matNames = SplitCommaList(TryGetMetaString(meta.get(), "material_slots"));
-    int matCount = TryGetMetaInt(meta.get(), "material_slot_count", -1);
+    const bool importMaterials = GetOptionalMetaString(*meta, "material_import_mode") != "none";
+    std::vector<std::string> matNames = SplitCommaList(GetOptionalMetaString(*meta, "material_slots"));
+    const int matCount = meta->HasKey("material_slot_count") ? meta->GetIntData("material_slot_count") : -1;
     if (matNames.empty() && matCount > 0) {
         matNames.reserve(static_cast<size_t>(matCount));
         for (int i = 0; i < matCount; ++i)
@@ -1214,7 +1187,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
     // must never be fed back through Project selection/path projection.
     const std::string &animVirtualBase = modelPath;
     if (meta->HasKey("model_animations")) {
-        const auto animations = nlohmann::json::parse(TryGetMetaString(meta.get(), "model_animations"));
+        const auto animations = nlohmann::json::parse(GetOptionalMetaString(*meta, "model_animations"));
         for (size_t i = 0; i < animations.size(); ++i) {
             const auto &animation = animations[i];
             FileItem sub{};
@@ -2019,8 +1992,7 @@ void ProjectPanel::BeginRename(const std::string &path)
         if (!stem.empty())
             name = stem;
     }
-    std::strncpy(m_renameBuf, name.c_str(), sizeof(m_renameBuf) - 1);
-    m_renameBuf[sizeof(m_renameBuf) - 1] = '\0';
+    m_renameBuf = std::move(name);
     m_renameFocusRequested = true;
     m_renameSkipDeactivateFrames = 2;
     BeginTransientInteraction("rename", "inline_rename", 100, [this]() {
@@ -2355,7 +2327,7 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
         ctx->SetKeyboardFocusHere();
         m_focusSearchNextFrame = false;
     }
-    ctx->InputTextWithHint("##project_search", Tr("project.search_hint"), m_searchBuf, sizeof(m_searchBuf));
+    ctx->InputTextWithHint("##project_search", Tr("project.search_hint"), m_searchBuf);
     ctx->RecordSemanticItem("text_input", Tr("project.search_hint"), true, "project.search", std::nullopt, std::nullopt,
                             std::string(m_searchBuf));
     (void)m_search.SetQuery(m_searchBuf);
@@ -2667,7 +2639,7 @@ void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
                                                               : RequestAssetLocation(activatedItem.path);
     if (!accepted)
         return;
-    m_searchBuf[0] = '\0';
+    m_searchBuf.clear();
     (void)m_search.Clear();
     ResetAsyncSearch();
 }
@@ -3479,7 +3451,7 @@ void ProjectPanel::RenderItemLabel(InxGUIContext *ctx, const FileItem &item, flo
 
         ctx->SetCursorPosX(cellStartX);
         ctx->SetNextItemWidth(iconSize);
-        ctx->TextInput("##rename_" + item.path, m_renameBuf, sizeof(m_renameBuf));
+        ctx->TextInput("##rename_" + item.path, m_renameBuf);
         ctx->RecordSemanticItem("text_input", "Name", true, "project.rename.input");
 
         if (m_renameSkipDeactivateFrames > 0)

@@ -1,19 +1,12 @@
 """SceneViewOverlaysMixin — extracted from SceneViewPanel."""
 from __future__ import annotations
 
-"""
-Unity-style Scene View panel with 3D viewport and camera controls.
-"""
 
 import math
-from infernux.lib import InxGUIContext, InputManager
+from infernux.lib import InxGUIContext
 from infernux.engine.i18n import t
-from .editor_panel import EditorPanel
-from .closable_panel import ClosablePanel
-from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar
-from .viewport_utils import ViewportInfo, capture_viewport_info
-from . import imgui_keys as _keys
+from .viewport_utils import ViewportInfo
 from .editor_icons import EditorIcons
 from .dpi import editor_dpi_scale
 
@@ -23,14 +16,6 @@ from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE
 # Gizmo handle IDs — must match C++ EditorTools constants
 from infernux.debug import Debug
 from infernux.engine.editor_visibility import game_object_is_active_in_hierarchy
-from infernux.lib._Infernux import (
-    GIZMO_X_AXIS_ID,
-    GIZMO_Y_AXIS_ID,
-    GIZMO_Z_AXIS_ID,
-    GIZMO_XY_PLANE_ID,
-    GIZMO_XZ_PLANE_ID,
-    GIZMO_YZ_PLANE_ID,
-)
 
 
 class SceneViewOverlaysMixin:

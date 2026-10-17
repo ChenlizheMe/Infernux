@@ -87,7 +87,13 @@ def test_registered_panel_updates_every_frame_with_automatic_read_reuse(engine, 
             engine.unregister_gui_renderable(name)
         engine.set_render_pipeline(None)
         pipeline.dispose()
-    assert panel._content_render_error_signature is None
+    from infernux.debug import DebugConsole
+
+    assert not [
+        entry
+        for entry in DebugConsole.instance().get_entries()
+        if "Panel 'test.live_counter'" in entry.message
+    ]
     assert len(observations) >= 75, "The dispatcher did not complete 75 actual GUI frames"
     assert [count for count, _ in observations] == list(range(1, len(observations) + 1))
     assert observations[0][1] == "team/first"

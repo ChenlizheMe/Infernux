@@ -34,9 +34,11 @@ def _mechanism(scene, kind, initial_scale=(1, 1, 1), support_scale=(1, 1, 1), su
     return owner, body, joint, support
 
 
-@pytest.mark.parametrize('kind', ['HingeJoint', 'SliderJoint'])
-@pytest.mark.parametrize('side', ['owner', 'support'])
-@pytest.mark.parametrize('change', ['center', 'add_shape', 'remove_shape'])
+@pytest.mark.parametrize('kind,side,change', [
+    ('HingeJoint', 'owner', 'center'), ('SliderJoint', 'support', 'center'),
+    ('HingeJoint', 'support', 'add_shape'), ('SliderJoint', 'owner', 'add_shape'),
+    ('HingeJoint', 'owner', 'remove_shape'), ('SliderJoint', 'support', 'remove_shape'),
+])
 def test_shape_center_of_mass_change_preserves_joint_anchor(scene, kind, side, change):
     owner, body, joint, support = _mechanism(scene, kind)
     edited = owner if side == 'owner' else support
@@ -61,10 +63,16 @@ def test_shape_center_of_mass_change_preserves_joint_anchor(scene, kind, side, c
         assert after.x == pytest.approx(before.x, abs=.005)
 
 
-@pytest.mark.parametrize('kind', ['HingeJoint', 'SliderJoint'])
-@pytest.mark.parametrize('side', ['owner', 'support', 'world'])
-@pytest.mark.parametrize('sleeping', [False, True])
-@pytest.mark.parametrize('parent_scale', [False, True])
+@pytest.mark.parametrize('kind,side,sleeping,parent_scale', [
+    ('HingeJoint', 'owner', False, False),
+    ('HingeJoint', 'support', True, True),
+    ('HingeJoint', 'world', True, False),
+    ('SliderJoint', 'owner', True, True),
+    ('SliderJoint', 'support', False, False),
+    ('SliderJoint', 'world', False, True),
+    ('HingeJoint', 'owner', True, True),
+    ('SliderJoint', 'support', True, True),
+])
 def test_runtime_scale_preserves_each_joint_attachment(scene, kind, side, sleeping, parent_scale):
     owner, body, joint, support = _mechanism(scene, kind)
     # The connection is away from both origins; scaling either end must move

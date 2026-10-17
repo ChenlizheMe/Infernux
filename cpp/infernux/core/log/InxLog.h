@@ -27,6 +27,9 @@ enum LogLevel
     LOG_FATAL = 4
 };
 
+std::string FormatDiagnosticMessage(LogLevel level, const std::string &sourceFile, int sourceLine,
+                                    const std::string &message, const std::string &projectRoot = "");
+
 class InxLog
 {
   public:
@@ -122,20 +125,10 @@ class InxLog
         if (logLevel.load(std::memory_order_relaxed) > level)
             return;
 
-        // Build the ENTIRE formatted message outside the lock so that
-        // string formatting never holds the mutex.  Use '\n' instead of
-        // std::endl to avoid a blocking flush() while the lock is held —
-        // this prevents deadlocks / severe contention when multiple
-        // threads (main loop, Vulkan validation callback, file watcher)
-        // log concurrently.
-
-        // Plain message for file output (no ANSI color codes)
-        std::ostringstream plain;
-        plain << '[' << LogLevelToString(level) << "] " << '(' << file << ':' << line << ") ";
-        (plain << ... << args);
-        plain << '\n';
-
-        std::string plainStr = plain.str();
+        std::ostringstream message;
+        (message << ... << args);
+        const std::string rawMessage = message.str();
+        const std::string plainStr = FormatDiagnosticMessage(level, file ? file : "", line, rawMessage) + '\n';
 
         // Copy sink list under lock, then invoke outside lock to avoid
         // deadlocks if a sink calls back into the logger.
@@ -165,13 +158,8 @@ class InxLog
                 sinksCopy.push_back(s.callback);
         }
 
-        // Strip trailing newline for sink consumers
-        std::string msgForSinks = plainStr;
-        if (!msgForSinks.empty() && msgForSinks.back() == '\n')
-            msgForSinks.pop_back();
-
         for (const auto &sink : sinksCopy)
-            sink(level, file, line, msgForSinks, internalOnly);
+            sink(level, file, line, rawMessage, internalOnly);
     }
 
   public:

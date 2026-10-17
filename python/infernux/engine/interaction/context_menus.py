@@ -125,7 +125,7 @@ class ContextMenuBuilder:
                 ResolvedContextMenuCommand(
                     spec=spec,
                     context=context,
-                    label=spec.label or command.display_name or command.command_id,
+                    label=spec.label or command.localized_name,
                     shortcut=spec.shortcut or command.default_shortcut,
                     enabled=enabled,
                     checked=registry.is_checked(spec.command_id, context),

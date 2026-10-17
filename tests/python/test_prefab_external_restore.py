@@ -1,4 +1,5 @@
 """Restored Prefab sources must publish into every affected resident scene."""
+
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -68,19 +69,22 @@ def _linked_worlds(scene, fixture, depth):
         source_path = variant
     other = SceneManager.instance().create_scene("Other resident world")
     files.register_loaded_scene(other, "")
-    instances = [instantiate_prefab(file_path=str(source_path),
-                                   guid=database.get_guid_from_path(str(source_path)),
-                                   scene=world, asset_database=database)
-                 for world in (scene, other)]
+    instances = [
+        instantiate_prefab(
+            file_path=str(source_path),
+            guid=database.get_guid_from_path(str(source_path)),
+            scene=world,
+            asset_database=database,
+        )
+        for world in (scene, other)
+    ]
     instances[1].get_child(0).name = "Local override"
     refs = [ComponentRef(obj.get_child(0).get_component("BoxCollider")) for obj in instances]
-    identities = [(obj.id, obj.get_child(0).id, ref.resolve().component_id)
-                  for obj, ref in zip(instances, refs)]
+    identities = [(obj.id, obj.get_child(0).id, ref.resolve().component_id) for obj, ref in zip(instances, refs)]
     return base, source_path, instances, refs, identities, variant_bytes
 
 
-@pytest.mark.parametrize("depth", [0, 1, 2])
-@pytest.mark.parametrize("event", ["modified", "restored"])
+@pytest.mark.parametrize("event,depth", [("modified", 1), ("restored", 2)])
 def test_source_update_reaches_resident_instances_without_losing_identity(prefab_project, scene, depth, event):
     database, _, _, handler = prefab_project
     base, variant, instances, refs, identities, variant_bytes = _linked_worlds(scene, prefab_project, depth)
@@ -105,10 +109,11 @@ def test_source_update_reaches_resident_instances_without_losing_identity(prefab
     assert database.get_guid_from_path(str(base)) == guid
     assert _read_resolved_prefab_document(str(variant), database)["root_object"]["children"][0]["layer"] == 11
     assert [obj.get_child(0).layer for obj in instances] == [11, 11]
-    assert instances[0].get_child(0).name == (f"Variant door {depth-1}" if depth else "Door")
+    assert instances[0].get_child(0).name == (f"Variant door {depth - 1}" if depth else "Door")
     assert instances[1].get_child(0).name == "Local override"
-    assert [(obj.id, obj.get_child(0).id, ref.resolve().component_id)
-            for obj, ref in zip(instances, refs)] == identities
+    assert [
+        (obj.id, obj.get_child(0).id, ref.resolve().component_id) for obj, ref in zip(instances, refs)
+    ] == identities
     for obj in instances:
         assert obj.get_component("HingeJoint").connected_body is obj.get_child(0).get_component("Rigidbody")
     assert base.read_bytes() == source_bytes

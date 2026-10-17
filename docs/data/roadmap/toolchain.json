@@ -96,7 +96,7 @@
         ["Memory snapshot viewer","内存快照查看器","planned"],
         ["Live resource inspector","实时资源检查器","planned"],
         ["Remote player inspection","远程 Player 检查","live"],
-        ["Performance regression reports","性能回归报告","live"],
+        ["Performance regression reports","性能回归报告","planned"],
         ["Frame comparison tools","帧对比工具","live"]
       ]
     },
@@ -240,7 +240,7 @@
         ["Allocation stack sampling","分配栈采样","planned"],
         ["Subsystem budget annotations","子系统预算注释","planned"],
         ["Remote trace transport","远程追踪传输","planned"],
-        ["Percentile frame-time reports","帧耗时分位报告","live"],
+        ["Percentile frame-time reports","帧耗时分位报告","planned"],
         ["Hitch attribution views","卡顿归因视图","planned"]
       ]
     },

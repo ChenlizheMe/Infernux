@@ -219,6 +219,7 @@ class MaterialDescriptorManager
 
     /**
      * @brief Initialize the manager
+     * SetRetirementQueue must be called first.
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                     vk::VkDescriptorManager *descriptorManager);

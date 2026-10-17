@@ -1,36 +1,14 @@
 """ComponentLifecycleMixin — extracted from InxComponent."""
 from __future__ import annotations
 
-"""
-InxComponent - Base class for all Python-defined components.
 
-Provides Unity-style lifecycle methods and property injection.
-Users inherit from this class to create custom game logic.
-
-Example:
-    from infernux.components import InxComponent, serialized_field
-    
-    class PlayerController(InxComponent):
-        speed: float = serialized_field(default=5.0)
-        
-        def start(self):
-            print("Player started!")
-        
-        def update(self, delta_time: float):
-            pos = self.transform.position
-            self.transform.position = Vector3(pos.x + self.speed * delta_time, pos.y, pos.z)
-"""
-
-import copy
-import threading
 import weakref
 from collections import defaultdict
-from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, TYPE_CHECKING, Type
+from typing import Any, Mapping, NamedTuple, Optional
+import sys
 
-from infernux.lib import GameObject
 
 
 _RUNTIME_PHASE_NAMES = (
@@ -48,25 +26,26 @@ _RUNTIME_SCHEDULER_PHASES = (
     "late_update",
 )
 _MISSING = object()
+_runtime_phase_presence_fn = None
 
 
-@contextmanager
-def _compute_recording_scope():
-    """Batch GPU launches emitted by one runtime lifecycle phase.
+def _runtime_phase_presence(component_type: type) -> tuple[bool, ...]:
+    global _runtime_phase_presence_fn
+    resolver = _runtime_phase_presence_fn
+    if resolver is None:
+        from infernux.engine.runtime_dispatch import runtime_phase_presence
 
-    Compute is optional for CPU-only projects, so importing the public compute
-    frontend is deliberately late. The normal path uses its authoritative
-    recording boundary; a missing frontend simply keeps the lifecycle path
-    usable for lightweight scheduler tests.
-    """
-    try:
-        from infernux.compute import recording
-    except ImportError:
-        with nullcontext():
-            yield
-        return
-    with recording():
-        yield
+        resolver = _runtime_phase_presence_fn = runtime_phase_presence
+    return resolver(component_type)
+# The scheduler only derives plan invalidation from structural domains. Keeping
+# field/value domains out lets the journal skip per-field bookkeeping in the
+# Player, where no Inspector cursor subscribes to them.
+_SCHEDULER_CHANGE_DOMAINS = (
+    "scene_topology",
+    "component_structure",
+    "component_enabled",
+    "script_schema",
+)
 
 
 def _missing_runtime_phase(*_args):
@@ -85,6 +64,7 @@ class RuntimeExecutionScheduler:
     """
 
     _live_schedulers = weakref.WeakSet()
+    _primary_scheduler: Any = None
     _runtime_service_phases: dict[str, set[str]] = {}
 
     def __init__(
@@ -103,7 +83,8 @@ class RuntimeExecutionScheduler:
         self._native_scene_manager = None
         self._change_journal = change_journal
         self._change_cursor = change_journal.create_cursor(
-            f"runtime-execution:{self.name}:{id(self):x}"
+            f"runtime-execution:{self.name}:{id(self):x}",
+            domains=_SCHEDULER_CHANGE_DOMAINS,
         )
         # Scene replacement publishes the new graph before the retained old
         # graph is finalized. Component IDs are scene-local, and freshly bound
@@ -124,21 +105,60 @@ class RuntimeExecutionScheduler:
         self._native_frame: RuntimeExecutionFrame | None = None
         self._cpu_mesh_frame_open = False
         self._execution_snapshot: _RuntimeExecutionSnapshot | None = None
+        # Native work availability is maintained incrementally: registration is
+        # O(1) and only a false<->true transition crosses to the SceneManager.
+        self._work_components: set[int] = set()
+        self._native_work_available = False
+        self._native_work_dirty = False
         self._last_barrier_changes: dict[Any, Any] = {}
         self._last_completed_frame_changes: dict[Any, Any] = {}
         self._last_completed_barrier_sequence: tuple[tuple[Any, Any], ...] = ()
         self._live_schedulers.add(self)
+        primary = RuntimeExecutionScheduler._primary_scheduler
+        if primary is None or primary() is None:
+            RuntimeExecutionScheduler._primary_scheduler = weakref.ref(self)
 
-    def _sync_native_work_availability(self) -> None:
-        """Publish structural work state without adding a per-frame crossing."""
+    def _component_has_runtime_work(self, component: Any) -> bool:
+        if self._active_coroutine_scheduler(component) is not None:
+            return True
+        return any(_runtime_phase_presence(type(component)))
+
+    def _note_component_work(self, component: Any, *, present: bool) -> None:
+        """Update one component's work contribution and publish transitions.
+
+        Scene loading registers thousands of components; each registration must
+        stay O(1). The native lifecycle fast path only needs to know whether any
+        work exists, so a set membership plus a level check is sufficient.
+        """
+        key = id(component)
+        if present and self._component_has_runtime_work(component):
+            self._work_components.add(key)
+        else:
+            self._work_components.discard(key)
+        self._recompute_work_availability()
+
+    def _recompute_work_availability(self) -> None:
         if not self._native_bridge or self._native_scene_manager is None:
             return
-        has_work = any(self._runtime_service_phases.values()) or any(
-            self._active_coroutine_scheduler(component) is not None
-            or any(self._has_phase(component, phase) for phase in _RUNTIME_SCHEDULER_PHASES)
-            for component in self._components.values()
-        )
-        self._native_scene_manager.set_runtime_lifecycle_work_available(has_work)
+        has_work = bool(self._work_components) or any(self._runtime_service_phases.values())
+        if has_work == self._native_work_available and not self._native_work_dirty:
+            return
+        self._native_work_dirty = False
+        if has_work != self._native_work_available:
+            self._native_work_available = has_work
+            self._native_scene_manager.set_runtime_lifecycle_work_available(has_work)
+
+    def _sync_native_work_availability(self, *, force: bool = False) -> None:
+        """Recompute the work mirror; force rebuilds it from live membership."""
+        if not self._native_bridge or self._native_scene_manager is None:
+            return
+        if force:
+            self._work_components = {
+                id(component)
+                for component in self._components.values()
+                if self._component_has_runtime_work(component)
+            }
+        self._recompute_work_availability()
 
     @classmethod
     def set_runtime_service_phase_active(
@@ -164,7 +184,7 @@ class RuntimeExecutionScheduler:
         if not changed:
             return
         for scheduler in tuple(cls._live_schedulers):
-            scheduler._sync_native_work_availability()
+            scheduler._recompute_work_availability()
             scheduler._publish_native_plan()
 
     @classmethod
@@ -202,7 +222,7 @@ class RuntimeExecutionScheduler:
     def sync_native_work_availability(self) -> None:
         """Synchronize the native fast-path after lifecycle bridge installation."""
         self._sync_active_registry_once()
-        self._sync_native_work_availability()
+        self._sync_native_work_availability(force=True)
         self._publish_native_plan()
 
     def refresh_scene_membership(self) -> None:
@@ -217,12 +237,23 @@ class RuntimeExecutionScheduler:
         """
         self._registry_scan_pending = True
         self.prepare_frame()
-        self._sync_native_work_availability()
+        self._sync_native_work_availability(force=True)
 
     @classmethod
     def _notify_component_structure(cls, component: Any, *, present: bool) -> None:
         from infernux.engine.runtime_change_journal import RuntimeChangeDomain
 
+        primary_ref = cls._primary_scheduler
+        primary = primary_ref() if primary_ref is not None else None
+        if primary is not None and len(cls._live_schedulers) == 1:
+            # Scene load registers one component at a time; the single-scheduler
+            # case must not iterate the WeakSet or dedupe journals per call.
+            primary._change_journal.publish(
+                RuntimeChangeDomain.COMPONENT_STRUCTURE,
+                stable_id=cls._component_token(component),
+            )
+            primary._on_component_structure(component, present=present)
+            return
         schedulers = tuple(cls._live_schedulers)
         cls._publish_to_scheduler_journals(
             schedulers,
@@ -255,7 +286,23 @@ class RuntimeExecutionScheduler:
             self._structure_revision += 1
             self._execution_snapshot = None
             self._counters["coroutine_plan_invalidations"] += 1
-        self._sync_native_work_availability()
+        self._note_component_work(component, present=True)
+
+    @staticmethod
+    def _journal_type_id(component_type: type) -> str:
+        type_id = component_type.__dict__.get("_runtime_journal_type_id")
+        if type_id is None:
+            type_id = sys.intern(
+                str(
+                    getattr(component_type, "_type_guid_", None)
+                    or f"{component_type.__module__}.{component_type.__qualname__}"
+                )
+            )
+            try:
+                component_type._runtime_journal_type_id = type_id
+            except (AttributeError, TypeError):
+                pass
+        return type_id
 
     @classmethod
     def _notify_component_value(
@@ -265,20 +312,59 @@ class RuntimeExecutionScheduler:
     ) -> None:
         from infernux.engine.runtime_change_journal import RuntimeChangeDomain
 
-        component_type = type(component)
-        type_id = (
-            getattr(component_type, "_type_guid_", None)
-            or f"{component_type.__module__}.{component_type.__qualname__}"
-        )
-        component_id = cls._component_token(component)[0]
-        schedulers = tuple(cls._live_schedulers)
-        journals = cls._scheduler_journals(schedulers)
+        type_id = cls._journal_type_id(type(component))
+        component_id = component._component_id or id(component)
+        primary_ref = cls._primary_scheduler
+        primary = primary_ref() if primary_ref is not None else None
+        if primary is not None and len(cls._live_schedulers) == 1:
+            # Steady state: one scheduler owns one journal. Avoid iterating the
+            # WeakSet and the generic per-publish validation below. When no
+            # consumer subscribes to field domains the write is journal-free.
+            journal = primary._change_journal
+            if journal._field_tracking:
+                journal.publish_component_field_value(
+                    type_id, component_id, field_id
+                )
+            return
+        journals = cls._scheduler_journals(tuple(cls._live_schedulers))
         for journal in journals:
+            if not journal._field_tracking:
+                continue
             journal.publish_component_field(type_id, component_id, field_id)
             journal.publish(
                 RuntimeChangeDomain.SCRIPT_VALUE,
                 stable_id=component_id,
             )
+
+    @classmethod
+    def _notify_component_values(
+        cls,
+        components: tuple[Any, ...],
+        field_id: Any,
+    ) -> None:
+        """Publish one homogeneous batch write without per-component calls."""
+        if not components:
+            return
+        type_id = cls._journal_type_id(type(components[0]))
+        # Unregistered candidates are private: their values must not invalidate
+        # runtime consumers even though the native scatter already succeeded.
+        component_ids = [
+            component._component_id or id(component)
+            for component in components
+            if component._registered_go_id is not None
+        ]
+        if not component_ids:
+            return
+        primary_ref = cls._primary_scheduler
+        primary = primary_ref() if primary_ref is not None else None
+        if primary is not None and len(cls._live_schedulers) == 1:
+            journal = primary._change_journal
+            if journal._field_tracking:
+                journal.publish_component_fields(type_id, component_ids, field_id)
+            return
+        for journal in cls._scheduler_journals(tuple(cls._live_schedulers)):
+            if journal._field_tracking:
+                journal.publish_component_fields(type_id, component_ids, field_id)
 
     @staticmethod
     def _scheduler_journals(schedulers: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -351,7 +437,9 @@ class RuntimeExecutionScheduler:
             previous = self._component_tokens.pop(id(component), None)
             if previous is not None and self._components.get(previous) is component:
                 self._components.pop(previous, None)
-        self._sync_native_work_availability()
+        # Registration happens per component during scene load; the work mirror
+        # is updated incrementally so loading stays O(1) per component.
+        self._note_component_work(component, present=present)
         # The typed journal advances the plan revision at the next explicit
         # runtime barrier.  The object map is updated immediately so that the
         # next frame can build from authoritative membership without a scan.
@@ -407,7 +495,7 @@ class RuntimeExecutionScheduler:
                 RuntimeChangeDomain.SCRIPT_SCHEMA,
                 stable_id=type_id,
             )
-            self._sync_native_work_availability()
+            self._sync_native_work_availability(force=True)
 
     def mark_runtime_revision(self, revision: int) -> None:
         """Apply an external structural revision monotonically."""
@@ -490,12 +578,6 @@ class RuntimeExecutionScheduler:
         return tuple(self._last_completed_barrier_sequence)
 
     @staticmethod
-    def _has_phase(component: Any, phase: str) -> bool:
-        from infernux.engine.runtime_dispatch import has_runtime_phase
-
-        return has_runtime_phase(type(component), phase)
-
-    @staticmethod
     def _owner_is_active_in_hierarchy(component: Any) -> bool:
         """Read the cached owner only when a plan is being changed/built.
 
@@ -560,7 +642,7 @@ class RuntimeExecutionScheduler:
         return scheduler if scheduler.count > 0 else None
 
     def _build_plan(self) -> None:
-        components = []
+        entries: list[tuple[Any, bool]] = []
         for component in self._components.values():
             # Re-read the native owner's active state when rebuilding a plan.
             # A component can be deserialized before its GameObject is
@@ -569,18 +651,24 @@ class RuntimeExecutionScheduler:
             owner_active = self._refresh_owner_active_mirror(component)
             if not owner_active:
                 continue
-            if self._eligible(component) or self._active_coroutine_scheduler(component) is not None:
-                components.append(component)
-        components.sort(key=self._sort_key)
-        self._phase_plan = {
-            phase: tuple(
-                component
-                for component in components
-                if self._has_phase(component, phase)
-                or self._active_coroutine_scheduler(component) is not None
-            )
-            for phase in _RUNTIME_SCHEDULER_PHASES
+            has_coroutines = self._active_coroutine_scheduler(component) is not None
+            if has_coroutines or self._eligible(component):
+                entries.append((component, has_coroutines))
+        entries.sort(key=lambda item: self._sort_key(item[0]))
+        presence_by_type = {
+            component_type: _runtime_phase_presence(component_type)
+            for component_type in {type(component) for component, _ in entries}
         }
+        plan: dict[str, tuple[Any, ...]] = {}
+        for phase in _RUNTIME_SCHEDULER_PHASES:
+            index = _RUNTIME_PHASE_NAMES.index(phase)
+            plan[phase] = tuple(
+                component
+                for component, has_coroutines in entries
+                if has_coroutines
+                or presence_by_type[type(component)][index]
+            )
+        self._phase_plan = plan
         self._plan_revision = self._structure_revision
         self._execution_snapshot = None
         self._counters["plan_builds"] += 1
@@ -614,6 +702,14 @@ class RuntimeExecutionScheduler:
                 descriptor = epoch.require_descriptor(type(component))
                 components[component_key] = (component, descriptor.phase_invokers)
 
+        dispatch_plan: dict[str, tuple[_DispatchEntry, ...]] = {}
+        for phase, phase_components in self._phase_plan.items():
+            invoker_index = _RUNTIME_PHASE_NAMES.index(phase)
+            dispatch_plan[phase] = tuple(
+                _DispatchEntry(component, components[id(component)][1][invoker_index])
+                for component in phase_components
+            )
+
         snapshot = _RuntimeExecutionSnapshot(
             structure_revision=self._structure_revision,
             epoch=epoch,
@@ -621,6 +717,7 @@ class RuntimeExecutionScheduler:
                 {phase: tuple(values) for phase, values in self._phase_plan.items()}
             ),
             component_snapshots=MappingProxyType(components),
+            dispatch_plan=MappingProxyType(dispatch_plan),
         )
         self._execution_snapshot = snapshot
         self._counters["execution_snapshot_builds"] += 1
@@ -655,40 +752,31 @@ class RuntimeExecutionScheduler:
         *,
         editor_only: bool = False,
     ) -> None:
-        phase_index = _RUNTIME_PHASE_NAMES.index(phase)
-        with _compute_recording_scope():
-            for component in frame.phase_plan[phase]:
-                snapshot = frame.component_snapshots[id(component)]
-                _component, invokers = snapshot
-                if bool(getattr(component, "_is_destroyed", False)):
-                    self._counters["phase_skips"] += 1
+        from infernux.compute import recording
+
+        counters = self._counters
+        tick_coroutines = (
+            phase == "update" or phase == "fixed_update" or phase == "late_update"
+        )
+        with recording():
+            for component, invoke in frame.dispatch_plan[phase]:
+                # ComponentLifecycleMixin declares these mirrors as class
+                # defaults, so the steady-state path is a direct LOAD_ATTR.
+                if component._is_destroyed:
+                    counters["phase_skips"] += 1
+                    continue
+                if not component._runtime_active_in_hierarchy:
+                    counters["phase_skips"] += 1
+                    continue
+                if editor_only and not component._execute_in_edit_mode:
+                    counters["phase_skips"] += 1
                     continue
 
-                # Owner activation is mirrored when the plan is invalidated or
-                # rebuilt.  Reading this Python bool here handles a same-frame
-                # disable callback without crossing the native boundary.
-                if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
-                    self._counters["phase_skips"] += 1
-                    continue
-
-                if editor_only and not bool(getattr(component, "_execute_in_edit_mode", False)):
-                    self._counters["phase_skips"] += 1
-                    continue
-
-                enabled = bool(getattr(component, "_enabled", True))
-
-                try:
-                    if enabled:
-                        invokers[phase_index](component, delta_time)
-                except Exception as exc:
-                    reporter = getattr(component, "_report_lifecycle_exception", None)
-                    if callable(reporter):
-                        reporter(exc)
-                    else:
-                        # Keep the scheduler useful for lightweight test/runtime
-                        # component doubles without weakening real component error
-                        # isolation.
-                        self._counters["phase_errors"] += 1
+                if component._enabled:
+                    try:
+                        invoke(component, delta_time)
+                    except Exception as exc:
+                        self._report_phase_error(component, exc)
 
                 # Keep the component/invoker tuple stable for the frame, but make
                 # enabled transitions visible between phases just like the legacy
@@ -696,26 +784,29 @@ class RuntimeExecutionScheduler:
                 # the following update/late_update callbacks immediately.
                 # Component ``enabled`` gates the user callback, while the owning
                 # hierarchy independently gates coroutine work.
-                coroutine_scheduler = self._active_coroutine_scheduler(component)
-                if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
+                if not component._runtime_active_in_hierarchy:
                     continue
-                try:
-                    if phase == "update":
-                        if coroutine_scheduler is not None:
-                            coroutine_scheduler.tick_update(delta_time, epoch=frame.epoch)
-                    elif phase == "fixed_update":
-                        if coroutine_scheduler is not None:
-                            coroutine_scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
-                    elif phase == "late_update":
-                        if coroutine_scheduler is not None:
-                            coroutine_scheduler.tick_late_update(delta_time, epoch=frame.epoch)
-                except Exception as exc:
-                    reporter = getattr(component, "_report_lifecycle_exception", None)
-                    if callable(reporter):
-                        reporter(exc)
-                    else:
-                        self._counters["phase_errors"] += 1
-                self._counters["phase_dispatches"] += 1
+                if tick_coroutines:
+                    scheduler = component.__dict__.get("_runtime_coroutine_scheduler")
+                    if scheduler is not None and scheduler.count > 0:
+                        try:
+                            if phase == "update":
+                                scheduler.tick_update(delta_time, epoch=frame.epoch)
+                            elif phase == "fixed_update":
+                                scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
+                            else:
+                                scheduler.tick_late_update(delta_time, epoch=frame.epoch)
+                        except Exception as exc:
+                            self._report_phase_error(component, exc)
+                counters["phase_dispatches"] += 1
+
+    def _report_phase_error(self, component: Any, exc: Exception) -> None:
+        """Route one phase failure; only the error path pays for the fallback."""
+        reporter = getattr(component, "_report_lifecycle_exception", None)
+        if reporter is None:
+            self._counters["phase_errors"] += 1
+        else:
+            reporter(exc)
 
     def execute_frame(
         self,
@@ -764,6 +855,9 @@ class RuntimeExecutionScheduler:
         from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
         self.consume_runtime_changes(RuntimeFrameBarrier.SAFE_POINT)
+        # Registration marks the native work mirror dirty; flush it once at the
+        # frame boundary instead of once per component during scene load.
+        self._sync_native_work_availability()
         if self._plan_revision == self._structure_revision:
             self._counters["plan_hits"] += 1
         else:
@@ -879,7 +973,7 @@ class RuntimeExecutionScheduler:
             frame.close()
         self._components.clear()
         self._component_tokens.clear()
-        self._sync_native_work_availability()
+        self._sync_native_work_availability(force=True)
         self._invalidate()
         self._phase_plan = {phase: () for phase in _RUNTIME_SCHEDULER_PHASES}
         self._plan_revision = self._structure_revision
@@ -891,7 +985,8 @@ class RuntimeExecutionScheduler:
         self._last_completed_frame_changes.clear()
         self._last_completed_barrier_sequence = ()
         self._change_cursor = self._change_journal.create_cursor(
-            f"runtime-execution:{self.name}:{id(self):x}"
+            f"runtime-execution:{self.name}:{id(self):x}",
+            domains=_SCHEDULER_CHANGE_DOMAINS,
         )
 
 
@@ -901,6 +996,20 @@ class _RuntimeExecutionSnapshot:
     epoch: Any
     phase_plan: Mapping[str, tuple[Any, ...]]
     component_snapshots: Mapping[int, tuple[Any, tuple[Any, ...]]]
+    dispatch_plan: Mapping[str, tuple["_DispatchEntry", ...]]
+
+
+class _DispatchEntry(NamedTuple):
+    """One component and the phase invoker captured for this frame epoch.
+
+    The entry removes two steady-state costs from the dispatch loop: the
+    ``id(component)`` snapshot lookup and the per-phase invoker tuple index.
+    Phase membership and the invoker are both immutable for the frame; only
+    the runtime state flags are read per phase.
+    """
+
+    component: Any
+    invoke: Any
 
 
 class RuntimeExecutionFrame:
@@ -920,6 +1029,7 @@ class RuntimeExecutionFrame:
         self._scheduler = scheduler
         self.phase_plan = snapshot.phase_plan
         self.component_snapshots = snapshot.component_snapshots
+        self.dispatch_plan = snapshot.dispatch_plan
         self.structure_revision = snapshot.structure_revision
         self.epoch = snapshot.epoch
         self.barrier_changes: dict[Any, Any] = {}
@@ -1032,8 +1142,25 @@ def notify_runtime_component_value_changed(component: Any, field_id: Any) -> Non
     RuntimeExecutionScheduler._notify_component_value(component, field_id)
 
 
+def notify_runtime_component_values(components: tuple[Any, ...], field_id: Any) -> None:
+    """Publish one homogeneous batch write (CDS scatter) in a single pass."""
+    RuntimeExecutionScheduler._notify_component_values(components, field_id)
+
+
 class ComponentLifecycleMixin:
     """ComponentLifecycleMixin method group for InxComponent."""
+
+    # Runtime state mirrors used by the dispatch hot loop. Declaring them on the
+    # class makes ``component._enabled`` a direct attribute load for every real
+    # component and test double, instead of a per-phase ``getattr(..., default)``.
+    # Instances that need another value assign the instance attribute as before.
+    _is_destroyed = False
+    _enabled = True
+    _runtime_active_in_hierarchy = True
+    _execute_in_edit_mode = False
+    _cds_key = None
+    _component_id = 0
+    _registered_go_id = None
 
     def _resolve_runtime_method(self, name: str, *, epoch: Any = None) -> Any:
         """Resolve a helper through the owner-published runtime epoch."""
@@ -1066,14 +1193,13 @@ class ComponentLifecycleMixin:
             callback(*args)
             return True
         except Exception as exc:
-            # Keep Player diagnostics visible even when the debug console is
-            # not attached; lifecycle failures otherwise silently disable the
-            # component and make authored scenes appear inert.
-            print(f"[Infernux lifecycle] {type(self).__name__}.{method_name} failed: {exc!r}", flush=True)
-            # Route to DebugConsole so the Console Panel shows the error.
             try:
-                from infernux.debug import debug
-                debug.log_exception(exc, context=self)
+                from infernux.debug import Debug
+                Debug.report_script_error(
+                    exc,
+                    f"{type(self).__name__}.{method_name}",
+                    self,
+                )
             except (ImportError, RuntimeError):
                 # Absolute fallback if debug itself cannot be imported.
                 import traceback
@@ -1082,10 +1208,9 @@ class ComponentLifecycleMixin:
 
     def _report_lifecycle_exception(self, exc: Exception) -> None:
         """Route a phase exception without adding work to the success path."""
-        print(f"[Infernux lifecycle] {type(self).__name__} phase failed: {exc!r}", flush=True)
         try:
-            from infernux.debug import debug
-            debug.log_exception(exc, context=self)
+            from infernux.debug import Debug
+            Debug.report_script_error(exc, f"{type(self).__name__}.lifecycle", self)
         except (ImportError, RuntimeError):
             import traceback
             traceback.print_exc()
@@ -1228,12 +1353,26 @@ class ComponentLifecycleMixin:
             self._invalidate_native_binding()
             self.__dict__.pop("_play_domain_retirement_owner", None)
 
+    def _set_component_data_slot(self, slot, class_id):
+        """Bind slot ownership; transactions retain responsibility for replaced slots."""
+        if self._cds_finalizer is not None:
+            self._cds_finalizer.detach()
+        self._cds_slot = slot
+        self._cds_class_id = class_id
+        # One tuple carries both identity words for the descriptor fast path.
+        self._cds_key = (class_id, slot) if slot is not None and class_id is not None else None
+        self._cds_finalizer = None
+        if slot is not None and class_id is not None:
+            from ._cds_bridge import release_slot
+
+            self._cds_finalizer = weakref.finalize(self, release_slot, type(self), slot, class_id)
+            self._cds_finalizer.atexit = False
+
     def _release_component_data_slot(self):
         """Relinquish the numeric-field slot exactly once."""
         cds_slot = getattr(self, '_cds_slot', None)
         cds_class_id = getattr(self, '_cds_class_id', None)
-        self._cds_slot = None
-        self._cds_class_id = None
+        self._set_component_data_slot(None, None)
         if cds_slot is None or cds_class_id is None:
             return
         from ._cds_bridge import release_slot as _cds_free

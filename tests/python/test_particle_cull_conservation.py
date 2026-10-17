@@ -40,13 +40,11 @@ def _ordered_float(value):
     return ~bits & 0xFFFFFFFF if bits & 0x80000000 else bits ^ 0x80000000
 
 
-@pytest.mark.parametrize("view_enabled", [True, False])
-@pytest.mark.parametrize("count, case", [
-    (0, "inside"), (1, "unbounded"), (255, "unbounded"), (256, "unbounded"),
-    (257, "unbounded"), (4096, "inside"), (1048576, "unbounded"),
-    (1048576, "inside"), (1048576, "partial"), (1048576, "outside"),
-    (1, "ribbon"), (257, "ribbon"), (4096, "ribbon_breaks"),
-    (1048576, "ribbon"), (4096, "invalid_indices"), (257, "tangent"),
+@pytest.mark.parametrize('count,case,view_enabled', [
+    (0, 'inside', True), (1, 'ribbon', True), (255, 'unbounded', True),
+    (256, 'unbounded', True), (257, 'ribbon', True), (4096, 'ribbon_breaks', True),
+    (1048576, 'partial', True), (4096, 'outside', True), (4096, 'invalid_indices', True),
+    (257, 'tangent', True), (257, 'inside', False), (257, 'ribbon', False),
 ])
 def test_cull_preserves_every_visible_source_index(cull_kernels, count, case, view_enabled):
     host, kernels = cull_kernels

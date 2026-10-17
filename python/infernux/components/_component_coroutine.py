@@ -1,12 +1,11 @@
 """ComponentCoroutineMixin — extracted from InxComponent."""
 from __future__ import annotations
 
-from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
-import copy
-import threading
-import weakref
+from typing import TYPE_CHECKING
 
-from infernux.lib import GameObject
+
+if TYPE_CHECKING:
+    from infernux.coroutine import Coroutine
 
 
 class ComponentCoroutineMixin:
@@ -114,6 +113,8 @@ class ComponentCoroutineMixin:
 
     @classmethod
     def _clear_all_instances(cls) -> None:
-        """Clear the active-instances registry (call on scene unload/reload)."""
-        cls._active_instances.clear()
+        """Detach registry ownership; resident objects retain their field storage."""
+        instances = tuple(instance for group in cls._active_instances.values() for instance in group)
+        for instance in instances:
+            instance._remove_from_active_registry()
 

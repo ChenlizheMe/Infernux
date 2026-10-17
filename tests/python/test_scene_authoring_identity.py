@@ -1,4 +1,5 @@
 """Persistent Scene identities survive native authoring and transaction boundaries."""
+
 from copy import deepcopy
 import re
 
@@ -185,7 +186,9 @@ def test_python_and_native_references_follow_publication_without_retargeting(sce
     hinge.connected_body = target_body
     refs = owner.add_py_component(_AuthoringRefs())
     refs.target_object = GameObjectRef(target)
-    refs.target_component = ComponentRef(go_id=target.id, component_type="Rigidbody", component_id=target_body.component_id)
+    refs.target_component = ComponentRef(
+        go_id=target.id, component_type="Rigidbody", component_id=target_body.component_id
+    )
     source = scene.serialize_document()
     if missing:
         source["objects"] = [obj for obj in source["objects"] if obj["name"] != "ReferenceTarget"]
@@ -200,8 +203,14 @@ def test_python_and_native_references_follow_publication_without_retargeting(sce
     body_id = fields["target_component"]["component_id"]
     assert target_id != target.id and body_id != target_body.component_id
     assert copied_hinge.serialize_document()["connected_body_component_id"] == body_id
-    assert published["authoring_identity"]["objects"][str(target_id)] == source["authoring_identity"]["objects"][str(target.id)]
-    assert published["authoring_identity"]["components"][str(body_id)] == source["authoring_identity"]["components"][str(target_body.component_id)]
+    assert (
+        published["authoring_identity"]["objects"][str(target_id)]
+        == source["authoring_identity"]["objects"][str(target.id)]
+    )
+    assert (
+        published["authoring_identity"]["components"][str(body_id)]
+        == source["authoring_identity"]["components"][str(target_body.component_id)]
+    )
     if missing:
         assert copied_refs.target_object is None and copied_refs.target_component is None
         assert copied_hinge.connected_body is None

@@ -111,9 +111,9 @@ class _InputMeta(type):
         or exceed viewport size when the cursor is outside.
         """
         mgr = _NativeInputManager.instance()
-        abs_x, abs_y = mgr.mouse_position_x, mgr.mouse_position_y
+        mouse = mgr.get_game_mouse_frame_state(0)
         vx, vy = cls._game_viewport_origin
-        return (abs_x - vx, abs_y - vy)
+        return (mouse[0] - vx, mouse[1] - vy)
 
     @property
     def game_viewport_size(cls) -> Tuple[float, float]:
@@ -378,11 +378,10 @@ class Input(metaclass=_InputMeta):
 
     @staticmethod
     def _accepts_game_input() -> bool:
-        manager = _NativeInputManager.instance()
         return (
             Input._game_focused
             or Input._automation_game_input_depth > 0
-            or bool(manager.has_synthetic_gameplay_input)
+            or bool(_NativeInputManager.instance().has_synthetic_gameplay_input)
         )
 
     @staticmethod
@@ -444,6 +443,15 @@ class Input(metaclass=_InputMeta):
         sc = Input._resolve_key(key)
         return sc >= 0 and _NativeInputManager.instance().get_key_up(sc)
 
+    @staticmethod
+    def consume_key_down(key: Union[str, int]) -> None:
+        """Prevent one gameplay key edge from also reaching Editor shortcuts."""
+        if not Input._accepts_game_input():
+            return
+        sc = Input._resolve_key(key)
+        if sc >= 0:
+            _NativeInputManager.instance().consume_key_down(sc)
+
     # ------------------------------------------------------------------
     # Mouse buttons — Unity: Input.GetMouseButton / Down / Up
     # ------------------------------------------------------------------
@@ -453,14 +461,14 @@ class Input(metaclass=_InputMeta):
         """``True`` while *button* is held (0=left, 1=right, 2=middle)."""
         if not Input._accepts_game_input():
             return False
-        return _NativeInputManager.instance().get_mouse_button(button)
+        return _NativeInputManager.instance().get_game_mouse_button(button)
 
     @staticmethod
     def get_mouse_button_down(button: int) -> bool:
         """``True`` during the frame *button* was pressed."""
         if not Input._accepts_game_input():
             return False
-        return _NativeInputManager.instance().get_mouse_button_down(button)
+        return _NativeInputManager.instance().get_game_mouse_button_down(button)
 
     @staticmethod
     def get_mouse_button_up(button: int) -> bool:
@@ -474,7 +482,7 @@ class Input(metaclass=_InputMeta):
         """Return ``(abs_x, abs_y, scroll_x, scroll_y, held, down, up)`` for one button."""
         if not Input._accepts_game_input():
             return (0.0, 0.0, 0.0, 0.0, False, False, False)
-        return _NativeInputManager.instance().get_mouse_frame_state(button)
+        return _NativeInputManager.instance().get_game_mouse_frame_state(button)
 
     @staticmethod
     def get_game_mouse_frame_state(button: int = 0):
@@ -491,6 +499,19 @@ class Input(metaclass=_InputMeta):
 
     # Property-style access: Input.mouse_scroll_delta → (x, y)
     # (implemented in _InputMeta metaclass)
+
+    @staticmethod
+    def get_mouse_delta() -> Tuple[float, float]:
+        """Unscaled pointer movement accumulated during this input frame.
+
+        Positive X points right and positive Y points down. Reading does not
+        consume the delta. Cursor lock reports relative device motion, without
+        axis sensitivity, frame-time, or Game View display-scale multipliers.
+        """
+        if not Input._accepts_game_input():
+            return (0.0, 0.0)
+        mgr = _NativeInputManager.instance()
+        return (mgr.mouse_delta_x, mgr.mouse_delta_y)
 
     # ------------------------------------------------------------------
     # Axis helpers — Unity: Input.GetAxis / GetAxisRaw

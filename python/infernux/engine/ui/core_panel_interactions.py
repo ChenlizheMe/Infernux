@@ -1414,28 +1414,6 @@ def ui_editor_panel_interaction(
     )
 
 
-def deselect_only_panel_interaction(
-    selection_domain: Optional[SelectionDomain] = None,
-) -> PanelInteractionDescriptor:
-    def bind(_panel: object) -> PanelCommandAdapter:
-        return PanelCommandAdapter(
-            {
-                "edit.deselect": BoundPanelCommand(
-                    lambda context: _deselect(context, "panel_deselect"),
-                    _can_deselect,
-                )
-            }
-        )
-
-    domains = frozenset({selection_domain}) if selection_domain is not None else frozenset()
-    return PanelInteractionDescriptor(
-        commands=(PanelCommandSpec("edit.deselect"),),
-        shortcuts=(
-            PanelShortcutSpec("edit.deselect", KeyChord.parse("Escape")),
-        ),
-        owned_selection_domains=domains,
-        adapter_factory=bind,
-    )
 
 
 def passive_editor_surface_interaction() -> PanelInteractionDescriptor:

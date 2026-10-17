@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
-from infernux.engine.path_utils import is_path_within, path_key, relative_path
+from infernux.engine.path_utils import is_path_within, path_key
 import sys
 from dataclasses import dataclass
 from typing import Dict, Optional, Set

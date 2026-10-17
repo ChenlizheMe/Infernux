@@ -3,6 +3,8 @@ import keyword
 import os
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Iterator, Optional, Protocol
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
@@ -26,87 +28,91 @@ class _RuntimeAssetExtensionResolver(Protocol):
     def __call__(self, guid: str, /) -> str: ...
 
 
-_project_root: Optional[str] = None
-_runtime_asset_resolver: Optional[_RuntimeAssetResolver] = None
-_runtime_package_resolver: Optional[_RuntimePackageResolver] = None
-_runtime_asset_query: Optional[_RuntimeAssetQuery] = None
-_runtime_asset_extension_resolver: Optional[_RuntimeAssetExtensionResolver] = None
-_guid_manifest: Optional[dict] = None
-_guid_manifest_loaded: bool = False
-_package_registry_cache: tuple[str, int, int, frozenset[str]] | None = None
+@dataclass
+class ProjectContext:
+    root: Optional[str] = None
+    asset_resolver: Optional[_RuntimeAssetResolver] = None
+    package_resolver: Optional[_RuntimePackageResolver] = None
+    asset_query: Optional[_RuntimeAssetQuery] = None
+    asset_extension_resolver: Optional[_RuntimeAssetExtensionResolver] = None
+    guid_manifest: Optional[dict] = None
+    guid_manifest_loaded: bool = False
+    package_registry_cache: tuple[str, int, int, frozenset[str]] | None = None
+
+
+# The default is the application session; build/cook scopes own independent state.
+_project_context = ContextVar("infernux_project_context", default=ProjectContext())
+
+
+def _context() -> ProjectContext:
+    return _project_context.get()
+
 
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
-    global _project_root, _runtime_asset_resolver, _runtime_package_resolver
-    global _runtime_asset_query, _runtime_asset_extension_resolver
-    global _guid_manifest, _guid_manifest_loaded
-    _project_root = resolved_path(path) if path else None
-    _runtime_asset_resolver = None
-    _runtime_package_resolver = None
-    _runtime_asset_query = None
-    _runtime_asset_extension_resolver = None
-    _guid_manifest = None
-    _guid_manifest_loaded = False
+    _context().root = resolved_path(path) if path else None
+    _context().asset_resolver = None
+    _context().package_resolver = None
+    _context().asset_query = None
+    _context().asset_extension_resolver = None
+    _context().guid_manifest = None
+    _context().guid_manifest_loaded = False
 
 
 def set_runtime_asset_resolver(
     resolver: Optional[_RuntimeAssetResolver],
 ) -> None:
     """Install the immutable packaged-asset resolver for the active Player."""
-    global _runtime_asset_resolver
     if resolver is not None and not callable(resolver):
         raise TypeError("runtime asset resolver must be callable")
-    _runtime_asset_resolver = resolver
+    _context().asset_resolver = resolver
 
 
 def set_runtime_package_resolver(
     resolver: Optional[_RuntimePackageResolver],
 ) -> None:
     """Install the package-scoped physical-path resolver for the active Player."""
-    global _runtime_package_resolver
     if resolver is not None and not callable(resolver):
         raise TypeError("runtime package resolver must be callable")
-    _runtime_package_resolver = resolver
+    _context().package_resolver = resolver
 
 
 def set_runtime_asset_query(query: Optional[_RuntimeAssetQuery]) -> None:
     """Install the build-frozen path/glob-to-GUID query for Player scripts."""
-    global _runtime_asset_query
     if query is not None and not callable(query):
         raise TypeError("runtime asset query must be callable")
-    _runtime_asset_query = query
+    _context().asset_query = query
 
 
 def set_runtime_asset_extension_resolver(
     resolver: Optional[_RuntimeAssetExtensionResolver],
 ) -> None:
     """Install the build-frozen GUID-to-authored-suffix lookup."""
-    global _runtime_asset_extension_resolver
     if resolver is not None and not callable(resolver):
         raise TypeError("runtime asset extension resolver must be callable")
-    _runtime_asset_extension_resolver = resolver
+    _context().asset_extension_resolver = resolver
 
 
 def query_runtime_asset_guids(pattern: str, *, exact: bool = False) -> tuple[str, ...]:
     """Query Player asset identities without scanning its filesystem."""
-    if _runtime_asset_query is None:
+    if _context().asset_query is None:
         raise RuntimeError("Player runtime asset query is not configured")
-    return tuple(_runtime_asset_query(str(pattern), exact=exact))
+    return tuple(_context().asset_query(str(pattern), exact=exact))
 
 
 def runtime_asset_extension(guid: str) -> str:
     """Return one authored suffix from the frozen Player catalog."""
-    if _runtime_asset_extension_resolver is None:
+    if _context().asset_extension_resolver is None:
         raise RuntimeError("Player runtime asset extension resolver is not configured")
-    return str(_runtime_asset_extension_resolver(str(guid)) or "").casefold()
+    return str(_context().asset_extension_resolver(str(guid)) or "").casefold()
 
 
 def resolve_runtime_asset_guid(guid: str) -> Optional[str]:
     """Resolve one current Player managed GUID to its cooked payload."""
     token = str(guid or "").strip()
-    if not token or _runtime_asset_resolver is None:
+    if not token or _context().asset_resolver is None:
         return None
-    return _runtime_asset_resolver(token)
+    return _context().asset_resolver(token)
 
 
 def resolve_asset_path(
@@ -132,8 +138,8 @@ def resolve_asset_path(
 
     if (
         Application.is_player()
-        or _runtime_asset_resolver is not None
-        or _runtime_asset_query is not None
+        or _context().asset_resolver is not None
+        or _context().asset_query is not None
     ):
         if allow_directory:
             return None
@@ -147,7 +153,7 @@ def resolve_asset_path(
         guid = AssetManager._managed_guid(authored_path)
         resolved = AssetManager._get_path_from_guid(guid) if guid else ""
         return resolved if resolved and os.path.isfile(resolved) else None
-    root = project_root or _project_root
+    root = project_root or _context().root
     if not root:
         return None
     assets_root = resolved_path(os.path.join(root, "Assets"))
@@ -169,13 +175,13 @@ def resolve_package_path(
     raw = os.fspath(path)
     if not raw:
         return None
-    if _runtime_package_resolver is not None:
-        return _runtime_package_resolver(raw, allow_directory=allow_directory)
+    if _context().package_resolver is not None:
+        return _context().package_resolver(raw, allow_directory=allow_directory)
     from infernux.application import Application
 
     if Application.is_player():
         return None
-    root = resolved_path(project_root or _project_root) if (project_root or _project_root) else ""
+    root = resolved_path(project_root or _context().root) if (project_root or _context().root) else ""
     if not root:
         return None
     candidate = resolved_path(raw if os.path.isabs(raw) else os.path.join(root, raw))
@@ -189,38 +195,29 @@ def resolve_package_path(
 
 def get_project_root() -> Optional[str]:
     """Get the current project root if set."""
-    return _project_root
+    return _context().root
 
 
 @contextmanager
 def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
-    """Bind ``get_project_root()`` for one compile or cook interval."""
-    global _guid_manifest, _guid_manifest_loaded
-    previous = get_project_root()
-    previous_manifest = _guid_manifest
-    previous_manifest_loaded = _guid_manifest_loaded
-    previous_resolver = _runtime_asset_resolver
-    previous_package_resolver = _runtime_package_resolver
-    previous_query = _runtime_asset_query
-    previous_extension_resolver = _runtime_asset_extension_resolver
-    set_project_root(path)
+    """Bind isolated path/catalog state for one compile or cook interval.
+
+    Worker scopes never clear the Editor/Player session's resolvers or caches.
+    Nested scopes restore the exact outer context without rereading its catalog.
+    """
+    context = ProjectContext(root=resolved_path(path) if path else None)
+    token = _project_context.set(context)
     try:
-        yield get_project_root()
+        yield context.root
     finally:
-        set_project_root(previous)
-        _guid_manifest = previous_manifest
-        _guid_manifest_loaded = previous_manifest_loaded
-        set_runtime_asset_resolver(previous_resolver)
-        set_runtime_package_resolver(previous_package_resolver)
-        set_runtime_asset_query(previous_query)
-        set_runtime_asset_extension_resolver(previous_extension_resolver)
+        _project_context.reset(token)
 
 
 def get_assets_root() -> Optional[str]:
     """Return the project's Assets directory when available."""
-    if not _project_root:
+    if not _context().root:
         return None
-    assets_root = os.path.join(_project_root, "Assets")
+    assets_root = os.path.join(_context().root, "Assets")
     if os.path.isdir(assets_root):
         return assets_root
     return None
@@ -229,7 +226,7 @@ def get_assets_root() -> Optional[str]:
 def get_project_script_roots(project_root: Optional[str] = None) -> tuple[str, ...]:
     """Return the authoritative Editor source roots for one project."""
 
-    root = resolved_path(project_root or _project_root) if (project_root or _project_root) else ""
+    root = resolved_path(project_root or _context().root) if (project_root or _context().root) else ""
     if not root:
         return ()
     return (
@@ -317,7 +314,7 @@ def _package_script_layout(
     # runtime registry is then the authoritative package boundary, especially
     # for namespaced references such as ``vendor/tool``.
     registry_path = os.path.join(
-        resolved_path(project_root or _project_root),
+        resolved_path(project_root or _context().root),
         "ProjectSettings",
         "InxPlugins.json",
     )
@@ -402,7 +399,7 @@ def is_project_component_script(
     roots = get_project_script_roots(project_root)
     if not roots:
         return False
-    root = resolved_path(project_root or _project_root)
+    root = resolved_path(project_root or _context().root)
     candidate = resolved_path(path)
     if any(is_path_within(candidate, library, allow_root=False)
            for libraries in _preload_python_libraries.values() for library in libraries):
@@ -419,7 +416,6 @@ def is_project_component_script(
 def _disabled_package_references(project_root: str) -> frozenset[str]:
     """Return explicitly disabled installed packages from the durable registry."""
 
-    global _package_registry_cache
     registry = resolved_path(
         os.path.join(project_root, "ProjectSettings", "InxPlugins.json")
     )
@@ -427,7 +423,7 @@ def _disabled_package_references(project_root: str) -> frozenset[str]:
         stat = os.stat(registry)
     except FileNotFoundError:
         return frozenset()
-    cache = _package_registry_cache
+    cache = _context().package_registry_cache
     if (
         cache is not None
         and cache[0] == registry
@@ -450,7 +446,7 @@ def _disabled_package_references(project_root: str) -> frozenset[str]:
         and not bool(item.get("enabled", True))
         and str(item.get("reference", "")).strip()
     )
-    _package_registry_cache = (registry, stat.st_mtime_ns, stat.st_size, disabled)
+    _context().package_registry_cache = (registry, stat.st_mtime_ns, stat.st_size, disabled)
     return disabled
 
 
@@ -492,7 +488,7 @@ def get_script_module_name(
     Returns ``None`` when the script is outside the gameplay/editor script
     domains or its code-relative path is not a valid Python module name.
     """
-    active_root = resolved_path(project_root or _project_root) if (project_root or _project_root) else ""
+    active_root = resolved_path(project_root or _context().root) if (project_root or _context().root) else ""
     if path and project_root and not os.path.isabs(path):
         resolved = resolved_path(os.path.join(active_root, path))
     else:
@@ -607,8 +603,8 @@ def resolve_script_path(path: Optional[str]) -> Optional[str]:
         return path
     if os.path.isabs(path):
         resolved = resolved_path(path)
-    elif _project_root:
-        resolved = resolved_path(os.path.join(_project_root, path))
+    elif _context().root:
+        resolved = resolved_path(os.path.join(_context().root, path))
     else:
         resolved = resolved_path(path)
 
@@ -629,22 +625,21 @@ def resolve_script_guid_to_path(guid: str) -> Optional[str]:
     ``_script_guid_map.json`` manifest is written that maps GUIDs to
     relative ``.pyc`` paths.  This function loads and queries it.
     """
-    global _guid_manifest, _guid_manifest_loaded
     # An unbound lookup cannot consume the future project's load-once state.
-    if not guid or not _project_root:
+    if not guid or not _context().root:
         return None
-    if not _guid_manifest_loaded:
-        _guid_manifest_loaded = True
-        if _project_root:
-            manifest = os.path.join(_project_root, "_script_guid_map.json")
+    if not _context().guid_manifest_loaded:
+        _context().guid_manifest_loaded = True
+        if _context().root:
+            manifest = os.path.join(_context().root, "_script_guid_map.json")
             if os.path.isfile(manifest):
                 try:
                     with open(manifest, "r", encoding="utf-8") as f:
-                        _guid_manifest = json.load(f)
+                        _context().guid_manifest = json.load(f)
                 except (json.JSONDecodeError, OSError) as exc:
                     Debug.log_suppressed("project_context.load_guid_manifest", exc)
-    if _guid_manifest and guid and guid in _guid_manifest:
-        rel = _guid_manifest[guid]
-        if _project_root:
-            return os.path.join(_project_root, rel)
+    if _context().guid_manifest and guid and guid in _context().guid_manifest:
+        rel = _context().guid_manifest[guid]
+        if _context().root:
+            return os.path.join(_context().root, rel)
     return None

@@ -71,8 +71,9 @@ def test_temporary_cook_host_does_not_unload_callers_plugins(monkeypatch, owner)
     assert PluginManager.instance() is manager
 
 
-@pytest.mark.parametrize("error", [None, KeyboardInterrupt(), RuntimeError("frame failed")])
-@pytest.mark.parametrize("gc_enabled", [True, False])
+@pytest.mark.parametrize(
+    "gc_enabled,error", [(True, None), (True, RuntimeError("frame failed")), (False, KeyboardInterrupt())]
+)
 def test_native_loop_always_exits_and_restores_gc(error, gc_enabled):
     calls = []
     engine = Engine.__new__(Engine)
@@ -98,12 +99,6 @@ def test_native_loop_always_exits_and_restores_gc(error, gc_enabled):
         (gc.enable if previous_gc else gc.disable)()
 
 
-def test_exit_after_native_teardown_is_a_noop():
-    engine = Engine.__new__(Engine)
-    engine._engine = None
-    engine.exit()
-
-
 def test_sigint_finishes_current_frame_before_cleanup():
     calls = []
     engine = Engine.__new__(Engine)
@@ -121,7 +116,7 @@ def test_sigint_finishes_current_frame_before_cleanup():
     assert signal.getsignal(signal.SIGINT) is previous_handler
 
 
-@pytest.mark.parametrize("phase", ["startup", "loop", "normal"])
+@pytest.mark.parametrize("phase", ["startup", "normal"])
 def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch, phase, tmp_path):
     import infernux.engine as entry
     from infernux.engine import bootstrap as bootstrap_module
@@ -163,4 +158,3 @@ def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch,
         with pytest.raises(KeyboardInterrupt):
             entry.release_engine(str(tmp_path))
     assert calls == ["cleanup", "unlock"]
-

@@ -149,10 +149,39 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
         from infernux.engine.player_gui import PlayerGUI
         panel = PlayerGUI(object())
     else:
+        import infernux.engine.ui.game_view_panel as game_view
         from infernux.engine.ui.game_view_panel import GameViewPanel
         panel = GameViewPanel(engine=None)
         panel._display_scale = 1.0
         panel._is_playing = lambda: False
+        panel._last_game_width, panel._last_game_height = 1920, 1080
+        native_enabled = [True]
+        panel._engine = SimpleNamespace(get_screen_ui_renderer=lambda: SimpleNamespace(
+            is_enabled=lambda: native_enabled[0],
+        ))
+        visits, semantics, overlays = [], [], []
+
+        class CanvasSnapshot(tuple):
+            def __iter__(self):
+                visits.append("canvas iteration")
+                return super().__iter__()
+
+        canvases = CanvasSnapshot((first, second))
+        context = SimpleNamespace(
+            semantic_capture_enabled=False,
+            record_semantic_rect=lambda *args: semantics.append(args),
+        )
+        panel._render_screen_ui(context, 0, 0, 1920, 1080, scene=scene, canvases=canvases)
+        assert visits == [] and semantics == []
+        context.semantic_capture_enabled = True
+        panel._render_screen_ui(context, 0, 0, 1920, 1080, scene=scene, canvases=canvases)
+        assert visits == ["canvas iteration"] and len(semantics) == 2
+        context.semantic_capture_enabled = False
+        native_enabled[0] = False
+        monkeypatch.setattr(game_view, "_get_tex_cache", lambda: SimpleNamespace(get_bound=lambda _engine: None))
+        monkeypatch.setattr(game_view, "_ui_dispatch", lambda element, *_args, **_kwargs: overlays.append(element))
+        panel._render_screen_ui(context, 0, 0, 1920, 1080, scene=scene, canvases=canvases)
+        assert visits == ["canvas iteration"] * 2 and overlays == [first_button, second_button]
     key = (PointerType.Mouse, -1)
     clear()
     try:

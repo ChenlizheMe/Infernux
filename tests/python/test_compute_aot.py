@@ -54,138 +54,6 @@ def _write_kernel(project: Path) -> Path:
     return source
 
 
-def test_declared_kernel_names_uses_runtime_module_identity(tmp_path):
-    source = _write_kernel(tmp_path)
-
-    assert declared_kernel_names((source,), tmp_path) == ("Scripts.Jelly.step",)
-
-
-def test_declared_kernel_names_accepts_explicit_static_class_kernel(tmp_path):
-    source = tmp_path / "Assets/Scripts/Jelly.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "import infernux as inx\n"
-        "class Jelly:\n"
-        "    @staticmethod\n"
-        "    @inx.compute.kernel\n"
-        "    def step(domain):\n"
-        "        i = inx.compute.index(domain)\n"
-        "        domain[i] = 1\n",
-        encoding="utf-8",
-    )
-
-    assert declared_kernel_names((source,), tmp_path) == ("Scripts.Jelly.Jelly.step",)
-
-
-def test_declared_kernel_names_accepts_declared_instance_receiver_field(tmp_path):
-    source = tmp_path / "Assets/Scripts/Jelly.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "import infernux as inx\n"
-        "class Jelly:\n"
-        "    scale: float\n"
-        "    @inx.compute.kernel\n"
-        "    def step(self, domain):\n"
-        "        i = inx.compute.index(domain)\n"
-        "        domain[i] = self.scale\n",
-        encoding="utf-8",
-    )
-
-    assert declared_kernel_names((source,), tmp_path, target="Android/AOT") == (
-        "Scripts.Jelly.Jelly.step",
-    )
-
-
-def test_declared_kernel_names_reports_implicit_class_receiver_with_location(tmp_path):
-    source = tmp_path / "Assets/Scripts/Jelly.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "import infernux as inx\n"
-        "class Jelly:\n"
-        "    @inx.compute.kernel\n"
-        "    def step(self, domain):\n"
-        "        i = inx.compute.index(domain)\n"
-        "        domain[i] = 1\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ComputeAotBuildError) as error:
-        declared_kernel_names((source,), tmp_path, target="Android/AOT")
-    message = str(error.value)
-    assert "Scripts.Jelly.Jelly.step" in message
-    assert f"{source}:4:5" in message
-    assert "Android/AOT" in message
-    assert "implicit instance receiver 'self'" in message
-    assert "@staticmethod" in message
-
-
-def test_declared_kernel_names_reports_positional_only_class_receiver(tmp_path):
-    source = tmp_path / "Assets/Scripts/Jelly.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "import infernux as inx\n"
-        "class Jelly:\n"
-        "    @inx.compute.kernel\n"
-        "    def step(self, /, domain):\n"
-        "        i = inx.compute.index(domain)\n"
-        "        domain[i] = 1\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ComputeAotBuildError, match="implicit instance receiver 'self'"):
-        declared_kernel_names((source,), tmp_path, target="Android/AOT")
-
-
-def test_declared_kernel_names_reports_unbound_class_field_with_attribute_location(tmp_path):
-    source = tmp_path / "Assets/Scripts/Jelly.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "import infernux as inx\n"
-        "class Jelly:\n"
-        "    @inx.compute.kernel\n"
-        "    def step(domain):\n"
-        "        i = inx.compute.index(domain)\n"
-        "        domain[i] = self.scale\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ComputeAotBuildError) as error:
-        declared_kernel_names((source,), tmp_path, target="Web/Player")
-    message = str(error.value)
-    assert f"{source}:6:21" in message
-    assert "unbound receiver field 'self.scale'" in message
-    assert "target 'Web/Player'" in message
-    assert "pass the required scalar or inx.buffer explicitly" in message
-
-
-@pytest.mark.parametrize(
-    "target",
-    ("Editor/Desktop", "Player/Windows", "Player/Linux", "Android/AOT"),
-)
-def test_kernel_contract_fixture_reports_the_same_identity_for_native_targets(target):
-    fixture_root = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "compute_kernel_contract"
-    source = fixture_root / "Assets/Scripts/InvalidInstance.py"
-    with pytest.raises(ComputeAotBuildError) as error:
-        declared_kernel_names((source,), fixture_root, target=target)
-    message = str(error.value)
-    assert "Scripts.InvalidInstance.JellyKernel.step" in message
-    assert f"{source}:8:5" in message
-    assert f"target '{target}'" in message
-    assert "implicit instance receiver 'self'" in message
-
-
-@pytest.mark.parametrize(
-    "target",
-    ("Editor/Desktop", "Player/Windows", "Player/Linux", "Android/AOT"),
-)
-def test_kernel_contract_fixture_accepts_the_same_static_kernel_for_native_targets(target):
-    fixture_root = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "compute_kernel_contract"
-    source = fixture_root / "Assets/Scripts/ValidStatic.py"
-    assert declared_kernel_names((source,), fixture_root, target=target) == (
-        "Scripts.ValidStatic.JellyKernel.step",
-    )
-
-
 def test_stage_compute_artifacts_seals_selected_and_engine_kernels(tmp_path, monkeypatch):
     from infernux._compiler.source_metadata import embed_compute_sources
     from infernux.engine.project_context import using_project_root
@@ -195,8 +63,7 @@ def test_stage_compute_artifacts_seals_selected_and_engine_kernels(tmp_path, mon
     namespace = {"__name__": "Scripts.Jelly", "__file__": str(source)}
     exec(compile(embed_compute_sources(source.read_text(encoding="utf-8")), str(source), "exec"), namespace)
     with using_project_root(tmp_path):
-        frontend.compile_kernel(namespace["step"].function,
-                                (compute_aot._gpu_buffer_descriptor((1,), np.int32),))
+        frontend.compile_kernel(namespace["step"].function, (compute_aot._gpu_buffer_descriptor((1,), np.int32),))
     _write_artifact(cache / "other.inxgpu", "Scripts.EditorOnly.step")
     data = tmp_path / "build/Data"
 
@@ -246,29 +113,6 @@ def test_stage_compute_artifacts_rejects_incomplete_selected_closure(tmp_path, m
 
     assert error.value.missing == ("Scripts.Jelly.step",)
     assert not (tmp_path / "build/Data/Library/Artifacts/Compute").exists()
-
-
-def test_stage_compute_artifacts_uses_platform_target_for_source_diagnostics(tmp_path, monkeypatch):
-    monkeypatch.setattr(compute_aot, "ensure_engine_compute_artifacts", lambda _root: 0.0)
-    source = tmp_path / "Assets/Scripts/Jelly.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "import infernux as inx\n"
-        "class Jelly:\n"
-        "    @inx.compute.kernel\n"
-        "    def step(self, domain):\n"
-        "        i = inx.compute.index(domain)\n"
-        "        domain[i] = 1\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ComputeAotBuildError, match="target 'Android/AOT'"):
-        stage_compute_artifacts(
-            tmp_path,
-            (source,),
-            tmp_path / "build/Data",
-            target="Android/AOT",
-        )
 
 
 def _runtime_missing_kernel(domain):

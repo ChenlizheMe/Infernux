@@ -491,9 +491,8 @@ static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const 
 
     JPH::StaticCompoundShapeSettings compoundSettings;
     for (size_t i = 0; i < childShapes.size(); ++i) {
-        auto *col = childShapes[i].first;
-        uint32_t userData = col ? static_cast<uint32_t>(col->GetComponentID()) : 0;
-        compoundSettings.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), childShapes[i].second, userData);
+        compoundSettings.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), childShapes[i].second,
+                                  static_cast<uint32_t>(i));
     }
 
     auto result = compoundSettings.Create();
@@ -1316,7 +1315,8 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
         return 0xFFFFFFFF;
 
     size_t shapeCount = 0;
-    auto shape = BuildShapeForColliderSet(go, nullptr, &shapeCount);
+    std::vector<Collider *> members;
+    auto shape = BuildShapeForColliderSet(go, nullptr, &shapeCount, &members);
     if (!shape)
         return 0xFFFFFFFF;
 
@@ -1357,7 +1357,7 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
 
     uint32_t id = bodyId.GetIndexAndSequenceNumber();
     m_bodyToCollider[id] = collider;
-    m_bodyColliders[id] = go->GetComponents<Collider>();
+    m_bodyColliders[id] = std::move(members);
     PublishBodyQueryIdentitiesUnlocked(id);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
     return id;
@@ -3241,18 +3241,23 @@ void PhysicsWorld::PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId)
     auto &published = m_bodyQueryIdentities[bodyId];
     published.clear();
 
-    const auto append = [&published](Collider *collider) {
+    const auto append = [&published](Collider *collider, uint32_t memberIndex) {
         if (!collider)
             return;
-        if (std::any_of(published.begin(), published.end(),
-                        [collider](const QueryColliderIdentity &identity) { return identity.collider == collider; }))
+        const auto existing =
+            std::find_if(published.begin(), published.end(),
+                         [collider](const QueryColliderIdentity &identity) { return identity.collider == collider; });
+        if (existing != published.end()) {
+            existing->memberIndex = memberIndex;
             return;
+        }
         GameObject *gameObject = collider->GetGameObject();
         QueryColliderIdentity identity;
         identity.collider = collider;
         identity.gameObject = gameObject;
         identity.colliderId = collider->GetComponentID();
         identity.gameObjectId = gameObject ? gameObject->GetID() : 0;
+        identity.memberIndex = memberIndex;
         identity.target = PhysicsTargetReference(collider);
         identity.isTrigger = collider->IsTrigger();
         published.push_back(identity);
@@ -3263,13 +3268,13 @@ void PhysicsWorld::PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId)
     // mutable body-to-component maps at all.
     const auto primary = m_bodyToCollider.find(bodyId);
     if (primary != m_bodyToCollider.end())
-        append(primary->second);
+        append(primary->second, UINT32_MAX);
 
     const auto colliders = m_bodyColliders.find(bodyId);
     if (colliders != m_bodyColliders.end()) {
         published.reserve(published.size() + colliders->second.size());
-        for (Collider *collider : colliders->second)
-            append(collider);
+        for (size_t index = 0; index < colliders->second.size(); ++index)
+            append(colliders->second[index], static_cast<uint32_t>(index));
     }
 }
 
@@ -3294,14 +3299,11 @@ PhysicsWorld::ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t body
 
     JPH::SubShapeID remainder;
     const uint32_t subShapeIndex = compound->GetSubShapeIndexFromID(subShapeId, remainder);
-    const uint32_t componentId = compound->GetCompoundUserData(subShapeIndex);
-    if (componentId == 0)
-        return fallback;
+    const uint32_t memberIndex = compound->GetCompoundUserData(subShapeIndex);
 
-    const auto match = std::find_if(published->second.begin(), published->second.end(),
-                                    [componentId](const QueryColliderIdentity &identity) {
-                                        return static_cast<uint32_t>(identity.colliderId) == componentId;
-                                    });
+    const auto match = std::find_if(
+        published->second.begin(), published->second.end(),
+        [memberIndex](const QueryColliderIdentity &identity) { return identity.memberIndex == memberIndex; });
     return match != published->second.end() ? &*match : fallback;
 }
 
@@ -3310,11 +3312,6 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t bodyId, uint32_t sub
     Collider *fallback = FindColliderByBodyId(bodyId);
     if (!fallback) {
         return nullptr;
-    }
-
-    auto *go = fallback->GetGameObject();
-    if (!go) {
-        return fallback;
     }
 
     JPH::BodyID joltBodyId(bodyId);
@@ -3334,11 +3331,6 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32
         return nullptr;
     }
 
-    auto *go = fallback->GetGameObject();
-    if (!go) {
-        return fallback;
-    }
-
     const JPH::Shape *shape = body.GetShape();
     if (!shape || shape->GetType() != JPH::EShapeType::Compound) {
         return fallback;
@@ -3352,23 +3344,14 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32
     }
 
     JPH::SubShapeID remainder;
-    uint32_t subShapeIndex = compound->GetSubShapeIndexFromID(subShapeId, remainder);
-    uint32_t componentId = compound->GetCompoundUserData(subShapeIndex);
-    if (componentId == 0) {
-        return fallback;
-    }
+    const uint32_t subShapeIndex = compound->GetSubShapeIndexFromID(subShapeId, remainder);
+    const uint32_t memberIndex = compound->GetCompoundUserData(subShapeIndex);
 
     const auto cached = m_bodyColliders.find(bodyId);
-    if (cached == m_bodyColliders.end()) {
+    if (cached == m_bodyColliders.end() || memberIndex >= cached->second.size()) {
         return fallback;
     }
-    for (auto *col : cached->second) {
-        if (col && static_cast<uint32_t>(col->GetComponentID()) == componentId) {
-            return col;
-        }
-    }
-
-    return fallback;
+    return cached->second[memberIndex] ? cached->second[memberIndex] : fallback;
 }
 
 void PhysicsWorld::RebindBodyCollider(uint32_t bodyId, Collider *collider)
@@ -3379,14 +3362,15 @@ void PhysicsWorld::RebindBodyCollider(uint32_t bodyId, Collider *collider)
     }
     m_bodyToCollider[bodyId] = collider;
     m_physicsSystem->GetBodyInterface().SetUserData(JPH::BodyID(bodyId), reinterpret_cast<uint64_t>(collider));
-    // This path also runs during owner teardown, when rebuilding geometry is
-    // intentionally skipped. Never republish a prior snapshot's raw members:
-    // some of them may already have completed destruction.
-    auto members = collider->GetGameObject()->GetComponents<Collider>();
-    members.erase(std::remove_if(members.begin(), members.end(),
-                                 [](const Collider *member) { return member->IsBeingDestroyed(); }),
-                  members.end());
-    m_bodyColliders[bodyId] = std::move(members);
+    // Rebinding does not replace the shape. Preserve its member indices and
+    // clear removed pointers using the current owner's live component list.
+    const auto liveMembers = collider->GetGameObject()->GetComponents<Collider>();
+    auto &members = m_bodyColliders.at(bodyId);
+    for (auto &member : members) {
+        const auto live = std::find(liveMembers.begin(), liveMembers.end(), member);
+        if (live == liveMembers.end() || (*live)->IsBeingDestroyed())
+            member = nullptr;
+    }
     PublishBodyQueryIdentitiesUnlocked(bodyId);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }

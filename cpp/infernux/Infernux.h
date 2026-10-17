@@ -22,7 +22,6 @@
 
 #include <core/error/InxError.h>
 #include <core/log/InxLog.h>
-#include <platform/filesystem/InxExtLoad.h>
 #include <platform/filesystem/InxPath.h>
 #include <platform/input/InputManager.h>
 
@@ -81,6 +80,7 @@ class Infernux
         return m_exitRequested.load(std::memory_order_acquire);
     }
     void Cleanup();
+    void RequireFrameInactive() const;
     [[nodiscard]] std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> CreateRenderTexture(const rhi::RenderTextureDesc &description);
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> LoadRenderTexture(const std::string &guid);
@@ -630,7 +630,6 @@ class Infernux
     InxAppMetadata m_metadata{"Infernux", 0, 1, 0, "com.infrenderer.Infernux"};
     RuntimeMode m_runtimeMode = RuntimeMode::Graphical;
 
-    std::unique_ptr<InxExtLoad> m_extLoader;
     std::unique_ptr<AssetDatabase> m_assetDatabase;
     std::unique_ptr<InxRenderer> m_renderer;
 
@@ -642,6 +641,7 @@ class Infernux
     std::atomic<bool> m_exitRequested{false};
     /// True while Run() owns the graphical frame loop; blocks manual Tick().
     std::atomic<bool> m_runLoopActive{false};
+    bool m_tickActive = false;
     std::mutex m_runMutex;
     std::condition_variable m_runCv;
     std::function<void(float)> m_preSceneUpdateCallback;

@@ -178,17 +178,22 @@ SemanticTypeDescriptor DescribeCamera()
     farClip["range"] = {0.002, 1000000000.0};
     farClip["setter_owns_document_shape"] = true;
     add("depth", "depth", "FLOAT", 0.0);
-    add("culling_mask", "cullingMask", "INT", 0xffffffffu)["range"] = {0u, 0xffffffffu};
+    auto &mask = add("culling_mask", "cullingMask", "INT", 0xffffffffu);
+    mask["range"] = {0u, 0xffffffffu};
+    mask["document_type"] = "FieldType.UINT";
     enumeration(
         "clear_flags", "clearFlags", "CameraClearFlags", {"Skybox", "SolidColor", "DepthOnly", "DontClear"},
         {"camera.clear.skybox", "camera.clear.solid_color", "camera.clear.depth_only", "camera.clear.dont_clear"});
     type.fields.back().attributes["header"] = "camera.section.clear";
     add("background_color", "backgroundColor", "COLOR", {0.1, 0.1, 0.1, 1.0});
-    add("dithering", "dithering", "BOOL", false);
-    add("stop_nans", "stopNaNs", "BOOL", false)["header"] = "camera.section.output";
+    add("dithering", "dithering", "BOOL", false)["document_required"] = false;
+    auto &stopNaNs = add("stop_nans", "stopNaNs", "BOOL", false);
+    stopNaNs["header"] = "camera.section.output";
+    stopNaNs["document_required"] = false;
     auto &target = add("target_texture", "targetTextureGuid", "ASSET",
                        {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}});
     target["asset_type"] = "RenderTexture";
+    target["document_required"] = false;
     target["nullable"] = true;
     target["setter_owns_document_shape"] = true;
     return type;
@@ -434,57 +439,25 @@ nlohmann::json Camera::SerializeDocument() const
 void Camera::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "Camera",
-                              {"projectionMode",
-                               "fov",
-                               "aspectRatio",
-                               "orthoSize",
-                               "nearClip",
-                               "farClip",
-                               "depth",
-                               "cullingMask",
-                               "clearFlags",
-                               "backgroundColor",
-                               "usePhysicalProperties",
-                               "iso",
-                               "shutterSpeed",
-                               "aperture",
-                               "focusDistance",
-                               "focalLength",
-                               "bladeCount",
-                               "curvature",
-                               "barrelClipping",
-                               "anamorphism",
-                               "sensorSize",
-                               "lensShift",
-                               "gateFit"},
-                              {"dithering", "stopNaNs", "targetTextureGuid"});
+    ValidateComponentDocument(j, "Camera", {});
+    static const auto declaration = DescribeCamera();
+    ValidateDeclaredFields(j, "Camera", declaration);
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");
     const float fov = RequireFiniteFloat(j, "fov", "Camera");
-    RequireBoolean(j, "usePhysicalProperties", "Camera");
     const int iso = RequireInteger(j, "iso", "Camera");
     const float shutterSpeed = RequireFiniteFloat(j, "shutterSpeed", "Camera");
     const float aperture = RequireFiniteFloat(j, "aperture", "Camera");
     const float focusDistance = RequireFiniteFloat(j, "focusDistance", "Camera");
     const float focalLength = RequireFiniteFloat(j, "focalLength", "Camera");
     const int bladeCount = RequireInteger(j, "bladeCount", "Camera");
-    RequireFiniteVector(j, "curvature", 2, "Camera");
     const float barrelClipping = RequireFiniteFloat(j, "barrelClipping", "Camera");
     const float anamorphism = RequireFiniteFloat(j, "anamorphism", "Camera");
     const float aspectRatio = RequireFiniteFloat(j, "aspectRatio", "Camera");
     const float orthoSize = RequireFiniteFloat(j, "orthoSize", "Camera");
     const float nearClip = RequireFiniteFloat(j, "nearClip", "Camera");
     const float farClip = RequireFiniteFloat(j, "farClip", "Camera");
-    RequireFiniteFloat(j, "depth", "Camera");
     const uint64_t cullingMask = RequireUnsignedInteger(j, "cullingMask", "Camera");
     const int clearFlags = RequireInteger(j, "clearFlags", "Camera");
-    RequireFiniteVector(j, "backgroundColor", 4, "Camera");
-    if (j.contains("dithering"))
-        RequireBoolean(j, "dithering", "Camera");
-    if (j.contains("stopNaNs"))
-        RequireBoolean(j, "stopNaNs", "Camera");
-    if (j.contains("targetTextureGuid"))
-        RequireString(j, "targetTextureGuid", "Camera");
 
     RequireProjectionMode(projectionMode);
     RequireFieldOfView(fov);
@@ -503,10 +476,8 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
         throw std::invalid_argument("Camera.curvature requires x <= y");
     RequireFiniteRange(barrelClipping, 0.0f, 1.0f, "barrelClipping");
     RequireFiniteRange(anamorphism, -1.0f, 1.0f, "anamorphism");
-    RequireFiniteVector(j, "sensorSize", 2, "Camera");
     RequirePositive(j["sensorSize"][0].get<float>(), "sensorSize.x");
     RequirePositive(j["sensorSize"][1].get<float>(), "sensorSize.y");
-    RequireFiniteVector(j, "lensShift", 2, "Camera");
     RequireGateFit(RequireInteger(j, "gateFit", "Camera"));
     RequirePositive(orthoSize, "orthoSize");
     if (aspectRatio < 0.01f)

@@ -150,10 +150,8 @@ void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPi
                                   const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
                                   const uint32_t *dynamicOffsets)
 {
-    if (g_recordingDescriptorManager && descriptorSets) {
-        for (uint32_t index = 0; index < descriptorSetCount; ++index)
-            g_recordingDescriptorManager->MarkUsed(descriptorSets[index], g_recordingSubmissionSerial);
-    }
+    if (g_recordingDescriptorManager && descriptorSets)
+        g_recordingDescriptorManager->MarkUsed(descriptorSets, descriptorSetCount, g_recordingSubmissionSerial);
     RecordDescriptorBind(site, cmdBuf, layout, firstSet, descriptorSetCount, descriptorSets);
     vkCmdBindDescriptorSets(cmdBuf, pipelineBindPoint, layout, firstSet, descriptorSetCount, descriptorSets,
                             dynamicOffsetCount, dynamicOffsets);

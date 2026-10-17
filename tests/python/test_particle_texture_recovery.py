@@ -1,6 +1,7 @@
 """A failed particle surface source recovers through GUID-stable asset editing."""
 import json
 from pathlib import Path
+import time
 
 from PIL import Image
 
@@ -75,7 +76,8 @@ def test_failed_particle_texture_recovers_without_recreating_emitter(engine, sce
     install_runtime_service("gpu-particles", engine)
     failures, colors, initial_errors = [], [], []
     resident_id = None
-    frame, changed, ticket = 0, 0, None
+    frame, ticket, upload_baseline, publication_frame = 0, None, None, None
+    deadline = time.monotonic() + 20.0
     try:
         engine.set_render_pipeline(pipeline)
         engine.resize_game_render_target(64, 64)
@@ -90,18 +92,24 @@ def test_failed_particle_texture_recovers_without_recreating_emitter(engine, sce
             component.update(1. / 120.)
 
         def after_draw():
-            nonlocal frame, changed, ticket, resident_id
+            nonlocal frame, ticket, resident_id, upload_baseline, publication_frame
             try:
                 frame += 1
-                assert frame < 160, colors
+                assert time.monotonic() < deadline, colors
                 AssetManager.flush_pending_gpu_texture_reloads()
-                if ticket is None and frame >= changed + 16:
+                if (
+                    upload_baseline is not None
+                    and publication_frame is None
+                    and engine.completed_texture_gpu_upload_count > upload_baseline
+                ):
+                    publication_frame = frame
+                texture_rendered = publication_frame is not None and frame > publication_frame
+                if ticket is None and (not colors or texture_rendered):
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy()
                     center = pixels[pixels.shape[0] // 2, pixels.shape[1] // 2, :3].tolist()
                     colors.append(center)
-                    (tmp_path / "texture-recovery.json").write_text(json.dumps(colors), encoding="utf-8")
                     if len(colors) == 1:
                         assert min(center) > .7, center
                         messages = console._get_visible_log_snapshot(1000)
@@ -109,7 +117,8 @@ def test_failed_particle_texture_recovers_without_recreating_emitter(engine, sce
                         initial_errors.extend(item for item in messages if item['level'] in ('ERROR', 'FATAL'))
                         resident_id = component._batch_id
                         assert replace_with_image(volume, image, database) == guid
-                        changed, ticket = frame, None
+                        upload_baseline = engine.completed_texture_gpu_upload_count
+                        ticket = None
                     else:
                         assert center[1] > .7 and center[0] < .1 and center[2] < .1, center
                         assert component.runtime_diagnostics()["resident"]

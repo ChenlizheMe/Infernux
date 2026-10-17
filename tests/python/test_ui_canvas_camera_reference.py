@@ -1,9 +1,10 @@
 """Canvas camera ownership is a serialized reference, including hierarchy clones."""
+
 from infernux.lib import GameObject
 from infernux.ui import UICanvas
 
 
-def test_camera_id_compatibility_serializes_a_typed_reference(scene):
+def test_camera_assignment_serializes_a_typed_reference(scene):
     camera = scene.create_game_object("Assigned Camera")
     camera.add_component("Camera")
     canvas = UICanvas()
@@ -27,16 +28,8 @@ def test_canvas_target_follows_cloned_camera_in_same_hierarchy(scene):
     clone = GameObject.instantiate(root)
     children = {owner.name: owner for owner in clone.get_children()}
     cloned_camera = children["Assigned Camera"]
-    cloned_canvas = next(component for component in children["Assigned Canvas"].get_py_components()
-                         if isinstance(component, UICanvas))
+    cloned_canvas = next(
+        component for component in children["Assigned Canvas"].get_py_components() if isinstance(component, UICanvas)
+    )
     assert cloned_camera.id != camera.id
     assert cloned_canvas.target_camera_id == cloned_camera.id
-
-
-def test_legacy_runtime_canvas_snapshot_restores_camera_reference(scene):
-    camera = scene.create_game_object("Legacy Camera")
-    camera.add_component("Camera")
-    canvas = UICanvas()
-    canvas._deserialize_fields_document({"target_camera_id": camera.id})
-    assert canvas.target_camera.id == camera.id
-    assert canvas._serialize_fields_document()["target_camera"]["object_id"] == camera.id

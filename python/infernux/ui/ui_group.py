@@ -5,7 +5,7 @@ from __future__ import annotations
 from infernux.components import add_component_menu, serialized_field
 
 from .inx_ui_component import InxUIComponent
-from .ui_render_revision import is_unchanged_ui_scalar, mark_runtime_ui_dirty
+from .ui_render_revision import is_unchanged_ui_value, mark_runtime_ui_dirty
 
 
 @add_component_menu("UI/Group")
@@ -19,7 +19,7 @@ class UIGroup(InxUIComponent):
     blocks_raycast: bool = serialized_field(default=True, group="Group")
 
     def __setattr__(self, name, value):
-        unchanged = is_unchanged_ui_scalar(self, name, value)
+        unchanged = is_unchanged_ui_value(self, name, value)
         super().__setattr__(name, value)
         if not name.startswith("_") and not unchanged:
             mark_runtime_ui_dirty()

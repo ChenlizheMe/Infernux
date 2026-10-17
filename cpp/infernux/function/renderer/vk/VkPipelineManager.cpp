@@ -637,44 +637,6 @@ VertexInputConfig VkPipelineManager::GetStandardMeshVertexInput()
     return config;
 }
 
-VertexInputConfig VkPipelineManager::GetUIVertexInput()
-{
-    VertexInputConfig config;
-
-    // Single binding for interleaved vertex data
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = sizeof(float) * (2 + 2 + 4); // pos(2) + texCoord(2) + color(4)
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    config.bindings.push_back(binding);
-
-    // Position attribute
-    VkVertexInputAttributeDescription posAttr{};
-    posAttr.binding = 0;
-    posAttr.location = 0;
-    posAttr.format = VK_FORMAT_R32G32_SFLOAT;
-    posAttr.offset = 0;
-    config.attributes.push_back(posAttr);
-
-    // TexCoord attribute
-    VkVertexInputAttributeDescription texCoordAttr{};
-    texCoordAttr.binding = 0;
-    texCoordAttr.location = 1;
-    texCoordAttr.format = VK_FORMAT_R32G32_SFLOAT;
-    texCoordAttr.offset = sizeof(float) * 2;
-    config.attributes.push_back(texCoordAttr);
-
-    // Color attribute
-    VkVertexInputAttributeDescription colorAttr{};
-    colorAttr.binding = 0;
-    colorAttr.location = 2;
-    colorAttr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-    colorAttr.offset = sizeof(float) * 4;
-    config.attributes.push_back(colorAttr);
-
-    return config;
-}
-
 // ============================================================================
 // Internal Methods
 // ============================================================================

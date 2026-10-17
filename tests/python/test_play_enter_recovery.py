@@ -79,10 +79,9 @@ def assert_authoring_restored(state):
 def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, monkeypatch, phase):
     state = authoring_project
     from infernux.components.builtin.sprite_renderer import SpriteRenderer
-    from infernux.debug import Debug
+    from infernux.debug import Debug, DebugConsole
 
-    errors = []
-    monkeypatch.setattr(Debug, "log_error", lambda message, *a, **kw: errors.append(str(message)))
+    Debug.clear_console()
 
     def fail(*args, **kwargs):
         # Snapshot capture fails before runtime ownership and must not mutate.
@@ -145,7 +144,10 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
             fault.setattr(state.manager, "_get_scene_manager", lambda: NativeStartFault())
         assert state.manager.enter_play_mode()
         state.runner.tick()
-        assert errors, "The failed preparation must be reported"
+        errors = DebugConsole.instance().get_filtered_entries(show_logs=False, show_warnings=False)
+        expected = ("Play scripting-domain preparation was rejected" if phase == "domain_rejected"
+                    else f"injected {phase} failure")
+        assert any(expected in entry.message for entry in errors), "The failed preparation must be reported"
         assert state.manager.is_edit_mode, errors
         assert_authoring_restored(state)
 

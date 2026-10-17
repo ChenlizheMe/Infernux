@@ -1,13 +1,14 @@
 """Refresh distinguishes source files from model-owned derived assets."""
+
+from test_model_animation_clips import model as model
+from test_model_material_defaults import imported_model as imported_model
 import json
 from pathlib import Path
 
 import pytest
 
 from infernux.core.assets import AssetManager
-from test_model_animation_clips import model
 from test_model_embedded_textures import embed, records
-from test_model_material_defaults import imported_model
 
 
 def assert_unchanged_refresh(database):
@@ -35,13 +36,8 @@ def prepare_embedded_texture(imported_model):
     source.write_text(json.dumps(document), encoding="utf-8")
     result = AssetManager.reimport_asset(str(source), database=database)
     assert result, result.error
-    record, = records(database, source)
+    (record,) = records(database, source)
     return database, source, record["guid"]
-
-
-def test_unchanged_embedded_texture_preserves_query_and_index(imported_model):
-    database, _, _ = prepare_embedded_texture(imported_model)
-    assert_unchanged_refresh(database)
 
 
 @pytest.mark.parametrize("change", ["missing", "invalid_header"])

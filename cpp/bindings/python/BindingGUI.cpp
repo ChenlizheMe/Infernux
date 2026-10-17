@@ -21,6 +21,7 @@
 #include <function/editor/ToolbarPanel.h>
 #include <function/renderer/ProfileConfig.h>
 #include <memory>
+#include <optional>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -28,6 +29,7 @@
 #include <pybind11/stl.h>
 
 #include "BindingRegistration.h"
+#include <function/scene/PythonNativeLifetime.h>
 
 namespace py = pybind11;
 
@@ -438,6 +440,7 @@ void RegisterGUIBindings(py::module_ &m)
 
     py::class_<InxGUIContext>(m, "InxGUIContext")
         .def("label", &InxGUIContext::Label)
+        .def("field_label", &InxGUIContext::FieldLabel, py::arg("text"), py::arg("column_width"))
         .def("text_wrapped", &InxGUIContext::TextWrapped)
         .def("button", &InxGUIContext::Button, py::arg("label"), py::arg("on_click") = py::none(),
              py::arg("width") = 0.0f, py::arg("height") = 0.0f,
@@ -647,6 +650,9 @@ void RegisterGUIBindings(py::module_ &m)
         .def("progress_bar", &InxGUIContext::ProgressBar)
         .def("begin_group", &InxGUIContext::BeginGroup, py::arg("name") = "")
         .def("end_group", &InxGUIContext::EndGroup)
+        .def("begin_framed_group", &InxGUIContext::BeginFramedGroup,
+             py::arg("padding_x"), py::arg("padding_y"), py::arg("rounding"), py::arg("background"), py::arg("border"))
+        .def("end_framed_group", &InxGUIContext::EndFramedGroup)
         .def("same_line", &InxGUIContext::SameLine, py::arg("offset_from_start_x") = 0.0f, py::arg("spacing") = -1.0f)
         .def("align_text_to_frame_padding", &InxGUIContext::AlignTextToFramePadding,
              "Vertically align upcoming text baseline to FramePadding.y so it aligns with framed widgets")
@@ -789,6 +795,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_item_rect_min_y", &InxGUIContext::GetItemRectMinY)
         .def("get_item_rect_max_x", &InxGUIContext::GetItemRectMaxX)
         .def("get_item_rect_max_y", &InxGUIContext::GetItemRectMaxY)
+        .def("get_item_visible_rect", &InxGUIContext::GetItemVisibleRect)
         // Splitter helper methods
         .def("invisible_button", &InxGUIContext::InvisibleButton)
         .def("is_item_active", &InxGUIContext::IsItemActive)
@@ -1066,33 +1073,6 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("plan"), py::arg("values"), py::arg("label_width"),
             "Update only the values of a compiled property plan, render it, and return changed fields.")
-        .def(
-            "render_material_top",
-            [](InxGUIContext &ctx, const std::string &shaderSectionLabel, const std::string &vertexLabel,
-               const std::string &vertexDisplay, const std::string &fragmentLabel,
-               const std::string &fragmentDisplay, float shaderLabelWidth, const std::string &surfaceSectionLabel,
-               const std::shared_ptr<PropertyBatchPlan> &surfacePlan, py::sequence surfaceValues,
-               float surfaceLabelWidth, uint64_t pickerTextureId, uint64_t previewTextureId,
-               const std::string &previewUnavailableLabel, bool defaultOpen, bool readOnly) -> py::tuple {
-                if (surfacePlan)
-                    UpdatePropertyBatchValues(*surfacePlan, surfaceValues);
-                const auto interaction = ctx.RenderMaterialTop(
-                    shaderSectionLabel, vertexLabel, vertexDisplay, fragmentLabel, fragmentDisplay,
-                    shaderLabelWidth, surfaceSectionLabel, surfacePlan.get(), surfaceLabelWidth,
-                    pickerTextureId, previewTextureId, previewUnavailableLabel, defaultOpen, readOnly);
-                return py::make_tuple(
-                    interaction.vertexFlags, interaction.vertexPickerOpen, interaction.vertexPayload,
-                     interaction.vertexListPopupOpen, interaction.fragmentFlags, interaction.fragmentPickerOpen,
-                     interaction.fragmentPayload, interaction.fragmentListPopupOpen,
-                     EncodePropertyChanges(interaction.surfaceChanges), interaction.activeSurfaceIndex,
-                     interaction.deactivatedSurfaceIndex);
-            },
-            py::arg("shader_section_label"), py::arg("vertex_label"), py::arg("vertex_display"),
-            py::arg("fragment_label"), py::arg("fragment_display"), py::arg("shader_label_width"),
-            py::arg("surface_section_label"), py::arg("surface_plan"), py::arg("surface_values"),
-            py::arg("surface_label_width"), py::arg("picker_texture_id"), py::arg("preview_texture_id"),
-            py::arg("preview_unavailable_label"), py::arg("default_open"), py::arg("read_only"),
-            "Render the stable material shader/surface/preview header in one native call.")
         .def("render_object_field_chrome", &InxGUIContext::RenderObjectFieldChrome, py::arg("field_id"),
              py::arg("display_text"), py::arg("type_hint"), py::arg("selected") = false,
              py::arg("clickable") = true, py::arg("has_picker") = false, py::arg("picker_texture_id") = 0,
@@ -1125,7 +1105,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def(py::init<>());
 
     // ResourcePreviewManager - manages resource previewers for Inspector
-    py::class_<ResourcePreviewManager>(m, "ResourcePreviewManager")
+    NativeClass<ResourcePreviewManager>(m, "ResourcePreviewManager")
         .def("has_previewer", &ResourcePreviewManager::HasPreviewer, py::arg("extension"),
              "Check if there's a previewer for the given file extension")
         .def("get_previewer_type_name", &ResourcePreviewManager::GetPreviewerTypeName, py::arg("extension"),
@@ -1172,10 +1152,19 @@ void RegisterGUIBindings(py::module_ &m)
 
     // ConsolePanel — C++ native console that replaces the Python ConsolePanel
     py::class_<ConsolePanel, EditorPanel, std::shared_ptr<ConsolePanel>>(m, "ConsolePanel")
-        .def(py::init<>())
-        .def("log_from_python", &ConsolePanel::LogFromPython, py::arg("level"), py::arg("message"),
-             py::arg("stack_trace") = "", py::arg("source_file") = "", py::arg("source_line") = 0,
-             "Log a message originating from Python Debug.log()")
+        .def(py::init<const std::string &>(), py::arg("project_root") = "")
+        .def_property_readonly("project_root", &ConsolePanel::GetProjectRoot)
+        .def("get_entry_context_object_id", &ConsolePanel::GetEntryContextObjectId, py::arg("uid"))
+        .def(
+            "log_from_python",
+            [](ConsolePanel &self, LogLevel level, const std::string &message, const std::string &stackTrace,
+               const std::string &sourceFile, int sourceLine, const std::optional<ObjectHandle> &contextHandle) {
+                self.LogFromPython(level, message, stackTrace, sourceFile, sourceLine,
+                                   contextHandle.value_or(ObjectHandle{}));
+            },
+            py::arg("level"), py::arg("message"), py::arg("stack_trace") = "", py::arg("source_file") = "",
+            py::arg("source_line") = 0, py::arg("context_handle") = py::none(),
+            "Log a message originating from Python Debug.log()")
         .def("clear", &ConsolePanel::Clear, "Clear all log entries")
         .def("remove_entries_from_source", &ConsolePanel::RemoveEntriesFromSource, py::arg("source_file"),
              py::arg("message_prefix") = "", "Remove Console entries owned by one source file")

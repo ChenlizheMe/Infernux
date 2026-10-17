@@ -44,39 +44,6 @@ def audio_assets(engine, scene, tmp_path):
             database.delete_asset(str(path))
 
 
-@pytest.mark.parametrize("operation", ["clear", "replace", "transient", "shrink", "same", "deserialize"])
-def test_shared_clip_edge_survives_until_its_last_track_is_removed(audio_assets, operation):
-    source, graph, identity, guids, paths, _database = audio_assets
-    first, second = guids
-    if operation == "clear":
-        source.set_track_clip_by_guid(1, "")
-    elif operation == "replace":
-        source.set_track_clip_by_guid(1, second)
-    elif operation == "transient":
-        clip = AudioClip()
-        assert clip.load_from_file(str(paths[1]))
-        source.set_track_clip(1, clip)
-    elif operation == "shrink":
-        source.track_count = 1
-    elif operation == "same":
-        source.set_track_clip_by_guid(1, first)
-    else:
-        document = json.loads(source.serialize())
-        document["tracks"][1].pop("clip_guid")
-        source.deserialize(json.dumps(document))
-    assert graph.has_dependency(identity, first)
-    assert identity in graph.get_dependents(first)
-    assert source.get_track_clip_guid(0) == first
-    # Remove every reference to the original clip, retaining other clips.
-    for index in range(source.track_count):
-        if source.get_track_clip_guid(index) == first:
-            source.set_track_clip_by_guid(index, "")
-    assert not graph.has_dependency(identity, first)
-    assert identity not in graph.get_dependents(first)
-    if operation == "replace":
-        assert graph.has_dependency(identity, second)
-
-
 def test_shrinking_all_tracks_of_one_clip_preserves_other_clip_edges(audio_assets):
     source, graph, identity, guids, _paths, _database = audio_assets
     source.set_track_clip_by_guid(0, guids[1])
@@ -99,3 +66,34 @@ def test_retained_shared_track_still_receives_asset_reimport_notifications(audio
     assert not source.is_track_playing(0)
     assert source.get_track_clip(0).duration == pytest.approx(.2)
     assert graph.has_dependency(identity, guids[0])
+
+
+def test_track_edit_workflow_keeps_shared_clip_edges_until_the_last_reference(audio_assets):
+    source, graph, identity, guids, paths, _database = audio_assets
+    first, second = guids
+    source.set_track_clip_by_guid(1, first)
+    assert set(graph.get_dependencies(identity)) == {first}
+    source.set_track_clip_by_guid(1, second)
+    assert set(graph.get_dependencies(identity)) == {first, second}
+    transient = AudioClip()
+    assert transient.load_from_file(str(paths[1]))
+    source.set_track_clip(2, transient)
+    assert graph.has_dependency(identity, first) and identity in graph.get_dependents(first)
+    assert source.get_track_clip_guid(0) == first
+    source.set_track_clip_by_guid(0, "")
+    assert not graph.has_dependency(identity, first) and identity not in graph.get_dependents(first)
+    assert graph.has_dependency(identity, second)
+    source.track_count = 1
+    assert not graph.get_dependencies(identity)
+    source.track_count = 2
+    source.set_track_clip_by_guid(0, first)
+    source.set_track_clip_by_guid(1, first)
+    assert graph.has_dependency(identity, first)
+    document = json.loads(source.serialize())
+    document["tracks"][1].pop("clip_guid")
+    assert source.deserialize(json.dumps(document))
+    assert source.get_track_clip_guid(0) == first
+    assert graph.has_dependency(identity, first) and identity in graph.get_dependents(first)
+    document["tracks"][0].pop("clip_guid")
+    assert source.deserialize(json.dumps(document))
+    assert not graph.has_dependency(identity, first) and identity not in graph.get_dependents(first)

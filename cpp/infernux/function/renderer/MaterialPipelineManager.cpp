@@ -131,8 +131,8 @@ void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device
     (void)descriptorIndexingEnabled;
     ShaderProgram::SetUpdateAfterBindEnabled(false);
     m_descriptorManager.SetUpdateAfterBindEnabled(false);
-    m_descriptorManager.Initialize(allocator, device, physicalDevice, descriptorManager);
     m_descriptorManager.SetRetirementQueue(deletionQueue);
+    m_descriptorManager.Initialize(allocator, device, physicalDevice, descriptorManager);
 
     // Create Vulkan pipeline cache for faster recreation
     VkPipelineCacheCreateInfo cacheCreateInfo{};

@@ -8,7 +8,6 @@ from infernux.lib import (
     GameObject,
     InvalidNativeObjectError,
     Vector3,
-    _unwrap_vec3,
 )
 
 
@@ -44,14 +43,24 @@ def test_query_and_contact_records_have_no_entity_bool_override():
 
 
 class TestTransformVectorCoercion:
-    def test_plain_sequence_becomes_vector3(self):
-        value = _unwrap_vec3((1, 2.5, -3))
-        assert isinstance(value, Vector3)
-        assert (value.x, value.y, value.z) == pytest.approx((1.0, 2.5, -3.0))
+    def test_transform_setters_accept_numeric_sequences(self, scene):
+        transform = scene.create_game_object("SequenceTransform").transform
+        for name, value in (
+            ("position", (1, 2.5, -3)), ("local_position", [4, 5, 6]),
+            ("local_scale", (2, 3, 4)), ("euler_angles", [10, 20, 30]),
+            ("local_euler_angles", (15, 25, 35)),
+        ):
+            setattr(transform, name, value)
+            result = getattr(transform, name)
+            assert isinstance(result, Vector3)
+            assert tuple(result) == pytest.approx(value, abs=0.001)
 
-    def test_invalid_sequence_is_left_for_native_diagnostic(self):
-        value = _unwrap_vec3((1, 2))
-        assert value == (1, 2)
+    def test_transform_setters_reject_wrong_dimensions(self, scene):
+        transform = scene.create_game_object("InvalidSequenceTransform").transform
+        for value in ((1, 2), (1, 2, 3, 4)):
+            with pytest.raises(TypeError):
+                transform.position = value
+        assert tuple(transform.position) == (0, 0, 0)
 
 
 def test_native_guard_does_not_retain_python_wrapper(scene):

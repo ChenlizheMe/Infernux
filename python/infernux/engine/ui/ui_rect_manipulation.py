@@ -70,6 +70,135 @@ def apply_layout_size(
         component.height = float(height)
 
 
+def _screen_layout_context(component, render_size):
+    from infernux.ui import UIFrame
+    from infernux.ui.enums import UILayoutDirection, UILayoutPosition
+
+    canvas = component.get_canvas()
+    if canvas is None:
+        return None, None, None, None
+    width, height = (canvas.compute_logical_size(*render_size) if render_size is not None
+                     else (canvas.reference_width, canvas.reference_height))
+    parent = next(component._layout_ancestors(), None)
+    frame = parent.get_component(UIFrame) if parent is not None else None
+    if frame is not None and (frame.layout_direction == UILayoutDirection.None_
+                              or component.layout_position != UILayoutPosition.Flow):
+        frame = None
+    return canvas, width, height, frame
+
+
+def describe_ui_layout(component, *, render_size=None) -> dict:
+    """Read the same resolved geometry used by the renderer and UI Editor."""
+    canvas, width, height, flow = _screen_layout_context(component, render_size)
+    owner = component.game_object
+    rect = component.get_rect(width, height)
+    render_scale = canvas.compute_scale(*render_size)[:2] if canvas is not None and render_size is not None else None
+    return {
+        "object_id": int(owner.id),
+        "component_id": int(component.component_id),
+        "coordinates": {
+            "space": "canvas" if canvas is not None else "world_ui_local",
+            "units": "logical_pixels",
+            "basis": ("world_geometry" if canvas is None else
+                      "game_render_target" if render_size is not None else "design_reference"),
+            "origin": "top_left",
+            "x_direction": "right",
+            "y_direction": "down",
+            "transform_position": "parent_center_x_right_y_up" if canvas is not None else "world_transform",
+            "render_rect_space": "render_target_pixels" if render_scale is not None else None,
+        },
+        "canvas": None if canvas is None else {
+            "object_id": int(canvas.game_object.id),
+            "component_id": int(canvas.component_id),
+            "reference_size": [canvas.reference_width, canvas.reference_height],
+            "logical_size": [width, height],
+            "render_size": list(render_size) if render_size is not None else None,
+            "render_mode": canvas.render_mode.name,
+            "scale_mode": canvas.ui_scale_mode.name,
+            "pixel_perfect": canvas.pixel_perfect,
+        },
+        "rect": list(rect),
+        "render_scale": list(render_scale) if render_scale is not None else None,
+        "render_rect": list(canvas.pixel_adjust_rect(rect, *render_scale)) if render_scale is not None else None,
+        "visual_rect": list(component.get_visual_rect(width, height)),
+        "corners": [list(point) for point in component.get_rotated_corners(width, height)],
+        "clip_bounds": component.get_effective_clip_rect(width, height),
+        "parent_rect": None if canvas is None else list(component._get_parent_world_rect(width, height)),
+        "local_position": list(owner.transform.local_position),
+        "rotation_degrees": component.get_layout_rotation(),
+        "authored_size": [component.width, component.height],
+        "layout_position": component.layout_position.name,
+        "width_sizing": component.width_sizing.name,
+        "height_sizing": component.height_sizing.name,
+        "flow": None if flow is None else {
+            "object_id": int(flow.game_object.id),
+            "component_id": int(flow.component_id),
+            "direction": flow.layout_direction.name,
+        },
+    }
+
+
+def edit_layout_rect(component, rect, commands, *, render_size=None, detach_from_layout=False):
+    """Apply one UI rect edit through the same history as a UI Editor gesture.
+
+    The rectangle is unrotated canvas geometry, not its rotated visual AABB.
+    Flow membership changes only when the author explicitly requests it.
+    """
+    from infernux.ui.enums import TextResizeMode, UILayoutPosition, UILayoutSizing
+
+    canvas, cw, ch, flow = _screen_layout_context(component, render_size)
+    if canvas is None:
+        raise ValueError("Canvas-free UI is positioned through its world Transform")
+    if flow is not None and not detach_from_layout:
+        raise ValueError("Parent auto layout controls this rectangle; set detach_from_layout=true to author an absolute rect")
+    x, y, width, height = rect
+    if not all(math.isfinite(value) for value in (x, y, width, height)):
+        raise ValueError("UI rectangle values must be finite")
+    if width < 0 or height < 0:
+        raise ValueError("UI rectangle extents must be nonnegative")
+    for extent, minimum, maximum in (
+        (width, component.min_width, component.max_width),
+        (height, component.min_height, component.max_height),
+    ):
+        if extent < minimum or (maximum > 0 and extent > maximum):
+            raise ValueError("UI rectangle exceeds its authored min/max size constraints")
+    values = {}
+    for axis, extent, resolved in zip(("width", "height"), (width, height), component.get_rect(cw, ch)[2:]):
+        if extent != resolved or (detach_from_layout and flow is not None):
+            values[axis] = extent
+            values[axis + "_sizing"] = UILayoutSizing.Fixed
+    if detach_from_layout:
+        values["layout_position"] = UILayoutPosition.Absolute
+    if ("width" in values or "height" in values) and hasattr(component, "resize_mode"):
+        values["width"], values["height"] = width, height
+        values["resize_mode"] = TextResizeMode.FixedSize
+    description = "Set UI Rect"
+    changes = [
+        (component, field, getattr(component, field), value, description)
+        for field, value in values.items()
+    ]
+    transform = component.game_object.transform
+    before_position = transform.local_position
+    if not commands.can_record():
+        return False
+    with commands.suppress_replay():
+        try:
+            for target, field, _old, value, _description in changes:
+                setattr(target, field, value)
+            # Resolve after sizing/Flow changes: a Hug parent can change its
+            # own rect when this child leaves auto layout.
+            component._set_layout_rect_origin(x, y, cw, ch)
+        except Exception:
+            for target, field, old, _value, _description in changes:
+                setattr(target, field, old)
+            transform.local_position = before_position
+            raise
+    changes.append((transform, "local_position", before_position, transform.local_position, description))
+    if not any(old != new for _, _, old, new, _ in changes):
+        return True
+    return commands.record_applied_property_changes(changes, description=description)
+
+
 def resolve_world_ui_frame(component):
     """Resolve one free world UI element into the frame used by its renderer.
 

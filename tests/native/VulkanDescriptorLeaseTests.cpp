@@ -1,9 +1,10 @@
 // Real Vulkan allocations; retirement serials are controlled contract inputs.
+#include <SDL3/SDL.h>
 #include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
-#include <SDL3/SDL.h>
 
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <optional>
@@ -52,21 +53,34 @@ int main(int argc, char **argv)
     {
         std::optional<vk::VkDescriptorManager> first(std::in_place, firstDevice.GetDevice(), firstDevice.GetDeviceId());
         vk::VkDescriptorManager second(separateDevice ? secondDevice.GetDevice() : firstDevice.GetDevice(),
-                                        separateDevice ? secondDevice.GetDeviceId() : firstDevice.GetDeviceId());
+                                       separateDevice ? secondDevice.GetDeviceId() : firstDevice.GetDeviceId());
         const auto original = first->Allocate(firstLayout);
         assert(original.IsValid() && first->Owns(original));
         if (scenario == "own") {
             first->Retire(original);
             assert(!first->Owns(original) && first->GetStats().liveSets == 0);
-        } else if (scenario == "deferred" || scenario == "native_mark") {
-            if (scenario == "deferred")
-                first->MarkUsed(original, 9);
-            else
-                first->MarkUsed(original.set, 9);
+        } else if (scenario == "deferred") {
+            first->MarkUsed(original, 9);
             first->Retire(original, 5);
             assert(first->Collect(5) == 0);
             assert(first->Collect(9) == 1);
             assert(!first->Owns(original));
+        } else if (scenario == "native_mark") {
+            const auto active = first->Allocate(firstLayout);
+            const auto external = second.Allocate(firstLayout);
+            first->MarkUsed(original.set, 3);
+            first->Retire(original, 5);
+            const std::array<VkDescriptorSet, 5> sets{original.set, active.set, external.set, original.set,
+                                                      VK_NULL_HANDLE};
+            first->MarkUsed(sets.data(), static_cast<uint32_t>(sets.size()), 9);
+            first->MarkUsed(nullptr, 0, 10);
+            first->MarkUsed(sets.data(), static_cast<uint32_t>(sets.size()), rhi::InvalidSubmissionSerial);
+            first->Retire(active, 5);
+            assert(first->Collect(5) == 0);
+            assert(first->Collect(9) == 2);
+            assert(!first->Owns(original) && !first->Owns(active));
+            second.Retire(external, 5);
+            assert(second.Collect(5) == 1);
         } else {
             auto *victim = &second;
             vk::DescriptorLease live;
@@ -116,8 +130,7 @@ int main(int argc, char **argv)
         const auto baseline = device.GetDescriptorStats();
         const auto buffer = device.CreateBuffer({256, rhi::BufferUsageFlags::Storage});
         rhi::BindingLayoutDesc layoutDesc;
-        layoutDesc.entries[layoutDesc.entryCount++] = {0, rhi::BindingType::StorageBuffer,
-                                                        rhi::ShaderStage::Vertex, 1};
+        layoutDesc.entries[layoutDesc.entryCount++] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
         const auto layout = device.CreateBindingLayout(layoutDesc);
         assert(buffer.IsValid() && layout.IsValid());
         for (unsigned cycle = 0; cycle < 32; ++cycle) {

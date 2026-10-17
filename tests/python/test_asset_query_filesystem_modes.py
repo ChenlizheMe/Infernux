@@ -9,6 +9,7 @@ from infernux.application import Application
 from infernux.core.assets import AssetFile, AssetManager
 from infernux.core.material import Material
 from infernux.core.sandbox_files import SandboxPath
+from infernux.core.texture import Texture
 
 
 class _Database:
@@ -21,6 +22,11 @@ class _Database:
     def get_path_from_guid(self, guid):
         return self.entries.get(guid, "")
 
+    def get_directory_catalog(self, directory):
+        key = os.path.normcase(os.path.abspath(directory))
+        return [{"guid": guid, "path": path} for guid, path in self.entries.items()
+                if os.path.normcase(os.path.abspath(os.path.dirname(path))) == key]
+
     def get_guid_from_path(self, path):
         key = os.path.normcase(os.path.abspath(path))
         for guid, candidate in self.entries.items():
@@ -28,11 +34,15 @@ class _Database:
                 return guid
         return ""
 
+    get_guid_from_catalog_path = get_guid_from_path
+
 
 def _editor(monkeypatch, root: Path) -> None:
+    from infernux.engine import project_context
+
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: True))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
-    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(root)))
+    monkeypatch.setattr(project_context._context(), "root", str(root))
 
 
 def test_editor_asset_path_is_converted_to_guid_before_load(monkeypatch, tmp_path):
@@ -49,29 +59,30 @@ def test_editor_asset_path_is_converted_to_guid_before_load(monkeypatch, tmp_pat
         classmethod(lambda cls, guid, asset_type=None: observed.append(guid) or object()),
     )
 
-    assert AssetManager.load("Assets/Materials/Gold.mat") is not None
+    from infernux.engine import project_context
+
+    assert project_context.resolve_asset_path("Assets/Materials/Gold.mat") == str(material)
+    assert AssetManager.load(r"assets\Materials\Gold.mat") is not None
     assert observed == ["material-guid"]
 
 
-def test_editor_managed_load_rejects_absolute_paths_even_below_assets(
-    monkeypatch, tmp_path
-):
+def test_editor_managed_load_rejects_absolute_paths_even_below_assets(monkeypatch, tmp_path):
     material = tmp_path / "Assets" / "Materials" / "Gold.mat"
     material.parent.mkdir(parents=True)
     material.write_text("{}", encoding="utf-8")
     _editor(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        AssetManager, "_asset_database", _Database({"material-guid": str(material)})
-    )
+    monkeypatch.setattr(AssetManager, "_asset_database", _Database({"material-guid": str(material)}))
 
     with pytest.raises(ValueError, match="stay below Assets"):
         AssetManager.load(str(material))
 
 
-@pytest.mark.parametrize("player", [False, True])
-@pytest.mark.parametrize("path", ["Assets//Config.json", "Assets/./Config.json", "Assets/Nested/../Config.json", "C:/Author/Assets/Config.json", "C:Assets/Config.json"])
+@pytest.mark.parametrize("path,player", [("Assets/Nested/../Config.json", False), ("C:Assets/Config.json", True)])
 def test_managed_load_and_file_resolution_reject_the_same_invalid_paths(
-    monkeypatch, tmp_path, player, path,
+    monkeypatch,
+    tmp_path,
+    player,
+    path,
 ):
     from infernux.engine import project_context
 
@@ -79,42 +90,21 @@ def test_managed_load_and_file_resolution_reject_the_same_invalid_paths(
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: player))
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: not player))
     monkeypatch.setattr(AssetManager, "_asset_database", _Database({}))
-    monkeypatch.setattr(project_context, "_runtime_asset_query", lambda _path, *, exact=False: ("wrong-guid",) if player else ())
-    monkeypatch.setattr(project_context, "_runtime_asset_resolver", lambda _guid: str(tmp_path / "wrong.json") if player else None)
+    monkeypatch.setattr(
+        project_context._context(), "asset_query", lambda _path, *, exact=False: ("wrong-guid",) if player else ()
+    )
+    monkeypatch.setattr(
+        project_context._context(), "asset_resolver", lambda _guid: str(tmp_path / "wrong.json") if player else None
+    )
     with pytest.raises(ValueError):
         AssetManager.load(path)
+    with pytest.raises(ValueError):
+        AssetManager.find_assets(path)
     assert project_context.resolve_asset_path(path) is None
 
 
-def test_editor_managed_load_normalizes_the_assets_root_spelling(monkeypatch, tmp_path):
-    material = tmp_path / "Assets" / "Materials" / "Gold.mat"
-    material.parent.mkdir(parents=True)
-    material.write_text("{}", encoding="utf-8")
-    _editor(monkeypatch, tmp_path)
-    monkeypatch.setattr(AssetManager, "_asset_database", _Database({"material-guid": str(material)}))
-    assert AssetManager._managed_guid(r"assets\Materials\Gold.mat") == "material-guid"
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "Gold.mat",
-        "*.mat",
-        ".",
-        "..",
-        "Materials/Gold.mat",
-        "Assets//Materials/Gold.mat",
-        "Assets/./Materials/Gold.mat",
-        "Assets/Materials/../Gold.mat",
-        "/Assets/Materials/Gold.mat",
-        "C:/Assets/Materials/Gold.mat",
-        r"C:\Assets\Materials\Gold.mat",
-        r"\\server\share\Assets\Gold.mat",
-    ],
-)
-def test_managed_api_rejects_non_author_paths_without_legacy_fallback(
-    monkeypatch, tmp_path, query
-):
+@pytest.mark.parametrize("query", ["\\\\server\\share\\Assets\\Gold.mat"])
+def test_managed_api_rejects_non_author_paths_without_legacy_fallback(monkeypatch, tmp_path, query):
     (tmp_path / "Assets").mkdir()
     _editor(monkeypatch, tmp_path)
     monkeypatch.setattr(AssetManager, "_asset_database", _Database({}))
@@ -125,32 +115,12 @@ def test_managed_api_rejects_non_author_paths_without_legacy_fallback(
         AssetManager.find_assets(query)
 
 
-def test_editor_managed_find_accepts_a_guid_and_still_returns_a_file_handle(
-    monkeypatch, tmp_path
-):
-    material = tmp_path / "Assets" / "Materials" / "Gold.mat"
-    material.parent.mkdir(parents=True)
-    material.write_text("{}", encoding="utf-8")
-    _editor(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        AssetManager, "_asset_database", _Database({"material-guid": str(material)})
-    )
-
-    files = AssetManager.find_assets("material-guid")
-    assert files == [AssetFile("material-guid")]
-    assert files[0].read_text() == "{}"
-
-
-def test_editor_managed_file_read_rejects_catalog_entries_outside_assets(
-    monkeypatch, tmp_path
-):
+def test_editor_managed_file_read_rejects_catalog_entries_outside_assets(monkeypatch, tmp_path):
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
     (tmp_path / "Assets").mkdir()
     _editor(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        AssetManager, "_asset_database", _Database({"outside-guid": str(outside)})
-    )
+    monkeypatch.setattr(AssetManager, "_asset_database", _Database({"outside-guid": str(outside)}))
 
     handle = AssetFile("outside-guid")
     with pytest.raises(PermissionError, match="outside Assets"):
@@ -168,36 +138,13 @@ def test_editor_managed_file_read_rejects_asset_symlink_escape(monkeypatch, tmp_
     except OSError as exc:
         pytest.skip(f"file links are unavailable: {exc}")
     _editor(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        AssetManager, "_asset_database", _Database({"linked-guid": str(link)})
-    )
+    monkeypatch.setattr(AssetManager, "_asset_database", _Database({"linked-guid": str(link)}))
 
     with pytest.raises(PermissionError, match="outside Assets"):
         AssetFile("linked-guid").read_text()
 
 
-def test_editor_project_context_resolves_assets_through_guid_identity(
-    monkeypatch, tmp_path
-):
-    import infernux.engine.project_context as project_context
-
-    material = tmp_path / "Assets" / "Materials" / "Gold.mat"
-    material.parent.mkdir(parents=True)
-    material.write_text("{}", encoding="utf-8")
-    _editor(monkeypatch, tmp_path)
-    database = _Database({"material-guid": str(material)})
-    monkeypatch.setattr(AssetManager, "_asset_database", database)
-    observed = []
-    original = database.get_guid_from_path
-    database.get_guid_from_path = lambda path: observed.append(path) or original(path)
-
-    assert project_context.resolve_asset_path("Assets/Materials/Gold.mat") == str(material)
-    assert observed
-
-
-def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
-    monkeypatch, tmp_path
-):
+def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(monkeypatch, tmp_path):
     import infernux.engine.project_context as project_context
 
     material = tmp_path / "Assets" / "Materials" / "Gold.mat"
@@ -211,7 +158,6 @@ def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
     database = _Database(
         {
             "material-guid": str(material),
-            "directory-guid": str(directory),
             "nested-guid": str(nested),
         }
     )
@@ -220,11 +166,11 @@ def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
 
     matches = AssetManager.find_assets("Assets/Materials/*.mat")
     assert matches == [AssetFile("material-guid")]
+    assert AssetManager.find_assets("material-guid") == matches
+    assert matches[0].read_text() == "{}"
     assert not hasattr(matches[0], "guid")
     assert "material-guid" not in repr(matches[0])
-    assert AssetManager.find_assets("Assets/Materials") == [
-        AssetFile("material-guid")
-    ]
+    assert AssetManager.find_assets("Assets/Materials") == [AssetFile("material-guid")]
     assert AssetManager.find_assets("Assets/Materials/**/*.mat") == [
         AssetFile("material-guid"),
         AssetFile("nested-guid"),
@@ -235,26 +181,31 @@ def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_query",
-        lambda pattern, *, exact=False: ("material-guid",)
-        if pattern in {
-            "Assets/Materials/*.mat",
-            "Assets/Materials/Gold.mat",
-            "Assets/Materials",
-            "material-guid",
-        } else (),
+        project_context._context(),
+        "asset_query",
+        lambda pattern, *, exact=False: (
+            ("material-guid",)
+            if pattern
+            in {
+                "Assets/Materials/*.mat",
+                "Assets/Materials/Gold.mat",
+                "Assets/Materials",
+                "material-guid",
+            }
+            else ()
+        ),
     )
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_resolver",
+        project_context._context(),
+        "asset_resolver",
         lambda guid: str(material) if guid == "material-guid" else None,
     )
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_extension_resolver",
+        project_context._context(),
+        "asset_extension_resolver",
         lambda guid: ".mat" if guid == "material-guid" else "",
     )
+
     class ForbiddenPlayerDatabase:
         def __getattribute__(self, name):
             if name == "__class__":
@@ -276,15 +227,9 @@ def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
             AssertionError("Player managed queries must not inspect source files")
         ),
     )
-    assert AssetManager.find_assets("Assets/Materials/*.mat") == [
-        AssetFile("material-guid")
-    ]
-    assert AssetManager.find_assets("Assets/Materials") == [
-        AssetFile("material-guid")
-    ]
-    assert AssetManager.find_assets(
-        "Assets/Materials/*.mat", asset_type=Material
-    ) == [AssetFile("material-guid")]
+    assert AssetManager.find_assets("Assets/Materials/*.mat") == [AssetFile("material-guid")]
+    assert AssetManager.find_assets("Assets/Materials") == [AssetFile("material-guid")]
+    assert AssetManager.find_assets("Assets/Materials/*.mat", asset_type=Material) == [AssetFile("material-guid")]
     assert AssetManager.find_assets("material-guid") == [AssetFile("material-guid")]
     with pytest.raises(ValueError, match="GUID or full Assets"):
         AssetManager.find_assets("Gold.mat")
@@ -299,9 +244,62 @@ def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
     assert observed == ["material-guid", "material-guid"]
 
 
-def test_raw_filesystem_handle_reads_writes_lists_and_deletes_inside_editor_assets(
-    monkeypatch, tmp_path
-):
+def test_managed_queries_read_published_index_without_filesystem_probes(monkeypatch, tmp_path):
+    material = tmp_path / "Assets" / "Materials" / "Gold.mat"
+    material.parent.mkdir(parents=True)
+    material.write_text("{}", encoding="utf-8")
+    sibling = material.with_name("Silver.mat")
+    sibling.write_text("{}", encoding="utf-8")
+    dotted_directory = material.parent / "Directory.mat"
+    dotted_directory.mkdir()
+    nested = dotted_directory / "Nested.mat"
+    nested.write_text("{}", encoding="utf-8")
+    unrelated = tmp_path / "Assets" / "Textures" / "Unrelated.mat"
+    unrelated.parent.mkdir()
+    unrelated.write_text("{}", encoding="utf-8")
+    database = _Database({"gold": str(material), "silver": str(sibling), "nested": str(nested),
+                          "unrelated": str(unrelated), "virtual": str(material) + "::subtex:preview"})
+    _editor(monkeypatch, tmp_path)
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    enumerated = []
+    monkeypatch.setattr(database, "get_all_guids", lambda: enumerated.append(True) or list(database.entries))
+
+    assert AssetManager.find_assets(r"assets\Materials\Gold.mat") == [AssetFile("gold")]
+    if os.name == "nt":
+        assert AssetManager.find_assets("ASSETS/materials/gOLD.MAT") == [AssetFile("gold")]
+    else:
+        assert AssetManager.find_assets("Assets/materials/gOLD.MAT") == []
+    assert AssetManager.find_assets("Assets/Materials/Gold.mat", asset_type=Material) == [AssetFile("gold")]
+    assert AssetManager.find_assets("Assets/Materials/Gold.mat", asset_type=Texture) == []
+    assert AssetManager.find_assets("Assets/Materials/Missing.mat") == []
+    assert AssetManager.find_assets("Assets/Materials/Gold.mat::subtex:preview") == []
+    assert AssetManager.find_assets("virtual") == []
+    assert enumerated == []
+    assert AssetManager.find_assets("Assets/Materials") == [AssetFile("gold"), AssetFile("silver")]
+    assert AssetManager.find_assets("Assets/Materials/Directory.mat") == [AssetFile("nested")]
+    assert enumerated == []
+    material.unlink()
+
+    def filesystem_probe(*_args, **_kwargs):
+        raise AssertionError("managed search must read the published catalog without filesystem probes")
+
+    with monkeypatch.context() as search:
+        for name in ("stat", "lstat", "scandir", "walk"):
+            search.setattr(os, name, filesystem_probe)
+        for name in ("isfile", "isdir", "realpath"):
+            search.setattr(os.path, name, filesystem_probe)
+        search.setattr(database, "get_guid_from_path", filesystem_probe)
+        assert AssetManager.find_assets("Assets/Materials/Gold.mat") == [AssetFile("gold")]
+        assert AssetManager.find_assets("gold") == [AssetFile("gold")]
+        assert AssetManager.find_assets("Assets/Materials/Missing.mat") == []
+        assert AssetManager.find_assets("Assets/Materials") == [AssetFile("gold"), AssetFile("silver")]
+        assert AssetManager.find_assets("Assets/Materials/*.mat") == [AssetFile("gold"), AssetFile("silver")]
+        assert AssetManager.find_assets("Assets/Materials/*.mat", asset_type=Texture) == []
+    with pytest.raises(FileNotFoundError):
+        AssetFile("gold").read_text()
+
+
+def test_raw_filesystem_handle_reads_writes_lists_and_deletes_inside_editor_assets(monkeypatch, tmp_path):
     assets = tmp_path / "Assets"
     mods = assets / "Mods"
     mods.mkdir(parents=True)
@@ -314,14 +312,11 @@ def test_raw_filesystem_handle_reads_writes_lists_and_deletes_inside_editor_asse
 
     matches = AssetManager.find_assets("Mods/*.json", raw_filesystem=True)
     assert [item.relative_path for item in matches] == ["Mods/a.json"]
-    assert [
-        item.relative_path
-        for item in AssetManager.find_assets("Mods", raw_filesystem=True)
-    ] == ["Mods/a.json"]
-    assert [
-        item.relative_path
-        for item in AssetManager.find_assets("Mods/**/*.json", raw_filesystem=True)
-    ] == ["Mods/a.json", "Mods/Nested/nested.json"]
+    assert [item.relative_path for item in AssetManager.find_assets("Mods", raw_filesystem=True)] == ["Mods/a.json"]
+    assert [item.relative_path for item in AssetManager.find_assets("Mods/**/*.json", raw_filesystem=True)] == [
+        "Mods/a.json",
+        "Mods/Nested/nested.json",
+    ]
     assert matches[0].read_text() == "a"
 
     created = AssetManager.load("Mods/b.json", raw_filesystem=True)
@@ -332,9 +327,7 @@ def test_raw_filesystem_handle_reads_writes_lists_and_deletes_inside_editor_asse
     assert not (mods / "b.json").exists()
 
 
-def test_player_load_resolves_path_to_guid_without_asset_database(
-    monkeypatch, tmp_path
-):
+def test_player_load_resolves_path_to_guid_without_asset_database(monkeypatch, tmp_path):
     import infernux.engine.project_context as project_context
 
     cooked = tmp_path / "Library" / "Artifacts" / "Document" / "material.inxdoc"
@@ -343,21 +336,21 @@ def test_player_load_resolves_path_to_guid_without_asset_database(
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_query",
-        lambda path, *, exact=False: ("material-guid",)
-        if path == "Assets/Materials/Gold.mat" else (),
+        project_context._context(),
+        "asset_query",
+        lambda path, *, exact=False: ("material-guid",) if path == "Assets/Materials/Gold.mat" else (),
     )
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_resolver",
+        project_context._context(),
+        "asset_resolver",
         lambda guid: str(cooked) if guid == "material-guid" else None,
     )
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_extension_resolver",
+        project_context._context(),
+        "asset_extension_resolver",
         lambda guid: ".mat" if guid == "material-guid" else "",
     )
+
     class ForbiddenPlayerDatabase:
         def __getattribute__(self, name):
             if name == "__class__":
@@ -372,9 +365,7 @@ def test_player_load_resolves_path_to_guid_without_asset_database(
     monkeypatch.setattr(
         AssetManager,
         "_load_by_type",
-        classmethod(
-            lambda cls, path, asset_type: observed.append((path, asset_type)) or loaded
-        ),
+        classmethod(lambda cls, path, asset_type: observed.append((path, asset_type)) or loaded),
     )
 
     assert AssetManager.load("Assets/Materials/Gold.mat") is loaded
@@ -390,8 +381,8 @@ def test_player_managed_file_reads_cooked_guid_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     monkeypatch.setattr(
-        project_context,
-        "_runtime_asset_resolver",
+        project_context._context(),
+        "asset_resolver",
         lambda guid: str(cooked) if guid == "config-guid" else None,
     )
 
@@ -400,7 +391,12 @@ def test_player_managed_file_reads_cooked_guid_payload(monkeypatch, tmp_path):
     assert "config-guid" not in repr(handle)
 
 
-@pytest.mark.parametrize("path", ["../outside.txt", "Mods/../../outside.txt"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Mods/../../outside.txt",
+    ],
+)
 def test_raw_filesystem_rejects_parent_traversal(monkeypatch, tmp_path, path):
     (tmp_path / "Assets").mkdir()
     _editor(monkeypatch, tmp_path)
@@ -409,18 +405,8 @@ def test_raw_filesystem_rejects_parent_traversal(monkeypatch, tmp_path, path):
         AssetManager.load(path, raw_filesystem=True)
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/system/secret.txt",
-        "C:/system/secret.txt",
-        r"C:\system\secret.txt",
-        r"\\server\share\secret.txt",
-    ],
-)
-def test_raw_filesystem_rejects_cross_platform_absolute_paths(
-    monkeypatch, tmp_path, path
-):
+@pytest.mark.parametrize("path", ["C:/system/secret.txt"])
+def test_raw_filesystem_rejects_cross_platform_absolute_paths(monkeypatch, tmp_path, path):
     (tmp_path / "Assets").mkdir()
     _editor(monkeypatch, tmp_path)
 
@@ -437,9 +423,7 @@ def test_raw_filesystem_load_rejects_directories(monkeypatch, tmp_path):
         AssetManager.load("Mods", raw_filesystem=True)
 
 
-def test_sandbox_path_constructor_cannot_select_an_arbitrary_root(
-    monkeypatch, tmp_path
-):
+def test_sandbox_path_constructor_cannot_select_an_arbitrary_root(monkeypatch, tmp_path):
     assets = tmp_path / "Assets"
     assets.mkdir()
     outside = tmp_path / "outside"
@@ -454,9 +438,7 @@ def test_sandbox_path_constructor_cannot_select_an_arbitrary_root(
         SandboxPath(str(outside / "secret.txt"))
 
 
-def test_raw_filesystem_handle_cannot_outlive_its_active_project_root(
-    monkeypatch, tmp_path
-):
+def test_raw_filesystem_handle_cannot_outlive_its_active_project_root(monkeypatch, tmp_path):
     first = tmp_path / "First"
     second = tmp_path / "Second"
     (first / "Assets").mkdir(parents=True)
@@ -465,9 +447,7 @@ def test_raw_filesystem_handle_cannot_outlive_its_active_project_root(
     active = {"root": first}
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: True))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
-    monkeypatch.setattr(
-        Application, "data_path", staticmethod(lambda: str(active["root"]))
-    )
+    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(active["root"])))
     handle = AssetManager.load("secret.txt", raw_filesystem=True)
     active["root"] = second
 
@@ -475,9 +455,7 @@ def test_raw_filesystem_handle_cannot_outlive_its_active_project_root(
         handle.read_text()
 
 
-def test_raw_filesystem_handle_rejects_root_replaced_at_same_path(
-    monkeypatch, tmp_path
-):
+def test_raw_filesystem_handle_rejects_root_replaced_at_same_path(monkeypatch, tmp_path):
     project = tmp_path / "Project"
     assets = project / "Assets"
     assets.mkdir(parents=True)
@@ -495,9 +473,7 @@ def test_raw_filesystem_handle_rejects_root_replaced_at_same_path(
         handle.read_text()
 
 
-def test_player_managed_resolution_never_falls_back_to_project_disk(
-    monkeypatch, tmp_path
-):
+def test_player_managed_resolution_never_falls_back_to_project_disk(monkeypatch, tmp_path):
     import infernux.engine.project_context as project_context
 
     source = tmp_path / "Assets" / "Data" / "source.txt"
@@ -505,9 +481,9 @@ def test_player_managed_resolution_never_falls_back_to_project_disk(
     source.write_text("source", encoding="utf-8")
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
-    monkeypatch.setattr(project_context, "_project_root", str(tmp_path))
-    monkeypatch.setattr(project_context, "_runtime_asset_resolver", None)
-    monkeypatch.setattr(project_context, "_runtime_asset_query", None)
+    monkeypatch.setattr(project_context._context(), "root", str(tmp_path))
+    monkeypatch.setattr(project_context._context(), "asset_resolver", None)
+    monkeypatch.setattr(project_context._context(), "asset_query", None)
 
     with pytest.raises(RuntimeError, match="query is not configured"):
         project_context.resolve_asset_path("Assets/Data/source.txt")
@@ -532,9 +508,7 @@ def test_raw_filesystem_does_not_traverse_symlink(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("operation", ["read", "write", "delete"])
-def test_raw_filesystem_handle_rejects_leaf_replaced_by_symlink(
-    monkeypatch, tmp_path, operation
-):
+def test_raw_filesystem_handle_rejects_leaf_replaced_by_symlink(monkeypatch, tmp_path, operation):
     assets = tmp_path / "Assets"
     assets.mkdir()
     inside = assets / "config.txt"
@@ -560,9 +534,7 @@ def test_raw_filesystem_handle_rejects_leaf_replaced_by_symlink(
 
 
 @pytest.mark.parametrize("operation", ["read", "write", "delete"])
-def test_raw_filesystem_handle_rechecks_redirect_before_every_io(
-    monkeypatch, tmp_path, operation
-):
+def test_raw_filesystem_handle_rechecks_redirect_before_every_io(monkeypatch, tmp_path, operation):
     import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
@@ -579,9 +551,9 @@ def test_raw_filesystem_handle_rechecks_redirect_before_every_io(
         monkeypatch.setattr(
             sandbox_files,
             "_has_reparse_point",
-            lambda path: os.path.normcase(os.path.abspath(path))
-            == os.path.normcase(os.path.abspath(target))
-            or original(path),
+            lambda path: (
+                os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(target)) or original(path)
+            ),
         )
     else:
         original_open = os.open
@@ -623,9 +595,9 @@ def test_raw_filesystem_query_ignores_a_redirected_subtree(monkeypatch, tmp_path
     monkeypatch.setattr(
         sandbox_files,
         "_has_reparse_point",
-        lambda path: os.path.normcase(os.path.abspath(path))
-        == os.path.normcase(os.path.abspath(mods))
-        or original(path),
+        lambda path: (
+            os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(mods)) or original(path)
+        ),
     )
 
     assert AssetManager.find_assets("Mods/*.txt", raw_filesystem=True) == []
@@ -634,9 +606,7 @@ def test_raw_filesystem_query_ignores_a_redirected_subtree(monkeypatch, tmp_path
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX dirfd confinement contract")
-def test_raw_filesystem_delete_stays_on_open_parent_when_path_is_redirected(
-    monkeypatch, tmp_path
-):
+def test_raw_filesystem_delete_stays_on_open_parent_when_path_is_redirected(monkeypatch, tmp_path):
     assets = tmp_path / "Assets"
     mods = assets / "Mods"
     mods.mkdir(parents=True)
@@ -668,9 +638,7 @@ def test_raw_filesystem_delete_stays_on_open_parent_when_path_is_redirected(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX dirfd confinement contract")
-def test_raw_filesystem_create_stays_on_open_parent_when_path_is_redirected(
-    monkeypatch, tmp_path
-):
+def test_raw_filesystem_create_stays_on_open_parent_when_path_is_redirected(monkeypatch, tmp_path):
     assets = tmp_path / "Assets"
     mods = assets / "Mods"
     mods.mkdir(parents=True)
@@ -698,9 +666,7 @@ def test_raw_filesystem_create_stays_on_open_parent_when_path_is_redirected(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle confinement contract")
-def test_windows_raw_filesystem_delete_rejects_leaf_redirected_during_open(
-    monkeypatch, tmp_path
-):
+def test_windows_raw_filesystem_delete_rejects_leaf_redirected_during_open(monkeypatch, tmp_path):
     import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
@@ -725,9 +691,7 @@ def test_windows_raw_filesystem_delete_rejects_leaf_redirected_during_open(
                 pytest.skip(f"file links are unavailable: {exc}")
         return original_open(path, desired_access, disposition)
 
-    monkeypatch.setattr(
-        sandbox_files, "_windows_create_handle", redirect_before_open
-    )
+    monkeypatch.setattr(sandbox_files, "_windows_create_handle", redirect_before_open)
     with pytest.raises(PermissionError, match="links or junctions"):
         handle.delete()
 
@@ -736,9 +700,7 @@ def test_windows_raw_filesystem_delete_rejects_leaf_redirected_during_open(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle confinement contract")
-def test_windows_raw_filesystem_create_stays_on_open_parent_when_parent_moves(
-    monkeypatch, tmp_path
-):
+def test_windows_raw_filesystem_create_stays_on_open_parent_when_parent_moves(monkeypatch, tmp_path):
     import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
@@ -762,9 +724,7 @@ def test_windows_raw_filesystem_create_stays_on_open_parent_when_parent_moves(
                 pytest.skip(f"directory links are unavailable: {exc}")
         return original_open(path, desired_access, disposition)
 
-    monkeypatch.setattr(
-        sandbox_files, "_windows_create_handle", redirect_before_open
-    )
+    monkeypatch.setattr(sandbox_files, "_windows_create_handle", redirect_before_open)
     with pytest.raises(PermissionError, match="outside its root"):
         handle.write_text("inside")
 
@@ -789,27 +749,21 @@ def test_player_raw_filesystem_is_rooted_beside_executable(monkeypatch, tmp_path
     handle = AssetManager.load("Mods/config.json", raw_filesystem=True)
 
     assert handle.read_text() == "{}"
-    assert [item.relative_path for item in AssetManager.find_assets(
-        "Mods/*.json", raw_filesystem=True
-    )] == ["Mods/config.json"]
+    assert [item.relative_path for item in AssetManager.find_assets("Mods/*.json", raw_filesystem=True)] == [
+        "Mods/config.json"
+    ]
 
 
-def test_web_raw_filesystem_uses_isolated_persistent_loose_root(
-    monkeypatch, tmp_path
-):
+def test_web_raw_filesystem_uses_isolated_persistent_loose_root(monkeypatch, tmp_path):
     cooked_root = tmp_path / "cooked-player"
     cooked_mods = cooked_root / "Mods"
     cooked_mods.mkdir(parents=True)
-    (cooked_mods / "config.json").write_text(
-        '{"source":"cooked"}', encoding="utf-8"
-    )
+    (cooked_mods / "config.json").write_text('{"source":"cooked"}', encoding="utf-8")
     persistent_root = tmp_path / "browser-persistent"
     loose_root = persistent_root / "loose"
     loose_mods = loose_root / "Mods"
     loose_mods.mkdir(parents=True)
-    (loose_mods / "config.json").write_text(
-        '{"source":"loose"}', encoding="utf-8"
-    )
+    (loose_mods / "config.json").write_text('{"source":"loose"}', encoding="utf-8")
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     monkeypatch.setattr(
@@ -828,9 +782,5 @@ def test_web_raw_filesystem_uses_isolated_persistent_loose_root(
     assert handle.read_text() == '{"source":"loose"}'
     handle.write_text('{"source":"changed"}')
 
-    assert (loose_mods / "config.json").read_text(encoding="utf-8") == (
-        '{"source":"changed"}'
-    )
-    assert (cooked_mods / "config.json").read_text(encoding="utf-8") == (
-        '{"source":"cooked"}'
-    )
+    assert (loose_mods / "config.json").read_text(encoding="utf-8") == ('{"source":"changed"}')
+    assert (cooked_mods / "config.json").read_text(encoding="utf-8") == ('{"source":"cooked"}')

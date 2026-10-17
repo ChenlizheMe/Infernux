@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <core/serialization/BinaryCodec.h>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -33,33 +34,13 @@ constexpr uint32_t MorphTargetsV1 = 0x3152504dU;      // MPR1
 constexpr uint32_t RigDefinitionV2 = 0x32474952U;     // RIG2, includes resolved humanoid mapping/report
 constexpr uint32_t GeometryEncoding = 0x334f4547U;    // GEO3, typed indices, compression and UV0/UV1
 
-uint64_t Fnv1a64(std::string_view bytes)
-{
-    uint64_t hash = 14695981039346656037ULL;
-    for (const unsigned char byte : bytes) {
-        hash ^= byte;
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
+using binary_codec::Fnv1a64;
 
-void AppendU32(std::string &output, uint32_t value)
-{
-    for (unsigned int shift = 0; shift < 32; shift += 8)
-        output.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
+using binary_codec::AppendU32;
 
-void AppendU16(std::string &output, uint16_t value)
-{
-    output.push_back(static_cast<char>(value & 0xffU));
-    output.push_back(static_cast<char>((value >> 8U) & 0xffU));
-}
+using binary_codec::AppendU16;
 
-void AppendU64(std::string &output, uint64_t value)
-{
-    for (unsigned int shift = 0; shift < 64; shift += 8)
-        output.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
+using binary_codec::AppendU64;
 
 void AppendI32(std::string &output, int32_t value)
 {
@@ -69,15 +50,7 @@ void AppendI32(std::string &output, int32_t value)
     AppendU32(output, bits);
 }
 
-void AppendFloat(std::string &output, float value)
-{
-    if (!std::isfinite(value))
-        throw std::invalid_argument("skinned Mesh artifact contains a non-finite float");
-    uint32_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value));
-    std::memcpy(&bits, &value, sizeof(bits));
-    AppendU32(output, bits);
-}
+using binary_codec::AppendFloat;
 
 void AppendDouble(std::string &output, double value)
 {
@@ -139,112 +112,7 @@ void AppendMat4(std::string &output, const glm::mat4 &value)
         AppendVec4(output, value[column]);
 }
 
-class Reader final
-{
-  public:
-    explicit Reader(std::string_view bytes) : m_bytes(bytes)
-    {
-    }
-
-    [[nodiscard]] uint32_t ReadU32()
-    {
-        Require(sizeof(uint32_t));
-        uint32_t value = 0;
-        for (unsigned int shift = 0; shift < 32; shift += 8)
-            value |= static_cast<uint32_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
-        return value;
-    }
-
-    [[nodiscard]] uint16_t ReadU16()
-    {
-        Require(sizeof(uint16_t));
-        const uint16_t low = static_cast<unsigned char>(m_bytes[m_cursor++]);
-        const uint16_t high = static_cast<unsigned char>(m_bytes[m_cursor++]);
-        return static_cast<uint16_t>(low | (high << 8U));
-    }
-
-    [[nodiscard]] uint64_t ReadU64()
-    {
-        Require(sizeof(uint64_t));
-        uint64_t value = 0;
-        for (unsigned int shift = 0; shift < 64; shift += 8)
-            value |= static_cast<uint64_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
-        return value;
-    }
-
-    [[nodiscard]] int32_t ReadI32()
-    {
-        const uint32_t bits = ReadU32();
-        int32_t value = 0;
-        static_assert(sizeof(bits) == sizeof(value));
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-
-    [[nodiscard]] float ReadFloat()
-    {
-        const uint32_t bits = ReadU32();
-        float value = 0.0f;
-        static_assert(sizeof(bits) == sizeof(value));
-        std::memcpy(&value, &bits, sizeof(value));
-        if (!std::isfinite(value))
-            throw std::invalid_argument("skinned Mesh artifact contains a non-finite float");
-        return value;
-    }
-
-    [[nodiscard]] double ReadDouble()
-    {
-        const uint64_t bits = ReadU64();
-        double value = 0.0;
-        static_assert(sizeof(bits) == sizeof(value));
-        std::memcpy(&value, &bits, sizeof(value));
-        if (!std::isfinite(value))
-            throw std::invalid_argument("skinned Mesh artifact contains a non-finite double");
-        return value;
-    }
-
-    [[nodiscard]] std::string ReadString(bool allowEmpty = true)
-    {
-        const uint32_t size = ReadU32();
-        if ((!allowEmpty && size == 0) || size > MaximumStringBytes)
-            throw std::invalid_argument("skinned Mesh artifact contains an invalid string");
-        Require(size);
-        std::string value(m_bytes.substr(m_cursor, size));
-        m_cursor += size;
-        return value;
-    }
-
-    [[nodiscard]] std::string_view ReadBytes(size_t size)
-    {
-        Require(size);
-        const auto value = m_bytes.substr(m_cursor, size);
-        m_cursor += size;
-        return value;
-    }
-
-    [[nodiscard]] uint32_t ReadCount(uint32_t maximum)
-    {
-        const uint32_t count = ReadU32();
-        if (count > maximum)
-            throw std::invalid_argument("skinned Mesh artifact count exceeds its format limit");
-        return count;
-    }
-
-    [[nodiscard]] bool AtEnd() const noexcept
-    {
-        return m_cursor == m_bytes.size();
-    }
-
-  private:
-    void Require(size_t size) const
-    {
-        if (m_cursor > m_bytes.size() || size > m_bytes.size() - m_cursor)
-            throw std::invalid_argument("skinned Mesh artifact is truncated");
-    }
-
-    std::string_view m_bytes;
-    size_t m_cursor = 0;
-};
+using Reader = binary_codec::Reader<MaximumStringBytes>;
 
 glm::vec2 ReadVec2(Reader &reader)
 {
@@ -330,7 +198,7 @@ template <typename Value, typename ReadValue>
 std::vector<std::pair<double, Value>> ReadKeys(Reader &reader, ReadValue readValue)
 {
     std::vector<std::pair<double, Value>> keys;
-    const uint32_t count = reader.ReadCount(MaximumKeys);
+    const uint32_t count = reader.ReadCount(MaximumKeys, sizeof(double) + sizeof(Value));
     keys.reserve(count);
     double previousTime = -std::numeric_limits<double>::infinity();
     for (uint32_t index = 0; index < count; ++index) {
@@ -648,6 +516,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     mesh->compression = static_cast<MeshCompression>(encodedCompression);
     const uint32_t vertexCount = reader.ReadCount(MaximumVertices);
     if (mesh->compression == MeshCompression::Off) {
+        reader.Require(static_cast<size_t>(vertexCount) * 100u);
         mesh->baseVertices.reserve(vertexCount);
         for (uint32_t index = 0; index < vertexCount; ++index)
             mesh->baseVertices.push_back(ReadVertex(reader, true));
@@ -666,7 +535,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         mesh->influences.push_back(influence);
     }
 
-    const uint32_t indexCount = reader.ReadCount(MaximumIndices);
+    const uint32_t indexCount = reader.ReadCount(MaximumIndices, indexBits / 8u);
     mesh->indices.reserve(indexCount);
     for (uint32_t index = 0; index < indexCount; ++index) {
         const uint32_t vertexIndex = mesh->indexFormat == MeshIndexFormat::UInt16 ? reader.ReadU16() : reader.ReadU32();
@@ -675,7 +544,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         mesh->indices.push_back(vertexIndex);
     }
 
-    mesh->subMeshes.resize(reader.ReadCount(MaximumObjects));
+    mesh->subMeshes.resize(reader.ReadCount(MaximumObjects, 52u));
     for (SubMesh &subMesh : mesh->subMeshes) {
         subMesh.indexStart = reader.ReadU32();
         subMesh.indexCount = reader.ReadU32();
@@ -693,7 +562,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
             throw std::invalid_argument("skinned Mesh artifact contains an invalid submesh range");
     }
 
-    const uint32_t nodeCount = reader.ReadCount(MaximumObjects);
+    const uint32_t nodeCount = reader.ReadCount(MaximumObjects, 72u);
     mesh->skeleton.nodes.reserve(nodeCount);
     for (uint32_t index = 0; index < nodeCount; ++index) {
         SkinnedRuntimeNode node;
@@ -709,7 +578,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         mesh->skeleton.nodes.push_back(std::move(node));
     }
 
-    const uint32_t boneCount = reader.ReadCount(MaximumObjects);
+    const uint32_t boneCount = reader.ReadCount(MaximumObjects, 72u);
     mesh->skeleton.bones.reserve(boneCount);
     for (uint32_t index = 0; index < boneCount; ++index) {
         SkinnedRuntimeBone bone;
@@ -730,7 +599,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         }
     }
 
-    const uint32_t animationCount = reader.ReadCount(MaximumObjects);
+    const uint32_t animationCount = reader.ReadCount(MaximumObjects, 24u);
     mesh->animations.reserve(animationCount);
     std::unordered_set<std::string> animationNames;
     for (uint32_t animationIndex = 0; animationIndex < animationCount; ++animationIndex) {
@@ -741,7 +610,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         if (!animationNames.insert(animation.name).second || animation.durationTicks < 0.0 ||
             animation.ticksPerSecond <= 0.0)
             throw std::invalid_argument("skinned Mesh artifact contains an invalid animation timing");
-        const uint32_t trackCount = reader.ReadCount(MaximumObjects);
+        const uint32_t trackCount = reader.ReadCount(MaximumObjects, 16u);
         animation.tracks.reserve(trackCount);
         animation.trackByNodeIndex.assign(mesh->skeleton.nodes.size(), -1);
         for (uint32_t trackIndex = 0; trackIndex < trackCount; ++trackIndex) {
@@ -838,7 +707,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         target.name = reader.ReadString();
         target.defaultWeight = reader.ReadFloat();
         const auto readDeltas = [&](std::vector<glm::vec3> &values) {
-            const uint32_t count = reader.ReadCount(MaximumVertices);
+            const uint32_t count = reader.ReadCount(MaximumVertices, 12u);
             values.reserve(count);
             for (uint32_t index = 0; index < count; ++index)
                 values.push_back(ReadVec3(reader));

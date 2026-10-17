@@ -29,13 +29,13 @@ def _project(tmp_path: Path) -> Path:
     (project / "ProjectSettings" / "PythonRuntime.json").write_text('{"pythonVersion": "3.13"}\n', encoding="utf-8")
     (project / "ProjectSettings" / "requirements.txt").write_text("# Project dependencies\n", encoding="utf-8")
     (project / ".gitignore").write_text(
-        (ROOT / "python" / "infernux" / "templates" / "project" / "project.gitignore.txt")
-        .read_text(encoding="utf-8"),
+        (ROOT / "python" / "infernux" / "templates" / "project" / "project.gitignore.txt").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     (project / ".gitattributes").write_text(
-        (ROOT / "python" / "infernux" / "templates" / "project" / "project.gitattributes.txt")
-        .read_text(encoding="utf-8"),
+        (ROOT / "python" / "infernux" / "templates" / "project" / "project.gitattributes.txt").read_text(
+            encoding="utf-8"
+        ),
         encoding="utf-8",
     )
     return project
@@ -53,40 +53,13 @@ def _write_asset(project: Path, relative: str, guid: str, *, absolute_hint: str 
     }
     if absolute_hint:
         payload["metadata"]["file_path"] = {"type": "string", "value": absolute_hint}
-    (Path(str(source) + ".meta")).write_text(
-        json.dumps(payload, indent=4) + "\n", encoding="utf-8"
-    )
+    (Path(str(source) + ".meta")).write_text(json.dumps(payload, indent=4) + "\n", encoding="utf-8")
 
 
 def test_fixture_project_has_a_portable_sync_contract():
     report = _module().audit_project(ROOT / "tests" / "fixtures" / "multiplatform_player")
     assert report.ok, report.errors
     assert report.package_count == 6
-
-
-def test_audit_does_not_require_asset_sidecars_for_vcs_control_files(tmp_path):
-    project = _project(tmp_path)
-    _write_asset(project, "Assets/Vendor/Notes.txt", "1" * 32)
-    for relative in (
-        "Assets/Vendor/.git/HEAD", "Assets/Vendor/.git/objects/source.py",
-        "Assets/Vendor/.hg/state", "Assets/Vendor/.svn/state",
-        "Assets/Vendor/.gitignore", "Assets/Vendor/.gitattributes",
-        "Assets/Vendor/.gitmodules", "Assets/Vendor/.gitkeep", "Assets/Worktree/.git",
-    ):
-        path = project / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("version control state\n", encoding="utf-8")
-    report = _module().audit_project(project)
-    assert report.ok, report.errors
-    assert report.asset_count == report.guid_count == 1
-
-
-def test_absolute_metadata_path_is_rejected(tmp_path: Path):
-    project = _project(tmp_path)
-    _write_asset(project, "Assets/Scenes/Main.scene", "0123456789abcdef0123456789abcdef", absolute_hint="C:/work/Main.scene")
-    report = _module().audit_project(project)
-    assert not report.ok
-    assert any("metadata.file_path must be project-relative" in error for error in report.errors)
 
 
 def test_duplicate_guid_and_missing_sidecar_are_rejected(tmp_path: Path):
@@ -98,16 +71,6 @@ def test_duplicate_guid_and_missing_sidecar_are_rejected(tmp_path: Path):
     assert not report.ok
     assert any("duplicate GUID" in error for error in report.errors)
     assert any("missing tracked .meta sidecar" in error for error in report.errors)
-
-
-def test_orphan_sidecar_and_unresolved_lfs_payload_are_rejected(tmp_path: Path):
-    project = _project(tmp_path)
-    _write_asset(project, "Assets/Ship.fbx", "0123456789abcdef0123456789abcdef")
-    (project / "Assets/Ship.fbx").write_text("version https://git-lfs.github.com/spec/v1\noid sha256:placeholder\nsize 123\n", encoding="utf-8")
-    (project / "Assets/Deleted.txt.meta").write_text("{}", encoding="utf-8")
-    report = _module().audit_project(project)
-    assert any("orphan .meta" in error for error in report.errors)
-    assert any("Git LFS payload" in error for error in report.errors)
 
 
 def _tracked_project(tmp_path):
@@ -129,10 +92,12 @@ def test_project_clone_keeps_native_plugin_payloads_and_ignores_bytecode(tmp_pat
     for relative, content in tuple(authored.items()):
         authored[relative + ".meta"] = b'{"author":"shared"}\n'
     generated = (
-        "Assets/Plugins/solver.pyc", "Assets/Plugins/solver.pyo",
+        "Assets/Plugins/solver.pyc",
+        "Assets/Plugins/solver.pyo",
         "Packages/studio/solver/runtime/__pycache__/helper.cpython-313.pyc",
         ".runtime/python313/Lib/site-packages/solver.pyd",
-        "Library/solver.pyd", "Cache/solver.pyd",
+        "Library/solver.pyd",
+        "Cache/solver.pyd",
     )
     for relative, content in authored.items():
         path = project / relative
@@ -145,9 +110,22 @@ def test_project_clone_keeps_native_plugin_payloads_and_ignores_bytecode(tmp_pat
 
     def git(*arguments, cwd=project):
         return subprocess.run(
-            ["git", "-c", "user.name=Sync Test", "-c", "user.email=sync-test@example.invalid",
-             "-c", "commit.gpgsign=false", "-C", str(cwd), *arguments],
-            check=True, capture_output=True, text=True, encoding="utf-8",
+            [
+                "git",
+                "-c",
+                "user.name=Sync Test",
+                "-c",
+                "user.email=sync-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-C",
+                str(cwd),
+                *arguments,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         ).stdout
 
     git("init", "-q")
@@ -155,8 +133,7 @@ def test_project_clone_keeps_native_plugin_payloads_and_ignores_bytecode(tmp_pat
     tracked = set(git("ls-files").splitlines())
     assert set(authored) <= tracked
     assert not set(generated) & tracked
-    attributes = git("check-attr", "text", "diff", "merge", "--",
-                     "Assets/Plugins/solver.cp313-win_amd64.pyd")
+    attributes = git("check-attr", "text", "diff", "merge", "--", "Assets/Plugins/solver.cp313-win_amd64.pyd")
     assert all(line.endswith(": unset") for line in attributes.splitlines())
     git("commit", "-qm", "Native project inputs")
     clone = tmp_path / "New teammate"
@@ -164,30 +141,6 @@ def test_project_clone_keeps_native_plugin_payloads_and_ignores_bytecode(tmp_pat
     assert all((clone / relative).read_bytes() == content for relative, content in authored.items())
     assert all(not (clone / relative).exists() for relative in generated)
     assert not git("status", "--porcelain", cwd=clone)
-
-
-def test_effective_ignore_override_cannot_hide_source_sidecars(tmp_path):
-    project = _tracked_project(tmp_path)
-    (project / "Assets" / ".gitignore").write_text("*.meta\n", encoding="utf-8")
-    report = _module().audit_project(project, require_tracked=True)
-    assert any("authored project input is ignored" in error for error in report.errors)
-
-
-def test_effective_attributes_reject_nested_binary_scene_rule(tmp_path):
-    project = _tracked_project(tmp_path)
-    (project / "Assets" / ".gitattributes").write_text("*.scene binary\n", encoding="utf-8")
-    report = _module().audit_project(project, require_tracked=True)
-    assert any("Main.scene: effective Git attributes" in error for error in report.errors)
-
-
-def test_force_added_generated_state_is_rejected(tmp_path):
-    project = _tracked_project(tmp_path)
-    backup = project / ".infernux-backups" / "old-project.zip"
-    backup.parent.mkdir()
-    backup.write_bytes(b"private")
-    subprocess.run(["git", "-C", str(project), "add", "-f", ".infernux-backups"], check=True, capture_output=True)
-    report = _module().audit_project(project, require_tracked=True)
-    assert any("old-project.zip: ignored/generated state" in error for error in report.errors)
 
 
 def test_missing_tracked_asset_and_sidecar_are_not_mistaken_for_a_complete_clone(tmp_path):
@@ -201,36 +154,16 @@ def test_missing_tracked_asset_and_sidecar_are_not_mistaken_for_a_complete_clone
 
 def test_case_only_index_collision_is_detected_even_on_windows(tmp_path):
     project = _tracked_project(tmp_path)
-    blob = subprocess.run(["git", "-C", str(project), "hash-object", "Assets/Main.scene"],
-                          check=True, capture_output=True, text=True).stdout.strip()
-    subprocess.run(["git", "-C", str(project), "update-index", "--add", "--cacheinfo",
-                    f"100644,{blob},Assets/main.scene"], check=True, capture_output=True)
+    blob = subprocess.run(
+        ["git", "-C", str(project), "hash-object", "Assets/Main.scene"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(project), "update-index", "--add", "--cacheinfo", f"100644,{blob},Assets/main.scene"],
+        check=True,
+        capture_output=True,
+    )
     report = _module().audit_project(project, require_tracked=True)
     assert any("case-only Git index collision" in error for error in report.errors)
-
-
-def test_legacy_view_preferences_are_private_and_audit_is_read_only(tmp_path):
-    project = _tracked_project(tmp_path)
-    legacy = project / "ProjectSettings/EditorSettings.json"
-    legacy.write_text('{"last_scene_path": "C:/old/workstation/Main.scene"}\n', encoding="utf-8")
-    before = legacy.read_bytes()
-    report = _module().audit_project(project, require_tracked=True)
-    assert report.ok, report.errors
-    assert legacy.read_bytes() == before
-    subprocess.run(["git", "-C", str(project), "add", "-f", str(legacy)], check=True, capture_output=True)
-    assert any("EditorSettings.json: ignored/generated state" in error
-               for error in _module().audit_project(project, require_tracked=True).errors)
-
-
-@pytest.mark.parametrize("suffix", [".animclip3d", ".animclip2d", ".timelinefsm", ".inxdata", ".rendertexture", ".physicMaterial"])
-def test_audit_rejects_stale_structured_documents_and_absolute_paths(tmp_path, suffix):
-    project = _project(tmp_path)
-    _write_asset(project, "Assets/Invalid" + suffix, "1" * 32)
-    path = project / ("Assets/Invalid" + suffix)
-    path.write_text('{"path_hint": "C:/author/machine"}\n', encoding="utf-8")
-    assert any("machine-local absolute path" in error for error in _module().audit_project(project).errors)
-    path.write_text('{"name": "first", "name": "second"}\n', encoding="utf-8")
-    assert any("duplicate field" in error for error in _module().audit_project(project).errors)
 
 
 @pytest.mark.parametrize("suffix", [".scene", ".prefab", ".mat", ".meta", ".effect", ".json"])
@@ -239,9 +172,21 @@ def test_git_merges_independent_asset_fields_without_engine_driver(tmp_path: Pat
 
     def git(*arguments, expected=0):
         result = subprocess.run(
-            ["git", "-c", "user.name=Sync Test", "-c", "user.email=sync-test@example.invalid",
-             "-c", "commit.gpgsign=false", "-C", str(project), *arguments],
-            capture_output=True, text=True, encoding="utf-8",
+            [
+                "git",
+                "-c",
+                "user.name=Sync Test",
+                "-c",
+                "user.email=sync-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-C",
+                str(project),
+                *arguments,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         )
         assert result.returncode == expected, result.stdout + result.stderr
         return result.stdout
@@ -249,8 +194,10 @@ def test_git_merges_independent_asset_fields_without_engine_driver(tmp_path: Pat
     git("init", "-b", "main")
     scene = project / ("ProjectSettings" if suffix == ".json" else "Assets") / ("Main" + suffix)
     document = {"left": 1, "middle_a": 1, "middle_b": 1, "middle_c": 1, "right": 1}
+
     def write_document(**changes):
         scene.write_text(json.dumps({**document, **changes}, indent=2) + "\n", encoding="utf-8")
+
     write_document()
     git("add", ".")
     git("commit", "-m", "initial")

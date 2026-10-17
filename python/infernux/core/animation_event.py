@@ -143,7 +143,9 @@ def dispatch_animation_events(
         return
     try:
         comps = list(game_object.get_py_components() or [])
-    except Exception:
+    except RuntimeError as exc:
+        from infernux.debug import Debug
+        Debug.log_suppressed("AnimationEvent.scene_components", exc)
         return
     if not comps:
         return

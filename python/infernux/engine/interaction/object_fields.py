@@ -140,6 +140,17 @@ class AssetReferenceCatalog:
                 if metadata is not None:
                     name = f"{metadata.get_string('resource_name')} ({os.path.basename(portable.partition('::subtex:')[0])})"
             matches.append((name, path))
+        if descriptor.type_id == "AnimationClip3D":
+            from infernux.core.animation_clip3d import embedded_take_descriptors
+            from infernux.core.asset_types import read_meta_file
+
+            models = {path.partition("::")[0] for _name, path in self._items_for_type("Mesh")}
+            for path in sorted(models):
+                disk_path = os.path.join(project_root, path) if project_root and not os.path.isabs(path) else path
+                model_name = os.path.splitext(os.path.basename(path))[0]
+                for take in embedded_take_descriptors(read_meta_file(disk_path) or {}):
+                    virtual = f"{path}::subanim:{take['id']}"
+                    matches.append((f"{model_name} | {take['name']}", virtual))
         matches.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
         result = tuple(matches)
         self._typed_items[cache_key] = result

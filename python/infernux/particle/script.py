@@ -541,6 +541,10 @@ class ParticleScriptCompiler:
                     emitter = replace(emitter, **updates)
                 if not changed:
                     break
+            else:
+                raise ParticleScriptError(
+                    f"{source_name}: Attribute Cache type inference did not converge"
+                )
             if unresolved:
                 stage, node_uid, detail = unresolved[0]
                 raise ParticleScriptError(

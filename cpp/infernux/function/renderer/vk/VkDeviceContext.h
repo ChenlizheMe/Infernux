@@ -107,6 +107,8 @@ class VkDeviceContext
      * Skipped when shutting down (caller already drained the GPU).
      */
     void WaitIdle() const;
+    /// Shutdown may destroy a lost device, but cannot free work after any other failed idle wait.
+    void WaitIdleForShutdown() const noexcept;
     [[nodiscard]] uint64_t GetWaitIdleCount() const noexcept
     {
         return m_waitIdleCount;
@@ -338,6 +340,7 @@ class VkDeviceContext
     [[nodiscard]] static bool HasStencilComponent(VkFormat format);
 
   private:
+    VkResult WaitIdleResult() const noexcept;
     // ========================================================================
     // Internal Initialization Methods
     // ========================================================================

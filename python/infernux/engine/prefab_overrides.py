@@ -12,7 +12,6 @@ import copy
 from collections import defaultdict
 from dataclasses import dataclass
 import json
-import os
 from typing import List, Optional
 
 from infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPONENT_REF

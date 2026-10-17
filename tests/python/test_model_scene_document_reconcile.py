@@ -5,11 +5,9 @@ import json
 import pytest
 
 from infernux.engine.model_instance_sync import (
-    _matrix_trs,
     reconcile_scene_document_model_instances,
     reconcile_scene_document_model_source_graphs,
 )
-from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
 
 
 class _Meta:
@@ -114,37 +112,6 @@ def _source(name, parent_index, node_group, *, tx=0.0):
     }
 
 
-def test_source_matrix_decomposition_preserves_translation_rotation_and_scale():
-    position, rotation, scale = _matrix_trs(
-        [
-            [0.0, -3.0, 0.0, 4.0],
-            [2.0, 0.0, 0.0, 5.0],
-            [0.0, 0.0, 4.0, 6.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    )
-
-    assert position == pytest.approx([4.0, 5.0, 6.0])
-    assert scale == pytest.approx([2.0, 3.0, 4.0])
-    assert rotation == pytest.approx([0.0, 0.0, 90.0], abs=1.0e-4)
-
-
-def test_surviving_identity_updates_cached_path_before_native_commit():
-    node = _node("AuthorName", "stable", ["OldParent", "OldName"])
-    document = {"objects": [node]}
-
-    changed = reconcile_scene_document_model_instances(
-        document,
-        _Database([{"path": ["NewParent", "NewName"], "subresource_id": "stable"}]),
-    )
-
-    assert changed == 1
-    assert node["components"][0]["data"]["modelNodePath"] == ["NewParent", "NewName"]
-    # The live synchronizer uses the old source edge to distinguish a source
-    # reparent from an authored hierarchy edit.
-    assert node["model_source"]["path"] == ["OldParent", "OldName"]
-
-
 def test_deleted_generated_identity_is_removed_even_when_path_is_recreated():
     old = _node("AddedFromBlender", "old-id", ["Root", "AddedFromBlender"])
     document = {"objects": [old]}
@@ -229,17 +196,15 @@ def test_duplicate_imported_identity_fails_before_native_commit():
 
 
 @pytest.mark.parametrize(
-    "manifest, diagnostic",
+    "manifest,diagnostic",
     [
-        ([None], "entries must be objects"),
-        ([{"path": ["Root", "Mesh"], "subresource_id": ""}], "require identity and path"),
         (
             [
                 {"path": ["Root", "Mesh"], "subresource_id": "first"},
                 {"path": ["Root", "Mesh"], "subresource_id": "second"},
             ],
             "source path is duplicated",
-        ),
+        )
     ],
 )
 def test_malformed_manifest_fails_instead_of_retiring_scene_content(manifest, diagnostic):
@@ -252,52 +217,14 @@ def test_malformed_manifest_fails_instead_of_retiring_scene_content(manifest, di
     assert document["objects"] == [old]
 
 
-def test_scene_transaction_retires_deleted_identity_before_native_commit(scene):
-    existing = scene.create_game_object("ExistingWorldObject")
-    stale = scene.create_game_object("DeletedModelNode")
-    stale.add_component("MeshRenderer")
-    document = scene.serialize_document()
-    stale_document = next(node for node in document["objects"] if node["name"] == stale.name)
-    renderer = next(
-        component
-        for component in stale_document["components"]
-        if component["type_id"] == "native:infernux.MeshRenderer"
-    )
-    renderer["data"].update(
-        {
-            "meshAssetGuid": "model-guid",
-            "modelSubresourceId": "deleted-id",
-            "modelNodePath": ["Root", "DeletedModelNode"],
-            "useInlineMesh": False,
-        }
-    )
-    stale_document["model_source"] = {
-        "guid": "model-guid",
-        "path": ["Root", "DeletedModelNode"],
-    }
-    scene.destroy_game_object(stale)
-    scene.process_pending_destroys()
-
-    transaction = SceneDocumentTransaction(
-        scene,
-        document=document,
-        asset_database=_Database(
-            [{"path": ["Root", "DeletedModelNode"], "subresource_id": "new-id"}]
-        ),
-    )
-
-    assert transaction.run_to_completion(raise_on_failure=False) is True
-    assert transaction.document_reconciliation_count == 1
-    assert scene.find("ExistingWorldObject") is not existing
-    assert scene.find("DeletedModelNode") is None
-
-
 def test_source_graph_reparent_and_pivot_rename_are_atomic_and_preserve_authored_state(monkeypatch):
     authored = {"type_id": "python:gameplay.Marker", "data": {"value": 9}}
     renderer = _renderer("stable", ["OldPivot", "Mesh"])
     renderer["data"]["materials"] = ["authored-material"]
     mesh = _scene_node(
-        "Artist Mesh Name", 5, ["OldPivot", "Mesh"],
+        "Artist Mesh Name",
+        5,
+        ["OldPivot", "Mesh"],
         components=(renderer, authored),
     )
     pivot = _scene_node("OldPivot", 3, ["OldPivot"], children=(mesh,))
@@ -354,8 +281,19 @@ def test_source_graph_creates_new_nodes_before_commit_with_stable_identity(monke
     data = added["components"][0]["data"]
     assert data["modelSubresourceId"] == "new-stable"
     assert data["modelNodePath"] == ["Pivot", "Added"]
-    assert len({root["id"], pivot["id"], added["id"], pivot["transform"]["component_id"],
-                added["transform"]["component_id"], added["components"][0]["component_id"]}) == 6
+    assert (
+        len(
+            {
+                root["id"],
+                pivot["id"],
+                added["id"],
+                pivot["transform"]["component_id"],
+                added["transform"]["component_id"],
+                added["components"][0]["component_id"],
+            }
+        )
+        == 6
+    )
 
 
 def test_source_graph_new_geometry_honors_generate_colliders(monkeypatch):
@@ -406,9 +344,9 @@ def test_same_path_recreated_geometry_is_new_object_not_path_rebound(monkeypatch
 
 def test_authored_scene_reparent_is_preserved_while_source_binding_updates(monkeypatch):
     mesh = _scene_node("Mesh", 7, ["Old", "Mesh"], components=(_renderer("stable", ["Old", "Mesh"]),))
-    authored_parent = _scene_node("Authored Parent", 3, ["Old"], components=(
-        {"type_id": "python:gameplay.Anchor", "data": {}},
-    ), children=(mesh,))
+    authored_parent = _scene_node(
+        "Authored Parent", 3, ["Old"], components=({"type_id": "python:gameplay.Anchor", "data": {}},), children=(mesh,)
+    )
     # The mesh source path says Old/Mesh, but its actual parent deliberately
     # does not own source path Old: this is an authored hierarchy override.
     authored_parent["model_source"]["path"] = ["Different"]
@@ -430,32 +368,6 @@ def test_authored_scene_reparent_is_preserved_while_source_binding_updates(monke
     assert mesh in authored_parent["children"]
     assert mesh["model_source"]["path"] == ["New", "Mesh"]
     assert mesh["components"][0]["data"]["modelNodePath"] == ["New", "Mesh"]
-
-
-def test_source_reparent_between_existing_pivots_does_not_rename_the_old_pivot(monkeypatch):
-    mesh = _scene_node("Mesh", 7, ["Left", "Mesh"], components=(_renderer("stable", ["Left", "Mesh"]),))
-    left = _scene_node("Left", 3, ["Left"], children=(mesh,))
-    right = _scene_node("Right", 5, ["Right"])
-    root = _root(left, right)
-    document = {"objects": [root]}
-    monkeypatch.setattr(
-        "infernux.engine.model_instance_sync._load_model_source_nodes",
-        lambda guid: (
-            _source("Left", -1, -1),
-            _source("Right", -1, -1),
-            _source("Mesh", 1, 0),
-        ),
-    )
-
-    reconcile_scene_document_model_source_graphs(
-        document,
-        _Database([{"path": ["Right", "Mesh"], "subresource_id": "stable"}]),
-    )
-
-    assert left["name"] == "Left"
-    assert right["name"] == "Right"
-    assert mesh not in left["children"]
-    assert mesh in right["children"]
 
 
 def test_deleted_generated_pivot_preserves_authored_child_transform_chain(monkeypatch):

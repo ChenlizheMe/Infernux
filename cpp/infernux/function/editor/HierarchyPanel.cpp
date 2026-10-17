@@ -835,8 +835,7 @@ void HierarchyPanel::BeginRename(uint64_t objId)
     if (!obj)
         return;
     m_renameId = objId;
-    std::strncpy(m_renameBuf, obj->GetName().c_str(), sizeof(m_renameBuf) - 1);
-    m_renameBuf[sizeof(m_renameBuf) - 1] = '\0';
+    m_renameBuf = obj->GetName();
     m_renameFocus = true;
     m_renameSkipDeactivateFrames = 2;
     BeginTransientInteraction("rename", "inline_rename", 100, [this]() {
@@ -870,7 +869,7 @@ void HierarchyPanel::CommitRename()
         }
     }
     m_renameId = 0;
-    m_renameBuf[0] = '\0';
+    m_renameBuf.clear();
     m_renameFocus = false;
     m_renameSkipDeactivateFrames = 0;
     EndTransientInteraction("rename");
@@ -879,7 +878,7 @@ void HierarchyPanel::CommitRename()
 void HierarchyPanel::CancelRename()
 {
     m_renameId = 0;
-    m_renameBuf[0] = '\0';
+    m_renameBuf.clear();
     m_renameFocus = false;
     m_renameSkipDeactivateFrames = 0;
     EndTransientInteraction("rename");
@@ -990,8 +989,7 @@ void HierarchyPanel::RenderRenameInput(InxGUIContext *ctx, GameObject *obj)
 
     float availW = ctx->GetContentRegionAvailWidth();
     ctx->SetNextItemWidth(availW);
-    const bool submitted =
-        ctx->InputTextWithHint("##rename", "", m_renameBuf, sizeof(m_renameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool submitted = ctx->InputTextWithHint("##rename", "", m_renameBuf, ImGuiInputTextFlags_EnterReturnsTrue);
     ctx->RecordSemanticItem("hierarchy_rename", obj->GetName(), true,
                             "hierarchy.object." + std::to_string(obj->GetID()) + ".rename", std::nullopt, std::nullopt,
                             std::string(m_renameBuf));
@@ -1436,13 +1434,11 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         ctx->SetKeyboardFocusHere();
         m_focusSearchNextFrame = false;
     }
-    std::strncpy(m_searchBuf, m_search.Query().c_str(), sizeof(m_searchBuf) - 1);
-    m_searchBuf[sizeof(m_searchBuf) - 1] = '\0';
-    ctx->InputTextWithHint("##HierarchySearch", Tr("hierarchy.search_placeholder").c_str(), m_searchBuf,
-                           sizeof(m_searchBuf), 0);
+    m_searchBuf = m_search.Query();
+    ctx->InputTextWithHint("##HierarchySearch", Tr("hierarchy.search_placeholder").c_str(), m_searchBuf);
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("hierarchy_search", Tr("hierarchy.search_placeholder"), true, "hierarchy.search");
-    SetSearchQuery(m_searchBuf);
+    SetSearchQuery(m_searchBuf.c_str());
 
     ctx->Separator();
     m_subSearch += msSince(searchStart);

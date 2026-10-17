@@ -43,14 +43,6 @@ class CommandPaletteService:
         focus: FocusService,
         modals: ModalService,
     ) -> None:
-        if not isinstance(commands, EditorCommandRegistry):
-            raise TypeError("command palette requires EditorCommandRegistry")
-        if not isinstance(shortcuts, ShortcutRouter):
-            raise TypeError("command palette requires ShortcutRouter")
-        if not isinstance(focus, FocusService):
-            raise TypeError("command palette requires FocusService")
-        if not isinstance(modals, ModalService):
-            raise TypeError("command palette requires ModalService")
         self._commands = commands
         self._shortcuts = shortcuts
         self._focus = focus
@@ -195,7 +187,7 @@ class CommandPaletteService:
             result.append(
                 CommandPaletteEntry(
                     command.command_id,
-                    command.display_name,
+                    command.localized_name,
                     command.category,
                     self._shortcut_label(command.command_id),
                     enabled,
@@ -295,6 +287,7 @@ class CommandPaletteService:
             " ".join(
                 (
                     command.display_name,
+                    command.localized_name,
                     command.category,
                     command.command_id,
                     *command.palette_keywords,

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from i18n import tr
-from view.forge import SegmentMeter, StatusLed, fmt_bytes, fmt_eta, fmt_rate, mono_label, set_kind
+from view.forge import SegmentMeter, StatusLed, fmt_bytes, fmt_eta, fmt_rate, mono_label
 
 
 STATE_TEXT = {

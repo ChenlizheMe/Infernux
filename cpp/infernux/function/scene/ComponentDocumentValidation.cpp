@@ -1,6 +1,7 @@
 #include "ComponentDocumentValidation.h"
 
 #include <cmath>
+#include <core/reflection/SemanticTypeRegistry.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -39,7 +40,8 @@ void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_v
     RequireInteger(document, "execution_order", expectedType);
 
     if (const auto componentId = document.find("component_id"); componentId != document.end()) {
-        if (!componentId->is_number_unsigned() || componentId->get<uint64_t>() == 0)
+        if (!componentId->is_number_unsigned() || componentId->get<uint64_t>() == 0 ||
+            componentId->get<uint64_t>() == std::numeric_limits<uint64_t>::max())
             throw std::invalid_argument(FieldPath(expectedType, "component_id") +
                                         " must be a non-zero unsigned integer");
     }
@@ -86,11 +88,12 @@ int RequireInteger(const nlohmann::json &document, std::string_view field, std::
     const auto &value = RequireField(document, field, componentType);
     if (!value.is_number_integer())
         throw std::invalid_argument(FieldPath(componentType, field) + " must be an integer");
-    try {
-        return value.get<int>();
-    } catch (const std::exception &) {
+    if ((value.is_number_unsigned() &&
+         value.get<uint64_t>() > static_cast<uint64_t>(std::numeric_limits<int>::max())) ||
+        (!value.is_number_unsigned() && (value.get<int64_t>() < std::numeric_limits<int>::min() ||
+                                         value.get<int64_t>() > std::numeric_limits<int>::max())))
         throw std::invalid_argument(FieldPath(componentType, field) + " is outside the supported integer range");
-    }
+    return value.get<int>();
 }
 
 uint64_t RequireUnsignedInteger(const nlohmann::json &document, std::string_view field, std::string_view componentType)
@@ -130,6 +133,38 @@ void RequireFiniteVector(const nlohmann::json &document, std::string_view field,
         const double number = value[index].get<double>();
         if (!std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max())
             throw std::invalid_argument(FieldPath(componentType, field) + " must contain finite floats");
+    }
+}
+
+void ValidateDeclaredFields(const nlohmann::json &document, std::string_view componentType,
+                            const SemanticTypeDescriptor &declaration)
+{
+    for (const auto &field : declaration.fields) {
+        const auto &attributes = field.attributes;
+        if (!attributes.value("serialized", false))
+            continue;
+        const auto &stored = attributes.at("serialized_name").get_ref<const std::string &>();
+        if (!document.contains(stored) && !attributes.value("document_required", true))
+            continue;
+        const auto kind = attributes.value("document_type", field.valueType);
+        if (kind == "FieldType.BOOL")
+            RequireBoolean(document, stored, componentType);
+        else if (kind == "FieldType.INT" || kind == "FieldType.ENUM")
+            RequireInteger(document, stored, componentType);
+        else if (kind == "FieldType.UINT")
+            RequireUnsignedInteger(document, stored, componentType);
+        else if (kind == "FieldType.FLOAT")
+            RequireFiniteFloat(document, stored, componentType);
+        else if (kind == "FieldType.VEC2")
+            RequireFiniteVector(document, stored, 2, componentType);
+        else if (kind == "FieldType.VEC3")
+            RequireFiniteVector(document, stored, 3, componentType);
+        else if (kind == "FieldType.VEC4" || kind == "FieldType.COLOR")
+            RequireFiniteVector(document, stored, 4, componentType);
+        else if (kind == "FieldType.STRING" || kind == "FieldType.ASSET")
+            RequireString(document, stored, componentType);
+        else
+            throw std::logic_error("Unsupported native document field type: " + kind);
     }
 }
 

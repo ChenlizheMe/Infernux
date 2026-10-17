@@ -20,11 +20,10 @@ import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Optional
+from typing import Any
 
 # Re-export MaterialRef from core so existing callers still work.
 from infernux.core.asset_ref import MaterialRef  # noqa: F401
-from infernux.debug import Debug
 
 _log = logging.getLogger("infernux.ref")
 _retiring_worlds = ContextVar('infernux_retiring_reference_worlds', default=frozenset())
@@ -481,14 +480,6 @@ def _resolve_component_on_game_object(game_object, component_type: str = "", com
             return resolved
 
     return None
-
-
-def _infer_component_type_on_game_object(game_object) -> str:
-    """Infer a default component type name for a generic ComponentRef."""
-    resolved = _resolve_component_on_game_object(game_object, "")
-    if resolved is None:
-        return ""
-    return getattr(resolved, "type_name", type(resolved).__name__) or ""
 
 
 def _get_component_handle(component):

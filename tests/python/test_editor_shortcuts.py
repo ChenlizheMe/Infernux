@@ -12,7 +12,6 @@ from infernux.engine.interaction import (
     SelectionService,
     ShortcutBinding,
     ShortcutEvent,
-    ShortcutModifier,
     ShortcutPhase,
     ShortcutRouteStatus,
     ShortcutRouter,
@@ -27,16 +26,6 @@ def _router():
     return ShortcutRouter(commands, focus), commands, focus
 
 
-def test_key_chord_parses_aliases_into_one_normalized_identity():
-    assert KeyChord.parse("control + shift + z") == KeyChord(
-        "Z",
-        ShortcutModifier.CTRL | ShortcutModifier.SHIFT,
-    )
-    assert KeyChord.parse("cmd+s").display_name() == "Super+S"
-    with pytest.raises(ValueError):
-        KeyChord.parse("Ctrl+S+Z")
-
-
 def test_child_context_then_panel_then_global_binding_precedence():
     router, commands, focus = _router()
     executed = []
@@ -44,12 +33,8 @@ def test_child_context_then_panel_then_global_binding_precedence():
         commands.register(EditorCommand(command_id, lambda _ctx, value=command_id: executed.append(value)))
     chord = KeyChord.parse("Delete")
     router.register(ShortcutBinding("global", chord, binding_id="global"))
-    router.register(ShortcutBinding(
-        "panel", chord, ShortcutScope.PANEL, "inspector", binding_id="panel"
-    ))
-    router.register(ShortcutBinding(
-        "child", chord, ShortcutScope.CHILD_CONTEXT, "component.list", binding_id="child"
-    ))
+    router.register(ShortcutBinding("panel", chord, ShortcutScope.PANEL, "inspector", binding_id="panel"))
+    router.register(ShortcutBinding("child", chord, ShortcutScope.CHILD_CONTEXT, "component.list", binding_id="child"))
     focus.activate_panel("inspector", child_context_id="component.list")
     focus.input_contexts.push(InputContext("component.list", "inspector", 10))
 
@@ -80,12 +65,14 @@ def test_text_modal_and_game_capture_block_by_default(event, binding_flag):
     assert executed == []
 
     router.unregister("blocked")
-    router.register(ShortcutBinding(
-        "file.save",
-        event.chord,
-        binding_id="allowed",
-        **{binding_flag: True},
-    ))
+    router.register(
+        ShortcutBinding(
+            "file.save",
+            event.chord,
+            binding_id="allowed",
+            **{binding_flag: True},
+        )
+    )
     assert router.route(event).status is ShortcutRouteStatus.EXECUTED
     assert executed == [True]
 

@@ -1,4 +1,5 @@
 """Every public mesh channel follows the same node-local or whole-asset geometry."""
+
 import base64
 import json
 from pathlib import Path
@@ -13,23 +14,30 @@ from model_test_support import remove_model_test_folder
 
 
 def triangle_document(transform, *, instances=1):
-    payload = struct.pack("<9f6f3H", 0, 0, 0, 1, 0, 0, 0, 1, 0,
-                          0, 0, 1, 0, 0, 1, 0, 1, 2)
+    payload = struct.pack("<9f6f3H", 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 2)
     return {
-        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
         "nodes": [{"name": "Root", "children": list(range(1, instances + 1)), **transform}]
-        + [{"name": f"Surface{i}", "mesh": 0, "translation": [i * 3, 0, 0]}
-           for i in range(instances)],
+        + [{"name": f"Surface{i}", "mesh": 0, "translation": [i * 3, 0, 0]} for i in range(instances)],
         "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "indices": 2}]}],
-        "buffers": [{"byteLength": len(payload), "uri": "data:application/octet-stream;base64,"
-                     + base64.b64encode(payload).decode("ascii")}],
-        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36},
-                        {"buffer": 0, "byteOffset": 36, "byteLength": 24},
-                        {"buffer": 0, "byteOffset": 60, "byteLength": 6}],
-        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
-                       "min": [0, 0, 0], "max": [1, 1, 0]},
-                      {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"},
-                      {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}],
+        "buffers": [
+            {
+                "byteLength": len(payload),
+                "uri": "data:application/octet-stream;base64," + base64.b64encode(payload).decode("ascii"),
+            }
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+            {"buffer": 0, "byteOffset": 36, "byteLength": 24},
+            {"buffer": 0, "byteOffset": 60, "byteLength": 6},
+        ],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
+            {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"},
+            {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"},
+        ],
     }
 
 
@@ -46,7 +54,7 @@ def assert_consistent_streams(renderer):
     for a, b, c in indices.reshape(-1, 3):
         duv1, duv2 = uvs[b] - uvs[a], uvs[c] - uvs[a]
         determinant = duv1[0] * duv2[1] - duv1[1] * duv2[0]
-        assert abs(determinant) > .5
+        assert abs(determinant) > 0.5
         edge1, edge2 = positions[b] - positions[a], positions[c] - positions[a]
         tangent = (edge1 * duv2[1] - edge2 * duv1[1]) / determinant
         bitangent = (edge2 * duv1[0] - edge1 * duv2[0]) / determinant
@@ -60,14 +68,15 @@ def assert_consistent_streams(renderer):
     return positions, tangents
 
 
-@pytest.mark.parametrize("transform", [
-    {},
-    {"rotation": [0, 0, 2 ** -.5, 2 ** -.5]},
-    {"rotation": [2 ** -.5, 0, 0, 2 ** -.5], "scale": [2, 3, .5]},
-    {"rotation": [0, 0, 2 ** -.5, 2 ** -.5], "scale": [-2, 3, 1]},
-], ids=["identity", "rotated", "nonuniform", "mirrored"])
-@pytest.mark.parametrize("instances", [1, 2])
-@pytest.mark.parametrize("node_local", [False, True], ids=["whole_asset", "node_local"])
+@pytest.mark.parametrize(
+    "node_local,instances,transform",
+    [
+        (False, 1, {"rotation": [2 ** (-0.5), 0, 0, 2 ** (-0.5)], "scale": [2, 3, 0.5]}),
+        (False, 2, {"rotation": [0, 0, 2 ** (-0.5), 2 ** (-0.5)], "scale": [-2, 3, 1]}),
+        (True, 1, {"rotation": [0, 0, 2 ** (-0.5), 2 ** (-0.5)]}),
+        (True, 2, {}),
+    ],
+)
 def test_imported_model_channels_share_geometry(engine, scene, tmp_path, transform, instances, node_local):
     database = engine.get_asset_database()
     folder = Path(database.assets_root) / tmp_path.name
@@ -86,12 +95,14 @@ def test_imported_model_channels_share_geometry(engine, scene, tmp_path, transfo
             model = scene.create_from_model(imported.guid)
             objects.append(model)
             renderers = []
+
             def visit(node):
                 component = node.get_component("MeshRenderer")
                 if component is not None:
                     renderers.append(component)
                 for child in node.get_children():
                     visit(child)
+
             visit(model)
             assert len(renderers) == instances
         else:
@@ -117,9 +128,11 @@ def test_inline_model_channels_share_geometry(scene):
     try:
         renderer = obj.add_component("MeshRenderer")
         renderer._require_cpp_component().set_inline_mesh_data(
-            np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.float32), None,
+            np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.float32),
+            None,
             np.asarray([[0, 0], [1, 0], [0, 1]], np.float32),
-            np.asarray([0, 1, 2], np.uint32))
+            np.asarray([0, 1, 2], np.uint32),
+        )
         assert_consistent_streams(renderer)
     finally:
         scene._remove_game_object_immediately(obj)

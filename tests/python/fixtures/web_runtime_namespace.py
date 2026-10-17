@@ -53,6 +53,15 @@ elif name in ('buffer', 'Buffer'):
 elif name in ('warmup', 'JIT_AVAILABLE'):
     value = getattr(package, name)
     assert value is getattr(importlib.import_module('infernux.jit'), name)
+elif name == 'components':
+    from infernux.components.registry import get_type_by_identity
+
+    for symbol in ('SkeletalAnimator', 'SpriteAnimator', 'TimelineAction', 'RenderStack'):
+        component = getattr(package, symbol)
+        assert get_type_by_identity(symbol, component._get_intrinsic_script_guid(),
+                                    component._get_type_guid()) is component
+    for symbol in ('SpriteRenderer', 'HingeJoint', 'SliderJoint', 'UICanvas', 'UIImage', 'UIButton'):
+        assert getattr(package, symbol) is not None
 else:
     try:
         getattr(package, 'not_an_api')

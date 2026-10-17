@@ -1,4 +1,4 @@
-"""R3-B4 descriptor retirement and owner transaction tests."""
+"""Descriptor retirement and owner transaction semantics."""
 
 from __future__ import annotations
 
@@ -202,6 +202,7 @@ def test_script_move_publishes_new_type_and_retires_old_type_as_one_epoch():
 
 
 def test_script_delete_transaction_retires_only_at_commit():
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
     from infernux.engine.play_mode import ScriptDeleteBatch
 
     class _Manager:
@@ -217,6 +218,15 @@ def test_script_delete_transaction_retires_only_at_commit():
         retired_types=(_RetirementProbe,),
     )
     try:
+        scheduler = RuntimeExecutionScheduler()
+        frame = scheduler.begin_frame()
+        try:
+            with pytest.raises(RuntimeError, match="safe point"):
+                batch.commit()
+            assert not batch.committed and not batch.rolled_back
+            assert current_runtime_epoch() is before
+        finally:
+            frame.close()
         batch.commit()
         assert current_runtime_epoch().descriptor_for(_RetirementProbe) is None
         batch.rollback()

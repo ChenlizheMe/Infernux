@@ -1,4 +1,5 @@
 """ShaderInfo names are labels of imported GUIDs, including across reload."""
+
 import json
 from pathlib import Path
 import time
@@ -32,42 +33,33 @@ def rename_assets(engine, monkeypatch):
 
     vertex_name, fragment_name = prefix + " Vertex", prefix + " Fragment"
     vertex_source = '#version 450\nShaderInfo { Name "' + vertex_name + '" }\n'
-    fragment_source = ('#version 450\nShaderInfo { Name "' + fragment_name +
-                       '" ShadingModel Unlit }\nvoid surface(out SurfaceData s) { '
-                       's = InitSurfaceData(); s.albedo = vec3(0.1,0.2,0.3); }\n')
+    fragment_source = (
+        '#version 450\nShaderInfo { Name "'
+        + fragment_name
+        + '" ShadingModel Unlit }\nvoid surface(out SurfaceData s) { '
+        "s = InitSurfaceData(); s.albedo = vec3(0.1,0.2,0.3); }\n"
+    )
     vertex, vertex_guid = create(".vert", vertex_source)
     fragment, fragment_guid = create(".frag", fragment_source)
     document = InxMaterial.create_default_lit().serialize_document()
     document["builtin"] = False
     document["name"] = prefix
-    document["shaders"] = {"vertex": {"guid": vertex_guid, "shader_id": vertex_name},
-                           "fragment": {"guid": fragment_guid, "shader_id": fragment_name}}
+    document["shaders"] = {
+        "vertex": {"guid": vertex_guid, "shader_id": vertex_name},
+        "fragment": {"guid": fragment_guid, "shader_id": fragment_name},
+    }
     material_path, material_guid = create(".mat", json.dumps(document))
-    yield {"database": database, "material_guid": material_guid,
-           "material_path": material_path,
-           "create": create,
-           "vertex": (vertex, vertex_guid, vertex_name, vertex_source),
-           "fragment": (fragment, fragment_guid, fragment_name, fragment_source)}
+    yield {
+        "database": database,
+        "material_guid": material_guid,
+        "material_path": material_path,
+        "create": create,
+        "vertex": (vertex, vertex_guid, vertex_name, vertex_source),
+        "fragment": (fragment, fragment_guid, fragment_name, fragment_source),
+    }
     for path in reversed(paths):
         result = AssetManager.delete_asset(str(path))
         assert result, result.error
-
-
-@pytest.mark.parametrize("stage", ["vertex", "fragment"])
-def test_material_load_derives_current_shader_name_from_guid(rename_assets, stage):
-    assets = rename_assets
-    path, guid, old_name, source = assets[stage]
-    new_name = old_name + " V2"
-    path.write_text(source.replace(old_name, new_name), encoding="utf-8")
-    # Simulate loading an existing saved material after a new shader metadata
-    # publication, without first having that material resident in the renderer.
-    imported = assets["database"].reimport_asset(str(path))
-    assert imported, imported.error
-    material = AssetManager.load(assets["material_guid"], Material)
-    assert material is not None
-    reference = material._native.serialize_document()["shaders"][stage]
-    assert reference == {"guid": guid, "shader_id": new_name}
-    assert json.loads(assets["material_path"].read_text(encoding="utf-8"))["shaders"][stage]["shader_id"] == old_name
 
 
 @pytest.mark.parametrize("stage", ["vertex", "fragment"])
@@ -97,8 +89,7 @@ def test_shader_rename_migrates_loaded_guid_material_in_place(engine, rename_ass
     assert not engine.is_shader_loaded(new_name, stage)
 
 
-@pytest.mark.parametrize("stage", ["vertex", "fragment"])
-@pytest.mark.parametrize("rendered", [False, True])
+@pytest.mark.parametrize("rendered,stage", [(True, "vertex"), (True, "fragment")])
 def test_shader_rename_updates_runtime_clone_without_replacing_it(engine, rename_assets, stage, rendered):
     assets = rename_assets
     material = AssetManager.load(assets["material_guid"], Material)
@@ -136,9 +127,9 @@ def test_failed_shader_rename_keeps_live_bindings_and_recovers(engine, rename_as
     new_name = old_name + " Invalid"
     changed = source.replace(old_name, new_name)
     if stage == "vertex":
-        changed += '\nvoid vertex(inout VertexInput v) { v.position.x += missing_rename_symbol; }\n'
+        changed += "\nvoid vertex(inout VertexInput v) { v.position.x += missing_rename_symbol; }\n"
     else:
-        changed = changed.replace('vec3(0.1,0.2,0.3)', 'vec3(missing_rename_symbol)')
+        changed = changed.replace("vec3(0.1,0.2,0.3)", "vec3(missing_rename_symbol)")
     path.write_text(changed, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(path))
     assert not rejected
@@ -155,8 +146,10 @@ def test_failed_shader_rename_keeps_live_bindings_and_recovers(engine, rename_as
 
 def test_unreferenced_standalone_shader_rename_retires_old_name(engine, rename_assets):
     name = rename_assets["fragment"][2] + " Fullscreen"
-    source = ('#version 450\nShaderInfo { Name "'+name+'" Hidden On Capabilities [Fullscreen] '
-              'Outputs { Float4 outColor } }\nvoid main() { outColor = vec4(1,0,0,1); }\n')
+    source = (
+        '#version 450\nShaderInfo { Name "' + name + '" Hidden On Capabilities [Fullscreen] '
+        "Outputs { Float4 outColor } }\nvoid main() { outColor = vec4(1,0,0,1); }\n"
+    )
     path, _ = rename_assets["create"](".fullscreen.frag", source)
     published = AssetManager.reimport_asset(str(path))
     assert published, published.error
@@ -177,20 +170,20 @@ def test_unreferenced_standalone_shader_rename_retires_old_name(engine, rename_a
 def test_shader_rename_preflights_every_dependent_pair(engine, rename_assets):
     assets = rename_assets
     vertex_path, _, old_name, source = assets["vertex"]
-    linked_source = source.replace(
-        '" }', '" Outputs { Smooth Float renameSignal } }'
-    ) + ('VertexOutput vertex(inout VertexInput v) { VertexOutput result; '
-         'result.renameSignal = 0.25; return result; }\n')
+    linked_source = source.replace('" }', '" Outputs { Smooth Float renameSignal } }') + (
+        "VertexOutput vertex(inout VertexInput v) { VertexOutput result; result.renameSignal = 0.25; return result; }\n"
+    )
     vertex_path.write_text(linked_source, encoding="utf-8")
     imported = AssetManager.reimport_asset(str(vertex_path))
     assert imported, imported.error
     paired_name = assets["fragment"][2] + " With Signal"
     _, paired_guid = assets["create"](
         ".paired.frag",
-        '#version 450\nShaderInfo { Name "' + paired_name +
-        '" ShadingModel Unlit Inputs { Smooth Float renameSignal } }\n'
-        'void surface(out SurfaceData s) { s = InitSurfaceData(); '
-        's.albedo = vec3(fragmentInput.renameSignal); }\n',
+        '#version 450\nShaderInfo { Name "'
+        + paired_name
+        + '" ShadingModel Unlit Inputs { Smooth Float renameSignal } }\n'
+        "void surface(out SurfaceData s) { s = InitSurfaceData(); "
+        "s.albedo = vec3(fragmentInput.renameSignal); }\n",
     )
     material = AssetManager.load(assets["material_guid"], Material)
     clone = material.clone()

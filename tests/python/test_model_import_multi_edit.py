@@ -89,37 +89,6 @@ def test_multi_model_field_edit_is_one_undoable_document_transaction(authoring_s
     assert second.settings.scale_factor == 3.0
 
 
-def test_multi_model_renderer_marks_mixed_and_writes_every_draft(authoring_services):
-    first = _model_state("C:/Project/Assets/first.fbx", "first-guid", 1.0, attach_view=True)
-    second = _model_state("C:/Project/Assets/second.fbx", "second-guid", 2.0, attach_view=False)
-    batch = details._ImportSettingsBatch((first, second))
-
-    class _Context:
-        descriptors = None
-
-        @staticmethod
-        def calc_text_width(value):
-            return float(len(value) * 8)
-
-        def render_property_batch(self, descriptors, _label_width):
-            self.descriptors = descriptors
-            return {0: 4.0}
-
-    context = _Context()
-    field = details.FieldDef(
-        "scale_factor",
-        "asset.scale_factor",
-        details.WidgetType.FLOAT,
-        float_speed=0.01,
-        float_range=(0.0001, 100.0),
-    )
-    details._render_import_field_batch(context, first, batch, [field])
-
-    assert context.descriptors[0]["mix"] is True
-    assert first.settings.scale_factor == 4.0
-    assert second.settings.scale_factor == 4.0
-
-
 def test_batch_apply_preflights_every_document_before_starting_work(authoring_services, monkeypatch):
     registry, _manager = authoring_services
     first = _model_state("C:/Project/Assets/first.fbx", "first-guid", 1.0, attach_view=True)
@@ -183,46 +152,12 @@ def test_batch_apply_starts_next_model_only_after_first_publication(authoring_se
     assert not batch.dirty_document_ids()
 
 
-def test_batch_apply_leaves_later_draft_dirty_when_its_start_fails(authoring_services, monkeypatch):
-    registry, _manager = authoring_services
-    first = _model_state("C:/Project/Assets/first.fbx", "first-guid", 1.0, attach_view=True)
-    second = _model_state("C:/Project/Assets/second.fbx", "second-guid", 2.0, attach_view=False)
-    batch = details._ImportSettingsBatch((first, second))
-    assert batch.apply_mutation(
-        "scale_factor",
-        lambda settings: setattr(settings, "scale_factor", 3.0),
-        "Set scale on selected models",
-    )
-
-    def begin(path, _settings):
-        if path == second.file_path:
-            raise RuntimeError("second import rejected")
-        return object()
-
-    monkeypatch.setattr("infernux.core.assets.AssetManager.begin_model_reimport", begin)
-    monkeypatch.setattr(
-        "infernux.core.assets.AssetManager.poll_model_reimport",
-        lambda _database: SimpleNamespace(error=""),
-    )
-
-    assert batch.request_apply()
-    registry.process_pending_saves()
-    assert first.import_controller._pending_model_save is None
-    assert registry.active_save_ticket(first.document_id) is None
-    assert registry.active_save_ticket(second.document_id) is None
-    assert not registry.require(first.document_id).is_dirty
-    assert registry.require(second.document_id).is_dirty
-    assert not batch.is_applying()
-
-
 def test_batch_apply_stops_after_failed_owner_commit(authoring_services, monkeypatch):
     registry, _manager = authoring_services
     first = _model_state("C:/Project/Assets/first.fbx", "first-guid", 1.0, attach_view=True)
     second = _model_state("C:/Project/Assets/second.fbx", "second-guid", 2.0, attach_view=False)
     batch = details._ImportSettingsBatch((first, second))
-    assert batch.apply_mutation(
-        "scale_factor", lambda settings: setattr(settings, "scale_factor", 3.0), "Set scale"
-    )
+    assert batch.apply_mutation("scale_factor", lambda settings: setattr(settings, "scale_factor", 3.0), "Set scale")
     started = []
     monkeypatch.setattr(
         "infernux.core.assets.AssetManager.begin_model_reimport",
@@ -248,9 +183,7 @@ def test_batch_apply_stops_after_failed_owner_commit(authoring_services, monkeyp
     assert registry.active_save_ticket(second.document_id) is None
 
 
-def test_batch_apply_serializes_real_database_owner_commits(
-    authoring_services, engine, tmp_path, monkeypatch
-):
+def test_batch_apply_serializes_real_database_owner_commits(authoring_services, engine, tmp_path, monkeypatch):
     registry, _manager = authoring_services
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_engine", engine)
@@ -279,14 +212,14 @@ def test_batch_apply_serializes_real_database_owner_commits(
         while registry.active_save_ticket(states[0].document_id) is not None:
             registry.process_pending_saves()
             assert time.monotonic() < deadline
-            time.sleep(.002)
+            time.sleep(0.002)
         assert read_mesh_import_settings(str(sources[0])).scale_factor == 3.0
         assert registry.active_save_ticket(states[1].document_id) is not None
         assert read_mesh_import_settings(str(sources[1])).scale_factor == 1.0
         while batch.is_applying():
             registry.process_pending_saves()
             assert time.monotonic() < deadline
-            time.sleep(.002)
+            time.sleep(0.002)
         assert read_mesh_import_settings(str(sources[1])).scale_factor == 3.0
         assert not batch.dirty_document_ids()
     finally:

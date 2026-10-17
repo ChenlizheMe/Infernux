@@ -211,16 +211,26 @@ void AssetDependencyGraph::RekeyRuntimeDependencies(const std::string &oldOwner,
     if (oldOwner == newOwner)
         return;
     std::lock_guard<std::mutex> lock(m_runtimeMutex);
-    auto source = m_runtimeDependencies.extract(oldOwner);
-    if (source.empty())
+    const auto source = m_runtimeDependencies.find(oldOwner);
+    if (source == m_runtimeDependencies.end())
         return;
-    auto &destination = m_runtimeDependencies[newOwner];
-    for (const auto &asset : source.mapped()) {
+    auto destination =
+        m_runtimeDependencies.count(newOwner) ? m_runtimeDependencies.at(newOwner) : std::unordered_set<std::string>{};
+    std::vector<std::pair<std::unordered_set<std::string> *, std::unordered_set<std::string>>> reverseUpdates;
+    reverseUpdates.reserve(source->second.size());
+    for (const auto &asset : source->second) {
         destination.insert(asset);
         auto &dependents = m_runtimeDependents.at(asset);
-        dependents.erase(oldOwner);
-        dependents.insert(newOwner);
+        auto updated = dependents;
+        updated.erase(oldOwner);
+        updated.insert(newOwner);
+        reverseUpdates.emplace_back(&dependents, std::move(updated));
     }
+    // All allocation and invariant checks precede the mutation of either index.
+    m_runtimeDependencies.insert_or_assign(newOwner, std::move(destination));
+    for (auto &update : reverseUpdates)
+        update.first->swap(update.second);
+    m_runtimeDependencies.erase(oldOwner);
 }
 
 void AssetDependencyGraph::RemoveAsset(const std::string &guid)

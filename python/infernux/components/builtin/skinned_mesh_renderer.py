@@ -7,7 +7,11 @@ model metadata and the active take selection used by SkeletalAnimator.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Sequence, Tuple
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
 
 from infernux.components.builtin.mesh_renderer import MeshRenderer
 from infernux.components.builtin_component import CppProperty
@@ -28,12 +32,7 @@ class SkinnedMeshRenderer(MeshRenderer):
         visible_when=lambda _c: False,
         tooltip="GUID of the source animated model asset",
     )
-    active_take_name = CppProperty(
-        "active_take_name",
-        FieldType.STRING,
-        default="",
-        tooltip="Currently selected animation take name",
-    )
+    active_take_name = CppProperty.from_native("SkinnedMeshRenderer", "active_take_name")
     animation_source_guid = CppProperty(
         "animation_source_guid",
         FieldType.STRING,
@@ -53,6 +52,30 @@ class SkinnedMeshRenderer(MeshRenderer):
         cpp = self._cpp_component
         if cpp is not None and hasattr(cpp, "set_source_model_guid"):
             cpp.set_source_model_guid(guid or "")
+
+    def get_skeleton_node_names(self) -> List[str]:
+        """Return all unique skeleton node names, including unweighted attachment nodes."""
+        return self._require_cpp_component().get_skeleton_node_names()
+
+    def get_skeleton_node_world_matrices(self, node_names: Sequence[str]) -> NDArray[np.float32]:
+        """Read the latest submitted pose as ``float32[N, 4, 4]`` matrices.
+
+        Matrices use ``[node, row, column]`` and transform bone-local points in
+        engine units into rendered world space, including import scale, the
+        owner's Transform and a selected submesh's pivot. Read after animation
+        updates to consume this frame's pose. Missing node names raise ValueError.
+        """
+        return self._require_cpp_component().get_skeleton_node_world_matrices(node_names)
+
+    def submit_pose_stack(self, layers: Sequence[dict]) -> None:
+        """Sample and combine weighted animation layers with exact bone masks.
+
+        Each layer provides take_name, time, weight, loop and optional
+        source_model_guid, bone_mask and additive. blend_group normalizes member
+        weights per bone before group_weight applies a fade. Call after animator updates
+        when composing their poses with independent locomotion or aiming.
+        """
+        self._require_cpp_component().submit_pose_stack(list(layers))
 
     def get_root_motion_delta(
         self, take_name: str, from_seconds: float, to_seconds: float,

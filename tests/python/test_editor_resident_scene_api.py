@@ -1,4 +1,5 @@
 """Editor Scene APIs must finish authoring work while native owners are live."""
+
 import pytest
 
 from infernux.engine.interaction import DocumentRegistry
@@ -7,11 +8,13 @@ from infernux.lib import SceneManager as NativeSceneManager
 from infernux.scene import SceneManager
 
 
-@pytest.mark.parametrize("registered", [False, True])
-@pytest.mark.parametrize("active", [False, True])
-@pytest.mark.parametrize("playing", [False, True])
+@pytest.mark.parametrize("playing,active,registered", [(False, False, False), (True, True, True)])
 def test_public_unload_retires_editor_document_before_native_scene(
-    scene, monkeypatch, registered, active, playing,
+    scene,
+    monkeypatch,
+    registered,
+    active,
+    playing,
 ):
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)

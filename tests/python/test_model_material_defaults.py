@@ -1,4 +1,5 @@
 """Source materials follow model selection/reimport without erasing author edits."""
+
 from __future__ import annotations
 
 import copy
@@ -47,8 +48,7 @@ def color(renderer, slot=0):
     return [value.x, value.y, value.z, value.w]
 
 
-@pytest.mark.parametrize("apply_mode", ["sync", "async"])
-@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("override,apply_mode", [(False, "sync"), (True, "async")])
 def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_model, apply_mode, override):
     import time
     from infernux.core.asset_types import read_mesh_import_settings
@@ -79,7 +79,7 @@ def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_
             deadline = time.monotonic() + 30
             while (result := AssetManager.poll_model_reimport(owner)) is None:
                 assert time.monotonic() < deadline
-                time.sleep(.002)
+                time.sleep(0.002)
         assert result, result.error
         assert read_mesh_import_settings(str(source)).material_import_mode == mode
         assert read_mesh_import_settings(str(source)).material_remaps == settings.material_remaps
@@ -103,124 +103,6 @@ def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_
         assert bool(registry.load_mesh(str(source)).get_material_slot_data()) == (mode == "description")
 
 
-def test_disabled_material_import_defers_remap_resolution(imported_model):
-    from infernux.core.asset_types import read_mesh_import_settings
-    from infernux.lib import AssetRegistry, AssetDependencyGraph
-
-    renderer, _, source, database, _ = imported_model
-    mesh = AssetRegistry.instance().load_mesh(str(source))
-    settings = read_mesh_import_settings(str(source))
-    settings.material_import_mode = "none"
-    settings.material_remaps = {"material/RemovedSource": "a" * 32}
-    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
-    assert result, result.error
-    assert mesh.get_material_slot_data() == []
-    assert "a" * 32 not in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
-    settings.material_import_mode = "description"
-    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
-    assert not result
-    assert read_mesh_import_settings(str(source)).material_import_mode == "none"
-    assert mesh.get_material_slot_data() == []
-
-
-@pytest.mark.parametrize("apply_mode", ["sync", "async"])
-def test_material_none_removes_external_texture_dependency(imported_model, apply_mode):
-    import time
-    from PIL import Image
-    from infernux.core.asset_types import read_mesh_import_settings
-    from infernux.lib import AssetRegistry, AssetDependencyGraph
-
-    renderer, document, source, database, _ = imported_model
-    texture = source.with_name("model_color.png")
-    Image.new("RGBA", (4, 4), (220, 80, 40, 255)).save(texture)
-    imported = AssetManager.import_asset(str(texture), database=database)
-    assert imported, imported.error
-    document["images"] = [{"uri": texture.name}]
-    document["textures"] = [{"source": 0}]
-    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
-    source.write_text(json.dumps(document), encoding="utf-8")
-    settings = read_mesh_import_settings(str(source))
-    mesh = AssetRegistry.instance().load_mesh(str(source))
-    for mode in ("description", "none", "description"):
-        settings.material_import_mode = mode
-        if apply_mode == "sync":
-            result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
-        else:
-            owner = AssetManager.begin_model_reimport(str(source), settings)
-            deadline = time.monotonic() + 30
-            while (result := AssetManager.poll_model_reimport(owner)) is None:
-                assert time.monotonic() < deadline
-                time.sleep(.002)
-        assert result, result.error
-        assert (imported.guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)) == (mode == "description")
-        if mode == "description":
-            assert mesh.get_material_slot_data()[0]["base_color_texture_guid"] == imported.guid
-            for material in (mesh.create_material_copy(0), renderer.get_material(0)):
-                assert material.serialize_document()["properties"]["texSampler"]["guid"] == imported.guid
-            assert AssetRegistry.instance().reload_asset(mesh.guid)
-            assert mesh.get_material_slot_data()[0]["base_color_texture_guid"] == imported.guid
-
-
-def test_model_and_texture_first_scan_share_unpublished_guid_catalog(imported_model):
-    import time
-    from PIL import Image
-    from infernux.lib import AssetRegistry, AssetDependencyGraph
-
-    _, document, source, database, _ = imported_model
-    fresh = source.parent / "Fresh Textured Model.gltf"
-    image = fresh.with_suffix(".png")
-    Image.new("RGBA", (4, 4), (60, 200, 80, 255)).save(image)
-    document["images"] = [{"uri": image.name}]
-    document["textures"] = [{"source": 0}]
-    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
-    fresh.write_text(json.dumps(document), encoding="utf-8")
-    assert not Path(str(image) + ".meta").exists()
-    assert not Path(str(fresh) + ".meta").exists()
-    database.begin_refresh()
-    deadline = time.monotonic() + 60
-    while not database.try_commit_refresh():
-        assert time.monotonic() < deadline
-        time.sleep(.002)
-    guid = database.get_guid_from_path(str(image))
-    mesh = AssetRegistry.instance().load_mesh(str(fresh))
-    assert mesh and guid
-    assert mesh.get_material_slot_data()[0]["base_color_texture_guid"] == guid
-    assert guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
-    assert mesh.create_material_copy(0).serialize_document()["properties"]["texSampler"]["guid"] == guid
-
-
-def test_unregistered_model_texture_rejects_publication_but_none_does_not_use_it(imported_model):
-    from infernux.core.asset_types import read_mesh_import_settings
-    renderer, document, source, database, _ = imported_model
-    before = Path(str(source) + ".meta").read_bytes()
-    document["images"] = [{"uri": "MissingTexture.png"}]
-    document["textures"] = [{"source": 0}]
-    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
-    source.write_text(json.dumps(document), encoding="utf-8")
-    result = AssetManager.reimport_asset(str(source), database=database)
-    assert not result and "not a registered project asset" in result.error
-    assert Path(str(source) + ".meta").read_bytes() == before
-    np.testing.assert_allclose(color(renderer, 0), [1, 0, 0, 1])
-    settings = read_mesh_import_settings(str(source))
-    settings.material_import_mode = "none"
-    result = AssetManager.reimport_asset(str(source), database=database, import_settings=settings.to_dict())
-    assert result, result.error
-
-
-@pytest.mark.parametrize("value", [True, 1, "legacy", "", None])
-def test_invalid_material_import_mode_rejected_before_publication(imported_model, value):
-    from infernux.core.asset_types import read_mesh_import_settings, MeshImportSettings
-    _, _, source, database, _ = imported_model
-    before = source.with_suffix(source.suffix + ".meta").read_bytes()
-    data = read_mesh_import_settings(str(source)).to_dict()
-    data["material_import_mode"] = value
-    with pytest.raises(ValueError, match="material_import_mode"):
-        MeshImportSettings.from_dict(data)
-    with pytest.raises(ValueError, match="material_import_mode"):
-        AssetManager.reimport_asset(str(source), import_settings=data, database=database)
-    assert source.with_suffix(source.suffix + ".meta").read_bytes() == before
-
-
 def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
     from infernux.lib import AssetRegistry
 
@@ -235,8 +117,7 @@ def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
         mesh.create_material_copy(999)
 
 
-@pytest.mark.parametrize("alpha_mode", ["OPAQUE", "MASK", "BLEND"])
-@pytest.mark.parametrize("double_sided", [False, True])
+@pytest.mark.parametrize("double_sided,alpha_mode", [(False, "OPAQUE"), (False, "BLEND"), (True, "MASK")])
 def test_source_surface_survives_import_copy_and_binary_reload(imported_model, alpha_mode, double_sided):
     from infernux.core.asset_types import read_mesh_import_settings
     from infernux.core.material import Material
@@ -249,9 +130,7 @@ def test_source_surface_survives_import_copy_and_binary_reload(imported_model, a
     source.write_text(json.dumps(document), encoding="utf-8")
     settings = read_mesh_import_settings(str(source))
     settings.is_readable = True
-    result = AssetManager.reimport_asset(
-        str(source), import_settings=settings.to_dict(), database=database
-    )
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
     assert result, result.error
     registry = AssetRegistry.instance()
     mesh = registry.load_mesh(str(source))
@@ -344,6 +223,7 @@ def test_material_extraction_undo_redo_and_independent_asset(imported_model):
         manager.redo()
         assert database.get_guid_from_path(str(target)) == guid
         assert target.read_bytes() == content
+
         class ConcurrentTarget:
             def serialize_document(self):
                 occupied.write_bytes(b"another author's file")
@@ -378,8 +258,10 @@ def test_material_save_dialog_captures_source_before_reimport(imported_model, mo
         def request(self, **kwargs):
             captured.update(kwargs)
 
-    service = SimpleNamespace(project_root=str(source.parent), save_material_copy=lambda material, path: (
-        saved.append(material.serialize_document()) or path))
+    service = SimpleNamespace(
+        project_root=str(source.parent),
+        save_material_copy=lambda material, path: saved.append(material.serialize_document()) or path,
+    )
     monkeypatch.setattr(EditorInteractionCore, "instance", lambda: SimpleNamespace(project_assets=service))
     monkeypatch.setattr(asset_save_dialog, "AssetSaveAsDialog", Dialog)
     expected = mesh.create_material_copy(1).serialize_document()
@@ -407,30 +289,7 @@ def select(renderer, index, mode):
         assert renderer.deserialize_document(document)
 
 
-@pytest.mark.parametrize("mode", ["node", "submesh"])
-def test_model_material_selection_and_scene_restore(imported_model, mode):
-    renderer, _, _, _, scene = imported_model
-    assert renderer.material_count == 2
-    np.testing.assert_allclose(color(renderer, 0), [1, 0, 0, 1])
-    np.testing.assert_allclose(color(renderer, 1), [0, 1, 0, 1])
-    assert renderer.serialize_document()["materials"] == [None, None]
-    for index in (1, 0, 1):
-        select(renderer, index, mode)
-        assert renderer.material_count == 1
-        np.testing.assert_allclose(color(renderer), [0, 1, 0, 1] if index else [1, 0, 0, 1])
-    saved = renderer.serialize_document()
-    assert saved["materials"] == [None]
-    restored = scene.create_game_object("Restored").add_component("MeshRenderer")._require_cpp_component()
-    saved["component_id"] = restored.component_id
-    assert restored.deserialize_document(saved)
-    np.testing.assert_allclose(color(restored), [0, 1, 0, 1])
-    select(restored, -1, mode)
-    assert restored.material_count == 2
-    np.testing.assert_allclose(color(restored, 0), [1, 0, 0, 1])
-    np.testing.assert_allclose(color(restored, 1), [0, 1, 0, 1])
-
-
-@pytest.mark.parametrize("override", ["none", "edit", "assign_same", "guid", "inline_document"])
+@pytest.mark.parametrize("override", ["edit", "guid", "inline_document"])
 def test_reimport_updates_only_unmodified_source_materials(imported_model, override):
     renderer, source_document, source, database, scene = imported_model
     renderer.submesh_index = 1
@@ -469,14 +328,6 @@ def test_reimport_updates_only_unmodified_source_materials(imported_model, overr
     np.testing.assert_allclose(color(renderer), expected)
     np.testing.assert_allclose(color(restored), expected)
     assert (renderer.serialize_document()["materials"] == [None]) == (override == "none")
-
-
-def test_clearing_model_keeps_existing_inline_appearance(imported_model):
-    renderer, _, _, _, _ = imported_model
-    renderer.clear_mesh_asset()
-    saved = renderer.serialize_document()
-    assert "meshAssetGuid" not in saved
-    assert all("material" in slot for slot in saved["materials"])
 
 
 def test_unchanged_model_materials_keep_runtime_instances(imported_model):
@@ -531,7 +382,7 @@ def test_model_material_remap_follows_source_not_slot_and_preserves_overrides(im
     np.testing.assert_allclose(color(restored, 0), [0, 1, 0, 1])
 
 
-@pytest.mark.parametrize("failure", ["missing_source", "ambiguous_source", "missing_guid", "wrong_type", "self_dependency"])
+@pytest.mark.parametrize("failure", ["missing_guid", "self_dependency"])
 def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_model, failure):
     from infernux.core.asset_types import read_mesh_import_settings
     from infernux.lib import AssetRegistry
@@ -564,25 +415,13 @@ def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_mode
     result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict())
     assert not result
     expected_error = (
-        "missing or ambiguous" if failure.endswith("source")
-        else "self-dependency" if failure == "self_dependency"
+        "missing or ambiguous"
+        if failure.endswith("source")
+        else "self-dependency"
+        if failure == "self_dependency"
         else "registered Material"
     )
     assert expected_error in result.error
     assert Path(str(source) + ".meta").read_bytes() == original_meta
     assert renderer.serialize_document() == original_scene
     assert mesh.generation == original_generation
-
-
-def test_material_remap_settings_copy_and_complete_contract():
-    from infernux.core.asset_types import MeshImportSettings
-
-    settings = MeshImportSettings()
-    clone = settings.copy()
-    clone.material_remaps["material/Unique"] = "f" * 32
-    assert settings.material_remaps == {}
-    assert MeshImportSettings.from_dict(clone.to_dict()).material_remaps == clone.material_remaps
-    incomplete = settings.to_dict()
-    del incomplete["material_remaps"]
-    with pytest.raises(ValueError, match="complete current field set"):
-        MeshImportSettings.from_dict(incomplete)

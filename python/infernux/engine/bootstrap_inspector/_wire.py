@@ -11,7 +11,6 @@ from infernux.engine.bootstrap_inspector._helpers import (
     _can_remove_component,
     _get_add_component_entries,
     _get_components_safe,
-    _get_py_components_safe,
     _load_script_component,
 )
 

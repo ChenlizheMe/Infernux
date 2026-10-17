@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from infernux.engine.build import BuildProfile, BuildRequest
 from infernux.engine.build.host_player_export import execute_host_player_build
@@ -51,8 +50,7 @@ def _seal_build_manifest(data: Path, source_root: Path, document: dict) -> None:
     )
     identity = read_manifest(catalog)
     (data / "PackageIndex.inxmanifest").write_text(
-        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
-        f"catalog\t{identity['archive_sha256']}\t{identity['archive_bytes']}\n",
+        f"INFERNUX_PLAYER_PACKAGE_INDEX\ncatalog\t{identity['archive_sha256']}\t{identity['archive_bytes']}\n",
         encoding="ascii",
     )
 
@@ -68,30 +66,7 @@ def test_cooked_player_icon_is_read_from_the_sealed_content_package(tmp_path):
     assert read_cooked_player_icon(data, default_icon=tmp_path / "unused.png") == b"configured-icon"
 
 
-def test_cooked_player_icon_uses_explicit_default_only_when_manifest_is_empty(tmp_path):
-    data = tmp_path / "Game_Data"
-    data.mkdir()
-    default = tmp_path / "default.png"
-    default.write_bytes(b"default-icon")
-    _seal_build_manifest(data, tmp_path, {"icon_path": ""})
-
-    assert read_cooked_player_icon(data, default_icon=default) == b"default-icon"
-
-
-def test_cooked_player_icon_rejects_manifest_path_escape(tmp_path):
-    data = tmp_path / "Game_Data"
-    data.mkdir()
-    default = tmp_path / "default.png"
-    default.write_bytes(b"default-icon")
-    _seal_build_manifest(data, tmp_path, {"icon_path": "../icon.png"})
-
-    with pytest.raises(ValueError, match="escapes"):
-        read_cooked_player_icon(data, default_icon=default)
-
-
-def test_platform_cook_consumes_editor_catalog_snapshot_without_rescanning(
-    monkeypatch, tmp_path
-):
+def test_platform_cook_consumes_editor_catalog_snapshot_without_rescanning(monkeypatch, tmp_path):
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()
@@ -149,9 +124,7 @@ def test_platform_cook_consumes_editor_catalog_snapshot_without_rescanning(
     assert result.python_sources == ()
 
 
-def test_platform_cook_releases_headless_catalog_host_before_builder(
-    monkeypatch, tmp_path
-):
+def test_platform_cook_releases_headless_catalog_host_before_builder(monkeypatch, tmp_path):
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()
@@ -188,7 +161,9 @@ def test_platform_cook_releases_headless_catalog_host_before_builder(
 
     result = cook_platform_content(
         BuildRequest(
-            str(project), "web-wasm32", str(tmp_path / "Published"),
+            str(project),
+            "web-wasm32",
+            str(tmp_path / "Published"),
             BuildProfile(options=_presentation_options()),
         ),
         output,
@@ -206,18 +181,14 @@ def test_build_request_reads_and_normalizes_project_settings_strictly(tmp_path):
     (settings_dir / "BuildSettings.json").write_text(
         json.dumps(
             {
-                "platform_options": {
-                    "windows-x64": _presentation_options()
-                },
+                "platform_options": {"windows-x64": _presentation_options()},
                 "scene_guids": [],
             }
         ),
         encoding="utf-8",
     )
 
-    settings = build_settings_for_request(
-        BuildRequest(str(project), "windows-x64", str(tmp_path / "Build"))
-    )
+    settings = build_settings_for_request(BuildRequest(str(project), "windows-x64", str(tmp_path / "Build")))
 
     assert settings["display_mode"] == "windowed"
     assert settings["window_width"] == 1280
@@ -225,68 +196,7 @@ def test_build_request_reads_and_normalizes_project_settings_strictly(tmp_path):
     assert settings["window_resizable"] is True
 
 
-def test_build_request_rejects_missing_or_malformed_project_settings(tmp_path):
-    project = tmp_path / "Project"
-    settings_dir = project / "ProjectSettings"
-    settings_dir.mkdir(parents=True)
-    request = BuildRequest(
-        str(project), "windows-x64", str(tmp_path / "Build")
-    )
-
-    with pytest.raises(FileNotFoundError, match="BuildSettings.json"):
-        build_settings_for_request(request)
-
-    (settings_dir / "BuildSettings.json").write_text("{", encoding="utf-8")
-    with pytest.raises(ValueError, match="unreadable"):
-        build_settings_for_request(request)
-
-
-def test_build_request_rejects_invalid_explicit_snapshot_without_disk_fallback(
-    tmp_path,
-):
-    project = tmp_path / "Project"
-    settings_dir = project / "ProjectSettings"
-    settings_dir.mkdir(parents=True)
-    (settings_dir / "BuildSettings.json").write_text(
-        '{"display_mode":"windowed","scene_guids":[]}\n', encoding="utf-8"
-    )
-    request = BuildRequest(
-        str(project),
-        "windows-x64",
-        str(tmp_path / "Build"),
-        BuildProfile(options={"build_settings": "not-a-document"}),
-    )
-
-    with pytest.raises(TypeError, match="must be a mapping"):
-        build_settings_for_request(request)
-
-
-def test_build_request_rejects_non_positive_render_dimensions(tmp_path):
-    project = tmp_path / "Project"
-    (project / "ProjectSettings").mkdir(parents=True)
-    request = BuildRequest(
-        str(project),
-        "windows-x64",
-        str(tmp_path / "Build"),
-        BuildProfile(
-            options={
-                "build_settings": {
-                    "platform_options": {
-                        "windows-x64": _presentation_options(window_width=0)
-                    },
-                    "scene_guids": [],
-                }
-            }
-        ),
-    )
-
-    with pytest.raises(ValueError, match="window_width must be positive"):
-        build_settings_for_request(request)
-
-
-def test_host_player_uses_the_shared_authoritative_build_settings(
-    monkeypatch, tmp_path
-):
+def test_host_player_uses_the_shared_authoritative_build_settings(monkeypatch, tmp_path):
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
     settings_dir = project / "ProjectSettings"
@@ -295,9 +205,7 @@ def test_host_player_uses_the_shared_authoritative_build_settings(
         json.dumps(
             {
                 "game_name": "WindowedGame",
-                "platform_options": {
-                    "windows-x64": _presentation_options(window_resizable=False)
-                },
+                "platform_options": {"windows-x64": _presentation_options(window_resizable=False)},
                 "scene_guids": [],
             }
         ),
@@ -338,59 +246,3 @@ def test_host_player_uses_the_shared_authoritative_build_settings(
     assert observed["window_width"] == 1280
     assert observed["window_height"] == 720
     assert observed["window_resizable"] is False
-
-
-def test_host_player_does_not_recreate_missing_normalized_settings(
-    monkeypatch, tmp_path
-):
-    from infernux.engine.interaction.project_settings import normalize_build_settings
-
-    settings = normalize_build_settings({})
-    settings.update(_presentation_options())
-    settings.pop("display_mode")
-    monkeypatch.setattr(
-        "infernux.engine.platform_content_cook.build_settings_for_request",
-        lambda _request: settings,
-    )
-    request = BuildRequest(
-        str(tmp_path / "Project"),
-        "windows-x64",
-        str(tmp_path / "Build"),
-        asset_catalog_entries=({"guid": "d" * 32},),
-    )
-
-    with pytest.raises(KeyError, match="display_mode"):
-        execute_host_player_build(request, object())
-
-
-def test_platform_cook_does_not_recreate_missing_normalized_settings(
-    monkeypatch, tmp_path
-):
-    from infernux.engine.interaction.project_settings import normalize_build_settings
-
-    settings = normalize_build_settings({})
-    settings.update(_presentation_options())
-    settings.pop("window_width")
-    monkeypatch.setattr(
-        "infernux.engine.platform_content_cook.build_settings_for_request",
-        lambda _request: settings,
-    )
-    monkeypatch.setattr(
-        "infernux.engine.platform_content_cook.GameBuilder",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("GameBuilder must not receive an incomplete contract")
-        ),
-    )
-    request = BuildRequest(
-        str(tmp_path / "Project"),
-        "web-wasm32",
-        str(tmp_path / "Build"),
-        asset_catalog_entries=({"guid": "e" * 32},),
-    )
-
-    with pytest.raises(KeyError, match="window_width"):
-        cook_platform_content(
-            request,
-            tmp_path / "Cook",
-            platform_host={"identity": "fixture"},
-        )

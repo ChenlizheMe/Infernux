@@ -78,6 +78,8 @@ class DeferredTaskRunner:
             label, progress, _ = self._steps[0]
             from infernux.engine.ui.engine_status import EngineStatus
             EngineStatus.set(label, progress, source="deferred", priority=10)
+        else:
+            self._finish()
         return True
 
     def tick(self) -> None:
@@ -104,7 +106,7 @@ class DeferredTaskRunner:
                     self._failed = True
             except Exception as exc:
                 from infernux.debug import Debug
-                Debug.log_error(f"[DeferredTask] Step '{label}' failed: {exc}")
+                Debug.log_exception(exc)
                 self._failed = True
 
         self._index += 1
@@ -141,4 +143,4 @@ class DeferredTaskRunner:
                 on_done(ok)
             except Exception as exc:
                 from infernux.debug import Debug
-                Debug.log_error(f"[DeferredTask] on_done callback failed: {exc}")
+                Debug.log_exception(exc)

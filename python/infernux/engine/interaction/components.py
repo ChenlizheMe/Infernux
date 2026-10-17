@@ -280,7 +280,6 @@ class ComponentCommandService:
         if component is None or not field:
             raise ValueError("component property edit requires a target and field")
         from .serialized_properties import (
-            PropertyTransactionStatus,
             make_attribute_property_transaction,
             make_python_component_property_transaction,
         )

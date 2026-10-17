@@ -23,8 +23,6 @@ from typing import Dict, List, Optional
 
 from infernux.debug import Debug
 from infernux.engine.build_settings import (
-    BUILD_SETTINGS_FILE,
-    build_settings_path as _settings_path,
     load_build_settings,
 )
 from infernux.engine.build_cancellation import BuildCancelled
@@ -44,7 +42,6 @@ from infernux.engine.build import (
 from infernux.engine.project_context import get_project_root
 from infernux.engine.game_builder import (
     BuildOutputDirectoryError,
-    GameBuilder,
 )
 from infernux.engine.i18n import t
 from infernux.engine.interaction import (
@@ -80,10 +77,6 @@ DRAG_DROP_REORDER = "BUILD_REORDER"
 
 def _metric(ctx, value: float) -> float:
     return scaled_editor_metric(ctx, value)
-
-
-def _metric_pair(ctx, value) -> tuple[float, float]:
-    return (_metric(ctx, value[0]), _metric(ctx, value[1]))
 
 
 def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:

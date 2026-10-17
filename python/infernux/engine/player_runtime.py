@@ -27,6 +27,9 @@ class PlayerRuntimeSession:
         scheduler: Any = None,
         scene_service: Any = None,
     ):
+        from infernux.engine.runtime_dispatch import bind_runtime_dispatch_owner
+
+        bind_runtime_dispatch_owner()
         self._asset_database = asset_database
         self._native_engine = native_engine
         if scheduler is None:

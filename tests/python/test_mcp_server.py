@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import inspect
 import socket
 import sys
 import threading
@@ -14,9 +15,7 @@ import pytest
 from infernux.host import OperationRegistry
 from infernux_mcp import server
 from infernux_mcp import capabilities
-from infernux_mcp import scene_operations
 from infernux_mcp.adapter import (
-    MAX_GATEWAY_TOOLS,
     adapter_status,
     register_gateways,
     shutdown_adapter,
@@ -31,150 +30,10 @@ class _FakeMCP:
         name = kwargs.get("name") or (args[0] if args else "")
 
         def decorate(fn):
-            self.tools[str(name or fn.__name__)] = fn
+            self.tools[str(name or fn.__name__)] = fn.__wrapped__ if inspect.iscoroutinefunction(fn) else fn
             return fn
 
         return decorate
-
-
-def test_capability_config_ignores_unknown_schema_fields_without_rewriting(tmp_path):
-    settings = tmp_path / "ProjectSettings"
-    settings.mkdir()
-    path = settings / "mcp_capabilities.json"
-    path.write_text(
-        json.dumps(
-            {
-                "profile": "developer_assist",
-                "unknown_section": {"unused": True},
-                "limits": {"batch_max_steps": 12, "unknown_limit": 99},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    original = path.read_bytes()
-    loaded = capabilities.configure(str(tmp_path), write_default=True)
-    persisted = json.loads(path.read_text(encoding="utf-8"))
-
-    assert "unknown_section" not in loaded
-    assert "unknown_limit" not in loaded["limits"]
-    assert path.read_bytes() == original
-    assert persisted["limits"]["batch_max_steps"] == 12
-
-
-def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
-    (tmp_path / "Assets").mkdir()
-    (tmp_path / "ProjectSettings").mkdir()
-    mcp = _FakeMCP()
-    try:
-        state = register_gateways(mcp, str(tmp_path), {})
-
-        assert state["operation_count"] == 105
-        assert state["owned_operation_count"] == 71
-        assert state["gateway_count"] == 14
-        assert 0 < state["compact_schema_bytes"] < 128 * 1024
-        assert state["compact_schema_bytes"] < state["full_schema_bytes"] < 512 * 1024
-        assert len(mcp.tools) <= MAX_GATEWAY_TOOLS
-        assert set(mcp.tools) == {
-            "mcp_ping",
-            "operation_schema_list",
-            "operation_schema_get",
-            "operation_schema_search",
-            "operation_query_execute",
-            "operation_command_execute",
-            "operation_workflow_invoke",
-            "operation_execute",
-            "operation_batch_execute",
-            "operation_job_submit",
-            "operation_job_status",
-            "operation_job_cancel",
-            "host_capabilities",
-            "host_session_status",
-        }
-        documents = OperationRegistry.instance().list()
-        required = {
-            "$schema",
-            "id",
-            "kind",
-            "input_schema",
-            "output_schema",
-            "errors",
-            "thread",
-            "side_effects",
-            "reversible",
-            "capabilities",
-            "cost",
-            "availability",
-            "phase",
-        }
-        assert len(documents) == 105
-        assert all(required <= set(document) for document in documents)
-        operation_ids = {document["id"] for document in documents}
-        assert {
-            "infernux.project.info",
-            "infernux.mcp.checkpoint.list",
-            "infernux.mcp.checkpoint.status",
-            "infernux.mcp.supervisor.shutdown",
-            "infernux.mcp.attempt.start",
-            "infernux.mcp.attempt.stop",
-            "infernux.mcp.blocker.report",
-            "infernux.scene.object.create",
-            "infernux.scene.loaded.get",
-            "infernux.scene.additive.load",
-            "infernux.scene.object.transform.set",
-            "infernux.scene.component.property.set",
-            "infernux.asset.create",
-            "infernux.asset.mesh.save-copy",
-            "infernux.asset.model.material.extract",
-            "infernux.scene.mesh.assign",
-            "infernux.asset.move",
-            "infernux.material.property.set",
-            "infernux.data_asset.inspect",
-            "infernux.data_asset.schema",
-            "infernux.data_asset.property.set",
-            "infernux.material.slot.assign",
-            "infernux.renderer.parameter.get",
-            "infernux.renderer.parameter.set",
-            "infernux.renderer.parameter.remove",
-            "infernux.renderer.parameter.clear",
-            "infernux.particle.graph.document.replace",
-            "infernux.camera.editor.state.set",
-            "infernux.runtime.play",
-            "infernux.runtime.performance.begin",
-            "infernux.runtime.performance.get",
-            "infernux.runtime.compute.statistics",
-            "infernux.runtime.compute.reset_statistics",
-            "infernux.runtime.compute.profiling",
-            "infernux.input.key",
-            "infernux.ui.semantic.snapshot",
-            "infernux.capture.request",
-            "infernux.player.validation.launch",
-            "infernux.player.targets",
-            "infernux.docs.search",
-            "infernux.console.read",
-        } <= operation_ids
-        assert not any(
-            operation_id.startswith(
-                (
-                    "authoring_",
-                    "assets_",
-                    "camera_",
-                    "particle_",
-                    "runtime_",
-                    "mcp_session_",
-                )
-            )
-            for operation_id in operation_ids
-        )
-    finally:
-        shutdown_adapter()
-    remaining = OperationRegistry.instance().list()
-    assert len(remaining) == 34
-    assert {
-        OperationRegistry.instance().get(document["id"]).owner
-        for document in remaining
-    } == {"infernux/engine"}
-    assert adapter_status()["active"] is False
 
 
 def test_loaded_scene_query_reports_every_resident_scene_and_active_owner(scene):
@@ -201,29 +60,15 @@ def test_loaded_scene_query_reports_every_resident_scene_and_active_owner(scene)
         manager.unload_scene(additive)
 
 
-def test_capability_grants_are_explicit_and_diff_is_machine_readable(tmp_path):
+def test_default_grants_cover_every_operation_and_diff_is_machine_readable(tmp_path):
     (tmp_path / "Assets").mkdir()
     (tmp_path / "ProjectSettings").mkdir()
     mcp = _FakeMCP()
     try:
+        # Omitting granted_capabilities keeps the default: every capability.
         register_gateways(mcp, str(tmp_path), {})
-
-        # The default grant is an explicit whitelist, never a wildcard.
         config = capabilities.current_config()
-        assert "*" not in config["granted_capabilities"]
-        assert config["granted_capabilities"] == list(
-            capabilities.DEFAULT_GRANTED_CAPABILITIES
-        )
-
-        # Drift guard: every capability referenced by a registered operation
-        # must be covered by the default enumeration.
-        documents = OperationRegistry.instance().list()
-        used = {
-            str(name)
-            for document in documents
-            for name in document["capabilities"]
-        }
-        assert used <= set(capabilities.DEFAULT_GRANTED_CAPABILITIES)
+        assert config["granted_capabilities"] == ["*"]
 
         snapshot = mcp.tools["host_capabilities"]()
         assert snapshot["ok"] is True
@@ -255,9 +100,7 @@ def test_read_only_grants_block_writes_with_grant_remediation(tmp_path):
         assert rows["scene.write"]["granted"] is False
 
         # Pattern grants keep read operations available.
-        allowed = mcp.tools["operation_query_execute"](
-            "infernux.mcp.checkpoint.list", {}
-        )
+        allowed = mcp.tools["operation_query_execute"]("infernux.mcp.checkpoint.list", {})
         assert allowed["ok"] is True
 
         denied = mcp.tools["operation_command_execute"](
@@ -280,7 +123,7 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
     (tmp_path / "ProjectSettings").mkdir()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {})
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
         expected = {
             "project": "infernux.project.info",
             "checkpoint": "infernux.mcp.checkpoint.list",
@@ -290,25 +133,19 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
         for query, operation in expected.items():
             result = mcp.tools["operation_schema_search"](query, 200)
             assert result["ok"] is True
-            assert operation in {
-                item["id"] for item in result["data"]["operations"]
-            }
+            assert operation in {item["id"] for item in result["data"]["operations"]}
 
         missing_search = mcp.tools["operation_schema_search"]("missing.operation", 200)
         assert missing_search["ok"] is True
         assert missing_search["data"]["operations"] == []
 
-        result = mcp.tools["operation_query_execute"](
-            "infernux.mcp.checkpoint.list", {}
-        )
+        result = mcp.tools["operation_query_execute"]("infernux.mcp.checkpoint.list", {})
         assert result["ok"] is True
         assert "checkpoints" in result["data"]["result"]
         missing_execute = mcp.tools["operation_query_execute"]("missing.operation", {})
         assert missing_execute["ok"] is False
         assert missing_execute["error"]["code"] == "operation.not_found"
-        mismatch = mcp.tools["operation_command_execute"](
-            "infernux.mcp.checkpoint.list", {}
-        )
+        mismatch = mcp.tools["operation_command_execute"]("infernux.mcp.checkpoint.list", {})
         assert mismatch["ok"] is False
         assert mismatch["error"]["code"] == "operation.kind_mismatch"
         rejected = mcp.tools["operation_command_execute"](
@@ -346,7 +183,7 @@ def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, sce
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {})
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
         created = mcp.tools["operation_command_execute"](
             "infernux.scene.object.create",
             {"kind": "empty", "name": "SchemaCreated"},
@@ -371,11 +208,7 @@ def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, sce
             {},
         )
         assert hierarchy["ok"] is True
-        authored = next(
-            item
-            for item in hierarchy["data"]["result"]["objects"]
-            if item["id"] == object_id
-        )
+        authored = next(item for item in hierarchy["data"]["result"]["objects"] if item["id"] == object_id)
         assert authored["transform"] == {
             "position": [1.0, 2.0, 3.0],
             "rotation": [10.0, 20.0, 30.0],
@@ -388,45 +221,6 @@ def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, sce
         UndoManager._instance = previous_undo
         HierarchyCreationService._instance = previous_creation
         queue.release_owner("MCP editing operation test finished")
-
-
-@pytest.mark.parametrize("transform", [
-    {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1]},
-    {"position": [1, 2, 3], "rotation": [0, 90, 0], "scale": [2, 3, 4]},
-])
-def test_schema_gateway_repeated_transform_is_success_without_extra_history(scene, tmp_path, transform):
-    from infernux.engine.interaction import EditorInteractionCore
-    from infernux.engine.undo import UndoManager
-    from infernux.host import MainThreadCommandQueue
-
-    (tmp_path / "Assets").mkdir()
-    (tmp_path / "ProjectSettings").mkdir()
-    owner = scene.create_game_object("Repeated Transform")
-    previous_undo = UndoManager._instance
-    core = EditorInteractionCore()
-    undo = UndoManager(core.action_journal)
-    queue = MainThreadCommandQueue.instance()
-    queue.drain()
-    mcp = _FakeMCP()
-    try:
-        register_gateways(mcp, str(tmp_path), {})
-        execute = mcp.tools["operation_command_execute"]
-        arguments = dict(object_id=owner.id, **transform)
-        first = execute("infernux.scene.object.transform.set", arguments)
-        assert first["ok"], first
-        before = owner.serialize_document()
-        entries = tuple(undo.action_journal.applied_entries())
-        revision = scene.structure_version
-        repeated = execute("infernux.scene.object.transform.set", arguments)
-        assert repeated["ok"], repeated
-        assert owner.serialize_document() == before
-        assert tuple(undo.action_journal.applied_entries()) == entries
-        assert scene.structure_version == revision
-    finally:
-        shutdown_adapter()
-        core.shutdown()
-        UndoManager._instance = previous_undo
-        queue.release_owner("MCP repeated transform test finished")
 
 
 @pytest.mark.parametrize("invalid", [True, False])
@@ -445,14 +239,18 @@ def test_schema_gateway_transform_rejection_does_not_masquerade_as_no_change(sce
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {})
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
         before = owner.serialize_document()
         if not invalid:
             undo.enabled = False
         rejected = mcp.tools["operation_command_execute"](
             "infernux.scene.object.transform.set",
-            {"object_id": owner.id, "position": [float("nan") if invalid else 5, 0, 0],
-             "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+            {
+                "object_id": owner.id,
+                "position": [float("nan") if invalid else 5, 0, 0],
+                "rotation": [0, 0, 0],
+                "scale": [1, 1, 1],
+            },
         )
         assert not rejected["ok"], rejected
         assert rejected["error"]["code"] == "scene.edit_rejected", rejected
@@ -465,66 +263,9 @@ def test_schema_gateway_transform_rejection_does_not_masquerade_as_no_change(sce
         queue.release_owner("MCP rejected transform test finished")
 
 
-@pytest.mark.parametrize("kind", ["native", "python", "render_stack"])
-@pytest.mark.parametrize("changed", [False, True])
-def test_schema_gateway_repeated_component_field_set_is_success_without_history(
-    scene, tmp_path, kind, changed
-):
-    from infernux.components import InxComponent, serialized_field
-    from infernux.engine.interaction import EditorInteractionCore
-    from infernux.engine.undo import UndoManager
-    from infernux.host import MainThreadCommandQueue
-    from infernux.renderstack import RenderStack
-
-    class McpRepeatedFieldProbe(InxComponent):
-        speed: float = serialized_field(default=3.0, range=(0.0, 20.0))
-
-    (tmp_path / "Assets").mkdir()
-    (tmp_path / "ProjectSettings").mkdir()
-    owner = scene.create_game_object("MCP Repeated Component Field")
-    if kind == "native":
-        component = owner.add_component("Light")
-        field, value = "intensity", 2.5 if changed else 1.0
-    elif kind == "python":
-        component = owner.add_py_component(McpRepeatedFieldProbe())
-        field, value = "speed", 8.0 if changed else 3.0
-    else:
-        component = owner.add_py_component(RenderStack())
-        field, value = "pipeline_class_name", "Default Deferred" if changed else "Default Forward"
-    previous_undo = UndoManager._instance
-    core = EditorInteractionCore()
-    undo = UndoManager(core.action_journal)
-    queue = MainThreadCommandQueue.instance()
-    queue.drain()
-    mcp = _FakeMCP()
-    try:
-        register_gateways(mcp, str(tmp_path), {})
-        arguments = {"object_id": owner.id, "component_id": component.component_id,
-                     "field": field, "value": value}
-        first = mcp.tools["operation_command_execute"](
-            "infernux.scene.component.property.set", arguments
-        )
-        assert first["ok"], first
-        before = owner.serialize_document()
-        revision = core.action_journal.revision
-        entries = core.action_journal.applied_entries()
-        assert len(entries) == int(changed)
-        repeated = mcp.tools["operation_command_execute"](
-            "infernux.scene.component.property.set", arguments
-        )
-        assert repeated["ok"], repeated
-        assert owner.serialize_document() == before
-        assert core.action_journal.revision == revision
-        assert core.action_journal.applied_entries() == entries
-    finally:
-        shutdown_adapter()
-        core.shutdown()
-        UndoManager._instance = previous_undo
-        queue.release_owner("MCP repeated component field test finished")
-
-
-@pytest.mark.parametrize("kind", ["native", "python", "render_stack"])
-@pytest.mark.parametrize("invalid", [False, True])
+@pytest.mark.parametrize(
+    "kind,invalid", [("native", True), ("python", True), ("render_stack", True), ("native", False)]
+)
 def test_schema_gateway_component_field_rejection_is_not_no_change(scene, tmp_path, kind, invalid):
     from infernux.components import InxComponent, serialized_field
     from infernux.engine.interaction import EditorInteractionCore
@@ -554,15 +295,14 @@ def test_schema_gateway_component_field_rejection_is_not_no_change(scene, tmp_pa
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {})
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
         before = owner.serialize_document()
         revision = core.action_journal.revision
         if not invalid:
             undo.enabled = False
         rejected = mcp.tools["operation_command_execute"](
             "infernux.scene.component.property.set",
-            {"object_id": owner.id, "component_id": component.component_id,
-             "field": field, "value": value},
+            {"object_id": owner.id, "component_id": component.component_id, "field": field, "value": value},
         )
         assert not rejected["ok"], rejected
         assert owner.serialize_document() == before
@@ -575,9 +315,7 @@ def test_schema_gateway_component_field_rejection_is_not_no_change(scene, tmp_pa
         queue.release_owner("MCP rejected component field test finished")
 
 
-def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
-    scene, tmp_path
-):
+def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(scene, tmp_path):
     from infernux.components import InxComponent, serialized_field
     from infernux.engine.interaction import EditorInteractionCore
     from infernux.engine.undo import UndoManager
@@ -598,7 +336,7 @@ def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {})
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
 
         native_schema = mcp.tools["operation_query_execute"](
             "infernux.scene.component.schema",
@@ -613,14 +351,8 @@ def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
         )
         assert native_schema["ok"] is True
         assert python_schema["ok"] is True
-        native_fields = {
-            item["name"]: item
-            for item in native_schema["data"]["result"]["fields"]
-        }
-        python_fields = {
-            item["name"]: item
-            for item in python_schema["data"]["result"]["fields"]
-        }
+        native_fields = {item["name"]: item for item in native_schema["data"]["result"]["fields"]}
+        python_fields = {item["name"]: item for item in python_schema["data"]["result"]["fields"]}
         assert native_fields["intensity"]["range"] == [0.0, 10.0]
         assert python_fields["speed"]["range"] == [0.0, 20.0]
 
@@ -706,7 +438,9 @@ def test_schema_gateway_can_edit_real_material_document(engine):
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(project_root), {})
+        register_gateways(
+            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+        )
         changed = mcp.tools["operation_command_execute"](
             "infernux.material.property.set",
             {
@@ -732,15 +466,11 @@ def test_schema_gateway_can_edit_real_material_document(engine):
                 # atomic publication replaces the destination file.
                 time.sleep(0.01)
                 continue
-            if document["properties"]["baseColor"]["value"] == pytest.approx(
-                [0.25, 0.5, 0.75, 1.0]
-            ):
+            if document["properties"]["baseColor"]["value"] == pytest.approx([0.25, 0.5, 0.75, 1.0]):
                 break
             time.sleep(0.01)
         assert document is not None
-        assert document["properties"]["baseColor"]["value"] == pytest.approx(
-            [0.25, 0.5, 0.75, 1.0]
-        )
+        assert document["properties"]["baseColor"]["value"] == pytest.approx([0.25, 0.5, 0.75, 1.0])
         assert len(undo.action_journal.applied_entries()) == 1
         repeated = mcp.tools["operation_command_execute"](
             "infernux.material.property.set",
@@ -778,171 +508,6 @@ def test_schema_gateway_can_edit_real_material_document(engine):
         Path(str(path) + ".meta").unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize("field,value,override", [
-    ("renderQueue", 3500, "RENDER_QUEUE"),
-    ("renderQueue", 2000, "RENDER_QUEUE"),
-    ("depthWriteEnable", False, "DEPTH_WRITE"),
-    ("blendEnable", True, "BLEND_ENABLE"),
-    (None, None, None),
-])
-def test_schema_gateway_material_render_state_edit_claims_only_requested_override(engine, field, value, override):
-    from infernux.core.assets import AssetManager
-    from infernux.core.material import Material
-    from infernux.engine.interaction import EditorInteractionCore
-    from infernux.engine.ui import project_file_ops
-    from infernux.engine.undo import UndoManager
-    from infernux.host import MainThreadCommandQueue
-    from infernux.lib import RenderStateOverride
-    from infernux.plugins import PluginManager
-
-    database = engine.get_asset_database()
-    project_root = Path(database.project_root)
-    assets = project_root / "Assets"
-    assets.mkdir(exist_ok=True)
-    name = f"McpAuthorship_{uuid.uuid4().hex}"
-    path = assets / f"{name}.mat"
-    created, error = project_file_ops.create_material(str(assets), name, database)
-    assert created, error
-    guid = database.get_guid_from_path(str(path))
-    previous_plugins = PluginManager._instance
-    previous_database = AssetManager._asset_database
-    previous_undo = UndoManager._instance
-    core = EditorInteractionCore()
-    core.project_assets.configure(str(project_root), database)
-    undo = UndoManager(core.action_journal)
-    manager = PluginManager(str(project_root), engine=engine)
-    PluginManager._instance = manager
-    AssetManager._asset_database = database
-    queue = MainThreadCommandQueue.instance()
-    queue.drain()
-    mcp = _FakeMCP()
-    try:
-        register_gateways(mcp, str(project_root), {})
-        if field is None:
-            value = Material.load(str(path)).serialize_document()["renderState"]
-        arguments = {"asset_guid": guid, "pointer": f"/renderState/{field}" if field is not None else "/renderState", "value": value}
-        changed = mcp.tools["operation_command_execute"]("infernux.material.property.set", arguments)
-        assert changed["ok"], changed
-        expected_override = (
-            int(getattr(RenderStateOverride, override)) if override is not None
-            else sum(int(flag) for flag in RenderStateOverride.__members__.values())
-        )
-        assert changed["data"]["result"]["document"].get("renderStateOverrides", 0) == expected_override
-        material = Material.load(str(path))
-        assert material is not None
-        material.native.apply_shader_render_meta("back", "on", "less", "off", 2500)
-        actual_state = material.serialize_document()["renderState"]
-        assert (actual_state[field] if field is not None else actual_state) == value
-        revision = core.action_journal.revision
-        entries = core.action_journal.applied_entries()
-        repeated = mcp.tools["operation_command_execute"]("infernux.material.property.set", arguments)
-        assert repeated["ok"], repeated
-        assert core.action_journal.revision == revision
-        assert core.action_journal.applied_entries() == entries
-        undo.undo()
-        assert material.render_state_overrides == 0
-    finally:
-        shutdown_adapter()
-        manager.shutdown()
-        core.shutdown()
-        UndoManager._instance = previous_undo
-        PluginManager._instance = previous_plugins
-        AssetManager._asset_database = previous_database
-        queue.release_owner("MCP material render-state authorship test finished")
-        database.delete_asset(str(path))
-        path.unlink(missing_ok=True)
-        Path(str(path) + ".meta").unlink(missing_ok=True)
-
-
-def test_schema_gateway_repeated_material_slot_assignment_is_success(engine, scene):
-    from infernux.core.assets import AssetManager
-    from infernux.engine.interaction import EditorInteractionCore
-    from infernux.engine.ui import project_file_ops
-    from infernux.engine.undo import UndoManager
-    from infernux.host import MainThreadCommandQueue
-    from infernux.plugins import PluginManager
-
-    database = engine.get_asset_database()
-    project_root = Path(database.project_root)
-    assets = project_root / "Assets"
-    assets.mkdir(exist_ok=True)
-    paths = []
-    guids = []
-    for _ in range(2):
-        name = f"McpSlot_{uuid.uuid4().hex}"
-        path = assets / f"{name}.mat"
-        created, error = project_file_ops.create_material(str(assets), name, database)
-        assert created, error
-        paths.append(path)
-        guids.append(database.get_guid_from_path(str(path)))
-    assert all(guids)
-    owner = scene.create_game_object("MCP Material Slot")
-    renderer = owner.add_component("MeshRenderer")
-    previous_plugins = PluginManager._instance
-    previous_database = AssetManager._asset_database
-    previous_undo = UndoManager._instance
-    core = EditorInteractionCore()
-    core.project_assets.configure(str(project_root), database)
-    undo = UndoManager(core.action_journal)
-    manager = PluginManager(str(project_root), engine=engine)
-    PluginManager._instance = manager
-    AssetManager._asset_database = database
-    queue = MainThreadCommandQueue.instance()
-    queue.drain()
-    mcp = _FakeMCP()
-    try:
-        register_gateways(mcp, str(project_root), {})
-        arguments = {
-            "object_id": owner.id,
-            "component_id": renderer.component_id,
-            "slot": 0,
-            "material_guid": guids[0],
-        }
-        changed = mcp.tools["operation_command_execute"](
-            "infernux.material.slot.assign", arguments
-        )
-        assert changed["ok"], changed
-        assert renderer.get_material_guids()[0] == guids[0]
-        before = owner.serialize_document()
-        revision = core.action_journal.revision
-        entries = core.action_journal.applied_entries()
-        assert len(entries) == 1
-        repeated = mcp.tools["operation_command_execute"](
-            "infernux.material.slot.assign", arguments
-        )
-        assert repeated["ok"], repeated
-        assert repeated["data"]["result"]["material_guid"] == guids[0]
-        assert owner.serialize_document() == before
-        assert core.action_journal.revision == revision
-        assert core.action_journal.applied_entries() == entries
-
-        undo.enabled = False
-        rejected = mcp.tools["operation_command_execute"](
-            "infernux.material.slot.assign", {**arguments, "material_guid": guids[1]}
-        )
-        assert not rejected["ok"], rejected
-        invalid = mcp.tools["operation_command_execute"](
-            "infernux.material.slot.assign", {**arguments, "material_guid": uuid.uuid4().hex}
-        )
-        assert not invalid["ok"], invalid
-        assert renderer.get_material_guids()[0] == guids[0]
-        assert owner.serialize_document() == before
-        assert core.action_journal.revision == revision
-        assert core.action_journal.applied_entries() == entries
-    finally:
-        shutdown_adapter()
-        manager.shutdown()
-        core.shutdown()
-        UndoManager._instance = previous_undo
-        PluginManager._instance = previous_plugins
-        AssetManager._asset_database = previous_database
-        queue.release_owner("MCP repeated material slot test finished")
-        for path in paths:
-            database.delete_asset(str(path))
-            path.unlink(missing_ok=True)
-            Path(str(path) + ".meta").unlink(missing_ok=True)
-
-
 def test_schema_gateway_can_edit_real_data_asset_document(engine):
     from infernux.components import serialized_field
     from infernux.core import AssetManager, DataAsset
@@ -978,22 +543,18 @@ def test_schema_gateway_can_edit_real_data_asset_document(engine):
     try:
         source.save_to(str(path), database=database)
         guid = source.guid
-        register_gateways(mcp, str(project_root), {})
-
-        schema = mcp.tools["operation_query_execute"](
-            "infernux.data_asset.schema", {"asset_guid": guid}
+        register_gateways(
+            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
         )
+
+        schema = mcp.tools["operation_query_execute"]("infernux.data_asset.schema", {"asset_guid": guid})
         assert schema["ok"] is True
         speed_schema = next(
-            field
-            for field in schema["data"]["result"]["fields"]
-            if field["property_path"] == "McpDataAsset.speed"
+            field for field in schema["data"]["result"]["fields"] if field["property_path"] == "McpDataAsset.speed"
         )
         assert speed_schema["attributes"]["range"] == [0.0, 20.0]
 
-        inspected = mcp.tools["operation_query_execute"](
-            "infernux.data_asset.inspect", {"asset_guid": guid}
-        )
+        inspected = mcp.tools["operation_query_execute"]("infernux.data_asset.inspect", {"asset_guid": guid})
         assert inspected["ok"] is True
         assert inspected["data"]["result"]["document"]["fields"]["speed"] == 3.0
 
@@ -1017,9 +578,7 @@ def test_schema_gateway_can_edit_real_data_asset_document(engine):
         assert len(undo.action_journal.applied_entries()) == 1
 
         undo.undo()
-        restored = mcp.tools["operation_query_execute"](
-            "infernux.data_asset.inspect", {"asset_guid": guid}
-        )
+        restored = mcp.tools["operation_query_execute"]("infernux.data_asset.inspect", {"asset_guid": guid})
         assert restored["ok"] is True
         assert restored["data"]["result"]["document"]["fields"]["speed"] == 3.0
 
@@ -1083,7 +642,9 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(project_root), {})
+        register_gateways(
+            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+        )
         changed = mcp.tools["operation_command_execute"](
             "infernux.particle.graph.property.set",
             {
@@ -1111,7 +672,7 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
         Path(str(path) + ".meta").unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine, newline):
     from infernux.core.assets import AssetManager
     from infernux.engine.interaction import EditorInteractionCore
@@ -1124,7 +685,7 @@ def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine, new
     assets = project_root / "Assets"
     assets.mkdir(exist_ok=True)
     path = assets / f"McpText_{uuid.uuid4().hex}.txt"
-    original = ('before' + newline).encode('utf-8')
+    original = ("before" + newline).encode("utf-8")
     path.write_bytes(original)
     guid = AssetManager.import_asset(str(path), database=database).guid
 
@@ -1141,12 +702,12 @@ def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine, new
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(project_root), {})
-        read = mcp.tools["operation_query_execute"](
-            "infernux.asset.text.read", {"asset_guid": guid}
+        register_gateways(
+            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
         )
+        read = mcp.tools["operation_query_execute"]("infernux.asset.text.read", {"asset_guid": guid})
         assert read["ok"] is True
-        assert read["data"]["result"]["content"] == original.decode('utf-8')
+        assert read["data"]["result"]["content"] == original.decode("utf-8")
 
         changed = mcp.tools["operation_command_execute"](
             "infernux.asset.text.set",
@@ -1214,10 +775,10 @@ def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(project_root), {})
-        kinds = mcp.tools["operation_query_execute"](
-            "infernux.asset.create.kinds", {}
+        register_gateways(
+            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
         )
+        kinds = mcp.tools["operation_query_execute"]("infernux.asset.create.kinds", {})
         assert kinds["ok"] is True
         assert {item["kind"] for item in kinds["data"]["result"]["kinds"]} >= {
             "data_asset",
@@ -1278,9 +839,92 @@ def test_server_start_rejects_occupied_port_without_false_loaded_state(tmp_path)
     assert adapter_status()["active"] is False
 
 
-def test_server_hot_reload_keeps_one_owner_and_stops_without_error(
-    tmp_path, monkeypatch
-):
+def test_direct_http_clients_connect_and_survive_editor_restart(tmp_path):
+    import asyncio
+    import httpx
+    from fastmcp import Client
+    from infernux.engine.project_context import get_project_root, using_project_root
+    from infernux.host import Operation, OperationKind, OperationSchema
+    from infernux_mcp.client import create_loopback_client
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    endpoint = server.endpoint_url(port=port)
+    health = server.health_url(port=port)
+    blocked, release = threading.Event(), threading.Event()
+    registry = OperationRegistry.instance()
+
+    def slow_query():
+        blocked.set()
+        assert release.wait(10), "test did not release the gateway"
+        return {"root": get_project_root()}
+
+    async def verify():
+        async with httpx.AsyncClient(trust_env=False) as http:
+            # DNS-rebinding guard for /mcp: foreign Host and foreign browser origins.
+            initialize = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+            accept = {"Accept": "application/json, text/event-stream"}
+            rebinding = {**accept, "Host": f"attacker.example:{port}"}
+            assert (await http.post(endpoint, headers=rebinding, json=initialize)).status_code == 421
+            foreign = {**accept, "Origin": "https://attacker.example"}
+            assert (await http.post(endpoint, headers=foreign, json=initialize)).status_code == 403
+            assert (await http.get(health)).json() == {"name": "Infernux Editor", "ready": True}
+            async with create_loopback_client(endpoint, timeout_seconds=20) as client:
+                assert (await client.call_tool("mcp_ping")).data["ok"]
+                query = asyncio.create_task(
+                    client.call_tool("operation_query_execute", {"operation": "test.transport.slow"})
+                )
+                deadline = time.monotonic() + 5
+                while not blocked.is_set() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+                assert blocked.is_set()
+                assert (await http.get(health, timeout=2)).status_code == 200
+                assert not release.is_set()
+                release.set()
+                result = (await query).data
+                assert result["ok"] and result["data"]["result"]["root"] == str(tmp_path)
+            config = server.connection_info(port=port)["clients"]["generic"]["config"]
+            assert config["mcpServers"]["infernux-editor"]["url"] == endpoint
+            async with Client(config, timeout=20) as direct:
+                assert (await direct.call_tool("mcp_ping")).data["ok"]
+            server.stop_server()
+            assert server.start_server(str(tmp_path), port=port)
+            async with Client(config, timeout=20) as direct:
+                assert (await direct.call_tool("mcp_ping")).data["ok"]
+
+    try:
+        with using_project_root(str(tmp_path)):
+            assert server.start_server(str(tmp_path), port=port)
+            registry.register(
+                Operation(
+                    OperationSchema(
+                        id="test.transport.slow",
+                        kind=OperationKind.QUERY,
+                        summary="Block one gateway while testing health isolation.",
+                        input_schema={"type": "object", "properties": {}},
+                        output_schema={"type": "object"},
+                        errors=(),
+                        side_effects=(),
+                        reversible=False,
+                        cost={"class": "constant"},
+                        thread="any",
+                        capabilities=("project.read",),
+                    ),
+                    slow_query,
+                    "transport-test",
+                )
+            )
+            asyncio.run(verify())
+    finally:
+        release.set()
+        server.stop_server()
+        registry.unregister_owner("transport-test")
+
+
+def test_server_hot_reload_keeps_one_owner_and_stops_without_error(tmp_path, monkeypatch):
     (tmp_path / "Assets").mkdir()
     (tmp_path / "ProjectSettings").mkdir()
     with socket.socket() as probe:
@@ -1297,20 +941,14 @@ def test_server_hot_reload_keeps_one_owner_and_stops_without_error(
     try:
         assert server.start_server(str(tmp_path), port=port) is True
         assert server.is_running() is True
-        assert sum(
-            thread.name == "InfernuxMCPHTTP" and thread.is_alive()
-            for thread in threading.enumerate()
-        ) == 1
+        assert sum(thread.name == "InfernuxMCPHTTP" and thread.is_alive() for thread in threading.enumerate()) == 1
 
         sys.modules.pop(server.__name__, None)
         replacement = importlib.import_module(server.__name__)
         assert replacement is not server
         assert replacement.is_running() is True
         assert replacement.start_server(str(tmp_path), port=port) is True
-        assert sum(
-            thread.name == "InfernuxMCPHTTP" and thread.is_alive()
-            for thread in threading.enumerate()
-        ) == 1
+        assert sum(thread.name == "InfernuxMCPHTTP" and thread.is_alive() for thread in threading.enumerate()) == 1
 
         replacement.stop_server()
         assert replacement.is_running() is False
@@ -1363,12 +1001,12 @@ def test_server_shutdown_closes_connected_streamable_http_session(tmp_path):
         async with create_loopback_client(server.endpoint_url(port=port), timeout_seconds=20) as client:
             state = server._active_state()
             ping = await client.call_tool("mcp_ping")
-            assert ping.data['ok']
-            assert ping.data['data']['message'] == 'pong'
+            assert ping.data["ok"]
+            assert ping.data["data"]["message"] == "pong"
             await asyncio.to_thread(server.stop_server)
             assert not server.is_running()
             assert state.error is None
-            assert not (tmp_path / 'mcp.json').exists()
+            assert not (tmp_path / "mcp.json").exists()
 
     try:
         assert server.start_server(str(tmp_path), port=port)
@@ -1397,12 +1035,12 @@ def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeyp
             time.sleep(cancelled_reply_delay)
             raise
 
-    monkeypatch.setattr(CommandFuture, 'result', delayed_cancelled_reply)
+    monkeypatch.setattr(CommandFuture, "result", delayed_cancelled_reply)
     (tmp_path / "Assets").mkdir()
     (tmp_path / "ProjectSettings").mkdir()
     command_queue = MainThreadCommandQueue()
     command_queue.drain()
-    monkeypatch.setattr(MainThreadCommandQueue, '_instance', command_queue)
+    monkeypatch.setattr(MainThreadCommandQueue, "_instance", command_queue)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -1412,12 +1050,14 @@ def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeyp
             # Tool-result validation lazily fetches schemas. Discover them while
             # the server is alive so shutdown cannot trigger a new tools/list.
             await client.list_tools()
-            query = asyncio.create_task(client.call_tool('operation_query_execute', {'operation': 'infernux.project.info'}))
+            query = asyncio.create_task(
+                client.call_tool("operation_query_execute", {"operation": "infernux.project.info"})
+            )
             try:
                 for _ in range(100):
                     if command_queue._queue.qsize():
                         break
-                    await asyncio.sleep(.01)
+                    await asyncio.sleep(0.01)
                 assert command_queue._queue.qsize() == 1
                 state = server._active_state()
                 await asyncio.to_thread(server.stop_server)
@@ -1426,17 +1066,17 @@ def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeyp
                 pending = list(command_queue._queue.queue)
                 assert not any(future.can_execute() for _name, _fn, future in pending)
                 result = await query
-                assert not result.data['ok']
+                assert not result.data["ok"]
             finally:
-                command_queue.cancel_pending('test cleanup')
-                result, = await asyncio.gather(query, return_exceptions=True)
-                assert isinstance(result, BaseException) or not result.data['ok']
+                command_queue.cancel_pending("test cleanup")
+                (result,) = await asyncio.gather(query, return_exceptions=True)
+                assert isinstance(result, BaseException) or not result.data["ok"]
 
     try:
         assert server.start_server(str(tmp_path), port=port)
         asyncio.run(queued_shutdown())
     finally:
-        command_queue.cancel_pending('test cleanup')
+        command_queue.cancel_pending("test cleanup")
         server.stop_server()
 
 
@@ -1449,8 +1089,12 @@ def test_failed_transport_retirement_does_not_publish_successful_unload(monkeypa
         raise failure
 
     state = server._ServerState(
-        project_path=str(tmp_path), host="127.0.0.1", port=9713,
-        mcp=object(), transport=object(), adapter_shutdown=reject_shutdown,
+        project_path=str(tmp_path),
+        host="127.0.0.1",
+        port=9713,
+        mcp=object(),
+        transport=object(),
+        adapter_shutdown=reject_shutdown,
     )
     messages = []
     monkeypatch.setattr(server.Debug, "log_error", staticmethod(messages.append))

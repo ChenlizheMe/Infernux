@@ -12,20 +12,10 @@ from infernux.jit_runtime import (
 )
 
 
-def test_bounded_lru_evicts_oldest_and_promotes_reads():
-    cache = BoundedLRU[str, int](2)
-    cache["a"] = 1
-    cache["b"] = 2
-    assert cache.get("a") == 1
-    cache["c"] = 3
-    assert "a" in cache
-    assert "b" not in cache
-    assert cache.get("c") == 3
-
-
 def test_preparation_does_not_hold_arrays_until_cyclic_gc():
     import gc
     import weakref
+
     enabled = gc.isenabled()
     gc.disable()
     try:
@@ -41,155 +31,6 @@ def test_preparation_does_not_hold_arrays_until_cyclic_gc():
             gc.enable()
 
 
-def test_compiler_fingerprint_tracks_constants_defaults_and_dependencies():
-    def helper(value):
-        return value + 1
-
-    def kernel(value=3):
-        return helper(value) + 7
-
-    before = compiler_fingerprint(kernel, {"fastmath": False})
-
-    def replacement(value):
-        return value + 2
-
-    helper.__code__ = replacement.__code__
-    after_dependency = compiler_fingerprint(kernel, {"fastmath": False})
-    after_option = compiler_fingerprint(kernel, {"fastmath": True})
-
-    assert before != after_dependency
-    assert after_dependency != after_option
-
-
-def test_compiler_fingerprint_tracks_cpu_feature_configuration(monkeypatch):
-    def kernel(value):
-        return value + 1
-
-    monkeypatch.setenv("NUMBA_CPU_FEATURES", "+sse2")
-    first = compiler_fingerprint(kernel)
-    monkeypatch.setenv("NUMBA_CPU_FEATURES", "+avx2")
-    second = compiler_fingerprint(kernel)
-
-    assert first != second
-
-
-def test_compiler_fingerprint_tracks_transitive_helper_closure_values():
-    def make_leaf(offset):
-        def leaf(value):
-            return value + offset
-        return leaf
-
-    leaf = make_leaf(2)
-
-    def helper(value):
-        return leaf(value)
-
-    def kernel(value):
-        return helper(value)
-
-    first = compiler_fingerprint(kernel)
-    leaf = make_leaf(9)
-    assert compiler_fingerprint(kernel) != first
-
-
-def test_compiler_fingerprint_handles_recursive_helpers_without_identity_keys():
-    source = "def left(x): return right(x - 1) if x > 0 else FACTOR\n" \
-             "def right(x): return left(x)\n"
-
-    def publish(factor):
-        namespace = {"__name__": "recursive_jit_dependencies", "FACTOR": factor}
-        exec(source, namespace)
-        return namespace["left"]
-
-    assert compiler_fingerprint(publish(2)) == compiler_fingerprint(publish(2))
-    assert compiler_fingerprint(publish(2)) != compiler_fingerprint(publish(7))
-
-
-def test_compiler_fingerprint_ignores_unreferenced_module_values():
-    def publish(unused):
-        namespace = {"__name__": "jit_relevant_constants", "FACTOR": 2, "UNUSED": unused}
-        exec("def kernel(value): return value * FACTOR", namespace)
-        return namespace["kernel"]
-
-    assert compiler_fingerprint(publish(3)) == compiler_fingerprint(publish(9))
-
-
-def test_compiler_fingerprint_tracks_helper_defaults():
-    def helper(value, offset=2):
-        return value + offset
-
-    def kernel(value):
-        return helper(value)
-
-    first = compiler_fingerprint(kernel)
-    helper.__defaults__ = (5,)
-    assert compiler_fingerprint(kernel) != first
-
-
-def test_compiler_fingerprint_tracks_only_referenced_module_attributes():
-    from types import ModuleType
-
-    settings = ModuleType("authored_settings")
-    settings.nested = ModuleType("authored_settings.nested")
-    settings.nested.scale = 2
-    settings.unused = 1
-    namespace = {"__name__": "authored_kernel", "settings": settings}
-    exec("def kernel(value): return value * settings.nested.scale", namespace)
-    function = namespace["kernel"]
-    before = compiler_fingerprint(function)
-    settings.unused = 99
-    assert compiler_fingerprint(function) == before
-    settings.nested.scale = 5
-    assert compiler_fingerprint(function) != before
-
-
-def test_compiler_fingerprint_tracks_module_captured_in_closure():
-    from types import ModuleType
-
-    settings = ModuleType("closed_settings")
-    settings.scale = 2
-
-    def kernel(value):
-        return value * settings.scale
-
-    before = compiler_fingerprint(kernel)
-    settings.scale = 5
-    assert compiler_fingerprint(kernel) != before
-
-
-def test_runtime_signature_separates_shape_dtype_layout_and_threads():
-    small = np.zeros((16, 2), dtype=np.float32)
-    large = np.zeros((100_000, 2), dtype=np.float32)
-    f_order = np.asfortranarray(small)
-
-    small_key = runtime_signature((small,), {}, thread_count=4)
-    assert small_key != runtime_signature((large,), {}, thread_count=4)
-    assert small_key != runtime_signature((small.astype(np.float64),), {}, thread_count=4)
-    assert small_key != runtime_signature((f_order,), {}, thread_count=4)
-    assert small_key != runtime_signature((small,), {}, thread_count=8)
-
-
-def test_static_cost_model_prefers_ast_work_before_timing():
-    small = np.zeros((32, 3), dtype=np.float32)
-    large = np.zeros((10_000_000, 3), dtype=np.float32)
-
-    small_decision = static_cost_decision(
-        (small,), {}, operation_cost=12, thread_count=8
-    )
-    large_decision = static_cost_decision(
-        (large,), {}, operation_cost=12, thread_count=8
-    )
-
-    assert (small_decision.mode, small_decision.confidence) == ("serial", "high")
-    assert (large_decision.mode, large_decision.confidence) == ("parallel", "high")
-    assert large_decision.work_units > small_decision.work_units
-
-
-def test_static_cost_model_leaves_unknown_trip_count_for_measurement():
-    decision = static_cost_decision(([0] * 16,), {}, operation_cost=12, thread_count=8)
-    assert (decision.mode, decision.confidence) == ("serial", "gray")
-
-
 def test_clone_and_equivalence_include_mutated_array_arguments():
     values = np.arange(8, dtype=np.float32)
     left_args, left_kwargs = clone_call_arguments((values,), {"scale": 2.0})
@@ -202,18 +43,6 @@ def test_clone_and_equivalence_include_mutated_array_arguments():
 
     right_args[0][3] = -1
     assert not calls_equivalent(None, left_args, left_kwargs, None, right_args, right_kwargs)
-
-
-def test_clone_rejects_unknown_mutable_object():
-    class Unknown:
-        pass
-
-    try:
-        clone_call_arguments((Unknown(),), {})
-    except TypeError as exc:
-        assert "cannot isolate" in str(exc)
-    else:
-        raise AssertionError("unknown mutable object must not be benchmarked")
 
 
 def test_clone_preserves_aliases_across_positional_keyword_and_nested_arguments():

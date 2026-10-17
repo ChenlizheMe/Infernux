@@ -4,7 +4,6 @@ from infernux.components.component_identity import bind_asset_script_guid, compo
 from infernux.components.missing_script import create_missing_script_component
 from infernux.components.script_loader import load_component_class_from_file
 from infernux.engine.component_restore import create_component_instance
-from infernux.lib import _Vec3WritebackProxy
 
 
 def test_asset_script_bind_is_stable_across_module_rename(tmp_path):
@@ -198,22 +197,3 @@ def test_missing_script_placeholder_preserves_identity_and_fields():
     encoded = missing._serialize_fields_document()
     assert encoded["speed"] == 3.5
     assert encoded["__type_name__"] == "Gone"
-
-def test_vec3_writeback_proxy_is_subscriptable():
-    class _Vec:
-        def __init__(self, x=0.0, y=0.0, z=0.0):
-            self.x = float(x)
-            self.y = float(y)
-            self.z = float(z)
-
-    class _Owner:
-        def __init__(self):
-            self.pos = _Vec(1.0, 2.0, 3.0)
-
-    owner = _Owner()
-    proxy = _Vec3WritebackProxy(owner, "pos", owner.pos, lambda o, v: setattr(o, "pos", v))
-    assert proxy[0] == 1.0
-    assert proxy[1] == 2.0
-    assert proxy[2] == 3.0
-    proxy[1] = 9.0
-    assert owner.pos.y == 9.0

@@ -9,27 +9,20 @@ methods, and panel/manager references live on the bootstrap instance.
 from __future__ import annotations
 
 import os
-import threading
 import time
 from typing import Optional
 
 import infernux.resources as _resources
 from infernux.debug import Debug
 from infernux.engine.engine import Engine, LogLevel
-from infernux.engine.resources_manager import ResourcesManager
 from infernux.engine.play_mode import PlayModeManager, PlayModeState
 from infernux.engine.scene_manager import SceneFileManager
 from infernux.engine.ui import (
     SceneViewPanel,
     GameViewPanel,
     WindowManager,
-    TagLayerSettingsPanel,
-    BuildSettingsPanel,
     UIEditorPanel,
-    EditorPanel,
     EditorServices,
-    PanelRegistry,
-    editor_panel,
 )
 from infernux.engine.ui import panel_state as _panel_state
 
@@ -626,8 +619,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                         _panel_state.put(f"panel:{wid}", data)
                     else:
                         _panel_state.delete(f"panel:{wid}")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    Debug.log_suppressed(f"EditorBootstrap.save_state:{wid}", exc)
 
         _panel_state.save()
 

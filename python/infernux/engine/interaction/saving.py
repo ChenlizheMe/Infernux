@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
+from .contexts import FocusService, FocusSnapshot
 from .documents import DocumentActionResult, DocumentActionStatus, DocumentKind, DocumentRegistry
+
+if TYPE_CHECKING:
+    from .panels import PanelInteractionRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,33 +26,51 @@ class FocusedSaveResult:
 
 
 class EditorSaveService:
-    """Resolve and save exactly one focused document through DocumentRegistry."""
+    """Save the active authoring view while auxiliary panels own keyboard focus."""
 
     _instance: Optional["EditorSaveService"] = None
 
-    def __init__(self, registry: DocumentRegistry) -> None:
+    def __init__(self, registry: DocumentRegistry, panels: PanelInteractionRegistry) -> None:
         self._registry = registry
+        self._panels = panels
+        self._focus = FocusService.instance()
+        self._last_primary_view_id = ""
+        self._focus.add_listener(self._observe_focus)
+        self._observe_focus(self._focus.snapshot)
         EditorSaveService._instance = self
+
+    def _primary_document(self, view_id: str):
+        document = self._registry.document_for_view(view_id)
+        if document is not None and (
+            document.kind in {DocumentKind.SCENE, DocumentKind.PREFAB}
+            or self._panels.is_document_backed(type_id=view_id, view_id=view_id)
+        ):
+            return document
+        return None
+
+    def _observe_focus(self, snapshot: FocusSnapshot) -> None:
+        view_id = snapshot.active_view_id or snapshot.active_panel_id
+        if self._primary_document(view_id) is not None:
+            self._last_primary_view_id = view_id
 
     @classmethod
     def instance(cls) -> Optional["EditorSaveService"]:
         return cls._instance
 
     def save_focused(self, *, save_as: bool = False) -> FocusedSaveResult:
-        from .contexts import FocusService
         from .continuous_edits import ContinuousEditService
 
-        focus = FocusService.instance().snapshot
-        document_id = str(focus.active_document_id or "")
-        document = self._registry.get(document_id) if document_id else None
-        if document_id and document is None:
+        focus = self._focus.snapshot
+        self._observe_focus(focus)
+        view_id = self._last_primary_view_id
+        document = self._primary_document(view_id) if view_id else None
+        if view_id and document is None:
             return FocusedSaveResult(
                 DocumentActionResult(
                     DocumentActionStatus.REJECTED,
-                    "focused document is no longer registered",
+                    "last authoring view no longer owns a document",
                 ),
-                panel_id=focus.active_panel_id,
-                document_id=document_id,
+                panel_id=view_id,
             )
 
         if document is None:
@@ -119,10 +141,12 @@ class EditorSaveService:
             result,
             target="scene" if document.kind is DocumentKind.SCENE else "document",
             document_id=document.document_id,
-            panel_id=focus.active_panel_id if document.kind is not DocumentKind.SCENE else "",
+            panel_id=view_id if document.kind is not DocumentKind.SCENE else "",
             dirty_before=dirty_before,
         )
 
     def shutdown(self) -> None:
+        self._focus.remove_listener(self._observe_focus)
+        self._last_primary_view_id = ""
         if EditorSaveService._instance is self:
             EditorSaveService._instance = None

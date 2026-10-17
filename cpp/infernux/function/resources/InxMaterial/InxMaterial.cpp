@@ -2,6 +2,7 @@
 #include "MaterialDocumentValidation.h"
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
@@ -463,11 +464,9 @@ bool ApplyStencilMeta(RenderState &renderState, const std::string &stencil)
 
     MaterialStencilOpState opState{};
     opState.compareOp = ParseDepthCompareOpString(parts[0], MaterialCompareOp::Always);
-    try {
-        opState.reference = static_cast<uint32_t>(std::stoi(parts[1]));
-    } catch (...) {
-        opState.reference = 0;
-    }
+    const auto reference = std::from_chars(parts[1].data(), parts[1].data() + parts[1].size(), opState.reference);
+    if (reference.ec != std::errc{} || reference.ptr != parts[1].data() + parts[1].size())
+        throw std::invalid_argument("Shader stencil reference must be an unsigned integer: " + parts[1]);
     opState.passOp = (parts.size() > 2) ? ParseStencilOpString(parts[2]) : MaterialStencilOp::Keep;
     opState.failOp = (parts.size() > 3) ? ParseStencilOpString(parts[3]) : MaterialStencilOp::Keep;
     opState.depthFailOp = (parts.size() > 4) ? ParseStencilOpString(parts[4]) : MaterialStencilOp::Keep;
@@ -1033,6 +1032,15 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
                                         const std::string &passTag, const std::string &stencil,
                                         const std::string &alphaClip)
 {
+    float threshold = 0.0f;
+    const bool alphaEnabled = !alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip);
+    if (alphaEnabled) {
+        const auto parsed = std::from_chars(alphaClip.data(), alphaClip.data() + alphaClip.size(), threshold);
+        if (parsed.ec != std::errc{} || parsed.ptr != alphaClip.data() + alphaClip.size() || !std::isfinite(threshold))
+            throw std::invalid_argument("Shader alpha clip threshold must be a finite number: " + alphaClip);
+    }
+    RenderState stencilState = m_renderState;
+    const bool hasStencil = ApplyStencilMeta(stencilState, stencil);
     const uint64_t previousVersion = m_version;
     const RenderState previousState = m_renderState;
     const std::string previousPassTag = m_passTag;
@@ -1133,18 +1141,18 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
     }
 
     // Stencil: compare_op, ref, pass_op, fail_op, depth_fail_op.
-    changed |= ApplyStencilMeta(m_renderState, stencil);
+    if (hasStencil) {
+        m_renderState.stencilTestEnable = stencilState.stencilTestEnable;
+        m_renderState.stencilFront = stencilState.stencilFront;
+        m_renderState.stencilBack = stencilState.stencilBack;
+        changed = true;
+    }
 
     // AlphaClip threshold. Skip when the material overrides alpha clipping.
-    if (!alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip)) {
+    if (alphaEnabled) {
         if (!m_renderState.alphaClipEnabled) {
             m_renderState.alphaClipEnabled = true;
             changed = true;
-        }
-        float threshold = 0.5f;
-        try {
-            threshold = std::stof(alphaClip);
-        } catch (...) {
         }
         if (m_renderState.alphaClipThreshold != threshold) {
             m_renderState.alphaClipThreshold = threshold;

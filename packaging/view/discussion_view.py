@@ -18,7 +18,6 @@ from itertools import count
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -29,7 +28,6 @@ from PySide6.QtWidgets import (
 import community_feed
 from community_feed import COMMUNITY_ORIGIN, HotTopic, parse_hot_topics
 from i18n import tr
-from style import StyleManager
 from view.hover_widgets import AnimatedSurfaceFrame
 from view.forge import HazardStripe, PageHeader, StatusLed, fmt_age, mono_label, qcolor, theme
 
@@ -167,9 +165,8 @@ class DiscussionView(QWidget):
             if view is not None and shiboken6.isValid(view):
                 view._request_finished(request_id, topics, error)
 
-        self._deliver = deliver
         # Queued: workers emit from their own thread; widgets update on the GUI thread.
-        _bridge().finished.connect(deliver, Qt.ConnectionType.QueuedConnection)
+        self._feed_connection = _bridge().finished.connect(deliver, Qt.ConnectionType.QueuedConnection)
         self._request_error = ""
         self._deadline = QTimer(self)
         self._deadline.setSingleShot(True)
@@ -319,14 +316,13 @@ class DiscussionView(QWidget):
             self._refresh.setEnabled(True)
 
     def shutdown(self) -> None:
+        if self._closing:
+            return
         self._closing = True
         self._deadline.stop()
         self._auto_refresh.stop()
         self._reply = None
-        try:
-            _bridge().finished.disconnect(self._deliver)
-        except (RuntimeError, TypeError):
-            pass
+        QObject.disconnect(self._feed_connection)
 
     def _clear_feed(self) -> None:
         while self._feed.count():

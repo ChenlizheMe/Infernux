@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Protocol
@@ -130,7 +129,7 @@ class DocumentOpenService:
                         DocumentOpenStatus.FAILED,
                         message=str(exc),
                     )
-                if result.status is DocumentOpenStatus.FAILED:
+                if result.status is not DocumentOpenStatus.READY:
                     return result
             return DocumentOpenResult(DocumentOpenStatus.READY, document)
         return self.resolve_or_open(locator)

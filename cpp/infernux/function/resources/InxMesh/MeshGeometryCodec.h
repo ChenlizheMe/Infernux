@@ -329,6 +329,11 @@ inline std::vector<Vertex> Decode(std::string_view bytes, size_t vertexCount, Me
         if (secondaryUv && ranges.uv1Max[i] < ranges.uv1Min[i])
             throw std::invalid_argument("compressed mesh vertex stream contains a reversed secondary UV range");
     }
+    const size_t minimumVertexBits = 3 * precision.position + 2 + 3 * precision.color +
+                                     (secondaryUv ? 4 : 2) * precision.uv + 4 * 32 + 4 * precision.weight;
+    const uint64_t availableBits = static_cast<uint64_t>(bytes.size() - cursor) * 8;
+    if (vertexCount > availableBits / minimumVertexBits)
+        throw std::invalid_argument("compressed mesh vertex count exceeds the encoded stream");
     BitReader reader(bytes.substr(cursor));
     std::vector<Vertex> vertices(vertexCount);
     for (auto &vertex : vertices) {

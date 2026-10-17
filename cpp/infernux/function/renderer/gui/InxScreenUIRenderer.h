@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#include <function/scene/NativeLifetime.h>
 
 #include "../MaterialDescriptor.h"
 #include "../rhi/GpuRetirementQueue.h"
@@ -99,7 +100,7 @@ struct UIShaderMaterialBinding
  * Accumulates draw commands (filled rects, textured rects, text) per frame
  * and renders them into the scene MSAA render target during a RenderGraph pass.
  */
-class InxScreenUIRenderer
+class InxScreenUIRenderer : public NativeLifetimeOwner
 {
     friend struct ScreenUIVulkanTestAccess;
 

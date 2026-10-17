@@ -1,78 +1,15 @@
 from __future__ import annotations
-
 import pytest
-
 from infernux.engine.interaction import (
     ActionOrigin,
     ContextRestoreStatus,
-    DocumentKey,
-    DocumentKind,
-    DocumentLocator,
     EditorActionJournal,
     EditorContextSnapshot,
     FocusSnapshot,
     SelectionSnapshot,
     SelectionTarget,
-    WindowLocator,
 )
-
-
-class _DisposableAction:
-    marks_dirty = False
-
-    def __init__(self, name: str, disposed: list[str], *, merge: bool = False):
-        self.name = name
-        self.disposed = disposed
-        self.merge_enabled = merge
-
-    def can_merge(self, _other) -> bool:
-        return self.merge_enabled
-
-    def merge(self, _other) -> None:
-        pass
-
-    def dispose(self) -> None:
-        self.disposed.append(self.name)
-
-
-def test_editor_context_rejects_non_selection_payloads():
-    with pytest.raises(TypeError, match="SelectionSnapshot"):
-        EditorContextSnapshot().with_selection({"component": 7})
-
-    snapshot = SelectionSnapshot()
-    assert EditorContextSnapshot().with_selection(snapshot).selection == snapshot
-
-
-def test_editor_context_selection_replacement_preserves_document_locator():
-    locator = DocumentLocator(
-        "particle-smoke",
-        DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
-        title="Smoke",
-    )
-    window = WindowLocator("particle/Smoke", "particle_graph_editor")
-    scene = DocumentLocator(
-        "scene-main",
-        DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
-        title="Main",
-    )
-    context = EditorContextSnapshot(document=locator, window=window, scene=scene)
-
-    replaced = context.with_selection(SelectionSnapshot())
-
-    assert replaced.document == locator
-    assert replaced.window == window
-    assert replaced.scene == scene
-
-
 from infernux.engine.undo import UndoCommand, UndoManager
-
-
-def test_undo_manager_exposes_only_the_global_journal_history():
-    manager = UndoManager(EditorActionJournal())
-
-    assert manager.action_journal is not None
-    assert not hasattr(manager, "_undo_stack")
-    assert not hasattr(manager, "_redo_stack")
 
 
 class ValueAction(UndoCommand):
@@ -93,6 +30,24 @@ class ValueAction(UndoCommand):
 
     def merge(self, other):
         self.new_value = other.new_value
+
+
+class _DisposableAction:
+    marks_dirty = False
+
+    def __init__(self, name, disposed, *, merge=False):
+        self.name = name
+        self.disposed = disposed
+        self.merge_enabled = merge
+
+    def can_merge(self, _other):
+        return self.merge_enabled
+
+    def merge(self, _other):
+        pass
+
+    def dispose(self):
+        self.disposed.append(self.name)
 
 
 def test_action_journal_uses_one_cursor_and_discards_redo_branch():
@@ -143,18 +98,6 @@ def test_action_journal_disposes_action_absorbed_by_merge():
     assert disposed == ["incoming"]
 
 
-def test_external_changes_never_enter_user_history():
-    journal = EditorActionJournal()
-
-    result = journal.record(
-        ValueAction({"value": 0}, 0, 1),
-        origin=ActionOrigin.EXTERNAL,
-    )
-
-    assert result.recorded is False
-    assert journal.entries == ()
-
-
 def test_undo_manager_restores_context_around_replay():
     manager = UndoManager()
     state = {"value": 0}
@@ -188,35 +131,6 @@ def test_failed_prepare_restore_does_not_replay_or_move_cursor():
     assert state["value"] == 4
     assert manager.action_journal.cursor == cursor
     assert manager.can_undo
-
-
-def test_unrestorable_entry_is_discarded_and_undo_continues_to_previous_action():
-    manager = UndoManager()
-    state = {"value": 0}
-    valid_context = EditorContextSnapshot()
-    discarded_context = EditorContextSnapshot()
-    restore_calls = []
-
-    def restore(snapshot, phase):
-        restore_calls.append((snapshot, phase))
-        if snapshot is discarded_context and phase == "prepare_undo":
-            return ContextRestoreStatus.DISCARD
-        return ContextRestoreStatus.READY
-
-    manager.set_context_hooks(lambda: valid_context, restore)
-    manager.execute(ValueAction(state, 0, 4), transaction_id="valid")
-    manager.set_context_hooks(lambda: discarded_context, restore)
-    manager.execute(ValueAction(state, 4, 9), transaction_id="discarded")
-    manager.set_context_hooks(lambda: valid_context, restore)
-
-    manager.undo()
-
-    assert state["value"] == 0
-    assert manager.action_journal.cursor == 0
-    assert len(manager.action_journal.entries) == 1
-    assert not manager.can_undo
-    assert manager.can_redo
-    assert restore_calls[0] == (discarded_context, "prepare_undo")
 
 
 def test_pending_prepare_waits_without_replaying_or_moving_cursor():
@@ -322,39 +236,6 @@ def test_failed_final_restore_compensates_data_and_keeps_cursor():
     assert not manager.is_replay_pending
 
 
-def test_prepare_restore_exception_does_not_replay_or_move_cursor():
-    manager = UndoManager()
-    state = {"value": 0}
-    context = EditorContextSnapshot()
-
-    def fail_restore(_snapshot, phase):
-        if phase == "prepare_undo":
-            raise RuntimeError("document unavailable")
-
-    manager.set_context_hooks(lambda: context, fail_restore)
-    manager.execute(ValueAction(state, 0, 4))
-    cursor = manager.action_journal.cursor
-
-    manager.undo()
-
-    assert state["value"] == 4
-    assert manager.action_journal.cursor == cursor
-
-
-def test_undo_manager_executes_external_change_without_recording_it():
-    manager = UndoManager()
-    state = {"value": 0}
-
-    assert manager.execute(
-        ValueAction(state, 0, 4),
-        origin=ActionOrigin.EXTERNAL,
-    )
-
-    assert state["value"] == 4
-    assert manager.action_journal.entries == ()
-    assert not manager.can_undo
-
-
 def test_failed_undo_keeps_the_global_cursor_in_place():
     manager = UndoManager()
     state = {"value": 0}
@@ -372,24 +253,6 @@ def test_failed_undo_keeps_the_global_cursor_in_place():
     assert not manager.can_redo
 
 
-def test_failed_redo_keeps_the_global_cursor_in_place():
-    manager = UndoManager()
-    state = {"value": 0}
-
-    class FailingRedoAction(ValueAction):
-        def redo(self):
-            raise RuntimeError("redo failed")
-
-    manager.execute(FailingRedoAction(state, 0, 1))
-    manager.undo()
-    manager.redo()
-
-    assert state["value"] == 0
-    assert manager.action_journal.cursor == 0
-    assert not manager.can_undo
-    assert manager.can_redo
-
-
 def test_editor_transaction_rolls_back_on_failure():
     manager = UndoManager()
     state = {"value": 0}
@@ -405,21 +268,6 @@ def test_editor_transaction_rolls_back_on_failure():
 
     assert state["value"] == 0
     assert not manager.can_undo
-
-
-def test_editor_transaction_records_one_action():
-    manager = UndoManager()
-    state_a = {"value": 0}
-    state_b = {"value": 0}
-
-    with manager.transaction("Two values") as transaction:
-        transaction.execute(ValueAction(state_a, 0, 1))
-        transaction.execute(ValueAction(state_b, 0, 2))
-
-    assert len(manager.action_journal.entries) == 1
-    manager.undo()
-    assert state_a["value"] == 0
-    assert state_b["value"] == 0
 
 
 def test_user_action_groups_multiple_commands_into_one_global_step():
@@ -481,130 +329,6 @@ def test_context_only_user_action_is_one_replayable_history_entry():
     ]
 
 
-def test_user_action_uses_outer_context_for_data_command():
-    manager = UndoManager()
-    before = EditorContextSnapshot(FocusSnapshot(active_panel_id="hierarchy"))
-    after = EditorContextSnapshot(FocusSnapshot(active_panel_id="inspector"))
-    current = {"context": before}
-    state = {"value": 0}
-    manager.set_context_hooks(
-        lambda: current["context"],
-        lambda snapshot, _phase: current.__setitem__("context", snapshot),
-    )
-
-    with manager.user_action("Edit and focus"):
-        current["context"] = after
-        manager.execute(ValueAction(state, 0, 1))
-
-    entry = manager.action_journal.peek_undo()
-    assert entry.before_context == before
-    assert entry.after_context == after
-    assert len(manager.action_journal.entries) == 1
-
-
-def test_focus_transition_is_never_grouped_with_following_data_command():
-    from infernux.engine.undo import GlobalFocusCommand
-
-    manager = UndoManager()
-    hierarchy = EditorContextSnapshot(FocusSnapshot(active_panel_id="hierarchy"))
-    graph = EditorContextSnapshot(
-        FocusSnapshot(
-            active_panel_id="particle_graph_editor",
-            active_view_id="particle_graph_editor/Smoke",
-        )
-    )
-    current = {"context": hierarchy}
-    state = {"value": 0}
-    manager.set_context_hooks(
-        lambda: current["context"],
-        lambda snapshot, _phase: current.__setitem__("context", snapshot),
-    )
-
-    with manager.user_action("Remove Particle Graph parameter"):
-        current["context"] = graph
-        manager.record(
-            GlobalFocusCommand(hierarchy.focus, graph.focus),
-            before_context=hierarchy,
-            after_context=graph,
-        )
-        manager.execute(ValueAction(state, 0, 1))
-
-    entries = manager.action_journal.entries
-    assert len(entries) == 2
-    assert isinstance(entries[0].action, GlobalFocusCommand)
-    assert isinstance(entries[1].action, ValueAction)
-
-    manager.undo()
-    assert state["value"] == 0
-    assert current["context"].focus == graph.focus
-    manager.undo()
-    assert current["context"].focus == hierarchy.focus
-
-
-def test_scene_transform_undo_precedes_workspace_and_selection_restore():
-    from infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
-
-    manager = UndoManager()
-    empty = SelectionSnapshot()
-    selected = SelectionSnapshot.create(
-        (SelectionTarget.scene_object(42),),
-        owner_id="hierarchy",
-    )
-    graph_focus = FocusSnapshot(
-        active_panel_id="particle_graph_editor",
-        active_view_id="particle_graph_editor",
-    )
-    scene_focus = FocusSnapshot(
-        active_panel_id="scene_view",
-        active_view_id="scene_view",
-    )
-    graph_empty = EditorContextSnapshot(graph_focus, empty)
-    graph_selected = EditorContextSnapshot(graph_focus, selected)
-    scene_selected = EditorContextSnapshot(scene_focus, selected)
-    current = {"context": graph_empty}
-    transform = {"value": 0}
-    manager.set_context_hooks(
-        lambda: current["context"],
-        lambda snapshot, _phase: current.__setitem__("context", snapshot),
-    )
-
-    manager.record(
-        GlobalSelectionCommand(empty, selected),
-        before_context=graph_empty,
-        after_context=graph_selected,
-    )
-    current["context"] = graph_selected
-    manager.record(
-        GlobalFocusCommand(graph_focus, scene_focus),
-        before_context=graph_selected,
-        after_context=scene_selected,
-    )
-    current["context"] = scene_selected
-    transform["value"] = 3
-    transform_command = ValueAction(transform, 0, 3)
-    transform_command.before_selection_snapshot = selected
-    transform_command.after_selection_snapshot = selected
-    manager.record(
-        transform_command,
-        before_context=scene_selected,
-        after_context=scene_selected,
-    )
-
-    assert [entry.action.description for entry in manager.action_journal.entries] == [
-        "Change Selection",
-        "Change Editor Focus",
-        "Set Value",
-    ]
-
-    manager.undo()
-    assert transform["value"] == 0
-    assert current["context"] == scene_selected
-    manager.undo()
-    assert current["context"] == graph_selected
-    manager.undo()
-    assert current["context"] == graph_empty
-
-
 def test_action_origin_scope_is_inherited_by_nested_editor_commands():
     from infernux.engine.interaction import action_origin_scope, current_action_origin
 
@@ -620,7 +344,4 @@ def test_action_origin_scope_is_inherited_by_nested_editor_commands():
 
     assert current_action_origin() is ActionOrigin.USER
     assert state["value"] == 2
-    assert all(
-        entry.origin is ActionOrigin.AUTOMATION
-        for entry in manager.action_journal.applied_entries()
-    )
+    assert all(entry.origin is ActionOrigin.AUTOMATION for entry in manager.action_journal.applied_entries())

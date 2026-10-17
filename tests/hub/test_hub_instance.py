@@ -69,13 +69,13 @@ def test_simultaneous_launches_choose_one_owner_and_activate_it(tmp_path, launch
     children = [launch(tmp_path, delay=0.5) for _ in range(6)]
     wait_until(lambda: sum(p.poll() is not None for p in children) == 5)
     owner = next(p for p in children if p.poll() is None)
-    assert (tmp_path / "owners").read_text().splitlines() == [str(owner.pid)]
-    assert len((tmp_path / "activations").read_text().splitlines()) == 5
     for process in children:
         if process is not owner:
             output, error = process.communicate(timeout=5)
-            assert process.returncode == 0, error
-            assert output.strip() == "SECONDARY"
+            assert process.returncode == 0, f"pid={process.pid}; stdout={output!r}; stderr={error}"
+            assert output.strip() == "SECONDARY", f"pid={process.pid}; stderr={error}"
+    assert (tmp_path / "owners").read_text().splitlines() == [str(owner.pid)]
+    assert len((tmp_path / "activations").read_text().splitlines()) == 5
     (tmp_path / "stop").touch()
     assert owner.wait(timeout=5) == 0
     assert (tmp_path / "hub-instance.lock").exists()  # Stable kernel-lock inode.

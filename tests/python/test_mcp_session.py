@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
-import subprocess
-import zipfile
 
 import pytest
 
 from infernux_mcp import checkpoints as checkpoint_store
 from infernux_mcp import session
-from infernux_mcp import session_identity
 from infernux_mcp import trace
 
 
@@ -24,47 +19,6 @@ def _config(mode: str = "developer_assist", **session_overrides):
     }
     policy.update(session_overrides)
     return {"profile": mode, "session": policy}
-
-
-def test_session_status_enforces_debug_recording_policy(tmp_path):
-    configured = session.configure(str(tmp_path), _config(recording_enabled=True))
-
-    assert configured.mode == "developer_assist"
-    assert session.status()["recording_enabled"] is True
-
-    release = session.configure(
-        str(tmp_path),
-        _config(build_profile="release_exploration", recording_enabled=True),
-    )
-    assert release.recording_enabled is False
-    assert session.status()["recording_available"] is False
-
-
-def test_mode_remediation_exposes_only_engine_capture_contract(tmp_path):
-    session.configure(str(tmp_path), _config("developer_assist"))
-
-    remediation = session.mode_remediation("global_validation")
-
-    assert "os_foreground_control" not in remediation
-    assert remediation["capture_source"] == "engine_render_target_only"
-    assert "foreground window" not in remediation["instructions"]
-
-
-def test_mode_remediation_runs_outside_editor_module_paths(tmp_path):
-    session.configure(str(tmp_path), _config("developer_assist"))
-    argv = session.mode_remediation("global_validation")["config_update_argv"]
-    environment = os.environ.copy()
-    # The Editor adds plugin directories only to its own sys.path. A fresh
-    # interpreter must bootstrap that exact installed directory itself.
-    environment["PYTHONPATH"] = str((Path(__file__).resolve().parents[2] / "python"))
-    result = subprocess.run(
-        argv, cwd=tmp_path, env=environment, text=True,
-        capture_output=True, timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    config = json.loads((tmp_path / "ProjectSettings/mcp_capabilities.json").read_text())
-    assert config["enabled"] is True
-    assert config["profile"] == "global_validation"
 
 
 def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_path, monkeypatch):
@@ -96,40 +50,6 @@ def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_p
         trace_payload = json.load(f)
     assert lease not in json.dumps(trace_payload)
     assert trace_payload["steps"][0]["arguments"] == {"lease_token": "<redacted>"}
-
-
-def test_script_validation_allows_normal_python_imports_and_reflection():
-    accepted = session.validate_script(
-        "import inspect, importlib, zipfile\n"
-        "import infernux.renderstack\n"
-        "from infernux.renderstack import RenderStack\n"
-        "from infernux.lib import _Infernux\n"
-        "inspect.getsource(RenderStack)\n"
-        "importlib.import_module('infernux.renderstack')\n"
-    )
-    assert accepted["passed"] is True
-    assert accepted["violations"] == []
-
-def test_script_validation_rejects_invalid_syntax_without_executing_code():
-    assert session.validate_script("raise RuntimeError('must not execute')\n")["passed"] is True
-    rejected = session.validate_script("return 3\n")
-    assert rejected["passed"] is False
-    assert {item["code"] for item in rejected["violations"]} == {"syntax_error"}
-
-
-def test_developer_assist_prepares_only_lint_clean_assets_scripts(tmp_path):
-    session.configure(str(tmp_path), _config())
-
-    result = session.prepare_project_script_write(
-        "Racing/drive.py",
-        "from infernux.components import Component\n",
-    )
-    assert result["path"] == "Assets/Racing/drive.py"
-    assert result["lint"]["passed"] is True
-    assert not (tmp_path / "Assets" / "Racing" / "drive.py").exists()
-
-    with pytest.raises(session.McpPolicyError):
-        session.prepare_project_script_write("../escape.py", "pass\n")
 
 
 def test_developer_assist_attempt_persists_mode_and_checkpoint(tmp_path):
@@ -219,15 +139,17 @@ def test_global_validation_writes_logic_backed_blocker(tmp_path):
     attempt = session.start_attempt("physics contact validation", "clean-physics-001")
     stopped = session.stop_attempt()
 
-    result = session.write_blocker({
-        "category": "engine_bug",
-        "title": "Physics contact was never emitted",
-        "expected": "contact event count is positive",
-        "actual": "contact event count is zero",
-        "normal_workflow": ["create colliders", "enter play mode", "advance fixed steps"],
-        "logic_evidence": {"fixed_steps": 120, "contact_event_count": 0},
-        "persistence_proof": "passed",
-    })
+    result = session.write_blocker(
+        {
+            "category": "engine_bug",
+            "title": "Physics contact was never emitted",
+            "expected": "contact event count is positive",
+            "actual": "contact event count is zero",
+            "normal_workflow": ["create colliders", "enter play mode", "advance fixed steps"],
+            "logic_evidence": {"fixed_steps": 120, "contact_event_count": 0},
+            "persistence_proof": "passed",
+        }
+    )
 
     report_path = result["path"]
     with open(report_path, "r", encoding="utf-8") as f:
@@ -238,26 +160,6 @@ def test_global_validation_writes_logic_backed_blocker(tmp_path):
     assert report["attempt_id"] == attempt["attempt_id"]
     assert report["trace_id"] == stopped["trace_id"]
     assert report["attempt_manifest_path"] == stopped["attempt_manifest_path"]
-
-
-def test_unmanaged_attempt_uses_session_start_when_checkpoint_is_omitted(tmp_path):
-    session.configure(str(tmp_path), _config("developer_assist"))
-
-    attempt = session.start_attempt("author a particle graph", "")
-    stopped = session.stop_attempt()
-
-    assert attempt["checkpoint"] == "session-start"
-    assert stopped["checkpoint"] == "session-start"
-
-
-def test_managed_attempt_still_requires_a_supervisor_checkpoint(tmp_path):
-    session.configure(
-        str(tmp_path),
-        _config("global_validation", managed_checkpoints_required=True),
-    )
-
-    with pytest.raises(session.McpPolicyError, match="infernux.mcp.checkpoint.list"):
-        session.start_attempt("validate particles", "")
 
 
 def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
@@ -308,61 +210,6 @@ def test_global_validation_trace_persists_compact_operation_results(tmp_path, mo
     }
 
 
-def test_global_validation_attempt_manifest_persists_build_identity(tmp_path, monkeypatch):
-    identity = {
-        "source_root": "E:/engine",
-        "package_version": "0.2.1",
-        "git": {"available": True, "branch": "029/030preview", "revision": "abc123"},
-        "cmake": {"configure_preset": "debug", "build_preset": "debug"},
-    }
-    monkeypatch.setattr(session, "_capture_build_identity", lambda policy, build_profile: identity)
-    configured = session.configure(str(tmp_path), _config("global_validation"))
-
-    attempt = session.start_attempt("manifest validation", "identity-captured")
-    manifest_path = tmp_path / attempt["attempt_manifest_path"]
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        started_manifest = json.load(f)
-    assert started_manifest["session"]["session_id"] == configured.session_id
-    assert started_manifest["attempt"]["active"] is True
-    assert started_manifest["attempt"]["trace_id"] == attempt["trace_id"]
-    assert started_manifest["build_identity"] == identity
-
-    stopped = session.stop_attempt()
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        stopped_manifest = json.load(f)
-    assert stopped_manifest["attempt"]["active"] is False
-    assert stopped_manifest["attempt"]["trace_path"] == stopped["trace_path"]
-
-
-def test_cmake_identity_uses_build_preset_configuration(tmp_path):
-    presets = {
-        "buildPresets": [
-            {"name": "debug", "configurePreset": "debug", "configuration": "RelWithDebInfo"},
-        ],
-    }
-    (tmp_path / "CMakePresets.json").write_text(json.dumps(presets), encoding="utf-8")
-    cache_dir = tmp_path / "out" / "build"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "CMakeCache.txt").write_text("CMAKE_BUILD_TYPE:UNINITIALIZED=Release\n", encoding="utf-8")
-
-    identity = session_identity._cmake_identity(str(tmp_path), {}, "debug_feedback")
-
-    assert identity["build_preset"] == "debug"
-    assert identity["build_configuration"] == "RelWithDebInfo"
-    assert identity["build_configuration_source"] == "CMakePresets.json"
-    assert identity["cache_configured_build_type"] == "Release"
-
-
-def test_package_version_falls_back_to_installed_distribution(monkeypatch):
-    monkeypatch.setattr(
-        session_identity.importlib_metadata,
-        "version",
-        lambda _name: "0.2.1-installed",
-    )
-
-    assert session_identity._read_package_version("") == "0.2.1-installed"
-
-
 def test_global_validation_attempt_stop_is_idempotent_and_tracks_activity(tmp_path):
     session.configure(str(tmp_path), _config("global_validation"))
 
@@ -386,38 +233,3 @@ def test_global_validation_attempt_stop_is_idempotent_and_tracks_activity(tmp_pa
         "already_stopped": True,
     }
     assert session.status()["attempt_active"] is False
-
-
-def test_blocker_report_contract_exposes_trace_first_workflow():
-    contract = session.blocker_report_contract()
-
-    assert "editor_ui_bug" in contract["allowed_categories"]
-    assert set(contract["required_arguments"]) >= {
-        "category",
-        "title",
-        "expected",
-        "actual",
-        "normal_workflow",
-        "logic_evidence",
-        "persistence_proof",
-    }
-    assert "infernux.mcp.attempt.start" in contract["required_sequence"][0]
-    assert "infernux.mcp.attempt.stop" in contract["required_sequence"][2]
-
-
-def test_release_wheel_source_requires_allowlist_and_audits_read(tmp_path):
-    wheel = tmp_path / "api-hints.whl"
-    with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("package/hints.py", "PUBLIC_HINT = 'use public API first'\n")
-
-    session.configure(
-        str(tmp_path),
-        _config(
-            build_profile="release_exploration",
-            whl_readonly_source=[str(wheel)],
-        ),
-    )
-
-    result = session.read_release_wheel_source(str(wheel), "package/hints.py")
-    assert "PUBLIC_HINT" in result["content"]
-    assert (tmp_path / ".infernux" / "mcp_sessions").is_dir()

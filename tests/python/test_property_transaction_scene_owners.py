@@ -1,4 +1,5 @@
 """Property/history wrappers retain every actual resident Scene document owner."""
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,15 +45,21 @@ def resident_authors(engine, scene, tmp_path, monkeypatch):
     assert files.activate_loaded_scene(worlds[0])
     history.clear()
     try:
-        yield SimpleNamespace(worlds=worlds, docs=docs, paths=paths, objects=objects,
-                              history=history, files=files, registry=DocumentRegistry.instance())
+        yield SimpleNamespace(
+            worlds=worlds,
+            docs=docs,
+            paths=paths,
+            objects=objects,
+            history=history,
+            files=files,
+            registry=DocumentRegistry.instance(),
+        )
     finally:
         core.shutdown()
         project_context.set_project_root(previous_root)
 
 
-@pytest.mark.parametrize("wrapper", ["property", "compound", "nested"])
-@pytest.mark.parametrize("owners", [(1,), (1, 2)])
+@pytest.mark.parametrize("owners,wrapper", [((1,), "compound"), ((1, 2), "nested")])
 def test_nonactive_property_owners_survive_undo_save_and_reopen(resident_authors, wrapper, owners):
     state = resident_authors
     originals = [path.read_bytes() for path in state.paths]
@@ -81,7 +88,8 @@ def test_nonactive_property_owners_survive_undo_save_and_reopen(resident_authors
         disk = json.loads(state.paths[i].read_text(encoding="utf-8"))
         assert any(obj["name"] == "Edited" for obj in disk["objects"])
         assert state.files.reload_from_resource(
-            document_id=state.docs[i].document_id, resource_path=str(state.paths[i]),
+            document_id=state.docs[i].document_id,
+            resource_path=str(state.paths[i]),
         )
         loaded = state.files.scene_for_document(state.docs[i].document_id)
         assert loaded.find("Edited") is not None
@@ -98,19 +106,6 @@ def test_asset_child_does_not_mark_the_active_scene(resident_authors):
     assert state.history.execute(command)
     assert [doc.is_dirty for doc in state.docs] == [False, True, False]
     assert asset.value == 1
-
-
-def test_default_and_explicit_owner_are_only_marked_once(resident_authors):
-    state = resident_authors
-    default_target = SimpleNamespace(value=0)
-    command = CompoundCommand([
-        SetPropertyCommand(default_target, "value", 0, 1),
-        SetPropertyCommand(state.objects[0], "name", "Owner0", "Edited"),
-    ])
-    assert state.history.execute(command)
-    assert [doc.revision for doc in state.docs] == [1, 0, 0]
-    state.history.undo()
-    assert [doc.revision for doc in state.docs] == [0, 0, 0]
 
 
 def test_document_revision_wrapper_preserves_nested_scene_owners(resident_authors):

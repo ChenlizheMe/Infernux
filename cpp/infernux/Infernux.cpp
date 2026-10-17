@@ -133,18 +133,27 @@ bool IsDirectStructuredStage(const ShaderDescriptor &descriptor)
         });
 }
 
+std::optional<uint64_t> ParseComponentId(std::string_view value)
+{
+    uint64_t id = 0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), id);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || id == 0)
+        return std::nullopt;
+    return id;
+}
+
+template <typename T> T *ResolveDependentComponent(std::string_view guid)
+{
+    const auto id = ParseComponentId(guid);
+    return id ? dynamic_cast<T *>(Component::FindByComponentId(*id)) : nullptr;
+}
+
 void RegisterPhysicMaterialAssetCallback()
 {
     AssetDependencyGraph::Instance().RegisterCallback(
         ResourceType::PhysicMaterial,
         [](const std::string &dependentGuid, const std::string & /*materialGuid*/, AssetEvent event) {
-            uint64_t componentId = 0;
-            const char *begin = dependentGuid.data();
-            const char *end = begin + dependentGuid.size();
-            const auto [parsedEnd, error] = std::from_chars(begin, end, componentId);
-            if (error != std::errc{} || parsedEnd != end)
-                return;
-            auto *collider = dynamic_cast<Collider *>(Component::FindByComponentId(componentId));
+            auto *collider = ResolveDependentComponent<Collider>(dependentGuid);
             if (!collider)
                 return;
             collider->OnPhysicMaterialAssetEvent(event);
@@ -158,11 +167,11 @@ bool ParseModelEmbeddedMaterialSlot(const std::string &path, std::string &outMod
     if (pos == std::string::npos)
         return false;
     outModel = path.substr(0, pos);
-    try {
-        outSlot = std::stoi(path.substr(pos + sizeof(kTok) - 1));
-    } catch (...) {
+    const char *begin = path.data() + pos + sizeof(kTok) - 1;
+    const char *end = path.data() + path.size();
+    const auto parsed = std::from_chars(begin, end, outSlot);
+    if (parsed.ec != std::errc{} || parsed.ptr != end)
         return false;
-    }
     return !outModel.empty() && outSlot >= 0;
 }
 
@@ -1137,6 +1146,17 @@ void Infernux::Run()
 
 void Infernux::Tick(float deltaTime)
 {
+    if (m_tickActive)
+        throw std::logic_error("tick cannot be called from an active frame callback");
+    struct TickScope
+    {
+        bool &active;
+        ~TickScope()
+        {
+            active = false;
+        }
+    } tickScope{m_tickActive};
+    m_tickActive = true;
     if (!CheckEngineValid("tick") || !m_isInitialized) {
         throw std::logic_error("Cannot tick an uninitialized engine");
     }
@@ -1162,8 +1182,8 @@ void Infernux::Tick(float deltaTime)
     }
 
     auto &sceneManager = SceneManager::Instance();
-    if (m_preSceneUpdateCallback)
-        m_preSceneUpdateCallback(deltaTime);
+    if (auto callback = m_preSceneUpdateCallback)
+        callback(deltaTime);
     const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(deltaTime);
     TransformECSStore::Instance().BeginFrameCache();
     sceneManager.Update(sceneDeltaTime);
@@ -1195,8 +1215,8 @@ void Infernux::SetPreSceneUpdateCallback(std::function<void(float)> callback)
     // renderer only needs a native forwarding edge while the engine is live.
     if (m_preSceneUpdateCallback) {
         m_renderer->SetPreSceneUpdateCallback([this](float deltaTime) {
-            if (m_preSceneUpdateCallback)
-                m_preSceneUpdateCallback(deltaTime);
+            if (auto callback = m_preSceneUpdateCallback)
+                callback(deltaTime);
         });
     } else {
         m_renderer->SetPreSceneUpdateCallback(nullptr);
@@ -1238,8 +1258,15 @@ std::shared_ptr<rhi::RenderTexture> Infernux::LoadRenderTexture(const std::strin
     return m_renderer->LoadRenderTexture(guid);
 }
 
+void Infernux::RequireFrameInactive() const
+{
+    if (m_tickActive || (m_renderer && m_renderer->IsDrawingFrame()))
+        throw std::logic_error("cleanup cannot destroy the engine during an active frame callback");
+}
+
 void Infernux::Cleanup()
 {
+    RequireFrameInactive();
     if (m_isCleanedUp)
         return;
 
@@ -1289,7 +1316,6 @@ void Infernux::Cleanup()
     DocumentStore::Instance().Shutdown();
 
     m_assetDatabase.reset();
-    m_extLoader.reset();
 
     m_isCleanedUp = true;
     m_isInitialized = false;
@@ -2873,21 +2899,20 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
             }
             const std::string textureName = BuildTexturePreviewTextureName(key);
             if (!pump) {
-                // A non-pumping query is a registration/probe operation. Never
-                // allocate an ImGui descriptor before the first normal preview
-                // pump; early-failure cleanup may otherwise run before the
-                // Vulkan backend has entered its first frame.
+                // Read the current publication without allocating a descriptor;
+                // the preview pump owns publication, including the first frame.
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
                 auto &state = m_texturePreviewStates[key];
                 state.textureName = textureName;
                 state.importedTextureGuid = guid;
                 state.importedGpuPending = true;
+                state.textureId = LiveImGuiTextureId(m_renderer.get(), textureName);
                 state.readyWidth = importedWidth;
                 state.readyHeight = importedHeight;
                 state.authoring = state.authoring || authoring;
                 m_hasPreviewPumpWork.store(true, std::memory_order_release);
                 m_renderer->RequestFullSpeedFrame();
-                return {0, 0, 0};
+                return {state.textureId, importedWidth, importedHeight};
             }
             const uint64_t importedId = m_renderer->QueryImportedTextureForImGui(textureName, guid);
             if (importedId != 0) {
@@ -3657,13 +3682,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
                     return;
                 }
 
-                uint64_t componentId = 0;
-                const char *begin = dependentGuid.data();
-                const char *end = begin + dependentGuid.size();
-                const auto [parsedEnd, error] = std::from_chars(begin, end, componentId);
-                if (error != std::errc{} || parsedEnd != end)
-                    return;
-                auto *renderer = dynamic_cast<MeshRenderer *>(Component::FindByComponentId(componentId));
+                auto *renderer = ResolveDependentComponent<MeshRenderer>(dependentGuid);
                 if (renderer)
                     renderer->OnParameterTextureAssetEvent(texGuid, event);
             });
@@ -3672,16 +3691,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             ResourceType::Material, [](const std::string &dependentGuid, const std::string &matGuid, AssetEvent event) {
                 if (event != AssetEvent::Deleted && event != AssetEvent::Modified)
                     return;
-                uint64_t compId = 0;
-                try {
-                    compId = std::stoull(dependentGuid);
-                } catch (...) {
-                    return;
-                }
-                auto *comp = Component::FindByComponentId(compId);
-                if (!comp)
-                    return;
-                auto *mr = dynamic_cast<MeshRenderer *>(comp);
+                auto *mr = ResolveDependentComponent<MeshRenderer>(dependentGuid);
                 if (!mr)
                     return;
                 mr->OnMaterialAssetEvent(matGuid, event);
@@ -3690,19 +3700,10 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
         graph.RegisterCallback(ResourceType::Mesh,
                                [this](const std::string &dependentGuid, const std::string &meshGuid, AssetEvent event) {
-                                   uint64_t compId = 0;
-                                   try {
-                                       compId = std::stoull(dependentGuid);
-                                   } catch (...) {
-                                       return;
-                                   }
-                                   auto *comp = Component::FindByComponentId(compId);
-                                   if (!comp)
-                                       return;
-                                   auto *mr = dynamic_cast<MeshRenderer *>(comp);
+                                   auto *mr = ResolveDependentComponent<MeshRenderer>(dependentGuid);
                                    if (!mr)
                                        return;
-                                   mr->OnMeshAssetEvent(event);
+                                   mr->OnMeshAssetEvent(meshGuid, event);
                                    if (event == AssetEvent::Deleted && m_renderer)
                                        m_renderer->InvalidateMeshCache(meshGuid);
                                    if (event != AssetEvent::RuntimeModified)
@@ -3713,13 +3714,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             ResourceType::Audio, [](const std::string &dependentGuid, const std::string &audioGuid, AssetEvent event) {
                 if (event != AssetEvent::Deleted && event != AssetEvent::Modified)
                     return;
-                uint64_t componentId = 0;
-                const char *begin = dependentGuid.data();
-                const char *end = begin + dependentGuid.size();
-                const auto [parsedEnd, error] = std::from_chars(begin, end, componentId);
-                if (error != std::errc{} || parsedEnd != end)
-                    return;
-                auto *source = dynamic_cast<AudioSource *>(Component::FindByComponentId(componentId));
+                auto *source = ResolveDependentComponent<AudioSource>(dependentGuid);
                 if (!source)
                     return;
                 source->OnAudioClipAssetEvent(audioGuid, event);
@@ -4230,6 +4225,9 @@ Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &
     auto *adb = GetAssetDatabase();
     if (!adb)
         return {};
+
+    if (material->GetGuid().empty())
+        AssetRegistry::Instance().RegisterRuntimeMaterial(material);
 
     auto resolvePath = [&](const ShaderAssetReference &reference, const char *stage) {
         if (!reference.guid.empty()) {

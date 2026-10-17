@@ -184,18 +184,26 @@ VkDescriptorPool VkDescriptorManager::AcquireExternalPool(DescriptorArena arena)
 
 void VkDescriptorManager::MarkUsed(VkDescriptorSet set, rhi::SubmissionSerial serial) noexcept
 {
-    if (set == VK_NULL_HANDLE || serial == rhi::InvalidSubmissionSerial)
+    if (set != VK_NULL_HANDLE)
+        MarkUsed(&set, 1, serial);
+}
+
+void VkDescriptorManager::MarkUsed(const VkDescriptorSet *sets, uint32_t count, rhi::SubmissionSerial serial) noexcept
+{
+    if (count == 0 || serial == rhi::InvalidSubmissionSerial)
         return;
     std::lock_guard lock(m_mutex);
-    const auto native = m_nativeLeaseIds.find(reinterpret_cast<uint64_t>(set));
-    if (native == m_nativeLeaseIds.end())
-        return;
-    const auto found = m_leases.find(native->second);
-    if (found == m_leases.end())
-        return;
-    found->second.lastUse = (std::max)(found->second.lastUse, serial);
-    if (found->second.retired)
-        found->second.retireAfter = (std::max)(found->second.retireAfter, serial);
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto native = m_nativeLeaseIds.find(reinterpret_cast<uint64_t>(sets[index]));
+        if (native == m_nativeLeaseIds.end())
+            continue;
+        const auto found = m_leases.find(native->second);
+        if (found == m_leases.end())
+            continue;
+        found->second.lastUse = (std::max)(found->second.lastUse, serial);
+        if (found->second.retired)
+            found->second.retireAfter = (std::max)(found->second.retireAfter, serial);
+    }
 }
 
 void VkDescriptorManager::UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource)

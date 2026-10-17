@@ -36,7 +36,10 @@ def test_public_provider_submits_position_direction_radius_and_limit(registry):
     registry.collect(object())
 
     assert [item.handle_id for item in registry.frame_handles] == [
-        "sample:origin", "sample:forward", "sample:range", "sample:travel",
+        "sample:origin",
+        "sample:forward",
+        "sample:range",
+        "sample:travel",
     ]
     assert [item.kind for item in registry.frame_handles] == [
         EditorHandleKind.POSITION,
@@ -64,9 +67,7 @@ def test_capture_cancel_restores_value_before_resource_retirement(registry):
         )
 
     with PanelRegistry.contribution_scope("preload:handle-owner"):
-        register_handle_provider(
-            "owned", draw, on_retire=lambda: events.append(("retire", None))
-        )
+        register_handle_provider("owned", draw, on_retire=lambda: events.append(("retire", None)))
 
     registry.collect(object())
     assert registry.begin_capture("owned:pivot", (0, 0, 5), (0, 0, -1))
@@ -101,7 +102,9 @@ def test_owner_retirement_also_releases_core_transient_capture(registry, monkeyp
         register_handle_provider(
             "transient",
             lambda handles: handles.position(
-                "pivot", (0, 0, 0), lambda _value: None,
+                "pivot",
+                (0, 0, 0),
+                lambda _value: None,
             ),
         )
     registry.collect(object())
@@ -171,9 +174,7 @@ def test_duplicate_local_handle_id_fails_the_frame_instead_of_overwriting(regist
 
 def test_context_cannot_be_reused_after_its_collection_frame(registry):
     captured = []
-    registry.register(
-        EditorHandleProvider("one-frame", lambda handles: captured.append(handles))
-    )
+    registry.register(EditorHandleProvider("one-frame", lambda handles: captured.append(handles)))
     registry.collect(object())
     with pytest.raises(RuntimeError, match="valid only during"):
         captured[0].position("late", (0, 0, 0), lambda _value: None)
@@ -209,7 +210,8 @@ def test_retirement_clears_every_callback_even_when_cancel_and_retire_fail(regis
 
     def draw(handles):
         handles.position(
-            "pivot", (0, 0, 0),
+            "pivot",
+            (0, 0, 0),
             lambda value: fail("restore") if tuple(value) == (0.0, 0.0, 0.0) else None,
             on_cancel=lambda _value: fail("cancel"),
         )

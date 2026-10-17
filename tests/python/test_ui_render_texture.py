@@ -55,6 +55,7 @@ def test_button_runtime_override_preserves_guid_backed_background_texture():
 
 def test_screen_command_cache_tracks_resize_without_component_mutation(scene):
     from infernux.ui import UICanvas
+    from infernux.core.asset_ref import TextureRef
     image = UIImage()
     image.texture = target()
     owner = scene.create_game_object("Canvas")
@@ -68,6 +69,10 @@ def test_screen_command_cache_tracks_resize_without_component_mutation(scene):
     assert runtime_ui_revision(scene, canvases, 800, 600) == before
     image.texture._native.revision += 1
     assert runtime_ui_revision(scene, canvases, 800, 600) != before
+    image.texture = TextureRef(guid="static-ui-texture")
+    before = runtime_ui_revision(scene, canvases, 800, 600, texture_generation=1)
+    assert runtime_ui_revision(scene, canvases, 800, 600, texture_generation=1) == before
+    assert runtime_ui_revision(scene, canvases, 800, 600, texture_generation=2) != before
 
 
 def test_button_command_cache_tracks_live_background_resize(scene):

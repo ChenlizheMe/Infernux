@@ -270,7 +270,7 @@ inline void Run(vk::VkDeviceContext &context, SDL_Window *window)
             assert(commits == 1 && presentation.GetSwapchain() == VK_NULL_HANDLE);
             assert(presentation.GetImageViews().empty());
             assert(recorder.live.empty() && recorder.views.empty());
-            assert(recorder.semaphores.size() == vk::VkSwapchainManager::MAX_FRAMES_IN_FLIGHT);
+            assert(recorder.semaphores.size() == EngineConfig::kFrameSlotCapacity);
             const auto before = recorder.acquired.size();
             presentation.AcquireNextImage(0, image);
             assert(recorder.acquired.size() == before); // Regression: old code called the retired chain.

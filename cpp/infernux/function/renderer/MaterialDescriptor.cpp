@@ -340,12 +340,12 @@ bool MaterialDescriptorManager::IsDescriptorSetComplete(VkDescriptorSet descript
 void MaterialDescriptorManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
                                            vk::VkDescriptorManager *descriptorManager)
 {
+    if (!descriptorManager || !m_deletionQueue)
+        throw std::invalid_argument("MaterialDescriptorManager requires descriptor and retirement managers");
     m_vmaAllocator = allocator;
     m_device = device;
     m_physicalDevice = physicalDevice;
     m_descriptorManager = descriptorManager;
-    if (!m_descriptorManager)
-        INXLOG_ERROR("MaterialDescriptorManager requires the Vulkan descriptor manager");
 }
 
 void MaterialDescriptorManager::Shutdown()
@@ -1607,22 +1607,13 @@ void MaterialDescriptorManager::RetireDescriptorSet(std::shared_ptr<MaterialDesc
     if (m_descriptorManager)
         m_descriptorManager->Retire(lease);
 
-    if (m_deletionQueue) {
-        pending->fetch_add(1, std::memory_order_relaxed);
-        m_deletionQueue->Retire([descriptorSet = std::move(descriptorSet), pending = std::move(pending)]() mutable {
-            descriptorSet->descriptorSet = VK_NULL_HANDLE;
-            descriptorSet->descriptorLease = {};
-            descriptorSet.reset();
-            pending->fetch_sub(1, std::memory_order_relaxed);
-        });
-        return;
-    }
-
-    vkDeviceWaitIdle(m_device);
-    if (m_descriptorManager)
-        (void)m_descriptorManager->Collect((std::numeric_limits<rhi::SubmissionSerial>::max)());
-    descriptorSet->descriptorSet = VK_NULL_HANDLE;
-    descriptorSet->descriptorLease = {};
+    pending->fetch_add(1, std::memory_order_relaxed);
+    m_deletionQueue->Retire([descriptorSet = std::move(descriptorSet), pending = std::move(pending)]() mutable {
+        descriptorSet->descriptorSet = VK_NULL_HANDLE;
+        descriptorSet->descriptorLease = {};
+        descriptorSet.reset();
+        pending->fetch_sub(1, std::memory_order_relaxed);
+    });
 }
 
 void MaterialDescriptorManager::Clear()

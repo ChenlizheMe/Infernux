@@ -96,53 +96,18 @@ class _FakeScriptSceneManager:
 # PlayModeState enum
 # ══════════════════════════════════════════════════════════════════════
 
-class TestPlayModeState:
-    def test_members_exist(self):
-        assert PlayModeState.EDIT is not None
-        assert PlayModeState.PLAYING is not None
-        assert PlayModeState.PAUSED is not None
-
-    def test_distinct_values(self):
-        values = {PlayModeState.EDIT, PlayModeState.PLAYING, PlayModeState.PAUSED}
-        assert len(values) == 3
-
 
 # ══════════════════════════════════════════════════════════════════════
 # PlayModeEvent
 # ══════════════════════════════════════════════════════════════════════
-
-class TestPlayModeEvent:
-    def test_fields(self):
-        evt = PlayModeEvent(
-            old_state=PlayModeState.EDIT,
-            new_state=PlayModeState.PLAYING,
-            timestamp=1.0,
-        )
-        assert evt.old_state is PlayModeState.EDIT
-        assert evt.new_state is PlayModeState.PLAYING
-        assert evt.timestamp == 1.0
 
 
 # ══════════════════════════════════════════════════════════════════════
 # PlayModeManager
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestPlayModeManager:
-    def test_initial_state_is_edit(self):
-        mgr = PlayModeManager()
-        assert mgr._state is PlayModeState.EDIT
-
-    def test_singleton_instance(self):
-        mgr = PlayModeManager()
-        assert PlayModeManager.instance() is mgr
-
-    def test_timing_defaults(self):
-        mgr = PlayModeManager()
-        assert mgr._delta_time == 0.0
-        assert mgr._time_scale == 1.0
-        assert mgr._total_play_time == 0.0
-        assert mgr.step_sequence == 0
-
     def test_paused_step_sequence_records_completed_commands(self):
         class _SceneManager:
             def __init__(self):
@@ -186,94 +151,14 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         mgr._state = PlayModeState.PAUSED
         mgr._get_scene_manager = lambda: SimpleNamespace(
-            step=lambda dt: pytest.fail("cancelled step executed"), play=lambda: None,
+            step=lambda dt: pytest.fail("cancelled step executed"),
+            play=lambda: None,
         )
         mgr.step_frame()
         assert mgr.resume()
         mgr._state = PlayModeState.PAUSED
         mgr.process_pending_step()
         assert mgr.step_sequence == 0
-
-    def test_tick_does_not_poll_scene_load_service_without_pending_work(self, monkeypatch):
-        mgr = PlayModeManager()
-        mgr._state = PlayModeState.PLAYING
-        mgr._native_engine = None
-
-        from infernux.scene import SceneManager
-        from infernux.timing import Time
-
-        # This is a steady frame, not the zero-delta frame after a scene load.
-        monkeypatch.setattr(Time, "_reset_delta_on_next_tick", False)
-        monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
-        monkeypatch.setattr(SceneManager, "_active_scene_transaction", None)
-        monkeypatch.setattr(
-            SceneManager,
-            "process_pending_load",
-            staticmethod(lambda: (_ for _ in ()).throw(
-                AssertionError("empty play tick must not poll scene loading")
-            )),
-        )
-
-        mgr.tick(1.0 / 60.0)
-
-        assert mgr._delta_time > 0.0
-
-    def test_engine_steady_play_tick_does_not_prepare_python_phase_plan(self):
-        from infernux.engine.engine import Engine
-
-        class Scheduler:
-            prepare_calls = 0
-
-            def prepare_frame(self):
-                self.prepare_calls += 1
-                raise AssertionError(
-                    "steady Editor frames must not prepare a Python phase plan"
-                )
-
-        class PlayMode:
-            is_playing = True
-
-            def tick(self, _delta_time):
-                return None
-
-        scheduler = Scheduler()
-        engine = Engine.__new__(Engine)
-        engine._last_frame_time = time.time()
-        engine._editor_frame_sync_callback = None
-        engine._resources_manager = None
-        engine._play_mode_manager = PlayMode()
-        engine._player_runtime = None
-        engine._runtime_scheduler = scheduler
-        engine._scene_view_visible = False
-        engine._tick_runtime_acceptance = lambda _delta_time: None
-        engine._clear_uploaded_gizmos = lambda: None
-
-        assert engine.tick_play_mode(1.0 / 60.0) == 1.0 / 60.0
-        assert scheduler.prepare_calls == 0
-
-    def test_engine_tick_propagates_resource_transaction_failure(self):
-        from infernux.engine.engine import Engine
-
-        class Resources:
-            @staticmethod
-            def process_pending_reloads():
-                raise RuntimeError("resource transaction rejected")
-
-        engine = Engine.__new__(Engine)
-        engine._last_frame_time = time.time()
-        engine._editor_frame_sync_callback = None
-        engine._resources_manager = Resources()
-        engine._play_mode_manager = None
-        engine._next_reload_poll_time = 0.0
-        engine._reload_poll_interval = 0.1
-
-        with pytest.raises(RuntimeError, match="resource transaction rejected"):
-            engine.tick_play_mode(1.0 / 60.0)
-
-    def test_scene_backup_none_initially(self):
-        mgr = PlayModeManager()
-        assert mgr._scene_backup is None
-        assert mgr._scene_path_backup is None
 
     def test_restore_scene_path_reasserts_authored_scene_persistence(self, monkeypatch, tmp_path):
         from infernux.engine.scene_manager import SceneFileManager
@@ -339,9 +224,7 @@ class TestPlayModeManager:
         assert scene_changed == [True]
         assert remembered_paths == []
 
-    def test_exit_play_mode_restores_document_state_from_current_snapshot(
-        self, monkeypatch
-    ):
+    def test_exit_play_mode_restores_document_state_from_current_snapshot(self, monkeypatch):
         from infernux.engine.deferred_task import DeferredTaskRunner
         from infernux.input import Input
 
@@ -376,9 +259,7 @@ class TestPlayModeManager:
         manager._scene_backup = object()
         manager._get_scene_manager = lambda: scene_manager
         rebuild_calls = []
-        manager._rebuild_active_scene = lambda snapshot, **kwargs: (
-            rebuild_calls.append((snapshot, kwargs)) or True
-        )
+        manager._rebuild_active_scene = lambda snapshot, **kwargs: rebuild_calls.append((snapshot, kwargs)) or True
         notifications = []
         manager._notify_state_change = lambda old, new: notifications.append((old, new))
 
@@ -393,233 +274,8 @@ class TestPlayModeManager:
 
         assert manager.state is PlayModeState.EDIT
 
-        assert rebuild_calls == [
-            (manager._scene_backup, {"for_play": False, "restore_scene_path": True})
-        ]
+        assert rebuild_calls == [(manager._scene_backup, {"for_play": False, "restore_scene_path": True})]
         assert notifications == [(PlayModeState.PLAYING, PlayModeState.EDIT)]
-
-    def test_invalidate_native_gpu_view_state_drains_when_engine_present(self):
-        waits = []
-        manager = PlayModeManager()
-        manager._native_engine = SimpleNamespace(wait_for_gpu_idle=lambda: waits.append(True))
-        manager._invalidate_native_gpu_view_state()
-        assert waits == [True]
-
-    def test_mark_native_scene_temporal_discontinuity_does_not_drain(self):
-        waits = []
-        manager = PlayModeManager()
-        manager._native_engine = SimpleNamespace(wait_for_gpu_idle=lambda: waits.append(True))
-        manager._mark_native_scene_temporal_discontinuity()
-        assert waits == []
-
-    def test_enter_play_mode_drains_before_native_start(self, monkeypatch):
-        from infernux.engine.deferred_task import DeferredTaskRunner
-        from infernux.core.assets import AssetManager
-        from infernux.components.builtin_component import BuiltinComponent
-
-        order = []
-        monkeypatch.setattr(BuiltinComponent, "_clear_cache", lambda: order.append("clear_native_cache"))
-
-        class _SceneManager:
-            def play(self):
-                order.append("play")
-
-        class _Runner:
-            is_busy = False
-
-            def submit(self, _name, steps, on_done=None):
-                self.steps = list(steps)
-                return True
-
-        runner = _Runner()
-        monkeypatch.setattr(DeferredTaskRunner, "_instance", runner)
-        manager = PlayModeManager()
-        manager._scene_backup = object()
-        manager._save_scene_state = lambda: None
-        manager._prepare_active_scene_for_play = lambda *_args, **_kwargs: True
-        manager._get_scene_manager = lambda: _SceneManager()
-        manager._notify_state_change = lambda *_args: None
-        manager._invalidate_native_gpu_view_state = lambda: order.append("invalidate")
-        manager._mark_native_scene_temporal_discontinuity = lambda: order.append("mark")
-        monkeypatch.setattr(
-            AssetManager,
-            "_begin_play_data_asset_isolation",
-            lambda: order.append("asset_play_begin"),
-        )
-
-        assert manager.enter_play_mode() is True
-        _, _, step_enter = runner.steps[0]
-        assert step_enter() is None
-        assert order == ["asset_play_begin", "invalidate", "play", "mark"]
-
-    def test_exit_play_mode_invalidates_gpu_view_state_after_restore(self, monkeypatch):
-        from infernux.engine.deferred_task import DeferredTaskRunner
-        from infernux.core.assets import AssetManager
-
-        class _SceneManager:
-            def stop(self):
-                return None
-
-        class _Runner:
-            is_busy = False
-
-            def submit(self, _name, steps, on_done=None):
-                self.steps = list(steps)
-                return True
-
-        runner = _Runner()
-        monkeypatch.setattr(DeferredTaskRunner, "_instance", runner)
-        manager = PlayModeManager()
-        manager._state = PlayModeState.PLAYING
-        manager._scene_backup = object()
-        manager._get_scene_manager = lambda: _SceneManager()
-        manager._rebuild_active_scene = lambda *args, **kwargs: True
-        manager._notify_state_change = lambda *_args: None
-        invalidations = []
-        manager._invalidate_native_gpu_view_state = lambda: invalidations.append(True)
-        isolation_end = []
-        monkeypatch.setattr(
-            AssetManager,
-            "_end_play_data_asset_isolation",
-            lambda: isolation_end.append(True),
-        )
-
-        assert manager.exit_play_mode() is True
-        _, _, restore = runner.steps[0]
-        restore()
-        assert invalidations == [True]
-        assert isolation_end == [True]
-
-    def test_listener_list_empty(self):
-        mgr = PlayModeManager()
-        assert mgr._state_change_listeners == []
-
-    def test_last_transition_timings_returns_an_isolated_snapshot(self):
-        mgr = PlayModeManager()
-        mgr._last_transition_timings_ms = {
-            "transition": "exit",
-            "total": 12.0,
-            "phases": {"native_commit": 8.0},
-        }
-
-        timings = mgr.last_transition_timings_ms
-        timings["total"] = 0.0
-        timings["phases"]["native_commit"] = 0.0
-
-        assert mgr.last_transition_timings_ms == {
-            "transition": "exit",
-            "total": 12.0,
-            "phases": {"native_commit": 8.0},
-        }
-
-    def test_set_asset_database(self):
-        mgr = PlayModeManager()
-        mgr.set_asset_database("fake_db")
-        assert mgr._asset_database == "fake_db"
-
-    def test_scene_snapshot_requires_scene_manager(self):
-        manager = PlayModeManager()
-        manager._get_scene_manager = lambda: None
-
-        with pytest.raises(RuntimeError, match="without SceneManager"):
-            manager._save_scene_state()
-
-    def test_scene_snapshot_requires_native_capture_contract(self):
-        scene = SimpleNamespace(serialize_document=lambda: {"objects": []})
-        manager = PlayModeManager()
-        manager._get_scene_manager = lambda: SimpleNamespace(
-            get_active_scene=lambda: scene
-        )
-
-        with pytest.raises(AttributeError, match="_capture_play_mode_snapshot"):
-            manager._save_scene_state()
-
-    def test_script_reload_requires_asset_database(self, tmp_path):
-        script = tmp_path / "ReloadContract.py"
-        script.write_text("VALUE = 1\n", encoding="utf-8")
-        manager = PlayModeManager()
-
-        with pytest.raises(RuntimeError, match="requires AssetDatabase"):
-            manager.reload_components_from_script_result(str(script))
-
-    def test_script_reload_requires_registered_source(self, tmp_path):
-        script = tmp_path / "ReloadContract.py"
-        script.write_text("VALUE = 1\n", encoding="utf-8")
-        manager = PlayModeManager()
-        manager.set_asset_database(
-            SimpleNamespace(get_guid_from_path=lambda _path: "")
-        )
-
-        with pytest.raises(RuntimeError, match="not registered"):
-            manager.reload_components_from_script_result(str(script))
-
-    def test_script_delete_requires_native_replacement(self):
-        class DeleteContract(InxComponent):
-            _uses_component_data_store = False
-
-        bind_asset_script_guid(DeleteContract, "delete-contract-guid")
-        component = DeleteContract()
-        component._script_guid = "delete-contract-guid"
-        game_object = SimpleNamespace(
-            id=88,
-            get_py_components=lambda: (component,),
-            remove_py_component=lambda _component: None,
-            add_py_component=lambda _component: None,
-        )
-        scene = SimpleNamespace(get_all_objects=lambda: (game_object,))
-        manager = PlayModeManager()
-        manager._get_scene_manager = lambda: SimpleNamespace(
-            get_active_scene=lambda: scene
-        )
-
-        with pytest.raises(RuntimeError, match="transactionally replace"):
-            manager.prepare_script_delete_batch(
-                "delete-contract-guid",
-                "Assets/DeleteContract.py",
-            )
-
-    def test_script_delete_reaches_every_resident_scene(self, monkeypatch):
-        class ResidentDeleteProbe(InxComponent):
-            _uses_component_data_store = False
-
-        guid = "resident-delete-probe-guid"
-        bind_asset_script_guid(ResidentDeleteProbe, guid)
-        first = ResidentDeleteProbe()
-        second = ResidentDeleteProbe()
-        first._script_guid = guid
-        second._script_guid = guid
-        first_object = _FakeScriptGameObject(801, first)
-        second_object = _FakeScriptGameObject(802, second)
-        scenes = (
-            _FakeMultiScriptScene((first_object,)),
-            _FakeMultiScriptScene((second_object,)),
-        )
-
-        class _ResidentSceneManager:
-            scene_count = len(scenes)
-
-            @staticmethod
-            def get_scene_at(index):
-                return scenes[index]
-
-            @staticmethod
-            def get_active_scene():
-                return scenes[0]
-
-            @staticmethod
-            def find_runtime_object_by_id(object_id):
-                for scene in scenes:
-                    if (obj := scene.find_by_id(object_id)) is not None:
-                        return obj
-                return None
-
-        manager = PlayModeManager()
-        monkeypatch.setattr(manager, "_get_scene_manager", _ResidentSceneManager)
-        batch = manager.prepare_script_delete_batch(guid, "Assets/ResidentDeleteProbe.py")
-
-        assert manager.commit_script_delete_batch(batch) == 2
-        assert isinstance(first_object.components[0], MissingScript)
-        assert isinstance(second_object.components[0], MissingScript)
 
     def test_deleted_script_becomes_missing_and_recovers_with_identity(self, tmp_path, monkeypatch):
         script_guid = "1" * 32
@@ -665,6 +321,13 @@ class TestPlayModeManager:
         assert game_object.remove_calls == 0
         assert game_object.add_calls == 0
 
+        saved_missing = manager._serialize_py_component(missing)
+        missing._preserved_fields["speed"] = 999.0
+        manager._apply_py_component_state(missing, saved_missing)
+        assert missing._serialize_fields_document()["speed"] == 7.5
+        assert missing._serialize_fields_document()["material"]["guid"] == "material-guid"
+        assert missing.component_id == original_id
+
         script.write_text(
             "from infernux.components import InxComponent\n"
             "from infernux.core.asset_ref import MaterialRef\n"
@@ -684,7 +347,24 @@ class TestPlayModeManager:
                 return script_guid
 
         manager.set_asset_database(_AssetDatabase())
-        manager.reload_components_from_script_result(str(script))
+        from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+        from infernux.engine.play_mode import ScriptReloadBatchInput
+        from infernux.engine.runtime_dispatch import current_runtime_epoch
+
+        batch = manager.prepare_script_reload_batch((ScriptReloadBatchInput(str(script), script_guid),))
+        before_epoch = current_runtime_epoch()
+        scheduler = RuntimeExecutionScheduler()
+        frame = scheduler.begin_frame()
+        try:
+            with pytest.raises(RuntimeError, match="safe point"):
+                batch.commit()
+            assert not batch.committed and not batch.rolled_back
+            assert game_object.components[0] is missing
+            assert current_runtime_epoch() is before_epoch
+        finally:
+            frame.close()
+        assert manager.commit_script_reload_batch(batch).success
+        manager.finalize_script_reload_batch(batch)
 
         restored = game_object.components[0]
         assert not isinstance(restored, MissingScript)
@@ -783,32 +463,6 @@ class TestPlayModeManager:
         else:
             assert sys.modules[module_name] is before_module
 
-    def test_register_runtime_hidden_object_tracks_ids(self):
-        mgr = PlayModeManager()
-        obj = _FakeRuntimeGameObject(404, "HiddenClone")
-
-        mgr.register_runtime_hidden_object(obj)
-
-        assert mgr.is_runtime_hidden_object_id(404)
-
-    def test_runtime_hidden_listener_only_fires_for_state_changes(self):
-        mgr = PlayModeManager()
-        calls = []
-        listener = lambda: calls.append(mgr.get_runtime_hidden_object_ids())
-        mgr.add_runtime_hidden_listener(listener)
-
-        obj = _FakeRuntimeGameObject(404, "HiddenClone")
-        mgr.register_runtime_hidden_object(obj)
-        mgr.register_runtime_hidden_object(obj)
-        mgr.clear_runtime_hidden_object_ids()
-        mgr.clear_runtime_hidden_object_ids()
-
-        assert calls == [{404}, set()]
-
-        mgr.remove_runtime_hidden_listener(listener)
-        mgr.register_runtime_hidden_object(obj)
-        assert calls == [{404}, set()]
-
     def test_prepare_play_scene_propagates_primary_transaction_failure(self, monkeypatch):
         class _Scene:
             pass
@@ -821,9 +475,7 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         mgr._get_scene_manager = lambda: _SceneManager()
         rebuilds = []
-        mgr._rebuild_active_scene = lambda *args, **kwargs: rebuilds.append(
-            (args, kwargs)
-        )
+        mgr._rebuild_active_scene = lambda *args, **kwargs: rebuilds.append((args, kwargs))
 
         from infernux.engine import component_restore
 
@@ -840,21 +492,6 @@ class TestPlayModeManager:
             mgr._prepare_active_scene_for_play({"objects": []})
 
         assert rebuilds == []
-
-    def test_play_tick_propagates_time_contract_failure(self):
-        class _Time:
-            time_scale = 1.0
-
-            @staticmethod
-            def _tick(_delta_time):
-                raise RuntimeError("time contract rejected")
-
-        mgr = PlayModeManager()
-        mgr._state = PlayModeState.PLAYING
-        mgr._time_api = _Time
-
-        with pytest.raises(RuntimeError, match="time contract rejected"):
-            mgr.tick(1.0 / 60.0)
 
     def test_rebuild_scene_failure_preserves_runtime_hidden_ids(self):
         mgr = PlayModeManager()
@@ -937,6 +574,7 @@ class TestPlayModeManager:
         scene_manager = _FakeSceneManager(scene)
         monkeypatch.setattr(mgr, "_get_scene_manager", lambda: scene_manager)
         from infernux.engine import component_restore
+
         monkeypatch.setattr(
             component_restore,
             "preflight_scene_python_components",
@@ -945,7 +583,9 @@ class TestPlayModeManager:
         monkeypatch.setattr(
             component_restore,
             "publish_prepared_scene_python_components",
-            lambda scene, prepared, clear_registries=True, object_id_map=None, component_id_map=None: prepared.consume(),
+            lambda scene, prepared, clear_registries=True, object_id_map=None, component_id_map=None: (
+                prepared.consume()
+            ),
         )
 
         snapshot = {

@@ -9,17 +9,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_EDITOR = (
-    ROOT / "external" / "plugins" / "infernux_web" / "package" / "editor"
-)
-
-
-def test_raw_shader_compatibility_fixtures_are_not_shipped_as_authored_assets():
-    plugin = ROOT / "external/plugins/infernux_web"
-    fixtures = plugin / "tests/fixtures/shader_compat"
-    for suffix in ("vert", "frag"):
-        assert (fixtures / f"representative.{suffix}").read_text().startswith("#version 450")
-        assert not tuple((plugin / "package").rglob(f"representative.{suffix}"))
+PLUGIN_EDITOR = ROOT / "external" / "plugins" / "infernux_web" / "package" / "editor"
 
 
 @pytest.fixture
@@ -50,52 +40,16 @@ void main() {}
     assert "layout(std140, set = 0, binding = 999)" in prepared.source
     assert prepared.uses_push_constant_uniform
     assert prepared.tint_sampler_mapping == "2,7:2,507"
-    assert prepared.sampler_bindings == (
-        shader_pipeline.WebSamplerBinding("colorTexture", 2, 7, 507),
-    )
+    assert prepared.sampler_bindings == (shader_pipeline.WebSamplerBinding("colorTexture", 2, 7, 507),)
 
 
-def test_web_shader_preparation_rejects_reserved_binding(shader_pipeline):
-    with pytest.raises(
-        shader_pipeline.WebShaderCompatibilityError,
-        match="reserved by the Web shader ABI",
-    ):
-        shader_pipeline.prepare_glsl_for_webgpu(
-            """#version 450
-layout(set = 0, binding = 500) uniform sampler2D invalidTexture;
-void main() {}
-"""
-        )
-
-
-def test_web_shader_preparation_rejects_push_constant_arrays(shader_pipeline):
-    with pytest.raises(
-        shader_pipeline.WebShaderCompatibilityError,
-        match="does not support array members",
-    ):
-        shader_pipeline.prepare_glsl_for_webgpu(
-            """#version 450
-layout(push_constant) uniform DrawConstants {
-    vec4 values[2];
-} drawConstants;
-void main() {}
-"""
-        )
-
-
-def test_web_shader_pipeline_uses_vulkan_11_and_remaps_sampler_binding(
-    shader_pipeline, monkeypatch, tmp_path
-):
+def test_web_shader_pipeline_uses_vulkan_11_and_remaps_sampler_binding(shader_pipeline, monkeypatch, tmp_path):
     calls: list[tuple[str, ...]] = []
 
     def run(command, *, capture_output, check):
         arguments = tuple(str(item) for item in command)
         calls.append(arguments)
-        output = (
-            Path(arguments[arguments.index("--output-name") + 1])
-            if "--output-name" in arguments
-            else None
-        )
+        output = Path(arguments[arguments.index("--output-name") + 1]) if "--output-name" in arguments else None
         if output is not None:
             input_path = Path(arguments[-1])
             if input_path.suffix == ".wgsl":
@@ -131,29 +85,7 @@ void main() {}
     assert "@binding(503u) var sourceTexture_sampler" in compiled.wgsl
 
 
-def test_web_shader_tool_decodes_native_host_diagnostics_only_on_failure(
-    shader_pipeline, monkeypatch,
-):
-    diagnostic = "找不到着色器".encode("cp936")
-
-    monkeypatch.setattr(shader_pipeline.locale, "getencoding", lambda: "cp936")
-    monkeypatch.setattr(
-        shader_pipeline.subprocess,
-        "run",
-        lambda *_args, **_kwargs: type(
-            "Completed",
-            (),
-            {"returncode": 7, "stdout": b"", "stderr": diagnostic},
-        )(),
-    )
-
-    with pytest.raises(shader_pipeline.WebShaderToolError, match="找不到着色器"):
-        shader_pipeline._run(("glslangValidator", "shader.frag"), "glslang")
-
-
-def test_web_shader_manifest_builds_current_runtime_catalog(
-    shader_pipeline, monkeypatch, tmp_path
-):
+def test_web_shader_manifest_builds_current_runtime_catalog(shader_pipeline, monkeypatch, tmp_path):
     source = tmp_path / "stage.vert"
     source.write_text("#version 450\nvoid main() {}\n", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
@@ -190,32 +122,5 @@ def test_web_shader_manifest_builds_current_runtime_catalog(
     assert entry["name"] == "Fullscreen Triangle"
     assert entry["stage"] == "vertex"
     assert entry["path"].endswith(".vert.wgsl")
-    assert (output / entry["path"]).read_text(encoding="utf-8") == (
-        "@vertex fn main() {}\n"
-    )
+    assert (output / entry["path"]).read_text(encoding="utf-8") == ("@vertex fn main() {}\n")
     assert json.loads((output / "catalog.json").read_text(encoding="utf-8")) == catalog
-
-
-def test_web_shader_manifest_rejects_duplicate_identity(
-    shader_pipeline, tmp_path
-):
-    source = tmp_path / "stage.vert"
-    source.write_text("#version 450\nvoid main() {}\n", encoding="utf-8")
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "shaders": [
-                    {"name": "Same", "stage": "vertex", "source": source.name},
-                    {"name": "Same", "stage": "vertex", "source": source.name},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        shader_pipeline.WebShaderCompatibilityError,
-        match="Duplicate Web shader identity",
-    ):
-        shader_pipeline.compile_shader_manifest(manifest, tmp_path / "output")

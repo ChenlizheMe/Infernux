@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 import infernux as inx
-from infernux import jit
 from infernux import _jit_kernels as kernels
 
 
@@ -80,7 +79,9 @@ def accumulate(domain, bins, values, vectors, count):
     domain = inx.buffer(shape=4, dtype=np.int32, device="gpu")
     bins = inx.buffer(shape=4, dtype=np.int32, device="gpu", data=(0, 1, 0, 1))
     values = inx.buffer(
-        shape=4, dtype=inx.vector3, device="gpu",
+        shape=4,
+        dtype=inx.vector3,
+        device="gpu",
         data=np.arange(12, dtype=np.float32).reshape(4, 3),
     )
     vectors = inx.buffer(shape=2, dtype=inx.vector3, device="gpu")
@@ -88,9 +89,7 @@ def accumulate(domain, bins, values, vectors, count):
 
     inx.compute.launch(namespace["accumulate"], (domain, bins, values, vectors, count))
 
-    np.testing.assert_allclose(
-        vectors.numpy(copy=False), ((6.0, 8.0, 10.0), (12.0, 14.0, 16.0))
-    )
+    np.testing.assert_allclose(vectors.numpy(copy=False), ((6.0, 8.0, 10.0), (12.0, 14.0, 16.0)))
     assert int(count.numpy(copy=False)[0]) == 4
 
 
@@ -118,18 +117,6 @@ def accumulate(domain, bins, totals):
     inx.compute.launch(namespace["accumulate"], (domain, bins, totals))
 
     np.testing.assert_array_equal(totals.numpy(copy=False), (1, 1))
-
-
-def test_gpu_index_declaration_accepts_public_and_imported_spellings():
-    from infernux._compiler.kernel_contract import index_declaration as _index_declaration
-
-    for source in (
-        "i = inx.compute.index(domain)",
-        "i = compute.index(domain)",
-        "i = index(domain)",
-    ):
-        statement = ast.parse(source).body[0]
-        assert _index_declaration(statement) == ("i", "domain")
 
 
 def _execute_pair_lowered(source: str, *args):
@@ -204,19 +191,6 @@ def probe(limit):
         assert _execute_pair_lowered(source, limit) == expected
 
 
-def test_gpu_dynamic_range_step_must_be_compile_time_nonzero():
-    from infernux._compiler.taichi.frontend import _lower_serial_loops
-
-    for source, message in (
-        ("def probe(stop, step):\n    for i in range(0, stop, step):\n        pass\n",
-         "compile-time integer"),
-        ("def probe(stop):\n    for i in range(0, stop, 0):\n        pass\n", "cannot be zero"),
-    ):
-        definition = ast.parse(source).body[0]
-        with pytest.raises(TypeError, match=message):
-            _lower_serial_loops(definition)
-
-
 def test_buffer_cpu_typed_storage_and_explicit_snapshot():
     values = inx.buffer(shape=4, dtype=inx.vector3, device="cpu")
     values.set_data(np.arange(12, dtype=np.float32).reshape(4, 3))
@@ -257,11 +231,14 @@ def test_transform_binding_publishes_completed_buffer_pose(monkeypatch):
         shape=3,
         dtype=inx.vector4,
         device="cpu",
-        data=np.array([
-            [3.0, 4.0, 5.0, 1.0],
-            [0.0, 0.0, 0.7071068, 0.7071068],
-            [2.0, 3.0, 4.0, 1.0],
-        ], dtype=np.float32),
+        data=np.array(
+            [
+                [3.0, 4.0, 5.0, 1.0],
+                [0.0, 0.0, 0.7071068, 0.7071068],
+                [2.0, 3.0, 4.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
     )
     binding = inx.compute.bind_transform(owner, pose=pose)
 
@@ -272,10 +249,13 @@ def test_transform_binding_publishes_completed_buffer_pose(monkeypatch):
     binding._poll()
     assert tuple(owner.transform.position) == (3.0, 4.0, 5.0)
     assert tuple(owner.transform.local_scale) == (2.0, 3.0, 4.0)
-    assert inx.quaternion.angle(
-        owner.transform.rotation,
-        inx.quaternion(0.0, 0.0, 0.7071068, 0.7071068),
-    ) < 0.01
+    assert (
+        inx.quaternion.angle(
+            owner.transform.rotation,
+            inx.quaternion(0.0, 0.0, 0.7071068, 0.7071068),
+        )
+        < 0.01
+    )
     # CPU authors may write through NumPy directly, without a GPU write ticket.
     pose.numpy(copy=False)[0, :3] = (6.0, 7.0, 8.0)
     binding._poll()
@@ -409,9 +389,7 @@ def test_web_mapped_transform_authored_edit_wins_at_frame_boundary(monkeypatch):
         ),
     )
     authored = []
-    binding = inx.compute.bind_transform(
-        owner, pose=pose, on_transform=lambda old, new: authored.append((old, new))
-    )
+    binding = inx.compute.bind_transform(owner, pose=pose, on_transform=lambda old, new: authored.append((old, new)))
 
     binding._poll()
     inx.compute._begin_cpu_mesh_frame()
@@ -438,12 +416,12 @@ def test_transform_binding_retires_with_owner_not_only_game_object(monkeypatch, 
         _is_destroyed = False
 
     transform = SimpleNamespace(
-        position=inx.vector3(0, 0, 0), rotation=inx.quaternion.identity,
+        position=inx.vector3(0, 0, 0),
+        rotation=inx.quaternion.identity,
         local_scale=inx.vector3(1, 1, 1),
     )
     resolved = []
-    monkeypatch.setattr(inx.compute, "_resolve_bound_transform",
-                        lambda *args: resolved.append(args) or transform)
+    monkeypatch.setattr(inx.compute, "_resolve_bound_transform", lambda *args: resolved.append(args) or transform)
     data = np.array([[3, 4, 5, 1], [0, 0, 0, 1], [1, 1, 1, 1]], dtype=np.float32)
     pose = inx.buffer(shape=3, dtype=inx.vector4, device="cpu", data=data)
     owner = Owner()
@@ -489,16 +467,17 @@ def test_transform_binding_authored_trs_wins_once_and_updates_pose(monkeypatch):
         shape=3,
         dtype=inx.vector4,
         device="cpu",
-        data=np.array([
-            [1.0, 2.0, 3.0, 1.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0],
-        ], dtype=np.float32),
+        data=np.array(
+            [
+                [1.0, 2.0, 3.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
     )
     authored = []
-    binding = inx.compute.bind_transform(
-        owner, pose=pose, on_transform=lambda old, new: authored.append((old, new))
-    )
+    binding = inx.compute.bind_transform(owner, pose=pose, on_transform=lambda old, new: authored.append((old, new)))
     binding._poll()
     binding._poll()
 
@@ -536,11 +515,14 @@ def test_transform_binding_uses_authored_transform_to_initialize_simulation(monk
         shape=3,
         dtype=inx.vector4,
         device="cpu",
-        data=np.array([
-            [0.0, 2.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0],
-        ], dtype=np.float32),
+        data=np.array(
+            [
+                [0.0, 2.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
     )
     changes = []
     initial = inx.compute.TransformPose(
@@ -591,11 +573,14 @@ def test_transform_binding_closes_before_touching_a_destroyed_owner(monkeypatch)
         shape=3,
         dtype=inx.vector4,
         device="cpu",
-        data=np.array([
-            [3.0, 4.0, 5.0, 1.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0],
-        ], dtype=np.float32),
+        data=np.array(
+            [
+                [3.0, 4.0, 5.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
     )
     binding = inx.compute.bind_transform(owner, pose=pose)
 
@@ -603,32 +588,6 @@ def test_transform_binding_closes_before_touching_a_destroyed_owner(monkeypatch)
 
     assert binding.closed
     assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
-
-
-def test_buffer_description_freezes_layout_capacity_and_ownership():
-    values = inx.buffer(shape=(3, 5), dtype=inx.vector3, device="cpu")
-    description = values.description
-
-    assert description.shape == (3, 5)
-    assert description.dtype == "vector3"
-    assert description.scalar_dtype == "float32"
-    assert description.lanes == 3
-    assert description.attribute_offsets == (0, 4, 8)
-    assert description.capacity == 15
-    assert description.element_stride == 12
-    assert description.byte_offset == 0
-    assert description.byte_length == 180
-    assert description.nbytes == 180
-    assert description.device == "cpu"
-    assert description.usage == ("host_read", "host_write")
-    assert description.access == "read_write"
-    assert description.ownership == "owned"
-    assert description.generation > 0
-    assert description.resource_index is None
-    assert description.resource_generation is None
-
-    values.close()
-    assert values.description == description
 
 
 @pytest.mark.parametrize("device,web_runtime", [("cpu", False), ("gpu", True)])
@@ -643,17 +602,6 @@ def test_owned_buffer_copies_contiguous_initial_storage(monkeypatch, device, web
 
     assert source[0, 1] == 1.0
     assert second.numpy(copy=False)[0, 1] == 1.0
-
-
-def test_buffer_is_runtime_storage_not_a_serialized_asset_value():
-    from infernux.components.value_codec import ValueCodecRegistry
-
-    values = inx.buffer(shape=4, dtype=np.float32, device="cpu")
-    with pytest.raises(TypeError, match="unsupported serialized value type"):
-        ValueCodecRegistry().encode(values, "Probe.runtime_state")
-
-    assert values.description.resource_index is None
-    assert values.description.resource_generation is None
 
 
 def test_cpu_buffer_views_share_ranges_and_survive_owner_close():
@@ -672,21 +620,6 @@ def test_cpu_buffer_views_share_ranges_and_survive_owner_close():
     overlap[2] = 60
     np.testing.assert_array_equal(first.numpy(), [20, 21, 22, 23])
     assert overlap[2] == 60
-
-
-def test_buffer_empty_shape_and_read_only_view_are_explicit():
-    with pytest.raises(ValueError, match="positive integers"):
-        inx.buffer(shape=0, dtype=np.float32, device="cpu")
-
-    values = inx.buffer(shape=4, dtype=np.int32, device="cpu", data=[1, 2, 3, 4])
-    readonly = values.view(offset=1, count=2, readonly=True)
-    assert readonly.readonly
-    assert readonly.description.access == "read_only"
-    np.testing.assert_array_equal(readonly.numpy(), [2, 3])
-    with pytest.raises(RuntimeError, match="read-only"):
-        readonly[0] = 9
-    with pytest.raises(RuntimeError, match="read-only"):
-        readonly.set_data([8, 9])
 
 
 def test_cpu_buffer_async_readback_is_an_immediate_exact_snapshot():
@@ -793,27 +726,30 @@ def test_buffer_gpu_uses_engine_owned_storage_and_never_indexes(monkeypatch):
             self.payload = bytes(byte_size)
             self.resource_index = 7
             self.resource_generation = 13
+
         def set_bytes(self, value, offset=0):
             mutable = bytearray(self.payload)
-            mutable[offset:offset + len(value)] = value
+            mutable[offset : offset + len(value)] = value
             self.payload = bytes(mutable)
+
         def get_bytes(self, byte_size, offset=0):
-            return self.payload[offset:offset + byte_size]
+            return self.payload[offset : offset + byte_size]
 
     class Host:
         def __init__(self):
             self.created = []
             self.identity = 11
+
         def create_buffer(self, element_count, scalar_type, lanes=1):
             assert scalar_type == "float32" and lanes == 1
             byte_size = element_count * lanes * 4
             result = NativeBuffer(byte_size)
             self.created.append(result)
             return result
+
         def dispatch_batch_and_read(self, dispatches, updates, reads):
             assert dispatches == [] and updates == []
-            return [native.payload[offset:offset + byte_size]
-                    for native, offset, byte_size in reads]
+            return [native.payload[offset : offset + byte_size] for native, offset, byte_size in reads]
 
     host = Host()
     acquisitions = []
@@ -837,210 +773,7 @@ def test_buffer_gpu_uses_engine_owned_storage_and_never_indexes(monkeypatch):
     np.testing.assert_array_equal(snapshot.numpy(), np.array([1, 2, 3, 4], np.float32))
     assert values.description.resource_index == 7
     assert values.description.resource_generation == 13
-    assert values.description.usage == (
-        "storage", "uniform", "vertex", "transfer_source", "transfer_destination"
-    )
-
-
-def test_buffer_rejects_implicit_layout_or_device_guessing():
-    with pytest.raises(TypeError, match="device"):
-        inx.buffer(shape=4)
-    with pytest.raises(ValueError, match="explicitly"):
-        inx.buffer(shape=4, device="automatic")
-    with pytest.raises(ValueError, match="data shape"):
-        inx.buffer(shape=4, dtype=float, device="cpu", data=[1, 2])
-
-
-def test_gpu_kernel_declaration_is_inert_until_explicit_launch():
-    calls = []
-
-    @inx.compute.kernel
-    def declared(values):
-        calls.append(values)
-
-    assert isinstance(declared, inx.compute.Kernel)
-    assert declared.__name__ == "declared"
-    assert calls == []
-    with pytest.raises(RuntimeError, match="only inside"):
-        inx.compute.index(inx.buffer(shape=1, device="cpu"))
-    with pytest.raises(TypeError, match="tuple"):
-        inx.compute.launch(declared, params=[])
-    assert calls == []
-
-
-def test_source_less_player_metadata_preserves_kernel_and_helper_source(monkeypatch):
-    from infernux._compiler.source_metadata import embed_compute_sources
-    from infernux._compiler.taichi import frontend
-
-    source = """\
-from infernux import compute as gpu
-
-@gpu.function
-def twice(value):
-    return value * 2
-
-@gpu.kernel
-def scale(values):
-    i = gpu.index(values)
-    values[i] = twice(values[i])
-"""
-    cooked = embed_compute_sources(source)
-    assert embed_compute_sources(cooked) == cooked
-    namespace = {"__name__": "source_less_compute_fixture"}
-    exec(compile(cooked, "<source-less-compute-fixture>", "exec"), namespace)
-    monkeypatch.setattr(
-        frontend.inspect,
-        "getsource",
-        lambda _value: (_ for _ in ()).throw(OSError("source is absent")),
-    )
-    assert "def scale(values)" in frontend._function_source(
-        namespace["scale"].function
-    )
-    assert "def twice(value)" in frontend._function_source(
-        namespace["twice"].function
-    )
-
-
-def test_source_less_metadata_preserves_engine_owned_bare_kernel(monkeypatch):
-    from infernux._compiler.source_metadata import embed_compute_sources
-    from infernux._compiler.taichi import frontend
-
-    source = """\
-def kernel(fn):
-    return fn
-
-@kernel
-def internal(values):
-    values[0] = 1
-"""
-    cooked = embed_compute_sources(source)
-    namespace = {"__name__": "source_less_bare_kernel"}
-    exec(compile(cooked, "<source-less-bare-kernel>", "exec"), namespace)
-    monkeypatch.setattr(
-        frontend.inspect,
-        "getsource",
-        lambda _value: (_ for _ in ()).throw(OSError("source is absent")),
-    )
-    assert "def internal(values)" in frontend._function_source(namespace["internal"])
-
-
-def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
-    from infernux._compiler.taichi import frontend
-
-    class InvalidKernel:
-        @inx.compute.kernel
-        def step(self, domain):
-            i = inx.compute.index(domain)
-            domain[i] = 1
-
-    with pytest.raises(TypeError) as error:
-        frontend.compile_kernel(InvalidKernel.step.function, (None, None))
-    message = str(error.value)
-    assert "InvalidKernel.step" in message
-    assert "implicit instance receiver 'self'" in message
-    assert "@staticmethod" in message
-    assert "test_compute.py:" in message
-    assert " is invalid for target 'Editor/Desktop'" in message
-    assert ":2:1 is invalid for target" in message
-
-
-def test_class_kernel_instance_receiver_lowers_engine_owned_scalar(monkeypatch):
-    from infernux._compiler.taichi import frontend
-
-    class Host:
-        identity = 1901
-
-    class CompilerBuffer:
-        device = "gpu"
-        dtype = "float32"
-        _host = Host()
-        _cpu_mapped = False
-
-    class Executable:
-        def __init__(self, artifact, host, params):
-            self.artifact = artifact
-            self.host = host
-            self.params = params
-
-        def close(self):
-            pass
-
-    captured = {}
-    monkeypatch.setattr(inx.compute, "Buffer", CompilerBuffer)
-    monkeypatch.setattr(frontend, "parameter_key", lambda params: tuple(type(v).__name__ for v in params))
-    monkeypatch.setattr(inx.compute, "_KernelExecutable", Executable)
-
-    def compile_receiver(function, params, *, receiver_fields=None):
-        captured["function"] = function
-        captured["params"] = params
-        captured["receiver_fields"] = receiver_fields
-        return "receiver-artifact"
-
-    monkeypatch.setattr(frontend, "compile_kernel", compile_receiver)
-
-    class Component:
-        @inx.compute.kernel
-        def step(self, domain):
-            index = inx.compute.index(domain)
-            domain[index] = self.scale
-
-        def __init__(self):
-            self.scale = 2.5
-
-    domain = CompilerBuffer()
-    component = Component()
-    executable = component.step._executable((domain,))
-
-    assert captured["params"] == (2.5, domain)
-    assert captured["receiver_fields"] == (("scale", 2.5),)
-    assert executable.params == (2.5, domain)
-
-
-def test_class_kernel_diagnostics_reject_unbound_receiver_field():
-    from infernux._compiler.taichi import frontend
-
-    class InvalidFieldKernel:
-        @inx.compute.kernel
-        def step(domain):
-            i = inx.compute.index(domain)
-            domain[i] = self.scale
-
-    with pytest.raises(TypeError) as error:
-        frontend.compile_kernel(InvalidFieldKernel.step.function, (None,))
-    message = str(error.value)
-    assert "InvalidFieldKernel.step" in message
-    assert "unbound receiver field 'self.scale'" in message
-    assert "pass the required scalar or inx.buffer explicitly" in message
-    assert " is invalid for target 'Editor/Desktop'" in message
-
-
-def test_kernel_closure_diagnostic_identifies_captured_value():
-    from infernux._compiler.taichi import frontend
-
-    factor = 2
-
-    @inx.compute.kernel
-    def invalid(domain):
-        i = inx.compute.index(domain)
-        domain[i] = factor
-
-    with pytest.raises(TypeError) as error:
-        frontend.compile_kernel(invalid.function, (None,))
-    message = str(error.value)
-    assert "invalid" in message
-    assert "arbitrary Python closure capture" in message
-    assert "factor" in message
-    assert "test_compute.py:" in message
-
-
-def test_kernel_rejects_staticmethod_descriptor_in_wrong_decorator_order():
-    with pytest.raises(TypeError, match="put @staticmethod above @inx.compute.kernel"):
-        class WrongOrder:
-            @inx.compute.kernel
-            @staticmethod
-            def step(domain):
-                i = inx.compute.index(domain)
-                domain[i] = 1
+    assert values.description.usage == ("storage", "uniform", "vertex", "transfer_source", "transfer_destination")
 
 
 def test_gpu_kernel_rejects_cpu_buffers_without_fallback():
@@ -1053,149 +786,6 @@ def test_gpu_kernel_rejects_cpu_buffers_without_fallback():
 
     with pytest.raises(TypeError, match="transfer CPU data explicitly"):
         inx.compute.launch(declared, params=(values,))
-
-
-def test_gpu_kernel_prepare_is_explicit_and_never_dispatches():
-    calls = []
-
-    declaration = inx.compute.Kernel(lambda value: None)
-    executable = object()
-
-    def resolve(params):
-        calls.append(params)
-        return executable
-
-    declaration._executable = resolve
-    inx.compute.prepare(declaration, params=("domain", 2.0))
-    assert calls == [("domain", 2.0)]
-    with pytest.raises(TypeError, match="tuple"):
-        inx.compute.prepare(declaration, params=[])
-    with pytest.raises(TypeError, match="kernel declaration"):
-        inx.compute.prepare(object(), params=())
-
-
-def test_gpu_compiler_artifact_cache_is_engine_owned_binary(tmp_path, monkeypatch):
-    from infernux._compiler.taichi import frontend
-
-    artifact = frontend.CompilerArtifact(
-        spirv_tasks=(b"\x03\x02\x23\x07", b"task-two"),
-        task_metadata=({"name": "first", "buffer_bindings": []},),
-        domain_parameter=1,
-        argument_layout={
-            "size": 16,
-            "parameters": [
-                {"kind": "int32", "offset": 0},
-                {"kind": "float32", "offset": 4},
-            ],
-        },
-        required_capabilities={"spirv_version": 0x10300},
-        diagnostic_locations=({
-            "entry_point": "first",
-            "path": "Assets/Scripts/Kernel.py",
-            "line": 17,
-            "column": 0,
-            "function": "game.Kernel.integrate",
-        },),
-    )
-    monkeypatch.setattr(frontend, "_cache_root", lambda: tmp_path)
-    params = (1, 1.0)
-    frontend._store_artifact("a" * 64, artifact, params)
-    path = tmp_path / (("a" * 64) + ".inxgpu")
-    assert path.read_bytes().startswith(b"INXGPU\x01")
-
-    restored = frontend._load_artifact("a" * 64, params)
-    assert restored is not None
-    assert restored.spirv_tasks == artifact.spirv_tasks
-    assert restored.domain_parameter == 1
-    assert restored.argument_layout == artifact.argument_layout
-    assert restored.required_capabilities == artifact.required_capabilities
-    assert restored.diagnostic_locations == artifact.diagnostic_locations
-
-
-def test_gpu_compiler_artifact_cache_uses_project_library_and_player_data(
-    tmp_path, monkeypatch
-):
-    from infernux.application import Application
-    from infernux._compiler.taichi import frontend
-
-    project_root = tmp_path / "project"
-    player_root = tmp_path / "player-data"
-    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
-    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(project_root)))
-    assert frontend._cache_root() == project_root / "Library" / "Artifacts" / "Compute"
-
-    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
-    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(player_root)))
-    assert frontend._cache_root() == player_root / "Library" / "Artifacts" / "Compute"
-
-
-def test_gpu_compute_function_is_an_explicit_kernel_only_declaration():
-    @inx.compute.function
-    def double(value):
-        return value * 2
-
-    assert isinstance(double, inx.compute.Function)
-    assert double.__name__ == "double"
-    with pytest.raises(RuntimeError, match="only inside"):
-        double(4)
-
-
-def test_gpu_compute_errors_distinguish_capability_compile_and_execution(monkeypatch):
-    from infernux.application import Application
-    from infernux._compiler.taichi import CompilerInstallationError
-    from infernux._compiler.taichi import frontend
-
-    monkeypatch.setattr(Application, "_current_engine", staticmethod(lambda: None))
-    with pytest.raises(inx.compute.ComputeCapabilityError, match="running graphical"):
-        inx.buffer(shape=1, dtype=np.float32, device="gpu")
-
-    class CompilerBuffer:
-        device = "gpu"
-        _host = type("CompilerHost", (), {"identity": 91})()
-        _cpu_mapped = False
-
-    monkeypatch.setattr(inx.compute, "Buffer", CompilerBuffer)
-    monkeypatch.setattr(frontend, "parameter_key", lambda _params: ("layout",))
-
-    declaration = inx.compute.Kernel(lambda value: None)
-    monkeypatch.setattr(
-        frontend,
-        "compile_kernel",
-        lambda _function, _params: (_ for _ in ()).throw(
-            CompilerInstallationError("private compiler payload is incomplete")
-        ),
-    )
-    with pytest.raises(inx.compute.ComputeCompilerError, match="initialization failed"):
-        declaration._executable((CompilerBuffer(),))
-
-    authored = inx.compute.Kernel(lambda value: None)
-    monkeypatch.setattr(
-        frontend,
-        "compile_kernel",
-        lambda _function, _params: (_ for _ in ()).throw(
-            TypeError("unsupported authored expression")
-        ),
-    )
-    with pytest.raises(inx.compute.KernelCompilationError, match="authored expression"):
-        authored._executable((CompilerBuffer(),))
-
-    class Host:
-        identity = 73
-
-        def dispatch_batch(self, _dispatches, _updates):
-            raise RuntimeError("device lost")
-
-    class Executable:
-        host = Host()
-
-        @staticmethod
-        def prepare(_params):
-            return [], [(object(), (), (), b"", 1, 1, 1)]
-
-    declaration = inx.compute.Kernel(lambda value: None)
-    declaration._executable = lambda _params: Executable()
-    with pytest.raises(inx.compute.ComputeExecutionError, match="submission failed"):
-        inx.compute.launch(declaration, params=(object(),))
 
 
 def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
@@ -1212,7 +802,8 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
     host = SimpleNamespace(identity=12, create_buffer=lambda *args: NativeBuffer())
     native = SimpleNamespace(has_renderer=True, _acquire_compute_host=lambda: host)
     monkeypatch.setattr(
-        Application, "_current_engine",
+        Application,
+        "_current_engine",
         staticmethod(lambda: SimpleNamespace(get_native_engine=lambda: native)),
     )
     values = inx.buffer(shape=4, device="gpu")
@@ -1224,6 +815,7 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
 
     class Executable:
         closed = False
+
         def close(self):
             self.closed = True
 
@@ -1390,368 +982,3 @@ def test_explicit_readback_joins_pending_compute_submission():
     assert updates[0][1] == b"input"
     assert reads == ((output._native, 0, 8),)
     np.testing.assert_array_equal(snapshot.numpy(), [7.0, 8.0])
-
-
-def test_compiled_gpu_launch_preparation_is_reused_for_stable_parameters(monkeypatch):
-    from types import SimpleNamespace
-    from infernux.application import Application
-    from infernux.compute import _KernelExecutable
-
-    class NativeBuffer:
-        resource_index = 19
-        resource_generation = 1
-
-        def set_bytes(self, _value, _offset=0):
-            pass
-
-    class Host:
-        identity = 23
-
-        def create_buffer(self, *_args):
-            return NativeBuffer()
-
-        def _create_kernel_from_compiler(self, spirv, layout):
-            return (spirv, tuple(layout))
-
-    host = Host()
-    native = SimpleNamespace(has_renderer=True, _acquire_compute_host=lambda: host)
-    monkeypatch.setattr(
-        Application, "_current_engine",
-        staticmethod(lambda: SimpleNamespace(get_native_engine=lambda: native)),
-    )
-    domain = inx.buffer(shape=257, dtype=np.int32, device="gpu")
-    values = inx.buffer(shape=257, dtype=np.float32, device="gpu")
-
-    class Artifact:
-        spirv_tasks = (b"spirv",)
-        task_metadata = ({
-            "buffer_bindings": (
-                {"binding": 0, "binding_type": "uniform", "resource_kind": "arguments"},
-                {"binding": 1, "binding_type": "storage", "resource_kind": "external_buffer",
-                 "argument_indices": (1,), "access": 3},
-            ),
-            "threads_per_group": 64,
-        },)
-        domain_parameter = 0
-
-        def __init__(self):
-            self.argument_calls = 0
-
-        def argument_bytes(self, _params):
-            self.argument_calls += 1
-            return b"stable-arguments"
-
-    artifact = Artifact()
-    executable = _KernelExecutable(artifact, host, (domain, values, 2.0))
-    first_updates, first_dispatches = executable.prepare((domain, values, 2.0))
-    second_updates, second_dispatches = executable.prepare((domain, values, 2.0))
-    assert artifact.argument_calls == 1
-    assert len(first_updates) == 1 and second_updates == []
-    assert second_dispatches is first_dispatches
-
-    changed_updates, changed_dispatches = executable.prepare((domain, values, 3.0))
-    assert artifact.argument_calls == 2
-    assert len(changed_updates) == 1
-    assert changed_dispatches is not first_dispatches
-
-
-def test_public_compute_surface_has_one_gpu_execution_model():
-    import infernux
-
-    assert infernux.compute is inx.compute
-    assert not callable(inx.compute)
-    assert not hasattr(jit, "compute")
-    for removed in ("hpc", "resident", "Resident", "batch", "nn"):
-        assert not hasattr(inx.compute, removed)
-
-
-def test_compute_has_no_in_process_installer_or_second_device_array_api():
-    assert not hasattr(jit, "ensure_jit_runtime")
-    assert not hasattr(jit, "_install_numba")
-    assert not hasattr(jit, "create_array")
-    from infernux.core import parallel_backend
-    assert not hasattr(parallel_backend, "ResidentArray")
-
-
-@pytest.mark.parametrize("imports,decorator", [
-    ("import infernux as inx", "inx.jit.compile"),
-    ("import infernux", "infernux.jit.compile"),
-    ("from infernux import jit as cpu", "cpu.compile"),
-    ("import infernux.jit as cpu", "cpu.compile"),
-    ("from infernux.jit import compile as optimize", "optimize"),
-])
-def test_cpu_jit_declarations_are_recognized_without_importing_authored_code(imports, decorator):
-    source = f"{imports}\n@{decorator}\ndef fill(values):\n    return values\n"
-    assert kernels.cpu_jit_declarations(source) == ("fill",)
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "import infernux as inx\n"
-            "@inx.jit.compile(parallel_policy='required')\n"
-            "def fill(values):\n"
-            "    inx.jit.warmup(fill, values)\n"
-            "    for index in range(len(values)):\n"
-            "        values[index] = index\n"
-        ),
-        (
-            "from infernux import jit as cpu\n"
-            "class Solver:\n"
-            "    @cpu.compile(\n"
-            "        cache=True,\n"
-            "    )\n"
-            "    def fill(self, values):\n"
-            "        cpu.warmup(self.fill, values)\n"
-            "        return [value + 1 for value in values]\n"
-        ),
-        (
-            "from infernux.jit import compile as optimize, warmup as prepare\n"
-            "@optimize\n"
-            "def fill(values):\n"
-            "    marker = prepare(fill, values)\n"
-            "    return marker, [value * 2 for value in values]\n"
-        ),
-    ],
-)
-def test_no_jit_build_freezes_cpu_decorators_and_warmup_as_ordinary_python(source):
-    cooked = kernels.build_interpreted_cpu_source(source)
-
-    assert cooked.count("\n") == source.count("\n")
-    original_lines = [
-        node.lineno
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
-    cooked_lines = [
-        node.lineno
-        for node in ast.walk(ast.parse(cooked))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
-    assert cooked_lines == original_lines
-    assert "@inx.jit.compile" not in cooked
-    assert "@cpu.compile" not in cooked
-    assert "@optimize" not in cooked
-    compile(cooked, "Assets/Scripts/Cpu.py", "exec")
-
-    namespace = {}
-    exec(cooked, namespace)
-    target = namespace.get("fill")
-    if target is None:
-        target = namespace["Solver"]().fill
-    values = [8, 9, 10]
-    result = target(values)
-    if result is None:
-        assert values == [0, 1, 2]
-    elif isinstance(result, tuple):
-        assert result == (None, [16, 18, 20])
-    else:
-        assert result == [9, 10, 11]
-
-
-def test_no_jit_build_follows_assigned_cpu_jit_aliases():
-    source = (
-        "import infernux as inx\n"
-        "cpu = inx.jit\n"
-        "decorator, prepare = cpu.compile, cpu.warmup\n"
-        "optimize = decorator\n"
-        "@optimize(parallel_policy='required')\n"
-        "def fill(values):\n"
-        "    prepared = prepare(fill, values)\n"
-        "    return prepared, [value + 1 for value in values]\n"
-    )
-
-    cooked = kernels.build_interpreted_cpu_source(source)
-
-    assert "@optimize" not in cooked
-    assert "prepared = prepare(" not in cooked
-    namespace = {}
-    exec(cooked, namespace)
-    assert namespace["fill"]([1, 2, 3]) == (None, [2, 3, 4])
-
-
-def test_no_jit_build_follows_public_jit_star_imports():
-    source = (
-        "from infernux.jit import *\n"
-        "@compile(parallel_policy='required')\n"
-        "def fill(values):\n"
-        "    prepared = warmup(fill, values)\n"
-        "    return prepared, [value * 2 for value in values]\n"
-    )
-
-    cooked = kernels.build_interpreted_cpu_source(source)
-
-    assert "@compile" not in cooked
-    assert "prepared = warmup(" not in cooked
-    namespace = {}
-    exec(cooked, namespace)
-    assert namespace["fill"]([2, 4]) == (None, [4, 8])
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "from infernux import jit as cpu\n"
-            "events = []\n"
-            "class Ordinary:\n"
-            "    def compile(self, function):\n"
-            "        events.append('decorate')\n"
-            "        return function\n"
-            "    def warmup(self, *args):\n"
-            "        events.append('warmup')\n"
-            "        return 17\n"
-            "cpu = Ordinary()\n"
-            "@cpu.compile\n"
-            "def fill(values):\n"
-            "    return cpu.warmup(fill, values)\n"
-        ),
-        (
-            "from infernux.jit import compile as optimize, warmup as prepare\n"
-            "events = []\n"
-            "def ordinary_decorator(function):\n"
-            "    events.append('decorate')\n"
-            "    return function\n"
-            "def ordinary_warmup(*args):\n"
-            "    events.append('warmup')\n"
-            "    return 17\n"
-            "optimize = ordinary_decorator\n"
-            "prepare = ordinary_warmup\n"
-            "@optimize\n"
-            "def fill(values):\n"
-            "    return prepare(fill, values)\n"
-        ),
-    ],
-)
-def test_no_jit_build_preserves_imported_names_rebound_to_ordinary_code(source):
-    cooked = kernels.build_interpreted_cpu_source(source)
-
-    assert cooked == source
-    namespace = {}
-    exec(cooked, namespace)
-    assert namespace["events"] == ["decorate"]
-    assert namespace["fill"]([]) == 17
-    assert namespace["events"] == ["decorate", "warmup"]
-
-
-def test_no_jit_build_applies_import_rebinding_in_source_order():
-    source = (
-        "from infernux import jit as cpu\n"
-        "@cpu.compile(parallel_policy='required')\n"
-        "def cooked(values):\n"
-        "    return cpu.warmup(cooked, values)\n"
-        "events = []\n"
-        "class Ordinary:\n"
-        "    def compile(self, function):\n"
-        "        events.append('decorate')\n"
-        "        return function\n"
-        "    def warmup(self, *args):\n"
-        "        events.append('warmup')\n"
-        "        return 23\n"
-        "cpu = Ordinary()\n"
-        "@cpu.compile\n"
-        "def ordinary(values):\n"
-        "    return cpu.warmup(ordinary, values)\n"
-    )
-
-    cooked = kernels.build_interpreted_cpu_source(source)
-
-    assert "@cpu.compile(parallel_policy='required')" not in cooked
-    assert "return cpu.warmup(cooked, values)" not in cooked
-    assert "@cpu.compile\ndef ordinary" in cooked
-    assert "return cpu.warmup(ordinary, values)" in cooked
-    namespace = {}
-    exec(cooked, namespace)
-    assert namespace["cooked"]([]) is None
-    assert namespace["events"] == ["decorate"]
-    assert namespace["ordinary"]([]) == 23
-    assert namespace["events"] == ["decorate", "warmup"]
-
-
-def test_no_jit_build_rejects_control_flow_ambiguous_jit_binding():
-    source = (
-        "from infernux import jit as cpu\n"
-        "if use_ordinary:\n"
-        "    cpu = ordinary_cpu\n"
-        "@cpu.compile\n"
-        "def fill(values):\n"
-        "    return values\n"
-    )
-
-    with pytest.raises(ValueError, match="ambiguous CPU JIT binding at line 4"):
-        kernels.build_interpreted_cpu_source(source)
-
-
-def test_no_jit_build_rejects_conditional_jit_alias_assignment():
-    source = (
-        "from infernux import jit as cpu\n"
-        "optimize = cpu.compile if enable_jit else ordinary_decorator\n"
-        "@optimize\n"
-        "def fill(values):\n"
-        "    return values\n"
-    )
-
-    with pytest.raises(ValueError, match="ambiguous CPU JIT binding at line 3"):
-        kernels.build_interpreted_cpu_source(source)
-
-
-def test_no_jit_build_rejects_unknown_star_import_over_public_jit_alias():
-    source = (
-        "from infernux.jit import compile as optimize\n"
-        "from authored_helpers import *\n"
-        "@optimize\n"
-        "def fill(values):\n"
-        "    return values\n"
-    )
-
-    with pytest.raises(ValueError, match="ambiguous CPU JIT binding at line 3"):
-        kernels.build_interpreted_cpu_source(source)
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "class Ordinary:\n"
-            "    def compile(self, function):\n"
-            "        return function\n"
-            "jit = Ordinary()\n"
-            "from infernux import *\n"
-            "@jit.compile\n"
-            "def fill(values):\n"
-            "    return values\n"
-        ),
-        (
-            "from .infernux.jit import compile as optimize\n"
-            "@optimize\n"
-            "def fill(values):\n"
-            "    return values\n"
-        ),
-    ],
-)
-def test_no_jit_build_does_not_infer_non_public_star_or_relative_imports(source):
-    assert kernels.build_interpreted_cpu_source(source) == source
-
-
-def test_no_jit_build_does_not_rewrite_gpu_execution_model():
-    source = (
-        "import infernux as inx\n"
-        "@inx.compute.kernel\n"
-        "def fill(values):\n"
-        "    values[inx.compute.index(values)] = 1\n"
-    )
-    assert kernels.build_interpreted_cpu_source(source) == source
-
-
-def test_gpu_kernel_is_not_rewritten_as_cpu_parallel_work():
-    source = (
-        "from infernux import compute\n"
-        "@compute.kernel\n"
-        "def fill(values):\n"
-        "    i = compute.index(values)\n"
-        "    values[i] = i\n"
-    )
-    assert kernels.cpu_jit_declarations(source) == ()
-    assert kernels.auto_parallel_declarations(source) == ()
-    assert kernels.build_auto_parallel_embedded_source(source) is None

@@ -8,6 +8,7 @@
 
 #include "GPUMeshPreview.h"
 #include "InxError.h"
+#include "PreviewResources.h"
 #include <backends/imgui_impl_vulkan.h>
 #include <function/renderer/EngineGlobals.h>
 #include <function/renderer/InxRenderStruct.h>
@@ -816,9 +817,7 @@ void GPUMeshPreview::CreateAttachments(int size)
 void GPUMeshPreview::DestroyAttachments()
 {
     UnpublishRenderView();
-    m_msaaColor.Destroy();
-    m_resolveColor.Destroy();
-    m_depth.Destroy();
+    RetirePreviewAttachments(*m_vkCore, m_msaaColor, m_resolveColor, m_depth);
     m_msaaColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_resolveColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;

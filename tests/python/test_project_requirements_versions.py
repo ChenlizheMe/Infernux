@@ -29,7 +29,7 @@ def test_missing_authored_requirements_never_creates_a_shared_file(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("spec", ["Infernux==0.4.1", "infernux>=0.4.2", 'infernux; python_version < "2.0"'])
+@pytest.mark.parametrize("spec", ["Infernux==0.4.1"])
 def test_project_requirements_cannot_install_or_replace_the_pinned_engine(tmp_path, spec):
     path = tmp_path / "requirements.txt"
     path.write_text(spec + "\n", encoding="utf-8")

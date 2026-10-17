@@ -324,18 +324,4 @@ void VkShaderCache::Clear()
     ++m_renderMetaRevision;
 }
 
-// ============================================================================
-// Debug Helpers
-// ============================================================================
-
-void VkShaderCache::DumpAvailableKeys(std::string &outVert, std::string &outFrag) const
-{
-    outVert.clear();
-    outFrag.clear();
-    for (const auto &kv : m_vertCodes)
-        outVert += " [" + kv.first + "]";
-    for (const auto &kv : m_fragCodes)
-        outFrag += " [" + kv.first + "]";
-}
-
 } // namespace infernux

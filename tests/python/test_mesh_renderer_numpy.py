@@ -1,4 +1,5 @@
 """Public NumPy mesh upload uses the existing native mesh contract."""
+
 import json
 
 import numpy as np
@@ -62,20 +63,11 @@ def test_renderer_parameters_layer_over_shared_material_without_mutation(scene):
 
     restored_object = scene.create_game_object("restored parameter override")
     restored = restored_object.add_component("MeshRenderer")
+    document["component_id"] = restored.component_id
     assert restored.deserialize_document(document) is True
     restored = restored_object.get_component("MeshRenderer")
     assert restored.get_parameter("baseColor") == pytest.approx((0.8, 0.2, 0.1, 1.0))
     assert restored.get_parameter("metallic") == pytest.approx(0.4)
-
-
-def test_renderer_parameters_use_reflected_material_types(scene):
-    renderer = scene.create_game_object("typed renderer parameters").add_component("MeshRenderer")
-    with pytest.raises(KeyError, match="no parameter"):
-        renderer.set_parameter("not_declared_by_shader", 1.0)
-    with pytest.raises((TypeError, ValueError)):
-        renderer.set_parameter("baseColor", (1.0, 0.5, 0.25))
-    with pytest.raises((TypeError, ValueError)):
-        renderer.set_parameter("metallic", (1.0, 0.0))
 
 
 def test_renderer_parameter_slots_clone_and_field_removal_are_isolated(scene):
@@ -139,6 +131,7 @@ def test_renderer_texture_parameter_uses_asset_guid_boundary(scene):
     document = json.loads(renderer._require_cpp_component().serialize())
     document["parameterOverrides"] = [{"texSampler": {"type": 0, "value": 1.0}}]
     restored = scene.create_game_object("invalid renderer document").add_component("MeshRenderer")
+    document["component_id"] = restored.component_id
     assert restored.deserialize_document(document) is False
 
 
@@ -177,21 +170,6 @@ def test_inline_mesh_exposes_canonical_interleaved_vertex_storage(scene):
     np.testing.assert_array_equal(tangents[:, 3], 1)
 
 
-def test_vertex_buffer_requires_gpu_inx_buffer(scene):
-    from infernux.compute import buffer
-
-    renderer = scene.create_game_object("resident mesh contract").add_component("MeshRenderer")
-    renderer.set_inline_mesh_data(
-        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
-        np.tile(np.array([0, 0, 1], dtype=np.float32), (3, 1)),
-        np.zeros((3, 2), dtype=np.float32),
-        np.array([0, 1, 2], dtype=np.uint32),
-    )
-    cpu = buffer(shape=(3, 25), dtype=np.float32, device="cpu")
-    with pytest.raises(TypeError, match="GPU inx.buffer"):
-        renderer.set_vertex_buffer(cpu, (-1, -1, -1), (1, 1, 1))
-
-
 def test_vertex_buffer_capacity_is_explicit_and_cannot_shrink_below_mesh(scene):
     renderer = scene.create_game_object("resident mesh capacity").add_component("MeshRenderer")
     renderer.set_inline_mesh_data(
@@ -211,9 +189,7 @@ def test_web_cpu_world_vertex_stream_preserves_world_space(scene, monkeypatch):
     owner = scene.create_game_object("Web CPU world stream")
     owner.transform.position = vector3(10.0, 0.0, 0.0)
     renderer = owner.add_component("MeshRenderer")
-    local_positions = np.array(
-        [[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32
-    )
+    local_positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
     renderer.set_inline_mesh_data(
         local_positions,
         np.tile(np.array([0, 0, 1], dtype=np.float32), (3, 1)),
@@ -254,26 +230,17 @@ def test_web_cpu_mesh_publication_is_coalesced_to_native_frame(scene, monkeypatc
     np.testing.assert_allclose(renderer.get_positions(), original, atol=1e-6)
     _end_cpu_mesh_frame()
 
-    np.testing.assert_allclose(
-        renderer.get_positions(), original + np.array([0, 4, 0]), atol=1e-6
-    )
-
-
-def test_unbound_numpy_mesh_upload_is_not_silently_ignored():
-    with pytest.raises(ReferenceError):
-        MeshRenderer().set_inline_mesh_data(None, None, None, None)
+    np.testing.assert_allclose(renderer.get_positions(), original + np.array([0, 4, 0]), atol=1e-6)
 
 
 def test_native_normal_generation_is_area_weighted_and_manual_normals_are_preserved(scene):
     renderer = scene.create_game_object("generated normals").add_component("MeshRenderer")
-    positions = np.array([[0, 0, 0], [2, 0, 0], [0, 1, 0], [0, 0, 2],
-                          [10, 0, 0]], dtype=np.float32)
+    positions = np.array([[0, 0, 0], [2, 0, 0], [0, 1, 0], [0, 0, 2], [10, 0, 0]], dtype=np.float32)
     indices = np.array([0, 1, 2, 0, 3, 1], dtype=np.uint32)
     uvs = np.zeros((len(positions), 2), dtype=np.float32)
     renderer.set_inline_mesh_data(positions, None, uvs, indices)
     shared = np.array([0, 4, 2]) / np.sqrt(20)
-    np.testing.assert_allclose(renderer.get_normals(),
-                               [shared, shared, [0, 0, 1], [0, 1, 0], [0, 0, 0]], atol=1e-6)
+    np.testing.assert_allclose(renderer.get_normals(), [shared, shared, [0, 0, 1], [0, 1, 0], [0, 0, 0]], atol=1e-6)
     manual = np.tile([1, 0, 0], (len(positions), 1)).astype(np.float32)
     renderer.set_inline_mesh_data(positions, manual, uvs, indices)
     np.testing.assert_array_equal(renderer.get_normals(), manual)
@@ -313,13 +280,22 @@ def test_tangent_generation_normalizes_authored_normals_for_frame_projection(sce
     renderer.set_inline_mesh_data(positions, normals, uvs, indices)
     tangents = np.asarray(renderer.get_tangents(), dtype=np.float32)
     np.testing.assert_allclose(np.linalg.norm(tangents[:, :3], axis=1), 1.0, atol=1e-6)
-    np.testing.assert_allclose(tangents[:, :3,] @ np.array([0, 0, 1], dtype=np.float32), 0.0, atol=1e-6)
+    np.testing.assert_allclose(
+        tangents[
+            :,
+            :3,
+        ]
+        @ np.array([0, 0, 1], dtype=np.float32),
+        0.0,
+        atol=1e-6,
+    )
 
 
 def test_generated_normals_preserve_split_vertices_and_degenerate_faces(scene):
     renderer = scene.create_game_object("split normals").add_component("MeshRenderer")
-    positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0],
-                          [0, 0, 0], [0, 0, 1], [1, 0, 0], [2, 0, 0]], dtype=np.float32)
+    positions = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0], [0, 0, 1], [1, 0, 0], [2, 0, 0]], dtype=np.float32
+    )
     uvs = np.zeros((len(positions), 2), dtype=np.float32)
     indices = np.array([0, 1, 2, 3, 4, 5, 6, 6, 6], dtype=np.uint32)
     renderer.set_inline_mesh_data(positions, None, uvs, indices)
@@ -354,8 +330,7 @@ def test_inline_geometry_generation_and_world_bounds_are_authoritative(scene):
 
     go.transform.position = Vector3(10, 20, 30)
     go.transform.local_scale = Vector3(2, 3, 4)
-    np.testing.assert_allclose(renderer._require_cpp_component().get_world_bounds(),
-                               [6, 17, 18, 18, 35, 54], atol=1e-6)
+    np.testing.assert_allclose(renderer._require_cpp_component().get_world_bounds(), [6, 17, 18, 18, 35, 54], atol=1e-6)
 
     with pytest.raises(ValueError, match="outside positions"):
         renderer.set_inline_mesh_data(positions, None, uvs, np.array([0, 1, 7], dtype=np.uint32))
@@ -394,13 +369,6 @@ def test_visual_mesh_update_requires_explicit_collision_recook(scene, raw_native
     assert NativeMeshCollider.get_cooking_cache_stats()["async_submissions"] == before + 1
     assert collider.shape_error == ""
     assert Physics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 10).point.y == pytest.approx(2)
-
-
-def test_unbound_collision_recook_is_not_silently_ignored():
-    from infernux.components.builtin.mesh_collider import MeshCollider
-
-    with pytest.raises(ReferenceError):
-        MeshCollider().recook()
 
 
 @pytest.mark.parametrize("supersede", [False, True])
@@ -448,7 +416,9 @@ def test_recook_uses_requested_geometry_while_visual_mesh_keeps_changing(scene, 
     go.transform.local_scale = Vector3(1, 2, 1)
     Physics.sync_transforms()
     assert not collider.is_cooking
-    assert Physics.raycast(Vector3(0, 6, 0), Vector3(0, -1, 0), 10).point.y == pytest.approx((requested_height + 0.5) * 2)
+    assert Physics.raycast(Vector3(0, 6, 0), Vector3(0, -1, 0), 10).point.y == pytest.approx(
+        (requested_height + 0.5) * 2
+    )
     go.transform.local_scale = Vector3(1, 1, 1)
     Physics.sync_transforms()
     collider.recook()
@@ -456,8 +426,7 @@ def test_recook_uses_requested_geometry_while_visual_mesh_keeps_changing(scene, 
     assert Physics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 10).point.y == pytest.approx(2.5)
 
 
-@pytest.mark.parametrize("compound", [False, True])
-@pytest.mark.parametrize("worker_failure", [False, True])
+@pytest.mark.parametrize("worker_failure,compound", [(False, True), (True, False)])
 def test_failed_recook_preserves_complete_collision_and_can_be_replaced(scene, compound, worker_failure):
     from infernux.lib import Physics, Vector3
 

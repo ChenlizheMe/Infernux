@@ -1,4 +1,5 @@
 """A whole-document Undo must not overwrite an accepted collaborator revision."""
+
 import copy
 import json
 from pathlib import Path
@@ -10,7 +11,10 @@ from infernux.core.document_store import DocumentStore
 from infernux.core.material import Material
 from infernux.engine import project_context
 from infernux.engine.interaction import (
-    DocumentKind, DocumentRegistry, EditorInteractionCore, SelectionDomain,
+    DocumentKind,
+    DocumentRegistry,
+    EditorInteractionCore,
+    SelectionDomain,
     ensure_editable_resource_document,
 )
 from infernux.engine.resources_manager import ResourceChangeHandler
@@ -35,8 +39,12 @@ def material_editor(engine, scene, tmp_path, monkeypatch):
     path = folder / "Material.mat"
     material = Material.load(str(path))
     controller = ensure_editable_resource_document(
-        category="material", document_kind=DocumentKind.MATERIAL,
-        file_path=str(path), resource=material, guid=material.guid, view_id="inspector",
+        category="material",
+        document_kind=DocumentKind.MATERIAL,
+        file_path=str(path),
+        resource=material,
+        guid=material.guid,
+        view_id="inspector",
     )
     handler = ResourceChangeHandler(engine, project_path=database.project_root)
     history.clear()

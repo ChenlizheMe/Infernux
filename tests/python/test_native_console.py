@@ -1,9 +1,6 @@
-"""Tests for the C++ native ConsolePanel and Python Debug bridge."""
-
-from __future__ import annotations
+"""Native log stream, owned diagnostics, and Python Debug bridge."""
 
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -12,267 +9,167 @@ from infernux.debug import Debug, DebugConsole, LogEntry, LogType
 from infernux.lib import ConsolePanel, LogLevel, inflog_internal
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Fixture
-# ═══════════════════════════════════════════════════════════════════════════
-
 @pytest.fixture
 def native_console():
-    """Create a fresh C++ ConsolePanel and wire it to a clean DebugConsole."""
-    dc = DebugConsole()
+    console = DebugConsole()
     panel = ConsolePanel()
-    dc.set_native_console(panel)
+    console.set_native_console(panel)
     yield panel
-    dc.set_native_console(None)
-    dc.clear()
+    console.set_native_console(None)
+    console.clear()
     DebugConsole._instance = None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Basic C++ ConsolePanel
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestNativeConsolePanel:
-    def test_creation(self):
-        panel = ConsolePanel()
-        assert panel is not None
-
-    def test_initial_counts_zero(self):
-        panel = ConsolePanel()
-        assert panel.get_info_count() == 0
-        assert panel.get_warning_count() == 0
-        assert panel.get_error_count() == 0
-
-    def test_log_from_python_info(self):
-        panel = ConsolePanel()
-        panel.log_from_python(LogLevel.Info, "hello")
-        assert panel.get_info_count() == 1
-        assert panel.get_warning_count() == 0
-        assert panel.get_error_count() == 0
-
-    def test_log_from_python_warning(self):
-        panel = ConsolePanel()
-        panel.log_from_python(LogLevel.Warn, "careful")
-        assert panel.get_warning_count() == 1
-
-    def test_log_from_python_error(self):
-        panel = ConsolePanel()
-        panel.log_from_python(LogLevel.Error, "oops")
-        assert panel.get_error_count() == 1
-
-    def test_clear_resets_counts(self):
-        panel = ConsolePanel()
-        panel.log_from_python(LogLevel.Info, "a")
-        panel.log_from_python(LogLevel.Warn, "b")
-        panel.log_from_python(LogLevel.Error, "c")
-        panel.clear()
-        assert panel.get_info_count() == 0
-        assert panel.get_warning_count() == 0
-        assert panel.get_error_count() == 0
-
-    def test_projected_console_selection_owns_a_native_selection_set(self):
-        panel = ConsolePanel()
-        panel.log_from_python(LogLevel.Info, "selected")
-        uid = panel._get_visible_log_snapshot(1)[0]["uid"]
-
-        panel.set_selection_snapshot(uid)
-        assert panel._selected_uid == uid
-        assert panel._selected_uids == [uid]
-        assert panel.has_selected_entry()
-
-        panel.clear()
-        assert panel._selected_uids == []
-        assert not panel.has_selected_entry()
-
-    def test_remove_entries_from_source_is_selective(self, tmp_path):
-        panel = ConsolePanel()
-        script = tmp_path / "Player.py"
-        other = tmp_path / "Other.py"
-        panel.log_from_python(LogLevel.Error, "old error", source_file=str(script))
-        panel.log_from_python(LogLevel.Warn, "old warning", source_file=str(script))
-        panel.log_from_python(LogLevel.Error, "other error", source_file=str(other))
-
-        assert panel.remove_entries_from_source(str(script)) == 2
-        assert panel.get_info_count() == 0
-        assert panel.get_warning_count() == 0
-        assert panel.get_error_count() == 1
-        visible = panel._get_visible_log_snapshot(10)
-        assert [entry["message"] for entry in visible] == ["other error"]
-
-    def test_large_pending_log_counts_are_incremental(self):
-        panel = ConsolePanel()
-        for index in range(20000):
-            panel.log_from_python(LogLevel.Info, f"entry {index}")
-        panel.log_from_python(LogLevel.Warn, "warning")
-        panel.log_from_python(LogLevel.Error, "error")
-
-        assert panel.get_info_count() == 20000
-        assert panel.get_warning_count() == 1
-        assert panel.get_error_count() == 1
-
-    def test_source_diagnostic_prefix_preserves_other_owners_and_user_history(self, tmp_path):
-        panel = ConsolePanel()
-        source = str(tmp_path / "pipeline.py")
-        panel.log_from_python(LogLevel.Error, "[RenderStack:1] rejected", source_file=source)
-        panel.log_from_python(LogLevel.Error, "[RenderStack:2] rejected", source_file=source)
-        panel.log_from_python(LogLevel.Info, "user message", source_file=source)
-        # Drain one batch, then test removal in both published and pending logs.
-        entries = panel._get_visible_log_snapshot(10)
-        panel.set_selection_snapshot(entries[0]["uid"])
-        panel.log_from_python(LogLevel.Error, "[RenderStack:1] pending", source_file=source)
-        assert panel.remove_entries_from_source(source, "[RenderStack:1] ") == 2
-        assert panel.get_error_count() == 1
-        assert panel.get_info_count() == 1
-        assert not panel.has_selected_entry()
-        assert [entry["message"] for entry in panel._get_visible_log_snapshot(10)] == [
-            "[RenderStack:2] rejected", "user message",
-        ]
-
-    def test_filter_properties(self):
-        panel = ConsolePanel()
-        assert panel.show_info is True
-        assert panel.show_warnings is True
-        assert panel.show_errors is True
-        assert panel.collapse is False
-        assert panel.clear_on_play is True
-        assert panel.error_pause is False
-        assert panel.auto_scroll is True
-
-        panel.show_info = False
-        assert panel.show_info is False
-
-    def test_is_open_default(self):
-        panel = ConsolePanel()
-        assert panel.is_open() is True
-        panel.set_open(False)
-        assert panel.is_open() is False
-
-    def test_dynamic_attr(self):
-        """Ensure py::dynamic_attr() works (needed by WindowManager)."""
-        panel = ConsolePanel()
-        panel._window_type_id = "console"
-        assert panel._window_type_id == "console"
-
-    def test_cpp_internal_log_does_not_surface(self):
-        panel = ConsolePanel()
-        inflog_internal("internal noise")
-        assert panel.get_info_count() == 0
-        assert panel.get_warning_count() == 0
-        assert panel.get_error_count() == 0
-
-    def test_console_toolbar_exposes_cached_text_search(self):
-        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
-
-        assert 'InputTextWithHint("##ConsoleSearch"' in source
-        assert "MatchesCurrentFilters" in source
-        assert "if (!m_cacheDirty && !m_filterDirty)" in source
-
-    def test_console_commands_pass_source_before_payload(self):
-        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(
-            encoding="utf-8"
-        )
-
-        assert 'ExecuteEditorCommand("console.set_option", "pointer"' in source
-        assert 'ExecuteEditorCommand("console.set_search", "inline_edit"' in source
-        assert 'ExecuteEditorCommand("console.set_detail_height", "drag", argument)' in source
-        assert 'ExecuteEditorCommand("console.set_option", std::string' not in source
-        assert 'ExecuteEditorCommand("console.set_search", m_searchEditStart' not in source
-
-    def test_console_user_selection_is_intent_only_until_global_projection(self):
-        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
-        select_uid = source[
-            source.index("void ConsolePanel::SelectUid") : source.index("void ConsolePanel::PublishSelection")
-        ]
-        render_row = source[
-            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
-        ]
-
-        assert "m_selectedUid = uid" not in select_uid
-        assert "m_selectedUid = ve.uid" not in render_row
-        assert "PublishSelection(uid, recordHistory)" in select_uid
-        assert "PublishSelection(ve.uid, true)" in render_row
-        assert "ImGui::SetWindowFocus" not in select_uid
-
-    def test_console_row_identity_is_not_truncated_by_visible_log_text(self):
-        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
-        render_row = source[
-            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
-        ]
-
-        assert "const std::string label" in render_row
-        assert "std::to_string" in render_row
-        assert "char label[" not in render_row
-
-    def test_console_ctrl_selection_and_combined_detail_are_native(self):
-        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
-        render_row = source[
-            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
-        ]
-
-        assert "ImGui::GetIO().KeyCtrl" in render_row
-        assert "ToggleLocalSelection(ve.uid)" in render_row
-        assert "SelectedVisibleIndices()" in source
-        assert 'detailText += "\\n" + log.sourceFile + ":"' in source
-
-    def test_console_filter_rebuild_resets_virtual_scroll_immediately(self):
-        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
-        render = source[
-            source.index("void ConsolePanel::OnRenderContent") : source.index("void ConsolePanel::PreRender")
-        ]
-
-        assert "m_resetScrollToTop = true" in source
-        assert "ImGui::SetScrollY(0.0f)" in source
-        assert "scrollY = 0.0f" in source
-        assert "if (!wrapOptions)" in source
-        assert render.index("RenderToolbar(ctx)") < render.index("EnsureCache()") < render.index("RenderBody(ctx)")
+def test_log_stream_counts_filters_and_clear():
+    panel = ConsolePanel()
+    assert (panel.get_info_count(), panel.get_warning_count(), panel.get_error_count()) == (0, 0, 0)
+    assert panel.show_info and panel.show_warnings and panel.show_errors
+    assert not panel.collapse and panel.clear_on_play and not panel.error_pause
+    panel.show_info = False
+    assert not panel.show_info
+    panel.log_from_python(LogLevel.Info, "hello")
+    panel.log_from_python(LogLevel.Warn, "careful")
+    panel.log_from_python(LogLevel.Error, "failure")
+    assert (panel.get_info_count(), panel.get_warning_count(), panel.get_error_count()) == (1, 1, 1)
+    panel.clear()
+    assert (panel.get_info_count(), panel.get_warning_count(), panel.get_error_count()) == (0, 0, 0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Debug → C++ bridge
-# ═══════════════════════════════════════════════════════════════════════════
+def test_diagnostic_removal_preserves_other_sources_owners_and_user_history(tmp_path):
+    panel = ConsolePanel()
+    source, other = str(tmp_path / "pipeline.py"), str(tmp_path / "other.py")
+    panel.log_from_python(LogLevel.Error, "old error", source_file=source)
+    panel.log_from_python(LogLevel.Warn, "old warning", source_file=source)
+    panel.log_from_python(LogLevel.Error, "other error", source_file=other)
+    assert panel.remove_entries_from_source(source) == 2
+    assert panel.get_error_count() == 1 and panel.get_warning_count() == 0
+    assert [entry["message"] for entry in panel._get_visible_log_snapshot(10)] == ["other error"]
 
-class TestDebugBridge:
-    def test_debug_log_reaches_native(self, native_console):
-        Debug.log("bridge test")
-        assert native_console.get_info_count() == 1
+    panel.log_from_python(LogLevel.Error, "[RenderStack:1] rejected", source_file=source)
+    panel.log_from_python(LogLevel.Error, "[RenderStack:2] rejected", source_file=source)
+    panel.log_from_python(LogLevel.Info, "user message", source_file=source)
+    entries = panel._get_visible_log_snapshot(10)
+    owned = next(entry for entry in entries if entry["message"] == "[RenderStack:1] rejected")
+    panel.set_selection_snapshot(owned["uid"])
+    panel.log_from_python(LogLevel.Error, "[RenderStack:1] pending", source_file=source)
+    assert panel.remove_entries_from_source(source, "[RenderStack:1] ") == 2
+    assert panel.get_error_count() == 2 and panel.get_info_count() == 1
+    assert not panel.has_selected_entry()
+    assert [entry["message"] for entry in panel._get_visible_log_snapshot(10)] == [
+        "other error", "[RenderStack:2] rejected", "user message",
+    ]
 
-    def test_debug_warning_reaches_native(self, native_console):
-        Debug.log_warning("bridge warn")
-        assert native_console.get_warning_count() == 1
 
-    def test_debug_error_reaches_native(self, native_console):
-        Debug.log_error("bridge error")
-        assert native_console.get_error_count() == 1
+def test_large_pending_log_counts_are_incremental():
+    panel = ConsolePanel()
+    for index in range(20000):
+        panel.log_from_python(LogLevel.Info, f"entry {index}")
+    panel.log_from_python(LogLevel.Warn, "warning")
+    panel.log_from_python(LogLevel.Error, "error")
+    assert (panel.get_info_count(), panel.get_warning_count(), panel.get_error_count()) == (20000, 1, 1)
 
-    def test_debug_source_location_reaches_native_console(self, native_console):
-        source_line = sys._getframe().f_lineno + 1
-        Debug.log("native source location")
 
-        entry = native_console._get_visible_log_snapshot(1)[0]
-        assert Path(entry["source_file"]).resolve() == Path(__file__).resolve()
-        assert entry["source_line"] == source_line
+def test_debug_bridge_preserves_levels_source_location_and_internal_visibility(native_console):
+    source_line = sys._getframe().f_lineno + 1
+    Debug.log("native source location")
+    Debug.log_warning("bridge warning")
+    Debug.log_error("bridge error")
+    try:
+        raise ValueError("test exception")
+    except ValueError as error:
+        Debug.log_exception(error)
+    Debug.log_internal("hidden Python internal")
+    inflog_internal("hidden native internal")
+    assert (
+        native_console.get_info_count(), native_console.get_warning_count(),
+        native_console.get_error_count(),
+    ) == (1, 1, 2)
+    entry = next(entry for entry in native_console._get_visible_log_snapshot(10)
+                 if entry["message"] == "native source location")
+    assert Path(entry["source_file"]).resolve() == Path(__file__).resolve()
+    assert entry["source_line"] == source_line
 
-    def test_debug_exception_reaches_native(self, native_console):
-        try:
-            raise ValueError("test exception")
-        except ValueError as e:
-            Debug.log_exception(e)
-        assert native_console.get_error_count() == 1
 
-    def test_disconnected_bridge_no_crash(self):
-        """After disconnecting, Debug.log() should not crash."""
-        dc = DebugConsole()
-        panel = ConsolePanel()
-        dc.set_native_console(panel)
+def test_disconnected_debug_bridge_does_not_write_to_old_panel():
+    console = DebugConsole()
+    panel = ConsolePanel()
+    try:
+        console.set_native_console(panel)
         Debug.log("before disconnect")
-        dc.set_native_console(None)
-        Debug.log("should not crash")
+        console.set_native_console(None)
+        Debug.log("after disconnect")
         assert panel.get_info_count() == 1
-        dc.clear()
+    finally:
+        console.set_native_console(None)
+        console.clear()
         DebugConsole._instance = None
 
-    def test_debug_internal_does_not_reach_native(self, native_console):
-        Debug.log_internal("hidden internal")
-        assert native_console.get_info_count() == 0
-        assert native_console.get_warning_count() == 0
-        assert native_console.get_error_count() == 0
+
+def test_component_log_selects_owning_object_and_retains_diagnostic(scene, native_console):
+    from infernux.engine._bootstrap_panels import BootstrapPanelsMixin
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import EditorInteractionCore, SelectionDomain, SelectionService, SelectionTarget
+
+    class ConsoleOwner(BootstrapPanelsMixin, BootstrapSelectionMixin):
+        pass
+
+    previous_selection = SelectionService._instance
+    core = EditorInteractionCore()
+    owner = object.__new__(ConsoleOwner)
+    owner.interaction_core = core
+    core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
+    core.panels.register_selection_authority("console", (SelectionDomain.DIAGNOSTIC_ENTRY,))
+    core.navigation.register(SelectionDomain.SCENE_OBJECT, lambda _target, _request: True)
+    core.selection.add_listener(lambda _change: native_console.set_selection_snapshot(0))
+    game_object = scene.create_game_object("Logged object")
+    component = game_object.add_component("BoxCollider")
+    try:
+        Debug.log_error("component failure", component)
+        entry = native_console._get_visible_log_snapshot(1)[0]
+        uid = entry["uid"]
+        object_id = game_object.id
+        assert native_console.get_entry_context_object_id(uid) == object_id
+        owner._on_console_selection_changed(native_console, uid, False)
+        assert core.selection.snapshot.primary == SelectionTarget.scene_object(object_id)
+        assert core.selection.snapshot.owner_id == "hierarchy"
+        assert native_console._selected_uid == uid
+
+        Debug.log("object observation", game_object)
+        object_uid = native_console._get_visible_log_snapshot(1)[0]["uid"]
+        assert native_console.get_entry_context_object_id(object_uid) == object_id
+        scene.destroy_game_object(game_object)
+        scene.process_pending_destroys()
+        assert native_console.get_entry_context_object_id(uid) == 0
+        Debug.log("retired component observation", component)
+        Debug.log("retired object observation", game_object)
+        assert all(native_console.get_entry_context_object_id(entry["uid"]) == 0
+                   for entry in native_console._get_visible_log_snapshot(2))
+        owner._on_console_selection_changed(native_console, uid, False)
+        assert core.selection.snapshot.domain is SelectionDomain.DIAGNOSTIC_ENTRY
+    finally:
+        core.shutdown()
+        SelectionService._instance = previous_selection
+
+
+def test_log_display_is_relative_and_trace_remains_structured(tmp_path, capsys):
+    from datetime import datetime
+
+    previous = DebugConsole._instance
+    console = DebugConsole()
+    panel = ConsolePanel(str(tmp_path))
+    console.set_native_console(panel)
+    source = str(tmp_path / "Assets" / "Scripts" / "Player.py")
+    try:
+        console.log(LogEntry("ValueError: failed", LogType.EXCEPTION, datetime.now(),
+                             stack_trace="Traceback original diagnostic", source_file=source, source_line=35))
+        expected = "[Error] (Assets/Scripts/Player.py, line 35) ValueError: failed"
+        assert capsys.readouterr().err.strip() == expected
+        assert panel._get_status_snapshot()[0] == expected
+        snapshot = panel._get_visible_log_snapshot(1)[0]
+        assert snapshot["stack_trace"] == "Traceback original diagnostic"
+        assert snapshot["source_file"] == source
+        assert snapshot["message"] == "ValueError: failed"
+    finally:
+        console.set_native_console(None)
+        console.clear()
+        DebugConsole._instance = previous

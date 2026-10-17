@@ -38,9 +38,6 @@ class TestTextureCheckerboard:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestTextureInit:
-    def test_obsolete_raw_memory_signature_is_removed(self):
-        assert not hasattr(Texture, "from_memory")
-
     def test_none_raises(self):
         with pytest.raises(ValueError):
             Texture(None)

@@ -15,10 +15,8 @@ from __future__ import annotations
 import hashlib
 import weakref
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
+from typing import Any, Dict, Iterable, Optional
 
-if TYPE_CHECKING:
-    from .fields import FieldType
 
 # Lazy-loaded C++ module reference.
 _lib = None
@@ -80,6 +78,16 @@ def cds_type_code(field_type) -> int:
 # stable component type GUID + layout revision -> CDS field registration
 _class_registry: Dict[str, tuple] = {}
 
+# Class-key hashing is deliberately outside the batch/instance hot path. A
+# published class answers from this generation-checked cache instead.
+_class_info_cache: dict[type, tuple[int, Any]] = {}
+_class_info_generation = 0
+
+
+def _invalidate_class_info_cache() -> None:
+    global _class_info_generation
+    _class_info_generation += 1
+
 
 @dataclass
 class _RetiredLayoutState:
@@ -119,34 +127,27 @@ def _drain_retired_layout(class_id: int) -> None:
 
 def _retain_layout_epoch(class_id: int, component_type: type):
     """Pin only the old epoch object, never the class or its layout state."""
-    try:
-        from infernux.engine.runtime_dispatch import current_runtime_epoch
+    from infernux.engine.runtime_dispatch import current_runtime_epoch
 
-        epoch = current_runtime_epoch()
-        if epoch.descriptor_for(component_type) is None:
-            return None
-        state = _retired_layouts.setdefault(int(class_id), _RetiredLayoutState())
-        if state.sentinel_slot is None:
-            try:
-                state.sentinel_slot = tuple(_get_lib()._cds_alloc(int(class_id)))
-            except AttributeError:
-                # Lightweight Python probes may not expose native allocation.
-                # They still exercise epoch ordering without a native sentinel.
-                pass
-
-        def on_epoch_collected(_reference, retired_class_id=int(class_id)):
-            try:
-                _drain_retired_layout(retired_class_id)
-            except Exception:
-                # A weakref callback must not surface errors during GC.
-                pass
-
-        reference = weakref.ref(epoch, on_epoch_collected)
-        if all(existing() is not epoch for existing in state.epoch_refs):
-            state.epoch_refs.append(reference)
-        return reference
-    except (ImportError, AttributeError, TypeError):
+    epoch = current_runtime_epoch()
+    if epoch.descriptor_for(component_type) is None:
         return None
+    state = _retired_layouts.setdefault(int(class_id), _RetiredLayoutState())
+    if state.sentinel_slot is None:
+        state.sentinel_slot = tuple(_get_lib()._cds_alloc(int(class_id)))
+
+    def on_epoch_collected(_reference, retired_class_id=int(class_id)):
+        try:
+            _drain_retired_layout(retired_class_id)
+        except Exception as exc:
+            # GC observers cannot make the already committed epoch partial.
+            from infernux.debug import Debug
+            Debug.log_suppressed("CDS.retire_collected_epoch", exc)
+
+    reference = weakref.ref(epoch, on_epoch_collected)
+    if all(existing() is not epoch for existing in state.epoch_refs):
+        state.epoch_refs.append(reference)
+    return reference
 
 
 def _cancel_layout_epoch(class_id: int, reference) -> None:
@@ -456,8 +457,12 @@ class CDSSchemaPublication:
                     descriptor._cds_class_id = entry.class_id
                     descriptor._cds_field_id = field_id
                     descriptor._cds_type_code = type_code
+                    descriptor._cds_native_get = self._lib._cds_get
+                    descriptor._cds_native_set = self._lib._cds_set
+                    descriptor._cds_wrap = _cds_value_wrapper(self._lib, type_code)
             for key in self._retired_keys:
                 _class_registry.pop(key, None)
+            _invalidate_class_info_cache()
             self._committed = True
             return self.class_info()
         except Exception:
@@ -513,6 +518,7 @@ class CDSSchemaPublication:
                     _class_registry[key] = value
                 else:
                     _class_registry.pop(key, None)
+            _invalidate_class_info_cache()
         for class_id, reference in self._retired_epoch_holds:
             _cancel_layout_epoch(class_id, reference)
         self._retired_epoch_holds.clear()
@@ -552,6 +558,31 @@ def register_class(cls) -> Optional[int]:
     return publish_class(cls)
 
 
+def _cds_value_wrapper(lib, type_code: int):
+    """Return the constructor that rebuilds one vector value, or None.
+
+    Stamped on the descriptor so the hot path never branches on the type code
+    or re-resolves the native module.
+    """
+    if type_code == _CDS_VEC2:
+        return lambda raw: lib.Vector2(raw[0], raw[1])
+    if type_code == _CDS_VEC3:
+        return lambda raw: lib.Vector3(raw[0], raw[1], raw[2])
+    if type_code == _CDS_VEC4:
+        return lambda raw: lib.vec4f(raw[0], raw[1], raw[2], raw[3])
+    return None
+
+
+def _stamp_descriptor(descriptor, lib, class_id: int, field_id: int, type_code: int) -> None:
+    """Publish one descriptor's complete CDS read/write contract."""
+    descriptor._cds_class_id = class_id
+    descriptor._cds_field_id = field_id
+    descriptor._cds_type_code = type_code
+    descriptor._cds_native_get = lib._cds_get
+    descriptor._cds_native_set = lib._cds_set
+    descriptor._cds_wrap = _cds_value_wrapper(lib, type_code)
+
+
 def publish_class(cls) -> Optional[int]:
     """Register a class during owner commit, bypassing candidate deferral."""
     key = _class_key(cls)
@@ -559,11 +590,11 @@ def publish_class(cls) -> Optional[int]:
     if not numeric_fields:
         return None
 
+    lib = _get_lib()
     existing = _class_registry.get(key)
     if existing is not None:
         class_id, field_map = existing
     else:
-        lib = _get_lib()
         class_id = lib._cds_register_class(key)
         field_map = {}
         for fname, meta in numeric_fields.items():
@@ -576,10 +607,10 @@ def publish_class(cls) -> Optional[int]:
     for fname, (fid, tc) in field_map.items():
         descriptor = cls.__dict__.get(fname)
         if descriptor is not None and hasattr(descriptor, 'metadata'):
-            descriptor._cds_class_id = class_id
-            descriptor._cds_field_id = fid
-            descriptor._cds_type_code = tc
+            _stamp_descriptor(descriptor, lib, class_id, fid, tc)
 
+    _invalidate_class_info_cache()
+    _class_info_cache[cls] = (_class_info_generation, (class_id, field_map))
     return class_id
 
 
@@ -589,31 +620,27 @@ def get_class_info(cls):
 
     if is_component_registration_pending(cls):
         return None
-    return _class_registry.get(_class_key(cls))
+    cached = _class_info_cache.get(cls)
+    if cached is not None and cached[0] == _class_info_generation:
+        return cached[1]
+    info = _class_registry.get(_class_key(cls))
+    _class_info_cache[cls] = (_class_info_generation, info)
+    return info
 
 
 # ── Slot management ─────────────────────────────────────────────────────
 
 def allocate_slot(cls) -> Optional[tuple[int, int]]:
     """Allocate a CDS slot for a new component instance. Returns slot or None."""
-    from ._component_registration import is_component_registration_pending
-
-    if is_component_registration_pending(cls):
-        return None
-    info = _class_registry.get(_class_key(cls))
+    info = get_class_info(cls)
     if info is None:
         return None
-    lib = _get_lib()
-    return lib._cds_alloc(info[0])
+    return _get_lib()._cds_alloc(info[0])
 
 
 def get_class_id(cls) -> Optional[int]:
     """Return the CDS class_id for *cls*, or None if not registered."""
-    from ._component_registration import is_component_registration_pending
-
-    if is_component_registration_pending(cls):
-        return None
-    info = _class_registry.get(_class_key(cls))
+    info = get_class_info(cls)
     if info is None:
         return None
     return info[0]

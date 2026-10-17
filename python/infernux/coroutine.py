@@ -39,6 +39,7 @@ share one instruction. Realtime waits start when yielded, not when constructed.
 from __future__ import annotations
 
 import time as _time
+from math import isfinite
 import weakref
 from collections.abc import Generator as GeneratorProtocol
 from typing import Any, Callable, Generator, Optional
@@ -58,6 +59,8 @@ class WaitForSeconds:
 
     def __init__(self, seconds: float):
         self.duration: float = float(seconds)
+        if not isfinite(self.duration) or self.duration < 0.0:
+            raise ValueError("seconds must be finite and non-negative")
 
     def __repr__(self) -> str:
         return f"WaitForSeconds({self.duration})"
@@ -69,6 +72,8 @@ class WaitForSecondsRealtime:
 
     def __init__(self, seconds: float):
         self.duration: float = float(seconds)
+        if not isfinite(self.duration) or self.duration < 0.0:
+            raise ValueError("seconds must be finite and non-negative")
 
     def __repr__(self) -> str:
         return f"WaitForSecondsRealtime({self.duration})"

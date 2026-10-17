@@ -83,7 +83,7 @@ from .script_loader import (
     get_component_info as get_component_info,
     ScriptLoadError as ScriptLoadError,
 )
-from .spirit_animator import SpiritAnimator as SpiritAnimator
+from .sprite_animator import SpriteAnimator as SpriteAnimator
 from .skeletal_animator import SkeletalAnimator as SkeletalAnimator
 from .timeline_action import TimelineAction as TimelineAction
 from .particle_system import ParticleBoundsMode as ParticleBoundsMode, ParticleOffscreenPolicy as ParticleOffscreenPolicy, ParticleSystem as ParticleSystem
@@ -198,7 +198,7 @@ __all__ = [
     "DrivenTransformProperties",
     "drives_transform",
     "DrivesTransform",
-    "SpiritAnimator",
+    "SpriteAnimator",
     "SkeletalAnimator",
     "TimelineAction",
     "ParticleSystem",

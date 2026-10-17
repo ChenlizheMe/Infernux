@@ -8,6 +8,7 @@ async function verifyWebRenderSettings(page, readCanvas) {
   for (const [key, samples, expected] of [
     ["5", 1, [108, 22, 8]], ["6", 4, [255, 73, 39]],
     ["7", 4, [204, 51, 26]], ["8", 4, null],
+    ["9", 4, [26, 89, 179]], ["0", 4, null],
   ]) {
     const applied = page.waitForEvent("console", {
       predicate: message => message.text().includes(`INFERNUX_RENDER_SETTINGS_PROBE ${key}`),

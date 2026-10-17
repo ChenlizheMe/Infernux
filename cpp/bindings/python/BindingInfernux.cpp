@@ -5,6 +5,7 @@
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
+#include <function/scene/PythonNativeLifetime.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -39,6 +40,23 @@ namespace py = pybind11;
 
 namespace
 {
+
+struct PythonFrameCallback
+{
+    py::function function;
+    explicit PythonFrameCallback(py::function value) : function(std::move(value))
+    {
+    }
+    ~PythonFrameCallback()
+    {
+        if (!Py_IsInitialized()) {
+            function.release();
+            return;
+        }
+        py::gil_scoped_acquire acquire;
+        function = py::function();
+    }
+};
 
 // A shared_ptr from pybind11 keeps the C++ trampoline alive, but not its
 // Python subclass or overrides. Attach that Python owner to the registration's
@@ -948,7 +966,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
 
     py::class_<InxScreenUIRenderer::CommandPacket, std::shared_ptr<InxScreenUIRenderer::CommandPacket>>(
         m, "_UICommandPacket");
-    py::class_<InxScreenUIRenderer>(m, "InxScreenUIRenderer")
+    NativeClass<InxScreenUIRenderer>(m, "InxScreenUIRenderer")
         .def("begin_command_packet", &InxScreenUIRenderer::BeginCommandPacket)
         .def("end_command_packet", &InxScreenUIRenderer::EndCommandPacket)
         .def("abort_command_packet", &InxScreenUIRenderer::AbortCommandPacket)
@@ -1345,6 +1363,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("try_commit_linked_shader_programs", &Infernux::TryCommitLinkedShaderPrograms, py::arg("ticket"),
              "Publish a completed linked-shader preload on the engine owner thread")
         .def_property_readonly("has_renderer", [](const Infernux &self) { return self.GetRenderer() != nullptr; })
+        .def_property_readonly("game_presentation_ready", [](Infernux &self) {
+            auto *renderer = self.GetRenderer();
+            return renderer && renderer->IsGamePresentationReady();
+        })
         .def_property_readonly("pending_mesh_gpu_upload_count",
                                [](const Infernux &self) {
                                    const auto *renderer = self.GetRenderer();
@@ -1950,11 +1972,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 if (callback.is_none()) {
                     self.SetPreSceneUpdateCallback(nullptr);
                 } else {
-                    py::function fn = py::cast<py::function>(callback);
+                    auto fn = std::make_shared<PythonFrameCallback>(py::cast<py::function>(callback));
                     self.SetPreSceneUpdateCallback([fn](float deltaTime) {
                         py::gil_scoped_acquire acquire;
                         try {
-                            fn(deltaTime);
+                            fn->function(deltaTime);
                         } catch (const py::error_already_set &e) {
                             LogPythonFrameCallbackError("pre-scene update", e);
                         }
@@ -1972,11 +1994,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 if (callback.is_none()) {
                     r->SetPreGuiCallback(nullptr);
                 } else {
-                    py::function fn = py::cast<py::function>(callback);
+                    auto fn = std::make_shared<PythonFrameCallback>(py::cast<py::function>(callback));
                     r->SetPreGuiCallback([fn]() {
                         py::gil_scoped_acquire acquire;
                         try {
-                            fn();
+                            fn->function();
                         } catch (const py::error_already_set &e) {
                             LogPythonFrameCallbackError("pre-GUI", e);
                         }
@@ -1995,11 +2017,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 if (callback.is_none()) {
                     r->SetPostDrawCallback(nullptr);
                 } else {
-                    py::function fn = py::cast<py::function>(callback);
+                    auto fn = std::make_shared<PythonFrameCallback>(py::cast<py::function>(callback));
                     r->SetPostDrawCallback([fn]() {
                         py::gil_scoped_acquire acquire;
                         try {
-                            fn();
+                            fn->function();
                         } catch (const py::error_already_set &e) {
                             LogPythonFrameCallbackError("post-draw", e);
                         }
@@ -2067,6 +2089,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "cleanup",
             [](Infernux &self) {
+                self.RequireFrameInactive();
                 self.RequireComputeHostsReleased();
                 // Python frame callbacks must be released while this binding
                 // still owns the GIL. Native teardown may then release it while

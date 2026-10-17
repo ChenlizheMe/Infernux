@@ -468,16 +468,6 @@ class VkResourceManager
                                                                    VkFormat format = VK_FORMAT_UNDEFINED);
 
     /**
-     * @brief Transition image layout
-     *
-     * @param image Image to transition
-     * @param format Image format
-     * @param oldLayout Current layout
-     * @param newLayout Target layout
-     */
-    void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-
-    /**
      * @brief Copy buffer to image
      *
      * @param buffer Source buffer
@@ -644,23 +634,8 @@ class VkResourceManager
     VkSampler m_linearSampler = VK_NULL_HANDLE;
     VkSampler m_nearestSampler = VK_NULL_HANDLE;
 
-    // ────────────────────────────────────────────────────────────────────
-    // Single-time-command pools.
-    //
-    // Pre Phase 5b every BeginSingleTimeCommands / EndSingleTimeCommands
-    // pair did vkAllocateCommandBuffers + vkCreateFence + vkQueueSubmit +
-    // vkWaitForFences + vkDestroyFence + vkFreeCommandBuffers, which is
-    // 4 kernel-driver round-trips PER tiny upload. Texture-heavy scenes
-    // were spending hundreds of microseconds per asset in driver allocation
-    // alone before any actual GPU work happened.
-    //
-    // The free-list below recycles fences and command buffers so steady-state
-    // usage hits the kernel exactly twice per submit (vkBeginCommandBuffer +
-    // vkQueueSubmit) and the wait itself.
-    //
-    // The mutex protects against concurrent uploads from background asset
-    // loading threads (Phase 5d will widen this to per-thread pools).
-    // ────────────────────────────────────────────────────────────────────
+    // Recycled single-time command buffers and fences are published under
+    // m_singleTimeMutex and returned to free lists only after GPU completion.
     std::vector<VkCommandBuffer> m_freeSingleTimeCmdBuffers;
     std::vector<VkFence> m_freeSingleTimeFences;
     std::vector<VkFence> m_allSingleTimeFences;             // owned, destroyed in Destroy()

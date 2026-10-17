@@ -8,11 +8,7 @@ def should_route_game_input(*, is_playing: bool, panel_focused: bool, cursor_loc
     active and the Game panel owns focus. Cursor lock always keeps input
     active so the escape-to-unlock safety path still works.
     """
-    if cursor_locked:
-        return True
-    if not is_playing:
-        return False
-    return panel_focused
+    return is_playing and (panel_focused or cursor_locked)
 
 
 def should_process_game_ui_events(*, is_playing: bool, panel_focused: bool, cursor_locked: bool) -> bool:

@@ -11,6 +11,7 @@
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <function/scene/MeshRenderer.h>
+#include <function/scene/PythonNativeLifetime.h>
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -206,7 +207,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
     // The browser Player owns this database through AssetRegistry. Expose only
     // immutable runtime queries; authoring, refresh, and mutation APIs stay out
     // of the Web profile.
-    py::class_<AssetDatabase>(m, "AssetDatabase")
+    NativeClass<AssetDatabase>(m, "AssetDatabase")
         .def("contains_guid", &AssetDatabase::ContainsGuid, py::arg("guid"))
         .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"))
         .def("get_guid_from_path", &AssetDatabase::GetGuidFromPath, py::arg("path"))

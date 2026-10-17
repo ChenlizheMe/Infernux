@@ -413,6 +413,7 @@ class Scene : public NativeLifetimeOwner
 
   private:
     friend class GameObject;
+    friend class Component;
     friend class SceneCommitToken;
 
     void RequireWritableWorld() const;
@@ -432,6 +433,7 @@ class Scene : public NativeLifetimeOwner
     void FixedUpdateObject(GameObject *obj, float fixedDeltaTime);
     void LateUpdateObject(GameObject *obj, float deltaTime);
     void EditorUpdateObject(GameObject *obj, float deltaTime);
+    void DispatchInitialLifecycle(GameObject *object, bool start);
     class Component *FindComponentByID(uint64_t componentId) const;
     bool IsPendingDestroy(const GameObject *obj) const;
 
@@ -453,6 +455,7 @@ class Scene : public NativeLifetimeOwner
     void RegisterObjectSubtree(GameObject *root);
 
     void RegisterAuthoringComponent(uint64_t componentId);
+    void RekeyAuthoringComponent(uint64_t previousId, uint64_t componentId);
     void CopySubtreeAuthoringIdentity(const GameObject &object, const Scene &source);
     /// Shared ownership transfer for root moves and cross-Scene reparenting.
     bool TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent);
@@ -510,9 +513,9 @@ class Scene : public NativeLifetimeOwner
     // only after a hierarchy/component mutation instead of walking the entire
     // hierarchy for every Update, FixedUpdate and LateUpdate phase.
     uint64_t m_lifecycleObjectCacheVersion = UINT64_MAX;
-    std::vector<GameObject *> m_updateObjects;
-    std::vector<GameObject *> m_fixedUpdateObjects;
-    std::vector<GameObject *> m_lateUpdateObjects;
+    std::vector<ObjectHandle> m_updateObjects;
+    std::vector<ObjectHandle> m_fixedUpdateObjects;
+    std::vector<ObjectHandle> m_lateUpdateObjects;
 
     // Explicit seeks/cuts only. The renderer consumes this monotonic revision
     // once before view extraction and invalidates temporal histories together.

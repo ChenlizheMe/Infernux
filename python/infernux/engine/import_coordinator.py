@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable
 
-from infernux.engine.path_utils import path_key, portable_path, resolved_path
+from infernux.engine.path_utils import path_key as _path_key, portable_path, resolved_path
 
 
 class AssetFsEventKind(str, Enum):
@@ -41,10 +41,6 @@ def _absolute_path(path: str) -> str:
     if not path:
         raise ValueError("asset event path cannot be empty")
     return resolved_path(path)
-
-
-def _path_key(path: str) -> str:
-    return path_key(path)
 
 
 _DOCUMENT_STORE_TEMP_PATTERN = re.compile(r"\.tmp\.\d+\.\d+$")
@@ -313,18 +309,39 @@ class ImportCoordinator:
             raise ValueError("max_events must be positive or None")
         current = self._clock() if now is None else now
         with self._lock:
-            ready = [
-                (key, pending)
-                for key, pending in self._pending.items()
-                if force or pending.ready_at <= current
-            ]
-            ready.sort(key=lambda item: item[1].event.observed_at)
+            ordered = sorted(self._pending.items(), key=lambda item: item[1].event.observed_at)
             if not force and max_events is not None:
+                blocked = {
+                    identity
+                    for event in self._inflight.values()
+                    for identity in self._identity_keys(self._event_key(event), event)
+                }
+                ready = []
+                for key, pending in ordered:
+                    identities = self._identity_keys(key, pending.event)
+                    if pending.ready_at <= current and not blocked.intersection(identities):
+                        ready.append((key, pending))
+                    blocked.update(identities)
+                ready.sort(key=lambda item: not any(
+                    path.lower().endswith(".py")
+                    for path in (item[1].event.path, item[1].event.destination)
+                ))
                 ready = ready[:max_events]
+            else:
+                ready = [(key, pending) for key, pending in ordered if force or pending.ready_at <= current]
             for key, _pending in ready:
                 del self._pending[key]
                 self._inflight[id(_pending.event)] = _pending.event
         return [pending.event for _key, pending in ready]
+
+    @staticmethod
+    def _identity_keys(key: str, event: AssetFsEvent) -> tuple[str, ...]:
+        identities = (key.partition(":")[2],)
+        if event.kind is AssetFsEventKind.MOVED:
+            identities += (_path_key(event.path),)
+        if event.guid_hint:
+            identities += ("guid:" + event.guid_hint,)
+        return identities
 
     def complete(self, event: AssetFsEvent) -> None:
         """Release one owner claim without changing later watcher events."""

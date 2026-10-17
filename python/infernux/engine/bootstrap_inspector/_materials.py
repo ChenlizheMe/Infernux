@@ -115,8 +115,8 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
 
     def _render_material_sections_live(ctx, obj_id):
         from infernux.engine.ui import inspector_material as mat_ui
-        from infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
-        from infernux.engine.ui.theme import Theme, ImGuiCol, ImGuiStyleVar
+        from infernux.engine.ui.inspector_utils import render_compact_section_header
+        from infernux.engine.ui.theme import Theme, ImGuiStyleVar
 
         scene, items, native_map, _py_map = get_cached_maps(obj_id)
         obj = scene.find_by_id(obj_id) if scene else None

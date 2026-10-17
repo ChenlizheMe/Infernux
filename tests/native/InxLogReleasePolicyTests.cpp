@@ -12,9 +12,11 @@ int main()
 
     std::vector<LogLevel> receivedLevels;
     std::vector<bool> receivedInternal;
-    const size_t sinkId = log.AddSink([&](LogLevel level, const char *, int, const std::string &, bool internal) {
+    std::vector<std::string> receivedMessages;
+    const size_t sinkId = log.AddSink([&](LogLevel level, const char *, int, const std::string &message, bool internal) {
         receivedLevels.push_back(level);
         receivedInternal.push_back(internal);
+        receivedMessages.push_back(message);
     });
 
     int evaluatedNonErrorArgument = 0;
@@ -35,6 +37,16 @@ int main()
         return EXIT_FAILURE;
     if (receivedLevels.size() != 2 || receivedLevels.front() != LOG_ERROR || receivedLevels.back() != LOG_INFO ||
         !receivedInternal.back())
+        return EXIT_FAILURE;
+    if (receivedMessages.front() != "release policy error probe" || receivedMessages.back() != "startup geometry probe")
+        return EXIT_FAILURE;
+    const auto root = std::filesystem::current_path();
+    const auto source = root / "Assets" / "Scripts" / "Player.py";
+    if (FormatDiagnosticMessage(LOG_ERROR, source.string(), 35, "failed", root.string()) !=
+        "[Error] (Assets/Scripts/Player.py, line 35) failed")
+        return EXIT_FAILURE;
+    if (FormatDiagnosticMessage(LOG_WARN, "", 0, "warning") != "[Warning] warning" ||
+        FormatDiagnosticMessage(LOG_INFO, "", 0, "ready") != "[Debug] ready")
         return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }

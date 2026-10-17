@@ -30,6 +30,7 @@ def build_scene_operations() -> tuple[Operation, ...]:
             capability="scene.read",
             input_properties={
                 "include_mesh_data": {"type": "boolean", "default": False},
+                "include_ui_layout": {"type": "boolean", "default": False},
             },
             tags=("scene", "hierarchy", "component", "inspect"),
         ),
@@ -197,6 +198,33 @@ def build_scene_operations() -> tuple[Operation, ...]:
             tags=("scene", "component", "schema", "property"),
         ),
         operation(
+            "infernux.scene.ui.layout.get",
+            OperationKind.QUERY,
+            "Read a UI element's resolved canvas rect, rotated bounds, clip and parent auto-layout ownership. Canvas pixels use top-left origin, X right and Y down.",
+            _ui_layout,
+            capability="scene.read",
+            input_properties={"object_id": {"type": "integer"}, "component_id": {"type": "integer"}},
+            required=("object_id", "component_id"),
+            tags=("scene", "ui", "layout", "rect", "inspect"),
+        ),
+        operation(
+            "infernux.scene.ui.rect.set",
+            OperationKind.COMMAND,
+            "Set an unrotated canvas-pixel rect [x,y,width,height] in one Undo transaction. Direct resize fixes sizing; parent Flow requires explicit detach_from_layout. Rotation and Transform Z are preserved.",
+            _set_ui_rect,
+            capability="scene.write",
+            input_properties={
+                "object_id": {"type": "integer"},
+                "component_id": {"type": "integer"},
+                "rect": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+                "detach_from_layout": {"type": "boolean", "default": False},
+            },
+            required=("object_id", "component_id", "rect"),
+            side_effects=("Changes UI layout fields and its Transform through one shared Undo entry.",),
+            reversible=True,
+            tags=("scene", "ui", "layout", "rect", "authoring"),
+        ),
+        operation(
             "infernux.scene.component.property.set",
             OperationKind.COMMAND,
             "Set one serialized component field through the shared component service.",
@@ -276,14 +304,15 @@ def build_scene_operations() -> tuple[Operation, ...]:
     )
 
 
-def _hierarchy(include_mesh_data: bool = False) -> dict[str, object]:
+def _hierarchy(include_mesh_data: bool = False, include_ui_layout: bool = False) -> dict[str, object]:
     def read() -> dict[str, object]:
         scene = active_scene()
+        render_size = EditorAutomationHost.instance().scene_ui_render_size() if include_ui_layout else None
 
         def serialize(obj) -> dict[str, object]:
             transform = obj.get_transform()
             values = components(obj.id)
-            return {
+            result = {
                 "id": int(obj.id),
                 "name": str(obj.name),
                 "active": bool(getattr(obj, "active", True)),
@@ -302,6 +331,15 @@ def _hierarchy(include_mesh_data: bool = False) -> dict[str, object]:
                 ],
                 "children": [serialize(child) for child in obj.get_children()],
             }
+            if include_ui_layout:
+                from infernux.engine.ui.ui_rect_manipulation import describe_ui_layout
+                from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+
+                result["ui_layout"] = [
+                    describe_ui_layout(value, render_size=render_size) for value in values
+                    if isinstance(value, InxUIScreenComponent)
+                ]
+            return result
 
         return {
             "name": str(scene.name),
@@ -453,6 +491,22 @@ def _set_component_property(
         return {"object_id": int(object_id), "component": serializable_component(target)}
 
     return on_editor("infernux.scene.component.property.set", edit)
+
+
+def _ui_layout(object_id: int, component_id: int) -> dict[str, object]:
+    return on_editor(
+        "infernux.scene.ui.layout.get",
+        lambda: EditorAutomationHost.instance().scene_ui_layout(object_id, component_id),
+    )
+
+
+def _set_ui_rect(object_id: int, component_id: int, rect, detach_from_layout: bool = False):
+    return on_editor(
+        "infernux.scene.ui.rect.set",
+        lambda: EditorAutomationHost.instance().set_scene_ui_rect(
+            object_id, component_id, rect, detach_from_layout=detach_from_layout,
+        ),
+    )
 
 
 def _assign_mesh(object_id: int, component_id: int, asset_guid: str, node_path=None) -> dict[str, object]:

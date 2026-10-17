@@ -443,8 +443,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self.process_script_worker()
 
         # Asset import and live GPU publication are owner-thread operations.
-        # A watcher burst must not turn one editor frame into an unbounded
-        # import transaction; preserve FIFO order and advance it frame by frame.
+        # Import one asset per frame. Script edits take priority while the
+        # coordinator preserves earlier work for the same asset identity.
         events = self._coordinator.drain(
             force=force,
             max_events=None if force else 1,

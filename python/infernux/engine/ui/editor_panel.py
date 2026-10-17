@@ -80,7 +80,6 @@ class EditorPanel(ClosablePanel):
         self._content_visible_previous_frame = False
         self._content_hovered = False
         self._persisted_view_state_loaded = False
-        self._content_render_error_signature: tuple[type[BaseException], str] | None = None
 
     def is_content_visible(self) -> bool:
         """Return whether this panel's current dock tab is presenting content."""
@@ -464,16 +463,13 @@ class EditorPanel(ClosablePanel):
                         # restores any unfinished child/style stacks when the
                         # window ends; keep retrying so transient asset state
                         # can heal without requiring the panel to be reopened.
-                        signature = (type(exc), str(exc))
-                        if signature != self._content_render_error_signature:
-                            from infernux.debug import Debug
+                        # The unified reporter keeps the first traceback and
+                        # counts repeats instead of hiding them.
+                        from infernux.debug import Debug
 
-                            Debug.log_error(
-                                f"Panel '{self.panel_type_id}' render failed: {exc}"
-                            )
-                        self._content_render_error_signature = signature
-                    else:
-                        self._content_render_error_signature = None
+                        Debug.report_internal_error(
+                            exc, f"Panel '{self.panel_type_id}'", self
+                        )
                 else:
                     if self._content_was_visible is not False:
                         self._on_not_visible(ctx)

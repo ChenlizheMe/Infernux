@@ -1,48 +1,17 @@
 """BootstrapPanelsMixin — extracted from EditorBootstrap."""
 from __future__ import annotations
 
-"""
-EditorBootstrap — structured editor initialization.
-
-Breaks the monolithic ``release_engine()`` startup path into explicit
-startup steps. Each step is a separate method, closures become instance
-methods, and panel/manager references live on the bootstrap instance.
-"""
 
 
-import logging
-import os
-import pathlib
 from dataclasses import dataclass
-from typing import Optional
 
-from infernux.lib import TagLayerManager
-import infernux.resources as _resources
-from infernux.engine.engine import Engine, LogLevel
-from infernux.engine.resources_manager import ResourcesManager
-from infernux.engine.play_mode import PlayModeManager, PlayModeState
-from infernux.engine.scene_manager import SceneFileManager
 from infernux.engine.ui import (
     SceneViewPanel,
     GameViewPanel,
-    WindowManager,
     TagLayerSettingsPanel,
-    BuildSettingsPanel,
-    PreferencesPanel,
-    HistoryPanel,
-    PluginPanel,
-    InxPackageImportPanel,
     PhysicsLayerMatrixPanel,
-    EnvironmentSettingsPanel,
     UIEditorPanel,
-    AnimClip2DEditorPanel,
-    AnimFSMEditorPanel,
-    AnimTimelineEditorPanel,
-    ParticleGraphEditorPanel,
-    EditorPanel,
-    EditorServices,
     PanelRegistry,
-    editor_panel,
 )
 from infernux.engine.ui import panel_state as _panel_state
 @dataclass(frozen=True, slots=True)
@@ -170,7 +139,6 @@ class BootstrapPanelsMixin:
         engine = self.engine
         project_path = self.project_path
 
-        from infernux.engine.interaction import SelectionDomain
         from infernux.engine.ui.core_panel_interactions import (
             console_panel_interaction,
             hierarchy_panel_interaction,
@@ -329,10 +297,10 @@ class BootstrapPanelsMixin:
     def _create_native_console(self):
         """Create a fresh C++ ConsolePanel for WindowManager re-open."""
         from infernux.lib import ConsolePanel as NativeConsolePanel
-        panel = NativeConsolePanel()
+        panel = NativeConsolePanel(self.project_path)
         self._wire_console_command_callbacks(panel)
         panel.on_request_focus = lambda: self.window_manager.open_window("console")
-        panel.on_selection_changed = self._on_console_selection_changed
+        panel.on_selection_changed = lambda uid, history: self._on_console_selection_changed(panel, uid, history)
         panel.on_panel_focused = self.window_manager.native_panel_focus_callback(
             "console",
             view_id="console",
@@ -397,8 +365,7 @@ class BootstrapPanelsMixin:
             )
         )
 
-    @staticmethod
-    def _on_console_selection_changed(uid, record_history):
+    def _on_console_selection_changed(self, panel, uid, record_history):
         from infernux.engine.interaction import (
             SelectionDomain,
             SelectionService,
@@ -408,6 +375,10 @@ class BootstrapPanelsMixin:
         selection = SelectionService.instance()
         entry_uid = int(uid or 0)
         if entry_uid > 0:
+            object_id = panel.get_entry_context_object_id(entry_uid)
+            if object_id and self._navigate_console_entry_to_object(object_id, record_history=bool(record_history)):
+                panel.set_selection_snapshot(entry_uid)
+                return
             selection.select(
                 SelectionTarget.diagnostic_entry(
                     "console",
@@ -472,7 +443,7 @@ class BootstrapPanelsMixin:
         engine.register_gui("menu_bar", self.menu_bar)
 
         # Toolbar (native C++ panel)
-        from infernux.lib import ToolbarPanel as NativeToolbarPanel, PlayState
+        from infernux.lib import ToolbarPanel as NativeToolbarPanel
         self.toolbar = NativeToolbarPanel()
         wm.register_existing_window("toolbar", self.toolbar, "toolbar")
         enforce_native_builtin_window_policy("toolbar", self.toolbar)
@@ -512,12 +483,14 @@ class BootstrapPanelsMixin:
         # Console (native C++ panel)
         from infernux.lib import ConsolePanel as NativeConsolePanel
         from infernux.debug import DebugConsole
-        self.console = NativeConsolePanel()
+        self.console = NativeConsolePanel(self.project_path)
         self._wire_console_command_callbacks(self.console)
         # Bridge Python Debug.log() → C++ ConsolePanel
         DebugConsole.instance().set_native_console(self.console)
         self.console.on_request_focus = lambda: wm.open_window("console")
-        self.console.on_selection_changed = self._on_console_selection_changed
+        self.console.on_selection_changed = lambda uid, history: self._on_console_selection_changed(
+            self.console, uid, history,
+        )
         self.console.on_panel_focused = wm.native_panel_focus_callback(
             "console",
             view_id="console",

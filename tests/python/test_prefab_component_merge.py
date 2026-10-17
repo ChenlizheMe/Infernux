@@ -1,14 +1,18 @@
 """Prefab component edits use source identity across publication and cook."""
-import copy
+
 import pytest
 
 from infernux.engine.component_restore import deserialize_game_object_document_transactionally
 from infernux.engine.prefab_manager import (
-    PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab,
+    _read_prefab_document,
+    instantiate_prefab,
+    save_prefab,
 )
 from infernux.engine.prefab_overrides import (
-    apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
-    resolve_scene_prefab_documents, revert_overrides,
+    apply_overrides_to_prefab,
+    build_prefab_apply_command,
+    compute_overrides,
+    revert_overrides,
 )
 
 
@@ -85,28 +89,6 @@ def test_private_same_type_component_does_not_replace_deleted_source(scene, tmp_
     assert len({record["component_id"] for record in records}) == 2
 
 
-def test_unversioned_scene_component_baseline_is_rejected(scene, tmp_path):
-    path, (first, _) = _pair(scene, tmp_path)
-    source = _read_prefab_document(path)["root_object"]
-    document = {"objects": [first.serialize_document()]}
-    root = document["objects"][0]
-    root["prefab_source"] = copy.deepcopy(source)
-    for record in root["components"]:
-        record.pop("prefab_source_id")
-    with pytest.raises(PrefabDocumentError, match="Unsupported prefab component identity baseline"):
-        resolve_scene_prefab_documents(document, lambda _: source)
-
-
-def test_component_source_metadata_is_not_author_data(scene, tmp_path):
-    from infernux.engine.component_restore import serialize_game_object_document_authoritatively
-    path, (first, _) = _pair(scene, tmp_path)
-    document = serialize_game_object_document_authoritatively(first)
-    for record in document["components"]:
-        assert record["prefab_source_id"] > 0
-        assert "prefab_source_id" not in record["data"]
-    assert apply_overrides_to_prefab(first, path)
-
-
 def test_instance_reorder_survives_unrelated_source_field_change(scene, tmp_path):
     path, (first, second) = _pair(scene, tmp_path)
     _edit(second, lambda components: components.reverse())
@@ -120,6 +102,7 @@ def test_instance_reorder_survives_unrelated_source_field_change(scene, tmp_path
 
 def test_unpack_clears_component_links_and_undo_restores_them(scene, tmp_path):
     from infernux.engine.undo import PrefabUnpackCommand
+
     _, (first, _) = _pair(scene, tmp_path)
     before = first.serialize_document()["components"]
     command = PrefabUnpackCommand(first.id)

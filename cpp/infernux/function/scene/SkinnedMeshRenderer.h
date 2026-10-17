@@ -49,10 +49,8 @@ class SkinnedMeshRenderer : public MeshRenderer
         return m_animationSourceGuid;
     }
 
-    [[nodiscard]] const std::vector<std::string> &GetAnimationTakeNames() const
-    {
-        return m_animationTakeNames;
-    }
+    [[nodiscard]] std::vector<std::string> GetAnimationTakeNames() const;
+    [[nodiscard]] size_t GetAnimationTakeCount() const;
 
     void SetActiveTakeName(const std::string &name);
     [[nodiscard]] const std::string &GetActiveTakeName() const
@@ -110,7 +108,7 @@ class SkinnedMeshRenderer : public MeshRenderer
 
     [[nodiscard]] bool HasAnimationTakes() const
     {
-        return !m_animationTakeNames.empty();
+        return GetAnimationTakeCount() != 0;
     }
     [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName,
                                                     const std::string &animationSourceGuid = {}) const;
@@ -141,6 +139,9 @@ class SkinnedMeshRenderer : public MeshRenderer
     {
         return m_skinPoseHistory.Acquire();
     }
+    [[nodiscard]] std::vector<std::string> GetSkeletonNodeNames() const;
+    /// Latest submitted pose, with bone-local coordinates expressed in engine units.
+    [[nodiscard]] std::vector<glm::mat4> GetSkeletonNodeWorldMatrices(const std::vector<std::string> &nodeNames) const;
     void CommitRuntimeSkinPoseHistory();
 
     /// Animated geometry can leave the imported bind-pose AABB even when the
@@ -160,7 +161,6 @@ class SkinnedMeshRenderer : public MeshRenderer
     [[nodiscard]] std::shared_ptr<const InxSkinnedMesh>
     LoadCompatibleAnimationSource(const std::string &guid, const std::string &takeName = {}) const;
 
-    std::vector<std::string> m_animationTakeNames;
     std::string m_activeTakeName;
     std::string m_animationSourceGuid;
     std::string m_blendAnimationSourceGuid;
@@ -174,6 +174,13 @@ class SkinnedMeshRenderer : public MeshRenderer
     std::vector<std::shared_ptr<const InxSkinnedMesh>> m_poseStackAnimationSources;
     bool m_usePoseStack = false;
     SkinPoseHistory m_skinPoseHistory;
+    mutable std::shared_ptr<const InxSkinnedMesh> m_boundsModel;
+    mutable SkinPoseHistory::PalettePtr m_boundsPalette;
+    mutable int32_t m_boundsNodeGroup = -1;
+    mutable int32_t m_boundsSubmeshIndex = -1;
+    mutable glm::vec3 m_skinnedBoundsMin{0.0f};
+    mutable glm::vec3 m_skinnedBoundsMax{0.0f};
+    mutable bool m_skinnedBoundsValid = false;
     mutable std::shared_ptr<const InxSkinnedMesh> m_runtimeModel;
     mutable std::shared_ptr<const InxSkinnedMesh> m_animationSourceModel;
     mutable std::shared_ptr<const InxSkinnedMesh> m_blendAnimationSourceModel;

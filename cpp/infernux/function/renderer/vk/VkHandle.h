@@ -333,28 +333,6 @@ class VkImageHandle
                 std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
 
     /**
-     * @brief Create an image with explicit cross-queue concurrent sharing.
-     *
-     * Identical to Create() above except the resulting VkImage uses
-     * VK_SHARING_MODE_CONCURRENT across @p sharedQueueFamilies, which
-     * lets transfer-queue uploads be sampled from the graphics queue
-     * without an explicit queue family ownership transfer barrier. Pays
-     * a small driver-level performance cost (variable by vendor) in
-     * exchange for that simplicity. Recommended ONLY for resources that
-     * actually cross queues — purely graphics-side render targets should
-     * stick to the EXCLUSIVE overload.
-     *
-     * Pre: @p sharedQueueFamilies must contain at least 2 distinct
-     * family indices; otherwise CONCURRENT is not legal and the call
-     * silently downgrades to EXCLUSIVE.
-     */
-    bool CreateConcurrent(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format,
-                          VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
-                          const std::vector<uint32_t> &sharedQueueFamilies,
-                          VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1,
-                          std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
-
-    /**
      * @brief Create an image view for this image
      * @param format View format
      * @param aspectFlags Image aspect flags

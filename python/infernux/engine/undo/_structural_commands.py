@@ -183,8 +183,6 @@ class DeleteGameObjectCommand(UndoCommand):
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class DeleteGameObjectsCommand(UndoCommand):
@@ -268,8 +266,6 @@ class DeleteGameObjectsCommand(UndoCommand):
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
 
-    def redo(self) -> None:
-        self.execute()
 
 
 def _capture_prefab_parent_links(roots):
@@ -709,8 +705,6 @@ class AdditiveSceneResidencyCommand(UndoCommand):
         if not self._scene_files.request_unload_scene_guid(self._asset_guid):
             raise RuntimeError("additive Scene could not be unloaded")
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class GlobalSelectionCommand(UndoCommand):
@@ -843,8 +837,6 @@ class PrefabModeCommand(UndoCommand):
         if not succeeded:
             raise RuntimeError(f"Undo {self.description} was rejected")
 
-    def redo(self) -> None:
-        self.execute()
 
 
 class PrefabUnpackCommand(UndoCommand):

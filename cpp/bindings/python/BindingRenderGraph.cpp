@@ -16,6 +16,7 @@
 #include "function/renderer/SceneRenderGraph.h"
 #include "function/renderer/rhi/RhiComputeBuffer.h"
 #include "function/renderer/rhi/RhiRenderTexture.h"
+#include <function/scene/PythonNativeLifetime.h>
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -211,7 +212,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
                        "MSAA sample count (0=no change, 1=off, 2, 4, 8)");
 
     // SceneRenderGraph class
-    py::class_<SceneRenderGraph>(m, "SceneRenderGraph")
+    NativeClass<SceneRenderGraph>(m, "SceneRenderGraph")
         // Pass configuration
         .def("mark_dirty", &SceneRenderGraph::MarkDirty, "Force rebuild of the render graph on next frame")
         // Render graph topology defined from Python

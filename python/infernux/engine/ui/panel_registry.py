@@ -37,7 +37,6 @@ from infernux.engine.interaction import (
 from infernux.engine.interaction._contributions import current_owner, contribution_scope
 
 if TYPE_CHECKING:
-    from infernux.lib import InxGUIRenderable
     from .window_manager import WindowManager
 
 

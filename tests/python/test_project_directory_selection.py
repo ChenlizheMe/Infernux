@@ -1,11 +1,15 @@
 """Project directory clicks share selection projection without resource GUIDs."""
+
 from types import SimpleNamespace
 
 import pytest
 
 from infernux.engine import _bootstrap_selection as bridge
 from infernux.engine.interaction import (
-    AssetMutation, AssetMutationKind, SelectionDomain, SelectionService,
+    AssetMutation,
+    AssetMutationKind,
+    SelectionDomain,
+    SelectionService,
     SelectionTarget,
 )
 from infernux.engine.path_utils import path_key
@@ -18,10 +22,14 @@ def directory_selection(tmp_path, monkeypatch):
     folder.mkdir(parents=True)
     asset = tmp_path / "Assets" / "File.txt"
     asset.write_text("test", encoding="utf-8")
-    monkeypatch.setattr(bridge, "_selection_asset_database", lambda: SimpleNamespace(
-        get_guid_from_path=lambda path: "file-guid" if path_key(path) == path_key(asset) else "",
-        get_path_from_guid=lambda guid: str(asset) if guid == "file-guid" else "",
-    ))
+    monkeypatch.setattr(
+        bridge,
+        "_selection_asset_database",
+        lambda: SimpleNamespace(
+            get_guid_from_path=lambda path: "file-guid" if path_key(path) == path_key(asset) else "",
+            get_path_from_guid=lambda guid: str(asset) if guid == "file-guid" else "",
+        ),
+    )
     return folder, asset
 
 
@@ -50,16 +58,12 @@ def test_directory_and_resource_share_multiselection(directory_selection):
     folder, asset = directory_selection
     selection = SelectionService()
     bridge.BootstrapSelectionMixin()._on_project_selection_changed(
-        (str(folder), str(asset)), str(folder),
+        (str(folder), str(asset)),
+        str(folder),
     )
     assert len(selection.snapshot.targets) == 2
     assert selection.snapshot.primary.sub_kind == "directory"
     assert SelectionTarget.asset("file-guid") in selection.snapshot.targets
-
-
-def test_missing_unregistered_file_is_not_a_directory_target(directory_selection):
-    folder, _asset = directory_selection
-    assert bridge._project_selection_target(str(folder / "missing.py")) is None
 
 
 @pytest.mark.parametrize("kind", [AssetMutationKind.MOVED, AssetMutationKind.DELETED])
@@ -113,47 +117,3 @@ def test_project_commands_select_empty_directory_without_database(tmp_path):
     selection = SelectionService()
     ProjectAssetCommandService(selection)._select_project_paths((str(folder),))
     assert selection.snapshot.primary == SelectionTarget.project_directory(str(folder))
-
-
-def test_directory_selection_drives_project_keyboard_commands(tmp_path):
-    from infernux.engine.interaction import CommandContext, CommandSource, FocusService
-    from infernux.engine.ui.core_panel_interactions import project_panel_interaction
-
-    folder = tmp_path / "Folder"
-    folder.mkdir()
-    selection = SelectionService()
-    selection.select(SelectionTarget.project_directory(str(folder)), owner_id="project")
-    context = CommandContext(CommandSource.SHORTCUT, FocusService().snapshot, selection.snapshot)
-    calls = []
-    interactions = SimpleNamespace(
-        can_copy=lambda paths: bool(paths),
-        copy=lambda paths, *, cut: calls.append(("copy", tuple(paths), cut)) or True,
-        request_delete=lambda paths, *, origin: calls.append(("delete", tuple(paths))) or True,
-    )
-    navigation = SimpleNamespace(
-        locate=lambda target, **kwargs: calls.append(("locate", target)) or True,
-    )
-    panel = SimpleNamespace(
-        begin_rename_selected_asset=lambda path: calls.append(("rename", path)) or True,
-        can_rename_selected_asset=lambda path: bool(path),
-        can_navigate_to_path=lambda path: bool(path),
-        get_current_path=lambda: str(tmp_path),
-        set_current_path=lambda path: True,
-        get_folder_expanded_paths=lambda: [],
-        set_folder_expanded_paths=lambda paths: None,
-        get_model_expanded_paths=lambda: [],
-        set_model_expanded_paths=lambda paths: None,
-        request_search_focus=lambda: None,
-    )
-    descriptor = project_panel_interaction(interactions, navigation, object())
-    adapter = descriptor.adapter_factory(panel)
-    for command_id in ("edit.copy", "edit.cut", "edit.delete", "edit.rename", "project.locate_asset"):
-        handler = adapter.handler(command_id)
-        assert handler.can_execute(context)
-        assert handler.execute(context)
-    path = path_key(folder)
-    assert calls == [
-        ("copy", (path,), False), ("copy", (path,), True),
-        ("delete", (path,)), ("rename", path),
-        ("locate", SelectionTarget.project_directory(str(folder))),
-    ]

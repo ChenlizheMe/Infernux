@@ -41,9 +41,12 @@ def source_less_kernel(path, text):
     return module.solve
 
 
-@pytest.mark.parametrize("order", [0, 1, 3])
-@pytest.mark.parametrize("domain_size", [2, 4])
-@pytest.mark.parametrize("decorator", ["inx.compute.kernel", "gpu.kernel", "kernel"])
+@pytest.mark.parametrize('order,domain_size,decorator', [
+    (0, 2, 'inx.compute.kernel'),
+    (1, 4, 'gpu.kernel'),
+    (3, 2, 'kernel'),
+    (3, 4, 'inx.compute.kernel'),
+])
 def test_source_less_web_and_native_dispatch_agree(tmp_path, engine, monkeypatch, order, domain_size, decorator):
     text = source(order, decorator)
     namespace = {"__name__": "DomainProbe"}

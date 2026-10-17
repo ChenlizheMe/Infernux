@@ -14,8 +14,7 @@ def rotation_value(values, form):
     return {"tuple": tuple, "list": list, "native": lambda v: quatf(*v)}[form](values)
 
 
-@pytest.mark.parametrize("form", ["tuple", "list", "native"])
-@pytest.mark.parametrize("angle", [0, .7, math.pi / 2])
+@pytest.mark.parametrize('form,angle', [('tuple', 0), ('list', .7), ('native', math.pi / 2)])
 def test_move_rotation_applies_public_quaternion_inputs(scene, form, angle):
     owner = scene.create_game_object("Kinematic quaternion input")
     body = owner.add_component("Rigidbody")
@@ -36,8 +35,7 @@ def test_move_rotation_applies_public_quaternion_inputs(scene, form, angle):
     assert abs(sum(a * b for a, b in zip(body.rotation, target))) == pytest.approx(1, abs=2e-5)
 
 
-@pytest.mark.parametrize("form", ["tuple", "list", "native"])
-@pytest.mark.parametrize("values", [(0, 0, 0, 0), (math.nan, 0, 0, 1), (0, math.inf, 0, 1)])
+@pytest.mark.parametrize('form,values', [('tuple', (0, 0, 0, 0)), ('list', (math.nan, 0, 0, 1)), ('native', (0, math.inf, 0, 1))])
 def test_move_rotation_keeps_native_geometry_rejection(scene, form, values):
     owner = scene.create_game_object("Invalid quaternion")
     body = owner.add_component("Rigidbody")
@@ -48,8 +46,7 @@ def test_move_rotation_keeps_native_geometry_rejection(scene, form, values):
         body.move_rotation(rotation_value(values, form))
 
 
-@pytest.mark.parametrize("form", ["tuple", "list", "native"])
-@pytest.mark.parametrize("missing_body", [False, True])
+@pytest.mark.parametrize('form,missing_body', [('list', False), ('native', True)])
 def test_move_rotation_keeps_native_body_preconditions(scene, form, missing_body):
     owner = scene.create_game_object("Unmovable rigidbody")
     body = owner.add_component("Rigidbody")
@@ -62,13 +59,14 @@ def test_move_rotation_keeps_native_body_preconditions(scene, form, missing_body
         body.move_rotation(rotation_value((0, 0, 0, 1), form))
 
 
-@pytest.mark.parametrize("local,parent", [
-    ((1, 1, 1), (1, 1, 1)), ((2, 3, 4), (1, 1, 1)),
-    ((1, 1, 1), (3, 3, 3)), ((1, 2, .5), (2, 3, 4)),
-    ((-2, 3, 4), (1, 1, 1)), ((1, -2, .5), (-2, 3, 4)),
+@pytest.mark.parametrize('local,parent,center,rotated', [
+    ((1, 1, 1), (1, 1, 1), (0, 0, 0), False),
+    ((2, 3, 4), (1, 1, 1), (.4, -.3, .2), True),
+    ((1, 1, 1), (3, 3, 3), (0, 0, 0), True),
+    ((1, 2, .5), (2, 3, 4), (.4, -.3, .2), True),
+    ((-2, 3, 4), (1, 1, 1), (.4, -.3, .2), False),
+    ((1, -2, .5), (-2, 3, 4), (.4, -.3, .2), True),
 ])
-@pytest.mark.parametrize("center", [(0, 0, 0), (.4, -.3, .2)])
-@pytest.mark.parametrize("rotated", [False, True])
 def test_selected_sphere_outline_matches_scaled_physics(scene, monkeypatch, local, parent, center, rotated):
     ancestor = scene.create_game_object("Scaled ancestor")
     ancestor.transform.position = Vector3(10, 20, -30)

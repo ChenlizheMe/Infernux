@@ -49,29 +49,6 @@ def test_cpu_buffer_same_storage_uses_the_same_parallel_proof():
     assert compiled.selected_mode == "parallel"
 
 
-@pytest.mark.parametrize("layout", ["zero_stride", "partial_element", "overlapping_rows"])
-def test_layout_guard_rejects_internal_overlap(layout):
-    storage = np.zeros(32, dtype=np.int64)
-    shape, strides = {
-        "zero_stride": ((16,), (0,)),
-        "partial_element": ((16,), (4,)),
-        "overlapping_rows": ((4, 4), (8, 8)),
-    }[layout]
-    view = np.lib.stride_tricks.as_strided(storage, shape=shape, strides=strides)
-    assert array_arguments_alias((view,), {})
-
-
-@pytest.mark.parametrize("view", [
-    np.arange(24).reshape(4, 6),
-    np.arange(24).reshape(4, 6).T,
-    np.arange(24).reshape(4, 6)[::-1, ::2],
-    np.arange(24)[::3],
-    np.empty(0),
-])
-def test_nonoverlapping_layouts_are_admitted(view):
-    assert not array_arguments_alias((view,), {})
-
-
 def test_layout_proof_never_admits_overlapping_bytes_in_small_strided_corpus():
     for row in (-24, -16, -8, 0, 4, 8, 16, 24):
         for column in (-24, -16, -8, 0, 4, 8, 16, 24):

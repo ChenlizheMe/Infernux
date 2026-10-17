@@ -484,12 +484,12 @@ bool VkSwapchainManager::CreateImageViews(SwapchainGeneration &generation)
 
 bool VkSwapchainManager::CreateSyncObjects()
 {
-    std::vector<VkSemaphore> candidate(MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+    std::vector<VkSemaphore> candidate(EngineConfig::kFrameSlotCapacity, VK_NULL_HANDLE);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    for (size_t i = 0; i < EngineConfig::kFrameSlotCapacity; i++) {
         if (m_dispatch.createSemaphore(m_device, &semaphoreInfo, nullptr, &candidate[i]) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create image-acquire semaphore for frame ", i);
             for (VkSemaphore semaphore : candidate) {

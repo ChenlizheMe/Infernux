@@ -21,13 +21,13 @@ class UICanvas(InxUIComponent):
         render_mode: ``ScreenOverlay`` or ``CameraOverlay``.
         sort_order: Rendering order (lower draws first).
         target_camera: Camera GameObject reference (CameraOverlay mode only).
-        target_camera_id: Compatibility access to the reference's runtime ID.
+        target_camera_id: Runtime ID access to the camera reference.
         reference_width: Design reference width in pixels (default 1920).
         reference_height: Design reference height in pixels (default 1080).
         ui_scale_mode: Canvas scaler mode.
         screen_match_mode: Width/height match behavior for ScaleWithScreenSize.
         match_width_or_height: 0 = match width, 1 = match height.
-        pixel_perfect: Round scale to integer pixels when possible.
+        pixel_perfect: Align drawing geometry to render pixels without changing layout scale.
         reference_pixels_per_unit: Sprite pixel density hint.
     """
 
@@ -56,6 +56,10 @@ class UICanvas(InxUIComponent):
 
     def compute_logical_size(self, screen_w: float, screen_h: float) -> Tuple[float, float]:
         """Return the live logical Canvas extent for the viewport."""
+        ...
+
+    def pixel_adjust_rect(self, rect: Tuple[float, float, float, float], scale_x: float, scale_y: float) -> Tuple[float, float, float, float]:
+        """Project a logical rectangle to render pixels and optionally snap its edges."""
         ...
 
     def invalidate_element_cache(self) -> None:

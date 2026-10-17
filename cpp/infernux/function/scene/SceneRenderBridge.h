@@ -27,7 +27,6 @@ class SceneRenderBridge final
     void UpdateCameraData(float *outPos, float *outLookAt, float *outUp);
     void OnWindowResize(uint32_t width, uint32_t height);
     void PrepareFrame(bool useActiveCameraCulling = true);
-    [[nodiscard]] DrawCallResult PrepareAndBuildForCamera(Camera *camera);
     [[nodiscard]] CameraDrawCallResult CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls);
     [[nodiscard]] const DrawCallResult &BuildDrawCalls();
     [[nodiscard]] Camera *GetEditorCamera() const;

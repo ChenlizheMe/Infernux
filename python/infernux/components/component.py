@@ -18,7 +18,7 @@ Example:
             self.transform.position = Vector3(pos.x + self.speed * delta_time, pos.y, pos.z)
 """
 
-from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
+from typing import Optional, Dict, Any, TYPE_CHECKING, List
 import threading
 import weakref
 
@@ -28,11 +28,35 @@ def _default_lifecycle_method(function):
     function.__infernux_default_lifecycle__ = True
     return function
 
+
+class per_instance:
+    """Class-level default for private mutable runtime state.
+
+    ``_cache = per_instance(dict)`` gives every instance its own value on first
+    read, so state written before ``awake()`` never leaks into the class (a bare
+    ``= {}`` would be shared by every unawakened instance). Assignment stores on
+    the instance as usual.
+    """
+
+    __slots__ = ("_factory", "_name")
+
+    def __init__(self, factory):
+        self._factory = factory
+        self._name = ""
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        value = instance.__dict__[self._name] = self._factory()
+        return value
+
 from infernux.lib import GameObject
 
 if TYPE_CHECKING:
     from infernux.lib import GameObject, Transform
-    from infernux.coroutine import Coroutine
 
 from ._component_native import ComponentNativeMixin
 from ._component_lifecycle import ComponentLifecycleMixin
@@ -195,10 +219,11 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
         self._cds_slot: Optional[tuple[int, int]] = None
         self._cds_class_id: Optional[int] = None
+        self._cds_key: Optional[tuple[int, tuple[int, int]]] = None
+        self._cds_finalizer = None
         if self._uses_component_data_store:
             from ._cds_bridge import allocate_slot as _cds_alloc, get_class_id as _cds_class_id
-            self._cds_slot = _cds_alloc(self.__class__)
-            self._cds_class_id = _cds_class_id(self.__class__)
+            self._set_component_data_slot(_cds_alloc(self.__class__), _cds_class_id(self.__class__))
 
         # Initialize serialized fields with defaults (from class-level declarations)
         self._init_serialized_fields()
@@ -235,11 +260,12 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                     cds_set(descriptor._cds_class_id, descriptor._cds_field_id,
                             descriptor._cds_type_code, self._cds_slot, default_value)
                 else:
-                    # Non-CDS field: Python dict.
-                    inst_id = id(self)
-                    with descriptor._lock:
-                        descriptor._weak_refs[inst_id] = weakref.ref(self, descriptor._make_ref_callback(inst_id))
-                        descriptor._values[inst_id] = default_value
+                    # Non-CDS field: per-instance storage owned by the component.
+                    values = self.__dict__.get("_field_values")
+                    if values is None:
+                        values = {}
+                        self.__dict__["_field_values"] = values
+                    values[name] = default_value
             elif hasattr(descriptor, '_is_cpp_property'):
                 # Skip ALL CppProperty descriptors — their values come from C++.
                 continue

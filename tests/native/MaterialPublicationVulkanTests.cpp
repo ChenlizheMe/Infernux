@@ -48,8 +48,8 @@ int main(int argc, char **argv)
     vk::VkDescriptorManager allocator(vkDevice, context.GetDeviceId());
     allocator.UseSubmissionSerials([&] { return serial; });
     MaterialDescriptorManager descriptors;
-    descriptors.Initialize(context.GetVmaAllocator(), vkDevice, context.GetPhysicalDevice(), &allocator);
     descriptors.SetRetirementQueue(&retirement);
+    descriptors.Initialize(context.GetVmaAllocator(), vkDevice, context.GetPhysicalDevice(), &allocator);
 
     ShaderProgram program;
     ShaderProgramVariantKey key;

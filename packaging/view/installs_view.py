@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import time
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -20,7 +19,7 @@ from install_queue import InstallQueue
 from android_support import AndroidSupportManager
 from blender_support import BLENDER_VERSION, BlenderSupportManager
 from i18n import tr
-from view.forge import HazardStripe, StatusLed, chip, fmt_age, fmt_bytes, mono_label, set_kind, theme, track
+from view.forge import HazardStripe, StatusLed, chip, fmt_age, fmt_bytes, mono_label, theme
 from PySide6.QtGui import QColor, QPainter
 from view.hover_widgets import AnimatedSurfaceFrame
 from view.job_widgets import JobStrip

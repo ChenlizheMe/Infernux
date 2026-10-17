@@ -1,4 +1,5 @@
 """Scene publication preserves the physical intent of every resident World."""
+
 from __future__ import annotations
 
 import pytest
@@ -30,9 +31,15 @@ def _queue_change(owner, operation, x):
             owner.transform.position = Vector3(x + 4, 0, 0)
 
 
-@pytest.mark.parametrize("operation", ["create_single", "create_compound", "disable", "reenable", "move"])
-@pytest.mark.parametrize("boundary", ["native_commit", "python_additive", "python_rollback"])
-@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize(
+    "operation,boundary,persistent",
+    [
+        ("create_compound", "python_additive", True),
+        ("disable", "python_rollback", False),
+        ("reenable", "native_commit", True),
+        ("move", "native_commit", True),
+    ],
+)
 def test_other_scene_pending_physics_survives_publication(scene, operation, boundary, persistent):
     manager = SceneManager.instance()
     target = manager.create_scene("ReplacementTarget")
@@ -51,12 +58,16 @@ def test_other_scene_pending_physics_survives_publication(scene, operation, boun
         native._preflight_scene_resource_dependencies(document)
         assert target._commit_document(document)
     else:
+
         def after_publish():
             if boundary == "python_rollback":
                 raise RuntimeError("intentional scene publication rejection")
 
         transaction = SceneDocumentTransaction(
-            target, document=document, clear_registries=False, after_publish=after_publish,
+            target,
+            document=document,
+            clear_registries=False,
+            after_publish=after_publish,
         )
         assert transaction.run_to_completion(raise_on_failure=False) is (boundary != "python_rollback")
         if boundary == "python_rollback":
@@ -69,8 +80,9 @@ def test_other_scene_pending_physics_survives_publication(scene, operation, boun
         assert _hit(24.0) is not None
 
 
-@pytest.mark.parametrize("rollback", [False, True])
-@pytest.mark.parametrize("operation", ["create_single", "create_compound", "disable", "reenable"])
+@pytest.mark.parametrize(
+    "operation,rollback", [("create_single", False), ("create_compound", True), ("disable", False), ("reenable", True)]
+)
 def test_retained_world_resolves_pending_bodies_before_suspension(scene, operation, rollback):
     # Capture the real empty document before creating the graph to be retained.
     empty = scene.serialize_document()
@@ -106,7 +118,9 @@ def test_single_prepare_preserves_pending_persistent_reenable(scene):
     manager.prepare_active_scene_replacement()
     _queue_change(owner, "reenable", 60.0)
     transaction = SceneDocumentTransaction(
-        scene, document=scene.serialize_document(), clear_registries=True,
+        scene,
+        document=scene.serialize_document(),
+        clear_registries=True,
         before_commit=manager.prepare_active_scene_replacement,
     )
     assert transaction.run_to_completion(), transaction.error

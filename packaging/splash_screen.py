@@ -14,7 +14,7 @@ import time
 import uuid
 
 from PySide6.QtWidgets import QWidget, QApplication, QLabel, QProgressBar
-from PySide6.QtCore import Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve, QUrl, QPointF, QRectF
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QPointF, QRectF
 from PySide6.QtGui import QPixmap, QFont, QFontMetrics, QPainter, QColor, QPen, QDesktopServices, QPolygonF
 
 from hub_utils import get_project_lock_path, merge_child_env_utf8, remove_project_lock, write_project_lock

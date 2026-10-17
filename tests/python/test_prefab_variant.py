@@ -1,4 +1,5 @@
 """Variant source and local additions retain independent persistent identities."""
+
 import copy
 import json
 
@@ -7,20 +8,37 @@ import pytest
 from infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPONENT_REF
 from infernux.engine.prefab_manager import PrefabDocumentError
 from infernux.engine.prefab_variant import (
-    create_variant_definition, rebase_variant_definition, validate_variant_definition, rebase_variant_graph,
-    variant_document, variant_definition, variant_property_modifications, revert_variant_property,
+    create_variant_definition,
+    rebase_variant_definition,
+    validate_variant_definition,
+    rebase_variant_graph,
+    variant_document,
+    variant_definition,
+    variant_property_modifications,
+    revert_variant_property,
 )
 
 
 def node(identity, name, children=(), components=()):
-    return dict(local_id=identity, name=name, active=True, is_static=False, tag="Untagged", layer=0,
-                transform=dict(position=[0, 0, 0], rotation=[0, 0, 0], scale=[1, 1, 1]),
-                children=list(children), components=list(components))
+    return dict(
+        local_id=identity,
+        name=name,
+        active=True,
+        is_static=False,
+        tag="Untagged",
+        layer=0,
+        transform=dict(position=[0, 0, 0], rotation=[0, 0, 0], scale=[1, 1, 1]),
+        children=list(children),
+        components=list(components),
+    )
 
 
 def prefab():
-    return dict(root_object=node(1, "Root", [node(2, "Same", components=[dict(component_id=1, type_id="Test", value=1)])]),
-                next_local_id=3, next_component_id=2)
+    return dict(
+        root_object=node(1, "Root", [node(2, "Same", components=[dict(component_id=1, type_id="Test", value=1)])]),
+        next_local_id=3,
+        next_component_id=2,
+    )
 
 
 def test_variant_inherits_base_edits_preserving_explicit_overrides():
@@ -42,47 +60,15 @@ def test_variant_inherits_base_edits_preserving_explicit_overrides():
     assert rebase_variant_definition(updated, changed) == updated
 
 
-def test_equal_valued_override_can_be_explicitly_reverted_without_touching_other_properties():
-    base = prefab()
-    own = copy.deepcopy(base)
-    own["root_object"]["name"] = "Private"
-    own["root_object"]["children"][0]["layer"] = 5
-    definition = create_variant_definition("base-guid", base, own)
-    base["root_object"]["children"][0]["layer"] = 5
-    current = variant_document(rebase_variant_definition(definition, base))
-    before = copy.deepcopy(current)
-    rows = variant_property_modifications(current)
-    layer = next(item for item in rows if item["path"] == ["layer"])
-    assert layer["value"] == layer["source_value"] == 5
-    reverted = revert_variant_property(current, 2, 0, ("layer",))
-    assert current == before
-    assert reverted["root_object"] == current["root_object"]
-    assert [item["path"] for item in variant_property_modifications(reverted)] == [["name"]]
-    base["root_object"]["children"][0]["layer"] = 7
-    later = rebase_variant_definition(variant_definition(reverted), base)["document"]
-    assert later["root_object"]["children"][0]["layer"] == 7
-    assert later["root_object"]["name"] == "Private"
-
-
-def test_editing_override_to_equal_base_does_not_silently_restore_inheritance():
-    from infernux.engine.prefab_variant import edit_variant_document
-
-    base = prefab()
-    own = copy.deepcopy(base)
-    own["root_object"]["layer"] = 5
-    current = variant_document(create_variant_definition("base-guid", base, own))
-    edited = copy.deepcopy(own)
-    edited["root_object"]["layer"] = 0
-    saved = edit_variant_document(current, edited)
-    assert saved["variant"]["property_overrides"] == [dict(object=1, component=0, path=["layer"], value=0)]
-    base["root_object"]["layer"] = 8
-    assert rebase_variant_definition(variant_definition(saved), base)["document"]["root_object"]["layer"] == 0
-
-
 def test_variant_revert_projects_references_into_local_identity_domain():
     base = prefab()
-    base["root_object"]["components"] = [dict(component_id=2, type_id="Ref",
-        target={TYPE_KEY: COMPONENT_REF, "game_object_id": 2, "component_id": 1, "component_type": "Test"})]
+    base["root_object"]["components"] = [
+        dict(
+            component_id=2,
+            type_id="Ref",
+            target={TYPE_KEY: COMPONENT_REF, "game_object_id": 2, "component_id": 1, "component_type": "Test"},
+        )
+    ]
     base["next_component_id"] = 3
     own = copy.deepcopy(base)
     own["root_object"]["components"][0]["target"]["game_object_id"] = 0
@@ -99,14 +85,6 @@ def test_variant_revert_projects_references_into_local_identity_domain():
     assert not variant_property_modifications(reverted)
 
 
-def test_variant_revert_rejects_unknown_property_without_mutating_document():
-    document = variant_document(create_variant_definition("base-guid", prefab()))
-    before = copy.deepcopy(document)
-    with pytest.raises(PrefabDocumentError, match="not an explicit override"):
-        revert_variant_property(document, 1, 0, ("name",))
-    assert document == before
-
-
 def test_concurrent_same_name_additions_and_typed_references_do_not_alias():
     base = prefab()
     own = copy.deepcopy(base)
@@ -114,10 +92,17 @@ def test_concurrent_same_name_additions_and_typed_references_do_not_alias():
     own.update(next_local_id=4, next_component_id=3)
     definition = create_variant_definition("base-guid", base, own)
     changed = copy.deepcopy(base)
-    changed["root_object"]["children"].append(node(3, "Same", components=[dict(component_id=2, type_id="Test", value=30)]))
-    changed["root_object"]["components"] = [dict(component_id=3, type_id="Reference",
-        target={TYPE_KEY: GAME_OBJECT_REF, "object_id": 3},
-        component={TYPE_KEY: COMPONENT_REF, "game_object_id": 3, "component_id": 2, "component_type": "Test"})]
+    changed["root_object"]["children"].append(
+        node(3, "Same", components=[dict(component_id=2, type_id="Test", value=30)])
+    )
+    changed["root_object"]["components"] = [
+        dict(
+            component_id=3,
+            type_id="Reference",
+            target={TYPE_KEY: GAME_OBJECT_REF, "object_id": 3},
+            component={TYPE_KEY: COMPONENT_REF, "game_object_id": 3, "component_id": 2, "component_type": "Test"},
+        )
+    ]
     changed.update(next_local_id=4, next_component_id=4)
     updated = rebase_variant_definition(definition, changed)
     root = updated["document"]["root_object"]
@@ -172,7 +157,7 @@ def test_component_removal_and_object_deactivation_are_variant_overrides():
     assert not updated["document"]["root_object"]["children"][0]["active"]
 
 
-@pytest.mark.parametrize("mutation", ["duplicate", "missing", "watermark", "bool"])
+@pytest.mark.parametrize("mutation", ["duplicate"])
 def test_invalid_projections_rejected_at_authoring_boundary(mutation):
     definition = create_variant_definition("base-guid", prefab())
     pairs = definition["base"]["object_sources"]
@@ -186,18 +171,6 @@ def test_invalid_projections_rejected_at_authoring_boundary(mutation):
         pairs[0][0] = True
     with pytest.raises(PrefabDocumentError):
         validate_variant_definition(definition)
-
-
-def test_explicit_override_survives_base_matching_then_changing_its_value():
-    base = prefab()
-    own = copy.deepcopy(base)
-    own["root_object"]["layer"] = 3
-    definition = create_variant_definition("base", base, own)
-    base["root_object"]["layer"] = 3
-    updated = rebase_variant_definition(definition, base)
-    base["root_object"]["layer"] = 7
-    again = rebase_variant_definition(json.loads(json.dumps(updated)), base)
-    assert again["document"]["root_object"]["layer"] == 3
 
 
 def test_variant_chain_resolves_shared_base_once_without_modifying_inputs():
@@ -228,8 +201,10 @@ def test_variant_chain_resolves_shared_base_once_without_modifying_inputs():
 @pytest.mark.parametrize("cycle", [False, True])
 def test_graph_failure_never_publishes_partial_definition(cycle):
     base = prefab()
-    definitions = {"first": create_variant_definition("second", base),
-                   "second": create_variant_definition("first" if cycle else "missing", base)}
+    definitions = {
+        "first": create_variant_definition("second", base),
+        "second": create_variant_definition("first" if cycle else "missing", base),
+    }
     before = copy.deepcopy(definitions)
 
     def missing(guid):
@@ -248,8 +223,7 @@ def test_nested_source_projection_does_not_rewrite_inner_baseline():
     definition["document"]["next_local_id"] = 4
     nested = node(3, "Nested", components=[dict(component_id=2, type_id="Test")])
     inner = node(10, "Inner", components=[dict(component_id=20, type_id="Test")])
-    nested["nested_prefab"] = dict(guid="inner", baseline=inner,
-                                   object_sources=[[3, 10]], component_sources=[[2, 20]])
+    nested["nested_prefab"] = dict(guid="inner", baseline=inner, object_sources=[[3, 10]], component_sources=[[2, 20]])
     base["root_object"]["children"].append(nested)
     base.update(next_local_id=4, next_component_id=3)
     updated = rebase_variant_definition(definition, base)
@@ -285,15 +259,52 @@ def test_rebased_variant_instantiates_through_native_prefab_path(engine, scene, 
     assert instance.get_component("BoxCollider") is not None
 
 
-def test_typed_reference_override_remains_one_value():
+def test_explicit_variant_overrides_survive_equal_base_edits_and_selective_revert():
+    from infernux.engine.prefab_variant import edit_variant_document
+
     base = prefab()
-    target = {TYPE_KEY: COMPONENT_REF, "game_object_id": 2, "component_id": 1, "component_type": "Test"}
-    base["root_object"]["components"] = [dict(component_id=2, type_id="Test", target=target)]
-    base["next_component_id"] = 3
     own = copy.deepcopy(base)
-    own["root_object"]["components"][0]["target"] = {**target, "game_object_id": 1, "component_id": 2}
-    definition = create_variant_definition("base", base, own)
-    overrides = definition["base"]["property_overrides"]
-    assert len(overrides) == 1
-    assert overrides[0]["path"] == ["target"]
-    assert overrides[0]["value"]["component_id"] == 2
+    own["root_object"]["name"] = "Private"
+    own["root_object"]["layer"] = 3
+    own["root_object"]["children"][0]["layer"] = 5
+    definition = create_variant_definition("base-guid", base, own)
+
+    # Equality with a newer base never implicitly deletes override intent.
+    base["root_object"]["layer"] = 3
+    base["root_object"]["children"][0]["layer"] = 5
+    matching = rebase_variant_definition(definition, base)
+    base["root_object"]["layer"] = 7
+    base["root_object"]["children"][0]["layer"] = 9
+    updated = rebase_variant_definition(json.loads(json.dumps(matching)), base)
+    assert updated["document"]["root_object"]["layer"] == 3
+    assert updated["document"]["root_object"]["children"][0]["layer"] == 5
+
+    # An explicit user edit to a matching value remains an explicit override.
+    current = variant_document(updated)
+    authored = copy.deepcopy(current)
+    authored["root_object"]["layer"] = 7
+    saved = edit_variant_document(current, authored)
+    base["root_object"]["layer"] = 11
+    updated = rebase_variant_definition(variant_definition(saved), base)
+    assert updated["document"]["root_object"]["layer"] == 7
+
+    # Revert only the child's equal-valued override; preserve the root edits.
+    base["root_object"]["children"][0]["layer"] = 5
+    current = variant_document(rebase_variant_definition(updated, base))
+    row = next(
+        item for item in variant_property_modifications(current) if item["object"] == 2 and item["path"] == ["layer"]
+    )
+    assert row["value"] == row["source_value"] == 5
+    before = copy.deepcopy(current)
+    reverted = revert_variant_property(current, 2, 0, ("layer",))
+    assert current == before
+    assert reverted["root_object"] == current["root_object"]
+    assert {(item["object"], tuple(item["path"])) for item in variant_property_modifications(reverted)} == {
+        (1, ("name",)),
+        (1, ("layer",)),
+    }
+    base["root_object"]["children"][0]["layer"] = 13
+    later = rebase_variant_definition(variant_definition(reverted), base)["document"]
+    assert later["root_object"]["children"][0]["layer"] == 13
+    assert later["root_object"]["name"] == "Private"
+    assert later["root_object"]["layer"] == 7

@@ -11,7 +11,7 @@ from typing import Callable, Sequence
 
 from infernux.lib import InxGUIContext
 
-from .theme import ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar, Theme
+from .theme import ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar, ImGuiWindowFlags, Theme
 OVERLAY_PANEL_BG = (0.14, 0.14, 0.145, 1.0)
 OVERLAY_PANEL_ROUNDING = 6.0
 OVERLAY_RESIZE_GRIP = 8.0
@@ -122,7 +122,10 @@ def render_floating_overlay(
     ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
     ctx.push_style_color(ImGuiCol.Border, 0.0, 0.0, 0.0, 0.0)
     ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, OVERLAY_PANEL_ROUNDING)
-    visible = ctx.begin_child(child_id, width, panel_h, False)
+    visible = ctx.begin_child(
+        child_id, width, panel_h, False,
+        int(ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse),
+    )
     try:
         if visible:
             paint_overlay_background(ctx, width=width, height=panel_h)

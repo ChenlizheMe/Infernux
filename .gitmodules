@@ -51,3 +51,19 @@
 [submodule "external/MikkTSpace"]
 	path = external/MikkTSpace
 	url = https://github.com/mmikk/MikkTSpace.git
+[submodule "external/zstd_for_infernux"]
+	path = external/zstd_for_infernux
+	url = https://github.com/InfernuxEngine/zstd_for_infernux.git
+	branch = infernux-support
+[submodule "external/lunasvg_for_infernux"]
+	path = external/lunasvg_for_infernux
+	url = https://github.com/InfernuxEngine/lunasvg_for_infernux.git
+	branch = infernux-support
+[submodule "external/spirv_cross_for_infernux"]
+	path = external/spirv_cross_for_infernux
+	url = https://github.com/InfernuxEngine/spirv_cross_for_infernux.git
+	branch = infernux-support
+[submodule "external/volk_for_infernux"]
+	path = external/volk_for_infernux
+	url = https://github.com/InfernuxEngine/volk_for_infernux.git
+	branch = infernux-support

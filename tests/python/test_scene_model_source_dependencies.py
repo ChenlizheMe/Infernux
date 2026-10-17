@@ -13,9 +13,7 @@ def test_empty_model_root_remains_a_mesh_dependency(scene):
     root = scene.create_game_object("Empty Model Root")
     root._set_model_source("model-source-guid", [])
 
-    dependencies = native._collect_scene_resource_dependencies(
-        scene.serialize_document()
-    )
+    dependencies = native._collect_scene_resource_dependencies(scene.serialize_document())
 
     assert dependencies.count(("model-source-guid", "Mesh")) == 1
 
@@ -30,8 +28,6 @@ def test_nested_model_source_is_collected_once_without_renderers(scene):
     child._set_model_source("model-source-guid", ["Imported Pivot"])
     child.set_parent(root, world_position_stays=False)
 
-    dependencies = native._collect_scene_resource_dependencies(
-        scene.serialize_document()
-    )
+    dependencies = native._collect_scene_resource_dependencies(scene.serialize_document())
 
     assert dependencies.count(("model-source-guid", "Mesh")) == 1

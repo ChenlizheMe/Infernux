@@ -1,4 +1,5 @@
 #include "RhiComputeKernel.h"
+#include <core/log/InxLog.h>
 
 #include <algorithm>
 #include <cstring>
@@ -478,7 +479,8 @@ void ComputeKernel::Destroy() noexcept
 {
     try {
         Wait();
-    } catch (...) {
+    } catch (const std::exception &error) {
+        INXLOG_ERROR("Compute kernel wait failed during release; allocation follows GPU retirement: ", error.what());
     }
     for (const auto &entry : m_groups)
         m_host.device.Release(entry.group);

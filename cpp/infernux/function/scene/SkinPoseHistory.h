@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
 #include <atomic>
 #include <cstdint>
@@ -19,13 +19,14 @@ class SkinPoseHistory
 
     struct Snapshot
     {
+        std::shared_ptr<const EvaluatedSkinPose> evaluated;
         PalettePtr current;
         PalettePtr previous;
         uint64_t revision = 0;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return current && previous && !current->empty() && current->size() == previous->size();
+            return evaluated && current && previous && !current->empty() && current->size() == previous->size();
         }
     };
 
@@ -35,16 +36,17 @@ class SkinPoseHistory
     {
     }
 
-    void Publish(PalettePtr palette, bool resetHistory)
+    void Publish(std::shared_ptr<const EvaluatedSkinPose> pose, bool resetHistory)
     {
-        if (!palette || palette->empty()) {
+        if (!pose || pose->palette.empty()) {
             Reset();
             return;
         }
 
         const SnapshotPtr published = Acquire();
         auto next = std::make_shared<Snapshot>();
-        next->current = std::move(palette);
+        next->current = PalettePtr(pose, &pose->palette);
+        next->evaluated = std::move(pose);
         next->previous =
             resetHistory || !published || !published->current || published->current->size() != next->current->size()
                 ? next->current
@@ -62,6 +64,7 @@ class SkinPoseHistory
         if (!published || !published->IsValid() || published->previous == published->current)
             return false;
         auto next = std::make_shared<Snapshot>();
+        next->evaluated = published->evaluated;
         next->current = published->current;
         next->previous = published->current;
         next->revision = m_nextRevision.fetch_add(1, std::memory_order_relaxed);

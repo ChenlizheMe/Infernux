@@ -48,10 +48,13 @@ class AuthoringDocumentController:
     accidental cross-system API.
     """
 
+    autosave_on_close = False
+
     def __init__(self, view: Any) -> None:
         if view is None:
             raise TypeError("authoring document controller requires a view")
         self._view_ref = weakref.ref(view)
+        self._resource_owner = None
         self._pending_writes: dict[int, _PendingAuthoringWrite] = {}
         self._publication_error = ""
 
@@ -315,6 +318,37 @@ class AuthoringDocumentController:
 
     def capture_authoring_snapshot(self):
         return self._call("capture_authoring_snapshot")
+
+    @property
+    def document_id(self) -> str:
+        return self.view.document_id
+
+    def bind_resource_document(self, document_id: str) -> None:
+        self._resource_owner = self.view
+        self._resource_owner.document_id = document_id
+
+    def capture_document(self) -> dict:
+        return self._call("capture_resource_document")
+
+    @property
+    def resource(self):
+        return self.view.resource
+
+    def restore_document(self, document: dict, revision=None) -> None:
+        self._call("restore_resource_document", document)
+        if revision is not None:
+            DocumentRegistry.instance().restore_content_revision(self.document_id, revision)
+
+    def apply_document(self, document: dict, *, view_id: str, edit_key: str, description: str) -> bool:
+        from .authoring_mutations import AuthoringMutationService
+
+        return AuthoringMutationService.require().apply(
+            self.document_id,
+            description,
+            lambda: self.restore_document(document),
+            view_id=view_id,
+            merge_key=f"resource:{edit_key}",
+        )
 
     def restore_authoring_snapshot(self, state) -> None:
         self._call("restore_authoring_snapshot", state)

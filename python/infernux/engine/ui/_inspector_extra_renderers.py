@@ -3,7 +3,7 @@
 import os
 
 from infernux.debug import Debug
-from infernux.core.asset_types import IMAGE_EXTENSIONS, MESH_EXTENSIONS
+from infernux.core.asset_types import MESH_EXTENSIONS
 from infernux.graph.types import (
     AssetReference,
     BUILTIN_MESH_NAMES,
@@ -571,11 +571,6 @@ def _clear_track_audio_clip(comp, track_index: int) -> None:
         Debug.log_error(f"Audio clip clear failed: {e}")
 
 
-def _apply_track_audio_clip_drop(comp, track_index: int, payload):
-    """Route drag assignment through the same registered-asset path as picker."""
-    _apply_track_audio_clip_pick(comp, track_index, payload)
-
-
 # ============================================================================
 # MeshRenderer extra renderer (material slots)
 # ============================================================================
@@ -591,11 +586,8 @@ _PRIMITIVE_MESH_ITEMS = (
 
 def _mesh_asset_path(comp) -> str:
     """Disk path of the mesh/model asset assigned to *comp*, or empty."""
-    try:
-        if comp.has_inline_mesh():
-            return ""
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    if comp.has_inline_mesh():
+        return ""
 
     guid = getattr(comp, 'mesh_asset_guid', '') or getattr(comp, 'source_model_guid', '') or ''
     path = _path_from_guid(guid)
@@ -612,23 +604,15 @@ def _mesh_display_name(comp) -> str:
     node_path = getattr(comp, "model_node_path", [])
     if node_path:
         return node_path[-1]
-    try:
-        if comp.has_inline_mesh():
-            inline_name = getattr(comp, 'inline_mesh_name', '') or ''
-            return inline_name if inline_name else "Inline Mesh"
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    if comp.has_inline_mesh():
+        return comp.inline_mesh_name or "Inline Mesh"
 
-    try:
-        if getattr(comp, 'has_mesh_asset', False):
-            mesh_name = getattr(comp, 'mesh_name', '') or ''
-            if mesh_name:
-                return mesh_name
-            guid = getattr(comp, 'mesh_asset_guid', '') or ''
-            path = _path_from_guid(guid)
-            return os.path.basename(path) if path else (guid or "Mesh")
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    if comp.has_mesh_asset:
+        if comp.mesh_name:
+            return comp.mesh_name
+        guid = comp.mesh_asset_guid
+        path = _path_from_guid(guid)
+        return os.path.basename(path) if path else (guid or "Mesh")
 
     return "None"
 
@@ -664,19 +648,10 @@ def _guid_and_path_from_model_payload(payload):
     if not adb:
         return "", ref
 
-    try:
-        path = adb.get_path_from_guid(ref) or ""
-        if path:
-            return ref, path
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-
-    try:
-        guid = adb.get_guid_from_path(source) or ""
-        return guid, ref
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return "", ref
+    path = adb.get_path_from_guid(ref) or ""
+    if path:
+        return ref, path
+    return adb.get_guid_from_path(source) or "", ref
 
 
 def _mesh_additional_picker_items(filter_text: str):
@@ -782,18 +757,15 @@ def _apply_mesh_pick(comp, picked_value) -> None:
 
 
 def _mesh_reference_value(comp) -> dict:
-    try:
-        if comp.has_inline_mesh():
-            name = str(getattr(comp, "inline_mesh_name", "") or "").strip()
-            if name in {item[1] for item in _PRIMITIVE_MESH_ITEMS}:
-                return {
-                    "asset_type": "Mesh",
-                    "builtin": name,
-                    "guid": "",
-                    "path_hint": "",
-                }
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    if comp.has_inline_mesh():
+        name = comp.inline_mesh_name.strip()
+        if name in {item[1] for item in _PRIMITIVE_MESH_ITEMS}:
+            return {
+                "asset_type": "Mesh",
+                "builtin": name,
+                "guid": "",
+                "path_hint": "",
+            }
     guid = str(
         getattr(comp, "mesh_asset_guid", "")
         or getattr(comp, "source_model_guid", "")

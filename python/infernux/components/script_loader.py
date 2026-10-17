@@ -8,6 +8,7 @@ for use in the Infernux editor. Used for drag-and-drop script attachment.
 from __future__ import annotations
 
 import os
+import copy
 import sys
 import importlib
 import importlib.util
@@ -18,7 +19,6 @@ from dataclasses import dataclass, fields as dataclass_fields
 from typing import TYPE_CHECKING, Iterable, Type, List, Optional
 
 from infernux.engine.path_utils import path_key, resolved_path
-from infernux.debug import Debug
 from infernux.engine.project_context import (
     get_script_module_name,
     resolve_script_path,
@@ -82,6 +82,10 @@ class _SchemaInstanceBeforeImage:
     old_class_id: object
     old_values: dict[str, object]
     instance_dict: dict[str, tuple[bool, object]]
+    # Non-CDS fields live in the component-owned dictionary. Candidate schema
+    # preparation writes prepared values there, so a rejected publication needs
+    # the exact pre-preparation mapping to restore value identity.
+    old_field_values: dict[str, object] | None = None
     new_slot: object = None
     new_class_id: object = None
 
@@ -175,12 +179,12 @@ class ComponentBodyReloadTransaction:
             raise ScriptReloadRejected("reload transaction has already been rolled back")
         if self._committed:
             return dict(self._result)
-        try:
-            from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+        from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
-            # Guard before registry/class mutation.  A later publication
-            # failure must never leave a body patch visible in an active frame.
-            assert_runtime_dispatch_safe_point()
+        # A rejected precondition has not started publication and must not
+        # restore the component registry while a runtime frame is active.
+        assert_runtime_dispatch_safe_point()
+        try:
             with self._candidate_import.serializable_type_scope():
                 _prepare_transaction_schema_state(self)
             self._result = _apply_component_body_patch_plans(self.plans)
@@ -471,6 +475,7 @@ def _prepare_transaction_schema_state(
                     old_values[name] = descriptor.get_raw(instance)
 
                 instance_values = getattr(instance, "__dict__", {})
+                instance_field_values = instance_values.get("_field_values")
                 image = _SchemaInstanceBeforeImage(
                     migration.target_type,
                     migration.candidate_type,
@@ -482,6 +487,11 @@ def _prepare_transaction_schema_state(
                         name: (name in instance_values, instance_values.get(name))
                         for name in field_names
                     },
+                    old_field_values=(
+                        dict(instance_field_values)
+                        if instance_field_values is not None
+                        else None
+                    ),
                 )
 
                 if entry is not None and entry.candidate_id is not None:
@@ -551,8 +561,7 @@ def _publish_transaction_instance_schemas(
     transaction: ComponentBodyReloadTransaction,
 ) -> None:
     for image in transaction._schema_instance_images:
-        image.instance._cds_slot = image.new_slot
-        image.instance._cds_class_id = image.new_class_id
+        image.instance._set_component_data_slot(image.new_slot, image.new_class_id)
         values = getattr(image.instance, "__dict__", {})
         for name in image.instance_dict:
             values.pop(name, None)
@@ -610,9 +619,12 @@ def _restore_transaction_instance_schemas(
                         restored_slot,
                         image.old_values[name],
                     )
-        image.instance._cds_slot = restored_slot
-        image.instance._cds_class_id = image.old_class_id
+        image.instance._set_component_data_slot(restored_slot, image.old_class_id)
         values = getattr(image.instance, "__dict__", {})
+        if image.old_field_values is not None:
+            values["_field_values"] = dict(image.old_field_values)
+        else:
+            values.pop("_field_values", None)
         for name, (present, value) in image.instance_dict.items():
             if present:
                 values[name] = value
@@ -666,6 +678,41 @@ def _component_classes_from_module(
     return components
 
 
+def _contains_candidate_type(value, replacements, seen) -> bool:
+    """Find replacement identities without traversing imported modules or classes."""
+    if isinstance(value, type):
+        return value in replacements
+    identity = id(value)
+    if identity in seen:
+        return False
+    seen.add(identity)
+    if isinstance(value, dict):
+        values = (*value.keys(), *value.values())
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        values = value
+    elif isinstance(value, types.FunctionType):
+        values = [*(value.__defaults__ or ()), *(value.__kwdefaults__ or {}).values(),
+                  *(value.__annotations__ or {}).values()]
+        for cell in value.__closure__ or ():
+            try:
+                values.append(cell.cell_contents)
+            except ValueError:
+                continue
+    else:
+        return False
+    return any(_contains_candidate_type(item, replacements, seen) for item in values)
+
+
+def _copy_immutable_container_state(source, result):
+    state = getattr(source, "__dict__", None)
+    if state is not None:
+        vars(result).update(state)
+    for base in type(source).__mro__:
+        for name, descriptor in vars(base).items():
+            if isinstance(descriptor, types.MemberDescriptorType) and hasattr(source, name):
+                descriptor.__set__(result, descriptor.__get__(source, type(source)))
+
+
 def _replace_candidate_type_value(
     value: object,
     replacements: dict[type, type],
@@ -677,6 +724,9 @@ def _replace_candidate_type_value(
     identity = id(value)
     if identity in memo:
         return memo[identity]
+    if isinstance(value, (list, tuple, dict, set, frozenset)) and not _contains_candidate_type(value, replacements, set()):
+        memo[identity] = value
+        return value
     if isinstance(value, (staticmethod, classmethod)):
         memo[identity] = value
         _replace_candidate_type_value(value.__func__, replacements, memo)
@@ -717,38 +767,54 @@ def _replace_candidate_type_value(
                 cell.cell_contents = rebound
         return value
     if isinstance(value, tuple):
-        memo[identity] = value
-        result = tuple(
+        items = tuple(
             _replace_candidate_type_value(item, replacements, memo) for item in value
         )
+        if identity in memo:
+            return memo[identity]
+        if any(a is not b for a, b in zip(items, value)):
+            result = tuple.__new__(type(value), items)
+            _copy_immutable_container_state(value, result)
+        else:
+            result = value
         memo[identity] = result
         return result
     if isinstance(value, list):
-        memo[identity] = value
-        for index, item in enumerate(tuple(value)):
-            value[index] = _replace_candidate_type_value(item, replacements, memo)
-        return value
+        result = copy.copy(value)
+        if result is value or type(result) is not type(value):
+            raise ScriptReloadRejected("hot-reload list copy must preserve its type and be independent")
+        memo[identity] = result
+        result.clear()
+        result.extend(_replace_candidate_type_value(item, replacements, memo) for item in value)
+        return result
     if isinstance(value, dict):
-        memo[identity] = value
-        items = tuple(value.items())
-        value.clear()
-        for key, item in items:
+        result = copy.copy(value)
+        if result is value or type(result) is not type(value):
+            raise ScriptReloadRejected("hot-reload dict copy must preserve its type and be independent")
+        memo[identity] = result
+        result.clear()
+        for key, item in value.items():
             rebound_key = _replace_candidate_type_value(key, replacements, memo)
-            value[rebound_key] = _replace_candidate_type_value(item, replacements, memo)
-        return value
+            result[rebound_key] = _replace_candidate_type_value(item, replacements, memo)
+        return result
     if isinstance(value, set):
-        memo[identity] = value
-        items = tuple(value)
-        value.clear()
-        value.update(
-            _replace_candidate_type_value(item, replacements, memo) for item in items
-        )
-        return value
-    if isinstance(value, frozenset):
-        memo[identity] = value
-        result = frozenset(
+        result = copy.copy(value)
+        if result is value or type(result) is not type(value):
+            raise ScriptReloadRejected("hot-reload set copy must preserve its type and be independent")
+        memo[identity] = result
+        result.clear()
+        result.update(
             _replace_candidate_type_value(item, replacements, memo) for item in value
         )
+        return result
+    if isinstance(value, frozenset):
+        items = tuple(
+            _replace_candidate_type_value(item, replacements, memo) for item in value
+        )
+        if identity in memo:
+            return memo[identity]
+        result = frozenset.__new__(type(value), items)
+        _copy_immutable_container_state(value, result)
         memo[identity] = result
         return result
     return value
@@ -785,7 +851,7 @@ def _rebind_candidate_type_references(
                 setattr(module, name, rebound)
     for candidate_type in replacements:
         for name, value in tuple(candidate_type.__dict__.items()):
-            if name.startswith("__"):
+            if name in _BODY_PATCH_TYPE_METADATA_KEYS or name in _BODY_PATCH_TYPE_STRUCTURE_KEYS:
                 continue
             rebound = _replace_candidate_type_value(value, replacements, memo)
             if rebound is not value:
@@ -1208,6 +1274,9 @@ _BODY_PATCH_CONTRACT_KEYS = frozenset({
     "_uses_component_data_store_",
 })
 
+_BODY_PATCH_TYPE_STRUCTURE_KEYS = frozenset({"__slots__", "__bases__", "__mro__", "__class__"})
+_BODY_PATCH_TYPE_METADATA_KEYS = frozenset({"__dict__", "__weakref__", "__module__", "__classcell__", "__name__", "__qualname__"})
+
 
 def _reload_value_signature(value):
     """Make class-contract values comparable without invoking descriptors."""
@@ -1277,6 +1346,10 @@ def _plan_component_class_body_patch(
         raise ScriptReloadRejected(
             f"component '{target_type.__name__}' base classes changed; reload rejected"
         )
+    for name in _BODY_PATCH_TYPE_STRUCTURE_KEYS:
+        if name in target_type.__dict__ or name in candidate_type.__dict__:
+            if _reload_value_signature(target_type.__dict__.get(name)) != _reload_value_signature(candidate_type.__dict__.get(name)):
+                raise ScriptReloadRejected(f"component '{target_type.__name__}' type structure '{name}' changed; restart required")
     target_schema = _serialized_schema_signature(target_type)
     candidate_schema = _serialized_schema_signature(candidate_type)
     identity_changed = publish_identity and target_type._get_type_guid() != candidate_type._get_type_guid()
@@ -1316,8 +1389,11 @@ def _plan_component_class_body_patch(
             name in _BODY_PATCH_GENERATED_KEYS
             or name in field_names
             or name in _BODY_PATCH_CONTRACT_KEYS
-            or name.startswith("__")
+            or name in _BODY_PATCH_TYPE_STRUCTURE_KEYS
+            or name in _BODY_PATCH_TYPE_METADATA_KEYS
         ):
+            continue
+        if isinstance(target_body.get(name), (types.MemberDescriptorType, types.GetSetDescriptorType)):
             continue
         target_has = name in target_body
         candidate_has = name in candidate_body
@@ -1825,8 +1901,6 @@ def create_component_instance(component_class: Type[InxComponent]) -> InxCompone
     Returns:
         New instance of the component
         
-    Raises:
-        ScriptLoadError: If instantiation fails
     """
     return component_class()
 
@@ -1925,27 +1999,3 @@ def get_component_info(component_class: Type[InxComponent]) -> dict:
         'docstring': inspect.getdoc(component_class) or "",
         'fields': list(get_serialized_fields(component_class).keys()),
     }
-
-
-# Example usage (for testing):
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1:
-        script_path = sys.argv[1]
-        print(f"Loading components from: {script_path}")
-
-        components = load_all_components_from_file(script_path)
-        print(f"Found {len(components)} component(s):")
-
-        for comp_class in components:
-            info = get_component_info(comp_class)
-            print(f"\n  - {info['name']}")
-            print(f"    Doc: {info['docstring'][:50]}...")
-            print(f"    Fields: {info['fields']}")
-
-            # Try to instantiate
-            instance = create_component_instance(comp_class)
-            print(f"    [OK] Instantiation successful")
-
-    else:
-        print("Usage: python script_loader.py <path_to_script.py>")

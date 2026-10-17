@@ -153,7 +153,7 @@ class PlayerBootstrap:
         )
 
     def _prewarm_first_frame(self) -> None:
-        """Build the Player target, then submit one complete hidden frame."""
+        """Build the Player target and submit its initial resource requests."""
         if self.engine is None:
             raise RuntimeError("Player first-frame GPU prewarm requires an Engine")
         started = time.perf_counter()
@@ -164,7 +164,7 @@ class PlayerBootstrap:
         self.engine.tick(0.0)
         self.engine.tick(0.0)
         _plog(
-            "[Startup] first complete GPU frame prewarmed: "
+            "[Startup] initial GPU frame preparation: "
             f"{(time.perf_counter() - started) * 1000.0:.1f} ms"
         )
 

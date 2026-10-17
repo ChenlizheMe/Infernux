@@ -23,6 +23,7 @@ import uuid
 import zlib
 from dataclasses import dataclass, field
 from enum import Enum
+from itertools import islice
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from infernux.lib import InxGUIContext
@@ -55,9 +56,11 @@ from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from infernux.engine.path_utils import relative_path, resolved_path, same_path
 from infernux.debug import Debug
+from infernux.core.file_read_cache import FileReadCache
 
 
 _U64 = 0xFFFFFFFFFFFFFFFF
+_shader_source_cache = FileReadCache(16)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -390,7 +393,6 @@ class _ImportSettingsController:
             _ImportSettingsBatch.model_save_completed(self.document_id, False, "model Apply was cancelled")
 
     def discard(self, *, document_id: str):
-        from infernux.engine.interaction import DocumentRegistry
 
         if str(document_id) != self.document_id:
             return False
@@ -607,10 +609,15 @@ class _State:
         self.reset()
 
     def reset(self, *, keep_view: bool = False):
+        from infernux.engine.interaction.resource_documents import EditableResourceDocumentController
+
         # Controllers outlive this reusable Inspector view. A later linked
         # resource reload must not bind its old document back into a new view.
         for controller in (self.import_controller, self.resource_controller):
-            if controller is not None and controller.state is self:
+            if (
+                isinstance(controller, (_ImportSettingsController, EditableResourceDocumentController))
+                and controller.state is self
+            ):
                 controller.state = None
         self.file_path: str = self.file_path if keep_view else ""
         self.category: str = self.category if keep_view else ""
@@ -634,7 +641,7 @@ class _State:
                 cat_def.refresh_fn(self)
             return True
         # Fresh load. Return live preview ownership before replacing state.
-        if self.resource_controller is not None:
+        if self.resource_controller is not None and self.resource_controller.autosave_on_close:
             self.resource_controller.flush_autosave(force=True)
         if self.file_path and self.category in {"texture", "material"}:
             from .asset_resource_preview import (
@@ -815,7 +822,10 @@ def _bind_editable_resource_document(
 ) -> None:
     """Bind supported directly editable assets to one stable document."""
     from infernux.engine.interaction import (
+        AuthoringDocumentController,
+        DocumentKey,
         DocumentKind,
+        DocumentRegistry,
         ensure_editable_resource_document,
     )
 
@@ -848,6 +858,16 @@ def _bind_editable_resource_document(
     ):
         return
 
+    registry = DocumentRegistry.instance()
+    guid = str((state.meta or {}).get("guid", "") or "")
+    existing = registry.get_by_key(DocumentKey.asset(document_kind, guid)) if guid else None
+    if state.category == "animclip" and existing is not None and isinstance(existing.controller, AuthoringDocumentController):
+        state.document_id = existing.document_id
+        state.resource_controller = existing.controller
+        state.settings = existing.controller.resource
+        registry.attach_view(existing.document_id, "inspector")
+        return
+
     resource = state.settings
     controller_state = state
     on_restored = None
@@ -863,7 +883,7 @@ def _bind_editable_resource_document(
         document_kind=document_kind,
         file_path=state.file_path,
         resource=resource,
-        guid=str((state.meta or {}).get("guid", "") or ""),
+        guid=guid,
         title=os.path.basename(state.file_path),
         view_id="inspector",
         exec_layer=state.exec_layer,
@@ -1735,7 +1755,7 @@ def _load_animclip(path: str):
 
 def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     from infernux.core.animation_clip import AnimationClip
-    from .inspector_utils import render_compact_section_header, render_info_text
+    from .inspector_utils import render_compact_section_header
     from .inspector_components import render_asset_reference_field
 
     clip: AnimationClip = state.settings
@@ -1911,6 +1931,7 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         t("asset.animclip3d_name"),
         t("asset.animclip3d_source_model"),
         t("asset.animclip3d_take"),
+        t("asset.animation_bone_mask"),
     ]
     lw = max_label_w(ctx, labels)
 
@@ -1931,19 +1952,13 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     ctx.end_disabled()
 
     # ── Source model reference ────────────────────────────────────
-    model_path = ""
-    if (clip.source_model_guid or "").strip():
-        try:
-            adb = getattr(AssetManager, "_asset_database", None)
-            if adb:
-                model_path = adb.get_path_from_guid(clip.source_model_guid) or ""
-        except Exception:
-            model_path = ""
+    adb = AssetManager._asset_database
+    model_path = adb.get_path_from_guid(clip.source_model_guid) if adb and clip.source_model_guid else ""
 
-    if model_path and os.path.isfile(model_path):
+    if model_path:
         model_display = os.path.basename(model_path)
     elif clip.source_model_guid:
-        model_display = "(missing) " + clip.source_model_guid[:8] + "…"
+        model_display = t("asset.missing")
     else:
         model_display = "None (Model)"
 
@@ -1968,10 +1983,7 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         if not p:
             return
         model_guid = supplied_guid
-        try:
-            model_guid = model_guid or AssetManager._get_guid_from_path(p) or ""
-        except Exception:
-            pass
+        model_guid = model_guid or AssetManager._get_guid_from_path(p) or ""
         bone_names = []
         # Pull bind pose bone names from import metadata (cheap UX).
         meta = read_meta_file(p) or {}
@@ -2034,6 +2046,18 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     if embedded:
         ctx.end_disabled()
 
+    if not embedded:
+        mask_text = ", ".join(clip.bone_mask)
+        field_label(ctx, t("asset.animation_bone_mask"), lw)
+        next_mask = ctx.text_input("##animclip3d_mask", mask_text, 4096)
+        ctx.record_semantic_item("text_input", t("asset.animation_bone_mask"), True, "animclip3d.bone_mask")
+        if next_mask != mask_text:
+            document = clip.serialize_document()
+            document["bone_mask"] = list(dict.fromkeys(name.strip() for name in next_mask.split(",") if name.strip()))
+            _apply_editable_resource_document(
+                state, document, edit_key="bone_mask", description="Set Animation Clip Bone Mask",
+            )
+
     from .model_animation_preview import render_clip_animation_preview
     render_clip_animation_preview(ctx, panel, state, model_path, clip.take_name)
 
@@ -2051,15 +2075,10 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
 def _resolve_authoring_texture_path(clip) -> str:
     """Resolve the actual file path for the clip's authoring texture."""
     if clip.authoring_texture_guid:
-        try:
-            from infernux.engine.bootstrap import EditorBootstrap
-            adb = EditorBootstrap.instance().engine.get_asset_database()
-            if adb:
-                p = adb.get_path_from_guid(clip.authoring_texture_guid)
-                if p and os.path.isfile(p):
-                    return p
-        except Exception:
-            pass
+        from infernux.core.assets import AssetManager
+        p = AssetManager._get_path_from_guid(clip.authoring_texture_guid)
+        if p and os.path.isfile(p):
+            return p
     return ""
 
 
@@ -2079,26 +2098,13 @@ def _animclip_texture_stamp(path: str, nearest: bool, srgb: bool) -> int:
 
 
 def _read_animclip_preview_settings(tex_file: str):
-    use_nearest = False
-    use_srgb = False
-    frames = []
-    source_w = 0
-    source_h = 0
-    try:
-        settings = read_texture_import_settings(tex_file)
-        if settings:
-            use_nearest = getattr(settings, "filter_mode", None) == FilterMode.POINT
-            use_srgb = bool(getattr(settings, "srgb", False))
-            if settings.sprite_frames:
-                frames = list(settings.sprite_frames)
-    except Exception:
-        pass
-    try:
-        meta = read_meta_file(tex_file) or {}
-        source_w = int(meta.get("width", 0) or 0)
-        source_h = int(meta.get("height", 0) or 0)
-    except Exception:
-        pass
+    settings = read_texture_import_settings(tex_file)
+    use_nearest = settings.filter_mode == FilterMode.POINT
+    use_srgb = bool(settings.srgb)
+    frames = list(settings.sprite_frames)
+    meta = read_meta_file(tex_file) or {}
+    source_w = int(meta.get("width", 0) or 0)
+    source_h = int(meta.get("height", 0) or 0)
     if (source_w <= 0 or source_h <= 0) and frames:
         source_w = max((int(f.x) + int(f.w) for f in frames), default=0)
         source_h = max((int(f.y) + int(f.h) for f in frames), default=0)
@@ -2187,13 +2193,14 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
         }
         return True
     except Exception as exc:
-        Debug.log_warning(f"[AnimClipPreview] {exc}")
+        Debug.log_suppressed("AssetInspector.animclip_preview", exc)
         return False
 
 
 def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
     """Render an animated preview of the animation clip in the inspector."""
     import time as _time
+    from infernux.core.animation_clip import animation_frame_index
 
     # Use preview override if set, otherwise fall back to authoring texture
     preview_override = state.extra.get("_animclip_preview_override_path", "")
@@ -2227,40 +2234,31 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
     # Playback state in state.extra
     pb = state.extra.get("_animclip_pb")
     if pb is None:
-        pb = {"playing": False, "frame_idx": 0, "last_time": 0.0}
+        pb = {"playing": False, "frame_idx": 0, "elapsed": 0.0, "last_time": 0.0}
         state.extra["_animclip_pb"] = pb
 
-    # Transport: Play/Pause + frame counter
-    is_playing = pb["playing"]
-    if is_playing:
-        if ctx.button(t("animclip_editor.pause") + "##insp_transport"):
+    now = _time.perf_counter()
+    if pb["playing"]:
+        pb["elapsed"] += now - pb["last_time"]
+        pb["last_time"] = now
+        if not clip.loop and pb["elapsed"] >= clip.duration:
+            pb["elapsed"] = clip.duration
             pb["playing"] = False
-    else:
-        if ctx.button(t("animclip_editor.play") + "##insp_transport"):
-            pb["playing"] = True
-            pb["last_time"] = _time.perf_counter()
-            if pb["frame_idx"] >= fc:
-                pb["frame_idx"] = 0
+
+    label = "animclip_editor.pause" if pb["playing"] else "animclip_editor.play"
+    if ctx.button(t(label) + "##insp_transport"):
+        if not pb["playing"] and not clip.loop and pb["elapsed"] >= clip.duration:
+            pb["elapsed"] = 0.0
+        pb["playing"] = not pb["playing"]
+        pb["last_time"] = now
+    pb["frame_idx"] = animation_frame_index(pb["elapsed"], fc, clip.fps, clip.loop)
 
     ctx.same_line(0, 8)
     ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
     ctx.label(f"{pb['frame_idx'] + 1}/{fc}")
     ctx.pop_style_color(1)
 
-    # Advance frame
-    if pb["playing"] and clip.fps > 0:
-        now = _time.perf_counter()
-        elapsed = now - pb["last_time"]
-        interval = 1.0 / clip.fps
-        if elapsed >= interval:
-            steps = int(elapsed / interval)
-            pb["frame_idx"] += steps
-            pb["last_time"] = now
-            if pb["frame_idx"] >= fc:
-                pb["frame_idx"] = pb["frame_idx"] % fc
-
-    fi = max(0, min(pb["frame_idx"], fc - 1))
-    source_id = clip.frames[fi].sprite_frame_id
+    source_id = clip.frames[pb["frame_idx"]].sprite_frame_id
     frame = next(
         (candidate for candidate in frames if candidate.stable_id == source_id),
         None,
@@ -2287,28 +2285,6 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
         ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + pad_x)
 
     ctx.image(tex_id, pw, ph, uv0_x, uv0_y, uv1_x, uv1_y)
-
-
-def _get_sprite_frames(texture_guid: str, texture_path: str = "") -> list[SpriteFrame]:
-    path = ""
-    if texture_guid:
-        try:
-            from infernux.engine.bootstrap import EditorBootstrap
-            adb = EditorBootstrap.instance().engine.get_asset_database()
-            if adb:
-                path = adb.get_path_from_guid(texture_guid) or ""
-        except Exception:
-            pass
-    if not path and texture_path:
-        path = texture_path
-    if not path:
-        return []
-    try:
-        from infernux.core.asset_types import read_texture_import_settings
-        settings = read_texture_import_settings(path)
-        return list(settings.sprite_frames)
-    except Exception:
-        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2398,16 +2374,13 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
             is_default = (s.name == fsm.default_state)
             prefix = "► " if is_default else "  "
             ctx.label(f"{prefix}{s.name}")
+            if s.kind == "group":
+                ctx.same_line()
+                ctx.label(f"  [{t('animfsm_editor.node_kind_group')} · {len(s.clips)}]")
             clip_path = ""
             if s.clip_guid:
-                try:
-                    from infernux.engine.bootstrap import EditorBootstrap
-                    bs = EditorBootstrap.instance()
-                    adb = bs.engine.get_asset_database() if bs and bs.engine else None
-                    if adb:
-                        clip_path = adb.get_path_from_guid(s.clip_guid) or ""
-                except Exception:
-                    pass
+                from infernux.core.assets import AssetManager
+                clip_path = AssetManager._get_path_from_guid(s.clip_guid) or ""
             if clip_path:
                 ctx.same_line()
                 ctx.label(f"  [{os.path.basename(clip_path)}]")
@@ -2549,7 +2522,8 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
         )
     elif cat_def.access_mode == AssetAccessMode.READ_WRITE_RESOURCE:
         if _state.resource_controller is not None:
-            _state.resource_controller.flush_autosave()
+            if _state.resource_controller.autosave_on_close:
+                _state.resource_controller.flush_autosave()
         elif _state.exec_layer:
             _state.exec_layer.flush_rw_autosave()
 
@@ -2559,7 +2533,7 @@ def invalidate():
     from infernux.engine.interaction import ContinuousEditService, DocumentRegistry
 
     ContinuousEditService.instance().commit_owner("inspector")
-    if _state.resource_controller is not None:
+    if _state.resource_controller is not None and _state.resource_controller.autosave_on_close:
         _state.resource_controller.flush_autosave(force=True)
     for controller in tuple(_state.extra.get("linked_resource_controllers", {}).values()):
         controller.flush_autosave(force=True)
@@ -2629,20 +2603,9 @@ def invalidate_asset(path: str, *, keep_view: bool = False):
 
 def _render_header(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                    state: _State):
-    """Render the standard asset header: name, GUID, path, extra meta."""
+    """Render the standard asset header: name, path, extra metadata."""
     filename = (state.meta or {}).get("resource_name") or os.path.basename(state.file_path)
     ctx.label(f"{t(cat_def.display_name)}: {filename}")
-
-    # GUID — try .meta first, then serialized data (material stores it inside)
-    guid = (state.meta or {}).get("guid", "")
-    if not guid:
-        cached = state.extra.get("cached_data")
-        if cached:
-            guid = cached.get("guid", "")
-    if guid:
-        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label(t("asset.guid_label").format(guid=guid))
-        ctx.pop_style_color(1)
 
     # Path
     ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
@@ -3739,106 +3702,34 @@ def _select_sprite_frame(state: _State, frame: Optional[SpriteFrame]) -> None:
     )
 
 
-def _live_sprite_texture_id(ss: "_SpriteEditorState", cur_srgb, cur_filter) -> int:
-    """Cheap per-frame lookup of the currently-published sprite preview descriptor."""
-    try:
-        from infernux.engine.ui.editor_services import EditorServices
-        svc = EditorServices.instance()
-        native = svc.native_engine if svc else None
-        if not native or not hasattr(native, "get_texture_preview_texture_id"):
-            return 0
-        filter_tag = cur_filter.name if cur_filter else "default"
-        srgb_tag = "srgb" if cur_srgb else "linear"
-        norm_path = resolved_path(ss.file_path)
-        resource_key = f"spriteedit|sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
-        return int(native.get_texture_preview_texture_id(resource_key) or 0)
-    except Exception as exc:
-        Debug.log_warning(f"[SpriteEditor] live texture lookup failed: {exc}")
-        return 0
-
-
 def _ensure_sprite_texture(state: _State) -> bool:
-    """Load the texture dimensions + ImGui texture ID for the sprite editor."""
+    """Query the current descriptor without resetting the slice editing state."""
+    from .editor_services import EditorServices
+
+    native = EditorServices.instance().native_engine
+    if native is None:
+        return False
     ss = _sprite_state
-    # Track sRGB + filter_mode so we re-upload when either changes
-    cur_srgb = getattr(state.settings, 'srgb', False)
-    cur_filter = getattr(state.settings, 'filter_mode', None)
-    meta = state.meta or read_meta_file(state.file_path) or {}
-    expected_w = int(meta.get("width", 0) or 0)
-    expected_h = int(meta.get("height", 0) or 0)
-    dims_match = ((expected_w <= 0 or ss.tex_w == expected_w)
-                  and (expected_h <= 0 or ss.tex_h == expected_h))
-    if (ss.file_path == state.file_path and ss.tex_w > 0 and ss.texture_id != 0
-            and getattr(ss, '_srgb', None) == cur_srgb
-            and getattr(ss, '_filter', None) == cur_filter
-            and dims_match):
-        # Re-resolve the descriptor every frame — the C++ side may replace or
-        # evict the ImGui texture, and binding a cached freed VkDescriptorSet
-        # triggers validation errors and intermittent crashes.
-        live_id = _live_sprite_texture_id(ss, cur_srgb, cur_filter)
-        if live_id:
-            ss.texture_id = live_id
-            return True
-        # Texture gone — fall through to a full re-query/reschedule.
-    # Preserve slice grid when only sRGB/filter changed for the same file
-    same_file = (ss.file_path == state.file_path)
-    saved_rows = ss.slice_rows if same_file else 1
-    saved_cols = ss.slice_cols if same_file else 1
-    saved_zoom = ss.zoom if same_file else 0.0
-    saved_pan_x = ss.pan_x if same_file else 0.0
-    saved_pan_y = ss.pan_y if same_file else 0.0
-    saved_view_initialized = ss.view_initialized if same_file else False
-    ss.reset()
-    ss.slice_rows = saved_rows
-    ss.slice_cols = saved_cols
-    ss.zoom = saved_zoom
-    ss.pan_x = saved_pan_x
-    ss.pan_y = saved_pan_y
-    ss.view_initialized = saved_view_initialized
-    ss.file_path = state.file_path
-    ss._srgb = cur_srgb
-    ss._filter = cur_filter
+    if ss.file_path != state.file_path:
+        ss.reset()
+        ss.file_path = state.file_path
 
-    try:
-        from infernux.engine.ui.editor_services import EditorServices
-        svc = EditorServices.instance()
-        native = svc.native_engine if svc else None
-        if not native:
-            Debug.log_warning("[SpriteEditor] No native engine via EditorServices")
-            return False
-
-        filter_tag = cur_filter.name if cur_filter else "default"
-        srgb_tag = "srgb" if cur_srgb else "linear"
-        norm_path = resolved_path(state.file_path)
-        stamp = texture_stamp(norm_path, "sprite_edit_preview", filter_tag, srgb_tag)
-        if stamp == 0:
-            return False
-
-        resource_key = f"spriteedit|sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
-        tex_id, tex_w, tex_h = query_or_schedule_texture(
-            native,
-            resource_key,
-            norm_path,
-            int(stamp),
-            nearest=(cur_filter == FilterMode.POINT),
-            srgb=bool(cur_srgb),
-            pump=True,
-        )
-
-        source_w = int(meta.get("width", 0) or 0)
-        source_h = int(meta.get("height", 0) or 0)
-        if source_w <= 0:
-            source_w = max(int(tex_w), 0)
-        if source_h <= 0:
-            source_h = max(int(tex_h), 0)
-
-        ss.texture_id = int(tex_id)
-        ss.tex_w = source_w
-        ss.tex_h = source_h
-    except Exception as exc:
-        Debug.log_warning(f"[SpriteEditor] Preview task exception: {exc}")
-        ss.texture_id = 0
-    return ss.tex_w > 0
+    settings: TextureImportSettings = state.settings
+    filter_tag = settings.filter_mode.name
+    srgb_tag = "srgb" if settings.srgb else "linear"
+    norm_path = resolved_path(state.file_path)
+    stamp = texture_stamp(norm_path, "sprite_edit_preview", filter_tag, srgb_tag)
+    resource_key = f"spriteedit|sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
+    tex_id, width, height = query_or_schedule_texture(
+        native, resource_key, norm_path, stamp,
+        nearest=settings.filter_mode == FilterMode.POINT,
+        srgb=settings.srgb,
+    )
+    ss.texture_id = tex_id
+    meta = state.meta or {}
+    ss.tex_w = int(meta.get("width", width))
+    ss.tex_h = int(meta.get("height", height))
+    return ss.tex_w > 0 and ss.tex_h > 0
 
 
 def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
@@ -3931,8 +3822,6 @@ def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
     rows, cols = ss.slice_rows, ss.slice_cols
     if not _valid_sprite_grid(ss):
         raise ValueError("Sprite grid must have at least one pixel in every row and column")
-    fw = ss.tex_w // cols
-    fh = ss.tex_h // rows
     existing = {
         (frame.x, frame.y, frame.w, frame.h): frame
         for frame in settings.sprite_frames
@@ -3941,7 +3830,9 @@ def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
     idx = 0
     for r in range(rows):
         for c in range(cols):
-            rect = (c * fw, r * fh, fw, fh)
+            x0, x1 = c * ss.tex_w // cols, (c + 1) * ss.tex_w // cols
+            y0, y1 = r * ss.tex_h // rows, (r + 1) * ss.tex_h // rows
+            rect = (x0, y0, x1 - x0, y1 - y0)
             previous = existing.get(rect)
             frames.append(
                 SpriteFrame(
@@ -4112,21 +4003,21 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
 
     if ctx.button(f"{t('sprite.fit_view')}##sprite_fit_view"):
         ss.view_initialized = False
-    ctx.same_line(0, 10)
     selected_label = t("sprite.preview_none")
     if 0 <= selected_frame < len(settings.sprite_frames):
         selected_label = f"#{selected_frame}"
     shown_zoom = ss.zoom if ss.zoom > 0.0 else fit_zoom_hint
     ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-    ctx.label(t("sprite.preview_status").format(
+    ctx.text_wrapped(t("sprite.preview_status").format(
         zoom=f"{shown_zoom:.2f}",
         selected=selected_label,
     ))
     ctx.pop_style_color(1)
 
-    if not ctx.begin_child("##sprite_zoom_canvas", 0, canvas_h, True):
-        return
+    visible = ctx.begin_child("##sprite_zoom_canvas", 0, canvas_h, True)
     try:
+        if not visible:
+            return
         canvas_w = max(ctx.get_content_region_avail_width(), 8.0)
         canvas_h_inner = max(ctx.get_content_region_avail_height(), 8.0)
         ctx.invisible_button("##sprite_canvas_hit", canvas_w, canvas_h_inner)
@@ -4340,8 +4231,6 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
         ctx.end_child()
 
 
-# _render_frame_table removed — divider lines replace per-frame editing
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Texture — preview section (custom_header_fn)
@@ -4448,10 +4337,14 @@ def _render_shader_source(ctx: InxGUIContext, file_path: str):
         ctx.label(t("asset.file_not_found"))
         return
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()[:40]
-        text = "".join(lines)
-        if len(lines) == 40:
+        def read_source(observed):
+            observed.watch(file_path)
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                return tuple(islice(f, 41))
+
+        lines = _shader_source_cache.get(file_path, read_source)
+        text = "".join(lines[:40])
+        if len(lines) > 40:
             text += "\n" + t("asset.shader_truncated")
         ctx.push_style_color(ImGuiCol.Text, *Theme.SUCCESS_TEXT)
         ctx.label(text)

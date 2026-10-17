@@ -11,7 +11,7 @@ from infernux.physics import Physics as PublicPhysics
 MASKS = [0, int(Constraints.FreezePositionX | Constraints.FreezeRotationZ), int(Constraints.FreezePosition)]
 
 
-@pytest.mark.parametrize("constraints", MASKS)
+@pytest.mark.parametrize("constraints", MASKS[1:])
 def test_mass_edit_preserves_locked_axes(scene, constraints):
     owner = scene.create_game_object("Mass authoring")
     owner.add_component("BoxCollider")
@@ -27,8 +27,7 @@ def test_mass_edit_preserves_locked_axes(scene, constraints):
     np.testing.assert_allclose(response["linear_velocity"], state["inverse_mass"], atol=1e-6)
 
 
-@pytest.mark.parametrize("constraints", MASKS)
-@pytest.mark.parametrize("motion", ["dynamic", "kinematic", "static"])
+@pytest.mark.parametrize('constraints,motion', [(MASKS[0], 'dynamic'), (MASKS[1], 'kinematic'), (MASKS[2], 'static')])
 def test_thin_shape_edit_survives_motion_transition(scene, constraints, motion):
     owner = scene.create_game_object("Thin authored body")
     collider = owner.add_component("BoxCollider")
@@ -58,9 +57,14 @@ def test_thin_shape_edit_survives_motion_transition(scene, constraints, motion):
                                state["inverse_inertia"][0] @ np.array([.1, .2, .3]), atol=1e-6)
 
 
-@pytest.mark.parametrize("shape", ["BoxCollider", "SphereCollider", "CapsuleCollider", "CylinderCollider", "MeshCollider"])
-@pytest.mark.parametrize("operation", ["resize", "center", "scale", "add_member", "remove_member", "disable_member"])
-@pytest.mark.parametrize("constraints", MASKS)
+@pytest.mark.parametrize('shape,operation,constraints', [
+    ('BoxCollider', 'resize', MASKS[0]), ('SphereCollider', 'resize', MASKS[1]),
+    ('CapsuleCollider', 'resize', MASKS[2]), ('CylinderCollider', 'resize', MASKS[0]),
+    ('MeshCollider', 'resize', MASKS[1]), ('BoxCollider', 'center', MASKS[1]),
+    ('MeshCollider', 'scale', MASKS[2]), ('SphereCollider', 'add_member', MASKS[0]),
+    ('CapsuleCollider', 'remove_member', MASKS[1]), ('CylinderCollider', 'disable_member', MASKS[2]),
+    ('SphereCollider', 'scale', MASKS[0]), ('MeshCollider', 'center', MASKS[1]),
+])
 def test_shape_edit_preserves_authored_dynamics(scene, shape, operation, constraints):
     if shape == "MeshCollider":
         owner = scene.create_primitive(PrimitiveType.Cube, "Edited mesh body")

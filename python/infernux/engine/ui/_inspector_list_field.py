@@ -1,12 +1,9 @@
 """List field rendering helpers for the Inspector component renderers."""
 
-from dataclasses import replace
 import json
-from infernux.components.component import InxComponent
 from infernux.lib import InxGUIContext
 from .inspector_utils import (
-    max_label_w, render_serialized_field, has_field_changed,
-    render_compact_section_header, pretty_field_name,
+    render_serialized_field, render_compact_section_header, pretty_field_name, serialized_field_label,
     get_enum_members as _get_enum_members,
 )
 from .theme import Theme
@@ -16,7 +13,6 @@ from ._inspector_references import (
     _reference_owner_scene,
     _render_serializable_members,
     _get_reference_display_name,
-    _game_object_has_required_component,
     _picker_scene_gameobjects,
     _picker_scene_components,
     render_asset_reference_field,
@@ -314,7 +310,7 @@ def _render_serializable_list_value(ctx, parent_id, field_name, metadata, value,
             ctx, f"{parent_id}_{field_name}", field_name, metadata, value, label_width,
         )
     return render_serialized_field(
-        ctx, f"##{parent_id}_{field_name}", field_name, metadata, value, label_width,
+        ctx, f"##{parent_id}_{field_name}", serialized_field_label(field_name, metadata), metadata, value, label_width,
     )
 
 
@@ -370,7 +366,7 @@ def _render_serializable_asset_reference(
         nonlocal selected
         selected = make_null_ref(field_type, metadata)
 
-    field_label(ctx, pretty_field_name(field_name), label_width)
+    field_label(ctx, serialized_field_label(field_name, metadata), label_width)
     display = _get_reference_display_name(field_type, current_value)
 
     render_asset_reference_field(
@@ -425,74 +421,76 @@ def _render_list_items_body(
         return _cb
 
     # ── List body background ──
-    body_state = IGUI.list_body_begin(ctx, f"list_body_{field_name}")
+    IGUI.list_body_begin(ctx)
+    try:
 
-    if not metadata.readonly:
-        IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _LIST_REORDER_TYPE, _make_reorder_cb(0))
-
-    remove_index = None
-    element_meta = replace(metadata, field_type=element_type, default=_make_list_default_element(metadata, element_type))
-
-    for index, item in enumerate(items):
-        ctx.push_id_str(f"{field_name}_{index}")
-        remove_clicked = False
         if not metadata.readonly:
-            remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
-            ctx.same_line(0, button_spacing)
+            IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _LIST_REORDER_TYPE, _make_reorder_cb(0))
 
-        if not metadata.readonly and ctx.begin_drag_drop_source(0):
-            ctx.set_drag_drop_payload_str(
-                _LIST_REORDER_TYPE,
-                json.dumps((id(comp), field_name, index), separators=(",", ":")),
-            )
-            ctx.label(f"[{index}]")
-            ctx.end_drag_drop_source()
+        remove_index = None
+        element_meta = replace(metadata, field_type=element_type, default=_make_list_default_element(metadata, element_type))
 
-        if element_type in reference_types:
-            if metadata.readonly:
-                ctx.begin_disabled(True)
-            try:
-                reference_changed = _render_reference_list_item(
-                    ctx, field_name, index, item, items, metadata, element_type, comp=comp,
+        for index, item in enumerate(items):
+            ctx.push_id_str(f"{field_name}_{index}")
+            remove_clicked = False
+            if not metadata.readonly:
+                remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
+                ctx.same_line(0, button_spacing)
+
+            if not metadata.readonly and ctx.begin_drag_drop_source(0):
+                ctx.set_drag_drop_payload_str(
+                    _LIST_REORDER_TYPE,
+                    json.dumps((id(comp), field_name, index), separators=(",", ":")),
                 )
-            finally:
-                if metadata.readonly:
-                    ctx.end_disabled()
-            if reference_changed and not metadata.readonly:
-                changed = True
-        elif element_type == FieldType.SERIALIZABLE_OBJECT:
-            if _render_serializable_list_item(
-                ctx,
-                field_name,
-                index,
-                item,
-                items,
-                metadata,
-                item_label=item_label,
-                item_renderer=item_renderer,
-            ):
-                changed = True
-        else:
-            if metadata.readonly:
-                ctx.begin_disabled(True)
-            try:
-                new_item = render_serialized_field(
-                    ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
-                )
-            finally:
-                if metadata.readonly:
-                    ctx.end_disabled()
-            if not metadata.readonly and has_field_changed(element_type, item, new_item):
-                items[index] = new_item
-                changed = True
+                ctx.label(f"[{index}]")
+                ctx.end_drag_drop_source()
 
-        if remove_clicked:
-            remove_index = index
-        ctx.pop_id()
-        if not metadata.readonly:
-            IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _LIST_REORDER_TYPE, _make_reorder_cb(index + 1))
+            if element_type in reference_types:
+                if metadata.readonly:
+                    ctx.begin_disabled(True)
+                try:
+                    reference_changed = _render_reference_list_item(
+                        ctx, field_name, index, item, items, metadata, element_type, comp=comp,
+                    )
+                finally:
+                    if metadata.readonly:
+                        ctx.end_disabled()
+                if reference_changed and not metadata.readonly:
+                    changed = True
+            elif element_type == FieldType.SERIALIZABLE_OBJECT:
+                if _render_serializable_list_item(
+                    ctx,
+                    field_name,
+                    index,
+                    item,
+                    items,
+                    metadata,
+                    item_label=item_label,
+                    item_renderer=item_renderer,
+                ):
+                    changed = True
+            else:
+                if metadata.readonly:
+                    ctx.begin_disabled(True)
+                try:
+                    new_item = render_serialized_field(
+                        ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
+                    )
+                finally:
+                    if metadata.readonly:
+                        ctx.end_disabled()
+                if not metadata.readonly and has_field_changed(element_type, item, new_item):
+                    items[index] = new_item
+                    changed = True
 
-    IGUI.list_body_end(ctx, body_state)
+            if remove_clicked:
+                remove_index = index
+            ctx.pop_id()
+            if not metadata.readonly:
+                IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _LIST_REORDER_TYPE, _make_reorder_cb(index + 1))
+
+    finally:
+        IGUI.list_body_end(ctx)
 
     if remove_index is not None:
         items.pop(remove_index)

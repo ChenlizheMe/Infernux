@@ -23,6 +23,10 @@ set(INFERNUX_MAINTAINED_FORKS
     joltphysics_for_infernux
     taichi_for_infernux
     llvmlite_for_infernux
+    zstd_for_infernux
+    lunasvg_for_infernux
+    spirv_cross_for_infernux
+    volk_for_infernux
 )
 
 # Official plugins are packaged inputs. Their platform-native export projects
@@ -47,6 +51,10 @@ set(INFERNUX_THIRD_PARTY_SUBMODULES
     VulkanMemoryAllocator
     taichi_for_infernux
     MikkTSpace
+    zstd_for_infernux
+    lunasvg_for_infernux
+    spirv_cross_for_infernux
+    volk_for_infernux
 )
 
 # Source-only Python dependency fork. It has no CMake project and is consumed
@@ -66,7 +74,8 @@ endfunction()
 
 function(infernux_require_dependency DEPENDENCY_NAME DESCRIPTION)
     infernux_dependency_path(_dependency_path "${DEPENDENCY_NAME}")
-    if(NOT IS_DIRECTORY "${_dependency_path}")
+    file(GLOB _dependency_entries "${_dependency_path}/*")
+    if(NOT _dependency_entries)
         message(FATAL_ERROR
             "Missing ${DESCRIPTION} at '${_dependency_path}'. "
             "Initialize it with: git submodule update --init --recursive -- '${_dependency_path}'")

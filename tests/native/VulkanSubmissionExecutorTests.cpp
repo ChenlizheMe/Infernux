@@ -12,8 +12,8 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -532,10 +532,19 @@ int main()
                 slot, failedPlan,
                 [&](uint32_t, VkCommandBuffer commands) {
                     timestamps.BeginFrame(commands, slot);
+#if INFERNUX_FRAME_PROFILE
+                    assert(vk::GpuTimestampQueries::CurrentRecording() == &timestamps);
+#endif
                     const auto region =
                         timestamps.BeginRegion(commands, "ordered_sample", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+                    assert(region.IsValid());
+                    assert(!timestamps.BeginRegion(commands, "capacity_exceeded", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
+                                .IsValid());
                     timestamps.EndRegion(commands, region, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
                     timestamps.FinishFrame(slot);
+#if INFERNUX_FRAME_PROFILE
+                    assert(vk::GpuTimestampQueries::CurrentRecording() == nullptr);
+#endif
                     return true;
                 },
                 timingSync);

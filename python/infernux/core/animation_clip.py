@@ -17,10 +17,20 @@ import math
 import os
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from infernux.core.animation_event import AnimationEvent, events_from_list
 from infernux.engine.path_utils import lexical_path
+
+
+def animation_frame_index(elapsed: float, frame_count: int, fps: float, loop: bool) -> Optional[int]:
+    """Sample a uniform sprite sequence, holding its last non-looping frame."""
+    if frame_count <= 0 or fps <= 0:
+        return None
+    elapsed = max(0.0, elapsed)
+    if loop:
+        elapsed %= frame_count / fps
+    return min(math.floor(elapsed * fps), frame_count - 1)
 
 
 @dataclass

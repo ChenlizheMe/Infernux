@@ -134,15 +134,24 @@ class ResourceIndexAllocator final
     /// Scene, Game, preview, and background submissions.
     [[nodiscard]] bool MarkUsed(ResourceIndex resource, SubmissionSerial serial) noexcept
     {
-        if (!resource.IsValid() || resource.index == ResourceIndex::FallbackIndex || serial == InvalidSubmissionSerial)
-            return false;
+        return MarkUsed(&resource, 1, serial) != 0;
+    }
 
+    [[nodiscard]] size_t MarkUsed(const ResourceIndex *resources, size_t count, SubmissionSerial serial) noexcept
+    {
+        if (serial == InvalidSubmissionSerial || count == 0)
+            return 0;
         std::lock_guard lock(m_mutex);
-        if (!MatchesLiveSlot(resource))
-            return false;
-        Slot &slot = m_slots[resource.index];
-        slot.lastUse = (std::max)(slot.lastUse, serial);
-        return true;
+        size_t marked = 0;
+        for (size_t index = 0; index < count; ++index) {
+            const auto resource = resources[index];
+            if (resource.index == ResourceIndex::FallbackIndex || !MatchesLiveSlot(resource))
+                continue;
+            Slot &slot = m_slots[resource.index];
+            slot.lastUse = (std::max)(slot.lastUse, serial);
+            ++marked;
+        }
+        return marked;
     }
 
     /// Immediately invalidates `resource`, but holds its shader slot until the

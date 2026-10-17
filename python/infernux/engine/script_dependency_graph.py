@@ -27,7 +27,6 @@ from collections.abc import Mapping
 from typing import Iterable, Optional, Union
 
 from infernux.engine.path_utils import (
-    is_path_within,
     path_key,
     resolved_path,
 )

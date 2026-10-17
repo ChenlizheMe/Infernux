@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QFrame,
     QFileDialog,
     QHBoxLayout,

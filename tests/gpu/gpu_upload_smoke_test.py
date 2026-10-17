@@ -162,7 +162,7 @@ def main() -> int:
             assert evictable_gui_version > 0
             assert engine.query_or_schedule_texture_preview(
                 "gpu-smoke-preview-job", str(texture_path), 1, pump=False
-            ) == (0, 0, 0)
+            ) == (0, 4, 2)
             material_preview_json = material.serialize()
             assert (
                 engine.query_or_schedule_material_preview(
@@ -281,10 +281,13 @@ def main() -> int:
                     )
                     != 0
                 )
-                preview_job_complete = (
-                    preview_job_complete
-                    or engine.get_texture_preview_texture_id("gpu-smoke-preview-job") != 0
-                )
+                if not preview_job_complete:
+                    preview_id, preview_width, preview_height = engine.query_or_schedule_texture_preview(
+                        "gpu-smoke-preview-job", str(texture_path), 1, pump=False
+                    )
+                    assert preview_id == engine.get_texture_preview_texture_id("gpu-smoke-preview-job")
+                    assert (preview_width, preview_height) == (4, 2)
+                    preview_job_complete = preview_id != 0
 
                 if frames == 3:
                     readback_ticket = frontend.request_render_target_readback(False)

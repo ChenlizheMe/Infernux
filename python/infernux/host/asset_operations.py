@@ -318,9 +318,14 @@ def _create_asset(
     variant: str = "",
 ) -> dict[str, object]:
     def create():
+        from infernux.engine.ui.project_file_ops import _asset_name_error
+
         normalized = str(kind or "").strip()
         if normalized not in _CREATE_KINDS:
             raise OperationError("operation.invalid_arguments", f"Unknown asset kind: {kind}")
+        asset_name = str(name or "").strip()
+        if error := _asset_name_error(asset_name):
+            raise OperationError("operation.invalid_arguments", error)
         project_root = resolved_path(project_path)
         resolved_directory = resolved_path(
             directory if os.path.isabs(directory) else os.path.join(project_root, directory)
@@ -334,7 +339,7 @@ def _create_asset(
                 "Assets may only be created inside the project Assets or Packages roots.",
             )
         if normalized == "folder":
-            existing = os.path.join(resolved_directory, str(name or "").strip())
+            existing = os.path.join(resolved_directory, asset_name)
             if os.path.isdir(existing):
                 return {"asset": asset_identity(existing), "already_exists": True}
         path = EditorAutomationHost.instance().create_project_asset(

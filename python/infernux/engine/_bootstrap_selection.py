@@ -1,13 +1,6 @@
 """BootstrapSelectionMixin — extracted from EditorBootstrap."""
 from __future__ import annotations
 
-"""
-EditorBootstrap — structured editor initialization.
-
-Breaks the monolithic ``release_engine()`` startup path into explicit
-startup steps. Each step is a separate method, closures become instance
-methods, and panel/manager references live on the bootstrap instance.
-"""
 
 
 _PROJECT_SUBRESOURCE_TOKENS = {
@@ -380,7 +373,7 @@ class BootstrapSelectionMixin:
     ) -> bool:
         import os
 
-        from infernux.engine.interaction import SelectionDomain, ViewCommandService
+        from infernux.engine.interaction import ViewCommandService
         from infernux.engine.path_utils import is_path_within, lexical_path, same_path
         from infernux.engine.project_context import get_project_root
 
@@ -539,7 +532,8 @@ class BootstrapSelectionMixin:
 
         registry = self.interaction_core.documents
         resolved = registry.resolve_locator(locator)
-        if resolved is not None:
+        existing = registry.document_for_view(panel_id)
+        if resolved is not None and existing is resolved:
             return DocumentOpenResult(DocumentOpenStatus.READY, resolved)
 
         path = str(locator.resource_path or "").strip()
@@ -577,15 +571,32 @@ class BootstrapSelectionMixin:
                 message=request["message"] or "document replacement was cancelled",
             )
 
-        panel = self.window_manager.get_window_instance(panel_id)
-        existing = registry.document_for_view(panel_id)
+        def _complete_open():
+            try:
+                panel = self.window_manager.open_window(panel_id)
+                if panel.open_document_resource_immediate(path) is False:
+                    raise RuntimeError(f"editor panel rejected document: {path}")
+                document = registry.resolve_locator(locator)
+                if document is None:
+                    raise RuntimeError("document loader did not register the requested resource")
+            except Exception as exc:
+                result = DocumentOpenResult(DocumentOpenStatus.FAILED, message=str(exc))
+            else:
+                result = DocumentOpenResult(DocumentOpenStatus.READY, document)
+            requests.pop(request_key, None)
+            return result
+
         if existing is not None and existing.is_dirty and request["state"] == "new":
             from infernux.engine.ui.dirty_panel_confirmation import (
                 DirtyPanelConfirmationCoordinator,
             )
 
             def _approved() -> None:
-                request["state"] = "approved"
+                result = _complete_open()
+                if result.status is DocumentOpenStatus.FAILED:
+                    from infernux.debug import Debug
+
+                    Debug.log_error(f"[DocumentOpen] {result.message}")
 
             def _cancelled() -> None:
                 request["state"] = "failed"
@@ -602,35 +613,7 @@ class BootstrapSelectionMixin:
             return DocumentOpenResult(DocumentOpenStatus.PENDING)
         if request["state"] == "waiting":
             return DocumentOpenResult(DocumentOpenStatus.PENDING)
-
-        try:
-            panel = self.window_manager.open_window(panel_id)
-            controller = getattr(
-                panel,
-                "_authoring_document_controller",
-                None,
-            )
-            loader = getattr(controller, "open_resource_immediate", None)
-            if not callable(loader):
-                raise RuntimeError(
-                    f"editor panel '{panel_id}' has no authoring document loader"
-                )
-            loaded = loader(path)
-            if loaded is False:
-                raise RuntimeError(f"editor panel rejected document: {path}")
-        except Exception as exc:
-            requests.pop(request_key, None)
-            return DocumentOpenResult(DocumentOpenStatus.FAILED, message=str(exc))
-
-        resolved = registry.resolve_locator(locator)
-        if resolved is None:
-            requests.pop(request_key, None)
-            return DocumentOpenResult(
-                DocumentOpenStatus.FAILED,
-                message="document loader did not register the requested resource",
-            )
-        requests.pop(request_key, None)
-        return DocumentOpenResult(DocumentOpenStatus.READY, resolved)
+        return _complete_open()
 
     def _restore_editor_context(self, context, phase: str):
         from dataclasses import replace
@@ -829,14 +812,17 @@ class BootstrapSelectionMixin:
             native.clear_selection_outline()
 
     def _on_global_selection_changed(self, change) -> None:
-        self._present_selection_snapshot(change.after)
+        self._present_selection_snapshot(
+            change.after,
+            preserve_console_selection=change.reason == "console_navigate_to_object",
+        )
         self._record_selection_snapshot(
             change.after,
             previous_snapshot=change.before,
             record=change.record_history,
         )
 
-    def _present_selection_snapshot(self, snapshot) -> None:
+    def _present_selection_snapshot(self, snapshot, *, preserve_console_selection: bool = False) -> None:
         """Project the one authoritative selection into editor views."""
         from infernux.engine.interaction import SelectionDomain
 
@@ -853,7 +839,7 @@ class BootstrapSelectionMixin:
             except (TypeError, ValueError):
                 console_uid = 0
         console = getattr(self, "console", None)
-        if console is not None:
+        if console is not None and not preserve_console_selection:
             console.set_selection_snapshot(console_uid)
 
         inspector = self.inspector_panel
@@ -942,7 +928,6 @@ class BootstrapSelectionMixin:
         from infernux.engine.interaction import (
             SelectionService,
             SelectionSnapshot,
-            SelectionTarget,
         )
 
         targets = tuple(
@@ -993,20 +978,14 @@ class BootstrapSelectionMixin:
                     activate_panel=False,
                 )
 
-    def _navigate_console_entry_to_object(self, object_id: int) -> bool:
+    def _navigate_console_entry_to_object(self, object_id: int, *, record_history: bool = True) -> bool:
         """Reveal a console-targeted scene object in Hierarchy and Inspector."""
         if not object_id:
             return False
 
         from infernux.lib import SceneManager
 
-        manager = SceneManager.instance()
-        resolve_runtime = getattr(manager, "find_runtime_object_by_id", None)
-        if callable(resolve_runtime):
-            obj = resolve_runtime(object_id)
-        else:
-            scene = manager.get_active_scene()
-            obj = scene.find_by_id(object_id) if scene else None
+        obj = SceneManager.instance().find_runtime_object_by_id(object_id)
         if obj is None:
             return False
 
@@ -1016,7 +995,7 @@ class BootstrapSelectionMixin:
             SelectionTarget.scene_object(object_id),
             owner_id="hierarchy",
             reason="console_navigate_to_object",
-            record_history=True,
+            record_history=record_history,
         )
 
     def _record_selection_snapshot(

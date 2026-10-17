@@ -216,6 +216,76 @@ def _overwrite_preserving_pyc_fingerprint(path, source: str) -> None:
     )
 
 
+def test_candidate_rebinding_preserves_container_type_factory_aliases_and_cycles():
+    from collections import defaultdict
+    from infernux.components.script_loader import ScriptReloadRejected, _replace_candidate_type_value
+
+    class Candidate:
+        pass
+
+    class Live:
+        pass
+
+    original = defaultdict(list)
+    shared = [Candidate]
+    original.update(first=shared, alias=shared, cycle=original)
+    replaced = _replace_candidate_type_value(original, {Candidate: Live}, {})
+    assert isinstance(replaced, defaultdict) and replaced.default_factory is list
+    assert replaced is not original and replaced["cycle"] is replaced
+    assert replaced["first"] is replaced["alias"]
+    assert replaced["first"] == [Live]
+    assert original["cycle"] is original and original["first"] == [Candidate]
+    neutral = {"items": [1]}
+    assert _replace_candidate_type_value(neutral, {Candidate: Live}, {}) is neutral
+
+    class SharedCopy(list):
+        def __copy__(self):
+            return self
+
+    class WrongTypeCopy(dict):
+        def __copy__(self):
+            return dict(self)
+
+    for container in (SharedCopy([Candidate]), WrongTypeCopy(candidate=Candidate)):
+        with pytest.raises(ScriptReloadRejected, match="preserve its type and be independent"):
+            _replace_candidate_type_value(container, {Candidate: Live}, {})
+
+
+def test_body_patch_updates_dunder_methods_without_replacing_live_slot_descriptors():
+    from infernux.components import InxComponent
+    from infernux.components.script_loader import ScriptReloadRejected, patch_component_class_body
+
+    class Live(InxComponent):
+        _uses_component_data_store = False
+        __slots__ = ("__cache__",)
+
+        def __repr__(self):
+            return self.__cache__ + ":before"
+
+    class Candidate(InxComponent):
+        _uses_component_data_store = False
+        __slots__ = ("__cache__",)
+
+        def __repr__(self):
+            return self.__cache__ + ":after"
+
+    component = Live()
+    component.__cache__ = "preserved"
+    slot = Live.__dict__["__cache__"]
+    assert "__repr__" in patch_component_class_body(Live, Candidate)
+    assert Live.__dict__["__cache__"] is slot
+    assert repr(component) == "preserved:after"
+
+    class ChangedLayout(InxComponent):
+        _uses_component_data_store = False
+        __slots__ = ("__different__",)
+
+    with pytest.raises(ScriptReloadRejected, match="type structure.*restart required"):
+        patch_component_class_body(Live, ChangedLayout)
+    assert Live.__dict__["__cache__"] is slot
+    assert repr(component) == "preserved:after"
+
+
 @pytest.mark.parametrize("edit_mode", [False, True])
 @pytest.mark.parametrize("rollback", [False, True])
 @pytest.mark.parametrize("playing", [False, True])
@@ -290,7 +360,7 @@ def test_reload_publishes_edit_mode_flag_to_live_native_mirror(
 def test_direct_body_patch_updates_edit_mode_gate_and_rolls_it_back(
     component_script, monkeypatch, scene, edit_mode, rollback,
 ):
-    from infernux.engine.runtime_dispatch import RuntimeDispatchPublication
+    from infernux.engine.runtime_dispatch import RuntimeDispatchPublication, current_runtime_epoch
 
     source = '''
         import infernux as inx
@@ -312,6 +382,7 @@ def test_direct_body_patch_updates_edit_mode_gate_and_rolls_it_back(
     component = component_type()
     scene.create_game_object("DirectEditModeOwner").add_py_component(component)
     native = component._cpp_component
+    before_epoch = current_runtime_epoch()
     with monkeypatch.context() as patch:
         if rollback:
             def reject(_publication):
@@ -324,6 +395,8 @@ def test_direct_body_patch_updates_edit_mode_gate_and_rolls_it_back(
     expected = before if rollback else edit_mode
     assert component_type._execute_in_edit_mode_ is expected
     assert component._execute_in_edit_mode is expected
+    if rollback:
+        assert current_runtime_epoch() is before_epoch
     component._execute_in_edit_mode = None
     native.refresh_python_lifecycle_dispatch()
     assert component._execute_in_edit_mode is expected
@@ -371,11 +444,13 @@ def test_reload_rebinds_unchanged_field_types_to_published_declarations(
 
     if reject_publication:
         from infernux.engine.candidate_import import CandidateImportTransaction
+        from infernux.engine.runtime_dispatch import current_runtime_epoch
 
         original_values = (first.mode, first.modes, first.stats, first.members)
         original_slot = first._cds_slot
         original_class_id = first._cds_class_id
         original_module = sys.modules[owner.__module__]
+        original_epoch = current_runtime_epoch()
 
         def reject(_transaction):
             raise RuntimeError("simulated module publication failure")
@@ -384,6 +459,7 @@ def test_reload_rebinds_unchanged_field_types_to_published_declarations(
             patch.setattr(CandidateImportTransaction, "commit", reject)
             rejected = manager.reload_components_from_script_result(str(path))
         assert not rejected.success and "simulated module publication failure" in rejected.error
+        assert current_runtime_epoch() is original_epoch
         assert first.declarations() == (old_mode, old_stats, "old")
         assert first.counter == 17 and second.counter == 7
         assert all(value is original for value, original in zip(
@@ -716,6 +792,7 @@ def test_stable_field_id_rename_reloads_native_slots_and_can_rollback(
     original_id, original_slot = component._cds_class_id, component._cds_slot
     field_index = component_type.speed._cds_field_id
     manager = _play_manager(monkeypatch, path, guid, (component,))
+    saved_play_fields = manager._serialize_py_component(component)
     ensure_runtime_dispatch_types((component_type,))
     previous_epoch = current_runtime_epoch()
     candidate = source.replace("speed =", "velocity =").encode("utf-8")
@@ -730,6 +807,9 @@ def test_stable_field_id_rename_reloads_native_slots_and_can_rollback(
         assert not hasattr(component_type, "velocity")
         outcome = manager.commit_script_reload_batch(batch)
         assert outcome.success, outcome.error
+        assert component.velocity == batch_read([component], "velocity")[0] == 8.0
+        component.velocity = 99.0
+        manager._apply_py_component_state(component, saved_play_fields)
         assert component.velocity == batch_read([component], "velocity")[0] == 8.0
         assert not hasattr(component_type, "speed")
         assert get_field_schema(component_type, "velocity").attributes["field_id"] == "movement"
@@ -2280,7 +2360,6 @@ def test_script_delete_batch_is_transactional_in_edit_and_play(
             return new
 
     first_obj = _Object(501, first)
-    second_obj = _Object(502, second)
 
     class _Scene:
         def __init__(self, objects):

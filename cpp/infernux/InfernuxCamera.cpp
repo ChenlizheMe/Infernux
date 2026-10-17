@@ -12,12 +12,6 @@
 namespace infernux
 {
 
-// Static input state tracking (simple solution without modifying header extensively)
-static bool s_lastRightMouseDown = false;
-static bool s_lastMiddleMouseDown = false;
-static float s_lastMouseX = 0.0f;
-static float s_lastMouseY = 0.0f;
-
 // ----------------------------------
 // Editor Camera Access
 // ----------------------------------
@@ -53,86 +47,13 @@ void Infernux::ProcessSceneViewInput(float deltaTime, bool rightMouseDown, bool 
         return;
     }
 
-    // Handle mouse button state changes
-    if (rightMouseDown) {
-        if (!s_lastRightMouseDown) {
-            controller.OnMouseButtonDown(1, 0, 0);
-        }
-    } else {
-        if (s_lastRightMouseDown) {
-            controller.OnMouseButtonUp(1, 0, 0);
-        }
-    }
-    s_lastRightMouseDown = rightMouseDown;
-
-    if (middleMouseDown) {
-        if (!s_lastMiddleMouseDown) {
-            controller.OnMouseButtonDown(2, 0, 0);
-        }
-    } else {
-        if (s_lastMiddleMouseDown) {
-            controller.OnMouseButtonUp(2, 0, 0);
-        }
-    }
-    s_lastMiddleMouseDown = middleMouseDown;
-
-    // Apply mouse movement - Python side already handles priority
-    // Only apply if there's actual delta
-    if (mouseDeltaX != 0.0f || mouseDeltaY != 0.0f) {
-        if (rightMouseDown && !middleMouseDown) {
-            // Rotate mode
-            controller.ApplyRotation(mouseDeltaX, mouseDeltaY);
-        } else if (middleMouseDown && !rightMouseDown) {
-            // Pan mode
-            controller.ApplyPan(mouseDeltaX, mouseDeltaY);
-        } else if (rightMouseDown && middleMouseDown) {
-            // Both pressed: prioritize rotation
-            controller.ApplyRotation(mouseDeltaX, mouseDeltaY);
-        }
-    }
-
     // Handle scroll
     if (scrollDelta != 0) {
         controller.OnMouseScroll(scrollDelta);
     }
 
-    // Debug: Log key states when right mouse is down
-    // if (rightMouseDown && (keyW || keyA || keyS || keyD || keyQ || keyE)) {
-    //     INXLOG_INFO("Keys: W=", keyW, " A=", keyA, " S=", keyS, " D=", keyD, " Q=", keyQ, " E=", keyE);
-    // }
-
-    // Handle key state
-    if (keyW)
-        controller.OnKeyDown(87);
-    else
-        controller.OnKeyUp(87);
-    if (keyA)
-        controller.OnKeyDown(65);
-    else
-        controller.OnKeyUp(65);
-    if (keyS)
-        controller.OnKeyDown(83);
-    else
-        controller.OnKeyUp(83);
-    if (keyD)
-        controller.OnKeyDown(68);
-    else
-        controller.OnKeyUp(68);
-    if (keyQ)
-        controller.OnKeyDown(81);
-    else
-        controller.OnKeyUp(81);
-    if (keyE)
-        controller.OnKeyDown(69);
-    else
-        controller.OnKeyUp(69);
-    if (keyShift)
-        controller.OnKeyDown(340);
-    else
-        controller.OnKeyUp(340);
-
-    // Update camera controller (for fly mode)
-    controller.Update(deltaTime);
+    controller.ProcessInput(deltaTime, rightMouseDown, middleMouseDown, mouseDeltaX, mouseDeltaY, keyW, keyA, keyS,
+                            keyD, keyQ, keyE, keyShift);
 }
 
 } // namespace infernux

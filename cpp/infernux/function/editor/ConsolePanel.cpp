@@ -1,5 +1,8 @@
 #include "ConsolePanel.h"
 
+#include <function/scene/GameObject.h>
+#include <function/scene/Scene.h>
+#include <function/scene/SceneManager.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -17,7 +20,8 @@ namespace infernux
 // Construction / Destruction
 // ════════════════════════════════════════════════════════════════════
 
-ConsolePanel::ConsolePanel() : EditorPanel("Console", "console")
+ConsolePanel::ConsolePanel(const std::string &projectRoot)
+    : EditorPanel("Console", "console"), m_projectRoot(projectRoot)
 {
     // Subscribe to INXLOG — receives ALL C++ log messages.
     m_sinkId = InxLog::GetInstance().AddSink(
@@ -58,7 +62,8 @@ void ConsolePanel::OnLogMessage(LogLevel level, const char *file, int line, cons
 
     // Cache first line for display
     auto nl = entry.message.find('\n');
-    entry.firstLine = (nl != std::string::npos) ? entry.message.substr(0, nl) : entry.message;
+    entry.firstLine =
+        FormatDiagnosticMessage(level, entry.sourceFile, line, entry.message.substr(0, nl), m_projectRoot);
 
     {
         std::lock_guard<std::mutex> lock(m_logMutex);
@@ -85,7 +90,7 @@ void ConsolePanel::OnLogMessage(LogLevel level, const char *file, int line, cons
 // ════════════════════════════════════════════════════════════════════
 
 void ConsolePanel::LogFromPython(LogLevel level, const std::string &message, const std::string &stackTrace,
-                                 const std::string &sourceFile, int sourceLine)
+                                 const std::string &sourceFile, int sourceLine, const ObjectHandle &contextHandle)
 {
     LogEntry entry;
     entry.level = level;
@@ -93,10 +98,12 @@ void ConsolePanel::LogFromPython(LogLevel level, const std::string &message, con
     entry.stackTrace = stackTrace;
     entry.sourceFile = sourceFile;
     entry.sourceLine = sourceLine;
+    entry.contextHandle = contextHandle;
     entry.timestamp = CurrentTimestamp();
 
     auto nl = entry.message.find('\n');
-    entry.firstLine = (nl != std::string::npos) ? entry.message.substr(0, nl) : entry.message;
+    entry.firstLine =
+        FormatDiagnosticMessage(level, sourceFile, sourceLine, entry.message.substr(0, nl), m_projectRoot);
 
     {
         std::lock_guard<std::mutex> lock(m_logMutex);
@@ -116,6 +123,17 @@ void ConsolePanel::LogFromPython(LogLevel level, const std::string &message, con
         m_pendingLogs.push_back(std::move(entry));
         m_revision.fetch_add(1, std::memory_order_release);
     }
+}
+
+uint64_t ConsolePanel::GetEntryContextObjectId(uint64_t uid)
+{
+    const auto entry =
+        std::find_if(m_logs.begin(), m_logs.end(), [uid](const LogEntry &log) { return log.uid == uid; });
+    if (entry == m_logs.end() || !entry->contextHandle.IsValid())
+        return 0;
+    Scene *scene = SceneManager::Instance().GetSceneByWorldId(entry->contextHandle.worldId);
+    GameObject *object = scene ? scene->ResolveGameObject(entry->contextHandle) : nullptr;
+    return object ? object->GetID() : 0;
 }
 
 void ConsolePanel::Clear()
@@ -388,11 +406,7 @@ bool ConsolePanel::CopySelectedEntry()
         const auto &log = m_logs[visibleEntry.logIndex];
         if (!copyText.empty())
             copyText += "\n\n----------------------------------------\n\n";
-        copyText += "[" + log.timestamp + "] " + log.message;
-        if (!log.sourceFile.empty())
-            copyText += "\n" + log.sourceFile + ":" + std::to_string((std::max)(log.sourceLine, 0));
-        if (!log.stackTrace.empty())
-            copyText += "\n\n" + log.stackTrace;
+        copyText += FormatDiagnosticMessage(log.level, log.sourceFile, log.sourceLine, log.message, m_projectRoot);
     }
     if (copyText.empty())
         return false;
@@ -656,7 +670,10 @@ bool ConsolePanel::MatchesCurrentFilters(const LogEntry &entry) const
 
 std::string ConsolePanel::CollapseKey(const LogEntry &entry) const
 {
-    return std::to_string(static_cast<int>(entry.level)) + "|" + entry.message;
+    return std::to_string(static_cast<int>(entry.level)) + "|" + entry.sourceFile + ":" +
+           std::to_string(entry.sourceLine) + "|" + std::to_string(entry.contextHandle.id) + ":" +
+           std::to_string(entry.contextHandle.generation) + ":" + std::to_string(entry.contextHandle.worldId) + "|" +
+           entry.message;
 }
 
 int ConsolePanel::FindVisibleIndexByUid(uint64_t uid) const
@@ -1091,11 +1108,8 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
             const auto &log = m_logs[ve.logIndex];
             if (!detailText.empty())
                 detailText += "\n\n----------------------------------------\n\n";
-            detailText += "[" + log.timestamp + "]  " + log.message;
-            if (!log.sourceFile.empty())
-                detailText += "\n" + log.sourceFile + ":" + std::to_string((std::max)(log.sourceLine, 0));
-            if (!log.stackTrace.empty())
-                detailText += "\n\n" + log.stackTrace;
+            detailText +=
+                FormatDiagnosticMessage(log.level, log.sourceFile, log.sourceLine, log.message, m_projectRoot);
             if (semanticLabel.empty())
                 semanticLabel = log.firstLine;
             if (log.level == LOG_ERROR || log.level == LOG_FATAL)

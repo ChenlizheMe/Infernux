@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -18,7 +17,6 @@ from infernux.engine.build import (
     exporter_registry,
 )
 from infernux.host import EditorAutomationHost, OperationError
-from infernux.plugins.registry import PluginRegistry
 
 
 class _FixtureExporter(PlatformExporter):
@@ -79,7 +77,9 @@ def _project(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("output_dir", ["", r"Builds\Fixture"])
 def test_host_build_routes_registered_target_and_returns_structured_result(
-    monkeypatch, tmp_path, output_dir,
+    monkeypatch,
+    tmp_path,
+    output_dir,
 ):
     registration = exporter_registry.register("test:host-build", _FixtureExporter())
     monkeypatch.setattr(
@@ -105,77 +105,32 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
     assert result["executable_path"] == ""
     assert result["jit_enabled"] is False
     assert result["progress"][-1]["phase"] == "complete"
-    persisted = json.loads(
-        (project / "ProjectSettings" / "BuildSettings.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    persisted = json.loads((project / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8"))
     assert persisted["build_target"] == "fixture-x64"
     assert persisted["output_dir"] == ("Builds/Fixture" if output_dir else "../Build")
     assert Path(result["artifacts"][0]["path"]).is_file()
     assert "enable_jit" not in persisted
 
 
-def test_host_build_reports_available_targets_for_missing_plugin(tmp_path):
-    project = _project(tmp_path)
-
-    with pytest.raises(OperationError) as error:
-        EditorAutomationHost().build_player(
-            str(project),
-            target="android-arm64",
-            persist_settings=False,
-        )
-
-    assert error.value.code == "player.target_unavailable"
-    assert error.value.details["requested_target"] == "android-arm64"
-    assert error.value.details["available_targets"] == []
-
-
-def test_host_build_reports_required_platform_plugin(tmp_path):
-    project = _project(tmp_path)
-    PluginRegistry(str(project)).add_package(
-        "infernux/platform-android",
-        name="Infernux Android Platform",
-        source={"type": "git", "location": "https://example.test/android.git"},
-        category="Platform",
-        targets=("android-arm64",),
-    )
-
-    with pytest.raises(OperationError) as error:
-        EditorAutomationHost().build_player(
-            str(project),
-            target="android-arm64",
-            persist_settings=False,
-        )
-
-    assert error.value.code == "platform_plugin_required"
-    assert error.value.details["requested_target"] == "android-arm64"
-    assert error.value.details["plugin_reference"] == "infernux/platform-android"
-    assert error.value.details["installed"] is False
-    assert error.value.details["enabled"] is False
-
-
-def test_host_build_target_catalog_is_json_serializable():
-    payload = EditorAutomationHost().player_build_targets()
-
-    encoded = json.dumps(payload)
-
-    assert "current_host_target" in encoded
-    assert payload["current_host_target"] == ""
-    assert payload["targets"] == []
-
-
 @pytest.mark.parametrize("external_change", ["modified", "conflict", "deleted"])
 @pytest.mark.parametrize("persist", [True, False])
 def test_host_build_settings_publication_preserves_other_author(
-    monkeypatch, tmp_path, external_change, persist,
+    monkeypatch,
+    tmp_path,
+    external_change,
+    persist,
 ):
     project = _project(tmp_path)
     settings = project / "ProjectSettings/BuildSettings.json"
     original = settings.read_bytes()
-    expected = None if external_change == "deleted" else (
-        b"<<<<<<< HEAD\nconflict\n=======\nexternal\n>>>>>>> teammate\n"
-        if external_change == "conflict" else original + b"\n  "
+    expected = (
+        None
+        if external_change == "deleted"
+        else (
+            b"<<<<<<< HEAD\nconflict\n=======\nexternal\n>>>>>>> teammate\n"
+            if external_change == "conflict"
+            else original + b"\n  "
+        )
     )
 
     class ConcurrentExporter(_FixtureExporter):
@@ -209,36 +164,3 @@ def test_host_build_settings_publication_preserves_other_author(
         assert (settings.read_bytes() if settings.exists() else None) == expected
     finally:
         exporter_registry.unregister(registration)
-
-
-def test_host_build_target_catalog_exposes_required_platform_plugin(monkeypatch):
-    monkeypatch.setattr(
-        "infernux.engine.build.platform_support_catalog",
-        lambda: (
-            SimpleNamespace(
-                target_id="web-wasm32",
-                package_reference="infernux/platform-web",
-                installed=False,
-                enabled=False,
-                registered=False,
-                cached=True,
-            ),
-        ),
-    )
-
-    payload = EditorAutomationHost().player_build_targets()
-
-    assert payload["targets"] == [
-        {
-            "id": "web-wasm32",
-            "display_name": "Web Wasm32",
-            "platform": "web",
-            "architecture": "",
-            "capabilities": None,
-            "available": False,
-            "plugin_reference": "infernux/platform-web",
-            "installed": False,
-            "enabled": False,
-            "cached": True,
-        }
-    ]

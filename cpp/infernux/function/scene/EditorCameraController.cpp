@@ -64,92 +64,36 @@ void EditorCameraController::OnMouseScroll(float delta)
     ApplyZoom(delta);
 }
 
-void EditorCameraController::OnKeyDown(int keyCode)
+void EditorCameraController::ProcessInput(float deltaTime, bool rightDown, bool middleDown, float deltaX, float deltaY,
+                                          bool forward, bool left, bool back, bool right, bool down, bool up,
+                                          bool boost)
 {
-    // Handle key codes:
-    // - ASCII: 'W'=87, 'w'=119, 'A'=65, 'a'=97, etc.
-    // - SDL scancodes: W=26, A=4, S=22, D=7, Q=20, E=8
-    // - ImGuiKey: LeftShift=340, RightShift=344
-    switch (keyCode) {
-    case 'W': // 87
-    case 'w': // 119
-    case 26:  // SDL scancode W
-        m_keyW = true;
-        break;
-    case 'A': // 65
-    case 'a': // 97
-    case 4:   // SDL scancode A
-        m_keyA = true;
-        break;
-    case 'S': // 83
-    case 's': // 115
-    case 22:  // SDL scancode S
-        m_keyS = true;
-        break;
-    case 'D': // 68
-    case 'd': // 100
-    case 7:   // SDL scancode D
-        m_keyD = true;
-        break;
-    case 'Q': // 81
-    case 'q': // 113
-    case 20:  // SDL scancode Q
-        m_keyQ = true;
-        break;
-    case 'E': // 69
-    case 'e': // 101
-    case 8:   // SDL scancode E
-        m_keyE = true;
-        break;
-    case 225: // SDL Left Shift
-    case 229: // SDL Right Shift
-    case 340: // ImGuiKey_LeftShift
-    case 344: // ImGuiKey_RightShift
-        m_keyShift = true;
-        break;
+    if (rightDown != m_rightMouseDown) {
+        if (rightDown)
+            OnMouseButtonDown(1, 0.0f, 0.0f);
+        else
+            OnMouseButtonUp(1, 0.0f, 0.0f);
     }
-}
-
-void EditorCameraController::OnKeyUp(int keyCode)
-{
-    switch (keyCode) {
-    case 'W':
-    case 'w':
-    case 26:
-        m_keyW = false;
-        break;
-    case 'A':
-    case 'a':
-    case 4:
-        m_keyA = false;
-        break;
-    case 'S':
-    case 's':
-    case 22:
-        m_keyS = false;
-        break;
-    case 'D':
-    case 'd':
-    case 7:
-        m_keyD = false;
-        break;
-    case 'Q':
-    case 'q':
-    case 20:
-        m_keyQ = false;
-        break;
-    case 'E':
-    case 'e':
-    case 8:
-        m_keyE = false;
-        break;
-    case 225:
-    case 229:
-    case 340:
-    case 344:
-        m_keyShift = false;
-        break;
+    if (middleDown != m_middleMouseDown) {
+        if (middleDown)
+            OnMouseButtonDown(2, 0.0f, 0.0f);
+        else
+            OnMouseButtonUp(2, 0.0f, 0.0f);
     }
+    if (deltaX != 0.0f || deltaY != 0.0f) {
+        if (rightDown)
+            ApplyRotation(deltaX, deltaY);
+        else if (middleDown)
+            ApplyPan(deltaX, deltaY);
+    }
+    m_keyW = forward;
+    m_keyA = left;
+    m_keyS = back;
+    m_keyD = right;
+    m_keyQ = down;
+    m_keyE = up;
+    m_keyShift = boost;
+    Update(std::max(deltaTime, 0.0f));
 }
 
 void EditorCameraController::FocusOn(const glm::vec3 &point, float distance)

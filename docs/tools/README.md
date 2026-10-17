@@ -38,9 +38,7 @@ constitute completion or a promised release date. `roadmap-layout.js` lays out
 the actual branch sizes radially with a stable seed and reserved bilingual label
 footprints. Run `node docs/tools/test-roadmap-data.mjs` after edits to catch duplicate
 goals, missing translations, disconnected nodes and overlapping footprints.
-The maps are curated, not padded: every map keeps at least six branches with three
-leaves each and the whole roadmap at least 1,200 goals. Remove goals that duplicate
-another map or describe no engine work; promote a goal to `live` only with a code
+Remove goals that duplicate another map or describe no engine work; promote a goal to `live` only with a code
 reference recorded in the audit document.
 
 The GitHub workflows in `.github/workflows/build-wiki.yml` and

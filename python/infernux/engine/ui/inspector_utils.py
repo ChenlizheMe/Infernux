@@ -19,14 +19,14 @@ Hierarchy of abstractions
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import fields as dataclass_fields, is_dataclass, replace
 from functools import lru_cache
 from typing import Any
 
 from infernux.lib import InxGUIContext
+from infernux.engine.i18n import t
 from .dpi import editor_dpi_scale
-from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
+from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -34,13 +34,10 @@ from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
 # ═══════════════════════════════════════════════════════════════════════════
 
 DRAG_SPEED_DEFAULT: float = 0.1
-"""Default drag-float speed — matches Unity feel."""
 
 DRAG_SPEED_FINE: float = 0.01
-"""Fine drag speed for scale / small-precision fields."""
 
 DRAG_SPEED_INT: float = 1.0
-"""Drag speed for integer fields."""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -146,6 +143,11 @@ def pretty_field_name(name: str) -> str:
     return format_display_name(name, title_case=True)
 
 
+def serialized_field_label(name: str, metadata) -> str:
+    key = metadata.display_name_key
+    return t(key) if key else pretty_field_name(name)
+
+
 def semantic_capture_enabled(ctx: InxGUIContext) -> bool:
     """Return whether this frame is collecting an MCP semantic snapshot.
 
@@ -232,10 +234,7 @@ def field_label(ctx: InxGUIContext, label: str, width: float = 0.0):
             ctx.calc_text_width(label) + Theme.INSPECTOR_LABEL_PAD,
             Theme.INSPECTOR_MIN_LABEL_WIDTH,
         )
-    ctx.align_text_to_frame_padding()
-    ctx.label(label)
-    ctx.same_line(width)
-    ctx.set_next_item_width(-1)
+    ctx.field_label(label, width)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -927,6 +926,7 @@ def render_compact_section_header(
     text_color=None,
     level: str = "secondary",
     allow_overlap: bool = False,
+    header_id: str = "",
 ) -> bool:
     """Render a compact framed tree header shared by inspector-style panels."""
     if level == "primary":
@@ -963,7 +963,7 @@ def render_compact_section_header(
     dpi = editor_dpi_scale(ctx)
     effective_text_color = text_color if text_color is not None else Theme.TEXT
     return bool(native_header(
-        label,
+        f"{label}###{header_id}" if header_id else label,
         int(icon_id or 0),
         bool(default_open),
         Theme.COND_FIRST_USE_EVER,

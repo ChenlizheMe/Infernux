@@ -1,5 +1,6 @@
 #include "RhiComputeBuffer.h"
 #include "RhiComputeKernel.h"
+#include <core/log/InxLog.h>
 
 #include <limits>
 #include <stdexcept>
@@ -42,7 +43,9 @@ ComputeBuffer::~ComputeBuffer()
     if (m_uploadTicket.IsValid()) {
         try {
             m_host.queue.Wait(m_uploadTicket);
-        } catch (...) {
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("Compute buffer upload wait failed during release; allocation follows GPU retirement: ",
+                         error.what());
         }
     }
 }

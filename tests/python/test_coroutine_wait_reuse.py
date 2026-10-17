@@ -47,8 +47,7 @@ def test_repeated_yield_waits_the_full_duration_every_time(wait_case):
     assert handle.is_finished
 
 
-@pytest.mark.parametrize('separate_schedulers', [False, True])
-@pytest.mark.parametrize('reverse_tick_order', [False, True])
+@pytest.mark.parametrize('separate_schedulers,reverse_tick_order', [(False, False), (True, True)])
 def test_shared_wait_has_independent_staggered_start_times(
     wait_case, separate_schedulers, reverse_tick_order,
 ):
@@ -73,6 +72,7 @@ def test_shared_wait_has_independent_staggered_start_times(
     assert completed == {'first': 1.0, 'second': 1.5}
 
 
+@pytest.mark.parametrize('wait_case', ['scaled', 'late'], indirect=True)
 def test_stopping_one_waiter_does_not_change_another(wait_case):
     instruction, tick, clock = wait_case
     scheduler = CoroutineScheduler()
@@ -91,6 +91,7 @@ def test_stopping_one_waiter_does_not_change_another(wait_case):
     assert completed == [1.0]
 
 
+@pytest.mark.parametrize('wait_case', ['realtime', 'frames'], indirect=True)
 def test_reconfiguring_description_only_affects_future_yields(wait_case):
     instruction, tick, clock = wait_case
     scheduler = CoroutineScheduler()

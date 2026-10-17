@@ -8,6 +8,18 @@
 namespace infernux::vk
 {
 
+#if INFERNUX_FRAME_PROFILE
+namespace
+{
+thread_local GpuTimestampQueries *s_recordingQueries = nullptr;
+}
+
+GpuTimestampQueries *GpuTimestampQueries::CurrentRecording() noexcept
+{
+    return s_recordingQueries;
+}
+#endif
+
 GpuTimestampQueries::~GpuTimestampQueries()
 {
     Destroy();
@@ -63,6 +75,10 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
 
 void GpuTimestampQueries::Destroy() noexcept
 {
+#if INFERNUX_FRAME_PROFILE
+    if (s_recordingQueries == this)
+        s_recordingQueries = nullptr;
+#endif
     if (m_device != VK_NULL_HANDLE) {
         for (auto &frame : m_frames) {
             if (frame.pool != VK_NULL_HANDLE) {
@@ -82,6 +98,9 @@ void GpuTimestampQueries::Destroy() noexcept
 
 void GpuTimestampQueries::BeginFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex)
 {
+#if INFERNUX_FRAME_PROFILE
+    s_recordingQueries = nullptr;
+#endif
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
     if (!m_capabilities.supported || commandBuffer == VK_NULL_HANDLE || frameIndex >= m_frames.size()) {
         return;
@@ -94,6 +113,9 @@ void GpuTimestampQueries::BeginFrame(VkCommandBuffer commandBuffer, uint32_t fra
     frame.recorded = false;
     vkCmdResetQueryPool(commandBuffer, frame.pool, 0, m_maxQueriesPerFrame);
     m_recordingFrame = frameIndex;
+#if INFERNUX_FRAME_PROFILE
+    s_recordingQueries = this;
+#endif
 }
 
 rhi::TimestampRegionHandle GpuTimestampQueries::BeginRegion(VkCommandBuffer commandBuffer, std::string_view name,
@@ -141,6 +163,10 @@ void GpuTimestampQueries::FinishFrame(uint32_t frameIndex) noexcept
         m_frames[frameIndex].recorded = m_frames[frameIndex].queryCount > 0;
     }
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
+#if INFERNUX_FRAME_PROFILE
+    if (s_recordingQueries == this)
+        s_recordingQueries = nullptr;
+#endif
 }
 
 void GpuTimestampQueries::MarkSubmitted(uint32_t frameIndex) noexcept

@@ -5,12 +5,12 @@
 #include <function/scene/TransformECSStore.h>
 #include <function/scene/physics/PhysicsECSStore.h>
 
+#include "BroadphaseQueuePublicationTests.h"
+#include "CompoundColliderPublicationTests.h"
+#include "PhysicsQueryDefaultMaskTests.h"
+#include "TransformHierarchyPublicationTests.h"
 #include <cassert>
 #include <vector>
-#include "TransformHierarchyPublicationTests.h"
-#include "CompoundColliderPublicationTests.h"
-#include "BroadphaseQueuePublicationTests.h"
-#include "PhysicsQueryDefaultMaskTests.h"
 
 using infernux::GameObject;
 using infernux::PhysicsECSStore;
@@ -217,6 +217,27 @@ int main()
     manager.ClearRuntimeLifecycleCallbacks();
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
     assert(observed.empty());
+
+    int selfClearingBarriers = 0;
+    manager.SetRuntimeFrameBarrierCallback([&](Barrier) {
+        ++selfClearingBarriers;
+        manager.SetRuntimeFrameBarrierCallback({});
+    });
+    manager.EmitRuntimeFrameBarrier(Barrier::RenderGraph);
+    manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
+    assert(selfClearingBarriers == 1);
+    int selfClearingEnds = 0;
+    manager.SetRuntimeLifecycleCallbacks([] {}, [](float) {}, [](float) {}, [](float) {}, [](float) {},
+                                         [&] {
+                                             ++selfClearingEnds;
+                                             manager.ClearRuntimeLifecycleCallbacks();
+                                         });
+    manager.SetRuntimeLifecycleWorkAvailable(true);
+    manager.SetRuntimeLifecyclePlan(0, 0, 0, 0);
+    manager.Update(0.0f);
+    manager.EndFrame();
+    manager.EndFrame();
+    assert(selfClearingEnds == 1);
     manager.UnloadAllScenes();
     try {
         TestBroadphaseQueuePublication();

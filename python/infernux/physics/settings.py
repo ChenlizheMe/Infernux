@@ -179,7 +179,7 @@ def save(project_path: str, settings: dict) -> None:
 
 def apply(settings: dict) -> None:
     """Push *settings* into the live engine (gravity, fixed timestep, etc.)."""
-    from infernux.lib import EngineConfig, SceneManager, Vector3
+    from infernux.lib import EngineConfig, SceneManager
     from infernux.physics import Physics
     from infernux.timing import Time
 

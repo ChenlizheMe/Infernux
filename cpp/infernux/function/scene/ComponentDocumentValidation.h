@@ -6,6 +6,11 @@
 #include <string_view>
 #include <vector>
 
+namespace infernux
+{
+struct SemanticTypeDescriptor;
+}
+
 namespace infernux::component_document_validation
 {
 
@@ -23,5 +28,7 @@ const std::string &RequireString(const nlohmann::json &document, std::string_vie
                                  std::string_view componentType);
 void RequireFiniteVector(const nlohmann::json &document, std::string_view field, size_t size,
                          std::string_view componentType);
+void ValidateDeclaredFields(const nlohmann::json &document, std::string_view componentType,
+                            const SemanticTypeDescriptor &declaration);
 
 } // namespace infernux::component_document_validation

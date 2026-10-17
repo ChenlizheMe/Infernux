@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <limits>
 
 namespace infernux
@@ -113,7 +114,7 @@ ReadbackFormatInfo GetReadbackFormatInfo(VkFormat format)
     }
 }
 
-void WaitForFencePumpingEvents(VkDevice device, VkFence fence)
+VkResult WaitForFencePumpingEvents(VkDevice device, VkFence fence)
 {
     constexpr uint64_t kPollTimeoutNs = 50'000'000; // 50 ms
     // A healthy submission signals in milliseconds. A fence that stays
@@ -123,15 +124,16 @@ void WaitForFencePumpingEvents(VkDevice device, VkFence fence)
     for (int poll = 0; poll < kMaxPolls; ++poll) {
         VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, kPollTimeoutNs);
         if (result == VK_SUCCESS) {
-            return;
+            return result;
         }
         if (result != VK_TIMEOUT) {
             INXLOG_ERROR("VkResourceManager::EndSingleTimeCommands fence wait failed: ", result);
-            return;
+            return result;
         }
         SDL_PumpEvents();
     }
-    INXLOG_ERROR("Fence wait abandoned after 10 s (device lost or driver hang); continuing without GPU completion");
+    INXLOG_ERROR("Fence wait failed after 10 s; GPU completion has not been proven");
+    return VK_TIMEOUT;
 }
 
 } // namespace
@@ -260,15 +262,23 @@ void VkResourceManager::Destroy() noexcept
         return;
     }
 
+    if (!m_skipWaitIdle) {
+        const VkResult result = vkDeviceWaitIdle(m_device);
+        if (result != VK_SUCCESS) {
+            INXLOG_ERROR("VkResourceManager shutdown idle wait failed with VkResult ", result);
+            if (result != VK_ERROR_DEVICE_LOST)
+                std::terminate();
+        }
+    }
     DrainBufferUploads();
     DrainAsyncGraphicsSubmissions();
-
-    if (!m_skipWaitIdle) {
-        vkDeviceWaitIdle(m_device);
-    }
-    // A frame readback may still own staging referenced by the frame command
-    // buffer. Recycling can discard the allocation when the pool is full.
     DrainImageReadbacks();
+    // Device idle or loss proves resources are no longer executing, even if a
+    // failed fence poll could not publish successful completion to a ticket.
+    m_pendingBufferUploads.clear();
+    m_pendingTextureUploads.clear();
+    m_pendingAsyncGraphicsSubmissions.clear();
+    m_pendingImageReadbacks.clear();
     ClearStagingPool();
 
     // Destroy samplers
@@ -520,12 +530,14 @@ void VkResourceManager::DrainBufferUploads() noexcept
                 ticket->m_upload = {};
                 RecycleStagingBuffer(std::move(ticket->m_staging));
                 ticket->m_complete = true;
-            } catch (...) {
-                INXLOG_ERROR("Failed while draining a pending GPU buffer upload");
+            } catch (const std::exception &error) {
+                INXLOG_ERROR("Failed while draining a pending GPU buffer upload: ", error.what());
             }
         }
     }
-    m_pendingBufferUploads.clear();
+    m_pendingBufferUploads.erase(std::remove_if(m_pendingBufferUploads.begin(), m_pendingBufferUploads.end(),
+                                                [](const auto &ticket) { return !ticket || ticket->m_complete; }),
+                                 m_pendingBufferUploads.end());
 
     if (m_asyncTransfer) {
         for (const auto &ticket : m_pendingTextureUploads) {
@@ -536,12 +548,14 @@ void VkResourceManager::DrainBufferUploads() noexcept
                 ticket->m_upload = {};
                 RecycleStagingBuffer(std::move(ticket->m_staging));
                 ticket->m_complete = true;
-            } catch (...) {
-                INXLOG_ERROR("Failed while draining a pending GPU texture upload");
+            } catch (const std::exception &error) {
+                INXLOG_ERROR("Failed while draining a pending GPU texture upload: ", error.what());
             }
         }
     }
-    m_pendingTextureUploads.clear();
+    m_pendingTextureUploads.erase(std::remove_if(m_pendingTextureUploads.begin(), m_pendingTextureUploads.end(),
+                                                 [](const auto &ticket) { return !ticket || ticket->m_complete; }),
+                                  m_pendingTextureUploads.end());
 }
 
 std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const rhi::TextureUploadRequest &request)
@@ -978,9 +992,12 @@ void VkResourceManager::AbandonGraphicsImageReadback(GraphicsImageReadbackRecord
             if (m_queueManager)
                 m_queueManager->CompleteCompletionEpoch(completionEpoch);
         }
-        vkResetCommandBuffer(commandBuffer, 0);
-        std::lock_guard<std::mutex> guard(m_singleTimeMutex);
-        m_freeSingleTimeCmdBuffers.push_back(commandBuffer);
+        if (vkResetCommandBuffer(commandBuffer, 0) == VK_SUCCESS) {
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            m_freeSingleTimeCmdBuffers.push_back(commandBuffer);
+        } else {
+            INXLOG_ERROR("Abandoned image-readback command buffer could not be reset");
+        }
     }
     if (ticket)
         RecycleStagingBuffer(std::move(ticket->m_staging));
@@ -1046,13 +1063,16 @@ void VkResourceManager::DrainImageReadbacks() noexcept
             FinalizeImageReadback(ticket);
             continue;
         }
-        if (ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial) {
+        if (ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial && m_queueManager &&
+            m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch)) {
             ticket->Cancel();
             FinalizeImageReadback(ticket);
             continue;
         }
     }
-    m_pendingImageReadbacks.clear();
+    m_pendingImageReadbacks.erase(std::remove_if(m_pendingImageReadbacks.begin(), m_pendingImageReadbacks.end(),
+                                                 [](const auto &ticket) { return !ticket || !ticket->m_staging; }),
+                                  m_pendingImageReadbacks.end());
 }
 
 uint64_t VkResourceManager::GetPendingImageReadbackBytes() const noexcept
@@ -1202,61 +1222,6 @@ std::unique_ptr<VkImageHandle> VkResourceManager::CreateDepthBuffer(uint32_t wid
     }
 
     return depthImage;
-}
-
-void VkResourceManager::TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout,
-                                              VkImageLayout newLayout)
-{
-    VkCommandBuffer cmdBuffer = BeginSingleTimeCommands();
-
-    VkImageMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        barrier.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(format);
-    } else {
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    }
-
-    VkPipelineStageFlags srcStage;
-    VkPipelineStageFlags dstStage;
-
-    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
-               newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-               newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask =
-            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        dstStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    } else {
-        INXLOG_WARN("Unsupported layout transition");
-        srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        dstStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    }
-
-    vkCmdPipelineBarrier(cmdBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-    EndSingleTimeCommands(cmdBuffer);
 }
 
 void VkResourceManager::CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
@@ -1433,7 +1398,7 @@ void VkResourceManager::EndSingleTimeCommands(VkCommandBuffer cmdBuffer)
         finishEpoch();
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
         m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
-        return;
+        throw std::runtime_error("Failed to end single-time graphics command buffer");
     }
 
     // Acquire (or lazily create) a recycled fence.
@@ -1453,12 +1418,15 @@ void VkResourceManager::EndSingleTimeCommands(VkCommandBuffer cmdBuffer)
             finishEpoch();
             std::lock_guard<std::mutex> guard(m_singleTimeMutex);
             m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
-            return;
+            throw std::runtime_error("Failed to create single-time graphics submission fence");
         }
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
         m_allSingleTimeFences.push_back(submitFence);
-    } else {
-        vkResetFences(m_device, 1, &submitFence);
+    } else if (vkResetFences(m_device, 1, &submitFence) != VK_SUCCESS) {
+        finishEpoch();
+        std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+        m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+        throw std::runtime_error("Single-time graphics fence reset failed");
     }
 
     VkSubmitInfo submitInfo{};
@@ -1493,9 +1461,21 @@ void VkResourceManager::EndSingleTimeCommands(VkCommandBuffer cmdBuffer)
             m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
         }
         finishEpoch();
-        return;
+        throw std::runtime_error("Failed to submit single-time graphics command buffer");
     }
-    WaitForFencePumpingEvents(m_device, submitFence);
+    const VkResult waitResult = WaitForFencePumpingEvents(m_device, submitFence);
+    if (waitResult != VK_SUCCESS) {
+        if (waitResult != VK_ERROR_DEVICE_LOST)
+            std::terminate(); // Synchronous callers may own stack-scoped GPU resources.
+        auto pending = std::shared_ptr<GraphicsSubmissionTicket>(new GraphicsSubmissionTicket());
+        pending->m_fence = submitFence;
+        pending->m_commandBuffer = cmdBuffer;
+        pending->m_submission = submission;
+        pending->m_completionEpoch = completionEpoch;
+        std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+        m_pendingAsyncGraphicsSubmissions.push_back(std::move(pending));
+        throw std::runtime_error("Single-time graphics wait failed; submission remains pending");
+    }
     if (m_queueManager && submission.IsValid())
         m_queueManager->MarkCompleted(submission);
     finishEpoch();
@@ -1561,7 +1541,7 @@ VkResourceManager::EndSingleTimeCommandsAsync(VkCommandBuffer cmdBuffer, std::fu
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
         m_allSingleTimeFences.push_back(submitFence);
     } else if (vkResetFences(m_device, 1, &submitFence) != VK_SUCCESS) {
-        recycleUnsubmitted(submitFence);
+        recycleUnsubmitted();
         throw std::runtime_error("Failed to reset asynchronous graphics submission fence");
     }
 
@@ -1659,14 +1639,17 @@ void VkResourceManager::DrainAsyncGraphicsSubmissions() noexcept
         for (auto &submission : m_pendingAsyncGraphicsSubmissions) {
             if (!submission || submission->m_fence == VK_NULL_HANDLE)
                 continue;
-            WaitForFencePumpingEvents(m_device, submission->m_fence);
+            if (WaitForFencePumpingEvents(m_device, submission->m_fence) != VK_SUCCESS)
+                continue;
             m_freeSingleTimeFences.push_back(submission->m_fence);
             m_freeSingleTimeCmdBuffers.push_back(submission->m_commandBuffer);
             submission->m_fence = VK_NULL_HANDLE;
             submission->m_commandBuffer = VK_NULL_HANDLE;
             completed.push_back(std::move(submission));
         }
-        m_pendingAsyncGraphicsSubmissions.clear();
+        m_pendingAsyncGraphicsSubmissions.erase(
+            std::remove(m_pendingAsyncGraphicsSubmissions.begin(), m_pendingAsyncGraphicsSubmissions.end(), nullptr),
+            m_pendingAsyncGraphicsSubmissions.end());
     }
 
     for (const auto &submission : completed) {

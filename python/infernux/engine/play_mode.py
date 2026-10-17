@@ -14,17 +14,14 @@ Handles:
 
 import time
 import os
-import sys
 import types
 from enum import Enum, auto
-from typing import Optional, List, Dict, Any, Callable, Iterable, TYPE_CHECKING
+from typing import Optional, List, Any, Callable, Iterable
 from dataclasses import dataclass
-from infernux.debug import Debug, LogType
+from infernux.debug import Debug
+from infernux.lib import InputManager as _NativeInputManager
 from infernux.engine.project_context import resolve_script_path
 
-if TYPE_CHECKING:
-    from infernux.lib import SceneManager, Scene, GameObject
-    from infernux.components.component import InxComponent
 
 
 class PlayModeState(Enum):
@@ -259,8 +256,8 @@ class _MissingScriptRecoveryTransaction:
             return {}
         from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
+        assert_runtime_dispatch_safe_point()
         try:
-            assert_runtime_dispatch_safe_point()
             changed_by_type = self.body_transaction.commit()
             self._prepare_replacements()
             for member, instance in self._prepared:
@@ -387,13 +384,10 @@ class ScriptDeleteBatch:
             raise RuntimeError("script delete batch has been rolled back")
         if self._committed:
             return len(self._replaced)
-        try:
-            from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+        from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
-            # Reject before replacing the first live component.  Waiting
-            # until dispatch retirement would expose a half-deleted scene to
-            # an active lifecycle frame before the compensating rollback.
-            assert_runtime_dispatch_safe_point()
+        assert_runtime_dispatch_safe_point()
+        try:
             for member in self.members:
                 obj = self.manager._find_runtime_object_for_script_reload(
                     member.object_id
@@ -710,10 +704,16 @@ class PlayModeManager(PlayModeSerializationMixin):
             )
             return False
 
-        # ── Step functions (closures capture self) ───────────────────
+        progress = None
+
+        def report_progress(value, message):
+            if progress is not None:
+                progress.update(value, message)
+
         def step_enter():
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
             transition_started = time.perf_counter()
+            report_progress(0.05, "Saving the authored scene")
             # Capture authoring before any preparation can modify the graph.
             # Capture failure leaves Edit untouched and must not reuse an old backup.
             snapshot_started = time.perf_counter()
@@ -742,6 +742,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 notify_ms = (time.perf_counter() - notify_started) * 1000.0
                 sprite_init_started = time.perf_counter()
                 from infernux.components.builtin.sprite_renderer import SpriteRenderer
+                report_progress(0.2, "Preparing sprite resources")
                 for scene in self._loaded_scenes():
                     SpriteRenderer.init_all_in_scene(scene)
                 sprite_init_ms = (time.perf_counter() - sprite_init_started) * 1000.0
@@ -749,6 +750,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 # Retain native objects on the success path, replacing only the
                 # scripting domain. The same full snapshot owns every failure.
                 rebuild_started = time.perf_counter()
+                report_progress(0.4, "Preparing script components")
                 prepared = (
                     self._prepare_loaded_scenes_for_play()
                     if self._scene_backups
@@ -767,11 +769,14 @@ class PlayModeManager(PlayModeSerializationMixin):
                 self._invalidate_native_gpu_view_state()
                 from infernux.engine.startup_warmup import run_project_script_warmups, run_component_warmups
                 from infernux.engine.project_context import get_project_root
+                report_progress(0.6, "Warming project scripts")
                 run_project_script_warmups(
                     project_path=get_project_root(), scope="editor-startup"
                 )
+                report_progress(0.75, "Starting scene components")
                 scene_manager.play()
                 from infernux.components.component import InxComponent
+                report_progress(0.9, "Warming component resources")
                 run_component_warmups(
                     (
                         component
@@ -796,6 +801,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                     from infernux.input import Input
                     Input.set_game_focused(False)
                     Input.set_cursor_locked(False)
+                    _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
                     self._cancel_runtime_scene_loads()
                     AssetManager._end_play_data_asset_isolation()
                     restored = (
@@ -835,6 +841,26 @@ class PlayModeManager(PlayModeSerializationMixin):
                 "notify": notify_ms,
             }
 
+        def enter_with_progress():
+            nonlocal progress
+            from infernux.lib import RuntimeMode
+            if self._native_engine is not None and self._native_engine.runtime_mode == RuntimeMode.Graphical:
+                from infernux.engine.ui.busy_progress import BusyProgress
+                try:
+                    progress = BusyProgress()
+                except OSError as exc:
+                    # The progress window is presentation-only. A missing or
+                    # blocked helper executable must never block Enter Play.
+                    from infernux.debug import Debug
+                    Debug.report_recovered(exc, "PlayMode.progress_window")
+                    progress = None
+            try:
+                step_enter()
+            finally:
+                if progress is not None:
+                    progress.close()
+                    progress = None
+
         def on_done(ok):
             from infernux.engine.ui.engine_status import EngineStatus
             if ok:
@@ -843,7 +869,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 EngineStatus.flash("启动失败 Play Failed", 0.0, duration=2.0)
 
         runner.submit("Enter Play Mode", [
-            ("启动运行模式 Entering play mode...", 0.5, step_enter),
+            ("启动运行模式 Entering play mode...", 0.5, enter_with_progress),
         ], on_done=on_done)
         return True
     
@@ -889,6 +915,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         from infernux.input import Input
         Input.set_game_focused(False)
         Input.set_cursor_locked(False)
+        _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
 
         # Stopping simulation does not publish an authored scene. Keep saves
         # disabled until the retained snapshot has been restored successfully.
@@ -981,6 +1008,10 @@ class PlayModeManager(PlayModeSerializationMixin):
         scene_manager = self._get_scene_manager()
         if scene_manager:
             scene_manager.pause()
+
+        from infernux.input import Input
+        Input.set_game_focused(False)
+        _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
 
         old_state = self._state
         self._state = PlayModeState.PAUSED

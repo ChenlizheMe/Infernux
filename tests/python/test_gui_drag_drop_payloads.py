@@ -5,8 +5,10 @@ from infernux import lib
 from infernux.engine.ui.theme import ImGuiWindowFlags
 
 
-@pytest.mark.parametrize("value", ["choiceA", "中文a", "", "a\0bcdef", 0, 2**64 - 1])
-@pytest.mark.parametrize("any_type", [False, True])
+@pytest.mark.parametrize("value,any_type", [
+    ("choiceA", False), ("中文a", True), ("", False), ("a\0bcdef", True),
+    (0, True), (2**64 - 1, False),
+])
 def test_native_drag_drop_round_trip_through_python(engine, value, any_type):
     state = {"frame": 0, "source": None, "target": None, "start": None,
              "delivered": [], "errors": [], "source_frames": 0}

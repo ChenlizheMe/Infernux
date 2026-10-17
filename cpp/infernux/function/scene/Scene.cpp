@@ -401,6 +401,7 @@ void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 
 void Scene::RemoveGameObject(GameObject *gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject || gameObject->IsDestroying())
         return;
 
@@ -635,6 +636,30 @@ void Scene::RegisterAuthoringComponent(uint64_t componentId)
     m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, componentId + 1);
 }
 
+void Scene::RekeyAuthoringComponent(uint64_t previousId, uint64_t componentId)
+{
+    if (previousId == componentId)
+        return;
+    const auto previous = m_authoringIdentity.components.find(previousId);
+    // A prepared component receives its ID before it is attached/published.
+    if (previous == m_authoringIdentity.components.end())
+        return;
+    if (Component::FindByComponentId(componentId))
+        throw std::invalid_argument("Component ID is already assigned to a live component");
+    // Deleted identities remain reserved for Undo and missing references.
+    // Explicitly restoring such an ID restores its existing author GUID.
+    m_authoringIdentity.components.try_emplace(componentId, previous->second);
+    m_authoringIdentity.components.erase(previousId);
+    if (m_pendingStartComponentIdSet.erase(previousId)) {
+        m_pendingStartComponentIdSet.insert(componentId);
+        for (auto &pendingId : m_pendingStartComponentIds)
+            if (pendingId == previousId)
+                pendingId = componentId;
+    }
+    m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, componentId + 1);
+    ++m_structureVersion;
+}
+
 void Scene::CopySubtreeAuthoringIdentity(const GameObject &object, const Scene &source)
 {
     SceneAuthoringIdentity incoming;
@@ -799,59 +824,58 @@ void Scene::Start()
 
     PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
 
-    // ---- Unity-correct 2-pass lifecycle ----
-    // Pass 1: Awake + OnEnable on every object/component
-    for (size_t i = 0; i < m_rootObjects.size(); ++i) {
-        AwakeObject(m_rootObjects[i].get());
-    }
-    // Pass 2: Start on every enabled component (all Awake calls finished)
-    for (size_t i = 0; i < m_rootObjects.size(); ++i) {
-        StartObject(m_rootObjects[i].get());
-    }
+    std::vector<ObjectHandle> roots;
+    roots.reserve(m_rootObjects.size());
+    for (const auto &root : m_rootObjects)
+        roots.push_back(root->GetHandle());
+    for (ObjectHandle root : roots)
+        AwakeObject(ResolveGameObject(root));
+    // Components added by Awake already receive Awake on attachment; include
+    // newly published roots in Start without skipping survivors after removal.
+    roots.clear();
+    for (const auto &root : m_rootObjects)
+        roots.push_back(root->GetHandle());
+    for (ObjectHandle root : roots)
+        StartObject(ResolveGameObject(root));
 }
 
 void Scene::AwakeObject(GameObject *obj)
 {
-    if (!obj)
-        return;
-
-    // Unity: Awake is only called on GameObjects that are active in the hierarchy.
-    // Inactive objects will have Awake deferred until they are first activated
-    // (handled by GameObject::HandleActiveStateChanged).
-    if (!obj->IsActiveInHierarchy())
-        return;
-
-    const auto &components = obj->GetComponentsInExecutionOrderCached();
-    for (Component *component : components) {
-        if (component) {
-            component->CallAwake();
-        }
-    }
-
-    const auto &children = obj->GetChildren();
-    for (size_t i = 0; i < children.size(); ++i) {
-        AwakeObject(children[i].get());
-    }
+    DispatchInitialLifecycle(obj, false);
 }
 
 void Scene::StartObject(GameObject *obj)
 {
-    if (!obj)
+    DispatchInitialLifecycle(obj, true);
+}
+
+void Scene::DispatchInitialLifecycle(GameObject *obj, bool start)
+{
+    if (!obj || !obj->IsActiveInHierarchy())
         return;
-
-    const bool activeInHierarchy = obj->IsActiveInHierarchy();
-
-    const auto &components = obj->GetComponentsInExecutionOrderCached();
-    for (Component *component : components) {
-        if (component && activeInHierarchy && component->IsEnabled()) {
-            component->CallStart();
+    const ObjectHandle owner = obj->GetHandle();
+    const auto components = obj->GetComponentDispatchSnapshot();
+    for (ObjectHandle handle : *components) {
+        if (!ResolveGameObject(owner))
+            return;
+        Component *component = ResolveComponent(handle);
+        if (!component)
+            continue;
+        if (start) {
+            if (component->IsEnabled())
+                component->CallStart();
+        } else {
+            component->CallAwake();
         }
     }
-
-    const auto &children = obj->GetChildren();
-    for (size_t i = 0; i < children.size(); ++i) {
-        StartObject(children[i].get());
-    }
+    obj = ResolveGameObject(owner);
+    if (!obj)
+        return;
+    std::vector<ObjectHandle> children;
+    for (const auto &child : obj->GetChildren())
+        children.push_back(child->GetHandle());
+    for (ObjectHandle handle : children)
+        DispatchInitialLifecycle(ResolveGameObject(handle), start);
 }
 
 void Scene::Update(float deltaTime)
@@ -874,7 +898,7 @@ void Scene::Update(float deltaTime)
     RebuildRuntimeLifecycleObjectCaches();
     const size_t receiverCount = m_updateObjects.size();
     for (size_t i = 0; i < receiverCount && i < m_updateObjects.size(); ++i) {
-        GameObject *object = m_updateObjects[i];
+        GameObject *object = ResolveGameObject(m_updateObjects[i]);
         if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
             object->Update(deltaTime);
     }
@@ -892,7 +916,7 @@ void Scene::FixedUpdate(float fixedDeltaTime)
     RebuildRuntimeLifecycleObjectCaches();
     const size_t receiverCount = m_fixedUpdateObjects.size();
     for (size_t i = 0; i < receiverCount && i < m_fixedUpdateObjects.size(); ++i) {
-        GameObject *object = m_fixedUpdateObjects[i];
+        GameObject *object = ResolveGameObject(m_fixedUpdateObjects[i]);
         if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
             object->FixedUpdate(fixedDeltaTime);
     }
@@ -902,14 +926,16 @@ void Scene::TraverseActiveObjects(GameObject *obj, float dt, void (GameObject::*
 {
     if (!obj || !obj->IsActiveInHierarchy() || IsPendingDestroy(obj))
         return;
-
+    const ObjectHandle owner = obj->GetHandle();
     (obj->*updateMethod)(dt);
-
-    const auto &children = obj->GetChildren();
-    const size_t childCount = children.size();
-    for (size_t i = 0; i < childCount && i < children.size(); ++i) {
-        TraverseActiveObjects(children[i].get(), dt, updateMethod);
-    }
+    obj = ResolveGameObject(owner);
+    if (!obj)
+        return;
+    std::vector<ObjectHandle> children;
+    for (const auto &child : obj->GetChildren())
+        children.push_back(child->GetHandle());
+    for (ObjectHandle handle : children)
+        TraverseActiveObjects(ResolveGameObject(handle), dt, updateMethod);
 }
 
 void Scene::CollectRuntimeLifecycleObjects(GameObject *obj)
@@ -918,11 +944,11 @@ void Scene::CollectRuntimeLifecycleObjects(GameObject *obj)
         return;
 
     if (obj->m_hasUpdateReceivers)
-        m_updateObjects.push_back(obj);
+        m_updateObjects.push_back(obj->GetHandle());
     if (obj->m_hasFixedUpdateReceivers)
-        m_fixedUpdateObjects.push_back(obj);
+        m_fixedUpdateObjects.push_back(obj->GetHandle());
     if (obj->m_hasLateUpdateReceivers)
-        m_lateUpdateObjects.push_back(obj);
+        m_lateUpdateObjects.push_back(obj->GetHandle());
 
     const auto &children = obj->GetChildren();
     for (const auto &child : children)
@@ -964,7 +990,7 @@ void Scene::LateUpdate(float deltaTime)
     RebuildRuntimeLifecycleObjectCaches();
     const size_t receiverCount = m_lateUpdateObjects.size();
     for (size_t i = 0; i < receiverCount && i < m_lateUpdateObjects.size(); ++i) {
-        GameObject *object = m_lateUpdateObjects[i];
+        GameObject *object = ResolveGameObject(m_lateUpdateObjects[i]);
         if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
             object->LateUpdate(deltaTime);
     }

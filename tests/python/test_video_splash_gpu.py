@@ -1,6 +1,7 @@
 """Native decode, upload, GUI draws and editor framebuffer capture for Splash."""
 import json
 import io
+from time import monotonic, sleep
 
 import pytest
 from PIL import Image
@@ -10,23 +11,33 @@ from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 from tests.gpu.video_splash_case import VideoSplashCase
 
 
-def test_consecutive_video_frames_render_and_retire(engine,scene,tmp_path):
+@pytest.mark.parametrize('delayed_observations', [0, 600])
+def test_consecutive_video_frames_render_and_retire(engine,scene,tmp_path,delayed_observations):
     pipeline = RenderStackPipeline()
     engine.set_render_pipeline(pipeline)
     case = VideoSplashCase(engine,tmp_path/'Videos')
     console = ConsolePanel()
     frame = phase = 0
+    pending_observations = 0
+    # Decode/upload progress is asynchronous and does not have a frame-count
+    # bound. Use real elapsed time, independent of the player's virtual clock.
+    deadline = monotonic() + 30.0
     capture = None
     results,failures = [],[]
     try:
         def after_draw():
-            nonlocal frame,phase,capture
+            nonlocal frame,phase,capture,pending_observations
             try:
                 frame += 1
-                assert frame < 500, (phase,case.poll())
+                assert monotonic() < deadline, (phase,frame,case.poll())
                 if capture is None:
                     ready = case.poll()
-                    if ready['done']:
+                    # Also cover observing the third clip after more frames
+                    # than the previous global frame budget permitted. All
+                    # decode, publication and framebuffer checks remain real.
+                    if phase == 4:
+                        pending_observations += 1
+                    if ready['done'] and (phase != 4 or pending_observations > delayed_observations):
                         capture = engine.request_capture('editor',str(tmp_path/f'frame-{phase}.png'))
                         results.append(ready)
                 else:
@@ -43,6 +54,9 @@ def test_consecutive_video_frames_render_and_retire(engine,scene,tmp_path):
                         else:
                             case.change(phase)
                             capture = None
+                # Yield while waiting so a fast owner loop cannot monopolize
+                # the CPU/GIL that background decode work needs to progress.
+                sleep(0.001)
             except BaseException as error:
                 failures.append(error)
                 engine.exit()
@@ -77,6 +91,7 @@ def test_retired_decode_cannot_republish_into_stream_slot(engine,scene,tmp_path,
     pipeline = RenderStackPipeline()
     engine.set_render_pipeline(pipeline)
     frame,ready_frame = 0,None
+    deadline = monotonic() + 30.0
     failures = []
     try:
         def after_draw():
@@ -85,7 +100,7 @@ def test_retired_decode_cannot_republish_into_stream_slot(engine,scene,tmp_path,
                 frame += 1
                 engine.request_full_speed_frame()
                 engine.pump_preview_tasks()
-                assert frame < 250
+                assert monotonic() < deadline, (frame,ready_frame)
                 if engine.get_texture_preview_texture_id(control_key):
                     assert tuple(engine.get_texture_preview_size(control_key)) == (8,16)
                     if ready_frame is None:
@@ -95,6 +110,7 @@ def test_retired_decode_cannot_republish_into_stream_slot(engine,scene,tmp_path,
                         assert engine.get_texture_preview_texture_id(key) == 0
                         assert tuple(engine.get_texture_preview_size(key)) == (0,0)
                     engine.exit()
+                sleep(0.001)
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

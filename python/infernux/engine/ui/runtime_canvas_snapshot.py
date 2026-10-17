@@ -25,15 +25,9 @@ def runtime_canvas_snapshot_token(*scenes) -> tuple:
 
 def collect_sorted_runtime_canvas_snapshot(*scenes):
     """Return the current sorted Canvas snapshot without unrelated scene scans."""
-    return _collect_sorted_runtime_canvases(
-        *scenes,
-        allow_stale_empty=False,
-    )
+    return _collect_sorted_runtime_canvases(*scenes)
 
 
 def collect_runtime_canvas_snapshot_with_go(*scenes):
     """Return the shared runtime Canvas snapshot with owning GameObjects."""
-    return _collect_runtime_canvases_with_go(
-        *scenes,
-        allow_stale_empty=False,
-    )
+    return _collect_runtime_canvases_with_go(*scenes)

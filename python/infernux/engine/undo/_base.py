@@ -6,7 +6,7 @@ import copy as _copy
 import time as _time
 import uuid as _uuid
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List
 
 
 class UndoCommand(ABC):
@@ -33,6 +33,7 @@ class UndoCommand(ABC):
 
     def redo(self) -> None:
         self.execute()
+
 
     def dispose(self) -> None:
         """Release resources retained only for future replay.
@@ -250,10 +251,7 @@ def _snapshot_custom_copy(val: Any) -> Any:
     if getattr(cls, "__deepcopy__", None) is None and getattr(cls, "__copy__", None) is None:
         return _SNAPSHOT_UNHANDLED
 
-    try:
-        return _copy.deepcopy(val)
-    except Exception:
-        return _SNAPSHOT_UNHANDLED
+    return _copy.deepcopy(val)
 
 
 def _snapshot_value(val: Any) -> Any:
@@ -262,12 +260,9 @@ def _snapshot_value(val: Any) -> Any:
         return val
 
     # RGBA colour fields: material ptype-7 ``[r,g,b,a]`` lists.
-    try:
-        from infernux.components.fields import is_rgba_storage, snapshot_rgba
-        if is_rgba_storage(val):
-            return snapshot_rgba(val)
-    except Exception:
-        pass
+    from infernux.components.fields import is_rgba_storage, snapshot_rgba
+    if is_rgba_storage(val):
+        return snapshot_rgba(val)
 
     if isinstance(val, list):
         return [_snapshot_value(v) for v in val]

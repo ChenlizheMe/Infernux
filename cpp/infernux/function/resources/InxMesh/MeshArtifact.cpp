@@ -4,6 +4,7 @@
 #include "MeshGeometryCodec.h"
 
 #include <algorithm>
+#include <core/serialization/BinaryCodec.h>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -30,41 +31,15 @@ constexpr uint32_t GeometryEncoding = 0x334f4547U;   // GEO3, typed indices, com
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
 
-uint64_t Fnv1a64(std::string_view bytes)
-{
-    uint64_t hash = 14695981039346656037ULL;
-    for (const unsigned char byte : bytes) {
-        hash ^= byte;
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
+using binary_codec::Fnv1a64;
 
-void AppendU32(std::string &out, uint32_t value)
-{
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        out.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
+using binary_codec::AppendU32;
 
-void AppendU16(std::string &out, uint16_t value)
-{
-    out.push_back(static_cast<char>(value & 0xffU));
-    out.push_back(static_cast<char>((value >> 8U) & 0xffU));
-}
+using binary_codec::AppendU16;
 
-void AppendU64(std::string &out, uint64_t value)
-{
-    for (unsigned shift = 0; shift < 64; shift += 8)
-        out.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
+using binary_codec::AppendU64;
 
-void AppendFloat(std::string &out, float value)
-{
-    uint32_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value));
-    std::memcpy(&bits, &value, sizeof(bits));
-    AppendU32(out, bits);
-}
+using binary_codec::AppendFloat;
 
 void AppendString(std::string &out, std::string_view value)
 {
@@ -74,95 +49,7 @@ void AppendString(std::string &out, std::string_view value)
     out.append(value);
 }
 
-class Reader final
-{
-  public:
-    explicit Reader(std::string_view bytes) : m_bytes(bytes)
-    {
-    }
-
-    [[nodiscard]] uint32_t ReadU32()
-    {
-        Require(sizeof(uint32_t));
-        uint32_t value = 0;
-        for (unsigned shift = 0; shift < 32; shift += 8)
-            value |= static_cast<uint32_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
-        return value;
-    }
-
-    [[nodiscard]] uint16_t ReadU16()
-    {
-        Require(sizeof(uint16_t));
-        const uint16_t low = static_cast<unsigned char>(m_bytes[m_cursor++]);
-        const uint16_t high = static_cast<unsigned char>(m_bytes[m_cursor++]);
-        return static_cast<uint16_t>(low | (high << 8U));
-    }
-
-    [[nodiscard]] uint64_t ReadU64()
-    {
-        Require(sizeof(uint64_t));
-        uint64_t value = 0;
-        for (unsigned shift = 0; shift < 64; shift += 8)
-            value |= static_cast<uint64_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
-        return value;
-    }
-
-    [[nodiscard]] float ReadFloat()
-    {
-        const uint32_t bits = ReadU32();
-        float value = 0.0f;
-        static_assert(sizeof(bits) == sizeof(value));
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-
-    [[nodiscard]] std::string ReadString()
-    {
-        const uint32_t size = ReadU32();
-        if (size > MaximumStringBytes)
-            throw std::invalid_argument("mesh artifact string exceeds the format limit");
-        Require(size);
-        std::string value(m_bytes.substr(m_cursor, size));
-        m_cursor += size;
-        return value;
-    }
-
-    [[nodiscard]] std::string_view ReadBytes(size_t size)
-    {
-        Require(size);
-        const auto value = m_bytes.substr(m_cursor, size);
-        m_cursor += size;
-        return value;
-    }
-
-    [[nodiscard]] uint32_t ReadCount()
-    {
-        const uint32_t count = ReadU32();
-        if (count > MaximumElementCount)
-            throw std::invalid_argument("mesh artifact element count exceeds the format limit");
-        return count;
-    }
-
-    [[nodiscard]] size_t Cursor() const noexcept
-    {
-        return m_cursor;
-    }
-
-    [[nodiscard]] bool AtEnd() const noexcept
-    {
-        return m_cursor == m_bytes.size();
-    }
-
-  private:
-    void Require(size_t size) const
-    {
-        if (size > m_bytes.size() - m_cursor)
-            throw std::invalid_argument("mesh artifact is truncated");
-    }
-
-    std::string_view m_bytes;
-    size_t m_cursor = 0;
-};
+using Reader = binary_codec::Reader<MaximumStringBytes>;
 
 void AppendVec2(std::string &out, const glm::vec2 &value)
 {
@@ -412,6 +299,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     mesh->SetCompression(compression);
     std::vector<Vertex> vertices;
     if (compression == MeshCompression::Off) {
+        reader.Require(static_cast<size_t>(vertexCount) * 100u);
         vertices.resize(vertexCount);
         for (Vertex &vertex : vertices) {
             vertex.pos = ReadVec3(reader);
@@ -429,14 +317,14 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
         vertices = mesh_geometry_codec::Decode(reader.ReadBytes(encodedSize), vertexCount, compression, true);
     }
 
-    std::vector<uint32_t> indices(reader.ReadCount());
+    std::vector<uint32_t> indices(reader.ReadCount(MaximumElementCount, indexBits / 8u));
     for (uint32_t &index : indices) {
         index = indexFormat == MeshIndexFormat::UInt16 ? reader.ReadU16() : reader.ReadU32();
         if (index >= vertices.size())
             throw std::invalid_argument("mesh artifact contains an out-of-range vertex index");
     }
 
-    std::vector<SubMesh> subMeshes(reader.ReadCount());
+    std::vector<SubMesh> subMeshes(reader.ReadCount(MaximumElementCount, 52u));
     for (SubMesh &subMesh : subMeshes) {
         subMesh.indexStart = reader.ReadU32();
         subMesh.indexCount = reader.ReadU32();
@@ -452,11 +340,11 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
             throw std::invalid_argument("mesh artifact contains an invalid submesh range");
     }
 
-    std::vector<std::string> slotNames(reader.ReadCount());
+    std::vector<std::string> slotNames(reader.ReadCount(MaximumElementCount, 4u));
     for (auto &name : slotNames)
         name = reader.ReadString();
 
-    std::vector<MaterialSlotData> slotData(reader.ReadCount());
+    std::vector<MaterialSlotData> slotData(reader.ReadCount(MaximumElementCount, 44u));
     for (MaterialSlotData &material : slotData) {
         material.baseColor = ReadVec4(reader);
         material.emissionColor = ReadVec4(reader);
@@ -465,7 +353,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
         material.opacity = reader.ReadFloat();
     }
 
-    std::vector<std::string> nodeNames(reader.ReadCount());
+    std::vector<std::string> nodeNames(reader.ReadCount(MaximumElementCount, 4u));
     for (auto &name : nodeNames)
         name = reader.ReadString();
     std::vector<ImportedModelNode> nodes;
@@ -482,7 +370,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
             if (readMorphTargets)
                 throw std::invalid_argument("mesh artifact repeats its morph-target section");
             readMorphTargets = true;
-            morphTargets.resize(reader.ReadCount());
+            morphTargets.resize(reader.ReadCount(MaximumElementCount, 20u));
             std::unordered_set<std::string> names;
             for (auto &target : morphTargets) {
                 target.name = reader.ReadString();
@@ -490,7 +378,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
                 if (target.name.empty() || !names.insert(target.name).second)
                     throw std::invalid_argument("mesh artifact contains invalid morph-target names");
                 const auto readDeltas = [&](std::vector<glm::vec3> &values, bool required) {
-                    const uint32_t count = reader.ReadCount();
+                    const uint32_t count = reader.ReadCount(MaximumElementCount, 12u);
                     if ((required && count != vertices.size()) || (!required && count != 0 && count != vertices.size()))
                         throw std::invalid_argument("mesh artifact morph target does not match its vertex domain");
                     values.reserve(count);
@@ -574,7 +462,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
         sourceLocal = nodeFormat == ModelNodesSource;
         if (nodeFormat != ModelNodesSource && nodeFormat != ModelNodesBaked)
             throw std::invalid_argument("mesh artifact has an unsupported model hierarchy section");
-        nodes.resize(reader.ReadCount());
+        nodes.resize(reader.ReadCount(MaximumElementCount, 80u));
         const auto readNodeIndex = [&reader]() -> int32_t {
             const uint32_t value = reader.ReadU32();
             if (value == std::numeric_limits<uint32_t>::max())

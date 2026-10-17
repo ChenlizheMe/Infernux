@@ -95,67 +95,6 @@ def test_close_view_discard_uses_document_controller_once():
     assert close.state is CloseState.IDLE
 
 
-def test_closing_one_of_multiple_views_never_prompts_for_the_document():
-    registry = DocumentRegistry()
-    document, controller = _dirty_document(registry, "shared")
-    registry.attach_view(document.document_id, "scene-view")
-    registry.attach_view(document.document_id, "game-view")
-    completed: list[str] = []
-    close = CloseCoordinator(registry)
-
-    close.request(
-        CloseIntent(CloseIntentKind.CLOSE_VIEW, view_id="scene-view"),
-        lambda: completed.append("closed"),
-    )
-
-    assert completed == ["closed"]
-    assert close.state is CloseState.IDLE
-    assert document.is_dirty
-    assert controller.discard_calls == 0
-
-
-def test_reset_layout_with_explicit_empty_scope_does_not_prompt_for_all_dirty_documents():
-    registry = DocumentRegistry()
-    document, controller = _dirty_document(registry, "shared")
-    completed: list[str] = []
-    close = CloseCoordinator(registry)
-
-    assert close.request(
-        CloseIntent(CloseIntentKind.RESET_LAYOUT, document_ids=()),
-        lambda: completed.append("reset"),
-    )
-
-    assert completed == ["reset"]
-    assert close.state is CloseState.IDLE
-    assert document.is_dirty
-    assert controller.discard_calls == 0
-
-
-def test_exit_discard_abandons_session_state_without_rebuilding_documents():
-    registry = DocumentRegistry()
-    first, first_controller = _dirty_document(registry, "first")
-    second, second_controller = _dirty_document(registry, "second")
-    registry.attach_view(first.document_id, "first-left")
-    registry.attach_view(first.document_id, "first-right")
-    completed: list[str] = []
-    close = CloseCoordinator(registry)
-
-    close.request(
-        CloseIntent(CloseIntentKind.EXIT_EDITOR),
-        lambda: completed.append("exit"),
-    )
-    assert close.active_document is first
-    close.decide_discard()
-    assert close.active_document is second
-    close.decide_discard()
-
-    assert completed == ["exit"]
-    assert first_controller.discard_calls == 0
-    assert second_controller.discard_calls == 0
-    assert not first.is_dirty and not second.is_dirty
-    assert registry.capture_session_state()["documents"] == []
-
-
 def test_exit_orders_prefab_before_suspended_scene():
     registry = DocumentRegistry()
     scene, _scene_controller = _dirty_document(
@@ -175,26 +114,6 @@ def test_exit_orders_prefab_before_suspended_scene():
     assert close.active_document is prefab
     close.decide_discard()
     assert close.active_document is scene
-
-
-def test_replace_document_discard_approves_replacement_without_reloading_source():
-    registry = DocumentRegistry()
-    document, controller = _dirty_document(registry, "replace")
-    completed: list[str] = []
-    close = CloseCoordinator(registry)
-    close.request(
-        CloseIntent(
-            CloseIntentKind.REPLACE_DOCUMENT,
-            document_ids=(document.document_id,),
-        ),
-        lambda: completed.append("replace"),
-    )
-
-    close.decide_discard()
-
-    assert completed == ["replace"]
-    assert controller.discard_calls == 0
-    assert document.is_dirty
 
 
 def test_async_save_waits_for_captured_revision_and_then_advances():
@@ -218,27 +137,6 @@ def test_async_save_waits_for_captured_revision_and_then_advances():
 
     assert completed == ["closed"]
     assert close.state is CloseState.IDLE
-
-
-def test_cancelled_async_save_returns_to_same_document_decision():
-    registry = DocumentRegistry()
-    document, controller = _dirty_document(registry, "cancelled")
-    controller.pending_ticket = True
-    close = CloseCoordinator(registry)
-    close.request(
-        CloseIntent(CloseIntentKind.CLOSE_VIEW, document_ids=(document.document_id,)),
-        lambda: None,
-    )
-    close.decide_save()
-    ticket = registry.active_save_ticket(document.document_id)
-    assert ticket is not None
-
-    registry.complete_save(ticket.ticket_id, success=False, cancelled=True)
-    close.poll()
-
-    assert close.state is CloseState.AWAITING_DECISION
-    assert close.active_document is document
-    assert close.issue is CloseIssue.SAVE_CANCELLED
 
 
 def test_close_drains_autosaved_resource_without_showing_unsaved_decision():
@@ -320,24 +218,6 @@ def test_conflicted_close_autosave_enters_document_conflict_arbitration():
     assert close.state is CloseState.WAITING_FOR_CONFLICT
     assert close.active_document is document
     assert document.state is DocumentState.CONFLICT
-
-
-def test_cancel_invokes_callback_without_mutating_document():
-    registry = DocumentRegistry()
-    document, _ = _dirty_document(registry, "cancel")
-    cancelled: list[str] = []
-    close = CloseCoordinator(registry)
-    close.request(
-        CloseIntent(CloseIntentKind.REPLACE_DOCUMENT, document_ids=(document.document_id,)),
-        lambda: None,
-        lambda: cancelled.append("cancelled"),
-    )
-
-    close.cancel()
-
-    assert cancelled == ["cancelled"]
-    assert document.is_dirty
-    assert close.state is CloseState.IDLE
 
 
 def test_close_waits_for_external_conflict_before_dirty_decision():

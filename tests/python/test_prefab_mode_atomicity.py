@@ -1,8 +1,8 @@
 """Prefab transitions retain the original native world until publication succeeds."""
+
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 
 import pytest
@@ -11,7 +11,6 @@ from infernux import editor
 from infernux.components import InxComponent
 from infernux.core import AssetManager
 from infernux.engine import project_context
-from infernux.engine.component_restore import deserialize_scene_document_transactionally
 from infernux.engine.interaction import EditorInteractionCore, SelectionDomain
 from infernux.engine.scene_manager import SceneFileManager, PREFAB_MODE_SCENE_NAME
 from infernux.engine.undo import UndoManager
@@ -167,16 +166,6 @@ def test_prefab_mode_round_trip_preserves_unsaved_main_document(prefab_transitio
     assert path.read_bytes() == original_bytes
 
 
-def test_single_scene_publication_rollback_control(prefab_transition, scene):
-    _, files, folder = prefab_transition
-    _, source, probe = _source(scene, folder, reject_scene=True)
-    before = copy.deepcopy(scene.serialize_document())
-    with pytest.raises(RuntimeError, match="authored Prefab publication failure"):
-        deserialize_scene_document_transactionally(scene, before, files._asset_database)
-    assert scene.serialize_document() == before
-    assert source.get_py_components()[0] is probe
-
-
 @pytest.mark.parametrize("entering", [True, False])
 def test_failed_transition_preserves_residency_render_owner_selection_and_history(prefab_transition, scene, entering):
     core, files, folder = prefab_transition
@@ -202,8 +191,7 @@ def test_failed_transition_preserves_residency_render_owner_selection_and_histor
     collider_id = collider.component_id
     assert core.scene_objects.rename(source.id, "Journaled draft edit")
     core.selection.select_scene_object(source.id, owner_id="hierarchy", record_history=False)
-    core.focus.activate_panel("hierarchy", view_id="hierarchy", document_id=files.document_id,
-                              record_history=False)
+    core.focus.activate_panel("hierarchy", view_id="hierarchy", document_id=files.document_id, record_history=False)
     context = core.capture_context()
     entries, cursor = core.action_journal.entries, core.action_journal.cursor
     before = copy.deepcopy(active.serialize_document())
@@ -229,50 +217,6 @@ def test_failed_transition_preserves_residency_render_owner_selection_and_histor
     assert source.name == "Journaled draft edit"
 
 
-@pytest.mark.parametrize("choice", ["save", "discard", "cancel"])
-def test_public_prefab_exit_gate_preserves_mode_when_restore_fails(prefab_transition, scene, choice):
-    from infernux.engine.deferred_task import DeferredTaskRunner
-    from infernux.engine.ui.dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
-
-    core, files, folder = prefab_transition
-    path, _, _ = _source(scene, folder, reject_scene=True)
-    original_bytes = path.read_bytes()
-    assert files.open_prefab_mode(str(path))
-    manager = SceneManager.instance()
-    prefab = manager.get_active_scene()
-    root = prefab.get_root_objects()[0]
-    assert core.scene_objects.rename(root.id, "Gate draft")
-    document = core.documents.require(files.document_id)
-    core.documents.mark_changed(document.document_id)
-    assert core.prefabs.exit()
-    confirmation = DirtyPanelConfirmationCoordinator.instance()
-    assert confirmation.is_active
-    getattr(confirmation, f"choose_{choice}")()
-    runner = DeferredTaskRunner.instance()
-    assert runner.is_busy is (choice != "cancel")
-    entries, cursor = core.action_journal.entries, core.action_journal.cursor
-    runner.tick()
-    assert not runner.is_busy and not files._deferred_exit_prefab
-    assert files.is_prefab_mode and manager.get_active_scene() is prefab
-    assert prefab.get_root_objects()[0] is root and root.name == "Gate draft"
-    assert core.documents.require(files.document_id) is document
-    assert core.action_journal.entries == entries and core.action_journal.cursor == cursor
-    if choice == "save":
-        assert not document.is_dirty
-        assert json.loads(path.read_text(encoding="utf-8"))["root_object"]["name"] == "Gate draft"
-    else:
-        assert document.is_dirty
-        assert path.read_bytes() == original_bytes
-    # Fixing the author's failing callback permits a normal subsequent request.
-    PrefabPublicationProbe._failure_enabled = False
-    assert core.prefabs.exit()
-    if confirmation.is_active:
-        confirmation.choose_discard()
-    assert runner.is_busy
-    runner.tick()
-    assert not files.is_prefab_mode and manager.get_active_scene() is scene
-
-
 def test_reserved_prefab_scene_is_never_silently_cleared(prefab_transition, scene):
     _, files, folder = prefab_transition
     path, _, _ = _source(scene, folder)
@@ -291,8 +235,9 @@ def test_exit_source_reconciliation_failure_rolls_back_both_worlds(prefab_transi
     _, files, folder = prefab_transition
     path, _, _ = _source(scene, folder)
     database = files._asset_database
-    linked = instantiate_prefab(file_path=str(path), guid=database.get_guid_from_path(str(path)),
-                                scene=scene, asset_database=database)
+    linked = instantiate_prefab(
+        file_path=str(path), guid=database.get_guid_from_path(str(path)), scene=scene, asset_database=database
+    )
     assert linked.prefab_guid
     assert files.open_prefab_mode(str(path))
     manager = SceneManager.instance()

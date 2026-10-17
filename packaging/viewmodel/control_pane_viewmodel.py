@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QFileDialog
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
 )
 from PySide6.QtCore import QThread, Signal, Slot, QObject, QTimer, Qt
 from model.project_model import ProjectModel, source_engine_version

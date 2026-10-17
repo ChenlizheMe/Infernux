@@ -19,8 +19,8 @@ _RUNTIME_PACKAGE_SPECS: tuple[tuple[str, str], ...] = (
     ("av", "av"),
     # The default MCP plugin uses the SDK v1 server and FastMCP v3 client APIs.
     # Keep these ranges aligned with the plugin's own requirements.txt.
-    ("mcp>=1.24,<2", "mcp"),
-    ("fastmcp>=3,<4", "fastmcp"),
+    ("mcp>=1.29,<1.30", "mcp"),
+    ("fastmcp>=3.4,<3.5", "fastmcp"),
 )
 
 

@@ -44,6 +44,7 @@ def _reset_semantic_capture_between_tests():
 def test_synthetic_events_follow_the_graphical_input_path(engine):
     """Automation input must reach InputManager through the graphical loop."""
     manager = InputManager.instance()
+    manager.set_editor_game_viewport((500, 500, 20, 20), (500, 500, 20, 20))
     Input.set_game_focused(False)
     observed: dict[str, object] = {}
     frame = [0]
@@ -59,7 +60,13 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
                 "key_down": manager.get_key_down(26),
                 "mouse": manager.get_mouse_button(0),
                 "mouse_down": manager.get_mouse_button_down(0),
+                "game_mouse": Input.get_mouse_button(0),
+                "game_mouse_down": Input.get_mouse_button_down(0),
+                "game_mouse_frame": Input.get_mouse_frame_state(0)[4:],
                 "mouse_position": (manager.mouse_position_x, manager.mouse_position_y),
+                "mouse_delta": Input.get_mouse_delta(),
+                "mouse_delta_again": Input.get_mouse_delta(),
+                "mouse_axes": (Input.get_axis("Mouse X"), Input.get_axis("Mouse Y")),
                 "text": manager.input_string,
             }
             observed["release_sequences"] = (
@@ -74,8 +81,11 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
                 "key_up": manager.get_key_up(26),
                 "mouse": manager.get_mouse_button(0),
                 "mouse_up": manager.get_mouse_button_up(0),
+                "game_mouse_up": Input.get_mouse_button_up(0),
+                "game_mouse_frame": Input.get_mouse_frame_state(0)[4:],
                 "last_sequence": engine.last_processed_synthetic_input_sequence,
                 "pending": engine.pending_synthetic_input_count,
+                "mouse_delta": Input.get_mouse_delta(),
             }
             engine.exit()
 
@@ -100,7 +110,13 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
         "key_down": True,
         "mouse": True,
         "mouse_down": True,
+        "game_mouse": True,
+        "game_mouse_down": True,
+        "game_mouse_frame": (True, True, False),
         "mouse_position": (37.0, 41.0),
+        "mouse_delta": (5.0, -2.0),
+        "mouse_delta_again": (5.0, -2.0),
+        "mouse_axes": (0.5, -0.2),
         "text": "agent-input",
     }
     assert observed["release_sequences"] == (first_sequence + 4, first_sequence + 5)
@@ -111,9 +127,92 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
         "key_up": True,
         "mouse": False,
         "mouse_up": True,
+        "game_mouse_up": True,
+        "game_mouse_frame": (False, False, True),
         "last_sequence": first_sequence + 5,
         "pending": 0,
+        "mouse_delta": (0.0, 0.0),
     }
+
+
+@pytest.mark.parametrize("button,occluded", [(index, False) for index in range(5)] + [(0, True)])
+def test_game_capture_is_resolved_before_component_update(engine, scene, button, occluded):
+    from infernux.components import InxComponent
+    from infernux.engine.ui.game_view_panel import GameViewPanel
+    from infernux.lib import SceneManager
+
+    manager = InputManager.instance()
+    state = {"frame": 0}
+    down_samples = []
+
+    class GameCaptureView(GameViewPanel):
+        def __init__(self):
+            super().__init__()
+            self.point = None
+
+        def _is_playing(self):
+            return SceneManager.instance().is_playing()
+
+        def on_render(self, ctx):
+            ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
+            ctx.set_next_window_size(64.0, 64.0, 0)
+            if ctx.begin_window("Game Capture###game_capture", True, 0):
+                ctx.invisible_button("##GameViewportInput", 32.0, 24.0)
+                rect = tuple(ctx.get_item_visible_rect())
+                manager.set_editor_game_viewport(rect, rect)
+                self.point = (rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5)
+                self._route_game_input(
+                    ctx, 64, 64, ctx.is_item_hovered(),
+                    any(ctx.is_item_clicked(index) for index in range(5)), (),
+                )
+            ctx.end_window()
+            if occluded:
+                ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
+                ctx.set_next_window_size(64.0, 64.0, 0)
+                ctx.set_next_window_focus()
+                if ctx.begin_window("Floating Panel###capture_blocker", True, 0):
+                    ctx.button("Covered")
+                ctx.end_window()
+
+    class ClickConsumer(InxComponent):
+        def start(self):
+            Input.set_cursor_locked(True)
+
+        def update(self, _delta_time):
+            if manager.get_mouse_button_down(button):
+                down_samples.append((Input.get_mouse_button_down(button), Input.is_cursor_locked()))
+
+    view = GameCaptureView()
+    scene.create_game_object("Click consumer").add_component(ClickConsumer)
+    engine.register_gui_renderable("test.game_capture", view)
+    set_gui_semantic_capture_enabled(True)
+
+    def on_update(_delta_time):
+        state["frame"] += 1
+        if state["frame"] == 3:
+            engine.queue_synthetic_mouse_motion_input(*view.point, 0.0, 0.0)
+        elif state["frame"] == 5:
+            engine.queue_synthetic_mouse_button_input(button, True, *view.point)
+        elif state["frame"] == 7:
+            engine.queue_synthetic_mouse_button_input(button, False, *view.point)
+        elif state["frame"] == 10:
+            engine.exit()
+
+    scenes = SceneManager.instance()
+    try:
+        scenes.play()
+        manager.set_editor_cursor_capture_allowed(False)
+        engine.set_pre_scene_update_callback(on_update)
+        engine.run()
+    finally:
+        engine.set_pre_scene_update_callback(None)
+        engine.unregister_gui_renderable("test.game_capture")
+        scenes.stop()
+        Input.set_cursor_locked(False)
+        manager.set_editor_cursor_capture_allowed(True)
+        Input.set_game_focused(True)
+
+    assert down_samples == [(True, not occluded)]
 
 
 def test_semantic_snapshot_request_captures_exactly_one_rendered_frame(engine):

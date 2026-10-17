@@ -445,6 +445,9 @@ class EditableResourceDocumentController:
             self.poll_pending_writes()
             return True
         self._saved_document = copy.deepcopy(serialized_document)
+        from infernux.core.document_store import capture_document_file_state
+
+        editor_document.durable_file_state = capture_document_file_state(self.file_path)
         if registry.active_save_ticket(self.document_id) is None:
             registry.mark_saved(self.document_id, editor_document.revision)
         return True
@@ -474,10 +477,13 @@ class EditableResourceDocumentController:
                 return DocumentActionResult(DocumentActionStatus.PENDING)
             return True
         self._saved_document = copy.deepcopy(serialized_document)
+        from infernux.core.document_store import capture_document_file_state
+
         registry.complete_save(
             ticket.ticket_id,
             success=True,
             content_token=document_content_token(self.capture_document()),
+            committed_file_state=capture_document_file_state(self.file_path),
         )
         return True
 

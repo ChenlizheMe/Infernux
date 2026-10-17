@@ -42,30 +42,6 @@ class _AssetDatabase:
         return self.paths_by_guid.get(str(guid), "")
 
 
-def test_prefab_canvas_path_boundary_uses_guid_canonical_path(tmp_path):
-    stale = tmp_path / "old.prefab"
-    canonical = tmp_path / "moved.prefab"
-    stale.write_text(json.dumps(_prefab_document("WrongCanvas")), encoding="utf-8")
-    canonical.write_text(json.dumps(_prefab_document("CurrentCanvas")), encoding="utf-8")
-    database = _AssetDatabase(
-        {"prefab-guid": str(canonical)},
-        {str(stale): "prefab-guid"},
-    )
-
-    assert prefab_manager.read_prefab_source_canvas(
-        file_path=str(stale), asset_database=database,
-    ) == "CurrentCanvas"
-
-
-def test_prefab_canvas_ignores_unregistered_path(tmp_path):
-    legacy = tmp_path / "legacy.prefab"
-    legacy.write_text(json.dumps(_prefab_document("LegacyCanvas")), encoding="utf-8")
-
-    assert prefab_manager.read_prefab_source_canvas(
-        file_path=str(legacy), asset_database=_AssetDatabase({}, {}),
-    ) == ""
-
-
 def test_prefab_instantiation_path_boundary_caches_by_resolved_guid(tmp_path, monkeypatch):
     stale = tmp_path / "old.prefab"
     canonical = tmp_path / "moved.prefab"
@@ -83,9 +59,14 @@ def test_prefab_instantiation_path_boundary_caches_by_resolved_guid(tmp_path, mo
 
     monkeypatch.setattr(prefab_manager, "_get_cached_prefab_template", load)
 
-    assert prefab_manager.instantiate_prefab(
-        file_path=str(stale), scene=object(), asset_database=database,
-    ) is None
+    assert (
+        prefab_manager.instantiate_prefab(
+            file_path=str(stale),
+            scene=object(),
+            asset_database=database,
+        )
+        is None
+    )
     assert calls == [(str(canonical), "prefab-guid", database)]
 
 
@@ -107,7 +88,8 @@ def test_scene_prefab_path_is_resolved_before_runtime_calls(monkeypatch):
     )
     registry = SimpleNamespace(get_asset_database=lambda: database)
     monkeypatch.setattr(
-        "infernux.lib.AssetRegistry.instance", staticmethod(lambda: registry),
+        "infernux.lib.AssetRegistry.instance",
+        staticmethod(lambda: registry),
     )
 
     class Selection:

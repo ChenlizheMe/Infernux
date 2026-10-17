@@ -964,12 +964,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     if (s_filterDiagFrames < 3) {
         INXLOG_DEBUG("[DrawSceneFiltered] queue=[", queueMin, ",", queueMax, "] totalDC=", drawCalls().size(),
                      " eligible=", eligibleDraws.size());
-        if (!eligibleDraws.empty()) {
-            for (const auto &entry : eligibleDraws) {
-                INXLOG_DEBUG("  -> objId=", entry.dc->objectId, " mat='", entry.material->GetName(),
-                             "' queue=", entry.material->GetRenderQueue());
-            }
-        }
         ++s_filterDiagFrames;
     }
 
@@ -1350,8 +1344,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         MaterialRenderData *forward = ResolveMeshMaterial(owner);
         if (!forward)
             return {};
-        const ShaderStagePair requestedStages{owner->GetVertShaderName(), owner->GetFragShaderName()};
-
         const MaterialPassPipelineDescriptor defaultForward =
             m_materialPipelineManager.GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
         if (activePass == defaultForward) {
@@ -1365,10 +1357,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             // so resolving from the mutable asset fields would mix two ABIs.
             const ShaderStagePair &stages = forward->programKey.stages;
             const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
-            if (!artifact && m_shaderProgramArtifactResolver && stages == requestedStages) {
-                m_shaderProgramArtifactResolver(owner, ShaderProgramDomain::Mesh);
-                artifact = m_shaderCache.FindProgramArtifact(stages);
-            }
             if (!artifact || !artifact->FindVariant(activePass.target)) {
                 if (activePass.target == ShaderCompileTarget::Normal ||
                     activePass.target == ShaderCompileTarget::BaseColor) {
@@ -1540,21 +1528,18 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
         // Commit CPU-side material changes before selecting the immutable GPU
         // generation used by this draw. Texture resolution may publish a new
-        // descriptor set, so refresh only when the update could have changed
-        // the committed render data. The old code unconditionally resolved the
-        // same material twice, which was especially visible in SkyboxPass.
+        // Resolve again only when an update can publish different render data.
         if (matRaw != currentMaterialRaw) {
-            const std::string materialKey = matRaw->GetMaterialKey();
+            const std::string &materialKey = matRaw->GetMaterialKey();
             const bool hasPendingTextures = m_materialPipelineManager.HasPendingTextureProperties(materialKey);
             const bool needsMaterialUpdate = matRaw->IsPropertiesDirty() || hasPendingTextures;
-            const bool mayPublishDescriptor = needsMaterialUpdate;
             // Pending texture resolution may become ready between draw-list
             // passes, so preserve the old retry behavior for that state.
             if (needsMaterialUpdate && (updatedMaterials.insert(matRaw).second || hasPendingTextures)) {
                 ++materialUpdateCalls;
                 UpdateMaterialUBO(*matRaw);
             }
-            if (mayPublishDescriptor) {
+            if (needsMaterialUpdate) {
                 MaterialRenderData *updated = m_materialPipelineManager.GetRenderData(materialKey);
                 if (!updated || !updated->isValid || updated->pipeline != resolved.pipeline ||
                     updated->pipelineLayout != resolved.layout || updated->descriptorSet != resolved.descriptorSet ||
@@ -1627,11 +1612,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // The raw handles are backed by the active draw-list lease (or the
         // function-local fallback lease) for this entire command recording.
         if (entry.vertexBuf == VK_NULL_HANDLE || entry.indexBuf == VK_NULL_HANDLE) {
-            static int bufWarnCount = 0;
-            if (bufWarnCount++ < 10) {
-                // INXLOG_WARN("[DrawSceneFiltered] no GPU buffers for objectId=", dc.objectId, " material='",
-                //             matRaw->GetName(), "' queue=", matRaw->GetRenderQueue());
-            }
             emitBatch();
             continue;
         }
@@ -1674,7 +1654,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
 
         if (descriptorSet != currentDescriptorSet || pipelineLayout != currentLayout) {
-            if (descriptorSet != VK_NULL_HANDLE && !m_materialPipelineManager.IsDescriptorSetLive(descriptorSet)) {
+            if (!m_materialPipelineManager.IsDescriptorSetLive(descriptorSet)) {
                 static int staleSet0WarnCount = 0;
                 if (staleSet0WarnCount++ < 32) {
                     const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptorSet));
@@ -1930,8 +1910,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             } else {
                 auto resolved = m_resolvedShadowMaterialsScratch.find(material.get());
                 if (resolved == m_resolvedShadowMaterialsScratch.end()) {
-                    const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(
-                        material, material->GetVertShaderName(), material->GetFragShaderName(), depthFormat);
+                    const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(material, depthFormat);
                     resources.pipeline = material->GetPassPipeline(ShaderCompileTarget::Shadow);
                     resources.descriptorSet = descriptorSet;
                     resolved = m_resolvedShadowMaterialsScratch.emplace(material.get(), resources).first;
@@ -2393,31 +2372,20 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         uint32_t batchIdxStart = 0;
         uint32_t batchIdxCount = 0;
         int32_t batchVtxStart = 0;
+        auto &rhiDevice = m_backend.Device().GetRhiDevice();
+        const VkDescriptorSet bindlessSet = m_shadowUsesBindlessTextureTable
+                                                ? rhiDevice.Resolve(rhiDevice.GetBindlessTextureTableBinding().group)
+                                                : VK_NULL_HANDLE;
+        if (m_shadowUsesBindlessTextureTable && bindlessSet == VK_NULL_HANDLE) {
+            INXLOG_ERROR("Shadow pass requires the RHI bindless texture table");
+            return;
+        }
 
         auto emitShadowBatch = [&]() {
             if (batchCount == 0)
                 return;
-            const VkDescriptorSet materialDescSet = batchShadowMaterialDescSet != VK_NULL_HANDLE
-                                                        ? batchShadowMaterialDescSet
-                                                        : m_shadowMaterialDummyDescSet;
-            if (materialDescSet == VK_NULL_HANDLE) {
-                batchCount = 0;
-                return;
-            }
-            auto &rhiDevice = m_backend.Device().GetRhiDevice();
-            const VkDescriptorSet bindlessSet =
-                m_shadowUsesBindlessTextureTable ? rhiDevice.Resolve(rhiDevice.GetBindlessTextureTableBinding().group)
-                                                 : VK_NULL_HANDLE;
-            if (m_shadowUsesBindlessTextureTable && bindlessSet == VK_NULL_HANDLE) {
-                static int missingShadowBindlessSetErrorCount = 0;
-                if (missingShadowBindlessSetErrorCount++ < 8) {
-                    INXLOG_ERROR("Shadow draw batch skipped because the RHI bindless texture table is unavailable");
-                }
-                batchCount = 0;
-                return;
-            }
-            const std::array<VkDescriptorSet, 4> descriptorSets = {cascadeDescSet, shadowStreamDescSet, materialDescSet,
-                                                                   bindlessSet};
+            const std::array<VkDescriptorSet, 4> descriptorSets = {cascadeDescSet, shadowStreamDescSet,
+                                                                   batchShadowMaterialDescSet, bindlessSet};
             vkdebug::CmdBindDescriptorSetsTracked(
                 "VkCoreDraw.DrawShadowCasters.AllSets", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
                 0, m_shadowUsesBindlessTextureTable ? 4u : 3u, descriptorSets.data(), 0, nullptr);

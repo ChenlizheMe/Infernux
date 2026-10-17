@@ -377,6 +377,7 @@ class _UICommandDependencies:
             self.geometry_revision = geometry_revision
         bindings_revision = _get_resource_binding_revision()
         if bindings_revision != self.bindings_revision:
+            from infernux.core.asset_ref import RenderTextureRef
             from .ui_button import UIButton
             from .ui_image import UIImage
 
@@ -396,9 +397,11 @@ class _UICommandDependencies:
                     if isinstance(element, UIButton)
                     else None
                 )
+                # Imported static textures publish through texture_generation.
+                # Only render targets can resize without another field write.
                 if texture is not None and (
-                    bool(texture.get_raw(element)) or
                     element.__dict__.get("_render_texture") is not None
+                    or isinstance(texture.get_raw(element), RenderTextureRef)
                 ):
                     images.append(element)
             self.materials = tuple(materials)
@@ -653,6 +656,8 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
     material_state = material_visual_state(elem)
     tex_path = image_texture_source(elem, material_state)
     tex_id = get_tex_id(tex_path) if tex_path else 0
+    if tex_path and not tex_id:
+        return
     world_transform_owned = bool(_kw.get("world_transform_owned", False))
 
     attrs = extract_common(

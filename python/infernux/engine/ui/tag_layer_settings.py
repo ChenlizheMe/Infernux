@@ -14,7 +14,7 @@ from infernux.physics import settings as _phys_settings
 from .editor_panel import EditorPanel
 from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol, ImGuiWindowFlags
+from .theme import Theme, ImGuiCol
 from .igui import IGUI
 
 

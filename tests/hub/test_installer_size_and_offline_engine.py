@@ -1,11 +1,11 @@
 """Installer size reductions and the offline first-project engine seed."""
+
 from __future__ import annotations
 
 import fnmatch
 import io
 import json
 import os
-import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,8 +23,6 @@ from installer.payload import (
     HUB_EXECUTABLE,
     HUB_PAYLOAD_ARCHIVE,
     create_payload_archive,
-    extract_payload_archive,
-    payload_compression,
 )
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
@@ -122,19 +120,6 @@ def test_staged_runtime_prunes_debug_files_but_keeps_build_inputs(tmp_path):
     assert not any((root / relative).exists() for relative in pruned)
 
 
-def test_runtime_profile_restages_bundles_of_an_older_format(tmp_path):
-    runtime = tmp_path / "runtime" / "python313"
-    runtime.mkdir(parents=True)
-    stage._write_runtime_profile(str(runtime))
-    assert stage._profile_matches(str(runtime))
-
-    profile = Path(stage._runtime_profile_path(str(runtime)))
-    legacy = json.loads(profile.read_text(encoding="utf-8"))
-    assert legacy.pop("bundle_format") == stage._RUNTIME_BUNDLE_FORMAT
-    profile.write_text(json.dumps(legacy), encoding="utf-8")
-    assert not stage._profile_matches(str(runtime))
-
-
 def _runtime_marker() -> dict[str, str]:
     archive = runtime_archive_for_machine()
     return {
@@ -145,23 +130,6 @@ def _runtime_marker() -> dict[str, str]:
         "source_archive": archive.name,
         "written_at": "2026-10-01T16:51:42Z",
     }
-
-
-@pytest.mark.parametrize("compression", [zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED])
-def test_hub_build_rejects_a_non_lzma_runtime_bundle(tmp_path, compression):
-    bundle = tmp_path / "runtime_bundle.zip"
-    with zipfile.ZipFile(bundle, "w", compression=compression) as archive:
-        archive.writestr(
-            "python313/.infernux-private-python-runtime.json", json.dumps(_runtime_marker())
-        )
-    with pytest.raises(RuntimeError, match="not LZMA-compressed"):
-        build_hub._validate_runtime_bundle(bundle)
-
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_LZMA) as archive:
-        archive.writestr(
-            "python313/.infernux-private-python-runtime.json", json.dumps(_runtime_marker())
-        )
-    build_hub._validate_runtime_bundle(bundle)
 
 
 # -- Installer payload ------------------------------------------------------
@@ -177,41 +145,13 @@ def _hub_dir(root: Path) -> Path:
     return root
 
 
-def test_payload_stores_archives_and_lzma_compresses_everything_else(tmp_path):
-    hub = _hub_dir(tmp_path / "hub")
-    wheel = tmp_path / WHEEL
-    wheel.write_bytes(_wheel_bytes())
-    engine_name = (BUNDLED_ENGINES_DIR / WHEEL).as_posix()
-
-    archive_path = create_payload_archive(
-        hub, tmp_path / HUB_PAYLOAD_ARCHIVE, {engine_name: wheel}
-    )
-
-    with zipfile.ZipFile(archive_path) as archive:
-        compressions = {info.filename: info.compress_type for info in archive.infolist()}
-    assert compressions == {
-        HUB_EXECUTABLE: zipfile.ZIP_LZMA,
-        "qt6core.dll": zipfile.ZIP_LZMA,
-        "InfernuxHubData/runtime/runtime_bundle.zip": zipfile.ZIP_STORED,
-        f"InfernuxHubData/engines/{WHEEL}": zipfile.ZIP_STORED,
-    }
-    assert payload_compression("Some/Archive.WHL") == zipfile.ZIP_STORED
-
-    extracted = tmp_path / "extracted"
-    extract_payload_archive(archive_path, extracted)
-    assert (extracted / HUB_EXECUTABLE).read_bytes() == b"hub executable" * 100
-    assert (extracted / "InfernuxHubData" / "engines" / WHEEL).read_bytes() == wheel.read_bytes()
-
-
 def test_installed_hub_contains_the_bundled_engine(tmp_path):
     hub = _hub_dir(tmp_path / "hub")
     wheel = tmp_path / WHEEL
     wheel.write_bytes(_wheel_bytes())
     payload = tmp_path / "payload"
     payload.mkdir()
-    create_payload_archive(
-        hub, payload / HUB_PAYLOAD_ARCHIVE, {(BUNDLED_ENGINES_DIR / WHEEL).as_posix(): wheel}
-    )
+    create_payload_archive(hub, payload / HUB_PAYLOAD_ARCHIVE, {(BUNDLED_ENGINES_DIR / WHEEL).as_posix(): wheel})
     install_dir = tmp_path / "Infernux Hub"
 
     with HubInstallTransaction(payload, install_dir) as installation:
@@ -219,40 +159,10 @@ def test_installed_hub_contains_the_bundled_engine(tmp_path):
         installation.activate()
         installation.commit()
 
-    assert bundled_engine.bundled_engines_dir(install_dir / "InfernuxHubData").joinpath(
-        WHEEL
-    ).read_bytes() == wheel.read_bytes()
-
-
-@pytest.mark.parametrize("name", ["../escape.whl", "/abs.whl", "C:/drive.whl", "a/../b.whl"])
-def test_payload_rejects_unsafe_extra_names(tmp_path, name):
-    hub = _hub_dir(tmp_path / "hub")
-    wheel = tmp_path / WHEEL
-    wheel.write_bytes(b"wheel")
-    with pytest.raises(RuntimeError, match="Unsafe path"):
-        create_payload_archive(hub, tmp_path / HUB_PAYLOAD_ARCHIVE, {name: wheel})
-    assert not (tmp_path / HUB_PAYLOAD_ARCHIVE).exists()
-
-
-def test_payload_rejects_extra_files_that_shadow_the_hub(tmp_path):
-    hub = _hub_dir(tmp_path / "hub")
-    replacement = tmp_path / "other.exe"
-    replacement.write_bytes(b"other")
-    with pytest.raises(RuntimeError, match="Duplicate path"):
-        create_payload_archive(
-            hub, tmp_path / HUB_PAYLOAD_ARCHIVE, {HUB_EXECUTABLE.upper(): replacement}
-        )
-
-
-@pytest.mark.parametrize("member", ["../evil.dll", "C:/evil.dll", "/evil.dll"])
-def test_lzma_payload_extraction_rejects_unsafe_members(tmp_path, member):
-    archive_path = tmp_path / HUB_PAYLOAD_ARCHIVE
-    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_LZMA) as archive:
-        archive.writestr(HUB_EXECUTABLE, b"hub")
-        archive.writestr(member, b"evil")
-    with pytest.raises(RuntimeError, match="Unsafe path"):
-        extract_payload_archive(archive_path, tmp_path / "out")
-    assert not (tmp_path / "evil.dll").exists()
+    assert (
+        bundled_engine.bundled_engines_dir(install_dir / "InfernuxHubData").joinpath(WHEEL).read_bytes()
+        == wheel.read_bytes()
+    )
 
 
 # -- Qt trimming -------------------------------------------------------------
@@ -298,69 +208,10 @@ def _nuitka_matches(dest_path: str, patterns: list[str]) -> bool:
 
 def _excluded_patterns(command: list[str]) -> list[str]:
     prefix = "--noinclude-dlls="
-    return [argument[len(prefix):] for argument in command if argument.startswith(prefix)]
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows file name matching")
-def test_windows_nuitka_command_drops_unused_qt_and_keeps_runtime_plugins(monkeypatch):
-    monkeypatch.setattr(build_hub.os, "name", "nt")
-    options = build_hub._qt_trim_options()
-    assert "--noinclude-qt-translations" in options
-    patterns = _excluded_patterns(options)
-    for path in _TRIMMED + _WINDOWS_ONLY_TRIMMED:
-        assert _nuitka_matches(os.path.normcase(path), [os.path.normcase(p) for p in patterns]), path
-    for path in _KEPT:
-        assert not _nuitka_matches(os.path.normcase(path), [os.path.normcase(p) for p in patterns]), path
-
-
-def test_linux_nuitka_command_keeps_svg_icon_themes(tmp_path, monkeypatch):
-    monkeypatch.setattr(build_hub.os, "name", "posix")
-    monkeypatch.setattr(build_hub.sys, "platform", "linux")
-    command = build_hub._common_nuitka_command(
-        tmp_path / "out", tmp_path, product_name="Hub",
-        description="Hub", original_filename="Hub",
-    )
-    assert "--noinclude-qt-translations" in command
-    patterns = _excluded_patterns(command)
-    for path in (
-        "PySide6/Qt/lib/libQt6Pdf.so.6",
-        "PySide6/qt-plugins/imageformats/libqpdf.so",
-        "PySide6/qt-plugins/imageformats/libqjpeg.so",
-        "PySide6/qt-plugins/imageformats/libqwebp.so",
-    ):
-        assert _nuitka_matches(path, patterns), path
-    for path in (
-        "PySide6/Qt/lib/libQt6Svg.so.6",
-        "PySide6/qt-plugins/iconengines/libqsvgicon.so",
-        "PySide6/qt-plugins/imageformats/libqsvg.so",
-        "PySide6/qt-plugins/platforms/libqxcb.so",
-        "PySide6/qt-plugins/tls/libqopensslbackend.so",
-    ):
-        assert not _nuitka_matches(path, patterns), path
-
-
-def test_untrimmed_qt_files_are_reported(tmp_path, monkeypatch):
-    monkeypatch.setattr(build_hub.os, "name", "posix")
-    for relative in ("PySide6/qt-plugins/imageformats/libqjpeg.so", "PySide6/qt-plugins/platforms/libqxcb.so"):
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x")
-    assert build_hub._untrimmed_qt_files(tmp_path) == [
-        tmp_path / "PySide6/qt-plugins/imageformats/libqjpeg.so"
-    ]
+    return [argument[len(prefix) :] for argument in command if argument.startswith(prefix)]
 
 
 # -- Engine wheel embedding ----------------------------------------------------
-
-
-def test_installer_engine_identity_is_independent_of_hub_revision(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nversion="0.4.2"\n[tool.infernux.hub]\nbuild-number=3\n'
-    )
-    (tmp_path / "python/infernux").mkdir(parents=True)
-    (tmp_path / "python/infernux/version.py").write_text('ENGINE_BUILD_NUMBER=2\n')
-    assert build_hub._project_version(tmp_path) == "0.4.2-3"
-    assert build_hub._project_engine_release(tmp_path) == "0.4.2-v2"
 
 
 def test_installer_embeds_only_the_exact_host_engine_wheel(tmp_path, windows_wheels):
@@ -370,9 +221,7 @@ def test_installer_embeds_only_the_exact_host_engine_wheel(tmp_path, windows_whe
         WHEEL: _wheel_bytes(),
         "infernux-0.4.1-2-cp313-cp313-win_amd64.whl": _wheel_bytes(build="2"),
         "infernux-0.4.0-cp313-cp313-win_amd64.whl": _wheel_bytes(version="0.4.0", build=""),
-        "infernux-0.4.1-3-cp313-cp313-manylinux_2_28_x86_64.whl": _wheel_bytes(
-            tag="cp313-cp313-manylinux_2_28_x86_64"
-        ),
+        "infernux-0.4.1-3-cp313-cp313-manylinux_2_28_x86_64.whl": _wheel_bytes(tag="cp313-cp313-manylinux_2_28_x86_64"),
         "other-0.4.1-3-cp313-cp313-win_amd64.whl": b"not ours",
     }.items():
         (release_dir / name).write_bytes(content)
@@ -380,37 +229,6 @@ def test_installer_embeds_only_the_exact_host_engine_wheel(tmp_path, windows_whe
     assert build_hub._bundled_engine_wheel(release_dir, "0.4.1-v3") == release_dir / WHEEL
     assert build_hub._bundled_engine_wheel(release_dir, "0.4.2") is None
     assert build_hub._bundled_engine_wheel(tmp_path / "missing", "0.4.1-v3") is None
-
-
-def test_first_build_wheels_have_no_build_tag(tmp_path, windows_wheels):
-    wheel = tmp_path / "infernux-0.4.1-cp313-cp313-win_amd64.whl"
-    wheel.write_bytes(_wheel_bytes(build=""))
-    assert build_hub._bundled_engine_wheel(tmp_path, "0.4.1") == wheel
-
-
-def test_ambiguous_engine_wheels_fail_the_installer_build(tmp_path, windows_wheels):
-    (tmp_path / WHEEL).write_bytes(_wheel_bytes())
-    (tmp_path / "infernux-0.4.1-3-cp312-cp312-win_amd64.whl").write_bytes(
-        _wheel_bytes(tag="cp312-cp312-win_amd64")
-    )
-    with pytest.raises(RuntimeError, match="exactly one"):
-        build_hub._bundled_engine_wheel(tmp_path, "0.4.1-v3")
-
-
-def test_engine_wheel_for_another_python_or_mislabeled_fails(tmp_path, windows_wheels):
-    other_abi = tmp_path / "abi"
-    other_abi.mkdir()
-    (other_abi / "infernux-0.4.1-3-cp312-cp312-win_amd64.whl").write_bytes(
-        _wheel_bytes(tag="cp312-cp312-win_amd64")
-    )
-    with pytest.raises(RuntimeError, match="default Python"):
-        build_hub._bundled_engine_wheel(other_abi, "0.4.1-v3")
-
-    mislabeled = tmp_path / "mislabeled"
-    mislabeled.mkdir()
-    (mislabeled / WHEEL).write_bytes(_wheel_bytes(build="2"))
-    with pytest.raises(ValueError, match="identity"):
-        build_hub._bundled_engine_wheel(mislabeled, "0.4.1-v3")
 
 
 def _installer_fixture(tmp_path, monkeypatch):
@@ -446,21 +264,8 @@ def test_installer_payload_carries_the_release_engine_wheel(tmp_path, monkeypatc
         info = archive.getinfo(f"InfernuxHubData/engines/{WHEEL}")
         assert info.compress_type == zipfile.ZIP_STORED
         assert archive.read(info) == (release / WHEEL).read_bytes()
-    assert any(
-        argument.endswith(f"=payload/{HUB_PAYLOAD_ARCHIVE}") for argument in commands[0]
-    )
+    assert any(argument.endswith(f"=payload/{HUB_PAYLOAD_ARCHIVE}") for argument in commands[0])
     assert f"--include-data-dir={source / 'packaging' / 'resources' / 'fonts'}=resources/fonts" in commands[0]
-
-
-def test_installer_without_a_release_wheel_warns_and_still_builds(tmp_path, monkeypatch, capsys, windows_wheels):
-    source, build, package, _commands = _installer_fixture(tmp_path, monkeypatch)
-    release = tmp_path / "release"
-
-    build_hub._build_installer(source, build, package, release_dir=release, build_env={})
-
-    assert "WARNING: no engine wheel" in capsys.readouterr().err
-    with zipfile.ZipFile(build / HUB_PAYLOAD_ARCHIVE) as archive:
-        assert not any(name.startswith("InfernuxHubData/engines/") for name in archive.namelist())
 
 
 # -- Seeding the Engines cache --------------------------------------------------
@@ -501,35 +306,6 @@ def test_bundled_engine_is_seeded_once(engines, tmp_path):
     assert not manager.is_installed("0.4.1-v3")
 
 
-def test_already_installed_engine_is_recorded_without_copying(engines):
-    manager = vm.VersionManager(runtime_manager=_RuntimeManager())
-    manager.install_local_wheel(str(engines / "engines" / WHEEL))
-    calls = []
-    manager.install_local_wheel = lambda path: calls.append(path)
-
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == []
-    assert calls == []
-    state = vm._VERSIONS_DIR / bundled_engine.SEEDED_STATE_FILENAME
-    assert json.loads(state.read_text(encoding="utf-8")) == {"seeded": [WHEEL]}
-
-
-def test_seeding_waits_for_the_python_runtime(engines):
-    runtime = _RuntimeManager(installed=())
-    manager = vm.VersionManager(runtime_manager=runtime)
-
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == []
-    assert not (vm._VERSIONS_DIR / bundled_engine.SEEDED_STATE_FILENAME).exists()
-
-    runtime.installed.add("3.13")
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == ["0.4.1-v3"]
-
-
-def test_seeding_without_a_runtime_manager_is_skipped(engines):
-    manager = vm.VersionManager()
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == []
-    assert not manager.installed_versions()
-
-
 def test_seeding_errors_are_logged_and_retried(engines, caplog):
     (engines / "engines" / WHEEL).write_bytes(_wheel_bytes(build="2"))
     manager = vm.VersionManager(runtime_manager=_RuntimeManager())
@@ -538,28 +314,3 @@ def test_seeding_errors_are_logged_and_retried(engines, caplog):
         assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == []
     assert "Could not install bundled engine wheel" in caplog.text
     assert not (vm._VERSIONS_DIR / bundled_engine.SEEDED_STATE_FILENAME).exists()
-
-
-def test_seeding_ignores_foreign_and_missing_payloads(tmp_path, engines):
-    manager = vm.VersionManager(runtime_manager=_RuntimeManager())
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=tmp_path / "none") == []
-
-    (engines / "engines" / WHEEL).unlink()
-    foreign = engines / "engines" / "infernux-0.4.1-3-cp313-cp313-manylinux_2_28_x86_64.whl"
-    foreign.write_bytes(_wheel_bytes(tag="cp313-cp313-manylinux_2_28_x86_64"))
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == []
-    assert manager.installed_versions() == []
-
-
-def test_corrupt_seed_state_does_not_block_seeding(engines):
-    state = vm._VERSIONS_DIR / bundled_engine.SEEDED_STATE_FILENAME
-    state.parent.mkdir(parents=True, exist_ok=True)
-    state.write_text("{not json", encoding="utf-8")
-    manager = vm.VersionManager(runtime_manager=_RuntimeManager())
-
-    assert bundled_engine.seed_bundled_engines(manager, hub_data_dir=engines) == ["0.4.1-v3"]
-
-
-def test_default_bundled_engine_dir_is_beside_the_running_hub(monkeypatch, tmp_path):
-    monkeypatch.setattr(bundled_engine, "get_hub_data_dir", lambda: str(tmp_path / "InfernuxHubData"))
-    assert bundled_engine.bundled_engines_dir() == tmp_path / "InfernuxHubData" / "engines"

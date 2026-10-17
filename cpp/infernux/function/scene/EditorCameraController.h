@@ -54,11 +54,9 @@ class EditorCameraController
     /// @brief Mouse scroll
     void OnMouseScroll(float delta);
 
-    /// @brief Key pressed
-    void OnKeyDown(int keyCode);
-
-    /// @brief Key released
-    void OnKeyUp(int keyCode);
+    /// Input adapters pass logical controls, never ASCII/platform scancodes.
+    void ProcessInput(float deltaTime, bool rightDown, bool middleDown, float deltaX, float deltaY, bool forward,
+                      bool left, bool back, bool right, bool down, bool up, bool boost);
 
     // ========================================================================
     // Settings

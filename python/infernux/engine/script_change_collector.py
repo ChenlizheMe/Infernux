@@ -516,7 +516,7 @@ class ScriptChangeCollector:
                 end_line=issue.end_line,
                 end_column=issue.end_column,
             )
-            for issue in (*report.blocked, *report.runtime_guard_required)
+            for issue in report.blocked
         )
 
     def process_worker_batch(self, max_items: int | None = None) -> tuple[ScriptChangeResult, ...]:

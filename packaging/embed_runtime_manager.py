@@ -430,6 +430,7 @@ class PythonRuntimeManager:
             _emit_status(on_status, "Copying Python runtime into the project...")
             with runtime_publication(dest_path, replace_existing=False) as candidate:
                 _copy_project_runtime_tree(source, str(candidate))
+                clear_windows_readonly_tree(candidate)
                 prepare_private_runtime_paths(candidate)
                 python = _find_python_in_root(str(candidate))
                 if not python or not _is_python_version(python, runtime_id):
@@ -548,8 +549,12 @@ class PythonRuntimeManager:
                             if sys.platform != "win32" and member.create_system == 3:
                                 os.chmod(path, (member.external_attr >> 16) & 0o777)
                         prepare(candidate)
-            except (OSError, zipfile.BadZipFile) as exc:
+            except zipfile.BadZipFile as exc:
                 raise PythonRuntimeError(f"The bundled Python {runtime_id.series} runtime is invalid.\n{exc}") from exc
+            except OSError as exc:
+                raise PythonRuntimeError(
+                    f"Failed to install bundled Python {runtime_id.series} into {target}.\n{exc}"
+                ) from exc
             return self.private_runtime_python(runtime_id)
         return None
 

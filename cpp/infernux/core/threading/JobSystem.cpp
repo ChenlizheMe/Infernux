@@ -163,13 +163,16 @@ void JobSystem::Initialize(uint32_t workerCount)
 
     auto *instance = new JobSystem();
     instance->m_state.store(State::Running, std::memory_order_release);
-    g_instance.store(instance, std::memory_order_release);
-
-    const uint32_t resolved = ResolveWorkerCount(workerCount);
-    instance->m_workers.reserve(resolved);
-    for (uint32_t i = 0; i < resolved; ++i) {
-        instance->m_workers.emplace_back([instance] { instance->WorkerLoop(); });
+    try {
+        const uint32_t resolved = ResolveWorkerCount(workerCount);
+        instance->m_workers.reserve(resolved);
+        for (uint32_t i = 0; i < resolved; ++i)
+            instance->m_workers.emplace_back([instance] { instance->WorkerLoop(); });
+    } catch (...) {
+        delete instance; // Join every successfully created worker before propagating failure.
+        throw;
     }
+    g_instance.store(instance, std::memory_order_release);
 }
 
 void JobSystem::InitializeInline()
@@ -190,6 +193,8 @@ void JobSystem::Shutdown()
     JobSystem *toDestroy = nullptr;
     {
         std::lock_guard<std::mutex> guard(g_singletonMutex);
+        if (s_currentContext && s_currentContext->system == g_instance.load(std::memory_order_acquire))
+            throw std::logic_error("JobSystem cannot shut down from one of its executing jobs");
         toDestroy = g_instance.exchange(nullptr, std::memory_order_acq_rel);
     }
 
@@ -653,13 +658,19 @@ void JobSystem::PropagateFailureAndCancellation(const JobHandle &handle)
 
 void JobSystem::Wait(const JobHandle &handle)
 {
+    WaitForCompletion(handle, true);
+    PropagateFailureAndCancellation(handle);
+}
+
+void JobSystem::WaitForCompletion(const JobHandle &handle, bool executePendingWork)
+{
     if (!handle.IsValid()) {
         return;
     }
 
     const bool suspended = SuspendCurrentPermit();
     while (!WaitSatisfied(handle)) {
-        if (!TryRunOneForWait(handle)) {
+        if (!executePendingWork || !TryRunOneForWait(handle)) {
             std::unique_lock<std::mutex> lock(handle.m_state->completionMutex);
             handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1),
                                                   [this, &handle] { return WaitSatisfied(handle); });
@@ -668,7 +679,6 @@ void JobSystem::Wait(const JobHandle &handle)
     if (suspended) {
         ResumeCurrentPermit();
     }
-    PropagateFailureAndCancellation(handle);
 }
 
 void JobSystem::Wait(TaskGroup &group)
@@ -679,25 +689,13 @@ void JobSystem::Wait(TaskGroup &group)
 
 void JobSystem::WaitPassive(const JobHandle &handle)
 {
-    if (!handle.IsValid()) {
-        return;
-    }
-
-    if (m_inline) {
-        Wait(handle);
-        return;
-    }
-
-    const bool suspended = SuspendCurrentPermit();
-    while (!WaitSatisfied(handle)) {
-        std::unique_lock<std::mutex> lock(handle.m_state->completionMutex);
-        handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1),
-                                              [this, &handle] { return WaitSatisfied(handle); });
-    }
-    if (suspended) {
-        ResumeCurrentPermit();
-    }
+    WaitPassiveCompletion(handle);
     PropagateFailureAndCancellation(handle);
+}
+
+void JobSystem::WaitPassiveCompletion(const JobHandle &handle)
+{
+    WaitForCompletion(handle, m_inline);
 }
 
 void JobSystem::WaitPassive(TaskGroup &group)

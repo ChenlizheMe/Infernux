@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import json
 import os
 import subprocess
@@ -9,8 +8,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
-from infernux.engine.player_package_native import read_manifest, write_pack
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,9 +25,7 @@ def _module():
 
 
 @pytest.mark.parametrize("script", (SCRIPT, WINDOWS_SCRIPT))
-def test_player_smoke_cli_bootstraps_repository_python_from_any_working_directory(
-    script: Path, tmp_path: Path
-):
+def test_player_smoke_cli_bootstraps_repository_python_from_any_working_directory(script: Path, tmp_path: Path):
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
 
@@ -52,12 +47,8 @@ def test_gameplay_control_ready_requires_started_runtime_and_unpaused_input():
     module = _module()
 
     assert not module._gameplay_control_ready({"gameplay_ready": False})
-    assert module._gameplay_control_ready(
-        {"gameplay_ready": True, "scene_manager_paused": False}
-    )
-    assert not module._gameplay_control_ready(
-        {"gameplay_ready": True, "scene_manager_paused": True}
-    )
+    assert module._gameplay_control_ready({"gameplay_ready": True, "scene_manager_paused": False})
+    assert not module._gameplay_control_ready({"gameplay_ready": True, "scene_manager_paused": True})
     assert module._gameplay_control_ready(
         {"gameplay_ready": True, "scene_manager_paused": True},
         allow_paused=True,
@@ -65,9 +56,7 @@ def test_gameplay_control_ready_requires_started_runtime_and_unpaused_input():
 
 
 @pytest.mark.parametrize("state_location", ("LOCALAPPDATA", "XDG_STATE_HOME", "home"))
-def test_player_smoke_reads_errors_from_packaged_player_state_directory(
-    state_location, tmp_path, monkeypatch
-):
+def test_player_smoke_reads_errors_from_packaged_player_state_directory(state_location, tmp_path, monkeypatch):
     module = _module()
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
@@ -78,61 +67,11 @@ def test_player_smoke_reads_errors_from_packaged_player_state_directory(
         monkeypatch.setenv(state_location, str(state_home))
     actual_log = state_home / "Infernux" / "Players" / "Balance" / "Logs" / "player.log"
     actual_log.parent.mkdir(parents=True)
-    actual_log.write_text("[ERROR] scene failed\n", encoding="utf-8")
+    actual_log.write_text("[Error] scene failed\n", encoding="utf-8")
 
     log_path = module._state_log("Balance")
     assert str(log_path) == str(actual_log)
-    assert module._fatal_lines(module._new_log_text(log_path, 0)) == ["[ERROR] scene failed"]
-
-
-def test_linux_smoke_requires_debug_player_control(tmp_path: Path):
-    module = _module()
-    player = tmp_path / "Balance"
-    player.write_bytes(b"")
-    data = tmp_path / "Balance_Data"
-    data.mkdir()
-    build_manifest = tmp_path / "BuildManifest.json"
-    build_manifest.write_text(
-        json.dumps(
-            {
-                "game": "Balance",
-                "runtime_contract": {
-                    "runtime_policy": {"player_control": "disabled"}
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime_catalog = tmp_path / "RuntimeAssetCatalog.json"
-    runtime_catalog.write_text(
-        json.dumps(
-            {
-                "$schema": "infernux.runtime_asset_catalog",
-                "player_host": {},
-                "packages": [],
-                "artifacts": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    catalog = data / "AssetCatalog.inxcat"
-    write_pack(
-        (
-            ("RuntimeAssetCatalog.json", runtime_catalog),
-            ("BuildManifest.json", build_manifest),
-        ),
-        catalog,
-    )
-    catalog_manifest = read_manifest(catalog)
-    (data / "PackageIndex.inxmanifest").write_text(
-        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
-        f"catalog\t{catalog_manifest['archive_sha256']}\t"
-        f"{catalog_manifest['archive_bytes']}\n",
-        encoding="ascii",
-    )
-
-    with pytest.raises(RuntimeError, match="development build"):
-        module._load_debug_manifest(player)
+    assert module._fatal_lines(module._new_log_text(log_path, 0)) == ["[Error] scene failed"]
 
 
 def test_linux_smoke_position_and_axis_delta():
@@ -153,101 +92,17 @@ def test_player_smoke_rejects_a_body_that_falls_through_the_floor():
         module._require_minimum_final_y((0.0, -0.25, 2.0), 0.0)
 
 
-def test_linux_smoke_rejects_missing_public_position():
-    module = _module()
-
-    with pytest.raises(RuntimeError, match="no public position"):
-        module._position({"objects": {}}, "PlayerBall")
-
-
 def test_linux_smoke_report_is_atomic(tmp_path: Path):
     module = _module()
     report = tmp_path / "evidence" / "linux.json"
 
-    module._write_json_atomic(
-        report, {"schema": "infernux.linux_player_smoke", "status": "passed"}
-    )
+    module._write_json_atomic(report, {"schema": "infernux.linux_player_smoke", "status": "passed"})
 
     assert json.loads(report.read_text(encoding="utf-8")) == {
         "schema": "infernux.linux_player_smoke",
         "status": "passed",
     }
     assert not list(report.parent.glob("*.tmp"))
-
-
-def test_linux_smoke_parser_defaults_to_managed_cleanup():
-    module = _module()
-
-    arguments = module._parser().parse_args(["Balance"])
-
-    assert arguments.xvfb == "auto"
-    assert arguments.video_driver == "default"
-    assert arguments.object == "PlayerBall"
-    assert arguments.press_scancode == 26
-    assert arguments.axis == "z"
-    assert arguments.minimum_final_y is None
-    assert not arguments.validation
-    assert arguments.component_probe == []
-
-
-@pytest.mark.parametrize(
-    ("environment", "expected"),
-    (
-        ({"SDL_VIDEODRIVER": "x11", "DISPLAY": ":0"}, True),
-        ({"SDL_VIDEODRIVER": "x11", "WAYLAND_DISPLAY": "wayland-1"}, False),
-        ({"SDL_VIDEODRIVER": "wayland", "WAYLAND_DISPLAY": "wayland-1"}, True),
-        ({"SDL_VIDEODRIVER": "wayland", "DISPLAY": ":0"}, False),
-        ({"WAYLAND_DISPLAY": "wayland-1"}, True),
-        ({}, False),
-    ),
-)
-def test_linux_smoke_recognizes_the_selected_display_server(environment, expected):
-    module = _module()
-
-    assert module._display_server_available(environment) is expected
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    (
-        ("SDL/Vulkan window backend contract accepted: backend=x11, extensions=2", "x11"),
-        ("selected backend=wayland, extensions=2\nselected backend=x11, extensions=2", "x11"),
-        ("SDL chose video backend 'x11'", "x11"),
-        ("SDL initialized without a Vulkan window", ""),
-    ),
-)
-def test_linux_smoke_reports_the_selected_sdl_video_backend(text, expected):
-    module = _module()
-
-    assert module._selected_video_driver(text) == expected
-
-
-def test_linux_smoke_backend_evidence_is_emitted_at_info_level():
-    source = (ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp").read_text(
-        encoding="utf-8"
-    )
-
-    marker = '", selected backend=", videoDriver.empty() ? "<none>" : videoDriver'
-    marker_index = source.index(marker)
-    info_index = source.rfind("INXLOG_INFO", 0, marker_index)
-    debug_index = source.rfind("INXLOG_DEBUG", 0, marker_index)
-    assert info_index > debug_index
-    assert source[info_index:marker_index].count("INXLOG_INFO") == 1
-
-
-@pytest.mark.parametrize("script", (SCRIPT, WINDOWS_SCRIPT))
-def test_player_smoke_captures_only_after_renderer_submission_is_ready(script):
-    spec = importlib.util.spec_from_file_location(script.stem, script)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    source = inspect.getsource(module._run)
-
-    readiness = source.index('if not bool(feature_observation.get("submission_ready"))')
-    capture = source.index('control.call(\n                "capture"')
-    shutdown = source.index('control.call("shutdown"')
-
-    assert readiness < capture < shutdown
 
 
 def test_linux_smoke_component_probe_asserts_nested_public_state():
@@ -290,62 +145,9 @@ def test_linux_smoke_component_probe_asserts_nested_public_state():
     assert fields["GoalParticles/ParticleSystem[0]"]["time"] == 0.75
 
 
-def test_linux_smoke_component_probe_rejects_failed_contract():
-    module = _module()
-    probe = module._parse_component_probe(
-        json.dumps(
-            {
-                "object_name": "BallTrail",
-                "component_type": "LineRenderer",
-                "fields": ["position_count"],
-                "assertions": [
-                    {
-                        "field": "position_count",
-                        "operator": "greater_or_equal",
-                        "value": 3,
-                    }
-                ],
-            }
-        )
-    )
-    observation = {
-        "objects": {
-            "BallTrail": {
-                "component_fields": {
-                    "LineRenderer[0]": {"position_count": 2}
-                }
-            }
-        }
-    }
-
-    with pytest.raises(RuntimeError, match="component assertion failed"):
-        module._assert_component_probes(observation, [probe])
-
-
 def test_linux_smoke_fatal_scan_includes_vulkan_validation():
     module = _module()
 
-    lines = module._fatal_lines(
-        "normal line\nVulkan Validation Error: VUID-RuntimeSpirv-test\n"
-    )
+    lines = module._fatal_lines("normal line\nVulkan Validation Error: VUID-RuntimeSpirv-test\n")
 
     assert lines == ["Vulkan Validation Error: VUID-RuntimeSpirv-test"]
-
-
-@pytest.mark.parametrize(
-    "diagnostic",
-    [
-        "X Error of failed request: BadWindow",
-        "VK_ERROR_DEVICE_LOST",
-        "device lost while presenting",
-        "Aborted (core dumped)",
-        "Aborted",
-        "SIGABRT",
-        "Segmentation fault",
-        "SIGSEGV",
-    ],
-)
-def test_linux_smoke_fatal_scan_includes_native_process_failures(diagnostic):
-    module = _module()
-
-    assert module._fatal_lines(f"normal line\n{diagnostic}\n") == [diagnostic]

@@ -127,7 +127,7 @@ def test_particle_builtin_texture_values_and_live_changes(
 ):
     from infernux.engine import project_context
 
-    monkeypatch.setattr(project_context, "_project_root", str(tmp_path))
+    monkeypatch.setattr(project_context._context(), "root", str(tmp_path))
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", database)

@@ -1,13 +1,17 @@
 """A prefab node keeps its identity when either author reparents it."""
+
 import copy
 
 import pytest
 
 from infernux.engine.prefab_manager import (
-    _read_prefab_document, instantiate_prefab, save_prefab,
+    _read_prefab_document,
+    instantiate_prefab,
+    save_prefab,
 )
 from infernux.engine.prefab_overrides import (
-    apply_overrides_to_prefab, build_prefab_apply_command,
+    apply_overrides_to_prefab,
+    build_prefab_apply_command,
     resolve_scene_prefab_documents,
 )
 
@@ -23,8 +27,7 @@ def _fixture(scene, tmp_path):
     child.add_component("BoxCollider")
     path = str(tmp_path / "topology.prefab")
     assert save_prefab(root, path)
-    instances = [instantiate_prefab(file_path=path, guid="topology", scene=scene)
-                 for _ in range(2)]
+    instances = [instantiate_prefab(file_path=path, guid="topology", scene=scene) for _ in range(2)]
     return path, instances
 
 

@@ -114,6 +114,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         text_button_owner = scene.create_game_object("Platform Fixture Text Input")
         text_button_owner.set_parent(canvas_owner, world_position_stays=False)
         self._text_input_button = text_button_owner.add_component(inx.ui.UIButton)
+        self._text_input_button.align_h = inx.ui.ScreenAlignH.Center
+        self._text_input_button.align_v = inx.ui.ScreenAlignV.Center
         self._text_input_button.set_rect(512.0, 260.0, 256.0, 64.0, 1280.0, 720.0)
         self._text_input_button.label = "Open keyboard"
         self._text_input_button.background_color = [0.95, 0.28, 0.12, 1.0]
@@ -122,6 +124,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         status_owner = scene.create_game_object("Platform Fixture Text Status")
         status_owner.set_parent(canvas_owner, world_position_stays=False)
         self._text_input_status = status_owner.add_component(inx.ui.UIText)
+        self._text_input_status.align_h = inx.ui.ScreenAlignH.Center
+        self._text_input_status.align_v = inx.ui.ScreenAlignV.Center
         self._text_input_status.set_rect(400.0, 96.0, 480.0, 56.0, 1280.0, 720.0)
         self._text_input_status.text = "Text input idle"
         self._text_input_status.font_size = 24.0
@@ -146,6 +150,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         )
         package_status_owner.set_parent(canvas_owner, world_position_stays=False)
         package_status = package_status_owner.add_component(inx.ui.UIText)
+        package_status.align_h = inx.ui.ScreenAlignH.Center
+        package_status.align_v = inx.ui.ScreenAlignV.Center
         package_status.set_rect(256.0, 168.0, 768.0, 48.0, 1280.0, 720.0)
         package_status.text = package_message
         self._package_status = package_status
@@ -253,7 +259,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         from infernux.renderstack.render_effect import RenderEffect
         from infernux.renderstack.render_effect_asset import RenderEffectAsset
 
-        for key in "5678":
+        for key in "567890":
             if not inx.input.Input.get_key_down(key):
                 continue
             camera = inx.SceneManager.get_active_scene().main_camera
@@ -272,6 +278,13 @@ class PlatformFixtureBootstrap(inx.InxComponent):
                 self._render_settings_stack.effect_slots[0].enabled = False
             elif key == "8":
                 self._render_settings_stack.enabled = False
+                camera.clear_flags = CameraClearFlags.Skybox
+            elif key == "9":
+                camera.culling_mask = 0
+                camera.clear_flags = CameraClearFlags.SolidColor
+                camera.background_color = (.1, .35, .7, 1.)
+            elif key == "0":
+                camera.culling_mask = 0xffffffff
                 camera.clear_flags = CameraClearFlags.Skybox
             inx.Debug.log("INFERNUX_RENDER_SETTINGS_PROBE " + key)
 

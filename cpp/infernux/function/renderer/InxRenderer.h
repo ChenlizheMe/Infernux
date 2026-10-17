@@ -62,7 +62,6 @@ class Scene;
 class ScenePickingService;
 class SceneRenderGraph;
 class SceneRenderTarget;
-class TransientResourcePool;
 class InxGUIContext;
 class InxScreenUIRenderer;
 struct ShaderProgramArtifact;
@@ -279,6 +278,10 @@ class InxRenderer
     void Init(int width, int height, InxAppMetadata appMetaData);
     void PreparePipeline();
     void DrawFrame();
+    [[nodiscard]] bool IsDrawingFrame() const noexcept
+    {
+        return m_drawingFrame;
+    }
 
     /// @brief Force the next DrawFrame() to simulate with an exact delta time
     /// instead of the wall clock. Used by Infernux::Tick so graphical frames
@@ -497,9 +500,6 @@ class InxRenderer
     uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
                                          int size, uint64_t dependencyRevision);
 
-    // Refresh all materials using a specific shader
-    bool RefreshMaterialsUsingShader(const std::string &shaderId);
-
     // Invalidate shader cache for hot-reload (must call before loading new shader code)
     void InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType = "");
 
@@ -530,6 +530,9 @@ class InxRenderer
 
     /// @brief Get Game View texture ID for ImGui display
     uint64_t GetGameTextureId();
+
+    /// Screen-camera graphs have executed and initial uploads have drained.
+    [[nodiscard]] bool IsGamePresentationReady();
 
     /// @brief Monotonic generation of the native Game render target.
     ///
@@ -775,9 +778,9 @@ class InxRenderer
     };
     std::unordered_map<uint64_t, ParticleCollisionPublishedState> m_particleCollisionPublishedState;
     std::unique_ptr<OutlineRenderer> m_outlineRenderer;
-    std::unique_ptr<TransientResourcePool> m_transientResourcePool;
     uint64_t m_gpuResidencyBudgetBytes = 0;
     uint32_t m_gpuResidencyCheckFrames = 0;
+    double m_gpuResidencyCheckAccumulatorMs = 0.0;
 
     // Game cameras share one output target but own independent RenderGraphs.
     // This keeps camera matrices, shadows, Forward+ lists, particles and
@@ -913,6 +916,7 @@ class InxRenderer
 
     /// Callback invoked before SceneManager::Update with the raw frame delta.
     std::function<void(float)> m_preSceneUpdateCallback;
+    bool m_drawingFrame = false;
 
     /// Callback invoked once per frame AFTER VkCore::DrawFrame() + EndFrame().
     /// Used by Python to run heavy scene loads between frames, avoiding

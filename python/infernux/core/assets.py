@@ -29,7 +29,7 @@ import weakref
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type
 
 from infernux.core.material import Material
 from infernux.core.texture import Texture
@@ -49,7 +49,6 @@ from infernux.core.asset_types import (
     RENDER_EFFECT_EXTENSIONS,
     PARTICLE_GRAPH_EXTENSIONS,
     PHYSIC_MATERIAL_EXTENSIONS,
-    asset_category_from_extension,
 )
 from infernux.core.animation_clip import AnimationClip
 from infernux.core.animation_clip3d import AnimationClip3D
@@ -57,6 +56,9 @@ from infernux.core.anim_state_machine import AnimStateMachine
 from infernux.core.animation_timeline import AnimationTimeline
 from infernux.debug import Debug
 from infernux.engine.path_utils import managed_asset_glob_match, path_key, portable_path, resolved_path
+
+if TYPE_CHECKING:
+    from infernux.core.document_store import DocumentWriteTicket
 
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
@@ -82,7 +84,7 @@ class _AssetRevisionState:
 @dataclass(slots=True)
 class _PendingDocumentWrite:
     path: str
-    ticket: Any
+    ticket: DocumentWriteTicket
     edit_revision: int
     requested_write_revision: int
     commit_token: str
@@ -97,7 +99,7 @@ class _PendingDocumentWrite:
 class _SelfWriteCommit:
     """The last exact publication that a watcher may acknowledge."""
 
-    ticket: Any
+    ticket: DocumentWriteTicket | None
     commit_token: str
     content_token: str
     file_state: Any = None
@@ -135,7 +137,7 @@ class AssetFile:
             from infernux.engine.project_context import resolve_runtime_asset_guid
 
             path = resolve_runtime_asset_guid(self._guid)
-            if not path or not os.path.isfile(path):
+            if not path:
                 raise FileNotFoundError("Managed asset file is not available")
             return path
 
@@ -145,14 +147,12 @@ class AssetFile:
         project_root = Application.data_path()
         if not project_root:
             raise RuntimeError("Managed asset access requires an active Editor project")
-        assets_root = resolved_path(os.path.join(project_root, "Assets"))
+        assets_root = os.path.join(project_root, "Assets")
         candidate = resolved_path(path)
-        from infernux.engine.path_utils import is_path_within
+        from infernux.engine.path_utils import is_lexical_path_within
 
-        if not is_path_within(candidate, assets_root, allow_root=False):
+        if not is_lexical_path_within(candidate, assets_root, allow_root=False):
             raise PermissionError("Managed asset file resolves outside Assets")
-        if not os.path.isfile(candidate):
-            raise FileNotFoundError("Managed asset file is not available")
         return candidate
 
     def read_bytes(self) -> bytes:
@@ -381,9 +381,12 @@ class AssetManager:
         if not path:
             return None
 
-        resolved_type = asset_type or cls._type_from_extension(ext)
+        resolved_type = asset_type or (AnimationClip3D if "::subanim:" in path else cls._type_from_extension(ext))
 
-        asset = cls._load_by_type(path, resolved_type)
+        if resolved_type is AnimationClip3D and "::subanim:" in path:
+            asset = AnimationClip3D._load_imported_guid(guid, path, cls.require_asset_database())
+        else:
+            asset = cls._load_by_type(path, resolved_type)
         if asset is not None:
             if hasattr(asset, "_guid"):
                 try:
@@ -404,19 +407,20 @@ class AssetManager:
         *,
         raw_filesystem: bool = False,
     ) -> List[Any]:
-        """Query managed asset files or explicitly sandboxed loose files.
+        """Query the published asset catalog or explicitly sandboxed loose files.
 
         Args:
-            pattern: Case-insensitive asset path/glob or exact GUID;
-                a sandbox-relative glob when
-                ``raw_filesystem`` is true.
+            pattern: Exact asset path or GUID, or a case-insensitive glob.
+                Exact paths follow platform filesystem identity. Use a
+                sandbox-relative glob when ``raw_filesystem`` is true.
             asset_type: If specified, filter by type.
             raw_filesystem: Query real files rather than the asset database.
 
         Returns:
             Managed mode returns GUID-backed :class:`AssetFile` handles. Raw mode returns
-            :class:`SandboxPath` handles. Player path/glob queries use the
-            build-frozen path-to-GUID index and never scan its filesystem.
+            :class:`SandboxPath` handles. Managed searches never inspect source files;
+            external changes appear after catalog publication. Reading/loading a
+            result accesses its payload. Player queries use the build-frozen index.
         """
         if raw_filesystem:
             if asset_type is not None:
@@ -462,37 +466,38 @@ class AssetManager:
 
         database = cls.require_asset_database()
         if guid_query:
-            path = database.get_path_from_guid(token)
-            if not path or not os.path.isfile(path):
+            entries = [(token, database.get_path_from_guid(token))]
+        else:
+            project_root = Application.data_path()
+            if not project_root:
                 return []
-            if asset_type is not None:
-                ext = os.path.splitext(path)[1].lower()
-                if cls._type_from_extension(ext) != asset_type:
-                    return []
-            return [AssetFile(token)]
+            assets_root = os.path.join(project_root, "Assets")
+            if has_glob:
+                entries = ((guid, database.get_path_from_guid(guid)) for guid in database.get_all_guids())
+            else:
+                candidate = os.path.join(assets_root, *portable_token.split("/")[1:])
+                guid = database.get_guid_from_catalog_path(candidate)
+                if guid:
+                    entries = [(guid, database.get_path_from_guid(guid))]
+                else:
+                    entries = [(entry["guid"], entry["path"]) for entry in database.get_directory_catalog(candidate)]
         results: list[str] = []
-        normalized_pattern = portable_token.rstrip("/")
-        directory_query = not has_glob
-        guids = database.get_all_guids()
-        for guid in guids:
-            path = database.get_path_from_guid(guid)
-            if not path or not os.path.isfile(path):
+        from infernux.engine.path_utils import relative_path
+
+        for guid, path in entries:
+            if not path or "::" in path:
                 continue
-            logical = cls._author_asset_path(path) if path else ""
-            logical_glob_match = managed_asset_glob_match(logical, normalized_pattern)
-            if logical and (
-                logical_glob_match
-                or (
-                    directory_query
-                    and logical.rpartition("/")[0].casefold()
-                    == normalized_pattern.casefold()
-                )
-            ):
-                if asset_type is not None:
-                    ext = os.path.splitext(path)[1].lower()
-                    if cls._type_from_extension(ext) != asset_type:
-                        continue
-                results.append(str(guid))
+            if asset_type is not None and cls._type_from_extension(os.path.splitext(path)[1].lower()) != asset_type:
+                continue
+            if has_glob:
+                try:
+                    logical = ("Assets/" + relative_path(path, assets_root, resolve=False)
+                               if os.path.isabs(path) else portable_path(path))
+                except ValueError:
+                    continue  # Built-in and package assets are outside this Assets query.
+                if not managed_asset_glob_match(logical, portable_token):
+                    continue
+            results.append(str(guid))
         return [AssetFile(guid) for guid in sorted(results)]
 
     @staticmethod
@@ -526,25 +531,6 @@ class AssetManager:
             and not portable.casefold().startswith("assets/")
         ):
             raise ValueError("asset query patterns must be Assets-relative")
-
-    @staticmethod
-    def _author_asset_path(path: str) -> str:
-        from infernux.application import Application
-        from infernux.engine.path_utils import portable_relative_path, relative_path
-
-        project_root = Application.data_path()
-        if os.path.isabs(path):
-            if not project_root:
-                return ""
-            try:
-                return "Assets/" + relative_path(path, os.path.join(project_root, "Assets"))
-            except ValueError:
-                return ""
-        try:
-            portable = portable_relative_path(path)
-        except ValueError:
-            return ""
-        return "Assets/" + portable[len("assets/"):] if portable.casefold().startswith("assets/") else ""
 
     @classmethod
     def _managed_guid(cls, value: str) -> str:
@@ -1478,7 +1464,7 @@ class AssetManager:
 
     @classmethod
     def _register_self_write_commit(cls, record: _PendingDocumentWrite) -> None:
-        committed_state = getattr(record.ticket, "committed_file_state", None)
+        committed_state = record.ticket.committed_file_state
         if committed_state is None:
             return
         entries = cls._self_write_commits.setdefault(record.path, [])
@@ -1561,7 +1547,7 @@ class AssetManager:
         if cls._render_effect_save_snapshots.get(normalized) is not None:
             return True
         return any(
-            not bool(getattr(record.ticket, "is_complete", False))
+            not record.ticket.is_complete
             for record in cls._pending_document_write_records.get(normalized, ())
         )
 
@@ -1576,11 +1562,11 @@ class AssetManager:
         records = cls._pending_document_write_records.get(normalized, ())
         for record in records:
             ticket = record.ticket
-            if not bool(getattr(ticket, "is_complete", False)):
+            if not ticket.is_complete:
                 return "pending"
-            if str(getattr(ticket, "status", "") or "").lower() != "succeeded":
+            if ticket.status != "succeeded":
                 continue
-            committed = getattr(ticket, "committed_file_state", None)
+            committed = ticket.committed_file_state
             if committed is not None and cls._file_state_matches(file_path, committed):
                 cls._register_self_write_commit(record)
                 return "ack"
@@ -1594,9 +1580,8 @@ class AssetManager:
             # A completed write with a mismatching fingerprint is an external
             # edit; only an unsent revision should defer the event.
             if not any(
-                bool(getattr(record.ticket, "is_complete", False))
-                and str(getattr(record.ticket, "status", "") or "").lower()
-                == "succeeded"
+                record.ticket.is_complete
+                and record.ticket.status == "succeeded"
                 for record in records
             ):
                 return "pending"
@@ -1859,10 +1844,10 @@ class AssetManager:
             remaining: list[_PendingDocumentWrite] = []
             for record in records:
                 ticket = record.ticket
-                if not bool(getattr(ticket, "is_complete", False)):
+                if not ticket.is_complete:
                     remaining.append(record)
                     continue
-                status = str(getattr(ticket, "status", "") or "").lower()
+                status = ticket.status
                 state = cls._asset_revision_state(path)
                 if status == "succeeded":
                     cls._register_self_write_commit(record)
@@ -1874,14 +1859,14 @@ class AssetManager:
                             state.persisted_revision,
                             record.edit_revision,
                         )
-                    committed_state = getattr(ticket, "committed_file_state", None)
+                    committed_state = ticket.committed_file_state
                     if committed_state is not None and disk_is_current:
                         state.persisted_file_state = committed_state
                         state.expected_file_state = committed_state
                     if record.content_token == state.content_token and record.callback is None:
                         state.content_token = record.content_token
                 elif status not in {"superseded", "cancelled"}:
-                    detail = str(getattr(ticket, "error", "") or "").strip()
+                    detail = ticket.error.strip()
                     Debug.log_error(
                         f"Asset document write failed for '{path}' "
                         f"({status or 'unknown'}): {detail or 'no diagnostic'}"
@@ -2146,6 +2131,12 @@ class AssetManager:
                 if isinstance(obj, Material) and obj._disposed:
                     del cls._cache[guid]
                     return None
+                if isinstance(obj, AnimationClip3D) and obj._publication_revision >= 0:
+                    from infernux.lib import AssetDependencyGraph
+
+                    if obj._publication_revision != AssetDependencyGraph.instance().get_content_revision(guid):
+                        del cls._cache[guid]
+                        return None
                 if play_cache is not None:
                     from infernux.core.data_asset import DataAsset
 
@@ -2424,11 +2415,11 @@ class AssetManager:
             # Inspect completed records directly so the editor's own replace is
             # acknowledged by commit fingerprint, not by a time window.
             for record in cls._pending_document_write_records.get(normalized, ()):
-                if not bool(getattr(record.ticket, "is_complete", False)):
+                if not record.ticket.is_complete:
                     continue
-                if str(getattr(record.ticket, "status", "") or "").lower() != "succeeded":
+                if record.ticket.status != "succeeded":
                     continue
-                committed = getattr(record.ticket, "committed_file_state", None)
+                committed = record.ticket.committed_file_state
                 if committed is not None and cls._file_state_matches(path, committed):
                     cls._register_self_write_commit(record)
                     return True

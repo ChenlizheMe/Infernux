@@ -18,6 +18,12 @@ namespace infernux
 
 constexpr uint32_t kMaxSkinInfluences = 4;
 
+struct EvaluatedSkinPose
+{
+    std::vector<glm::mat4> palette;
+    std::vector<glm::mat4> nodeGlobals;
+};
+
 struct SkinInfluence
 {
     std::array<uint32_t, kMaxSkinInfluences> boneIndex{0, 0, 0, 0};
@@ -201,6 +207,9 @@ struct PoseStackLayer
     bool additive = false;
     bool loop = true;
     std::vector<std::string> boneMask;
+    // Normalize overlapping members per bone before applying the group's fade.
+    std::string blendGroup;
+    float groupWeight = 1.0f;
 };
 
 class InxSkinnedMesh
@@ -266,6 +275,12 @@ class InxSkinnedMesh
     [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>>
     GetOrBuildGpuBonePalette(const SkinnedSampleRequest &request, const InxSkinnedMesh *animationSource = nullptr,
                              const InxSkinnedMesh *blendAnimationSource = nullptr) const;
+    [[nodiscard]] std::shared_ptr<const EvaluatedSkinPose>
+    GetOrBuildEvaluatedPose(const SkinnedSampleRequest &request, const InxSkinnedMesh *animationSource = nullptr,
+                            const InxSkinnedMesh *blendAnimationSource = nullptr) const;
+    [[nodiscard]] std::vector<glm::mat4> GetSkeletonNodeWorldMatrices(const EvaluatedSkinPose &pose,
+                                                                      const std::vector<std::string> &nodeNames,
+                                                                      const glm::mat4 &drawWorld) const;
     [[nodiscard]] std::vector<Vertex> SampleVertices(const SkinnedSampleRequest &request) const;
 
     /// Compute a conservative local-space AABB for a GPU-skinned pose.  The
@@ -284,6 +299,9 @@ class InxSkinnedMesh
     [[nodiscard]] std::vector<glm::mat4> BuildGpuBonePaletteFromPoseStack(
         const std::vector<PoseStackLayer> &layers,
         const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources = {}) const;
+    [[nodiscard]] EvaluatedSkinPose
+    EvaluatePoseStack(const std::vector<PoseStackLayer> &layers,
+                      const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources = {}) const;
 
     void NormalizeInfluences();
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
@@ -324,11 +342,19 @@ class InxSkinnedMesh
     [[nodiscard]] std::vector<glm::mat4> BuildBoneMatrices(const SkinnedSampleRequest &request,
                                                            const InxSkinnedMesh *animationSource,
                                                            const InxSkinnedMesh *blendAnimationSource) const;
+    [[nodiscard]] std::vector<glm::mat4> EvaluateNodeGlobals(const SkinnedSampleRequest &request,
+                                                             const InxSkinnedMesh *animationSource,
+                                                             const InxSkinnedMesh *blendAnimationSource) const;
+    [[nodiscard]] std::vector<glm::mat4>
+    EvaluatePoseStackGlobals(const std::vector<PoseStackLayer> &layers,
+                             const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources) const;
+    [[nodiscard]] std::vector<glm::mat4> BuildPalette(const std::vector<glm::mat4> &globals, float importScale) const;
+    [[nodiscard]] EvaluatedSkinPose MakeEvaluatedPose(std::vector<glm::mat4> globals) const;
     [[nodiscard]] static PaletteCacheKey MakePaletteCacheKey(const SkinnedSampleRequest &request,
                                                              const InxSkinnedMesh *animationSource,
                                                              const InxSkinnedMesh *blendAnimationSource);
 
-    mutable std::unordered_map<PaletteCacheKey, std::shared_ptr<const std::vector<glm::mat4>>, PaletteCacheKeyHash>
+    mutable std::unordered_map<PaletteCacheKey, std::shared_ptr<const EvaluatedSkinPose>, PaletteCacheKeyHash>
         m_gpuPaletteCache;
     mutable std::vector<PaletteCacheKey> m_gpuPaletteCacheOrder;
 };

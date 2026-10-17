@@ -4,6 +4,7 @@
 #include "EditorTheme.h"
 #include "interaction/EditorSearchModel.h"
 #include <core/log/InxLog.h>
+#include <function/scene/ObjectHandle.h>
 
 #include <imgui.h>
 
@@ -26,14 +27,20 @@ namespace infernux
 class ConsolePanel : public EditorPanel
 {
   public:
-    ConsolePanel();
+    explicit ConsolePanel(const std::string &projectRoot = "");
     ~ConsolePanel() override;
 
     // ── Public API (called from pybind11 or other C++ systems) ──
 
     /// Log a message originating from Python's Debug.log() system.
     void LogFromPython(LogLevel level, const std::string &message, const std::string &stackTrace = "",
-                       const std::string &sourceFile = "", int sourceLine = 0);
+                       const std::string &sourceFile = "", int sourceLine = 0, const ObjectHandle &contextHandle = {});
+
+    [[nodiscard]] const std::string &GetProjectRoot() const
+    {
+        return m_projectRoot;
+    }
+    uint64_t GetEntryContextObjectId(uint64_t uid);
 
     /// Clear all log entries.
     void Clear();
@@ -125,6 +132,7 @@ class ConsolePanel : public EditorPanel
         int sourceLine = 0;
         LogLevel level = LOG_INFO;
         uint64_t uid = 0;
+        ObjectHandle contextHandle;
     };
 
     // ── Visible entry after filtering/collapsing ──
@@ -138,6 +146,7 @@ class ConsolePanel : public EditorPanel
 
     // ── INXLOG sink ──
     size_t m_sinkId = 0;
+    const std::string m_projectRoot;
     void OnLogMessage(LogLevel level, const char *file, int line, const std::string &message, bool internalOnly);
 
     // ── Log storage ──
@@ -166,8 +175,8 @@ class ConsolePanel : public EditorPanel
     int m_cachedErrorCount = 0;
 
     // ── Selection projection & scroll ──
-    // m_selectedUid mirrors SelectionService for drawing only. User actions
-    // publish intent and never mutate this field directly.
+    // Context navigation selects the owning GameObject globally while this
+    // projection retains the selected diagnostic for its detail pane.
     uint64_t m_selectedUid = 0;
     std::vector<uint64_t> m_selectedUids;
     std::unordered_set<uint64_t> m_selectedUidLookup;

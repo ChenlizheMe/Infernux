@@ -1246,11 +1246,7 @@ def _observe_player(
 def _public_component_type_names(obj) -> list[str]:
     names = []
     seen = set()
-    for getter in ("get_components", "get_py_components"):
-        try:
-            components = getattr(obj, getter)() or []
-        except Exception:
-            continue
+    for components in (obj.get_components(), obj.get_py_components()):
         for component in components:
             type_name = str(getattr(component, "type_name", type(component).__name__) or "").strip()
             if not type_name or type_name.startswith("_") or type_name in seen:
@@ -1321,11 +1317,7 @@ def _observe_component_fields(
 def _find_public_component(obj, component_type: str, ordinal: int):
     matches = []
     seen = set()
-    for getter in ("get_components", "get_py_components"):
-        try:
-            candidates = getattr(obj, getter)() or []
-        except Exception:
-            continue
+    for candidates in (obj.get_components(), obj.get_py_components()):
         for component in candidates:
             type_name = getattr(component, "type_name", type(component).__name__)
             if type_name != component_type and type(component).__name__ != component_type:
@@ -1341,16 +1333,13 @@ def _find_public_component(obj, component_type: str, ordinal: int):
 
 
 def _public_builtin_wrapper(obj, component, type_name: str):
-    try:
-        from infernux.components.builtin_component import BuiltinComponent
+    from infernux.components.builtin_component import BuiltinComponent
 
-        if isinstance(component, BuiltinComponent):
-            return component
-        wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
-        if wrapper_cls is not None:
-            return wrapper_cls._get_or_create_wrapper(component, obj)
-    except Exception:
-        pass
+    if isinstance(component, BuiltinComponent):
+        return component
+    wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
+    if wrapper_cls is not None:
+        return wrapper_cls._get_or_create_wrapper(component, obj)
     return component
 
 

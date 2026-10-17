@@ -93,18 +93,19 @@ def resolve_destination_path(path: PathLike) -> str:
     return os.path.join(resolved_path(os.path.dirname(lexical)), os.path.basename(lexical))
 
 
-def resolve_project_path(path: PathLike, root: PathLike) -> str:
-    """Resolve an I/O path against its explicit project, independent of cwd."""
+def resolve_project_path(path: PathLike, root: PathLike, *, destination: bool = False) -> str:
+    """Resolve against the project, preserving a destination's requested name."""
     if not root:
         raise ValueError("A project path requires an explicit project root")
     if not path:
         return ""
+    resolve = resolve_destination_path if destination else resolved_path
     portable = os.fspath(path).replace("\\", "/")
     if os.path.isabs(portable):
-        return resolved_path(portable)
+        return resolve(portable)
     if PureWindowsPath(portable).anchor:
         raise ValueError(f"Path is not valid on this host: {path!r}")
-    return resolved_path(os.path.join(resolved_path(root), *portable.split("/")))
+    return resolve(os.path.join(resolved_path(root), *portable.split("/")))
 
 
 def path_key(path: PathLike) -> str:

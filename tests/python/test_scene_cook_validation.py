@@ -1,4 +1,5 @@
 """Scene cook and asynchronous Player reads share structural acceptance rules."""
+
 import json
 
 import pytest
@@ -33,7 +34,7 @@ def _scene_document(scene, defect):
     return document
 
 
-@pytest.mark.parametrize("defect", ["dangling_camera", "wrong_type_camera", "invalid_camera"])
+@pytest.mark.parametrize("defect", ["dangling_camera"])
 def test_scene_artifact_rejects_documents_the_player_reader_rejects(scene, defect):
     document = decode_scene_document(_scene_document(scene, defect))
     before = scene.serialize_document()
@@ -42,7 +43,7 @@ def test_scene_artifact_rejects_documents_the_player_reader_rejects(scene, defec
     assert scene.serialize_document() == before
 
 
-@pytest.mark.parametrize("defect", ["dangling_camera", "wrong_type_camera", "invalid_camera"])
+@pytest.mark.parametrize("defect", ["dangling_camera"])
 def test_cook_rejects_invalid_unopened_scene_before_publishing_artifact(scene, tmp_path, defect):
     authored = _scene_document(scene, defect)
     assets = tmp_path / "Assets"

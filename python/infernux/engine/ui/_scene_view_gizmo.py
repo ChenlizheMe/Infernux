@@ -1,20 +1,10 @@
 """SceneViewGizmoMixin — extracted from SceneViewPanel."""
 from __future__ import annotations
 
-"""
-Unity-style Scene View panel with 3D viewport and camera controls.
-"""
 
 import math
-from infernux.lib import InxGUIContext, TextureLoader, InputManager
-from infernux.engine.i18n import t
-from .editor_panel import EditorPanel
-from .closable_panel import ClosablePanel
-from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol, ImGuiStyleVar
-from .viewport_utils import ViewportInfo, capture_viewport_info
+from infernux.lib import InxGUIContext, InputManager
 from . import imgui_keys as _keys
-import infernux.resources as _resources
 
 # Tool mode constants — imported from scene_view_panel
 from .scene_view_panel import (
@@ -26,14 +16,6 @@ from .scene_view_panel import (
 
 # Gizmo handle IDs — must match C++ EditorTools constants
 from infernux.debug import Debug
-from infernux.lib._Infernux import (
-    GIZMO_X_AXIS_ID,
-    GIZMO_Y_AXIS_ID,
-    GIZMO_Z_AXIS_ID,
-    GIZMO_XY_PLANE_ID,
-    GIZMO_XZ_PLANE_ID,
-    GIZMO_YZ_PLANE_ID,
-)
 
 
 def _rotate_vector_by_quat(q, v):

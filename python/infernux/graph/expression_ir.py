@@ -7,7 +7,7 @@ import hashlib
 import math
 from typing import Any, Callable, Mapping
 
-from .document import GraphDocument, GraphLinkRecord, GraphNodeRecord
+from .document import GraphDocument, GraphNodeRecord
 from .registry import (
     COMMON_NODE_REGISTRY,
     NodeDefinitionRegistry,

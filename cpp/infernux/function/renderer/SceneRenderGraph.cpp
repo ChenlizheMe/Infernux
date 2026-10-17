@@ -1023,7 +1023,7 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
             return false;
         }
     }
-    if (!m_cameraCanonicalLights.Initialize(rhiDevice, kMaxFramesInFlight)) {
+    if (!m_cameraCanonicalLights.Initialize(rhiDevice, EngineConfig::kFrameSlotCapacity)) {
         INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local canonical light buffers");
         return false;
     }
@@ -1037,7 +1037,7 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         INXLOG_ERROR("SceneRenderGraph: failed to register the canonical per-view descriptor layout");
         return false;
     }
-    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
+    for (uint32_t i = 0; i < EngineConfig::kFrameSlotCapacity; ++i) {
         auto &frame = m_perViewFrames[i];
         frame.geometryDescriptor = vkCore->AllocatePerViewDescriptorLease();
         frame.particleDescriptor = vkCore->AllocatePerViewDescriptorLease();
@@ -1078,10 +1078,10 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     // These two fixed built-in programs belong to the device, not a camera.
     // Recreating a Scene/Game view must not compile the same shaders again.
     const auto lightGridProgram = vkCore->GetForwardPlusGridProgram();
-    if (!m_forwardPlusGeometryGrid.Initialize(lightGridProgram, kMaxFramesInFlight) ||
-        !m_forwardPlusParticleGrid.Initialize(lightGridProgram, kMaxFramesInFlight))
+    if (!m_forwardPlusGeometryGrid.Initialize(lightGridProgram, EngineConfig::kFrameSlotCapacity) ||
+        !m_forwardPlusParticleGrid.Initialize(lightGridProgram, EngineConfig::kFrameSlotCapacity))
         return false;
-    for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+    for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
         const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
         if (lights.buffer.IsValid()) {
             if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
@@ -1553,7 +1553,7 @@ VkDescriptorSet SceneRenderGraph::GetPerViewDescriptorSet() const
 {
     if (!m_vkCore)
         return VK_NULL_HANDLE;
-    uint32_t frameIdx = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    uint32_t frameIdx = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     return m_perViewFrames[frameIdx].GeometrySet();
 }
 
@@ -1561,7 +1561,7 @@ rhi::BindGroupHandle SceneRenderGraph::GetPerViewBindGroup() const
 {
     if (!m_vkCore)
         return {};
-    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     return m_perViewFrames[frameIndex].geometryGroup;
 }
 
@@ -1569,7 +1569,7 @@ rhi::BindGroupHandle SceneRenderGraph::GetEditorOverlayBindGroup() const
 {
     if (!m_vkCore)
         return {};
-    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     return m_perViewFrames[frameIndex].editorOverlayGroup;
 }
 
@@ -1669,7 +1669,7 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
 {
     if (!m_vkCore)
         return false;
-    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
     if (!frame.cameraMatrix.IsValid())
         return false;
@@ -1727,7 +1727,7 @@ void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const g
                                            visibleDepthRange);
     m_cameraLightCollector.BuildShaderLightingUBO();
 
-    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     const ShaderLightingUBO &lighting = m_cameraLightCollector.GetShaderLightingUBO();
@@ -2604,7 +2604,7 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     if (!m_vkCore || !m_forwardPlusGeometryGrid.IsValid() ||
         (m_forwardPlusParticlesRequired && !m_forwardPlusParticleGrid.IsValid()))
         return false;
-    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
     if (!lights.buffer.IsValid())
         return false;
@@ -2904,7 +2904,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     }
 
     VkDescriptorSet graphShadowDesc = GetPerViewDescriptorSet();
-    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &viewFrame = m_perViewFrames[frameIndex];
     VkDescriptorSet particleShadowDesc = viewFrame.ParticleSet();
     if (graphShadowDesc == VK_NULL_HANDLE || particleShadowDesc == VK_NULL_HANDLE) {
@@ -3486,7 +3486,7 @@ void SceneRenderGraph::BuildRenderGraph()
     // The renderer has waited only for the current frame slot. Clear both
     // geometry and particle views for that slot before retiring graph-owned
     // shadow images; the other slot is republished after its own fence.
-    const uint32_t currentFrame = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    const uint32_t currentFrame = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &currentViewFrame = m_perViewFrames[currentFrame];
     if (currentViewFrame.GeometrySet() != VK_NULL_HANDLE)
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.GeometrySet());
@@ -3683,12 +3683,12 @@ void SceneRenderGraph::BuildRenderGraph()
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
     std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
-    std::array<vk::ResourceHandle, kMaxFramesInFlight> viewLightListHandles{};
+    std::array<vk::ResourceHandle, EngineConfig::kFrameSlotCapacity> viewLightListHandles{};
     uint64_t viewLightListByteSize = 0;
     const bool hasViewLightList = std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
                                               [](const GraphBufferDesc &buffer) { return buffer.viewLightList; });
     if (hasViewLightList) {
-        for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+        for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
             const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
             if (!lights.buffer.IsValid() || lights.capacityBytes < sizeof(uint32_t) * 4) {
                 INXLOG_ERROR("SceneRenderGraph: view light list is unavailable for frame slot ", frameIndex);
@@ -3709,7 +3709,7 @@ void SceneRenderGraph::BuildRenderGraph()
         // so descriptor bindings never retain another View's or frame's
         // light data.
         if (hasViewLightList) {
-            for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+            for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
                 const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
                 const std::string prefix = "View/LightList/Frame" + std::to_string(frameIndex);
                 m_renderGraph->AddComputePass(prefix, [&, frameIndex, prefix, lights](vk::PassBuilder &builder) {
@@ -4104,10 +4104,10 @@ void SceneRenderGraph::BuildRenderGraph()
             vk::ResourceHandle headers;
             vk::ResourceHandle lightMasks;
         };
-        std::array<ForwardPlusGraphResources, kMaxFramesInFlight> forwardPlusResources{};
-        std::array<ForwardPlusGraphResources, kMaxFramesInFlight> particleForwardPlusResources{};
+        std::array<ForwardPlusGraphResources, EngineConfig::kFrameSlotCapacity> forwardPlusResources{};
+        std::array<ForwardPlusGraphResources, EngineConfig::kFrameSlotCapacity> particleForwardPlusResources{};
         if (UsesForwardPlus()) {
-            for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+            for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
                 const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
                 const auto &gridFrame = m_forwardPlusGeometryGrid.Frame(frameIndex);
                 if (!lights.buffer.IsValid() || !gridFrame.config.IsValid())
@@ -4131,7 +4131,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     resources.headers = builder.WriteStorageBuffer(resources.headers);
                     resources.lightMasks = builder.WriteStorageBuffer(resources.lightMasks);
                     return [this, frameIndex](vk::RenderContext &ctx) {
-                        const uint32_t activeFrame = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+                        const uint32_t activeFrame = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
                         if (activeFrame != frameIndex)
                             return;
                         lighting::ForwardPlusGridConstants constants{};
@@ -4144,7 +4144,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 });
             }
             if (m_forwardPlusParticlesRequired) {
-                for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+                for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
                     const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
                     const auto &gridFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
                     if (!lights.buffer.IsValid() || !gridFrame.config.IsValid())
@@ -4170,7 +4170,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         resources.headers = builder.WriteStorageBuffer(resources.headers);
                         resources.lightMasks = builder.WriteStorageBuffer(resources.lightMasks);
                         return [this, frameIndex](vk::RenderContext &ctx) {
-                            const uint32_t activeFrame = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+                            const uint32_t activeFrame =
+                                m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
                             if (activeFrame != frameIndex)
                                 return;
                             lighting::ForwardPlusGridConstants constants{};
@@ -4635,7 +4636,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 struct FullscreenReadResource
                 {
                     vk::ResourceHandle handle;
-                    std::array<vk::ResourceHandle, kMaxFramesInFlight> frameHandles{};
+                    std::array<vk::ResourceHandle, EngineConfig::kFrameSlotCapacity> frameHandles{};
                     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
                     bool depthRead = false;
                     bool storageBuffer = false;
@@ -4955,8 +4956,8 @@ void SceneRenderGraph::BuildRenderGraph()
                             if (fsReadInputs[i].storageBuffer) {
                                 const auto resource =
                                     fsReadInputs[i].frameLocal
-                                        ? fsReadInputs[i]
-                                              .frameHandles[m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight]
+                                        ? fsReadInputs[i].frameHandles[m_vkCore->GetCurrentFrameSlot() %
+                                                                       EngineConfig::kFrameSlotCapacity]
                                         : fsReadInputs[i].handle;
                                 inputs[i].buffer = ctx.GetBufferHandle(resource);
                                 inputs[i].byteSize = fsReadInputs[i].byteSize;
@@ -5506,7 +5507,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         const auto sceneDepth = particleSceneDepth.IsValid() ? ctx.GetTextureView(particleSceneDepth)
                                                                              : rhi::TextureViewHandle{};
                         particle::GpuParticlePerViewBindings particlePerView;
-                        const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+                        const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
                         const auto &viewFrame = m_perViewFrames[frameIndex];
                         if (m_perViewLayout.IsValid() && viewFrame.particleGroup.IsValid()) {
                             particlePerView.layout = m_perViewLayout;

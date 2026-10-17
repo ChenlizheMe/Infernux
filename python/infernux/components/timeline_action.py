@@ -3,7 +3,7 @@
 A Timeline FSM is a state machine whose states are all timeline nodes; this
 component drives the owner GameObject's transform from it, handling transitions
 (exit-time, parameter conditions, triggers) between timelines.  It is the
-Timeline-mode counterpart to SpiritAnimator (2D) / SkeletalAnimator (3D).
+Timeline-mode counterpart to SpriteAnimator (2D) / SkeletalAnimator (3D).
 """
 
 from __future__ import annotations

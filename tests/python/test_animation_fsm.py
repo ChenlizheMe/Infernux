@@ -1,14 +1,7 @@
-"""Animation FSM logic tests (pure Python — no GPU sampling needed).
+"""Animation playback, authored assets and event publication contracts."""
 
-Regression coverage for the animation-audit fixes:
-- trigger consumption uses identifier boundaries (not substring matching)
-- AnimTransition.duration drives the cross-fade for that transition
-- non-looping clips report loop=False to the native pose submission
-- empty-condition ("clip finished") transitions
-"""
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pytest
 
@@ -18,11 +11,27 @@ from infernux.core.anim_state_machine import (
     AnimState,
     AnimStateMachine,
     AnimTransition,
+    AnimClipEntry,
 )
 from infernux.graph import TypeRef, ValueType
 from infernux.components.skeletal_animator import SkeletalAnimator
-from infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
-from infernux.components.spirit_animator import SpiritAnimator
+from infernux.components.sprite_animator import SpriteAnimator
+
+
+@pytest.mark.parametrize("loop", [False, True])
+@pytest.mark.parametrize("frame_count,fps", [(3, 2.0), (29, 23.976), (61, 29.97)])
+def test_uniform_sprite_frame_sampling_holds_or_wraps_at_the_clip_end(loop, frame_count, fps):
+    import math
+
+    from infernux.core.animation_clip import animation_frame_index
+
+    duration = frame_count / fps
+    assert animation_frame_index(-1.0, frame_count, fps, loop) == 0
+    assert animation_frame_index(1.0 / fps, frame_count, fps, loop) == 1
+    assert animation_frame_index(math.nextafter(duration, -math.inf), frame_count, fps, loop) == frame_count - 1
+    assert animation_frame_index(duration, frame_count, fps, loop) == (0 if loop else frame_count - 1)
+    assert animation_frame_index(duration + 2.5 / fps, frame_count, fps, loop) == (2 if loop else frame_count - 1)
+    assert animation_frame_index(1.0, 0, fps, loop) is None
 
 
 def _make_animator() -> SkeletalAnimator:
@@ -43,8 +52,16 @@ def _condition(parameter: AnimParameter, operator: str = "==", threshold: float 
 
 
 class _FakeClip:
-    def __init__(self, take_name="Walk", duration_hint=2.0, source_model_guid="",
-                 default_loop=True, apply_root_motion=False, bone_mask=(), curves=()):
+    def __init__(
+        self,
+        take_name="Walk",
+        duration_hint=2.0,
+        source_model_guid="",
+        default_loop=True,
+        apply_root_motion=False,
+        bone_mask=(),
+        curves=(),
+    ):
         self.take_name = take_name
         self.duration_hint = duration_hint
         self.source_model_guid = source_model_guid
@@ -100,18 +117,80 @@ class _NativePoseRecorder:
         self.pose_stacks.append(layers)
 
 
-def test_imported_root_motion_updates_owner_transform_once_per_frame(monkeypatch):
-    class Rotation:
-        def __init__(self, value):
-            self.value = value
+def test_skeletal_restart_and_rejected_transition_preserve_playback(monkeypatch):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator._fsm = AnimStateMachine(default_state="Walk", states=[
+        AnimState(name="Walk"), AnimState(name="Missing"),
+        AnimState(name="MissingTimeline", kind="timeline"),
+    ])
+    animator._clip_cache = {"Walk": _FakeClip()}
+    assert animator.play("Walk")
+    animator.update(0.5)
+    revision = animator._playback_revision
+    assert animator.play("Walk")
+    assert animator._elapsed == 0.5 and animator._playback_revision == revision
+    for missing in ("Missing", "MissingTimeline"):
+        assert not animator.play(missing)
+        assert animator.current_state == "Walk" and animator.is_playing
+        assert animator._elapsed == 0.5 and animator._playback_revision == revision
+    assert animator.play("Walk", restart=True)
+    assert animator._elapsed == 0.0 and animator._playback_revision == revision + 1
+    animator.update(0.25)
+    assert native.calls[-1][1] == pytest.approx(0.25)
+    layers = animator.get_pose_layers()
+    assert layers[0]["time"] == pytest.approx(0.25) and layers[0]["take_name"] == "Walk"
+    layers[0]["bone_mask"].append("Arm")
+    assert animator.get_pose_layers()[0]["bone_mask"] == []
 
-        def __mul__(self, other):
-            return Rotation((self.value, other.value))
+
+@pytest.mark.parametrize("phase", ["switch", "terminal", "restart"])
+def test_skeletal_event_state_change_keeps_the_new_playback_cursor(monkeypatch, phase):
+    from infernux.core.animation_clip3d import AnimationClip3D
+    from infernux.core.animation_event import AnimationEvent
+
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    calls = []
+
+    class Receiver:
+        def on_animation_event(self, function, string_arg, number_arg):
+            calls.append(function)
+            if len(calls) == 1:
+                assert animator.play("A" if phase == "restart" else "B")
+
+    receiver = Receiver()
+    owner.get_py_components = lambda: [receiver]
+    animator._fsm = AnimStateMachine(default_state="A", states=[
+        AnimState(name="A", loop=phase != "terminal", restart_same_clip=phase == "restart"),
+        AnimState(name="B"),
+    ])
+    animator._clip_cache = {
+        "A": AnimationClip3D(take_name="First", duration_hint=1.0, events=[
+            AnimationEvent(1.0 if phase == "terminal" else 0.25, "first"),
+        ]),
+        "B": AnimationClip3D(take_name="Second", duration_hint=1.0, events=[AnimationEvent(0.25, "second")]),
+    }
+    assert animator.play("A")
+    animator.update(1.0 if phase == "terminal" else 0.5)
+    assert animator.current_state == ("A" if phase == "restart" else "B") and animator.is_playing
+    assert animator.normalized_time == 0.0
+    animator.update(0.3)
+    assert calls == ["first", "first" if phase == "restart" else "second"]
+    assert native.calls[-1][1] == pytest.approx(0.3)
+
+
+def test_imported_root_motion_updates_owner_transform_once_per_frame(monkeypatch):
+    from infernux.lib import Vector3, quatf
 
     class Transform:
         def __init__(self):
             self.translations = []
-            self.local_rotation = Rotation("base")
+            self.local_rotation = quatf.identity()
 
         def translate_local(self, value):
             self.translations.append(value)
@@ -123,7 +202,7 @@ def test_imported_root_motion_updates_owner_transform_once_per_frame(monkeypatch
 
         def get_root_motion_delta(self, *args):
             self.root_calls.append(args)
-            return "move", Rotation("delta")
+            return Vector3(3.0 if args[0] == "Run" else 1.0, 0.0, 0.0), quatf.euler(0.0, 90.0, 0.0)
 
         def get_animation_duration_seconds(self, *_args):
             return 2.0
@@ -135,9 +214,8 @@ def test_imported_root_motion_updates_owner_transform_once_per_frame(monkeypatch
     owner.transform = transform
     animator = _make_animator()
     animator._fsm = AnimStateMachine(states=[AnimState(name="Walk", loop=True)], default_state="Walk")
-    animator._current_state_name = "Walk"
-    animator._current_clip = _FakeClip("Walk", duration_hint=2.0, source_model_guid="d" * 32,
-                                       apply_root_motion=True)
+    animator._current_state = animator._fsm.get_state("Walk")
+    animator._current_clip = _FakeClip("Walk", duration_hint=2.0, source_model_guid="d" * 32, apply_root_motion=True)
     animator._elapsed = 0.5
     animator._playing = True
     animator._last_native_pose_key = None
@@ -146,9 +224,12 @@ def test_imported_root_motion_updates_owner_transform_once_per_frame(monkeypatch
     animator.update(0.25)
 
     assert native.root_calls == [("Walk", 0.5, 0.75, True, "d" * 32)]
-    assert transform.translations == ["move"]
-    assert transform.local_rotation.value == ("base", "delta")
+    assert transform.translations[0].x == pytest.approx(1.0)
+    assert quatf.angle(transform.local_rotation, quatf.euler(0.0, 90.0, 0.0)) < 0.01
     assert len(native.calls) == 1
+    animator._apply_root_motion([(animator._current_clip, .25, True), (_FakeClip("Run"), .75, True)], .5, .75)
+    assert transform.translations[1].x == pytest.approx(2.5)
+    assert [call[0] for call in native.root_calls] == ["Walk", "Walk", "Run"]
 
 
 def test_imported_non_looping_clip_cannot_be_forced_to_wrap_by_fsm(monkeypatch):
@@ -156,9 +237,11 @@ def test_imported_non_looping_clip_cannot_be_forced_to_wrap_by_fsm(monkeypatch):
     native = _NativePoseRecorder()
     owner = _HierarchyOwner(renderer=_RendererBinding(native))
     monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
-    animator._fsm = AnimStateMachine(states=[AnimState(name="Once", loop=True)], default_state="Once")
-    animator._current_state_name = "Once"
+    state = AnimState(name="Once", loop=True)
+    animator._fsm = AnimStateMachine(states=[state, AnimState(name="Next")], default_state="Once")
+    animator._current_state = animator._fsm.get_state("Once")
     animator._current_clip = _FakeClip("Once", duration_hint=1.0, default_loop=False)
+    animator._clip_cache = {"Once": animator._current_clip, "Next": _FakeClip("Next")}
     animator._elapsed = 0.9
     animator._playing = True
 
@@ -168,84 +251,46 @@ def test_imported_non_looping_clip_cannot_be_forced_to_wrap_by_fsm(monkeypatch):
     assert animator.is_playing is False
     assert native.calls[-1][6] is False
 
+    state.transitions = [AnimTransition(target_state="Next", duration=0.5)]
+    assert animator.play("Once")
+    animator.update(1.0)
+    assert animator.current_state == "Next" and animator.is_playing
+    assert animator._blend_from_elapsed == 1.0
+    animator.update(0.25)
+    outgoing, incoming = native.pose_stacks[-1]
+    assert outgoing["take_name"] == "Once" and outgoing["time"] == 1.0
+    assert outgoing["loop"] is False
+    assert incoming["take_name"] == "Next" and incoming["time"] == pytest.approx(0.25)
+    assert outgoing["weight"] == incoming["weight"] == pytest.approx(0.5)
+
 
 def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
     animator = _make_animator()
     stale = _RendererBinding(None)
     live = _RendererBinding(object())
     owner = _RendererOwner(live)
-    animator._skinned_renderer = stale
+    animator._skinned_renderers = [stale]
     monkeypatch.setattr(
         SkeletalAnimator,
         "game_object",
         property(lambda _self: owner),
     )
 
-    assert animator._resolve_skinned_renderer() is live
-    assert animator._skinned_renderer is live
+    assert animator._resolve_native_renderers() == [live.native]
+    assert animator._skinned_renderers == [live]
     assert owner.lookups == 1
-
-
-def test_skeletal_animator_has_no_same_object_renderer_requirement():
-    assert SkinnedMeshRenderer not in tuple(
-        getattr(SkeletalAnimator, "_require_components_", ()) or ()
-    )
-
-
-def test_skinned_mesh_renderer_exposes_authoritative_runtime_pose_time(monkeypatch):
-    renderer = SkinnedMeshRenderer()
-    native = SimpleNamespace(
-        runtime_animation_time=1.25,
-        runtime_animation_normalized_time=0.625,
-    )
-    monkeypatch.setattr(renderer, "_get_bound_native_component", lambda: native)
-
-    assert renderer.runtime_animation_time == pytest.approx(1.25)
-    assert renderer.runtime_animation_normalized_time == pytest.approx(0.625)
-
-    monkeypatch.setattr(renderer, "_get_bound_native_component", lambda: None)
-    with pytest.raises(ReferenceError, match="not bound"):
-        _ = renderer.runtime_animation_time
-
-
-def test_skeletal_animator_uses_local_renderer_for_single_node_model(monkeypatch):
-    animator = _make_animator()
-    local = _RendererBinding(object())
-    owner = _HierarchyOwner(renderer=local)
-    monkeypatch.setattr(
-        SkeletalAnimator,
-        "game_object",
-        property(lambda _self: owner),
-    )
-
-    assert animator._resolve_skinned_renderers(force=True) == [local]
-    assert animator._resolve_skinned_renderer() is local
-
-
-def test_skeletal_animator_collects_all_descendant_renderers_from_model_root(monkeypatch):
-    animator = _make_animator()
-    body = _RendererBinding(object())
-    visor = _RendererBinding(object())
-    nested = _HierarchyOwner(children=[_HierarchyOwner(renderer=visor)])
-    owner = _HierarchyOwner(children=[_HierarchyOwner(renderer=body), nested])
-    monkeypatch.setattr(
-        SkeletalAnimator,
-        "game_object",
-        property(lambda _self: owner),
-    )
-
-    assert animator._resolve_skinned_renderers(force=True) == [body, visor]
-    assert animator._resolve_skinned_renderer() is body
 
 
 def test_skeletal_animator_submits_same_pose_to_all_descendant_renderers(monkeypatch):
     animator = _make_animator()
     body_native = _NativePoseRecorder()
     visor_native = _NativePoseRecorder()
-    owner = _HierarchyOwner(children=[
-        _HierarchyOwner(renderer=_RendererBinding(body_native)),
-        _HierarchyOwner(renderer=_RendererBinding(visor_native)),
-    ])
+    owner = _HierarchyOwner(
+        children=[
+            _HierarchyOwner(renderer=_RendererBinding(body_native)),
+            _HierarchyOwner(renderer=_RendererBinding(visor_native)),
+        ]
+    )
     monkeypatch.setattr(
         SkeletalAnimator,
         "game_object",
@@ -255,7 +300,7 @@ def test_skeletal_animator_submits_same_pose_to_all_descendant_renderers(monkeyp
         states=[AnimState(name="Walk", loop=True)],
         default_state="Walk",
     )
-    animator._current_state_name = "Walk"
+    animator._current_state = animator._fsm.get_state("Walk")
     animator._current_clip = _FakeClip("Walk", duration_hint=2.0)
     animator._elapsed = 0.5
     animator._playing = True
@@ -276,7 +321,7 @@ def test_skeletal_animator_submits_clip_source_separately_from_render_model(monk
         states=[AnimState(name="Walk", loop=True)],
         default_state="Walk",
     )
-    animator._current_state_name = "Walk"
+    animator._current_state = animator._fsm.get_state("Walk")
     animator._current_clip = _FakeClip("Walk", source_model_guid="d" * 32)
     animator._elapsed = 0.5
     animator._playing = True
@@ -288,45 +333,13 @@ def test_skeletal_animator_submits_clip_source_separately_from_render_model(monk
     assert native.calls[0][7] == "d" * 32
 
 
-def test_blend_state_uses_pose_stack_as_its_only_native_path(monkeypatch):
-    animator = _make_animator()
-    native = _NativePoseRecorder()
-    monkeypatch.setattr(
-        animator,
-        "_resolve_clip_b",
-        lambda _state: _FakeClip("Run", source_model_guid="e" * 32),
-    )
-    state = AnimState(name="Locomotion", kind="blend", blend_value=0.25)
-    animator._current_clip = _FakeClip("Walk", source_model_guid="d" * 32)
-    animator._elapsed = 0.5
-
-    assert animator._submit_blend_state([native], state) is True
-    assert native.calls == []
-    assert native.pose_stacks == [[
-        {
-            "take_name": "Walk",
-            "source_model_guid": "d" * 32,
-            "time": 0.5,
-            "weight": 0.75,
-            "loop": True,
-        },
-        {
-            "take_name": "Run",
-            "source_model_guid": "e" * 32,
-            "time": 0.5,
-            "weight": 0.25,
-            "loop": True,
-        },
-    ]]
-
-
 def test_imported_bone_mask_uses_native_pose_stack(monkeypatch):
     animator = _make_animator()
     native = _NativePoseRecorder()
     owner = _HierarchyOwner(renderer=_RendererBinding(native))
     monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
     animator._fsm = AnimStateMachine(states=[AnimState(name="Upper", loop=True)], default_state="Upper")
-    animator._current_state_name = "Upper"
+    animator._current_state = animator._fsm.get_state("Upper")
     animator._current_clip = _FakeClip("Wave", bone_mask=["Spine", "Arm"])
     animator._elapsed = 0.5
     animator._playing = True
@@ -335,40 +348,91 @@ def test_imported_bone_mask_uses_native_pose_stack(monkeypatch):
     animator._sync_native_runtime_playback()
 
     assert native.calls == []
-    assert native.pose_stacks == [[{
-        "take_name": "Wave", "source_model_guid": "", "time": 0.5,
-        "weight": 1.0, "loop": True, "bone_mask": ["Spine", "Arm"],
-    }]]
+    assert native.pose_stacks == [
+        [
+            {
+                "take_name": "Wave",
+                "source_model_guid": "",
+                "time": 0.5,
+                "weight": 1.0,
+                "loop": True,
+                "bone_mask": ["Spine", "Arm"],
+            }
+        ]
+    ]
 
 
-def test_single_clip_blend_state_preserves_imported_bone_mask(monkeypatch):
+def test_clip_group_pose_cache_weights_masks_and_loop_policy(monkeypatch):
     animator = _make_animator()
     native = _NativePoseRecorder()
-    monkeypatch.setattr(animator, "_resolve_clip_b", lambda _state: None)
-    animator._current_clip = _FakeClip("Upper", bone_mask=["Spine"])
-    animator._elapsed = 0.25
-
-    assert animator._submit_blend_state([native], AnimState(name="Single", kind="blend")) is True
-    assert native.calls == []
-    assert native.pose_stacks[0][0]["bone_mask"] == ["Spine"]
-
-
-def test_blend_state_pose_cache_includes_both_clip_masks(monkeypatch):
-    animator = _make_animator()
-    native = _NativePoseRecorder()
-    clip_b = _FakeClip("Run", bone_mask=["Leg"])
-    monkeypatch.setattr(animator, "_resolve_clip_b", lambda _state: clip_b)
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    clip_b = _FakeClip("Run", bone_mask=["Leg"], default_loop=False)
     animator._current_clip = _FakeClip("Walk", bone_mask=["Spine"])
+    animator._group_clips = [animator._current_clip, clip_b, _FakeClip("Recoil", bone_mask=["Arm"])]
+    animator._group_weights = [1.0, 1.0, 0.2]
     animator._elapsed = 0.5
-    state = AnimState(name="Locomotion", kind="blend", blend_value=0.5)
+    animator._current_state = AnimState(name="Locomotion", kind="group")
 
-    assert animator._submit_blend_state([native], state)
+    animator._sync_native_runtime_playback()
+    assert [layer["loop"] for layer in native.pose_stacks[-1]] == [True, False, True]
     animator._current_clip.bone_mask = ["Arm"]
-    assert animator._submit_blend_state([native], state)
+    animator._sync_native_runtime_playback()
 
     assert len(native.pose_stacks) == 2
     assert native.pose_stacks[-1][0]["bone_mask"] == ["Arm"]
     assert native.pose_stacks[-1][1]["bone_mask"] == ["Leg"]
+    clip_b.default_loop = True
+    animator._sync_native_runtime_playback()
+    assert len(native.pose_stacks) == 3
+    assert [layer["loop"] for layer in native.pose_stacks[-1]] == [True, True, True]
+    animator.set_clip_weight(2, 0.0)
+    assert [layer["weight"] for layer in native.pose_stacks[-1]] == [1.0, 1.0]
+    animator._sync_native_runtime_playback()
+    assert len(native.pose_stacks) == 4
+
+
+def test_clip_group_events_independent_loop_clocks_and_whole_group_crossfade(monkeypatch):
+    from infernux.core.assets import AssetManager
+    from infernux.core.animation_clip3d import ImportedFloatCurve
+
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    clips = {"legs": _FakeClip("Run", duration_hint=1.0, bone_mask=["Leg"]),
+             "arms": _FakeClip("Reload", duration_hint=3.0, default_loop=False, bone_mask=["Arm"]),
+             "head": _FakeClip("Look", duration_hint=2.0, bone_mask=["Head"])}
+    clips["legs"].curves = [ImportedFloatCurve("FootPlant", ((0.0, 2.0), (1.0, 2.0)))]
+    clips["arms"].curves = [ImportedFloatCurve("FootPlant", ((0.0, 4.0), (1.0, 4.0)))]
+    monkeypatch.setattr(AssetManager, "load_by_guid", lambda guid, _kind: clips.get(guid))
+    animator._fsm = AnimStateMachine(default_state="Group", states=[
+        AnimState(name="Group", kind="group", clips=[AnimClipEntry(guid) for guid in clips]),
+        AnimState(name="Idle"), AnimState(name="Incomplete", kind="group", clips=[AnimClipEntry("missing")]),
+    ])
+    animator._clip_cache["Idle"] = _FakeClip("Idle")
+    received = []
+    monkeypatch.setattr(animator, "_dispatch_clip_events", lambda clip, *args, **kwargs: received.append((clip.take_name, args)))
+    assert animator.play("Group")
+    animator.update(2.5)
+    assert animator._elapsed == 2.5 and animator.normalized_time == pytest.approx(2.5 / 3)
+    assert len(received) == 3
+    assert animator.get_curve_value("FootPlant") == pytest.approx(3.0)
+    assert received[0][1] == (0.0, 0.5, True)
+    assert received[1][1] == (0.0, 2.5 / 3, False)
+    assert not animator.play("Incomplete")
+    assert animator.current_state == "Group" and animator._elapsed == 2.5
+    assert animator.cross_fade("Idle", .2)
+    animator.update(.1)
+    layers = native.pose_stacks[-1]
+    assert [layer["take_name"] for layer in layers] == ["Run", "Reload", "Look", "Idle"]
+    assert [layer["weight"] for layer in layers] == [1.0] * 4
+    assert [layer["group_weight"] for layer in layers] == pytest.approx([.5] * 4)
+    assert len({layer["blend_group"] for layer in layers[:3]}) == 1
+    assert layers[-1]["blend_group"] != layers[0]["blend_group"]
+    assert [layer["time"] for layer in layers[:3]] == pytest.approx([2.6] * 3)
+    animator.update(.2)
+    assert native.calls[-1][0] == "Idle"
 
 
 def test_imported_float_curve_drives_animator_float_parameter():
@@ -397,7 +461,7 @@ def test_imported_events_dispatch_every_occurrence_across_multiple_wraps(monkeyp
     monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
     animator = _make_animator()
     animator._fsm = AnimStateMachine(states=[AnimState(name="Loop", loop=True)], default_state="Loop")
-    animator._current_state_name = "Loop"
+    animator._current_state = animator._fsm.get_state("Loop")
     animator._current_clip = _FakeClip("Loop", duration_hint=1.0)
     animator._current_clip.events = [AnimationEvent(0.25, "step", "L", 1.0)]
     animator._elapsed = 0.9
@@ -407,44 +471,6 @@ def test_imported_events_dispatch_every_occurrence_across_multiple_wraps(monkeyp
     animator.update(2.2)
 
     assert calls == [("L", 1.0), ("L", 1.0)]
-
-
-@pytest.mark.parametrize("deltas", [[2.0], [0.25] * 8])
-def test_imported_events_keep_playback_order_across_loop_boundaries(monkeypatch, deltas):
-    from infernux.core.animation_event import AnimationEvent
-
-    calls = []
-
-    class Receiver:
-        def on_animation_event(self, function, text, number):
-            calls.append(function)
-
-    owner = _HierarchyOwner(renderer=_RendererBinding(_NativePoseRecorder()))
-    owner.get_py_components = lambda: [Receiver()]
-    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
-    animator = _make_animator()
-    animator._fsm = AnimStateMachine(states=[AnimState(name="Loop", loop=True)], default_state="Loop")
-    animator._current_state_name = "Loop"
-    animator._current_clip = _FakeClip("Loop", duration_hint=1.0)
-    animator._current_clip.events = [
-        AnimationEvent(0.75, "late"), AnimationEvent(0.0, "zero"),
-        AnimationEvent(1.0, "end"), AnimationEvent(0.25, "early"),
-    ]
-    animator._elapsed = animator._prev_event_norm = 0.5
-    animator._playing = True
-    for delta in deltas:
-        animator.update(delta)
-    assert calls == ["late", "end", "zero", "early"] * 2
-
-
-def test_blend_state_does_not_fall_back_when_pose_stack_is_missing(monkeypatch):
-    animator = _make_animator()
-    native = SimpleNamespace(submit_animation_pose=lambda *_args: None)
-    monkeypatch.setattr(animator, "_resolve_clip_b", lambda _state: _FakeClip("Run"))
-    animator._current_clip = _FakeClip("Walk")
-
-    with pytest.raises(AttributeError, match="submit_pose_stack"):
-        animator._submit_blend_state([native], AnimState(name="Locomotion", kind="blend"))
 
 
 def test_native_pose_submission_failure_propagates(monkeypatch):
@@ -458,219 +484,31 @@ def test_native_pose_submission_failure_propagates(monkeypatch):
     owner = _HierarchyOwner(renderer=_RendererBinding(Native()))
     monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
     animator._fsm = AnimStateMachine(states=[AnimState(name="Walk")], default_state="Walk")
-    animator._current_state_name = "Walk"
+    animator._current_state = animator._fsm.get_state("Walk")
     animator._current_clip = _FakeClip("Walk")
 
     with pytest.raises(RuntimeError, match="native pose rejected"):
         animator._sync_native_runtime_playback()
 
 
-def test_blend_parameter_type_error_propagates() -> None:
-    animator = _make_animator()
-    state = AnimState(name="Locomotion", kind="blend")
-    animator._parameters["Locomotion/Lerp"] = "not-a-number"
-
-    with pytest.raises(ValueError):
-        animator._blend_state_lerp(state)
-
-
-def test_native_duration_query_failure_propagates(monkeypatch) -> None:
-    animator = _make_animator()
-
-    class Native:
-        @staticmethod
-        def get_animation_duration_seconds(_take_name, _source_guid):
-            raise RuntimeError("duration query rejected")
-
-    monkeypatch.setattr(
-        animator,
-        "_resolve_skinned_renderer",
-        lambda: _RendererBinding(Native()),
-    )
-
-    with pytest.raises(RuntimeError, match="duration query rejected"):
-        animator._clip_duration(_FakeClip("Walk", duration_hint=0.0))
-
-
 class TestTriggerConsumption:
-    def test_exact_identifier_consumed(self):
-        anim = _make_animator()
-        attack = AnimParameter(
-            name="attack", value_type=TypeRef(ValueType.BOOL), default=False
-        )
-        anim._fsm = AnimStateMachine(parameters=[attack])
-        anim.set_trigger("attack")
-        anim._consume_triggers(
-            AnimTransition(conditions=[_condition(attack)])
-        )
-        assert anim._parameters["attack"] is False
-
-    def test_substring_not_consumed(self):
-        anim = _make_animator()
-        attack = AnimParameter(
-            name="attack", value_type=TypeRef(ValueType.BOOL), default=False
-        )
-        attacking = AnimParameter(
-            name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False
-        )
-        anim._fsm = AnimStateMachine(parameters=[attack, attacking])
-        anim.set_trigger("attack")
-        anim._consume_triggers(
-            AnimTransition(conditions=[_condition(attacking)])
-        )
-        assert anim._parameters["attack"] is True, \
-            "'attack' must NOT be consumed by identifier 'is_attacking'"
-
-    def test_multiple_triggers(self):
-        anim = _make_animator()
-        jump = AnimParameter(
-            name="jump", value_type=TypeRef(ValueType.BOOL), default=False
-        )
-        fire = AnimParameter(
-            name="fire", value_type=TypeRef(ValueType.BOOL), default=False
-        )
-        anim._fsm = AnimStateMachine(parameters=[jump, fire])
-        anim.set_trigger("jump")
-        anim.set_trigger("fire")
-        anim.set_bool("idle", True)
-        anim._consume_triggers(
-            AnimTransition(conditions=[_condition(jump), _condition(fire)])
-        )
-        assert anim._parameters["jump"] is False
-        assert anim._parameters["fire"] is False
-        assert anim._parameters["idle"] is True
-
-    def test_spirit_animator_same_semantics(self):
-        sp = SpiritAnimator()
-        attack = AnimParameter(
-            name="attack", value_type=TypeRef(ValueType.BOOL), default=False
-        )
-        attacking = AnimParameter(
-            name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False
-        )
+    def test_sprite_animator_same_semantics(self):
+        sp = SpriteAnimator()
+        attack = AnimParameter(name="attack", value_type=TypeRef(ValueType.BOOL), default=False)
+        attacking = AnimParameter(name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False)
         sp._fsm = AnimStateMachine(parameters=[attack, attacking])
         sp.set_trigger("attack")
-        sp._consume_triggers(
-            AnimTransition(conditions=[_condition(attacking)])
-        )
+        sp._consume_triggers(AnimTransition(conditions=[_condition(attacking)]))
         assert sp._parameters["attack"] is True
 
 
-class TestTransitionDuration:
-    def test_transition_duration_overrides_component_fade(self):
-        anim = _make_animator()
-        anim.cross_fade_duration = 0.15
-        prev = _FakeClip("A")
-        nxt = _FakeClip("B")
-        anim._start_blend_if_needed(prev, 0.5, 1.0, nxt, fade_duration=0.6)
-        assert anim._blend_duration == pytest.approx(0.6)
-        assert anim._blend_from_take_name == "A"
-
-    def test_component_fade_is_fallback(self):
-        anim = _make_animator()
-        anim.cross_fade_duration = 0.25
-        anim._start_blend_if_needed(_FakeClip("A"), 0.0, 1.0, _FakeClip("B"),
-                                    fade_duration=None)
-        assert anim._blend_duration == pytest.approx(0.25)
-
-    def test_zero_duration_means_hard_cut(self):
-        anim = _make_animator()
-        anim.cross_fade_duration = 0.25
-        anim._start_blend_if_needed(_FakeClip("A"), 0.0, 1.0, _FakeClip("B"),
-                                    fade_duration=0.0)
-        assert anim._blend_duration == 0.0
-        assert anim._blend_from_clip is None
-
-    def test_same_take_fade_allowed(self):
-        # Restarting the same take with a fade is valid (sampled at two times).
-        anim = _make_animator()
-        anim.cross_fade_duration = 0.2
-        anim._start_blend_if_needed(_FakeClip("Run"), 1.2, 1.0, _FakeClip("Run"),
-                                    fade_duration=None)
-        assert anim._blend_duration == pytest.approx(0.2)
-        assert anim._blend_from_take_name == "Run"
-
-    def test_cross_fade_can_preserve_looping_phase(self):
-        anim = _make_animator()
-        walk = AnimState(name="Walk", loop=True)
-        run = AnimState(name="Run", loop=True)
-        anim._fsm = AnimStateMachine(states=[walk, run], default_state="Walk")
-        anim._clip_cache = {
-            "Walk": _FakeClip("Walk", duration_hint=2.0),
-            "Run": _FakeClip("Run", duration_hint=4.0),
-        }
-        anim._current_state_name = "Walk"
-        anim._current_clip = anim._clip_cache["Walk"]
-        anim._elapsed = 1.5
-        anim._playing = True
-        anim._apply_active_take = lambda: None
-        anim._sync_native_runtime_playback = lambda: None
-
-        assert anim.cross_fade("Run", 0.2, preserve_phase=True) is True
-        assert anim._elapsed == pytest.approx(3.0)
-        assert anim._prev_event_norm == pytest.approx(0.75)
-        assert anim._blend_from_elapsed == pytest.approx(1.5)
-
-    def test_cross_fade_restarts_by_default(self):
-        anim = _make_animator()
-        walk = AnimState(name="Walk", loop=True)
-        run = AnimState(name="Run", loop=True)
-        anim._fsm = AnimStateMachine(states=[walk, run], default_state="Walk")
-        anim._clip_cache = {
-            "Walk": _FakeClip("Walk", duration_hint=2.0),
-            "Run": _FakeClip("Run", duration_hint=4.0),
-        }
-        anim._current_state_name = "Walk"
-        anim._current_clip = anim._clip_cache["Walk"]
-        anim._elapsed = 1.5
-        anim._playing = True
-        anim._apply_active_take = lambda: None
-        anim._sync_native_runtime_playback = lambda: None
-
-        assert anim.cross_fade("Run", 0.2) is True
-        assert anim._elapsed == pytest.approx(0.0)
-        assert anim._prev_event_norm == pytest.approx(0.0)
-
-    def test_fsm_transition_can_preserve_looping_phase(self):
-        anim = _make_animator()
-        moving = AnimParameter(
-            name="moving",
-            value_type=TypeRef(ValueType.BOOL),
-            default=False,
-        )
-        walk = AnimState(name="Walk", loop=True, exit_time_normalized=0.0)
-        run = AnimState(name="Run", loop=True)
-        walk.transitions.append(
-            AnimTransition(
-                target_state="Run",
-                conditions=[_condition(moving)],
-                duration=0.2,
-                synchronize_normalized_time=True,
-            )
-        )
-        anim._fsm = AnimStateMachine(
-            states=[walk, run],
-            parameters=[moving],
-            default_state="Walk",
-        )
-        anim._parameters = {"moving": True}
-        anim._clip_cache = {
-            "Walk": _FakeClip("Walk", duration_hint=2.0),
-            "Run": _FakeClip("Run", duration_hint=4.0),
-        }
-        anim._current_state_name = "Walk"
-        anim._current_clip = anim._clip_cache["Walk"]
-        anim._elapsed = 1.5
-        anim._playing = True
-        anim._apply_active_take = lambda: None
-        anim._sync_native_runtime_playback = lambda: None
-
-        anim._try_auto_transition()
-
-        assert anim._current_state_name == "Run"
-        assert anim._elapsed == pytest.approx(3.0)
-        assert anim._prev_event_norm == pytest.approx(0.75)
-        assert anim._blend_duration == pytest.approx(0.2)
+@pytest.mark.parametrize("animator_type", [SpriteAnimator, SkeletalAnimator])
+def test_runtime_state_before_awake_is_not_shared_between_instances(animator_type):
+    first, second = animator_type(), animator_type()
+    first.set_bool("grounded", True)
+    first._clip_cache["Walk"] = None
+    assert second.get_bool("grounded") is False
+    assert "Walk" not in second._clip_cache
 
 
 class TestEmptyConditionTransition:
@@ -680,103 +518,16 @@ class TestEmptyConditionTransition:
         state = AnimState(name="S", loop=loop)
         fsm.states.append(state)
         anim._fsm = fsm
-        anim._current_state_name = "S"
+        anim._current_state = anim._fsm.get_state("S")
         anim._current_clip = _FakeClip("S_take", duration_hint=duration)
         return anim, state
-
-    def test_clip_finished_fires_for_non_loop(self):
-        anim, _ = self._animator_with_state(loop=False, duration=1.0)
-        anim._elapsed = 1.0
-        tr = AnimTransition(target_state="Next")
-        assert anim._evaluate_condition(tr) is True
-
-    def test_clip_not_finished_does_not_fire(self):
-        anim, _ = self._animator_with_state(loop=False, duration=1.0)
-        anim._elapsed = 0.4
-        tr = AnimTransition(target_state="Next")
-        assert anim._evaluate_condition(tr) is False
-
-    def test_looping_state_never_fires_empty_condition(self):
-        anim, _ = self._animator_with_state(loop=True, duration=1.0)
-        anim._elapsed = 5.0
-        tr = AnimTransition(target_state="Next")
-        assert anim._evaluate_condition(tr) is False
-
-    def test_parameter_condition(self):
-        anim, _ = self._animator_with_state(loop=True, duration=1.0)
-        speed = AnimParameter(name="speed")
-        anim._fsm.parameters.append(speed)
-        anim._parameters = {"speed": 3.0}
-        tr = AnimTransition(
-            target_state="Run", conditions=[_condition(speed, ">", 2.0)]
-        )
-        assert anim._evaluate_condition(tr) is True
-        tr2 = AnimTransition(
-            target_state="Run", conditions=[_condition(speed, ">", 5.0)]
-        )
-        assert anim._evaluate_condition(tr2) is False
-
-
-class TestNormalizedTime:
-    def test_normalized_clamps_to_one(self):
-        anim = _make_animator()
-        anim._current_clip = _FakeClip(duration_hint=2.0)
-        anim._elapsed = 5.0
-        assert anim.normalized_time == 1.0
-
-    def test_unknown_duration_uses_default_period(self):
-        anim = _make_animator()
-        anim._current_clip = _FakeClip(duration_hint=0.0)
-        anim._elapsed = 0.25
-        assert 0.0 <= anim.normalized_time < 1.0
 
 
 # ── Safe condition evaluator (replaces eval()) ──────────────────────────────
 
-class TestSafeConditionEvaluator:
-    def test_simple_compare(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition
-        assert evaluate_anim_condition("speed > 2.0", {"speed": 3.0}) is True
-        assert evaluate_anim_condition("speed > 2.0", {"speed": 1.0}) is False
-
-    def test_and_chain(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition
-        ctx = {"speed": 3.0, "grounded": True}
-        assert evaluate_anim_condition("(speed > 0.5) and (grounded == 1.0)", ctx) is True
-        ctx["grounded"] = False
-        assert evaluate_anim_condition("(speed > 0.5) and (grounded == 1.0)", ctx) is False
-
-    def test_or_and_not(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition
-        assert evaluate_anim_condition("a or b", {"a": False, "b": True}) is True
-        assert evaluate_anim_condition("not grounded", {"grounded": False}) is True
-        assert evaluate_anim_condition("not grounded", {"grounded": True}) is False
-
-    def test_bool_param_truthiness(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition
-        assert evaluate_anim_condition("is_running", {"is_running": True}) is True
-        assert evaluate_anim_condition("is_running", {"is_running": False}) is False
-
-    def test_string_state_compare(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition
-        assert evaluate_anim_condition('state == "idle"', {"state": "idle"}) is True
-        assert evaluate_anim_condition('state == "idle"', {"state": "run"}) is False
-
-    def test_unknown_identifier_defaults_zero(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition
-        assert evaluate_anim_condition("missing > 0", {}) is False
-        assert evaluate_anim_condition("missing == 0", {}) is True
-
-    def test_malformed_raises(self):
-        from infernux.core.anim_state_machine import evaluate_anim_condition, AnimConditionError
-        # Calls / attribute access / subscripts are rejected (no eval()).
-        with pytest.raises((AnimConditionError, SyntaxError)):
-            evaluate_anim_condition("__import__('os').system('x')", {})
-        with pytest.raises((AnimConditionError, SyntaxError)):
-            evaluate_anim_condition("obj.attr", {})
-
 
 # ── Animation events ────────────────────────────────────────────────────────
+
 
 class _EventSink:
     def __init__(self):
@@ -799,37 +550,6 @@ class _FakeGameObject:
 
 
 class TestAnimationEventWindowing:
-    def _ev(self, t, name="e"):
-        from infernux.core.animation_event import AnimationEvent
-        return AnimationEvent(time_normalized=t, function=name)
-
-    def test_forward_window(self):
-        from infernux.core.animation_event import collect_crossed_events
-        evs = [self._ev(0.3), self._ev(0.6)]
-        fired = collect_crossed_events(evs, 0.2, 0.5, looped=False)
-        assert [e.time_normalized for e in fired] == [0.3]
-
-    def test_no_double_fire(self):
-        from infernux.core.animation_event import collect_crossed_events
-        evs = [self._ev(0.3)]
-        assert collect_crossed_events(evs, 0.3, 0.5, looped=False) == []  # exclusive lower bound
-
-    def test_loop_wrap_window(self):
-        from infernux.core.animation_event import collect_crossed_events
-        evs = [self._ev(0.9), self._ev(0.05)]
-        fired = collect_crossed_events(evs, 0.8, 0.1, looped=True)
-        names = sorted(e.time_normalized for e in fired)
-        assert names == [0.05, 0.9]
-
-    def test_dispatch_calls_generic_and_named(self):
-        from infernux.core.animation_event import AnimationEvent, dispatch_animation_events
-        sink = _EventSink()
-        go = _FakeGameObject([sink])
-        evs = [AnimationEvent(time_normalized=0.5, function="footstep", string_arg="L", number_arg=2.0)]
-        dispatch_animation_events(go, evs, 0.4, 0.6, looped=False)
-        assert sink.footsteps == 1
-        assert sink.calls == [("footstep", "L", 2.0)]
-
     def test_dispatch_uses_precomputed_arity_without_signature_reflection(self, monkeypatch):
         from infernux.core import animation_event
         from infernux.core.animation_event import AnimationEvent
@@ -902,113 +622,8 @@ class TestAnimationEventWindowing:
         finally:
             publication.rollback()
 
-    def test_event_batch_keeps_one_epoch_after_handler_publishes_reload(self):
-        from infernux.core.animation_event import AnimationEvent, dispatch_animation_events
-        from infernux.engine.runtime_dispatch import (
-            current_runtime_epoch,
-            publish_runtime_dispatch_epoch,
-        )
-
-        class EpochSink:
-            def __init__(self):
-                self.calls = []
-
-            def first(self):
-                self.calls.append("first-old")
-
-            def second(self):
-                self.calls.append("second-old")
-
-        sink = EpochSink()
-        original_first = EpochSink.first
-        original_second = EpochSink.second
-        baseline = current_runtime_epoch()
-        old_publication = publish_runtime_dispatch_epoch((EpochSink,))
-        old_publication.commit()
-        replacement_publication = None
-
-        def second_new(self):
-            self.calls.append("second-new")
-
-        def first_reload(self):
-            nonlocal replacement_publication
-            self.calls.append("first-old")
-            EpochSink.second = second_new
-            replacement_publication = publish_runtime_dispatch_epoch((EpochSink,))
-            replacement_publication.commit()
-
-        EpochSink.first = first_reload
-        reload_publication = publish_runtime_dispatch_epoch((EpochSink,))
-        reload_publication.commit()
-        try:
-            dispatch_animation_events(
-                _FakeGameObject([sink]),
-                [AnimationEvent(0.5, "first"), AnimationEvent(0.5, "second")],
-                0.4,
-                0.6,
-                looped=False,
-            )
-            assert sink.calls == ["first-old", "second-old"]
-
-            dispatch_animation_events(
-                _FakeGameObject([sink]),
-                [AnimationEvent(0.5, "second")],
-                0.4,
-                0.6,
-                looped=False,
-            )
-            assert sink.calls[-1] == "second-new"
-        finally:
-            if replacement_publication is not None:
-                replacement_publication.rollback()
-            EpochSink.first = original_first
-            EpochSink.second = original_second
-            reload_publication.rollback()
-            old_publication.rollback()
-            assert current_runtime_epoch() is baseline
-
 
 # ── Serialization round-trips for new fields ────────────────────────────────
-
-class TestAnimationSerialization:
-    def test_transition_duration_round_trip(self):
-        condition = AnimCondition(parameter_id="speed-id", operator=">", threshold=1.0)
-        tr = AnimTransition(
-            target_state="Run",
-            conditions=[condition],
-            duration=0.25,
-            synchronize_normalized_time=True,
-        )
-        tr2 = AnimTransition.from_dict(tr.to_dict())
-        assert tr2.duration == 0.25
-        assert tr2.target_state == "Run"
-        assert tr2.synchronize_normalized_time is True
-
-    def test_clip2d_events_round_trip(self):
-        from infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from infernux.core.animation_event import AnimationEvent
-        clip = AnimationClip(
-            name="walk",
-            frames=[
-                AnimationFrame(sprite_frame_id=f"{index + 1:032x}")
-                for index in (0, 1, 2)
-            ],
-            fps=12.0,
-        )
-        clip.events = [AnimationEvent(0.5, "footstep", "L", 1.0)]
-        clip2 = AnimationClip.from_dict(clip.to_dict())
-        assert len(clip2.events) == 1
-        assert clip2.events[0].function == "footstep"
-        assert clip2.events[0].time_normalized == 0.5
-
-    def test_clip3d_events_round_trip(self):
-        from infernux.core.animation_clip3d import AnimationClip3D
-        from infernux.core.animation_event import AnimationEvent
-        clip = AnimationClip3D(name="run", take_name="Run")
-        clip.events = [AnimationEvent(0.25, "hit", "", 3.0)]
-        clip2 = AnimationClip3D.from_dict(clip.to_dict())
-        assert len(clip2.events) == 1
-        assert clip2.events[0].number_arg == 3.0
 
 
 def _write_texture_asset_metadata(
@@ -1056,27 +671,6 @@ class TestAnimationClipSpriteFrameReferences:
     FRAME_B = "2" * 32
     TEXTURE_GUID = "a" * 32
 
-    def test_legacy_authoring_texture_path_is_ignored_on_load(self):
-        from infernux.core.animation_clip import AnimationClip
-
-        document = AnimationClip(authoring_texture_guid=self.TEXTURE_GUID).to_dict()
-        document["authoring_texture_path"] = "Assets/Sprites/obsolete.png"
-        clip = AnimationClip.from_dict(document)
-
-        assert clip.authoring_texture_guid == self.TEXTURE_GUID
-        assert not hasattr(clip, "authoring_texture_path")
-        assert "authoring_texture_path" not in clip.to_dict()
-
-    def test_sprite_frames_require_texture_guid(self):
-        from infernux.core.animation_clip import AnimationClip, AnimationFrame
-
-        clip = AnimationClip(
-            frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
-        )
-
-        with pytest.raises(ValueError, match="texture GUID"):
-            clip.validate_sprite_frame_references()
-
     def test_valid_sprite_frame_references_resolve_guid_mapping(self, tmp_path):
         from infernux.core.animation_clip import AnimationClip, AnimationFrame
         from infernux.core.asset_types import TextureType
@@ -1101,50 +695,7 @@ class TestAnimationClipSpriteFrameReferences:
 
         assert resolved == str(texture)
 
-    def test_missing_sprite_frame_reference_is_rejected(self, tmp_path):
-        from infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from infernux.core.asset_types import TextureType
-
-        texture = tmp_path / "sheet.png"
-        _write_texture_asset_metadata(
-            texture,
-            guid=self.TEXTURE_GUID,
-            texture_type=TextureType.SPRITE,
-            sprite_frame_ids=(self.FRAME_A,),
-        )
-        clip = AnimationClip(
-            authoring_texture_guid=self.TEXTURE_GUID,
-            frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
-        )
-
-        with pytest.raises(ValueError, match=self.FRAME_B):
-            clip.validate_sprite_frame_references(
-                guid_paths={self.TEXTURE_GUID: str(texture)}
-            )
-
-    def test_non_sprite_texture_is_rejected_before_frame_lookup(self, tmp_path):
-        from infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from infernux.core.asset_types import TextureType
-
-        texture = tmp_path / "albedo.png"
-        _write_texture_asset_metadata(
-            texture,
-            guid=self.TEXTURE_GUID,
-            texture_type=TextureType.DEFAULT,
-        )
-        clip = AnimationClip(
-            authoring_texture_guid=self.TEXTURE_GUID,
-            frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
-        )
-
-        with pytest.raises(ValueError, match="not imported as Sprite"):
-            clip.validate_sprite_frame_references(
-                guid_paths={self.TEXTURE_GUID: str(texture)}
-            )
-
-    def test_guid_survives_file_round_trip_and_resolves_moved_texture(
-        self, tmp_path, monkeypatch
-    ):
+    def test_guid_survives_file_round_trip_and_resolves_moved_texture(self, tmp_path, monkeypatch):
         from infernux.core.animation_clip import AnimationClip, AnimationFrame
         from infernux.core.asset_types import TextureType
         from infernux.core.assets import AssetManager
@@ -1167,11 +718,7 @@ class TestAnimationClipSpriteFrameReferences:
         database = type(
             "Database",
             (),
-            {
-                "get_path_from_guid": staticmethod(
-                    lambda guid: str(texture) if guid == self.TEXTURE_GUID else ""
-                )
-            },
+            {"get_path_from_guid": staticmethod(lambda guid: str(texture) if guid == self.TEXTURE_GUID else "")},
         )()
         monkeypatch.setattr(AssetManager, "_asset_database", database)
         assert clip.save(str(clip_path)) is True
@@ -1186,68 +733,19 @@ class TestAnimationClipSpriteFrameReferences:
         ) == str(texture)
 
 
-def test_spirit_animator_guid_does_not_fall_back_to_stale_path(monkeypatch, tmp_path):
-    from infernux.components import spirit_animator as animator_module
-    from infernux.core.anim_state_machine import AnimState
-
-    stale_path = tmp_path / "stale.animclip2d"
-    stale_path.write_text("{}", encoding="utf-8")
-    database = type(
-        "Database",
-        (),
-        {"get_path_from_guid": staticmethod(lambda _guid: "")},
-    )()
-    monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
-
-    state = AnimState(
-        name="Walk",
-        clip_guid="b" * 32,
-    )
-
-    assert animator_module._resolve_clip_path(state) is None
-
-
-def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch):
-    from infernux.components import skeletal_animator as animator_module
-
-    class Database:
-        @staticmethod
-        def get_path_from_guid(_guid):
-            raise RuntimeError("catalog unavailable")
-
-    monkeypatch.setattr(animator_module, "_get_asset_database", lambda: Database())
-
-    with pytest.raises(RuntimeError, match="catalog unavailable"):
-        animator_module._resolve_clip_path_from("c" * 32)
-
-
-def test_skeletal_animator_only_uses_model_guid():
-    from infernux.components import skeletal_animator as animator_module
-    from infernux.core.animation_clip3d import AnimationClip3D
-
-    clip = AnimationClip3D(source_model_guid="d" * 32)
-
-    assert animator_module._animation_source_guid(clip) == "d" * 32
-
-
-class TestSpiritAnimatorAssetReload:
+class TestSpriteAnimatorAssetReload:
     @staticmethod
     def _clip(frame_count: int, fps: float):
         from infernux.core.animation_clip import AnimationClip, AnimationFrame
 
         return AnimationClip(
-            frames=[
-                AnimationFrame(sprite_frame_id=f"{index + 1:032x}")
-                for index in range(frame_count)
-            ],
+            frames=[AnimationFrame(sprite_frame_id=f"{index + 1:032x}") for index in range(frame_count)],
             fps=fps,
         )
 
-    def test_clip_hot_reload_preserves_state_progress_and_playback(
-        self, tmp_path, monkeypatch
-    ):
+    def test_clip_hot_reload_preserves_state_progress_and_playback(self, tmp_path, monkeypatch):
         import json
-        from infernux.components import spirit_animator as animator_module
+        from infernux.components import sprite_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
         clip_guid = "a" * 32
@@ -1261,7 +759,7 @@ class TestSpiritAnimatorAssetReload:
         monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
 
         state = AnimState(name="Walk", clip_guid=clip_guid)
-        animator = SpiritAnimator()
+        animator = SpriteAnimator()
         animator._fsm = AnimStateMachine(
             states=[state],
             default_state="Walk",
@@ -1304,11 +802,9 @@ class TestSpiritAnimatorAssetReload:
         assert renderer.frame_id == replacement.frames[4].sprite_frame_id
         assert renderer.sync_count == 1
 
-    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(
-        self, tmp_path, monkeypatch
-    ):
+    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(self, tmp_path, monkeypatch):
         import json
-        from infernux.components import spirit_animator as animator_module
+        from infernux.components import sprite_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
         clip_guid = "b" * 32
@@ -1321,7 +817,7 @@ class TestSpiritAnimatorAssetReload:
         )()
         monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
         state = AnimState(name="Walk", clip_guid=clip_guid)
-        animator = SpiritAnimator()
+        animator = SpriteAnimator()
         animator._fsm = AnimStateMachine(states=[state], default_state="Walk")
         animator._clip_cache = {"Walk": clip}
         animator._current_state_name = "Walk"
@@ -1346,124 +842,76 @@ class TestSpiritAnimatorAssetReload:
         assert animator._elapsed == pytest.approx(0.25)
         assert animator._playing is True
 
-    def test_controller_hot_reload_preserves_timeline_progress_without_clip_parse(
-        self, tmp_path, monkeypatch
-    ):
-        from infernux.core.animation_timeline import AnimationTimeline
-        from infernux.core.animation_clip import AnimationClip
-        from infernux.core.asset_ref import AnimStateMachineRef
 
-        controller_path = tmp_path / "controller.animfsm"
-        controller_guid = "d" * 32
-        timeline_path = tmp_path / "motion.animtimeline"
-        timeline_guid = "c" * 32
-        from infernux.components import spirit_animator as animator_module
-        database = type(
-            "Database",
-            (),
-            {
-                "get_path_from_guid": staticmethod(
-                    lambda guid: (
-                        str(timeline_path)
-                        if guid == timeline_guid
-                        else str(controller_path)
-                        if guid == controller_guid
-                        else ""
-                    )
-                )
-            },
-        )()
-        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
-        timeline = AnimationTimeline(name="motion", duration=4.0)
-        assert timeline.save(str(timeline_path)) is True
-        state = AnimState(
-            name="Timeline",
-            kind="timeline",
-            timeline_guid=timeline_guid,
-        )
-        current_fsm = AnimStateMachine(
-            name="controller",
-            mode="2d",
-            states=[state],
-            default_state="Timeline",
-        )
-        current_fsm.file_path = str(controller_path)
-
-        animator = SpiritAnimator()
-        animator.controller = AnimStateMachineRef(guid=controller_guid)
-        animator._fsm = current_fsm
-        animator._current_state_name = "Timeline"
-        animator._current_timeline = timeline
-        animator._current_clip = None
-        animator._timeline_cache = {"Timeline": timeline}
-        animator._clip_cache = {}
-        animator._elapsed = 2.0
-        animator._playing = True
-        animator._parameters = {}
-
-        replacement_timeline = AnimationTimeline(name="motion", duration=8.0)
-        assert replacement_timeline.save(str(timeline_path)) is True
-        replacement_fsm = AnimStateMachine(
-            name="controller",
-            mode="2d",
-            states=[
-                AnimState(
-                    name="Timeline",
-                    kind="timeline",
-                    timeline_guid=timeline_guid,
-                )
-            ],
-            default_state="Timeline",
-        )
-        assert replacement_fsm.save(str(controller_path)) is True
-
-        def reject_clip_parse(_path):
-            raise AssertionError("controller/timeline hot reload must not parse a 2D clip")
-
-        monkeypatch.setattr(AnimationClip, "load", reject_clip_parse)
-        applied = []
-        monkeypatch.setattr(
-            animator,
-            "_apply_timeline",
-            lambda value, elapsed: applied.append((value, elapsed)),
-        )
-
-        from infernux.engine.interaction import AssetMutation, AssetMutationKind
-
-        animator._on_asset_changed(
-            AssetMutation(
-                AssetMutationKind.MODIFIED,
-                str(controller_path),
-                guid=controller_guid,
-            )
-        )
-
-        assert animator.current_state == "Timeline"
-        assert animator._current_clip is None
-        assert animator._current_timeline is not None
-        assert animator._current_timeline.duration == pytest.approx(8.0)
-        assert animator.normalized_time == pytest.approx(0.5)
-        assert animator.is_playing is True
-        assert applied == [(animator._current_timeline, pytest.approx(4.0))]
+def test_trigger_consumption_uses_exact_declared_identifiers():
+    animator = _make_animator()
+    attack = AnimParameter(name="attack", value_type=TypeRef(ValueType.BOOL), default=False)
+    attacking = AnimParameter(name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False)
+    jump = AnimParameter(name="jump", value_type=TypeRef(ValueType.BOOL), default=False)
+    animator._fsm = AnimStateMachine(parameters=[attack, attacking, jump])
+    animator.set_trigger("attack")
+    animator.set_trigger("jump")
+    animator.set_bool("idle", True)
+    animator._consume_triggers(AnimTransition(conditions=[_condition(attacking)]))
+    assert animator._parameters["attack"] and animator._parameters["jump"]
+    animator._consume_triggers(AnimTransition(conditions=[_condition(attack), _condition(jump)]))
+    assert not animator._parameters["attack"] and not animator._parameters["jump"]
+    assert animator._parameters["idle"]
 
 
-class TestBlendStateModel:
-    def test_blend_state_round_trip(self):
-        st = AnimState(name="LocoBlend", kind="blend",
-                       clip_guid="A-guid", clip_b_guid="B-guid", blend_value=0.7)
-        st2 = AnimState.from_dict(st.to_dict())
-        assert st2.kind == "blend"
-        assert st2.clip_guid == "A-guid"
-        assert st2.clip_b_guid == "B-guid"
-        assert st2.blend_value == 0.7
+def test_reconfiguring_crossfade_duration_preserves_override_and_hard_cut_semantics():
+    animator = _make_animator()
+    animator.cross_fade_duration = 0.25
+    a, b = _FakeClip("A"), _FakeClip("B")
+    animator._start_blend_if_needed(a, 0.5, 1.0, b, fade_duration=0.6)
+    assert animator._blend_duration == pytest.approx(0.6) and animator._blend_from_take_name == "A"
+    animator._start_blend_if_needed(b, 0.2, 1.0, a, fade_duration=None)
+    assert animator._blend_duration == pytest.approx(0.25) and animator._blend_from_take_name == "B"
+    animator._start_blend_if_needed(a, 1.2, 1.0, a, fade_duration=None)
+    assert animator._blend_duration == pytest.approx(0.25) and animator._blend_from_take_name == "A"
+    animator._start_blend_if_needed(a, 0.0, 1.0, b, fade_duration=0.0)
+    assert animator._blend_duration == 0.0 and animator._blend_from_clip is None
 
-    def test_blend_value_out_of_range_is_rejected(self):
-        document = AnimState(name="x", kind="blend").to_dict()
-        document["blend_value"] = 5.0
-        with pytest.raises(ValueError):
-            AnimState.from_dict(document)
 
-    def test_default_state_is_clip(self):
-        st = AnimState(name="idle")
-        assert st.kind == "clip"
-        assert AnimState.from_dict(st.to_dict()).kind == "clip"
+@pytest.mark.parametrize("state_loop,clip_loop", [(True, True), (False, True), (True, False)])
+def test_crossfade_can_sync_phase_then_restart_the_return_state(monkeypatch, state_loop, clip_loop):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator._fsm = AnimStateMachine(
+        states=[AnimState(name="Walk", loop=state_loop), AnimState(name="Run", loop=True)], default_state="Walk"
+    )
+    animator._clip_cache = {
+        "Walk": _FakeClip("Walk", duration_hint=2.0, default_loop=clip_loop),
+        "Run": _FakeClip("Run", duration_hint=4.0),
+    }
+    animator._current_state = animator._fsm.get_state("Walk")
+    animator._current_clip = animator._clip_cache["Walk"]
+    animator._elapsed, animator._playing = 1.5, True
+    assert animator.cross_fade("Run", 2.0, preserve_phase=True)
+    assert animator._elapsed == pytest.approx(3.0)
+    assert animator._prev_event_norm == pytest.approx(0.75)
+    assert animator._blend_from_elapsed == pytest.approx(1.5)
+    animator._advance_blend(1.0)
+    animator._sync_native_runtime_playback()
+    outgoing, incoming = native.pose_stacks[-1]
+    assert outgoing["time"] == pytest.approx(0.5 if state_loop and clip_loop else 2.0)
+    assert outgoing["loop"] is (state_loop and clip_loop)
+    assert incoming["loop"] is True
+    assert outgoing["weight"] == incoming["weight"] == pytest.approx(0.5)
+    assert animator.cross_fade("Walk", 0.2)
+    assert animator._elapsed == 0.0 and animator._prev_event_norm == 0.0
+
+
+def test_non_looping_clip_end_condition_follows_clamped_progress():
+    animator = _make_animator()
+    state = AnimState(name="Once", loop=False)
+    animator._fsm = AnimStateMachine(states=[state], default_state=state.name)
+    animator._current_state = state
+    animator._current_clip = _FakeClip("Once", duration_hint=1.0)
+    transition = AnimTransition(target_state="Next")
+    animator._elapsed = 0.4
+    assert not animator._evaluate_condition(transition)
+    animator._elapsed = 1.5
+    assert animator._evaluate_condition(transition) and animator.normalized_time == 1.0

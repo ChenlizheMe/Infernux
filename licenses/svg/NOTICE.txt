@@ -1,5 +1,6 @@
 SVG rasterization uses LunaSVG and its bundled PlutoVG.
 Source: https://github.com/sammycage/lunasvg
+Maintained fork: https://github.com/InfernuxEngine/lunasvg_for_infernux (infernux-support)
 Pinned revision: 83c58df8103dc7dca423dfd824992af94d49bed6
 Both projects use the MIT license in LunaSVG-PlutoVG.txt.
 

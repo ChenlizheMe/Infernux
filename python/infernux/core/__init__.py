@@ -40,6 +40,7 @@ from .animation_clip3d import AnimationClip3D, ImportedFloatCurve
 from .anim_state_machine import (
     AnimStateMachine,
     AnimState,
+    AnimClipEntry,
     AnimTransition,
     AnimCondition,
     AnimParameter,
@@ -97,6 +98,7 @@ __all__ = [
     "ImportedFloatCurve",
     "AnimStateMachine",
     "AnimState",
+    "AnimClipEntry",
     "AnimTransition",
     "AnimCondition",
     "AnimParameter",

@@ -9,8 +9,9 @@ async function verifyWebKeyboard(page) {
     native: Module.ccall("InfernuxWebGetKeyState", "number", ["number"], [value]),
     python: Module.ccall("InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [0, value]),
   }), scan);
+  // The letter probe must not move the fixture's Rigidbody before render checks.
   for (const [key, scan] of [
-    ["a", 4], ["ShiftLeft", 225], ["ShiftRight", 229],
+    ["b", 5], ["ShiftLeft", 225], ["ShiftRight", 229],
     ["ControlLeft", 224], ["ControlRight", 228], ["AltLeft", 226], ["AltRight", 230],
     ["MetaLeft", 227], ["MetaRight", 231], ["F1", 58], ["F12", 69],
     ["Delete", 76], ["Home", 74], ["PageDown", 78], ["Numpad1", 89],

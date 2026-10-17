@@ -550,11 +550,9 @@ def read_meta_file(asset_path: str) -> Optional[Dict[str, Any]]:
 
 def _published_asset_database():
     """Return the process AssetDatabase without importing Editor services."""
-    try:
-        from infernux.lib import AssetRegistry
-        return AssetRegistry.instance().get_asset_database()
-    except Exception:
-        return None
+    from infernux.lib import AssetRegistry
+
+    return AssetRegistry.instance().get_asset_database()
 
 
 def read_asset_metadata(asset_path: str, *, guid: str = "") -> Optional[Dict[str, Any]]:

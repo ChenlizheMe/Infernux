@@ -27,6 +27,10 @@ int main()
     assert(!indices.RetireAfter(first, InvalidSubmissionSerial));
     assert(indices.MarkUsed(first, 9));
     assert(!indices.MarkUsed(first, InvalidSubmissionSerial));
+    const ResourceIndex used[] = {first, second, indices.Fallback(), {}, {second.index, second.generation + 1}};
+    assert(indices.MarkUsed(used, 5, 9) == 2);
+    assert(indices.MarkUsed(used, 5, InvalidSubmissionSerial) == 0);
+    assert(indices.MarkUsed(nullptr, 0, 9) == 0);
     assert(indices.RetireAfter(first, 7));
     assert(!indices.IsLive(first));
     assert(indices.ResolveShaderIndex(first) == ResourceIndex::FallbackIndex);
@@ -69,6 +73,9 @@ int main()
     assert(stats.allocationFailures == 3);
     assert(stats.retirements == 1);
     assert(stats.collections == 1);
+    assert(indices.RetireAfter(second, 1));
+    assert(indices.Collect(8) == 0);
+    assert(indices.Collect(9) == 1);
 
     // Allocation and validation share one lock so concurrent publication
     // cannot expose duplicate live slots.

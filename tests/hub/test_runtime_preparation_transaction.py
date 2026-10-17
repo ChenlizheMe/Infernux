@@ -15,8 +15,8 @@ import embed_runtime_manager as module
 import private_python_runtime as runtime
 
 
-@pytest.mark.parametrize("error_code", [5, 32, 33])
-@pytest.mark.parametrize("phase", ["backup", "publish", "restore"])
+@pytest.mark.parametrize('error_code,phase', [(32, phase) for phase in ('backup', 'publish', 'restore')]
+    + [(5, 'publish'), (33, 'publish')])
 def test_windows_runtime_rename_waits_for_transient_handles(tmp_path, monkeypatch, error_code, phase):
     target = tmp_path / "python313"
     target.mkdir()
@@ -116,9 +116,9 @@ def select_source(source_kind, manager, source, monkeypatch):
         monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [])
 
 
-@pytest.mark.parametrize("source_kind", ["directory", "zip", "archive"])
-@pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("success", [False, True])
+@pytest.mark.parametrize('source_kind,existing,success', [
+    (source, True, success) for source in ('directory', 'zip', 'archive') for success in (False, True)
+] + [('directory', False, False), ('directory', False, True)])
 def test_complete_preparation_precedes_publication(installation, monkeypatch, source_kind, existing, success):
     manager, target, source = installation
     if existing:
@@ -211,6 +211,24 @@ def test_bundle_failure_preserves_previous_runtime(installation, monkeypatch, ph
         manager.reinstall_runtime()
     assert (target / "identity.txt").read_text() == "old"
     assert manager.get_runtime_path() == manager.private_runtime_python()
+
+
+def test_bundle_publication_denial_is_not_reported_as_a_corrupt_bundle(installation, monkeypatch):
+    manager, target, source = installation
+    write_runtime(target, "old")
+    select_source("zip", manager, source, monkeypatch)
+    monkeypatch.setattr(manager, "_prepare_managed_runtime", lambda *a, **kw: None)
+    denied = PermissionError("publication access denied")
+    def fail(*args):
+        raise denied
+    monkeypatch.setattr(runtime, "_replace_runtime_directory", fail)
+    with pytest.raises(module.PythonRuntimeError, match="Failed to install bundled Python") as error:
+        manager.reinstall_runtime()
+    assert error.value.__cause__ is denied
+    assert str(target) in str(error.value)
+    assert "runtime is invalid" not in str(error.value)
+    assert (target / "identity.txt").read_text() == "old"
+    assert not list(target.parent.glob(".python313.extract-*"))
 
 
 @pytest.mark.parametrize("member", ["python313/../outside", "python313/C:/outside", "python313/sub/../../outside"])

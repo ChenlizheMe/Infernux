@@ -329,7 +329,7 @@ def _contains_absolute_author_path(text: str, *, game_content: bool = False) -> 
             pending.extend(value.values())
         elif isinstance(value, list):
             pending.extend(value)
-        elif not game_content and isinstance(value, str) and ABSOLUTE_PATH_RE.search(value) is not None:
+        elif not game_content and isinstance(value, str) and ABSOLUTE_PATH_RE.match(value) is not None:
             return True
     return False
 

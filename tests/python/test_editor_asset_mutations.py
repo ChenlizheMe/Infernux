@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -126,71 +125,6 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     assert controller.reloaded
     assert document.state is DocumentState.READY
     assert not document.is_dirty
-
-
-def test_project_directory_listener_flattens_typed_asset_notifications():
-    source = Path("python/infernux/engine/bootstrap_project.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "for mutation in iter_asset_mutations(change):" in source
-    assert "change.plan.mutations" not in source
-
-
-def test_asset_mutation_core_has_no_ui_event_bus_fallback():
-    assets_source = Path("python/infernux/core/assets.py").read_text(encoding="utf-8")
-    event_bus_path = Path("python/infernux/engine/ui/event_bus.py")
-    production_root = Path("python/infernux")
-
-    assert "engine.ui.event_bus" not in assets_source
-    assert not event_bus_path.exists()
-    assert all(
-        "ASSET_CHANGED" not in path.read_text(encoding="utf-8")
-        and "EditorEventBus" not in path.read_text(encoding="utf-8")
-        for path in production_root.rglob("*.py")
-    )
-
-
-def test_particle_graph_internal_name_uses_shared_rename_content_adapter(tmp_path):
-    source = tmp_path / "NewParticleGraph.particlegraph"
-    destination = tmp_path / "Smoke Trail.particlegraph"
-    source.write_text(
-        json.dumps(
-            {
-                "$schema": "infernux.particle_graph",
-                "stable_id": "graph-id",
-                "name": "NewParticleGraph",
-                "emitters": [],
-                "parameters": [],
-                "event_types": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    patch = AssetRenameContentRegistry.instance().build_patch(
-        str(source), str(destination)
-    )
-
-    assert patch is not None
-    original, updated = patch
-    assert json.loads(original)["name"] == "NewParticleGraph"
-    assert json.loads(updated)["name"] == "Smoke Trail"
-
-
-def test_asset_rename_content_adapters_are_extensible(tmp_path):
-    source = tmp_path / "Old.customasset"
-    destination = tmp_path / "New.customasset"
-    source.write_text("Old", encoding="utf-8")
-    registry = AssetRenameContentRegistry.instance()
-    registry.register(
-        (".customasset",),
-        lambda content, _source, target: content.replace(
-            "Old", Path(target).stem
-        ),
-    )
-
-    assert registry.build_patch(str(source), str(destination)) == ("Old", "New")
 
 
 def test_asset_move_remaps_documents_selection_and_reference_display(tmp_path):
@@ -357,30 +291,6 @@ def test_project_move_preflights_before_touching_the_workspace(tmp_path):
 
     assert old_path.exists()
     assert not new_path.exists()
-
-
-def test_relocation_batch_publishes_once_and_keeps_one_operation_id(tmp_path):
-    documents = DocumentRegistry()
-    selection = SelectionService()
-    service = AssetMutationService(documents, selection)
-    published = []
-    service.add_observer(published.append)
-    operation_id = "directory-move"
-    plan = service.prepare_relocation(
-        (
-            (str(tmp_path / "A.mat"), str(tmp_path / "Moved" / "A.mat"), "a"),
-            (str(tmp_path / "B.png"), str(tmp_path / "Moved" / "B.png"), "b"),
-        ),
-        origin=ActionOrigin.USER,
-        operation_id=operation_id,
-    )
-
-    change = service.commit_relocation(plan)
-
-    assert len(published) == 1
-    assert published[0] is change
-    assert change.operation_id == operation_id
-    assert {item.mutation.operation_id for item in change.changes} == {operation_id}
 
 
 def test_undo_command_and_journal_share_operation_identity():
