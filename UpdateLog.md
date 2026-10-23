@@ -20,6 +20,7 @@ This hotfix completes the native text interfaces used by the independent animati
 - Return a valid identity rotation for zero forward vectors and a normalized forward rotation for collinear or zero up vectors in `Quaternion.look_rotation`.
 - Make quaternion angle and rotation-towards calculations agree for opposite-sign representations of the same rotation; correct the quaternion constructor default in the Python type stub.
 - Read string-valued Enum members through their declared values in semantic field descriptions, so plugin controls do not fail by coercing them to integers.
+- Keep inherited component type identities separate from asset GUIDs in the Player dependency catalog, so valid plugin inheritance does not block builds while missing script dependencies remain errors.
 
 Tween and Text Animator remain independently maintained official packages. Their own API and authoring changes are released through the plugin catalog.
 

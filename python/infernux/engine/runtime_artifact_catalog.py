@@ -606,7 +606,7 @@ _SCALAR_ASSET_GUID_FIELDS = frozenset(
         "shader_guids",
     }
 )
-_NON_ASSET_GUID_FIELDS = frozenset({"type_guid", "stable_id"})
+_NON_ASSET_GUID_FIELDS = frozenset({"type_guid", "base_type_guid", "stable_id"})
 
 
 def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
