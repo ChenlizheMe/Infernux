@@ -172,6 +172,31 @@ def test_skinned_renderer_declares_inherited_fields_for_host_schema_and_edits(sc
         UndoManager._instance = previous
 
 
+def test_host_schema_preserves_python_enum_value_types(scene):
+    from enum import Enum, IntEnum
+    from infernux.host.editor import EditorAutomationHost
+
+    class Ease(str, Enum):
+        Linear = "Linear"
+        OutQuad = "OutQuad"
+
+    class Phase(IntEnum):
+        Normal = 0
+        Late = 1
+
+    class EnumControls(InxComponent):
+        ease: Ease = serialized_field(default=Ease.Linear)
+        phase: Phase = serialized_field(default=Phase.Normal)
+
+    owner = scene.create_game_object("EnumControls")
+    component = owner.add_component(EnumControls)
+    schema = EditorAutomationHost.instance().scene_component_schema(owner.id, component.component_id)
+    fields = {field["name"]: field for field in schema["fields"]}
+    assert fields["ease"]["enum"] == [{"name": "Linear", "value": "Linear"}, {"name": "OutQuad", "value": "OutQuad"}]
+    assert fields["phase"]["enum"] == [{"name": "Normal", "value": 0}, {"name": "Late", "value": 1}]
+    assert component.ease is Ease.Linear and component.phase is Phase.Normal
+
+
 def test_box_collider_editor_command_uses_native_schema_material_boundary_and_undo(scene):
     from infernux.components.builtin.box_collider import BoxCollider
     from infernux.core.asset_ref import PhysicMaterialRef

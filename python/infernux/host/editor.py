@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from enum import Enum
 from typing import Any, Iterable
 
 from infernux.debug import DebugConsole
@@ -833,7 +834,7 @@ class EditorAutomationHost:
                     entry["enum"] = [
                         {
                             "name": str(member_name),
-                            "value": int(getattr(member, "value", member)),
+                            "value": member.value if isinstance(member, Enum) else int(member),
                         }
                         for member_name, member in members.items()
                     ]
