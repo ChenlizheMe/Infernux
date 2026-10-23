@@ -972,7 +972,8 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("max_x"), py::arg("max_y"), py::arg("geometry"),
              py::arg("r") = 1.0f, py::arg("g") = 1.0f, py::arg("b") = 1.0f, py::arg("a") = 1.0f,
              py::arg("align_x") = 0.0f, py::arg("align_y") = 0.0f, py::arg("scale") = 1.0f,
-             py::arg("rotation") = 0.0f, py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("clip") = false)
+             py::arg("rotation") = 0.0f, py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("clip") = false,
+             py::arg("opacity") = 1.0f, py::arg("material_color") = std::array<float, 4>{1.f, 1.f, 1.f, 1.f})
         .def("draw_text_aligned", &InxGUIContext::DrawTextAligned, py::arg("min_x"), py::arg("min_y"), py::arg("max_x"),
              py::arg("max_y"), py::arg("text"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"),
              py::arg("align_x") = 0.0f, py::arg("align_y") = 0.0f, py::arg("font_size") = 0.0f, py::arg("clip") = false,

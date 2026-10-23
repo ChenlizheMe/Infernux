@@ -121,7 +121,7 @@ layout(location = 1) in vec2 aUV;
 layout(location = 2) in vec4 aColor;
 layout(location = 3) in vec2 aLocalPosition;
 layout(location = 4) in vec3 aAnchor;
-layout(location = 5) in vec2 aLocalOffset;
+layout(location = 5) in vec3 aLocalOffset;
 layout(location = 6) in float aPolicy;
 layout(push_constant) uniform WorldUIConstants {
     mat4 viewProjection;
@@ -144,7 +144,8 @@ void main() {
     if (policy != 0) {
         vec3 offset = aPosition - aAnchor;
         if ((policy & 1) != 0)
-            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y;
+            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
+                     cross(pc.cameraRight.xyz, pc.cameraUp.xyz) * aLocalOffset.z;
         if ((policy & 2) != 0) {
             float clipW = (pc.viewProjection * vec4(aAnchor, 1.0)).w;
             offset *= max(clipW, 0.0) * pc.screenScale.x * 100.0;
@@ -786,7 +787,7 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
                     span.commandStart += commandStart;
                     span.commandEnd += commandStart;
                     m_hasSelectiveWorldOcclusion |= span.ignoredOccluderId != 0 && !span.alwaysOnTop;
-                    m_worldElementSpans.push_back(span);
+                    m_worldElementSpans.push_back(std::move(span));
                 }
             } else {
                 for (auto span : packet->m_data->screens) {
@@ -1077,6 +1078,7 @@ void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localTo
     m_pendingWorldElement.billboard = billboard;
     m_pendingWorldElement.constantScreenSize = constantScreenSize;
     m_pendingWorldElement.ignoredOccluderId = 0;
+    m_pendingWorldElement.vertexDepths.clear();
 }
 
 void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
@@ -1193,6 +1195,7 @@ void InxScreenUIRenderer::EndWorldElement()
         throw std::logic_error("EndWorldElement requires a matching BeginWorldElement");
     m_pendingWorldElement.vertexStart = m_worldElementStart;
     m_pendingWorldElement.vertexEnd = drawList->VtxBuffer.Size;
+    m_pendingWorldElement.vertexDepths.resize(m_pendingWorldElement.vertexEnd - m_worldElementStart, 0.0f);
     m_pendingWorldElement.commandEnd = drawList->CmdBuffer.Size;
     while (m_pendingWorldElement.commandEnd > m_pendingWorldElement.commandStart &&
            drawList->CmdBuffer[m_pendingWorldElement.commandEnd - 1].ElemCount == 0)
@@ -1201,10 +1204,10 @@ void InxScreenUIRenderer::EndWorldElement()
         if (m_pendingWorldElement.commandEnd <= m_pendingWorldElement.commandStart)
             throw std::logic_error("World UI element produced vertices without a draw command");
         auto &spans = m_recordingPacket ? m_recordingPacket->m_data->worlds : m_worldElementSpans;
-        spans.push_back(m_pendingWorldElement);
         if (!m_recordingPacket)
             m_hasSelectiveWorldOcclusion |=
                 m_pendingWorldElement.ignoredOccluderId != 0 && !m_pendingWorldElement.alwaysOnTop;
+        spans.push_back(std::move(m_pendingWorldElement));
         // Texture/clip changes may merge an empty ImDrawCmd with the previous
         // one. A callback command is the explicit, non-mergeable separator
         // between independently sorted world elements. RenderWorld consumes
@@ -1290,16 +1293,20 @@ void InxScreenUIRenderer::AddText(ScreenUIList list, float minX, float minY, flo
 void InxScreenUIRenderer::AddTextGeometry(ScreenUIList list, float minX, float minY, float maxX, float maxY,
                                           textlayout::TextGeometry &geometry, float r, float g, float b, float a,
                                           float alignX, float alignY, float scale, float rotation, bool mirrorH,
-                                          bool mirrorV, bool clip)
+                                          bool mirrorV, bool clip, float opacity)
 {
     ImDrawList *draw = GetDrawList(list);
     if (!draw)
         return;
     geometry.Prepare(scale);
     const int firstVertex = draw->VtxBuffer.Size;
+    const bool world = list == ScreenUIList::World;
+    if (world && m_worldElementStart < 0)
+        throw std::logic_error("World text requires an active world element");
     draw->PushTextureID(ImGui::GetIO().Fonts->TexRef);
-    const float hdrScale = geometry.Render(*draw, minX, minY, maxX, maxY, {r, g, b, a}, alignX, alignY, scale, rotation,
-                                           mirrorH, mirrorV, true, clip);
+    const float hdrScale = geometry.Render(
+        *draw, minX, minY, maxX, maxY, {r, g, b, a}, alignX, alignY, scale, rotation, mirrorH, mirrorV, true, clip,
+        world ? &m_pendingWorldElement.vertexDepths : nullptr, world ? m_worldElementStart : 0, opacity);
     draw->PopTextureID();
     TrackHDRColorRange(list, firstVertex, draw->VtxBuffer.Size, hdrScale);
 }
@@ -1784,7 +1791,7 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     attributes[4].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[4].offset = offsetof(WorldGPUVertex, anchor);
     attributes[5].location = 5;
-    attributes[5].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[5].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[5].offset = offsetof(WorldGPUVertex, localOffset);
     attributes[6].location = 6;
     attributes[6].format = VK_FORMAT_R32_SFLOAT;
@@ -2436,8 +2443,11 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             // UI +X follows Transform +X; UI +Y points down while the world +Y
             // axis points up. This keeps world UI manipulation identical to
             // ordinary scene objects without introducing a second pose.
+            const size_t elementVertex = static_cast<size_t>(vertexIndex - element.vertexStart);
+            const float depth = element.vertexDepths[elementVertex];
             const glm::vec4 local((source.pos.x - element.pivotX) / kWorldUILogicalPixelsPerUnit,
-                                  -(source.pos.y - element.pivotY) / kWorldUILogicalPixelsPerUnit, 0.0f, 1.0f);
+                                  -(source.pos.y - element.pivotY) / kWorldUILogicalPixelsPerUnit,
+                                  depth / kWorldUILogicalPixelsPerUnit, 1.0f);
             const glm::vec4 world = element.localToWorld * local;
             WorldGPUVertex &target = vertices[static_cast<size_t>(vertexIndex)];
             target.pos[0] = world.x;
@@ -2447,7 +2457,7 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             target.anchor[0] = anchor.x;
             target.anchor[1] = anchor.y;
             target.anchor[2] = anchor.z;
-            target.localOffset = ImVec2(local.x, local.y);
+            target.localOffset = glm::vec3(local);
             target.policy = float((element.billboard ? WorldUIBillboard : 0u) |
                                   (element.constantScreenSize ? WorldUIConstantScreenSize : 0u));
             target.uv = source.uv;

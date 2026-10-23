@@ -1,3 +1,30 @@
+# Infernux v0.4.3-v4 · Hotfix 4: Character Geometry and Color Composition
+
+This hotfix completes the native text interfaces used by the independent animation plugins. The base engine version remains 0.4.3; wheels use build 4, with the matching Hub bundle at 0.4.3-5.
+
+[中文更新日志](UpdateLog-zh.md)
+
+**Baseline for comparison:** `v0.4.3-v3...v0.4.3-v4`.
+
+### Text and Rendering
+
+- Add per-grapheme three-dimensional affine transforms and four-corner depth offsets. Screen text projects the transformed geometry; world text preserves depth through its retained draw packets, clipping and GPU vertex attributes.
+- Compose the Manual, Effects and Appearance layers in order. Corner edits remain usable at zero scale and when another layer rotates or scales the character.
+- Separate absolute character RGB and alpha overrides from ordinary layer tint. Alpha-only animation preserves rich-text colors, including multiple colored glyphs belonging to one grapheme. Reset restores the authored colors.
+- Apply parent and element opacity independently from character alpha, and retain material tint in both runtime rendering and UI Editor previews. Characters can become visible after an authored zero-alpha base color.
+- Treat text inside rich-text `<noparse>` spans as literal content while retaining original source offsets and the surrounding text styles.
+- Rebuild the matching Windows, Linux, Android and Web Player packages for these native interfaces.
+
+### Math and Reflection
+
+- Return a valid identity rotation for zero forward vectors and a normalized forward rotation for collinear or zero up vectors in `Quaternion.look_rotation`.
+- Make quaternion angle and rotation-towards calculations agree for opposite-sign representations of the same rotation; correct the quaternion constructor default in the Python type stub.
+- Read string-valued Enum members through their declared values in semantic field descriptions, so plugin controls do not fail by coercing them to integers.
+
+Tween and Text Animator remain independently maintained official packages. Their own API and authoring changes are released through the plugin catalog.
+
+---
+
 # Infernux v0.4.3-v3 · Hotfix 3: Reliable Plugin Reload and Text Authoring
 
 This hotfix fixes issues found while using independently installed animation plugins in real Windows and Linux projects. The base engine version remains 0.4.3; wheels use build 3. Hub 0.4.3-4 accompanies this distribution without changing its project-update workflow.

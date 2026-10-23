@@ -1,6 +1,14 @@
 // Source of upload.infernux-engine.com (existing Worker: infernux-r2-upload-040).
 // Explicit release destinations; keep published versions available. Secrets are bindings.
 const ALLOWED_KEYS = new Set([
+  "plugins/infernux.platform-linux/0.2.13/infernux.platform-linux.inxpkg",
+  "plugins/infernux.platform-windows/0.2.14/infernux.platform-windows.inxpkg",
+  "plugins/infernux.platform-web/0.2.21/infernux.platform-web.inxpkg",
+  "plugins/infernux.platform-android/0.2.15/infernux.platform-android.inxpkg",
+  "wheels/0.4.3/build-4/infernux-0.4.3-4-cp313-cp313-win_amd64.whl",
+  "wheels/0.4.3/build-4/infernux-0.4.3-4-cp313-cp313-manylinux_2_35_x86_64.whl",
+  "plugins/infernux.tween/0.1.1/infernux.tween.inxpkg",
+  "plugins/infernux.text_animator/0.1.1/infernux.text_animator.inxpkg",
   "plugins/infernux.platform-linux/0.2.12/infernux.platform-linux.inxpkg",
   "plugins/infernux.platform-windows/0.2.13/infernux.platform-windows.inxpkg",
   "plugins/infernux.platform-web/0.2.20/infernux.platform-web.inxpkg",
@@ -77,6 +85,14 @@ const ALLOWED_KEYS = new Set([
   "hub/0.4.0/build-2/InfernuxHubInstaller-0.4.0-windows-x64.exe"
 ]);
 const RELEASE_SOURCES = new Map([
+  ["plugins/infernux.platform-linux/0.2.13/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.13/infernux.platform-linux.inxpkg"],
+  ["plugins/infernux.platform-windows/0.2.14/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.14/infernux.platform-windows.inxpkg"],
+  ["plugins/infernux.platform-web/0.2.21/infernux.platform-web.inxpkg", "https://github.com/InfernuxEngine/infernux_web/releases/download/v0.2.21/infernux.platform-web.inxpkg"],
+  ["plugins/infernux.platform-android/0.2.15/infernux.platform-android.inxpkg", "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.15/infernux.platform-android.inxpkg"],
+  ["wheels/0.4.3/build-4/infernux-0.4.3-4-cp313-cp313-win_amd64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v4/infernux-0.4.3-4-cp313-cp313-win_amd64.whl"],
+  ["wheels/0.4.3/build-4/infernux-0.4.3-4-cp313-cp313-manylinux_2_35_x86_64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v4/infernux-0.4.3-4-cp313-cp313-manylinux_2_35_x86_64.whl"],
+  ["plugins/infernux.tween/0.1.1/infernux.tween.inxpkg", "https://github.com/InfernuxEngine/infernux_tween/releases/download/v0.1.1/infernux.tween.inxpkg"],
+  ["plugins/infernux.text_animator/0.1.1/infernux.text_animator.inxpkg", "https://github.com/InfernuxEngine/infernux_text_animator/releases/download/v0.1.1/infernux.text_animator.inxpkg"],
   ["plugins/infernux.tween/0.1.0/infernux.tween.inxpkg", "https://github.com/InfernuxEngine/infernux_tween/releases/download/v0.1.0/infernux.tween.inxpkg"],
   ["plugins/infernux.text_animator/0.1.0/infernux.text_animator.inxpkg", "https://github.com/InfernuxEngine/infernux_text_animator/releases/download/v0.1.0/infernux.text_animator.inxpkg"],
   ["plugins/infernux.platform-linux/0.2.12/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.12/infernux.platform-linux.inxpkg"],

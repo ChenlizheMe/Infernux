@@ -51,7 +51,7 @@
     {
       "reference": "infernux/platform-android",
       "name": "Infernux Android Platform",
-      "version": "0.2.14",
+      "version": "0.2.15",
       "intro": "Build Infernux games for Android with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
@@ -62,7 +62,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_android",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.14/infernux.platform-android.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.15/infernux.platform-android.inxpkg"
       },
       "category": "platform_build",
       "targets": [
@@ -88,7 +88,7 @@
     {
       "reference": "infernux/platform-linux",
       "name": "Infernux Linux Platform",
-      "version": "0.2.12",
+      "version": "0.2.13",
       "intro": "Build Infernux games for Linux with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Linux。"
@@ -99,7 +99,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_linux",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.12/infernux.platform-linux.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.13/infernux.platform-linux.inxpkg"
       },
       "category": "platform_build",
       "targets": [
@@ -124,7 +124,7 @@
     {
       "reference": "infernux/platform-web",
       "name": "Infernux Web Platform",
-      "version": "0.2.20",
+      "version": "0.2.21",
       "intro": "Build Infernux games for browsers with WebGPU.",
       "intros": {
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
@@ -135,7 +135,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_web",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.20/infernux.platform-web.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.21/infernux.platform-web.inxpkg"
       },
       "category": "platform_build",
       "targets": [
@@ -160,7 +160,7 @@
     {
       "reference": "infernux/platform-windows",
       "name": "Infernux Windows Platform",
-      "version": "0.2.13",
+      "version": "0.2.14",
       "intro": "Build Infernux games for Windows with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Windows。"
@@ -171,7 +171,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_windows",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.13/infernux.platform-windows.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.14/infernux.platform-windows.inxpkg"
       },
       "category": "platform_build",
       "targets": [

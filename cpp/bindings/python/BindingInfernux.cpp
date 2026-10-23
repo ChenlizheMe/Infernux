@@ -973,7 +973,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("geometry"), py::arg("r") = 1.0f,
              py::arg("g") = 1.0f, py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("align_x") = 0.0f,
              py::arg("align_y") = 0.0f, py::arg("scale") = 1.0f, py::arg("rotation") = 0.0f,
-             py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("clip") = false)
+             py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("clip") = false,
+             py::arg("opacity") = 1.0f)
         .def(
             "measure_text",
             [](const InxScreenUIRenderer &renderer, const std::string &text, float font_size, float wrap_width,

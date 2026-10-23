@@ -21,29 +21,37 @@ TextCharacterBuffer::Row IdentityRow()
 {
     TextCharacterBuffer::Row row{};
     row[3] = row[4] = 1.0f;
-    std::fill(row.begin() + 14, row.end(), 1.0f);
+    std::fill(row.begin() + 14, row.begin() + 30, 1.0f);
+    row[30] = row[35] = row[40] = 1.0f;
     return row;
 }
 
-ImDrawVert InterpolateVertex(const ImDrawVert &a, const ImDrawVert &b, float t)
+struct GlyphVertex
 {
-    const auto ac = ImGui::ColorConvertU32ToFloat4(a.col), bc = ImGui::ColorConvertU32ToFloat4(b.col);
-    return {{a.pos.x + (b.pos.x - a.pos.x) * t, a.pos.y + (b.pos.y - a.pos.y) * t},
-            {a.uv.x + (b.uv.x - a.uv.x) * t, a.uv.y + (b.uv.y - a.uv.y) * t},
-            ImGui::ColorConvertFloat4ToU32({ac.x + (bc.x - ac.x) * t, ac.y + (bc.y - ac.y) * t,
-                                            ac.z + (bc.z - ac.z) * t, ac.w + (bc.w - ac.w) * t})};
+    ImDrawVert draw;
+    float depth = 0.0f;
+};
+
+GlyphVertex InterpolateVertex(const GlyphVertex &a, const GlyphVertex &b, float t)
+{
+    const auto ac = ImGui::ColorConvertU32ToFloat4(a.draw.col), bc = ImGui::ColorConvertU32ToFloat4(b.draw.col);
+    return {{{a.draw.pos.x + (b.draw.pos.x - a.draw.pos.x) * t, a.draw.pos.y + (b.draw.pos.y - a.draw.pos.y) * t},
+             {a.draw.uv.x + (b.draw.uv.x - a.draw.uv.x) * t, a.draw.uv.y + (b.draw.uv.y - a.draw.uv.y) * t},
+             ImGui::ColorConvertFloat4ToU32({ac.x + (bc.x - ac.x) * t, ac.y + (bc.y - ac.y) * t,
+                                             ac.z + (bc.z - ac.z) * t, ac.w + (bc.w - ac.w) * t})},
+            a.depth + (b.depth - a.depth) * t};
 }
 
-void EmitClippedTriangle(ImDrawList &draw, const ImDrawVert &a, const ImDrawVert &b, const ImDrawVert &c,
-                         const std::array<float, 4> &bounds)
+void EmitClippedTriangle(ImDrawList &draw, const GlyphVertex &a, const GlyphVertex &b, const GlyphVertex &c,
+                         const std::array<float, 4> &bounds, std::vector<float> *depths, int depthOffset)
 {
     // Clip the two original glyph triangles independently. Four-corner edits
     // may produce a concave quad; treating it as one convex polygon is wrong.
-    std::array<ImDrawVert, 8> polygon{a, b, c}, output{};
+    std::array<GlyphVertex, 8> polygon{a, b, c}, output{};
     int count = 3;
     for (int edge = 0; edge < 4 && count > 0; ++edge) {
-        const auto distance = [&](const ImDrawVert &vertex) {
-            const float coordinate = edge % 2 == 0 ? vertex.pos.x : vertex.pos.y;
+        const auto distance = [&](const GlyphVertex &vertex) {
+            const float coordinate = edge % 2 == 0 ? vertex.draw.pos.x : vertex.draw.pos.y;
             return edge < 2 ? coordinate - bounds[edge] : bounds[edge] - coordinate;
         };
         int nextCount = 0;
@@ -72,17 +80,26 @@ void EmitClippedTriangle(ImDrawList &draw, const ImDrawVert &a, const ImDrawVert
         draw.PrimWriteIdx(static_cast<ImDrawIdx>(first + index));
         draw.PrimWriteIdx(static_cast<ImDrawIdx>(first + index + 1));
     }
-    for (int index = 0; index < count; ++index)
-        draw.PrimWriteVtx(polygon[index].pos, polygon[index].uv, polygon[index].col);
+    if (depths)
+        depths->resize(draw.VtxBuffer.Size - depthOffset, 0.0f);
+    const int vertexStart = draw.VtxBuffer.Size - count;
+    for (int index = 0; index < count; ++index) {
+        const auto &vertex = polygon[index];
+        draw.PrimWriteVtx(vertex.draw.pos, vertex.draw.uv, vertex.draw.col);
+        if (depths)
+            (*depths)[vertexStart + index - depthOffset] = vertex.depth;
+    }
 }
 
-void ClipGlyph(ImDrawList &draw, int firstVertex, const std::array<float, 4> &bounds)
+void ClipGlyph(ImDrawList &draw, int firstVertex, const std::array<float, 4> &bounds, std::vector<float> *depths,
+               int depthOffset)
 {
-    std::array<ImDrawVert, 4> quad;
+    std::array<GlyphVertex, 4> quad;
     bool contained = true;
     for (int index = 0; index < 4; ++index) {
-        quad[index] = draw.VtxBuffer[firstVertex + index];
-        const auto &position = quad[index].pos;
+        quad[index] = {draw.VtxBuffer[firstVertex + index],
+                       depths ? (*depths)[firstVertex + index - depthOffset] : 0.0f};
+        const auto &position = quad[index].draw.pos;
         contained &=
             position.x >= bounds[0] && position.y >= bounds[1] && position.x <= bounds[2] && position.y <= bounds[3];
     }
@@ -92,8 +109,10 @@ void ClipGlyph(ImDrawList &draw, int firstVertex, const std::array<float, 4> &bo
     draw._VtxCurrentIdx -= 4;
     draw._VtxWritePtr = draw.VtxBuffer.Data + draw.VtxBuffer.Size;
     draw._IdxWritePtr = draw.IdxBuffer.Data + draw.IdxBuffer.Size;
-    EmitClippedTriangle(draw, quad[0], quad[1], quad[2], bounds);
-    EmitClippedTriangle(draw, quad[0], quad[2], quad[3], bounds);
+    if (depths)
+        depths->resize(firstVertex - depthOffset);
+    EmitClippedTriangle(draw, quad[0], quad[1], quad[2], bounds, depths, depthOffset);
+    EmitClippedTriangle(draw, quad[0], quad[2], quad[3], bounds, depths, depthOffset);
 }
 } // namespace
 
@@ -174,37 +193,48 @@ void TextGeometry::CompileCharacters()
     if (!m_stateDirty)
         return;
     m_compiled.assign(m_layout->characters.size(), {});
-    m_colorScale = 1.0f;
+    m_colorScale = m_overrideColorScale = 0.0f;
     for (size_t index = 0; index < m_compiled.size(); ++index) {
         auto &state = m_compiled[index];
-        for (const auto &layer : m_layers) {
+        for (size_t layerIndex = 0; layerIndex < m_layers.size(); ++layerIndex) {
+            const auto &layer = m_layers[layerIndex];
             if (!layer)
                 continue;
             const auto &row = layer->m_rows[index];
+            const auto overrides = layerIndex == 0 ? static_cast<unsigned char>(row[46]) : 0;
+            if (layerIndex == 0)
+                state.colorOverrides = overrides;
+            const bool useRGB = overrides == 0 || (overrides & 1) != 0;
+            const bool useAlpha = overrides == 0 || (overrides & 2) != 0;
             const float radians = row[2] * DegreesToRadians;
             const float cosine = std::cos(radians), sine = std::sin(radians);
             const float xx = cosine * row[3], xy = (cosine * row[5] - sine) * row[4];
             const float yx = sine * row[3], yy = (sine * row[5] + cosine) * row[4];
+            const glm::mat3 planar(glm::vec3(xx, yx, 0.0f), glm::vec3(xy, yy, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+            const glm::mat3 affine(glm::vec3(row[30], row[34], row[38]), glm::vec3(row[31], row[35], row[39]),
+                                   glm::vec3(row[32], row[36], row[40]));
+            const glm::mat3 linear = affine * planar;
             const CharacterState previous = state;
-            state.xx = xx * previous.xx + xy * previous.yx;
-            state.xy = xx * previous.xy + xy * previous.yy;
-            state.yx = yx * previous.xx + yy * previous.yx;
-            state.yy = yx * previous.xy + yy * previous.yy;
-            state.offset = {xx * previous.offset.x + xy * previous.offset.y + row[0],
-                            yx * previous.offset.x + yy * previous.offset.y + row[1]};
+            state.linear = linear * previous.linear;
+            state.offset = linear * previous.offset + affine * glm::vec3(row[0], row[1], 0.0f) +
+                           glm::vec3(row[33], row[37], row[41]);
             for (size_t corner = 0; corner < 4; ++corner) {
                 const auto &vertex = previous.vertices[corner];
-                state.vertices[corner] = {xx * vertex.x + xy * vertex.y + row[6 + corner * 2],
-                                          yx * vertex.x + yy * vertex.y + row[7 + corner * 2]};
+                state.vertices[corner] =
+                    linear * vertex + glm::vec3(row[6 + corner * 2], row[7 + corner * 2], row[42 + corner]);
                 auto &tint = state.colors[corner];
-                tint.x *= row[14 + corner * 4];
-                tint.y *= row[15 + corner * 4];
-                tint.z *= row[16 + corner * 4];
-                tint.w *= row[17 + corner * 4];
+                if (useRGB) {
+                    tint.x *= row[14 + corner * 4];
+                    tint.y *= row[15 + corner * 4];
+                    tint.z *= row[16 + corner * 4];
+                }
+                if (useAlpha)
+                    tint.w *= row[17 + corner * 4];
             }
         }
+        auto &colorScale = (state.colorOverrides & 1) != 0 ? m_overrideColorScale : m_colorScale;
         for (const auto &color : state.colors)
-            m_colorScale = std::max({m_colorScale, color.x, color.y, color.z});
+            colorScale = std::max({colorScale, color.x, color.y, color.z});
     }
     m_stateDirty = false;
 }
@@ -238,18 +268,18 @@ void TextGeometry::Prepare(float scale)
 
 float TextGeometry::Render(ImDrawList &draw, float minX, float minY, float maxX, float maxY, ImVec4 color, float alignX,
                            float alignY, float scale, float rotation, bool mirrorH, bool mirrorV, bool allowHDR,
-                           bool clip)
+                           bool clip, std::vector<float> *vertexDepths, int depthOffset, float opacity)
 {
     EnsureLayout();
     CompileCharacters();
     const auto &layout = *m_layout;
-    const float hdrScale = allowHDR ? std::max({1.0f, color.x, color.y, color.z}) * m_colorScale : 1.0f;
+    const float hdrScale =
+        allowHDR ? std::max({1.0f, std::max({color.x, color.y, color.z}) * m_colorScale, m_overrideColorScale}) : 1.0f;
     color.x /= hdrScale;
     color.y /= hdrScale;
     color.z /= hdrScale;
     const float baseY =
         minY + (maxY - minY - (layout.inkMaxY - layout.inkMinY) * scale) * alignY - layout.inkMinY * scale;
-    const ImU32 baseColor = ImGui::ColorConvertFloat4ToU32(color);
     const int textStart = draw.VtxBuffer.Size;
     for (const auto &glyph : layout.glyphs) {
         if (!glyph.visible || glyph.line == text::NoWord ||
@@ -264,22 +294,38 @@ float TextGeometry::Render(ImDrawList &draw, float minX, float minY, float maxX,
         const auto codepoint = static_cast<ImWchar>(
             glyph.codepoint <= IM_UNICODE_CODEPOINT_MAX ? glyph.codepoint : IM_UNICODE_CODEPOINT_INVALID);
         glyph.font->RenderChar(&draw, glyph.fontSize * scale,
-                               {lineX + glyph.originX * scale, baseY + glyph.originY * scale}, baseColor, codepoint);
+                               {lineX + glyph.originX * scale, baseY + glyph.originY * scale}, IM_COL32_WHITE,
+                               codepoint);
         if (draw.VtxBuffer.Size == firstVertex)
             continue;
         assert(draw.VtxBuffer.Size == firstVertex + 4);
+        if (vertexDepths)
+            vertexDepths->resize(draw.VtxBuffer.Size - depthOffset, 0.0f);
         for (int corner = 0; corner < 4; ++corner) {
             auto &vertex = draw.VtxBuffer[firstVertex + corner];
             const float x = vertex.pos.x - center.x, y = vertex.pos.y - center.y;
-            vertex.pos = {center.x + state.xx * x + state.xy * y + (state.offset.x + state.vertices[corner].x) * scale,
-                          center.y + state.yx * x + state.yy * y + (state.offset.y + state.vertices[corner].y) * scale};
-            const ImVec4 tint(
-                color.x * state.colors[corner].x * glyph.color[0], color.y * state.colors[corner].y * glyph.color[1],
-                color.z * state.colors[corner].z * glyph.color[2], color.w * state.colors[corner].w * glyph.color[3]);
+            const auto position =
+                state.linear * glm::vec3(x, y, 0.0f) + (state.offset + state.vertices[corner]) * scale;
+            vertex.pos = {center.x + position.x, center.y + position.y};
+            if (vertexDepths)
+                (*vertexDepths)[firstVertex + corner - depthOffset] = position.z;
+            ImVec4 tint = state.colors[corner];
+            if ((state.colorOverrides & 1) != 0) {
+                tint.x /= hdrScale;
+                tint.y /= hdrScale;
+                tint.z /= hdrScale;
+            } else {
+                tint.x *= color.x * glyph.color[0];
+                tint.y *= color.y * glyph.color[1];
+                tint.z *= color.z * glyph.color[2];
+            }
+            if ((state.colorOverrides & 2) == 0)
+                tint.w *= color.w * glyph.color[3];
+            tint.w *= opacity;
             vertex.col = ImGui::ColorConvertFloat4ToU32(tint);
         }
         if (clip)
-            ClipGlyph(draw, firstVertex, {minX, minY, maxX, maxY});
+            ClipGlyph(draw, firstVertex, {minX, minY, maxX, maxY}, vertexDepths, depthOffset);
     }
     if (rotation != 0.0f || mirrorH || mirrorV) {
         const ImVec2 pivot((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);

@@ -440,7 +440,8 @@ class InxGUIContext
                            const std::vector<std::string> &fallbackFontPaths = {});
     void DrawTextGeometry(float minX, float minY, float maxX, float maxY, textlayout::TextGeometry &geometry, float r,
                           float g, float b, float a, float alignX, float alignY, float scale, float rotation,
-                          bool mirrorH, bool mirrorV, bool clip);
+                          bool mirrorH, bool mirrorV, bool clip, float opacity = 1.0f,
+                          const std::array<float, 4> &materialColor = {1.f, 1.f, 1.f, 1.f});
     std::pair<float, float> CalcTextSizeA(const std::string &text, float fontSize = 0.0f,
                                           const std::string &fontPath = "", float lineHeight = 1.0f,
                                           float letterSpacing = 0.0f,

@@ -2379,14 +2379,27 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
 
 void InxGUIContext::DrawTextGeometry(float minX, float minY, float maxX, float maxY, textlayout::TextGeometry &geometry,
                                      float r, float g, float b, float a, float alignX, float alignY, float scale,
-                                     float rotation, bool mirrorH, bool mirrorV, bool clip)
+                                     float rotation, bool mirrorH, bool mirrorV, bool clip, float opacity,
+                                     const std::array<float, 4> &materialColor)
 {
     geometry.Prepare(scale);
     ImDrawList *draw = ImGui::GetWindowDrawList();
+    const int firstVertex = draw->VtxBuffer.Size;
     draw->PushTextureID(ImGui::GetIO().Fonts->TexRef);
     geometry.Render(*draw, minX, minY, maxX, maxY, {r, g, b, a}, alignX, alignY, scale, rotation, mirrorH, mirrorV,
-                    false, clip);
+                    false, clip, nullptr, 0, opacity);
     draw->PopTextureID();
+    if (materialColor != std::array<float, 4>{1.f, 1.f, 1.f, 1.f}) {
+        for (int index = firstVertex; index < draw->VtxBuffer.Size; ++index) {
+            auto &vertex = draw->VtxBuffer[index];
+            auto color = ImGui::ColorConvertU32ToFloat4(vertex.col);
+            color.x *= materialColor[0];
+            color.y *= materialColor[1];
+            color.z *= materialColor[2];
+            color.w *= materialColor[3];
+            vertex.col = ImGui::ColorConvertFloat4ToU32(color);
+        }
+    }
 }
 
 std::pair<float, float> InxGUIContext::CalcTextSizeA(const std::string &text, float fontSize,

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "InxTextLayout.h"
+#include <glm/mat3x3.hpp>
+#include <glm/vec3.hpp>
 
 namespace infernux::textlayout
 {
@@ -15,7 +17,7 @@ enum class TextGeometryLayer
 class TextCharacterBuffer
 {
   public:
-    static constexpr size_t Columns = 30;
+    static constexpr size_t Columns = 47;
     using Row = std::array<float, Columns>;
 
     TextCharacterBuffer(std::shared_ptr<const std::string> content, size_t count);
@@ -60,24 +62,27 @@ class TextGeometry
     void Prepare(float scale);
     float Render(ImDrawList &draw, float minX, float minY, float maxX, float maxY, ImVec4 color, float alignX,
                  float alignY, float scale, float rotation = 0.0f, bool mirrorH = false, bool mirrorV = false,
-                 bool allowHDR = true, bool clip = false);
+                 bool allowHDR = true, bool clip = false, std::vector<float> *vertexDepths = nullptr,
+                 int depthOffset = 0, float opacity = 1.0f);
 
   private:
     void EnsureLayout();
     void CompileCharacters();
     struct CharacterState
     {
-        float xx = 1.0f, xy = 0.0f, yx = 0.0f, yy = 1.0f;
-        ImVec2 offset{};
-        std::array<ImVec2, 4> vertices{};
+        glm::mat3 linear{1.0f};
+        glm::vec3 offset{0.0f};
+        std::array<glm::vec3, 4> vertices{};
         std::array<ImVec4, 4> colors{{{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}}};
+        unsigned char colorOverrides = 0;
     };
     TextLayoutParams m_params;
     std::shared_ptr<TextLayoutResult> m_layout;
     std::shared_ptr<const std::string> m_content;
     std::array<std::shared_ptr<TextCharacterBuffer>, 3> m_layers{};
     std::vector<CharacterState> m_compiled;
-    float m_colorScale = 1.0f;
+    float m_colorScale = 0.0f;
+    float m_overrideColorScale = 0.0f;
     float m_preparedScale = 0.0f;
     bool m_stateDirty = true;
     uint64_t m_fontGeneration = 0;

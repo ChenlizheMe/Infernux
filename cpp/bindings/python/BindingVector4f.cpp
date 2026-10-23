@@ -1,12 +1,4 @@
-/**
- * @file BindingVector4f.cpp
- * @brief Python bindings for glm::vec4 as "vec4f" and glm::quat as "quatf".
- *
- * Operates directly on
- * glm::vec4 so that no manual conversion is needed anywhere in the binding
- * layer.  Also adds glm::quat bindings ("quatf") that were previously
- * missing — quaternions were only exposed as raw (x,y,z,w) tuples before.
- */
+// Python bindings for native four-component vectors and quaternions.
 
 #include "BindingRegistration.h"
 #include <cmath>
@@ -19,6 +11,14 @@ namespace py = pybind11;
 
 namespace infernux
 {
+namespace
+{
+float QuaternionAngleDegrees(const glm::quat &a, const glm::quat &b)
+{
+    const float cosine = std::min(std::abs(glm::dot(a, b)), 1.0f);
+    return cosine > 1.0f - 1e-6f ? 0.0f : glm::degrees(2.0f * std::acos(cosine));
+}
+} // namespace
 
 // ── helper free-functions (mirror the old Vector4f static API) ──────────────
 namespace vec4_util
@@ -472,14 +472,25 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_static(
                 "look_rotation",
                 [](const glm::vec3 &forward, const glm::vec3 &up) {
-                    return glm::quatLookAt(glm::normalize(forward), up);
+                    const float forwardLength = glm::length(forward);
+                    if (forwardLength == 0.0f)
+                        return Quat(1.f, 0.f, 0.f, 0.f);
+                    const glm::vec3 direction = forward / forwardLength;
+                    const glm::vec3 right = glm::cross(up, direction);
+                    if (glm::dot(right, right) < 1e-12f) {
+                        if (direction.z == -1.0f)
+                            return Quat(0.f, 0.f, 1.f, 0.f);
+                        return glm::normalize(Quat(1.0f + direction.z, -direction.y, direction.x, 0.0f));
+                    }
+                    const glm::vec3 normalizedRight = glm::normalize(right);
+                    return glm::quat_cast(
+                        glm::mat3(normalizedRight, glm::cross(direction, normalizedRight), direction));
                 },
                 py::arg("forward"), py::arg("up") = glm::vec3(0.f, 1.f, 0.f),
                 "Create rotation looking in forward direction")
             // ---- Static math ----
             .def_static("dot", [](const Quat &a, const Quat &b) { return glm::dot(a, b); })
-            .def_static("angle",
-                        [](const Quat &a, const Quat &b) { return glm::degrees(glm::angle(a * glm::inverse(b))); })
+            .def_static("angle", &QuaternionAngleDegrees)
             .def_static("slerp",
                         [](const Quat &a, const Quat &b, float t) { return glm::slerp(a, b, std::clamp(t, 0.f, 1.f)); })
             .def_static("lerp", [](const Quat &a, const Quat &b,
@@ -488,7 +499,7 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_static(
                 "rotate_towards",
                 [](const Quat &from, const Quat &to, float maxDeg) {
-                    float ang = glm::degrees(glm::angle(from * glm::inverse(to)));
+                    float ang = QuaternionAngleDegrees(from, to);
                     if (ang < 1e-6f)
                         return to;
                     float t = std::min(1.f, maxDeg / ang);

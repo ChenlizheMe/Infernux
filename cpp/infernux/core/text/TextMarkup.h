@@ -26,7 +26,7 @@ struct MarkupText
     std::vector<StyleRun> styles;
 };
 
-// Color (#RRGGBB[AA]), size (pixels or percent) and br. Unsupported tags remain
-// literal text; source ranges always address the original UTF-8 string.
+// Color (#RRGGBB[AA]), size (pixels or percent), br and noparse literal regions.
+// Unsupported tags remain literal; source ranges address the original UTF-8 string.
 MarkupText ParseTextMarkup(std::string_view source, float fontSize);
 } // namespace infernux::text

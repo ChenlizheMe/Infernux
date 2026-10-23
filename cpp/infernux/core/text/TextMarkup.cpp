@@ -111,6 +111,17 @@ MarkupText ParseTextMarkup(std::string_view source, float fontSize)
             break;
         }
         const auto token = source.substr(open + 1, close - open - 1);
+        if (token == "noparse") {
+            constexpr std::string_view endTag = "</noparse>";
+            const size_t end = source.find(endTag, close + 1);
+            if (end == std::string_view::npos) {
+                emit(close + 1, source.size());
+                break;
+            }
+            emit(close + 1, end);
+            cursor = end + endTag.size();
+            continue;
+        }
         bool consumed = false;
         if (token == "br" || token == "br/") {
             emit(open, close + 1, true);

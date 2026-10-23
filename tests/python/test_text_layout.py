@@ -119,6 +119,22 @@ def test_character_views_retain_storage_and_reject_a_different_text():
     assert buffer.offsets.shape == (2, 2) and buffer.colors.shape == (2, 4, 4)
     assert np.asarray(buffer).dtype == np.float32
     assert np.all(buffer.scales == 1) and np.all(buffer.colors == 1)
+    affine = buffer.affine_transforms
+    assert affine.shape == (2, 3, 4) and buffer.vertex_depth_offsets.shape == (2, 4)
+    assert buffer.color_overrides.shape == (2,) and np.all(buffer.color_overrides == 0)
+    assert buffer.columns == 47
+    assert affine.strides == (buffer.columns * 4, 16, 4)
+    assert np.all(affine == np.eye(3, 4, dtype=np.float32))
+    affine[:, 2, 3] = [3, 6]
+    buffer.vertex_depth_offsets[0] = [1, 4, -2, 6]
+    buffer.color_overrides[:] = [3, 2]
+    assert np.asarray(buffer)[:, 41].tolist() == [3, 6]
+    assert np.asarray(buffer)[0, 42:46].tolist() == [1, 4, -2, 6]
+    assert np.asarray(buffer)[:, 46].tolist() == [3, 2]
+    buffer.reset()
+    assert np.all(affine == np.eye(3, 4, dtype=np.float32))
+    assert np.all(buffer.vertex_depth_offsets == 0)
+    assert np.all(buffer.color_overrides == 0)
     offsets = buffer.offsets
     offsets[:, 1] = [2, 4]
     assert np.asarray(buffer)[:, 1].tolist() == [2, 4]
@@ -132,10 +148,13 @@ def test_character_views_retain_storage_and_reject_a_different_text():
         geometry.set_character_data(buffer)
     del buffer, geometry
     assert offsets[:, 1].tolist() == [2, 4]
+    assert np.all(affine == np.eye(3, 4, dtype=np.float32))
 
 
-def test_character_edits_preserve_layout_and_authored_fields(scene, engine):
+def test_character_edits_preserve_layout_and_authored_fields(scene, engine, monkeypatch):
+    from types import SimpleNamespace
     from infernux.ui import UIText
+    from infernux.ui import ui_render_dispatch as dispatch
     from infernux.ui.ui_command_packets import _CommandGroup
     from infernux.ui.ui_texture_cache import UITextureCache
 
@@ -160,6 +179,17 @@ def test_character_edits_preserve_layout_and_authored_fields(scene, engine):
     text.max_visible_characters = 2
     assert not group.dirty
     assert "max_visible_characters" not in text._serialize_fields_document()
+    text.color, text.opacity = [0.8, 0.4, 0.2, 0], 0.5
+    material = {"color": [0.5, 0.8, 0.25, 0.5], "texture_guid": "", "signature": (None, 0), "_native": None}
+    monkeypatch.setattr(dispatch, "material_visual_state", lambda *args: material)
+    editor_calls, runtime_calls = [], []
+    context = SimpleNamespace(draw_text_geometry=lambda *args: editor_calls.append(args))
+    dispatch._editor_render_text(text, context, 0, 0, 64, 64, 1, lambda _: 0)
+    assert editor_calls[0][5:9] == tuple(text.color)
+    assert editor_calls[0][-2:] == (0.5, material["color"])
+    renderer = SimpleNamespace(add_text_geometry=lambda *args: runtime_calls.append(args))
+    dispatch._runtime_render_text(text, renderer, 1, 0, 0, 64, 64, 64, 64, 1, 1, 1, lambda _: 0)
+    assert runtime_calls[0][6:10] == tuple(text.color) and runtime_calls[0][-1] == 0.5
 
 
 def test_native_character_geometry_translates_rotates_hides_and_resets(engine, scene):
@@ -248,6 +278,19 @@ def test_native_character_geometry_translates_rotates_hides_and_resets(engine, s
         styled = capture(mask=False)
         assert styled[:, :, 0][solid].mean() == pytest.approx(128 / 255, abs=0.025)
         assert np.max(styled[:, :, 1:3]) < 0.02
+        override = geometry.create_character_buffer()
+        override.colors[:] = [0, 1, 0, 0.8]
+        override.color_overrides[:] = 3
+        geometry.set_character_data(override)
+        tint[3] = 0
+        options["opacity"] = 0.5
+        green = capture(mask=False)
+        assert green[:, :, 1][solid].mean() == pytest.approx(0.4, abs=0.025)
+        assert np.max(green[:, :, (0, 2)]) < 0.02
+        geometry.reset_character_data()
+        tint[3] = 1
+        options["opacity"] = 1
+        assert capture(mask=False)[:, :, 0][solid].mean() == pytest.approx(128 / 255, abs=0.025)
         geometry.set_layout("FF", font_size=26)
         distorted = geometry.create_character_buffer()
         distorted.rotations[:] = [25, -30]

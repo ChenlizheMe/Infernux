@@ -311,7 +311,8 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
                                         const std::vector<std::string> &fallbackFontPaths = {}) const;
     void AddTextGeometry(ScreenUIList list, float minX, float minY, float maxX, float maxY,
                          textlayout::TextGeometry &geometry, float r, float g, float b, float a, float alignX,
-                         float alignY, float scale, float rotation, bool mirrorH, bool mirrorV, bool clip);
+                         float alignY, float scale, float rotation, bool mirrorH, bool mirrorV, bool clip,
+                         float opacity = 1.0f);
 
     /**
      * @brief Check if a command list has any draw commands
@@ -463,7 +464,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         float color[4];
         ImVec2 localPos;
         float anchor[3];
-        ImVec2 localOffset;
+        glm::vec3 localOffset{0.0f};
         float policy = 0.0f;
     };
 
@@ -474,6 +475,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         int commandStart = 0;
         int commandEnd = 0;
         glm::mat4 localToWorld{1.0f};
+        std::vector<float> vertexDepths;
         uint32_t layerMask = 0xffffffffu;
         float pivotX = 0.0f;
         float pivotY = 0.0f;

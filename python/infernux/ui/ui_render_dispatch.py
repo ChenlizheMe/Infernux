@@ -547,16 +547,19 @@ def dispatch(elem, backend: str, **kwargs):
 
 def _editor_render_text(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, get_tex_id, **_kw):
     """Render a UIText element in the UI Editor panel."""
-    attrs = extract_common(elem)
+    material_state = material_visual_state(elem)
+    attrs = extract_common(elem, material_state=material_state, material_in_shader=True)
     color = attrs["color"]
     if elem.rich_text or elem.__dict__.get("_text_geometry") is not None:
         align_x, align_y = text_align_to_float(elem.text_align_h, elem.text_align_v)
         ctx.draw_text_geometry(
             base_sx, base_sy, base_sx + base_sw, base_sy + base_sh, elem._resolve_text_geometry(),
-            color[0], color[1], color[2], color[3] * attrs["opacity"], align_x, align_y, zoom,
+            color[0], color[1], color[2], color[3], align_x, align_y, zoom,
             attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"], elem.overflow != TextOverflow.Visible,
+            attrs["opacity"], material_state["color"],
         )
         return
+    color = _multiply_rgba(color, material_state["color"])
     ta = _extract_text_attrs(elem, scale=zoom)
     clip = getattr(elem, "overflow", TextOverflow.Visible) != TextOverflow.Visible
     text_size = max(1.0, ta["font_size"] * zoom)
@@ -641,8 +644,9 @@ def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
         _bind_runtime_material(renderer, ui_list, material_state)
         renderer.add_text_geometry(
             ui_list, sx, sy, sx + sw, sy + sh, elem._resolve_text_geometry(),
-            color[0], color[1], color[2], color[3] * attrs["opacity"], align_x, align_y, text_scale,
+            color[0], color[1], color[2], color[3], align_x, align_y, text_scale,
             attrs["rotation"], attrs["mirror_h"], attrs["mirror_v"], elem.overflow != TextOverflow.Visible,
+            attrs["opacity"],
         )
         return
     ta = _extract_text_attrs(elem, scale=text_scale)

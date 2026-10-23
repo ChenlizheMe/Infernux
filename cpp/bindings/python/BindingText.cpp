@@ -134,8 +134,17 @@ void RegisterTextBindings(py::module_ &module)
         .def_property_readonly(
             "vertex_offsets",
             [](const std::shared_ptr<TextCharacterBuffer> &buffer) { return CharacterView(buffer, 6, {4, 2}); })
-        .def_property_readonly("colors", [](const std::shared_ptr<TextCharacterBuffer> &buffer) {
-            return CharacterView(buffer, 14, {4, 4});
+        .def_property_readonly(
+            "colors",
+            [](const std::shared_ptr<TextCharacterBuffer> &buffer) { return CharacterView(buffer, 14, {4, 4}); })
+        .def_property_readonly(
+            "affine_transforms",
+            [](const std::shared_ptr<TextCharacterBuffer> &buffer) { return CharacterView(buffer, 30, {3, 4}); })
+        .def_property_readonly(
+            "vertex_depth_offsets",
+            [](const std::shared_ptr<TextCharacterBuffer> &buffer) { return CharacterView(buffer, 42, {4}); })
+        .def_property_readonly("color_overrides", [](const std::shared_ptr<TextCharacterBuffer> &buffer) {
+            return CharacterView(buffer, 46, {});
         });
     py::class_<TextGeometry, std::shared_ptr<TextGeometry>>(module, "TextGeometry")
         .def(py::init([](const std::string &text, float fontSize, float wrapWidth, const std::string &fontPath,

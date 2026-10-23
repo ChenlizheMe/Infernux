@@ -167,6 +167,38 @@ int main()
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;
     io.Fonts->AddFontDefault();
     ImGui::NewFrame();
+    {
+        const std::string literal = "中e\xCC\x81<size=200%><br><noparse>A";
+        const std::string source =
+            "<color=#ff000080><noparse>" + literal + "</noparse><size=200%>尾</size><br>末</color>";
+        const auto markup = infernux::text::ParseTextMarkup(source, 18.f);
+        assert(markup.text == literal + "尾\n末");
+        const size_t literalStart = source.find("中");
+        for (size_t byte = 0; byte < literal.size(); ++byte) {
+            assert(markup.sources[byte].start == literalStart + byte);
+            assert(markup.sources[byte].end == literalStart + byte + 1);
+        }
+        const size_t tailStart = source.find("尾");
+        const size_t newline = literal.size() + std::string("尾").size();
+        assert(markup.sources[literal.size()].start == tailStart);
+        assert(source.substr(markup.sources[newline].start,
+                             markup.sources[newline].end - markup.sources[newline].start) == "<br>");
+        infernux::textlayout::TextLayoutParams params{source, "", 18.f};
+        params.richText = true;
+        const auto parsed = infernux::textlayout::LayoutText(params);
+        assert(parsed.displayText == markup.text && parsed.lines.size() == 2);
+        assert(source.substr(parsed.characters[0].startOffset,
+                             parsed.characters[0].endOffset - parsed.characters[0].startOffset) == "中");
+        assert(source.substr(parsed.characters[1].startOffset,
+                             parsed.characters[1].endOffset - parsed.characters[1].startOffset) == "e\xCC\x81");
+        for (const auto &glyph : parsed.glyphs) {
+            assert(glyph.logicalFontSize == (glyph.startOffset == tailStart ? 36.f : 18.f));
+            assert((glyph.color == std::array<float, 4>{1, 0, 0, 128.f / 255.f}));
+        }
+        assert(parsed.glyphs[1].codepoint == 0xE9);
+        const auto unclosed = infernux::text::ParseTextMarkup("<noparse><size=200%>中文<br>", 18.f);
+        assert(unclosed.text == "<size=200%>中文<br>" && unclosed.styles[0].fontSize == 18.f);
+    }
     std::vector<std::string> errors;
     auto &logger = infernux::InxLog::GetInstance();
     const size_t sink =

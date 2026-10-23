@@ -75,7 +75,7 @@ layout(location=1) in vec2 aUV;
 layout(location=2) in vec4 aColor;
 layout(location=3) in vec2 aLocalPosition;
 layout(location=4) in vec3 aAnchor;
-layout(location=5) in vec2 aLocalOffset;
+layout(location=5) in vec3 aLocalOffset;
 layout(location=6) in float aPolicy;
 ''' + WORLD_PUSH_CONSTANTS + '''
 layout(location=0) out vec4 outColor;
@@ -86,7 +86,8 @@ void main() {
     if (policy != 0) {
         vec3 offset = aPosition - aAnchor;
         if ((policy & 1) != 0)
-            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y;
+            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
+                     cross(pc.cameraRight.xyz, pc.cameraUp.xyz) * aLocalOffset.z;
         if ((policy & 2) != 0) {
             float clipW = (pc.viewProjection * vec4(aAnchor, 1.0)).w;
             offset *= max(clipW, 0.0) * pc.screenScale.x * 100.0;

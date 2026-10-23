@@ -1,7 +1,9 @@
 #include <SDL3/SDL.h>
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/VkShaderCache.h>
+#include <function/renderer/gui/InxGUIContext.h>
 #include <function/renderer/gui/InxScreenUIRenderer.h>
+#include <function/renderer/gui/InxTextGeometry.h>
 #include <function/renderer/gui/InxTextLayout.h>
 #include <function/renderer/gui/UIMaterialTextureResolver.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
@@ -58,7 +60,7 @@ layout(location=1) in vec2 aUV;
 layout(location=2) in vec4 aColor;
 layout(location=3) in vec2 aLocalPosition;
 layout(location=4) in vec3 aAnchor;
-layout(location=5) in vec2 aLocalOffset;
+layout(location=5) in vec3 aLocalOffset;
 layout(location=6) in float aPolicy;
 layout(push_constant) uniform WorldUIConstants {
     mat4 viewProjection;
@@ -76,6 +78,7 @@ void main() {
     vec3 position = aPosition;
     if (aPolicy > 0.5)
         position = aAnchor + pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
+                   cross(pc.cameraRight.xyz, pc.cameraUp.xyz) * aLocalOffset.z +
                    vec3(aLocalPosition * pc.screenScale, 0.0);
     gl_Position = pc.viewProjection * vec4(position, 1.0);
     outColor = aColor;
@@ -366,6 +369,144 @@ void main() {
     return artifact;
 }
 
+static void CheckTextAffineGeometry()
+{
+    using namespace textlayout;
+    TextGeometry geometry({"q\xCC\x81", "", 18.f});
+    const auto layout = geometry.GetLayout();
+    assert(layout->characters.size() == 1 && layout->glyphs.size() == 2);
+    ImDrawList draw(ImGui::GetDrawListSharedData());
+    const auto snapshot = [&](bool clip = false, float right = 70.f, ImVec4 color = {1, 1, 1, 1}, float opacity = 1.f) {
+        draw._ResetForNewFrame();
+        draw.PushClipRectFullScreen();
+        draw.PushTextureID(ImGui::GetIO().Fonts->TexRef);
+        draw.AddRectFilled(ImVec2(-100, -100), ImVec2(-90, -90), IM_COL32_WHITE);
+        const int start = draw.VtxBuffer.Size;
+        std::vector<float> depths;
+        geometry.Prepare(1.f);
+        geometry.Render(draw, 10, 10, right, 70, color, 0, 0, 1, 0, false, false, true, clip, &depths, start, opacity);
+        return std::make_pair(std::vector<ImDrawVert>(draw.VtxBuffer.begin() + start, draw.VtxBuffer.end()),
+                              std::move(depths));
+    };
+    const auto baseline = snapshot();
+    assert(baseline.first.size() == 8 && baseline.second.size() == 8);
+    const auto &bounds = layout->characters[0].bounds;
+    const ImVec2 center(10 + (bounds[0] + bounds[2]) * .5f, 10 - layout->inkMinY + (bounds[1] + bounds[3]) * .5f);
+    auto manual = geometry.CreateCharacterBuffer();
+    auto effects = geometry.CreateCharacterBuffer();
+    auto appearance = geometry.CreateCharacterBuffer();
+    constexpr float diagonal = .70710678f;
+    const std::array<float, 12> affine{.5f, .5f, diagonal, 2, .5f, .5f, -diagonal, -3, -diagonal, diagonal, 0, 5};
+    std::copy(affine.begin(), affine.end(), manual->GetData() + 30);
+    manual->GetData()[0] = 3;
+    manual->GetData()[1] = -2;
+    const std::array<float, 4> cornerDepths{1, 4, -2, 6};
+    std::copy(cornerDepths.begin(), cornerDepths.end(), manual->GetData() + 42);
+    effects->GetData()[2] = 90;
+    effects->GetData()[0] = 7;
+    effects->GetData()[1] = 4;
+    effects->GetData()[40] = 2;
+    appearance->GetData()[1] = 2;
+    std::reverse_copy(cornerDepths.begin(), cornerDepths.end(), appearance->GetData() + 42);
+    geometry.SetCharacterData(manual, TextGeometryLayer::Manual);
+    geometry.SetCharacterData(effects, TextGeometryLayer::Effects);
+    geometry.SetCharacterData(appearance, TextGeometryLayer::Appearance);
+    const auto transformed = snapshot();
+    assert(transformed.first.size() == baseline.first.size());
+    for (size_t index = 0; index < baseline.first.size(); ++index) {
+        const float x = baseline.first[index].pos.x - center.x + 3;
+        const float y = baseline.first[index].pos.y - center.y - 2;
+        const float z = cornerDepths[index % 4];
+        const float manualX = .5f * x + .5f * y + 2;
+        const float manualY = .5f * x + .5f * y - 3;
+        assert(std::abs(transformed.first[index].pos.x - (center.x - manualY + 7)) < .001f);
+        assert(std::abs(transformed.first[index].pos.y - (center.y + manualX + 6)) < .001f);
+        const float expectedDepth = 2 * (-diagonal * x + diagonal * y + 5 + z) + cornerDepths[3 - index % 4];
+        assert(std::abs(transformed.second[index] - expectedDepth) < .001f);
+    }
+    geometry.ResetCharacterData();
+    const auto reset = snapshot();
+    for (size_t index = 0; index < baseline.first.size(); ++index) {
+        assert(reset.first[index].pos.x == baseline.first[index].pos.x);
+        assert(reset.first[index].pos.y == baseline.first[index].pos.y && reset.second[index] == 0);
+    }
+    manual->Reset();
+    manual->GetData()[38] = .25f;
+    manual->GetData()[39] = .5f;
+    manual->GetData()[41] = 3;
+    geometry.SetCharacterData(manual, TextGeometryLayer::Manual);
+    const float right = (baseline.first[0].pos.x + baseline.first[1].pos.x) * .5f;
+    const auto clipped = snapshot(true, right);
+    assert(!clipped.first.empty() && clipped.first.size() == clipped.second.size());
+    for (size_t index = 0; index < clipped.first.size(); ++index) {
+        const auto &position = clipped.first[index].pos;
+        assert(position.x >= 10 - .001f && position.x <= right + .001f);
+        const float expectedDepth = .25f * (position.x - center.x) + .5f * (position.y - center.y) + 3;
+        assert(std::abs(clipped.second[index] - expectedDepth) < .001f);
+    }
+
+    geometry.SetLayout(
+        {"<color=#ff000080>q</color><color=#0000ff40>\xCC\x81</color>", "", 18.f, 0.f, 1.2f, 0.f, {}, true});
+    const auto styledLayout = geometry.GetLayout();
+    assert(styledLayout->characters.size() == 1 && styledLayout->glyphs.size() == 2);
+    manual = geometry.CreateCharacterBuffer();
+    effects = geometry.CreateCharacterBuffer();
+    appearance = geometry.CreateCharacterBuffer();
+    const std::array<float, 4> absoluteColor{.2f, 1.f, .4f, .8f};
+    const std::array<float, 4> effectColor{.5f, .5f, 1.f, .5f};
+    const std::array<float, 4> appearanceColor{1.f, .5f, .5f, .5f};
+    for (size_t corner = 0; corner < 4; ++corner) {
+        std::copy(absoluteColor.begin(), absoluteColor.end(), manual->GetData() + 14 + corner * 4);
+        std::copy(effectColor.begin(), effectColor.end(), effects->GetData() + 14 + corner * 4);
+        std::copy(appearanceColor.begin(), appearanceColor.end(), appearance->GetData() + 14 + corner * 4);
+    }
+    effects->GetData()[46] = appearance->GetData()[46] = 3;
+    geometry.SetCharacterData(effects, TextGeometryLayer::Effects);
+    geometry.SetCharacterData(appearance, TextGeometryLayer::Appearance);
+    const auto checkColor = [](ImU32 packed, ImVec4 expected) {
+        const auto actual = ImGui::ColorConvertU32ToFloat4(packed);
+        assert(std::abs(actual.x - expected.x) <= 1.f / 255);
+        assert(std::abs(actual.y - expected.y) <= 1.f / 255);
+        assert(std::abs(actual.z - expected.z) <= 1.f / 255);
+        assert(std::abs(actual.w - expected.w) <= 1.f / 255);
+    };
+    manual->GetData()[46] = 3;
+    geometry.SetCharacterData(manual, TextGeometryLayer::Manual);
+    const auto absolute = snapshot(false, 70, {7, 0, 0, 0}, .5f);
+    assert(absolute.first.size() == 8);
+    for (const auto &vertex : absolute.first)
+        checkColor(vertex.col, {.1f, .25f, .2f, .1f});
+    ImGui::Begin("Character color preview");
+    auto *previewDraw = ImGui::GetWindowDrawList();
+    const int previewStart = previewDraw->VtxBuffer.Size;
+    InxGUIContext preview;
+    preview.DrawTextGeometry(10, 10, 70, 70, geometry, 7, 0, 0, 0, 0, 0, 1, 0, false, false, false, .5f,
+                             {.5f, .8f, .25f, .5f});
+    assert(previewDraw->VtxBuffer.Size - previewStart == 8);
+    for (int index = previewStart; index < previewDraw->VtxBuffer.Size; ++index)
+        checkColor(previewDraw->VtxBuffer[index].col, {.05f, .2f, .05f, .05f});
+    ImGui::End();
+    manual->GetData()[46] = 2;
+    geometry.SetCharacterData(manual, TextGeometryLayer::Manual);
+    const auto fadeOnly = snapshot(false, 70, {1, 1, 1, 0}, .5f);
+    assert(fadeOnly.first.size() == 8);
+    for (size_t index = 0; index < fadeOnly.first.size(); ++index)
+        checkColor(fadeOnly.first[index].col, index < 4 ? ImVec4(.5f, 0, 0, .1f) : ImVec4(0, 0, .5f, .1f));
+    manual->GetData()[46] = 1;
+    geometry.SetCharacterData(manual, TextGeometryLayer::Manual);
+    const auto rgbOnly = snapshot(false, 70, {1, 1, 1, .8f}, .5f);
+    assert(rgbOnly.first.size() == 8);
+    for (size_t index = 0; index < rgbOnly.first.size(); ++index)
+        checkColor(rgbOnly.first[index].col, {.1f, .25f, .2f, .1f * styledLayout->glyphs[index / 4].color[3]});
+    geometry.ResetCharacterData(static_cast<int>(TextGeometryLayer::Manual));
+    const auto resetColor = snapshot();
+    assert(resetColor.first.size() == 8);
+    for (size_t index = 0; index < resetColor.first.size(); ++index) {
+        const float alpha = styledLayout->glyphs[index / 4].color[3] * .25f;
+        checkColor(resetColor.first[index].col, index < 4 ? ImVec4(.5f, 0, 0, alpha) : ImVec4(0, 0, .5f, alpha));
+    }
+}
+
 int main(int argc, char **argv)
 {
     assert(SDL_Init(SDL_INIT_VIDEO));
@@ -468,6 +609,7 @@ int main(int argc, char **argv)
     assert(io.Fonts->Build());
     io.Fonts->SetTexID(static_cast<ImTextureID>(reinterpret_cast<uintptr_t>(device.Resolve(group))));
     ImGui::NewFrame();
+    CheckTextAffineGeometry();
     {
         ImDrawList rounded(ImGui::GetDrawListSharedData());
         rounded.PathRect(ImVec2(0, 0), ImVec2(2000, 2000), 1000);
@@ -999,6 +1141,54 @@ int main(int argc, char **argv)
         buildGraph();
         assert(cameraPolicyBounds(2.f, true, true, true) == cameraPolicyBounds(4.f, true, true, true));
         cameraProjection = camera = glm::mat4(1.f);
+        buildGraph();
+
+        textlayout::TextGeometry worldText({"F", "", 32.f});
+        auto worldCharacters = worldText.CreateCharacterBuffer();
+        const auto worldTextPacket = [&](bool billboard, float depth) {
+            worldCharacters->GetData()[41] = depth;
+            worldText.SetCharacterData(worldCharacters, textlayout::TextGeometryLayer::Manual);
+            renderer.BeginFrame(128, 128);
+            renderer.BeginCommandPacket();
+            renderer.BeginWorldElement(topMatrix, 20, 20);
+            renderer.AddFilledRect(list, 500, 500, 510, 510, 1, 1, 1, 1);
+            renderer.EndWorldElement();
+            renderer.BeginWorldElement(topMatrix, 20, 20, 0xffffffffu, false, billboard);
+            renderer.AddTextGeometry(list, 0, 0, 40, 40, worldText, 1, 1, 1, 1, 0, 0, 1, 0, false, false, false);
+            renderer.EndWorldElement();
+            return renderer.EndCommandPacket();
+        };
+        const auto readWorldText = [&] {
+            frame();
+            std::vector<uint8_t> image(128 * 128 * 4);
+            assert(device.ReadBuffer(output, 0, image.data(), image.size()));
+            return worldBounds(image);
+        };
+        clearDepth = .7f;
+        buildGraph();
+        for (bool billboard : {false, true}) {
+            const auto visible = worldTextPacket(billboard, 0);
+            renderer.AppendCommandPackets({visible});
+            const auto nearText = readWorldText();
+            assert(nearText[2] >= nearText[0]);
+            const auto behind = worldTextPacket(billboard, 40);
+            renderer.AppendCommandPackets({behind});
+            const auto farText = readWorldText();
+            assert(farText[2] < farText[0]);
+            renderer.BeginFrame(128, 128);
+            renderer.AppendCommandPackets({behind});
+            assert(readWorldText() == farText);
+            if (billboard) {
+                // The same retained geometry must follow the camera's depth
+                // axis without rebuilding or projecting the glyphs on the CPU.
+                billboardView = glm::rotate(glm::mat4(1.f), glm::radians(180.f), glm::vec3(0, 1, 0));
+                const auto reverseFacing = readWorldText();
+                assert(reverseFacing[2] >= reverseFacing[0]);
+                billboardView = glm::mat4(1.f);
+                assert(readWorldText() == farText);
+            }
+        }
+        clearDepth = 1.f;
         buildGraph();
 
         // A retained UI packet carries an asset identity contract alongside

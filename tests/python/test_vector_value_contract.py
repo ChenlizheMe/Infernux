@@ -1,10 +1,8 @@
 """Mutable vector value semantics and the public axis-bearing angle API."""
 
-from collections.abc import Hashable
-
 import pytest
 
-from infernux import Vector2, Vector3, vec4f, vector3
+from infernux import Vector3, quatf, vector3
 
 
 @pytest.mark.parametrize(
@@ -42,3 +40,21 @@ def test_angles_are_invariant_under_finite_vector_scaling(scale, sign):
     a, b, axis = Vector3(scale, 0, 0), Vector3(0, scale, 0), Vector3(0, 0, sign * scale)
     assert Vector3.angle(a, b) == pytest.approx(90.0)
     assert Vector3.signed_angle(a, b, axis) == pytest.approx(sign * 90.0)
+
+
+def test_quaternion_look_rotation_and_shortest_arc_include_degenerate_up():
+    identity = quatf.identity()
+    assert tuple(quatf()) == (0, 0, 0, 0)
+    assert quatf.angle(quatf.look_rotation(Vector3(0, 0, 0)), identity) == 0
+    for direction, up, expected in (
+        (Vector3(0, 0, 1), Vector3(0, 10, 0), identity),
+        (Vector3(0, 1, 0), Vector3(0, 1, 0), quatf.euler(-90, 0, 0)),
+        (Vector3(0, -1, 0), Vector3(0, 0, 0), quatf.euler(90, 0, 0)),
+        (Vector3(1, 0, 0), Vector3(0, 1, 0), quatf.euler(0, 90, 0)),
+    ):
+        actual = quatf.look_rotation(direction, up)
+        assert quatf.dot(actual, actual) == pytest.approx(1, abs=1e-6)
+        assert quatf.angle(actual, expected) < 0.05
+        opposite = quatf(-actual.x, -actual.y, -actual.z, -actual.w)
+        assert quatf.angle(actual, opposite) == 0
+        assert quatf.angle(quatf.rotate_towards(actual, opposite, 10), actual) == 0

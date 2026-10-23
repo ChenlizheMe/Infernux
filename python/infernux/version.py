@@ -1,7 +1,7 @@
 """Single runtime-visible Infernux release identity."""
 
 ENGINE_VERSION = "0.4.3"
-ENGINE_BUILD_NUMBER = 3
+ENGINE_BUILD_NUMBER = 4
 # Project pins and compiled Player payloads identify a release, including its
 # wheel revision. Package dependency specifiers continue to use ENGINE_VERSION.
 ENGINE_RELEASE = (

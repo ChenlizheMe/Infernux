@@ -485,7 +485,7 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
         if (world) {
             requireIO(reflection.GetInputs(), 3, VK_FORMAT_R32G32_SFLOAT, "input");
             requireIO(reflection.GetInputs(), 4, VK_FORMAT_R32G32B32_SFLOAT, "input");
-            requireIO(reflection.GetInputs(), 5, VK_FORMAT_R32G32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 5, VK_FORMAT_R32G32B32_SFLOAT, "input");
             requireIO(reflection.GetInputs(), 6, VK_FORMAT_R32_SFLOAT, "input");
         }
         requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
