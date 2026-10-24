@@ -1,6 +1,12 @@
 // Source of upload.infernux-engine.com (existing Worker: infernux-r2-upload-040).
 // Explicit release destinations; keep published versions available. Secrets are bindings.
 const ALLOWED_KEYS = new Set([
+  "plugins/infernux.platform-windows/0.2.19/infernux.platform-windows.inxpkg",
+  "plugins/infernux.platform-linux/0.2.18/infernux.platform-linux.inxpkg",
+  "plugins/infernux.platform-android/0.2.19/infernux.platform-android.inxpkg",
+  "plugins/infernux.platform-windows/0.2.18/infernux.platform-windows.inxpkg",
+  "plugins/infernux.platform-linux/0.2.17/infernux.platform-linux.inxpkg",
+  "plugins/infernux.platform-android/0.2.18/infernux.platform-android.inxpkg",
   "plugins/infernux.platform-windows/0.2.17/infernux.platform-windows.inxpkg",
   "plugins/infernux.platform-linux/0.2.16/infernux.platform-linux.inxpkg",
   "plugins/infernux.platform-linux/0.2.15/infernux.platform-linux.inxpkg",
@@ -101,6 +107,12 @@ const ALLOWED_KEYS = new Set([
   "hub/0.4.0/build-2/InfernuxHubInstaller-0.4.0-windows-x64.exe"
 ]);
 const RELEASE_SOURCES = new Map([
+  ["plugins/infernux.platform-windows/0.2.19/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.19/infernux.platform-windows.inxpkg"],
+  ["plugins/infernux.platform-linux/0.2.18/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.18/infernux.platform-linux.inxpkg"],
+  ["plugins/infernux.platform-android/0.2.19/infernux.platform-android.inxpkg", "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.19/infernux.platform-android.inxpkg"],
+  ["plugins/infernux.platform-windows/0.2.18/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.18/infernux.platform-windows.inxpkg"],
+  ["plugins/infernux.platform-linux/0.2.17/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.17/infernux.platform-linux.inxpkg"],
+  ["plugins/infernux.platform-android/0.2.18/infernux.platform-android.inxpkg", "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.18/infernux.platform-android.inxpkg"],
   ["plugins/infernux.platform-windows/0.2.17/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.17/infernux.platform-windows.inxpkg"],
   ["plugins/infernux.platform-linux/0.2.16/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.16/infernux.platform-linux.inxpkg"],
   ["plugins/infernux.platform-linux/0.2.15/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.15/infernux.platform-linux.inxpkg"],
