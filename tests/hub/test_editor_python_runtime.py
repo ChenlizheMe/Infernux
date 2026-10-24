@@ -12,6 +12,31 @@ from PySide6.QtWidgets import QApplication
 from splash_screen import EngineSplashScreen
 
 
+def test_failed_launch_preserves_complete_stderr_and_exit_code(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    splash = EngineSplashScreen('', 'Failed startup')
+    failures = []
+    monkeypatch.setattr(splash, '_show_failure', lambda title, detail: failures.append(detail))
+    script = (
+        "import sys; sys.stderr.write('startup diagnostics\\n' + 'x' * 9000 + "
+        "'\\nRuntimeError: final-cause-marker\\n'); sys.exit(23)"
+    )
+    try:
+        splash.launch(sys.executable, script, str(tmp_path))
+        splash._poll_timer.stop()
+        splash._stderr_thread.join(15)
+        assert not splash._stderr_thread.is_alive()
+        splash._poll_launch_state()
+        assert len(failures) == 1
+        assert 'startup diagnostics' in failures[0]
+        assert 'RuntimeError: final-cause-marker' in failures[0]
+        assert 'Raw exit code: 23' in failures[0]
+    finally:
+        splash._stop_process()
+        splash._spin_timer.stop()
+        splash.close()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows managed editor process contract")
 @pytest.mark.parametrize("long_home", [False, True])
 def test_managed_host_uses_private_imports_and_child_interpreter(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import py_compile
 import sys
 from types import SimpleNamespace
 
@@ -23,12 +24,12 @@ from test_inxpackage_plugins import (
 )
 
 
-def test_package_preload_supports_relative_imports(tmp_path):
+def test_package_preload_relative_imports_refresh_changed_helpers(tmp_path):
     source = _source(tmp_path / "source", "vendor/relative-preload")
     package_module = source / "editor" / "infernux_relative_preload"
     package_module.mkdir(parents=True)
     (package_module / "__init__.py").write_text("", encoding="utf-8")
-    (package_module / "service.py").write_text("VALUE = 'relative-import-ready'\n", encoding="utf-8")
+    (package_module / "service.py").write_text("VALUE = 'first'\n", encoding="utf-8")
     (package_module / "lifecycle.py").write_text(
         "from pathlib import Path\n"
         "from infernux.lifecycle import InxPreload\n"
@@ -46,7 +47,25 @@ def test_package_preload_supports_relative_imports(tmp_path):
 
     assert state.loaded
     assert state.error == ""
-    assert (project / "relative-preload.txt").read_text(encoding="utf-8") == ("relative-import-ready")
+    result = project / "relative-preload.txt"
+    helper = project / "Packages/vendor/relative-preload/editor/infernux_relative_preload/service.py"
+    assert result.read_text(encoding="utf-8") == "first"
+    second = helper.stat().st_mtime_ns // 1_000_000_000
+    reloads = (
+        lambda: manager.preloads.reload_path(str(helper)),
+        lambda: manager.reload("vendor/relative-preload"),
+        manager.preloads.reload_all,
+    )
+    for index, (value, reload) in enumerate(zip(("other", "third", "final"), reloads), 1):
+        cache = Path(py_compile.compile(str(helper), doraise=True))
+        helper.write_text(f"VALUE = '{value}'\n", encoding="utf-8")
+        os.utime(helper, ns=(second * 1_000_000_000 + index * 100_000_000,) * 2)
+        reload()
+        assert result.read_text(encoding="utf-8") == value
+        cache_bytes = cache.read_bytes() if cache.exists() else None
+        manager.reload("vendor/relative-preload")
+        assert result.read_text(encoding="utf-8") == value
+        assert (cache.read_bytes() if cache.exists() else None) == cache_bytes
 
 
 def test_editor_translation_catalog_hot_reload_is_atomic(tmp_path, monkeypatch):

@@ -587,14 +587,14 @@ class EngineSplashScreen(QWidget):
                     logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
                     pass
 
-        if self._process is not None and self._process.poll() is not None:
-            stderr_text = b"".join(
-                getattr(self, '_stderr_chunks', [])
-            ).decode("utf-8", errors="replace").strip()
+        if (self._process is not None and self._process.poll() is not None
+                and not self._stderr_thread.is_alive()):
+            stderr_text = b"".join(self._stderr_chunks).decode("utf-8", errors="replace").strip()
             if stderr_text:
                 detail = (
                     "The engine process exited with an error:\n\n"
-                    f"{stderr_text[:4000]}"
+                    f"{_format_exit_code(self._process.returncode)}\n\n"
+                    f"{stderr_text}"
                 )
             else:
                 detail = (

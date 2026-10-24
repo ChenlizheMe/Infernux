@@ -20,11 +20,20 @@ This hotfix repairs game UI input in the editor and restores control of the Game
 - Add Auto resolution, which follows the Game panel's available area and framebuffer scale. Fixed resolution previews retain their selected dimensions across Play and Stop.
 - Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios.
 - Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking.
+- Keep the renderer running when a UI material references a missing shader. Skip only the affected draw, report it once until the dependency changes, and resume after a successful import.
+- Drain pending asset imports while their plugin modules are still loaded, before unloading plugins and releasing native resources during shutdown.
 - Retire native Player scenes before releasing the asset catalog, so component disable and destroy callbacks can still resolve their font and other asset references during shutdown.
 - Preserve signal handlers owned by embedded native hosts, avoiding an Android exit exception that interrupted normal engine cleanup.
 - Ignore access-time and attribute-only script notifications when the recorded modification time and size are unchanged, preventing needless plugin restarts during Windows Player builds.
+- Reload changed plugin helpers even when equal-size edits share an integer-second timestamp, while retaining unchanged import caches.
+- Report unmatched GUI tree pops before changing layout or ID state, preventing malformed custom panels from leaving errors in subsequent frames.
 - Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views.
 - Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces.
+
+### Hub
+
+- Preserve complete editor startup errors and include the process exit code. Wait for the stderr reader to finish without blocking the Hub, so the final exception is not lost.
+- Give the Show details button the standard visible button border.
 
 ---
 

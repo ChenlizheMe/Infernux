@@ -544,7 +544,15 @@ class PreloadManager:
         if self.runtime and not role_checked and _is_editor_source(path, self.project_root, owner):
             return ()
         if not path.casefold().endswith(".pyc"):
-            return _read_declarations(path, self.project_root)
+            declarations = _read_declarations(path, self.project_root)
+            previous_stamp = self._declaration_stamps.get(path_key(path))
+            if previous_stamp is not None and previous_stamp != _file_stamp(path):
+                # Timestamp pyc headers lose subsecond edits of equal size.
+                try:
+                    os.unlink(importlib.util.cache_from_source(path))
+                except FileNotFoundError:
+                    pass
+            return declarations
         if package_files is None:
             package_files = self._package_file_records()
         record = package_files.get(path_key(path))

@@ -283,6 +283,12 @@ if(INFERNUX_BUILD_TESTS)
     )
     add_test(NAME infernux.editor_gui_frame_scheduler COMMAND infernux_editor_gui_frame_scheduler_tests)
 
+    infernux_add_native_test(infernux_gui_tree_stack_tests tests/native/GuiTreeStackTests.cpp)
+    target_include_directories(infernux_gui_tree_stack_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux)
+    target_link_libraries(infernux_gui_tree_stack_tests PRIVATE imgui)
+    add_test(NAME infernux.gui_tree_stack COMMAND infernux_gui_tree_stack_tests)
+
     infernux_add_native_test(infernux_log_release_policy_tests
         tests/native/InxLogReleasePolicyTests.cpp
         cpp/infernux/core/log/InxLog.cpp

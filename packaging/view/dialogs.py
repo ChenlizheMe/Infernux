@@ -122,8 +122,7 @@ class HubDialog(QDialog):
         if detail:
             column.addSpacing(2)
             self._detail_toggle = QPushButton(tr("Show details"))
-            self._detail_toggle.setObjectName("ghostBtn")
-            self._detail_toggle.setFixedHeight(26)
+            self._detail_toggle.setObjectName("normalBtn")
             self._detail_toggle.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             self._detail_toggle.clicked.connect(self._toggle_detail)
             column.addWidget(self._detail_toggle, 0, Qt.AlignmentFlag.AlignLeft)
