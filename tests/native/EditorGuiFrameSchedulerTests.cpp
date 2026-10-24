@@ -91,6 +91,19 @@ int main()
     }
     assert(editorPlayBuilds >= 7 && editorPlayBuilds <= 8);
 
+    // Continuous semantic capture must not hide physical down/up requests.
+    EditorGuiFrameScheduler capturedInput;
+    assert(capturedInput.Consume(start, true));
+    assert(!capturedInput.Consume(start + 1ms, true));
+    capturedInput.Request();
+    assert(capturedInput.Consume(start + 2ms, true));
+    capturedInput.Request();
+    assert(capturedInput.Consume(start + 3ms, true));
+    assert(!capturedInput.Consume(start + 4ms, true));
+    assert(capturedInput.Consume(start + 17ms, true));
+    assert(!capturedInput.Consume(start + 18ms, true));
+    assert(capturedInput.Inspect(start + 18ms).requestCount == 2);
+
     // Player mode is deliberately unthrottled. This is a separate API path,
     // not a permanently-held editor force flag, so Editor Play can retain the
     // 60 Hz authoring cadence without slowing the exported game.

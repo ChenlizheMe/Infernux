@@ -34,6 +34,8 @@ def is_unchanged_ui_value(instance, name: str, value) -> bool:
     except (AttributeError, KeyError):
         return False
     if isinstance(value, (str, bytes, int, float, bool, type(None), Enum)):
+        if type(previous) in (int, float) and type(value) in (int, float):
+            return previous == value
         return type(previous) is type(value) and previous == value
     # An in-place edit may be written back through the same mutable object.
     if previous is value:

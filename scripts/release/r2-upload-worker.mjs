@@ -1,6 +1,10 @@
 // Source of upload.infernux-engine.com (existing Worker: infernux-r2-upload-040).
 // Explicit release destinations; keep published versions available. Secrets are bindings.
 const ALLOWED_KEYS = new Set([
+  "plugins/infernux.text_animator/0.1.2/infernux.text_animator.inxpkg",
+  "plugins/infernux.text_animator/0.1.2/infernux-plugin-release.json",
+  "plugins/infernux.mcp/0.1.21/infernux.mcp.inxpkg",
+  "plugins/infernux.mcp/0.1.21/infernux-plugin-release.json",
   "plugins/infernux.platform-linux/0.2.13/infernux.platform-linux.inxpkg",
   "plugins/infernux.platform-windows/0.2.14/infernux.platform-windows.inxpkg",
   "plugins/infernux.platform-web/0.2.21/infernux.platform-web.inxpkg",
@@ -85,6 +89,10 @@ const ALLOWED_KEYS = new Set([
   "hub/0.4.0/build-2/InfernuxHubInstaller-0.4.0-windows-x64.exe"
 ]);
 const RELEASE_SOURCES = new Map([
+  ["plugins/infernux.text_animator/0.1.2/infernux.text_animator.inxpkg", "https://github.com/InfernuxEngine/infernux_text_animator/releases/download/v0.1.2/infernux.text_animator.inxpkg"],
+  ["plugins/infernux.text_animator/0.1.2/infernux-plugin-release.json", "https://github.com/InfernuxEngine/infernux_text_animator/releases/download/v0.1.2/infernux-plugin-release.json"],
+  ["plugins/infernux.mcp/0.1.21/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.21/infernux.mcp.inxpkg"],
+  ["plugins/infernux.mcp/0.1.21/infernux-plugin-release.json", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.21/infernux-plugin-release.json"],
   ["plugins/infernux.platform-linux/0.2.13/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.13/infernux.platform-linux.inxpkg"],
   ["plugins/infernux.platform-windows/0.2.14/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.14/infernux.platform-windows.inxpkg"],
   ["plugins/infernux.platform-web/0.2.21/infernux.platform-web.inxpkg", "https://github.com/InfernuxEngine/infernux_web/releases/download/v0.2.21/infernux.platform-web.inxpkg"],

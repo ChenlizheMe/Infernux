@@ -141,6 +141,18 @@ class EditorAutomationHost:
         manager = self._play_mode_manager()
         return self._runtime_status_value(manager)
 
+    def ui_input_state(self) -> dict[str, object]:
+        """Read Game View input routing without generating pointer events."""
+        from infernux.engine.bootstrap import EditorBootstrap
+
+        bootstrap = EditorBootstrap.instance()
+        if bootstrap is None or bootstrap.window_manager is None:
+            raise OperationError("editor.unavailable", "A running graphical Editor session is required.")
+        view = bootstrap.window_manager.get_window_instance("game_view")
+        if view is None:
+            raise OperationError("ui.game_view_unavailable", "Open the Game View to inspect UI input routing.")
+        return view.ui_input_state()
+
     def runtime_transition(self, method: str) -> dict[str, object]:
         manager = self._play_mode_manager()
         result = getattr(manager, str(method))()
@@ -306,6 +318,11 @@ class EditorAutomationHost:
     def renderer_performance_window(self) -> dict[str, object]:
         native = self._native_engine()
         result = dict(native.get_renderer_performance_window())
+        frame = native.renderer_frame_snapshot
+        result["editor_ui"] = {name: frame[name] for name in (
+            "gui_frame", "gui_frame_consume_count", "gui_frame_approved_count",
+            "gui_frame_forced_count", "gui_frame_request_count", "ui_panel_times_ms",
+        )}
         result["resources"] = {
             "resident_mesh_vertex_buffers": int(native.resident_mesh_vertex_buffer_count),
             "pending_mesh_uploads": int(native.pending_mesh_gpu_upload_count),

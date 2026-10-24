@@ -100,6 +100,9 @@ class InxGUISemantics
     /// This remains available when full semantic capture is disabled.
     [[nodiscard]] static std::string GetFocusedWindowId();
 
+    [[nodiscard]] static bool ReceivesPointerAt(uint32_t windowId, float x, float y);
+    [[nodiscard]] static bool ReceivesKeyboard(uint32_t windowId);
+
     /// Visibility of a root editor window in the last fully completed ImGui
     /// frame. nullopt means no frame snapshot has been published yet.
     [[nodiscard]] static std::optional<bool> WasWindowContentPresented(const std::string &windowId);

@@ -15,6 +15,11 @@ def test_performance_observation_includes_texture_publication_and_gpu_residency(
     }
     native = SimpleNamespace(
         get_renderer_performance_window=lambda: window,
+        renderer_frame_snapshot={
+            "gui_frame": 20, "gui_frame_consume_count": 100,
+            "gui_frame_approved_count": 20, "gui_frame_forced_count": 10,
+            "gui_frame_request_count": 50, "ui_panel_times_ms": {"Game": 0.1},
+        },
         resident_mesh_vertex_buffer_count=1,
         pending_mesh_gpu_upload_count=0,
         submitted_mesh_gpu_upload_count=5,
@@ -36,4 +41,5 @@ def test_performance_observation_includes_texture_publication_and_gpu_residency(
     assert observed["resources"]["completed_texture_uploads"] == 3
     assert observed["gpu_residency"] == residency
     assert observed["gpu_residency"] is not residency
+    assert observed["editor_ui"] == native.renderer_frame_snapshot
     assert "resources" not in window  # The native timing result is not modified.

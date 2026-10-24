@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include <function/renderer/gui/InxGUISemantics.h>
 #include <imgui_impl_sdl3.h>
 #include <platform/filesystem/InxPath.h>
 #include <platform/input/InputManager.h>
@@ -509,10 +510,28 @@ void InxView::ProcessEvent()
 bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
 {
     bool hadInputEvent = false;
+    auto &input = InputManager::Instance();
+    const bool mouseButton = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP;
+    const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
+    const bool keyboard =
+        event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT;
+    bool gameInput = true;
+    if (input.IsEditorInputManaged() && !syntheticScreenCoordinates && (mouseButton || wheel || keyboard)) {
+        gameInput = !input.IsEditorMouseCaptureActive() && (!keyboard || !ImGui::GetIO().WantTextInput) &&
+                    !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+        if (gameInput && keyboard) {
+            gameInput = InxGUISemantics::ReceivesKeyboard(input.GetEditorGameWindowId());
+        } else if (gameInput && !input.IsCursorLocked()) {
+            const float x = mouseButton ? event.button.x : input.GetMousePositionX();
+            const float y = mouseButton ? event.button.y : input.GetMousePositionY();
+            gameInput = input.IsInEditorGameInputRect(x, y) &&
+                        InxGUISemantics::ReceivesPointerAt(input.GetEditorGameWindowId(), x, y);
+        }
+    }
     bool forwardToImGui = true;
     // Mouse releases still reach the SDL backend to clear its held-button
     // bookkeeping; captured gameplay presses, motion and scroll are exclusive.
-    if (InputManager::Instance().IsCursorLocked() &&
+    if (input.IsCursorLocked() && gameInput &&
         (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
          event.type == SDL_EVENT_MOUSE_WHEEL))
         forwardToImGui = false;
@@ -567,7 +586,7 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
     }
 
     const auto inputManagerStart = std::chrono::steady_clock::now();
-    InputManager::Instance().ProcessSDLEvent(event);
+    input.ProcessSDLEvent(event, gameInput);
     m_currentInputManagerDispatchMs +=
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inputManagerStart).count();
 
@@ -585,7 +604,12 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
     case SDL_EVENT_MOUSE_BUTTON_UP:
     case SDL_EVENT_MOUSE_WHEEL:
     case SDL_EVENT_KEY_DOWN:
-    case SDL_EVENT_KEY_UP:
+    case SDL_EVENT_KEY_UP: {
+        hadInputEvent = true;
+        if (!gameInput || !input.IsEditorGameInputEvent(event))
+            m_needsImmediateGuiRefresh = true;
+        break;
+    }
     case SDL_EVENT_TEXT_INPUT:
     case SDL_EVENT_FINGER_DOWN:
     case SDL_EVENT_FINGER_MOTION:
@@ -807,7 +831,7 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             hadInputEvent = ProcessOneEvent(positionEvent, true) || hadInputEvent;
         }
         InputManager::Instance().TrackSyntheticEvent(event);
-        hadInputEvent = ProcessOneEvent(event, synthetic.type == SyntheticInputType::MouseMotion) || hadInputEvent;
+        hadInputEvent = ProcessOneEvent(event, true) || hadInputEvent;
         if (synthetic.type == SyntheticInputType::MouseMotion)
             pointerMotionProcessedInBatch = true;
         if (isValidMouseButton && synthetic.pressed) {

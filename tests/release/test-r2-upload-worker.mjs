@@ -26,6 +26,17 @@ for (const manifest of packages) {
   assert.equal(context.releaseSources.get(key), `${manifest.repository}/releases/download/v${manifest.version}/${artifact}`);
   assert.throws(() => context.validateKey(key.replace(`/${manifest.version}/`, "/unpublished/")), /not authorized/);
 }
+for (const [reference, version, repository] of [
+  ["infernux.text_animator", "0.1.2", "infernux_text_animator"],
+  ["infernux.mcp", "0.1.21", "infernux_mcp"],
+]) {
+  for (const filename of [`${reference}.inxpkg`, "infernux-plugin-release.json"]) {
+    const key = `plugins/${reference}/${version}/${filename}`;
+    assert.equal(context.validateKey(key), key);
+    assert.equal(context.releaseSources.get(key), `https://github.com/InfernuxEngine/${repository}/releases/download/v${version}/${filename}`);
+    assert.throws(() => context.validateKey(key.replace(`/${version}/`, "/unpublished/")), /not authorized/);
+  }
+}
 for (const key of [
   "hub/0.4.1/build-1/InfernuxHubInstaller-0.4.1-linux-x64",
   "hub/0.4.1/build-2/InfernuxHubInstaller-0.4.1-2-linux-x64",

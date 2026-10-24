@@ -82,7 +82,10 @@ class GameViewPanel(EditorPanel):
         ("3840\u00d72160", 3840, 2160),
         ("1080\u00d71920 Portrait", 1080, 1920),
         ("Custom", 1920, 1080),
+        ("Auto", 0, 0),
     ]
+    _CUSTOM_RESOLUTION_INDEX = 5
+    _AUTO_RESOLUTION_INDEX = 6
     _PRESET_NAMES = [p[0] for p in _RESOLUTION_PRESETS]
     
     def __init__(self, title: str = "Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None):
@@ -119,11 +122,15 @@ class GameViewPanel(EditorPanel):
         self._ui_event_processor = UIEventProcessor()
         self._mouse_event_dispatcher = MouseEventDispatcher()
         self._input_scene_token = None
+        self._ui_input_frame = -1
+        self._ui_pointer_position = None
+        self._ui_input_time = None
 
         # Game resolution selection (Unity-like)
         self._selected_resolution_idx = 0
         self._custom_width = 1920
         self._custom_height = 1080
+        self._auto_resolution = (0, 0)
         self._display_scale = 0.5
         self._fit_mode = True            # When True, scale auto-adjusts to fill area
         self._settings_loaded = False
@@ -245,10 +252,17 @@ class GameViewPanel(EditorPanel):
 
     def _apply_view_state(self, state, *, persist: bool = True):
         preset, width, height, scale, fit_mode = state
+        previous_preset = self._selected_resolution_idx
         self._selected_resolution_idx = max(
             0,
             min(len(self._RESOLUTION_PRESETS) - 1, int(preset)),
         )
+        if (
+            self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX
+            and previous_preset != self._AUTO_RESOLUTION_INDEX
+        ):
+            self._auto_resolution = (0, 0)
+            self._last_game_width = self._last_game_height = 0
         self._custom_width = max(64, min(8192, int(width)))
         self._custom_height = max(64, min(8192, int(height)))
         self._display_scale = max(0.1, min(2.0, round(float(scale), 3)))
@@ -322,17 +336,18 @@ class GameViewPanel(EditorPanel):
 
     def _set_resolution_preset(self, preset_index: int) -> bool:
         before = self._capture_view_state()
-        self._selected_resolution_idx = max(
-            0,
-            min(len(self._RESOLUTION_PRESETS) - 1, int(preset_index)),
+        fit_mode = preset_index == self._AUTO_RESOLUTION_INDEX or before[4]
+        self._apply_view_state(
+            (preset_index, *before[1:4], fit_mode),
+            persist=False,
         )
         return self._commit_view_state(before, "Change Game View Resolution")
 
     def _current_target_resolution(self):
-        if self._render_output["width"]:
-            return self._render_output["width"], self._render_output["height"]
+        if self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX:
+            return self._auto_resolution
         _, w, h = self._RESOLUTION_PRESETS[self._selected_resolution_idx]
-        if self._selected_resolution_idx == len(self._RESOLUTION_PRESETS) - 1:
+        if self._selected_resolution_idx == self._CUSTOM_RESOLUTION_INDEX:
             return max(64, int(self._custom_width)), max(64, int(self._custom_height))
         return int(w), int(h)
 
@@ -341,10 +356,51 @@ class GameViewPanel(EditorPanel):
         """Published Game render pixels, independent of editor display zoom."""
         return self._last_game_width, self._last_game_height
 
+    def ui_input_state(self) -> dict[str, object]:
+        """Read current input layers and the last UI transition without dispatch."""
+        native = _NativeInputManager.instance()
+        mouse = [{
+            "button": button,
+            "raw": list(native.get_mouse_frame_state(button)),
+            "owned": list(native.get_game_mouse_frame_state(button)),
+            "game": list(Input.get_game_mouse_frame_state(button)),
+        } for button in range(3)]
+        origin = Input._game_viewport_origin
+        viewport_size = Input.game_viewport_size
+        target_size = self.render_target_size
+        pixel_scale = tuple(target_size[axis] / viewport_size[axis] for axis in range(2)) if all(viewport_size) else None
+        return {
+            "frame_index": int(native.frame_index),
+            "game_focused": Input.is_game_focused(),
+            "accepts_game_input": Input._accepts_game_input(),
+            "active_view": ClosablePanel.get_active_view_id(),
+            "cursor_locked": Input.is_cursor_locked(),
+            "cursor_capture_allowed": bool(native.is_editor_cursor_capture_allowed),
+            "playing": self._is_playing(),
+            "paused": self._is_paused(),
+            "mouse_frame_fields": ["x", "y", "scroll_x", "scroll_y", "held", "down", "up"],
+            "mouse": mouse,
+            "viewport": {
+                "origin": list(origin),
+                "size": list(viewport_size),
+                "render_target_size": list(target_size),
+                "display_scale": self._display_scale,
+                "raw_position_in_render_target": [
+                    (mouse[0]["raw"][axis] - origin[axis]) * pixel_scale[axis] for axis in range(2)
+                ] if pixel_scale is not None else None,
+                "game_position_in_render_target": [
+                    mouse[0]["game"][axis] * pixel_scale[axis] for axis in range(2)
+                ] if pixel_scale is not None else None,
+            },
+            "last_ui_transition": self._ui_event_processor.debug_state(),
+        }
+
     def prepare_render_target(self):
         """Publish Game pixels before scene lifecycle, even when this tab is hidden."""
         self._load_resolution_settings()
         width, height = self._current_target_resolution()
+        if width <= 0 or height <= 0:
+            return
         self._resize_game_target(width, height)
         self._last_game_width, self._last_game_height = width, height
 
@@ -395,6 +451,7 @@ class GameViewPanel(EditorPanel):
         # Runtime caches must always start from a cold state after open.
         self._last_game_width = 0
         self._last_game_height = 0
+        self._auto_resolution = (0, 0)
         self._game_camera_was_enabled = False
         self._invalidate_ui_scene_cache()
 
@@ -425,6 +482,8 @@ class GameViewPanel(EditorPanel):
         self._ui_event_processor.discard()
         self._mouse_event_dispatcher.discard()
         self._input_scene_token = scene_token
+        self._ui_pointer_position = None
+        self._ui_input_time = None
 
     def _on_not_visible(self, ctx):
         self._commit_pending_view_edits()
@@ -542,16 +601,13 @@ class GameViewPanel(EditorPanel):
 
     def _render_resolution_toolbar(self, ctx, dpi: float):
         """Resolution preset combo and optional custom width/height inputs."""
-        if self._render_output["width"]:
-            ctx.label(f'{self._render_output["width"]}\u00d7{self._render_output["height"]}')
-            return
         old_idx = self._selected_resolution_idx
         ctx.set_next_item_width(140.0 * dpi)
         selected_idx = ctx.combo("##Resolution", old_idx, self._PRESET_NAMES, -1)
         if selected_idx != old_idx:
             self._set_resolution_preset(selected_idx)
 
-        if self._selected_resolution_idx == len(self._RESOLUTION_PRESETS) - 1:
+        if self._selected_resolution_idx == self._CUSTOM_RESOLUTION_INDEX:
             ctx.same_line(0, 8.0 * dpi)
             width_before = self._capture_view_state()
             ctx.set_next_item_width(56.0 * dpi)
@@ -586,9 +642,15 @@ class GameViewPanel(EditorPanel):
 
         Returns ``(target_w, target_h, fit_scale)``.
         """
+        target_w, target_h = self._current_target_resolution()
+        if self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX:
+            ctx.same_line(0, 12.0 * dpi)
+            ctx.label(f"{target_w}\u00d7{target_h}" if target_w > 0 and target_h > 0 else "\u2014")
+            self._fps_toolbar_hidden = False
+            return target_w, target_h, 1.0
+
         avail_width = ctx.get_content_region_avail_width()
         avail_height = ctx.get_content_region_avail_height()
-        target_w, target_h = self._current_target_resolution()
 
         fit_scale = 1.0
         if target_w > 0 and target_h > 0 and avail_width > 0 and avail_height > 0:
@@ -758,24 +820,16 @@ class GameViewPanel(EditorPanel):
 
     def _render_game_viewport(self, ctx, target_w, target_h, fit_scale):
         """Render the game texture, screen UI, and route input events."""
+        auto_resolution = self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX
         # Recompute fit after the toolbar row has consumed layout height.
         viewport_avail_width = ctx.get_content_region_avail_width()
         viewport_avail_height = ctx.get_content_region_avail_height()
-        if self._fit_mode and target_w > 0 and target_h > 0 and viewport_avail_width > 0 and viewport_avail_height > 0:
+        if not auto_resolution and self._fit_mode and target_w > 0 and target_h > 0 and viewport_avail_width > 0 and viewport_avail_height > 0:
             fit_scale = min(viewport_avail_width / float(target_w), viewport_avail_height / float(target_h))
             self._display_scale = max(0.01, fit_scale)
 
         draw_w = float(target_w) * self._display_scale
         draw_h = float(target_h) * self._display_scale
-
-        if target_w != self._last_game_width or target_h != self._last_game_height:
-            self._resize_game_target(target_w, target_h)
-            self._last_game_width = target_w
-            self._last_game_height = target_h
-
-        # Native camera discovery is retained by scene revisions; it also owns
-        # target readiness and descriptor replacement after resize.
-        game_texture_id = self._engine.get_game_texture_id()
 
         viewport_clicked = False
 
@@ -783,7 +837,17 @@ class GameViewPanel(EditorPanel):
             avail_width = ctx.get_content_region_avail_width()
             avail_height = ctx.get_content_region_avail_height()
 
-            if self._fit_mode and target_w > 0 and target_h > 0 and avail_width > 0 and avail_height > 0:
+            if auto_resolution:
+                screen = _NativeInputManager.instance().screen_state
+                if avail_width <= 0 or avail_height <= 0:
+                    ctx.end_child()
+                    return
+                target_w = max(1, round(avail_width * screen.framebuffer_width / screen.logical_width))
+                target_h = max(1, round(avail_height * screen.framebuffer_height / screen.logical_height))
+                self._auto_resolution = (target_w, target_h)
+                draw_w, draw_h = avail_width, avail_height
+                self._display_scale = min(draw_w / target_w, draw_h / target_h)
+            elif self._fit_mode and target_w > 0 and target_h > 0 and avail_width > 0 and avail_height > 0:
                 # Leave a tiny epsilon so float rounding does not create a child scrollbar.
                 fit_region_w = max(0.0, avail_width - 1.0)
                 fit_region_h = max(0.0, avail_height - 1.0)
@@ -792,6 +856,11 @@ class GameViewPanel(EditorPanel):
                     point_filter=self._render_output["filter"] == "nearest",
                 )
                 self._display_scale = max(0.01, min(draw_w / float(target_w), draw_h / float(target_h)))
+
+            if target_w != self._last_game_width or target_h != self._last_game_height:
+                self._resize_game_target(target_w, target_h)
+                self._last_game_width, self._last_game_height = target_w, target_h
+            game_texture_id = self._engine.get_game_texture_id()
 
             cursor_start_x = ctx.get_cursor_pos_x()
             cursor_start_y = ctx.get_cursor_pos_y()
@@ -840,7 +909,8 @@ class GameViewPanel(EditorPanel):
                 ctx.label("  " + t("game_view.create_camera_hint_2"))
         ctx.end_child()
 
-        self._route_game_input(ctx, target_w, target_h, viewport_clicked)
+        if target_w > 0 and target_h > 0:
+            self._route_game_input(ctx, target_w, target_h, viewport_clicked)
 
     # ------------------------------------------------------------------
     # Screen-space UI overlay
@@ -975,8 +1045,30 @@ class GameViewPanel(EditorPanel):
     # UI event processing
     # ------------------------------------------------------------------
 
-    def _process_ui_events(self, game_w: int, game_h: int, canvases=None):
+    def process_runtime_input(self):
+        """Dispatch game pointer transitions without rebuilding editor panels."""
+        if not self._game_camera_was_enabled or not should_process_game_ui_events(
+            is_playing=self._is_playing() and not self._is_paused(),
+            panel_focused=ClosablePanel.get_active_view_id() == self.window_id,
+            cursor_locked=Input.is_cursor_locked(),
+        ):
+            return
+        frames = tuple(Input.get_game_mouse_frame_state(button) for button in range(3))
+        primary = frames[0]
+        changed = any(frame[5] or frame[6] for frame in frames) or any(primary[2:4])
+        dragging = any(frame[4] for frame in frames) and primary[:2] != self._ui_pointer_position
+        if changed or dragging:
+            self._process_ui_events(*self.render_target_size, mouse_frames=frames)
+
+    def _process_ui_events(self, game_w: int, game_h: int, *, mouse_frames=None):
         """Convert Input mouse state to per-canvas pointer events."""
+        frame = Input.frame_index
+        if frame == self._ui_input_frame:
+            return
+        viewport_w, viewport_h = Input.game_viewport_size
+        if game_w <= 0 or game_h <= 0 or viewport_w <= 0 or viewport_h <= 0:
+            return
+        self._ui_input_frame = frame
         from infernux.lib import SceneManager
         scene_manager = SceneManager.instance()
         scene = scene_manager.get_active_scene()
@@ -995,14 +1087,13 @@ class GameViewPanel(EditorPanel):
             self._ui_event_processor.reset()
 
         # Mouse position in viewport pixels (relative to game image top-left)
-        vp_x, vp_y, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
-        display_scale = self._display_scale
-        if display_scale < 1e-6:
-            return
-
+        if mouse_frames is None:
+            mouse_frames = tuple(Input.get_game_mouse_frame_state(button) for button in range(3))
+        vp_x, vp_y, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = mouse_frames[0]
+        self._ui_pointer_position = (vp_x, vp_y)
         # Convert viewport pixels → game-resolution pixels
-        game_px = vp_x / display_scale
-        game_py = vp_y / display_scale
+        game_px = vp_x * game_w / viewport_w
+        game_py = vp_y * game_h / viewport_h
 
         camera = scene.effective_game_camera if scene is not None else None
         from infernux.engine.runtime_screen_ui import map_runtime_ui_pointer
@@ -1023,14 +1114,15 @@ class GameViewPanel(EditorPanel):
         scroll = (scroll_x, scroll_y)
 
         from infernux.timing import Time
-        dt = Time.unscaled_delta_time
+        now = Time.unscaled_time
+        dt = Time.unscaled_delta_time if self._ui_input_time is None else now - self._ui_input_time
+        self._ui_input_time = now
 
         self._ui_event_processor.process_pointers(
             surfaces,
             _mouse_pointer_frames(
                 canvas_positions,
-                ((mouse_held, mouse_down, mouse_up),
-                 Input.get_game_mouse_frame_state(1)[4:], Input.get_game_mouse_frame_state(2)[4:]),
+                tuple(state[4:] for state in mouse_frames),
                 scroll,
             ),
             dt,

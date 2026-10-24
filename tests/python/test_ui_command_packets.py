@@ -849,6 +849,22 @@ def test_font_epoch_remeasures_intrinsic_size_without_field_edits(ui, monkeypatc
     assert label.get_resolved_size() == (previous[0] + 40, label.height)
 
 
+def test_equal_numeric_ui_assignments_keep_retained_packets(ui):
+    from infernux.ui import UIButton
+
+    button = ui.add(UIButton)
+    button.font_size = 8.0
+    button.width = 100.0
+    ui.frame()
+    captures = ui.renderer.captures
+    button.font_size = 8
+    button.width = 100
+    assert ui.frame()[0] is False
+    assert ui.renderer.captures == captures
+    button.font_size = 9
+    assert ui.frame()[0] is True
+
+
 def test_custom_renderer_preserves_order_between_retained_packets(ui, monkeypatch):
     from infernux.ui import UIButton
     from infernux.ui import ui_render_dispatch as dispatch

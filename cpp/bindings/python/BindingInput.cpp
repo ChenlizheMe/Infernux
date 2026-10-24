@@ -10,6 +10,7 @@
  */
 
 #include "BindingRegistration.h"
+#include <imgui_internal.h>
 #include <platform/input/InputManager.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -91,6 +92,10 @@ void RegisterInputBindings(py::module_ &m)
         .def("get_key_up", &InputManager::GetKeyUp, py::arg("scancode"), "True during the frame the key was released")
         .def("any_key", &InputManager::AnyKey, "True if any key is currently held down")
         .def("any_key_down", &InputManager::AnyKeyDown, "True during the frame any key was first pressed")
+        .def("get_game_key", &InputManager::GetGameKey)
+        .def("get_game_key_down", &InputManager::GetGameKeyDown)
+        .def("get_game_key_up", &InputManager::GetGameKeyUp)
+        .def("any_game_key", &InputManager::AnyGameKey, py::arg("down") = false)
         .def("consume_key_down", &InputManager::ConsumeKeyDown, py::arg("scancode"),
              "Consume one key-down edge before Editor shortcut routing")
         .def("is_key_down_consumed", &InputManager::IsKeyDownConsumed, py::arg("scancode"))
@@ -106,6 +111,7 @@ void RegisterInputBindings(py::module_ &m)
              "Return (mouse_x, mouse_y, scroll_x, scroll_y, held, down, up) for one mouse button")
         .def("get_game_mouse_button", &InputManager::GetGameMouseButton, py::arg("button"))
         .def("get_game_mouse_button_down", &InputManager::GetGameMouseButtonDown, py::arg("button"))
+        .def("get_game_mouse_button_up", &InputManager::GetGameMouseButtonUp, py::arg("button"))
         .def("get_game_mouse_frame_state", &InputManager::GetGameMouseFrameState, py::arg("button"))
 
         // ---- Mouse position & delta ----
@@ -120,9 +126,12 @@ void RegisterInputBindings(py::module_ &m)
         .def_property_readonly("mouse_scroll_delta_y", &InputManager::GetMouseScrollDeltaY,
                                "Vertical scroll delta (positive = up)")
         .def_property_readonly("mouse_scroll_delta_x", &InputManager::GetMouseScrollDeltaX, "Horizontal scroll delta")
+        .def_property_readonly("game_scroll_delta_x", &InputManager::GetGameScrollDeltaX)
+        .def_property_readonly("game_scroll_delta_y", &InputManager::GetGameScrollDeltaY)
 
         // ---- Text input ----
         .def_property_readonly("input_string", &InputManager::GetInputString, "Characters typed this frame (UTF-8)")
+        .def_property_readonly("game_input_string", &InputManager::GetGameInputString)
         .def("start_text_input", &InputManager::StartTextInput,
              "Begin committed platform text input and show a software keyboard when available")
         .def("stop_text_input", &InputManager::StopTextInput, "End platform text input")
@@ -163,7 +172,12 @@ void RegisterInputBindings(py::module_ &m)
                                "True when cursor is locked (relative mouse mode)")
         .def("set_editor_cursor_capture_allowed", &InputManager::SetEditorCursorCaptureAllowed, py::arg("allowed"))
         .def_property_readonly("is_editor_cursor_capture_allowed", &InputManager::IsEditorCursorCaptureAllowed)
-        .def("set_editor_game_viewport", &InputManager::SetEditorGameViewport)
+        .def("set_editor_game_viewport",
+             [](InputManager &input, const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect) {
+                 const ImGuiContext *context = ImGui::GetCurrentContext();
+                 const ImGuiWindow *window = context && context->WithinFrameScope ? context->CurrentWindow : nullptr;
+                 input.SetEditorGameViewport(imageRect, inputRect, window ? window->ID : 0);
+             })
         .def("set_cursor_visible", &InputManager::SetCursorVisible, py::arg("visible"),
              "Show or hide the cursor independently from relative mouse mode")
         .def_property_readonly("is_cursor_visible", &InputManager::IsCursorVisible,

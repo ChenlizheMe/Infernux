@@ -126,28 +126,28 @@ class _InputMeta(type):
         if not cls._accepts_game_input():
             return (0.0, 0.0)
         mgr = _NativeInputManager.instance()
-        return (mgr.mouse_scroll_delta_x, mgr.mouse_scroll_delta_y)
+        return (mgr.game_scroll_delta_x, mgr.game_scroll_delta_y)
 
     @property
     def input_string(cls) -> str:
         """Characters typed this frame (UTF-8)."""
         if not cls._accepts_game_input():
             return ""
-        return _NativeInputManager.instance().input_string
+        return _NativeInputManager.instance().game_input_string
 
     @property
     def any_key(cls) -> bool:
         """``True`` if any key or mouse button is currently held."""
         if not cls._accepts_game_input():
             return False
-        return _NativeInputManager.instance().any_key()
+        return _NativeInputManager.instance().any_game_key()
 
     @property
     def any_key_down(cls) -> bool:
         """``True`` during the frame any key was first pressed."""
         if not cls._accepts_game_input():
             return False
-        return _NativeInputManager.instance().any_key_down()
+        return _NativeInputManager.instance().any_game_key(down=True)
 
     @property
     def touch_count(cls) -> int:
@@ -422,7 +422,7 @@ class Input(metaclass=_InputMeta):
         if not Input._accepts_game_input():
             return False
         sc = Input._resolve_key(key)
-        return sc >= 0 and _NativeInputManager.instance().get_key(sc)
+        return sc >= 0 and _NativeInputManager.instance().get_game_key(sc)
 
     @staticmethod
     def get_key_down(key: Union[str, int]) -> bool:
@@ -433,7 +433,7 @@ class Input(metaclass=_InputMeta):
         if not Input._accepts_game_input():
             return False
         sc = Input._resolve_key(key)
-        return sc >= 0 and _NativeInputManager.instance().get_key_down(sc)
+        return sc >= 0 and _NativeInputManager.instance().get_game_key_down(sc)
 
     @staticmethod
     def get_key_up(key: Union[str, int]) -> bool:
@@ -441,7 +441,7 @@ class Input(metaclass=_InputMeta):
         if not Input._accepts_game_input():
             return False
         sc = Input._resolve_key(key)
-        return sc >= 0 and _NativeInputManager.instance().get_key_up(sc)
+        return sc >= 0 and _NativeInputManager.instance().get_game_key_up(sc)
 
     @staticmethod
     def consume_key_down(key: Union[str, int]) -> None:
@@ -449,8 +449,9 @@ class Input(metaclass=_InputMeta):
         if not Input._accepts_game_input():
             return
         sc = Input._resolve_key(key)
-        if sc >= 0:
-            _NativeInputManager.instance().consume_key_down(sc)
+        mgr = _NativeInputManager.instance()
+        if sc >= 0 and mgr.get_game_key_down(sc):
+            mgr.consume_key_down(sc)
 
     # ------------------------------------------------------------------
     # Mouse buttons — Unity: Input.GetMouseButton / Down / Up
@@ -475,7 +476,7 @@ class Input(metaclass=_InputMeta):
         """``True`` during the frame *button* was released."""
         if not Input._accepts_game_input():
             return False
-        return _NativeInputManager.instance().get_mouse_button_up(button)
+        return _NativeInputManager.instance().get_game_mouse_button_up(button)
 
     @staticmethod
     def get_mouse_frame_state(button: int = 0):
@@ -536,20 +537,20 @@ class Input(metaclass=_InputMeta):
         name = axis_name.lower()
         if name == "horizontal":
             val = 0.0
-            if mgr.get_key(_NativeInputManager.name_to_scancode("d")) or \
-               mgr.get_key(_NativeInputManager.name_to_scancode("right")):
+            if mgr.get_game_key(_NativeInputManager.name_to_scancode("d")) or \
+               mgr.get_game_key(_NativeInputManager.name_to_scancode("right")):
                 val += 1.0
-            if mgr.get_key(_NativeInputManager.name_to_scancode("a")) or \
-               mgr.get_key(_NativeInputManager.name_to_scancode("left")):
+            if mgr.get_game_key(_NativeInputManager.name_to_scancode("a")) or \
+               mgr.get_game_key(_NativeInputManager.name_to_scancode("left")):
                 val -= 1.0
             return val
         elif name == "vertical":
             val = 0.0
-            if mgr.get_key(_NativeInputManager.name_to_scancode("w")) or \
-               mgr.get_key(_NativeInputManager.name_to_scancode("up")):
+            if mgr.get_game_key(_NativeInputManager.name_to_scancode("w")) or \
+               mgr.get_game_key(_NativeInputManager.name_to_scancode("up")):
                 val += 1.0
-            if mgr.get_key(_NativeInputManager.name_to_scancode("s")) or \
-               mgr.get_key(_NativeInputManager.name_to_scancode("down")):
+            if mgr.get_game_key(_NativeInputManager.name_to_scancode("s")) or \
+               mgr.get_game_key(_NativeInputManager.name_to_scancode("down")):
                 val -= 1.0
             return val
         elif name == "mouse x":
@@ -557,7 +558,7 @@ class Input(metaclass=_InputMeta):
         elif name == "mouse y":
             return mgr.mouse_delta_y * Input.mouse_sensitivity
         elif name in ("mouse scrollwheel", "mouse scroll wheel"):
-            return mgr.mouse_scroll_delta_y
+            return mgr.game_scroll_delta_y
         return 0.0
 
     @staticmethod

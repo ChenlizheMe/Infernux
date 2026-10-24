@@ -1176,10 +1176,17 @@ void InxRenderer::DrawFrame()
 
     // Window events
     m_view->ProcessEvent();
-    if (samplePerformanceFrame)
+    if (samplePerformanceFrame) {
         performanceSample.inputMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - performanceWindowFrameStart)
                 .count();
+        const auto &pacing = m_view->GetLastPacingSample();
+        performanceSample.inputPhases = {pacing.inputBeginFrameMs,        pacing.inputPeepEventsMs,
+                                         pacing.inputImGuiDispatchMs,     pacing.inputManagerDispatchMs,
+                                         pacing.inputSyntheticDispatchMs, pacing.inputWindowQueryMs};
+        performanceSample.inputEventCount = pacing.queuedEventCount;
+        performanceSample.dispatchedMouseMotionCount = pacing.dispatchedMouseMotionCount;
+    }
     // Surface capabilities may leave the extent to the application (Wayland,
     // Retina). Publish the current pixel extent, never the requested initial
     // window size, before surface/swapchain recreation consumes it.
@@ -1200,6 +1207,10 @@ void InxRenderer::DrawFrame()
         // same GUI wake/consumption boundary for its Python UI callbacks.
         if (!m_guiPlayerMode)
             InxGUISemantics::RequestSnapshot(syntheticSequence);
+    } else if (m_view->NeedsImmediateGuiRefresh()) {
+        // Continuous semantic capture can hold the force level high. Wake each
+        // physical input batch before the next input frame clears its edges.
+        m_gui->RequestFrame();
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [1] after input/event processing

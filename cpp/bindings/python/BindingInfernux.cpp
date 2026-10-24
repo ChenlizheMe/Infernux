@@ -1832,6 +1832,14 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     frame["gui_ms"] = sample.guiMs;
                     frame["prepare_ms"] = sample.prepareMs;
                     frame["input_ms"] = sample.inputMs;
+                    frame["input_begin_ms"] = sample.inputPhases[0];
+                    frame["input_poll_ms"] = sample.inputPhases[1];
+                    frame["input_imgui_ms"] = sample.inputPhases[2];
+                    frame["input_dispatch_ms"] = sample.inputPhases[3];
+                    frame["input_synthetic_ms"] = sample.inputPhases[4];
+                    frame["input_window_query_ms"] = sample.inputPhases[5];
+                    frame["input_event_count"] = sample.inputEventCount;
+                    frame["input_mouse_motion_count"] = sample.dispatchedMouseMotionCount;
                     frame["callbacks_ms"] = sample.callbacksMs;
                     frame["gpu_wait_ms"] = sample.gpuWaitMs;
                     frame["draw_ms"] = sample.drawMs;

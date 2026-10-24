@@ -1,4 +1,5 @@
 #include <function/renderer/gui/InxGUIContext.h>
+#include <function/renderer/gui/InxGUISemantics.h>
 #include <imgui_internal.h>
 
 #include <iostream>
@@ -130,6 +131,40 @@ void VerifyTextGrowth(int route)
     frame();
     Check(changes == 1, "An idle follow-up frame repeated a text edit");
 }
+
+void VerifyViewportOwnership()
+{
+    Fixture fixture;
+    ImGuiID gameWindow = 0;
+    auto frame = [&](bool floating) {
+        fixture.Begin();
+        ImGui::BeginChild("Game viewport", ImVec2(400, 300));
+        gameWindow = ImGui::GetCurrentWindow()->ID;
+        if (!floating)
+            ImGui::SetWindowFocus();
+        ImGui::EndChild();
+        ImGui::End();
+        if (floating) {
+            ImGui::SetNextWindowPos(ImVec2(80, 80), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(180, 160), ImGuiCond_Always);
+            ImGui::Begin("Floating Editor");
+            ImGui::SetWindowFocus();
+            ImGui::End();
+        }
+        ImGui::Render();
+    };
+    using infernux::InxGUISemantics;
+    InxGUISemantics::SetCaptureEnabled(false);
+    frame(false);
+    frame(false);
+    Check(InxGUISemantics::ReceivesPointerAt(gameWindow, 100, 100), "Game child lost its pointer surface");
+    Check(InxGUISemantics::ReceivesKeyboard(gameWindow), "Game child lost keyboard ownership");
+    frame(true);
+    frame(true);
+    Check(!InxGUISemantics::ReceivesPointerAt(gameWindow, 100, 100), "Floating Editor leaked a Game click");
+    Check(InxGUISemantics::ReceivesPointerAt(gameWindow, 300, 240), "Uncovered Game surface stopped receiving input");
+    Check(!InxGUISemantics::ReceivesKeyboard(gameWindow), "Editor keyboard focus leaked into Game");
+}
 } // namespace
 
 int main()
@@ -146,6 +181,8 @@ try {
         VerifyTextGrowth(route);
         ++cases;
     }
+    VerifyViewportOwnership();
+    ++cases;
     std::cout << cases << " text editing cases passed\n";
     return 0;
 } catch (const std::exception &error) {

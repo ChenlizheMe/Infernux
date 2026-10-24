@@ -228,6 +228,9 @@ struct RendererFramePerformanceSample
     double guiMs = 0.0;
     double prepareMs = 0.0;
     double inputMs = 0.0;
+    std::array<double, 6> inputPhases{};
+    uint32_t inputEventCount = 0;
+    uint32_t dispatchedMouseMotionCount = 0;
     double callbacksMs = 0.0;
     double gpuWaitMs = 0.0;
     double drawMs = 0.0;

@@ -4,18 +4,18 @@
     {
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
-      "version": "0.1.20",
+      "version": "0.1.21",
       "intro": "Let an MCP-compatible AI agent drive the Infernux Editor.",
       "intros": {
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "engine": ">=0.4.2",
+      "engine": ">=0.4.3",
       "dependencies": [],
       "repository": "https://github.com/InfernuxEngine/infernux_mcp",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.20/infernux.mcp.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.21/infernux.mcp.inxpkg"
       },
       "category": "editor_tools",
       "targets": [],
@@ -196,7 +196,7 @@
     {
       "reference": "infernux/text_animator",
       "name": "Infernux Text Animator",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "intro": "Animate native UIText characters and reveal text with a Unicode-aware typewriter.",
       "intros": {
         "zh-CN": "为原生 UIText 添加逐字变形、持续字效和字素打字机。"
@@ -224,7 +224,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_text_animator",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.text_animator/0.1.1/infernux.text_animator.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.text_animator/0.1.2/infernux.text_animator.inxpkg"
       }
     },
     {

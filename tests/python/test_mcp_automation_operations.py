@@ -122,6 +122,52 @@ def test_runtime_compute_host_reuses_public_statistics_and_propagates_errors(mon
         host.set_compute_profiling(True)
 
 
+def test_ui_input_query_distinguishes_filtered_clicks_without_dispatch(editor_project, monkeypatch):
+    import infernux.input as input_module
+    from infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.ui import game_view_panel
+    from infernux.host import OperationKind
+    from infernux_mcp import runtime_operations
+
+    panel = game_view_panel.GameViewPanel()
+    panel._last_game_width, panel._last_game_height = 480, 270
+    panel._display_scale = 2.0
+    panel._ui_event_processor._last_pointer_debug = {"down": True, "hit_object": "Start"}
+    native = SimpleNamespace(
+        frame_index=125, is_cursor_locked=False, is_editor_cursor_capture_allowed=False,
+        has_synthetic_gameplay_input=False,
+        get_mouse_frame_state=lambda button: (420.0, 150.0, 0.0, 0.0, button == 0, button == 0, False),
+        get_game_mouse_frame_state=lambda button: (420.0, 150.0, 0.0, 0.0, False, False, False),
+    )
+    for module in (input_module, game_view_panel):
+        monkeypatch.setattr(module, "_NativeInputManager", SimpleNamespace(instance=lambda: native))
+    monkeypatch.setattr(input_module.Input, "_game_viewport_origin", (100.0, 50.0))
+    monkeypatch.setattr(input_module.Input, "_game_viewport_size", (960.0, 540.0))
+    monkeypatch.setattr(input_module.Input, "_automation_game_input_depth", 0)
+    bootstrap = SimpleNamespace(window_manager=SimpleNamespace(get_window_instance=lambda name: panel))
+    monkeypatch.setattr(EditorBootstrap, "instance", staticmethod(lambda: bootstrap))
+    monkeypatch.setattr(EditorAutomationHost, "instance", staticmethod(EditorAutomationHost))
+    boundaries = []
+    monkeypatch.setattr(runtime_operations, "on_editor", lambda name, callback: boundaries.append(name) or callback())
+    query = next(op for op in runtime_operations.build_runtime_operations() if op.schema.id == "infernux.runtime.ui.input_state")
+
+    state = query.handler()
+
+    assert query.schema.kind == OperationKind.QUERY
+    assert query.schema.capabilities == ("runtime.read",) and not query.schema.side_effects
+    assert boundaries == [query.schema.id]
+    assert state["frame_index"] == 125 and state["game_focused"] is False
+    assert state["mouse"][0]["raw"][4:6] == [True, True]
+    assert state["mouse"][0]["owned"][4:6] == [False, False]
+    assert state["mouse"][0]["game"][4:6] == [False, False]
+    assert state["viewport"]["raw_position_in_render_target"] == [160.0, 50.0]
+    assert state["viewport"]["game_position_in_render_target"] == [-50.0, -25.0]
+    state["last_ui_transition"]["down"] = False
+    assert panel._ui_event_processor.debug_state() == {"down": True, "hit_object": "Start"}
+    assert not panel._ui_event_processor._pointers
+    assert input_module.Input.is_game_focused() is False
+
+
 class _AutomationHost(EditorAutomationHost):
     def __init__(self, capture_path: Path):
         self.capture_path = capture_path

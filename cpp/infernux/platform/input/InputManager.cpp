@@ -173,7 +173,9 @@ void InputManager::BeginFrame()
     m_mouseDY = 0.f;
     m_scrollX = 0.f;
     m_scrollY = 0.f;
+    m_gameScroll = {};
     m_inputString.clear();
+    m_gameInputString.clear();
     m_accelerationEvents.clear();
     m_touches.erase(std::remove_if(m_touches.begin(), m_touches.end(),
                                    [](const TouchState &touch) {
@@ -200,12 +202,14 @@ void InputManager::BeginFrame()
 #endif
 }
 
-void InputManager::ProcessKeyEvent(int scancode, bool pressed)
+void InputManager::ProcessKeyEvent(int scancode, bool pressed, bool gameInput)
 {
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return;
     const size_t index = static_cast<size_t>(scancode);
     if (pressed) {
+        if (m_keys[index] == 0 || !gameInput || m_syntheticKeyDown[index] != 0)
+            m_gameKeyOwnership[index] = gameInput;
         if (m_keys[index] == 0)
             m_keyDown[index] = 1;
         m_keys[index] = 1;
@@ -216,16 +220,16 @@ void InputManager::ProcessKeyEvent(int scancode, bool pressed)
     }
 }
 
-void InputManager::ProcessPointerButtonEvent(int button, bool pressed)
+void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool gameInput)
 {
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return;
     const size_t index = static_cast<size_t>(button);
     if (pressed) {
         if (m_mouseButtons[index] == 0) {
-            const auto &[x, y, width, height] = m_editorGameInputRect;
-            const bool inGameView = m_mouseX >= x && m_mouseY >= y && m_mouseX < x + width && m_mouseY < y + height;
-            if (!m_editorCursorCaptureManaged || IsCursorLocked() || inGameView || m_syntheticMouseButtons[index] != 0)
+            const bool inGameView = IsInEditorGameInputRect(m_mouseX, m_mouseY);
+            if (gameInput && (!m_editorCursorCaptureManaged || IsCursorLocked() || inGameView ||
+                              m_syntheticMouseButtons[index] != 0))
                 m_gameMouseButtonOwnership |= 1u << button;
             else
                 m_gameMouseButtonOwnership &= ~(1u << button);
@@ -259,15 +263,21 @@ void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, flo
     }
 }
 
-void InputManager::ProcessScrollEvent(float deltaX, float deltaY)
+void InputManager::ProcessScrollEvent(float deltaX, float deltaY, bool gameInput)
 {
     m_scrollX += deltaX;
     m_scrollY += deltaY;
+    if (gameInput) {
+        m_gameScroll.first += deltaX;
+        m_gameScroll.second += deltaY;
+    }
 }
 
-void InputManager::ProcessTextInputEvent(const std::string &text)
+void InputManager::ProcessTextInputEvent(const std::string &text, bool gameInput)
 {
     m_inputString += text;
+    if (gameInput)
+        m_gameInputString += text;
 }
 
 void InputManager::ProcessMotionSensorEvent(MotionSensorType type, uint64_t timestampNs, float x, float y, float z)
@@ -499,7 +509,7 @@ void InputManager::StopTextInput()
     m_textInputActive = false;
 }
 
-void InputManager::ProcessSDLEvent(const SDL_Event &event)
+void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
 {
     // Helper: Remap SDL button index to Unity convention
     // SDL3: 1=left, 2=middle, 3=right, 4=X1, 5=X2
@@ -524,10 +534,10 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
 
     // ---- Keyboard ----
     case SDL_EVENT_KEY_DOWN:
-        ProcessKeyEvent(static_cast<int>(event.key.scancode), true);
+        ProcessKeyEvent(static_cast<int>(event.key.scancode), true, gameInput);
         break;
     case SDL_EVENT_KEY_UP:
-        ProcessKeyEvent(static_cast<int>(event.key.scancode), false);
+        ProcessKeyEvent(static_cast<int>(event.key.scancode), false, gameInput);
         break;
 
     // ---- Mouse buttons ----
@@ -537,14 +547,14 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
         if (event.button.which == SDL_TOUCH_MOUSEID)
             break;
         ProcessPointerMotionEvent(event.button.x, event.button.y, 0.0f, 0.0f);
-        ProcessPointerButtonEvent(remapButton(event.button.button), true);
+        ProcessPointerButtonEvent(remapButton(event.button.button), true, gameInput);
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP: {
         if (event.button.which == SDL_TOUCH_MOUSEID)
             break;
         ProcessPointerMotionEvent(event.button.x, event.button.y, 0.0f, 0.0f);
-        ProcessPointerButtonEvent(remapButton(event.button.button), false);
+        ProcessPointerButtonEvent(remapButton(event.button.button), false, gameInput);
         break;
     }
 
@@ -557,12 +567,12 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
 
     // ---- Mouse wheel ----
     case SDL_EVENT_MOUSE_WHEEL:
-        ProcessScrollEvent(event.wheel.x, event.wheel.y);
+        ProcessScrollEvent(event.wheel.x, event.wheel.y, gameInput);
         break;
 
     // ---- Text input ----
     case SDL_EVENT_TEXT_INPUT:
-        ProcessTextInputEvent(event.text.text);
+        ProcessTextInputEvent(event.text.text, gameInput);
         break;
 
     // ---- Motion sensors ----
@@ -776,6 +786,21 @@ bool InputManager::AnyKeyDown() const
     return false;
 }
 
+bool InputManager::IsGameKeyOwned(int scancode) const
+{
+    return scancode >= 0 && scancode < INPUT_MAX_KEYS &&
+           (!m_editorCursorCaptureManaged || m_gameKeyOwnership[scancode] != 0 || m_syntheticKeys[scancode] != 0 ||
+            m_syntheticKeyDown[scancode] != 0);
+}
+
+bool InputManager::AnyGameKey(bool down) const
+{
+    for (int i = 0; i < INPUT_MAX_KEYS; ++i)
+        if (IsGameKeyOwned(i) && (down ? GetKeyDown(i) : GetKey(i)))
+            return true;
+    return false;
+}
+
 void InputManager::ConsumeKeyDown(int scancode)
 {
     if (!GetKeyDown(scancode))
@@ -832,7 +857,9 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetGameMo
         std::get<1>(state) = y;
     }
     if (!IsGameMouseButtonOwned(button))
-        std::get<4>(state) = std::get<5>(state) = false;
+        std::get<4>(state) = std::get<5>(state) = std::get<6>(state) = false;
+    std::get<2>(state) = m_gameScroll.first;
+    std::get<3>(state) = m_gameScroll.second;
     return state;
 }
 
@@ -842,8 +869,46 @@ bool InputManager::IsGameMouseButtonOwned(int button) const
            (!m_editorCursorCaptureManaged || (m_gameMouseButtonOwnership & (1u << button)) != 0);
 }
 
-void InputManager::SetEditorGameViewport(const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect)
+bool InputManager::IsInEditorGameInputRect(float x, float y) const
 {
+    const auto &[left, top, width, height] = m_editorGameInputRect;
+    return x >= left && y >= top && x < left + width && y < top + height;
+}
+
+bool InputManager::IsEditorGameInputEvent(const SDL_Event &event) const
+{
+    if (!m_editorCursorCaptureAllowed || m_editorMouseCaptured)
+        return false;
+    switch (event.type) {
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        const int button = event.button.button == SDL_BUTTON_RIGHT    ? 1
+                           : event.button.button == SDL_BUTTON_MIDDLE ? 2
+                                                                      : event.button.button - 1;
+        return event.button.which != SDL_TOUCH_MOUSEID && IsGameMouseButtonOwned(button) &&
+               (IsCursorLocked() || IsInEditorGameInputRect(event.button.x, event.button.y));
+    }
+    case SDL_EVENT_MOUSE_WHEEL:
+        return IsCursorLocked() || IsInEditorGameInputRect(m_mouseX, m_mouseY);
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP: {
+        const auto code = event.key.scancode;
+        const bool shortcutModifier = code >= SDL_SCANCODE_LCTRL && code <= SDL_SCANCODE_RGUI &&
+                                      code != SDL_SCANCODE_LSHIFT && code != SDL_SCANCODE_RSHIFT;
+        return (event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) == 0 && !shortcutModifier &&
+               code != SDL_SCANCODE_ESCAPE && code != SDL_SCANCODE_DELETE &&
+               !(code >= SDL_SCANCODE_F1 && code <= SDL_SCANCODE_F12) &&
+               !(code >= SDL_SCANCODE_F13 && code <= SDL_SCANCODE_F24);
+    }
+    default:
+        return false;
+    }
+}
+
+void InputManager::SetEditorGameViewport(const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect,
+                                         uint32_t windowId)
+{
+    m_editorGameWindowId = windowId;
     if (imageRect == m_editorGameViewport && inputRect == m_editorGameInputRect)
         return;
     m_editorGameViewport = imageRect;
@@ -877,6 +942,7 @@ void InputManager::ResetAll()
     m_keyDown.fill(0);
     m_keyUp.fill(0);
     m_keyDownConsumed.fill(0);
+    m_gameKeyOwnership.fill(0);
     m_mouseButtons.fill(0);
     m_mouseButtonDown.fill(0);
     m_mouseButtonUp.fill(0);
@@ -884,6 +950,7 @@ void InputManager::ResetAll()
     m_mouseDX = m_mouseDY = 0.f;
     m_editorMouseDX = m_editorMouseDY = 0.f;
     m_scrollX = m_scrollY = 0.f;
+    m_gameScroll = {};
     m_syntheticMouseX = m_syntheticMouseY = 0.f;
     m_hasSyntheticMousePosition = false;
     m_syntheticInputThisFrame = false;
@@ -892,6 +959,7 @@ void InputManager::ResetAll()
     m_syntheticMouseButtons.fill(0);
     m_syntheticHeldCount = 0;
     m_inputString.clear();
+    m_gameInputString.clear();
     m_touches.clear();
     m_accelerationEvents.clear();
     m_droppedFiles.clear();
@@ -923,8 +991,10 @@ void InputManager::ResetPhysicalInputForFocusLoss()
     m_syntheticMouseButtons = syntheticMouseButtons;
     m_syntheticHeldCount = syntheticHeldCount;
     m_syntheticInputThisFrame = syntheticHeldCount != 0;
-    for (size_t index = 0; index < m_syntheticKeys.size(); ++index)
+    for (size_t index = 0; index < m_syntheticKeys.size(); ++index) {
         m_keys[index] = m_syntheticKeys[index];
+        m_gameKeyOwnership[index] = m_syntheticKeys[index];
+    }
     for (size_t index = 0; index < m_syntheticMouseButtons.size(); ++index) {
         m_mouseButtons[index] = m_syntheticMouseButtons[index];
         if (m_syntheticMouseButtons[index] != 0)
@@ -1007,6 +1077,7 @@ void InputManager::SetWindow(SDL_Window *window)
         m_editorCursorCaptureAllowed = false;
         m_editorGameViewport = {};
         m_editorGameInputRect = {};
+        m_editorGameWindowId = 0;
         m_gameMouseButtonOwnership = 0;
     }
     m_warpMotionPending = false;
@@ -1084,6 +1155,7 @@ void InputManager::SetEditorCursorCaptureAllowed(bool allowed)
     m_editorCursorCaptureManaged = true;
     m_editorCursorCaptureAllowed = allowed;
     m_mouseDX = m_mouseDY = m_scrollX = m_scrollY = 0.0f;
+    m_gameScroll = {};
     ApplyCursorState();
 }
 

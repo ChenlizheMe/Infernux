@@ -128,18 +128,18 @@ class InputManager
         return m_frameIndex;
     }
 
-    /// @brief Feed an SDL event into the input state.
-    void ProcessSDLEvent(const SDL_Event &event);
+    /// Raw state is retained; gameInput assigns the event's gameplay ownership.
+    void ProcessSDLEvent(const SDL_Event &event, bool gameInput = true);
 
     // ---- Platform-neutral event ingestion ----
     // Window-system adapters translate their native events once and feed this
     // semantic layer. Web, Android, and desktop therefore share the exact same
     // held/edge/touch lifecycle instead of maintaining parallel input models.
-    void ProcessKeyEvent(int scancode, bool pressed);
-    void ProcessPointerButtonEvent(int button, bool pressed);
+    void ProcessKeyEvent(int scancode, bool pressed, bool gameInput = true);
+    void ProcessPointerButtonEvent(int button, bool pressed, bool gameInput = true);
     void ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY);
-    void ProcessScrollEvent(float deltaX, float deltaY);
-    void ProcessTextInputEvent(const std::string &text);
+    void ProcessScrollEvent(float deltaX, float deltaY, bool gameInput = true);
+    void ProcessTextInputEvent(const std::string &text, bool gameInput = true);
     /// Feed one motion-sensor sample. Accelerometer values use SI m/s²;
     /// gyroscope values use radians per second.
     void ProcessMotionSensorEvent(MotionSensorType type, uint64_t timestampNs, float x, float y, float z);
@@ -209,6 +209,20 @@ class InputManager
     /// @brief Returns true during the frame any key was pressed down.
     [[nodiscard]] bool AnyKeyDown() const;
 
+    [[nodiscard]] bool GetGameKey(int scancode) const
+    {
+        return IsGameKeyOwned(scancode) && GetKey(scancode);
+    }
+    [[nodiscard]] bool GetGameKeyDown(int scancode) const
+    {
+        return IsGameKeyOwned(scancode) && GetKeyDown(scancode);
+    }
+    [[nodiscard]] bool GetGameKeyUp(int scancode) const
+    {
+        return IsGameKeyOwned(scancode) && GetKeyUp(scancode);
+    }
+    [[nodiscard]] bool AnyGameKey(bool down = false) const;
+
     /// @brief Consume one key-down edge before Editor shortcut routing.
     ///
     /// Gameplay UI uses this for modal keys such as Escape. The key remains
@@ -231,8 +245,24 @@ class InputManager
 
     [[nodiscard]] bool GetGameMouseButton(int button) const;
     [[nodiscard]] bool GetGameMouseButtonDown(int button) const;
+    [[nodiscard]] bool GetGameMouseButtonUp(int button) const
+    {
+        return IsGameMouseButtonOwned(button) && GetMouseButtonUp(button);
+    }
     [[nodiscard]] std::tuple<float, float, float, float, bool, bool, bool> GetGameMouseFrameState(int button) const;
-    void SetEditorGameViewport(const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect);
+    void SetEditorGameViewport(const std::array<float, 4> &imageRect, const std::array<float, 4> &inputRect,
+                               uint32_t windowId = 0);
+    [[nodiscard]] uint32_t GetEditorGameWindowId() const
+    {
+        return m_editorGameWindowId;
+    }
+    [[nodiscard]] bool IsEditorInputManaged() const
+    {
+        return m_editorCursorCaptureManaged;
+    }
+    [[nodiscard]] bool IsInEditorGameInputRect(float x, float y) const;
+    /// Native routing only: already-owned gameplay input need not rebuild Editor panels.
+    [[nodiscard]] bool IsEditorGameInputEvent(const SDL_Event &event) const;
 
     /// @brief Returns a batched snapshot for a mouse button this frame.
     /// Tuple layout: (mouseX, mouseY, scrollX, scrollY, held, down, up).
@@ -278,6 +308,14 @@ class InputManager
     {
         return m_scrollX;
     }
+    [[nodiscard]] float GetGameScrollDeltaX() const
+    {
+        return m_gameScroll.first;
+    }
+    [[nodiscard]] float GetGameScrollDeltaY() const
+    {
+        return m_gameScroll.second;
+    }
 
     // ---- Text input (Unity: Input.inputString) ----
 
@@ -285,6 +323,10 @@ class InputManager
     [[nodiscard]] const std::string &GetInputString() const
     {
         return m_inputString;
+    }
+    [[nodiscard]] const std::string &GetGameInputString() const
+    {
+        return m_gameInputString;
     }
 
     /// @brief Ask the current platform window to begin committed text input.
@@ -448,6 +490,7 @@ class InputManager
     std::array<uint8_t, INPUT_MAX_KEYS> m_keyDown{};
     std::array<uint8_t, INPUT_MAX_KEYS> m_keyUp{};
     std::array<uint8_t, INPUT_MAX_KEYS> m_keyDownConsumed{};
+    std::array<uint8_t, INPUT_MAX_KEYS> m_gameKeyOwnership{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtons{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtonDown{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_mouseButtonUp{};
@@ -460,6 +503,7 @@ class InputManager
     float m_editorMouseDY = 0.f;
     float m_scrollX = 0.f;
     float m_scrollY = 0.f;
+    std::pair<float, float> m_gameScroll{};
 
     float m_syntheticMouseX = 0.f;
     float m_syntheticMouseY = 0.f;
@@ -474,6 +518,7 @@ class InputManager
     uint32_t m_syntheticHeldCount = 0;
 
     std::string m_inputString;
+    std::string m_gameInputString;
     std::vector<TouchState> m_touches;
     std::vector<AccelerationEvent> m_accelerationEvents;
     std::vector<std::string> m_droppedFiles;
@@ -494,6 +539,7 @@ class InputManager
     bool m_editorCursorCaptureAllowed = false;
     std::array<float, 4> m_editorGameViewport{};
     std::array<float, 4> m_editorGameInputRect{};
+    uint32_t m_editorGameWindowId = 0;
     uint32_t m_gameMouseButtonOwnership = 0;
     bool m_cursorVisible = true;
     bool m_cursorConfined = false;
@@ -515,6 +561,7 @@ class InputManager
     void RefreshScreenState();
     void ApplyCursorState();
     [[nodiscard]] bool IsGameMouseButtonOwned(int button) const;
+    [[nodiscard]] bool IsGameKeyOwned(int scancode) const;
     [[nodiscard]] std::pair<float, float> CursorLockPosition(bool gameLocked) const;
 };
 

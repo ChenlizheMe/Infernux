@@ -496,6 +496,9 @@ class Engine():
                 if manager is not None:
                     manager.process_pending_actions()
                     manager.sync_native_gui_focus()
+                    game_view = manager.get_window_instance("game_view")
+                    if game_view is not None:
+                        game_view.process_runtime_input()
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
         # Install the frame-owner callback: after GPU submission when rendered,

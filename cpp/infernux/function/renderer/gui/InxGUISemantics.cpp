@@ -122,7 +122,7 @@ bool IsItemEnabled(const ImGuiLastItemData &item, bool requestedEnabled)
     return requestedEnabled && (item.ItemFlags & ImGuiItemFlags_Disabled) == 0;
 }
 
-bool ReceivesPointerAt(const PendingTargetSource &source, const ImVec2 &point)
+bool WindowReceivesPointerAt(const PendingTargetSource &source, const ImVec2 &point)
 {
     ImGuiWindow *hoveredWindow = nullptr;
     ImGui::FindHoveredWindowEx(point, false, &hoveredWindow, nullptr);
@@ -187,7 +187,7 @@ bool FindSafeClickPoint(const InxGUISemanticTarget &target, const PendingTargetS
     for (const auto &sample : kSamples) {
         const ImVec2 candidate(clickable.Min.x + clickableWidth * sample[0],
                                clickable.Min.y + clickableHeight * sample[1]);
-        if (ReceivesPointerAt(source, candidate)) {
+        if (WindowReceivesPointerAt(source, candidate)) {
             point = candidate;
             return true;
         }
@@ -205,7 +205,7 @@ bool FindSafeClickPoint(const InxGUISemanticTarget &target, const PendingTargetS
     for (float y : ySamples) {
         for (float x : xSamples) {
             const ImVec2 candidate(x, y);
-            if (ReceivesPointerAt(source, candidate)) {
+            if (WindowReceivesPointerAt(source, candidate)) {
                 point = candidate;
                 return true;
             }
@@ -260,6 +260,20 @@ void FinalizeTargetReachability()
 }
 
 } // namespace
+
+bool InxGUISemantics::ReceivesPointerAt(uint32_t windowId, float x, float y)
+{
+    ImGuiWindow *window = ImGui::FindWindowByID(windowId);
+    return IsWindowInteractable(window) && WindowReceivesPointerAt({window}, ImVec2(x, y));
+}
+
+bool InxGUISemantics::ReceivesKeyboard(uint32_t windowId)
+{
+    ImGuiContext &context = *ImGui::GetCurrentContext();
+    ImGuiWindow *window = ImGui::FindWindowByID(windowId);
+    return IsWindowInteractable(window) && RootWindow(context.NavWindow) == RootWindow(window) &&
+           (context.ActiveId == 0 || context.ActiveIdWindow == window);
+}
 
 void InxGUISemantics::SetCaptureEnabled(bool enabled)
 {

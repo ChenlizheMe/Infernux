@@ -473,6 +473,118 @@ int main()
     assert(input.GetAccelerationEvents().empty());
     assert(input.GetAcceleration()[1] == 1.0f);
 
+    // Focus acquisition and Editor input still require GUI; owned gameplay does not.
+    input.ResetAll();
+    input.SetEditorGameViewport({10, 10, 100, 100}, {10, 10, 80, 80});
+    auto gamePress = MouseButtonEvent(SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_BUTTON_LEFT);
+    gamePress.button.x = gamePress.button.y = 20;
+    input.SetEditorCursorCaptureAllowed(false);
+    input.ProcessSDLEvent(gamePress);
+    assert(!input.IsEditorGameInputEvent(gamePress));
+    input.SetEditorCursorCaptureAllowed(true);
+    for (Uint8 button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_X2; ++button) {
+        input.ResetAll();
+        gamePress.button.button = button;
+        input.ProcessSDLEvent(gamePress);
+        assert(input.IsEditorGameInputEvent(gamePress));
+        auto release = gamePress;
+        release.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        input.ProcessSDLEvent(release);
+        assert(input.IsEditorGameInputEvent(release));
+    }
+    input.ResetAll();
+    gamePress.button.button = SDL_BUTTON_LEFT;
+    gamePress.button.x = 95; // Image pixels clipped out of the interactive viewport.
+    input.ProcessSDLEvent(gamePress);
+    assert(!input.IsEditorGameInputEvent(gamePress));
+    auto editorRelease = gamePress;
+    editorRelease.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    editorRelease.button.x = 20;
+    input.ProcessSDLEvent(editorRelease);
+    assert(!input.IsEditorGameInputEvent(editorRelease)); // Moving in cannot transfer a press.
+    SDL_Event wheel{};
+    wheel.type = SDL_EVENT_MOUSE_WHEEL;
+    assert(input.IsEditorGameInputEvent(wheel));
+    input.ProcessPointerMotionEvent(95, 20, 0, 0);
+    assert(!input.IsEditorGameInputEvent(wheel));
+    auto gameKey = KeyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W);
+    assert(input.IsEditorGameInputEvent(gameKey));
+    gameKey.type = SDL_EVENT_KEY_UP;
+    assert(input.IsEditorGameInputEvent(gameKey));
+    for (SDL_Keymod modifier : {SDL_KMOD_LCTRL, SDL_KMOD_LALT, SDL_KMOD_LGUI}) {
+        gameKey.key.mod = modifier;
+        assert(!input.IsEditorGameInputEvent(gameKey));
+    }
+    gameKey.key.mod = SDL_KMOD_NONE;
+    for (SDL_Scancode code : {SDL_SCANCODE_ESCAPE, SDL_SCANCODE_DELETE, SDL_SCANCODE_F2, SDL_SCANCODE_F13,
+                              SDL_SCANCODE_LCTRL, SDL_SCANCODE_RGUI}) {
+        gameKey.key.scancode = code;
+        assert(!input.IsEditorGameInputEvent(gameKey));
+    }
+    gameKey.key.scancode = SDL_SCANCODE_LSHIFT;
+    assert(input.IsEditorGameInputEvent(gameKey));
+    input.SetEditorMouseCapture(true);
+    assert(!input.IsEditorGameInputEvent(gameKey));
+    input.SetEditorMouseCapture(false);
+
+    // Editor-owned input retains raw diagnostics without entering gameplay.
+    input.ResetAll();
+    gamePress.button.x = gamePress.button.y = 20;
+    input.ProcessSDLEvent(gamePress, false);
+    assert(input.GetMouseButtonDown(0) && !input.GetGameMouseButtonDown(0));
+    auto release = gamePress;
+    release.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    input.ProcessSDLEvent(release, false);
+    assert(input.GetMouseButtonUp(0) && !input.GetGameMouseButtonUp(0));
+    assert(!std::get<6>(input.GetGameMouseFrameState(0)));
+    input.BeginFrame();
+    input.ProcessSDLEvent(gamePress, true);
+    assert(input.GetGameMouseButtonDown(0));
+    input.BeginFrame();
+    release.button.x = release.button.y = 200;
+    input.ProcessSDLEvent(release, false);
+    assert(input.GetGameMouseButtonUp(0) && std::get<6>(input.GetGameMouseFrameState(0)));
+    input.BeginFrame();
+    assert(!input.GetGameMouseButtonUp(0));
+
+    input.ProcessKeyEvent(SDL_SCANCODE_A, true, false);
+    assert(input.GetKey(SDL_SCANCODE_A) && input.GetKeyDown(SDL_SCANCODE_A));
+    assert(!input.GetGameKey(SDL_SCANCODE_A) && !input.GetGameKeyDown(SDL_SCANCODE_A));
+    assert(input.AnyKey() && !input.AnyGameKey(true));
+    input.ProcessKeyEvent(SDL_SCANCODE_A, true, true);
+    assert(!input.GetGameKey(SDL_SCANCODE_A)); // Focus cannot transfer an existing press.
+    input.ProcessKeyEvent(SDL_SCANCODE_W, true, true);
+    assert(input.GetGameKey(SDL_SCANCODE_W) && input.AnyGameKey(true));
+    input.BeginFrame();
+    input.ProcessKeyEvent(SDL_SCANCODE_W, false, false);
+    input.ProcessKeyEvent(SDL_SCANCODE_A, false, false);
+    assert(input.GetGameKeyUp(SDL_SCANCODE_W) && !input.GetGameKeyUp(SDL_SCANCODE_A));
+    input.ProcessScrollEvent(.5f, -2.f, false);
+    input.ProcessTextInputEvent("Editor", false);
+    assert(input.GetMouseScrollDeltaY() == -2 && input.GetGameScrollDeltaY() == 0);
+    assert(input.GetInputString() == "Editor" && input.GetGameInputString().empty());
+    input.ProcessScrollEvent(1, 1, true);
+    input.ProcessTextInputEvent("Game", true);
+    assert(input.GetMouseScrollDeltaX() == 1.5f && input.GetGameScrollDeltaX() == 1);
+    assert(input.GetInputString() == "EditorGame" && input.GetGameInputString() == "Game");
+    assert(std::get<3>(input.GetGameMouseFrameState(0)) == 1);
+    input.ProcessKeyEvent(SDL_SCANCODE_A, true, false);
+    const auto syntheticPress = KeyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_A);
+    input.TrackSyntheticEvent(syntheticPress);
+    input.ProcessSDLEvent(syntheticPress);
+    assert(input.GetGameKeyDown(SDL_SCANCODE_A));
+    input.ProcessFocusEvent(false);
+    assert(input.GetGameKey(SDL_SCANCODE_A));
+    const auto syntheticRelease = KeyEvent(SDL_EVENT_KEY_UP, SDL_SCANCODE_A);
+    input.TrackSyntheticEvent(syntheticRelease);
+    input.ProcessSDLEvent(syntheticRelease);
+    assert(input.GetGameKeyUp(SDL_SCANCODE_A));
+    input.BeginFrame();
+    assert(input.GetGameScrollDeltaY() == 0 && input.GetGameInputString().empty());
+    input.SetWindow(nullptr);
+    input.ResetAll();
+    input.ProcessKeyEvent(SDL_SCANCODE_W, true);
+    assert(input.GetGameKey(SDL_SCANCODE_W) && input.GetGameKeyDown(SDL_SCANCODE_W));
     input.ResetAll();
     return 0;
 }

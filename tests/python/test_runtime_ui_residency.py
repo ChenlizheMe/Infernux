@@ -151,9 +151,15 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
         panel = PlayerGUI(object())
     else:
         import infernux.engine.ui.game_view_panel as game_view
+        import infernux.input as input_module
         from infernux.engine.ui.game_view_panel import GameViewPanel
+        input_frame = SimpleNamespace(frame_index=1, is_cursor_locked=False)
+        monkeypatch.setattr(input_module, "_NativeInputManager", SimpleNamespace(instance=lambda: input_frame))
         panel = GameViewPanel(engine=None)
         panel._display_scale = 1.0
+        viewport = (1000.5, 701.25)
+        monkeypatch.setattr(Input, "_game_viewport_size", viewport)
+        mouse[:2] = [mouse[0] * viewport[0] / 1920, mouse[1] * viewport[1] / 1080]
         panel._is_playing = lambda: False
         panel._last_game_width, panel._last_game_height = 1920, 1080
         native_enabled = [True]
@@ -211,13 +217,28 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
         panel._process_ui_events(1920, 1080)
         assert panel._ui_event_processor._pointers[key].hover_target is second_button
         mouse[4:7] = [True, True, False]
+        if host == "game_view":
+            input_frame.frame_index += 1
+            panel._is_playing = lambda: True
+            panel._is_paused = lambda: False
+            panel._game_camera_was_enabled = True
+            monkeypatch.setattr(game_view.ClosablePanel, "get_active_view_id", lambda: panel.window_id)
+            panel.process_runtime_input()
+            queued = panel._ui_event_processor._queued_callback_count
         panel._process_ui_events(1920, 1080)
+        if host == "game_view":
+            assert panel._ui_event_processor._queued_callback_count == queued
         assert panel._ui_event_processor._pointers[key].press_target is second_button
         mouse[4:7] = [False, False, True]
+        if host == "game_view":
+            input_frame.frame_index += 1
+            panel.process_runtime_input()
         panel._process_ui_events(1920, 1080)
         drain()
         second.sort_order = -1
         mouse[4:7] = [False, False, False]
+        if host == "game_view":
+            input_frame.frame_index += 1
         panel._process_ui_events(1920, 1080)
         assert panel._ui_event_processor._pointers[key].hover_target is first_button
     finally:
