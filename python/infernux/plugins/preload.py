@@ -202,15 +202,23 @@ class PreloadManager:
         target = resolved_path(file_path)
         if not target or not is_path_within(target, self.project_root, allow_root=False):
             return ()
+        normalized = path_key(target)
+        stamp = _file_stamp(target) if os.path.isfile(target) else None
+        # Windows also reports access-time and attribute changes as modifications.
+        if (
+            self._catalog_initialized
+            and stamp is not None
+            and self._declaration_stamps.get(normalized) == stamp
+        ):
+            return ()
         if not self._catalog_initialized:
             self._refresh_declaration_catalog()
-        normalized = path_key(target)
         previous = self._declarations_by_path.get(normalized, ())
         previous_candidates = self._candidate_declarations(
             self._catalog_declarations()
         )
         self.failures.pop(normalized, None)
-        if os.path.isfile(target):
+        if stamp is not None:
             try:
                 current = self._read_path_declarations(target)
             except (OSError, SyntaxError, ValueError) as exc:
@@ -224,7 +232,7 @@ class PreloadManager:
                     if path_key(state.source_path) == normalized
                 )
             self._declarations_by_path[normalized] = current
-            self._declaration_stamps[normalized] = _file_stamp(target)
+            self._declaration_stamps[normalized] = stamp
         else:
             current = ()
             self._declarations_by_path.pop(normalized, None)

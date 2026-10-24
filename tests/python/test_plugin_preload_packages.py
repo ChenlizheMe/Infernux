@@ -284,6 +284,8 @@ def test_runtime_components_follow_owned_library_install_enable_reload_and_catal
         old_api = publications[-1]
         _dispatch_updates(_update_snapshot()["update"], 0.1, 0.1)
         assert old_api.ticks == 1
+        startup = root / "Startup.py"
+        startup.write_text(startup.read_text(encoding="utf-8") + "\n", encoding="utf-8")
         resources.catalog_pending = True
         resources.process_pending_reloads(force=True)
         assert len(publications) == 4
@@ -484,6 +486,12 @@ def test_preload_hot_reload_keeps_public_namespace_identity_and_last_good_state(
     manager = PluginManager.startup(str(project))
     assert public_namespace._community_reload_probe == "first"
     assert sys.modules["infernux"] is public_namespace
+
+    published = next(iter(manager.preloads.states.values())).instance
+    stamp = lifecycle.stat()
+    os.utime(lifecycle, ns=(stamp.st_atime_ns + 1_000_000_000, stamp.st_mtime_ns))
+    assert manager.preloads.reload_path(str(lifecycle)) == ()
+    assert next(iter(manager.preloads.states.values())).instance is published
 
     write_source("second")
     states = manager.preloads.reload_path(str(lifecycle))
