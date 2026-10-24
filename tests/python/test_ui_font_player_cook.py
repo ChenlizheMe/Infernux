@@ -19,6 +19,23 @@ from infernux.ui import UIButton, UIText
 from infernux.ui.ui_render_dispatch import _extract_text_attrs
 
 
+def test_font_assignment_preserves_primary_and_fallback_handles(monkeypatch):
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("Copying a font reference must not load its binary payload")
+
+    monkeypatch.setattr(AssetManager, "load_by_guid", unexpected_load)
+    source = UIText()
+    source.font = create_asset_ref("Font", guid="a" * 32)
+    source.fallback_fonts = [create_asset_ref("Font", guid="b" * 32)]
+    for target in (UIText(), UIButton()):
+        target.font = source.font
+        target.fallback_fonts = list(source.fallback_fonts)
+        fields = target._serialize_fields_document()
+        assert fields["font"]["guid"] == "a" * 32
+        assert [reference["guid"] for reference in fields["fallback_fonts"]] == ["b" * 32]
+        assert target.font.guid == source.font.guid
+
+
 def _binding(guid: str, source_path: str) -> dict[str, object]:
     return {
         "source_guid": guid,

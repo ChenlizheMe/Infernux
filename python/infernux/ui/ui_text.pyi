@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Tuple
 
-from infernux.core.asset_types import FontAssetInfo
+from infernux.core.asset_ref import GenericAssetRef
 from infernux.lib import TextCharacterBuffer, TextGeometryLayer, TextLayout
 
 from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
@@ -40,8 +40,8 @@ class UIText(InxUIScreenComponent):
 
     text: str
     rich_text: bool
-    font: FontAssetInfo | None
-    fallback_fonts: list[FontAssetInfo | None]
+    font: GenericAssetRef | None
+    fallback_fonts: list[GenericAssetRef | None]
     font_size: float
     line_height: float
     letter_spacing: float

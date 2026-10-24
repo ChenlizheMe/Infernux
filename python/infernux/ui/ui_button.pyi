@@ -12,7 +12,7 @@ from infernux.ui.ui_event_data import PointerEventData
 from infernux.core.material import Material
 from infernux.core.render_texture import RenderTexture
 from infernux.core.texture import Texture
-from infernux.core.asset_types import FontAssetInfo
+from infernux.core.asset_ref import GenericAssetRef
 
 
 class UIButton(UISelectable):
@@ -51,8 +51,8 @@ class UIButton(UISelectable):
 
     label: str
     font_size: float
-    font: FontAssetInfo | None
-    fallback_fonts: list[FontAssetInfo | None]
+    font: GenericAssetRef | None
+    fallback_fonts: list[GenericAssetRef | None]
     label_color: list
     text_material: Material | None
     text_align_h: TextAlignH

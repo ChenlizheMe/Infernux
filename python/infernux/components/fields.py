@@ -617,7 +617,10 @@ def _resolve_single_reference(value: Any, field_type: FieldType) -> Any:
         from infernux.core.asset_ref import ShaderRef
         return value.resolve() if isinstance(value, ShaderRef) else value
     if field_type == FieldType.ASSET:
-        from infernux.core.asset_ref import AssetRefBase
+        from infernux.core.asset_ref import AssetRefBase, get_asset_type_for_ref
+        # Text renderers consume font handles through the asset catalog.
+        if isinstance(value, AssetRefBase) and get_asset_type_for_ref(value) == "Font":
+            return value
         return value.resolve() if isinstance(value, AssetRefBase) else value
     return value
 
