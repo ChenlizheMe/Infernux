@@ -1,93 +1,83 @@
 {
   "schema_version": 1,
   "version": "0.4.3",
-  "tag": "v0.4.3-v3",
-  "title": "Infernux v0.4.3-v3 · Hotfix 3: Reliable Plugin Reload and Text Authoring",
-  "codename": "Hotfix 3: Reliable Plugin Reload and Text Authoring",
+  "tag": "v0.4.3-v4",
+  "title": "Infernux v0.4.3-v4 · Hotfix 4: Character Geometry and Color Composition",
+  "codename": "Hotfix 4: Character Geometry and Color Composition",
   "language": "en",
-  "published_at": "2026-10-23T01:54:14Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v3",
+  "published_at": "2026-10-23T22:57:08Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v4",
   "source": "UpdateLog.md",
-  "summary": "This hotfix fixes issues found while using independently installed animation plugins in real Windows and Linux projects. The base engine version remains 0.4.3; wheels use build 3. Hub 0.4.3-4 accompanies this distribution without changing its project-update workflow.",
+  "summary": "This hotfix completes the native text interfaces used by the independent animation plugins. The base engine version remains 0.4.3; wheels use build 4, with the matching Hub bundle at 0.4.3-5.",
   "comparison": {
-    "from": "0.4.3-v2",
-    "to": "0.4.3-v3",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v2...v0.4.3-v3"
+    "from": "0.4.3-v3",
+    "to": "0.4.3-v4",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v3...v0.4.3-v4"
   },
   "section_count": 2,
-  "item_count": 12,
+  "item_count": 10,
   "sections": [
     {
-      "id": "plugin-lifecycle-and-editor",
-      "title": "Plugin Lifecycle and Editor",
+      "id": "text-and-rendering",
+      "title": "Text and Rendering",
       "kind": "changes",
       "items": [
         {
-          "title": "Load preload-owned Python libraries before publishing components during installation and re-enabling. Keep library modules out of component transactions and avoid repeating preload notifications during explicit package publication.",
+          "title": "Add per-grapheme three-dimensional affine transforms and four-corner depth offsets. Screen text projects the transformed geometry; world text preserves depth through its retained draw packets, clipping and GPU vertex attributes.",
           "detail": "",
-          "text": "Load preload-owned Python libraries before publishing components during installation and re-enabling. Keep library modules out of component transactions and avoid repeating preload notifications during explicit package publication."
+          "text": "Add per-grapheme three-dimensional affine transforms and four-corner depth offsets. Screen text projects the transformed geometry; world text preserves depth through its retained draw packets, clipping and GPU vertex attributes."
         },
         {
-          "title": "Refresh project scripts that import a reloaded plugin library, using the in-memory dependency graph. Their dependent scripts join the same transaction, so animations do not silently retain an unloaded manager.",
+          "title": "Compose the Manual, Effects and Appearance layers in order. Corner edits remain usable at zero scale and when another layer rotates or scales the character.",
           "detail": "",
-          "text": "Refresh project scripts that import a reloaded plugin library, using the in-memory dependency graph. Their dependent scripts join the same transaction, so animations do not silently retain an unloaded manager."
+          "text": "Compose the Manual, Effects and Appearance layers in order. Corner edits remain usable at zero scale and when another layer rotates or scales the character."
         },
         {
-          "title": "Compile preload-owned libraries into Players without misregistering their internal helper classes as authored asset components. Player acceptance uses the same import boundary as the editor.",
+          "title": "Separate absolute character RGB and alpha overrides from ordinary layer tint. Alpha-only animation preserves rich-text colors, including multiple colored glyphs belonging to one grapheme. Reset restores the authored colors.",
           "detail": "",
-          "text": "Compile preload-owned libraries into Players without misregistering their internal helper classes as authored asset components. Player acceptance uses the same import boundary as the editor."
+          "text": "Separate absolute character RGB and alpha overrides from ordinary layer tint. Alpha-only animation preserves rich-text colors, including multiple colored glyphs belonging to one grapheme. Reset restores the authored colors."
         },
         {
-          "title": "Recognize cooked preload libraries as project dependencies and retain each plugin's legal notices even when their license text matches.",
+          "title": "Apply parent and element opacity independently from character alpha, and retain material tint in both runtime rendering and UI Editor previews. Characters can become visible after an authored zero-alpha base color.",
           "detail": "",
-          "text": "Recognize cooked preload libraries as project dependencies and retain each plugin's legal notices even when their license text matches."
+          "text": "Apply parent and element opacity independently from character alpha, and retain material tint in both runtime rendering and UI Editor previews. Characters can become visible after an authored zero-alpha base color."
         },
         {
-          "title": "Respect the existing edit-mode lifecycle declaration: gameplay Awake/OnEnable waits for Play, including prepared Player scene components. RenderStack explicitly runs in edit mode to retain editor rendering.",
+          "title": "Treat text inside rich-text <noparse> spans as literal content while retaining original source offsets and the surrounding text styles.",
           "detail": "",
-          "text": "Respect the existing edit-mode lifecycle declaration: gameplay Awake/OnEnable waits for Play, including prepared Player scene components. RenderStack explicitly runs in edit mode to retain editor rendering."
+          "text": "Treat text inside rich-text <noparse> spans as literal content while retaining original source offsets and the surrounding text styles."
         },
         {
-          "title": "Preserve live component base-class identities after disabling and re-enabling a package. Recognize package Runtime classes as project scripts, bind provisional imported classes to their asset identity transactionally, and initialize package namespaces for relative component imports.",
+          "title": "Rebuild the matching Windows, Linux, Android and Web Player packages for these native interfaces.",
           "detail": "",
-          "text": "Preserve live component base-class identities after disabling and re-enabling a package. Recognize package Runtime classes as project scripts, bind provisional imported classes to their asset identity transactionally, and initialize package namespaces for relative component imports."
-        },
-        {
-          "title": "Give Inspector field groups stable IDs independent of their visible titles. Repeated groups no longer produce duplicate-item errors or share fold state. Apply field-label translation consistently to lists, asset references and nested objects.",
-          "detail": "",
-          "text": "Give Inspector field groups stable IDs independent of their visible titles. Repeated groups no longer produce duplicate-item errors or share fold state. Apply field-label translation consistently to lists, asset references and nested objects."
-        },
-        {
-          "title": "Accept ordinary Python name assignments that shadow imports, including Enum member declarations, without treating them as writes to an imported object. Mutating imported objects remains a rejected candidate side effect.",
-          "detail": "",
-          "text": "Accept ordinary Python name assignments that shadow imports, including Enum member declarations, without treating them as writes to an imported object. Mutating imported objects remains a rejected candidate side effect."
+          "text": "Rebuild the matching Windows, Linux, Android and Web Player packages for these native interfaces."
         }
       ]
     },
     {
-      "id": "text-and-ui",
-      "title": "Text and UI",
+      "id": "math-and-reflection",
+      "title": "Math and Reflection",
       "kind": "changes",
       "items": [
         {
-          "title": "Expose renderer-free Unicode grapheme segmentation through TextLayout.split_graphemes, preserving original text, combining marks, emoji sequences and line breaks.",
+          "title": "Return a valid identity rotation for zero forward vectors and a normalized forward rotation for collinear or zero up vectors in Quaternion.look_rotation.",
           "detail": "",
-          "text": "Expose renderer-free Unicode grapheme segmentation through TextLayout.split_graphemes, preserving original text, combining marks, emoji sequences and line breaks."
+          "text": "Return a valid identity rotation for zero forward vectors and a normalized forward rotation for collinear or zero up vectors in Quaternion.look_rotation."
         },
         {
-          "title": "Append the bundled font after authored primary and fallback fonts so mixed-language text retains its selected face and can display remaining Chinese glyphs. Missing authored font assets remain explicit errors.",
+          "title": "Make quaternion angle and rotation-towards calculations agree for opposite-sign representations of the same rotation; correct the quaternion constructor default in the Python type stub.",
           "detail": "",
-          "text": "Append the bundled font after authored primary and fallback fonts so mixed-language text retains its selected face and can display remaining Chinese glyphs. Missing authored font assets remain explicit errors."
+          "text": "Make quaternion angle and rotation-towards calculations agree for opposite-sign representations of the same rotation; correct the quaternion constructor default in the Python type stub."
         },
         {
-          "title": "Route left, right and middle mouse buttons through independent UI press and drag state in Editor, desktop Player and Web. Buttons and sliders continue to activate with the left button; custom pointer handlers receive the actual button.",
+          "title": "Read string-valued Enum members through their declared values in semantic field descriptions, so plugin controls do not fail by coercing them to integers.",
           "detail": "",
-          "text": "Route left, right and middle mouse buttons through independent UI press and drag state in Editor, desktop Player and Web. Buttons and sliders continue to activate with the left button; custom pointer handlers receive the actual button."
+          "text": "Read string-valued Enum members through their declared values in semantic field descriptions, so plugin controls do not fail by coercing them to integers."
         },
         {
-          "title": "Use adaptive arc subdivision for large rounded rectangles, improving large-radius UI edges without oversampling small corners.",
+          "title": "Keep inherited component type identities separate from asset GUIDs in the Player dependency catalog, so valid plugin inheritance does not block builds while missing script dependencies remain errors.",
           "detail": "",
-          "text": "Use adaptive arc subdivision for large rounded rectangles, improving large-radius UI edges without oversampling small corners."
+          "text": "Keep inherited component type identities separate from asset GUIDs in the Player dependency catalog, so valid plugin inheritance does not block builds while missing script dependencies remain errors."
         }
       ]
     }
