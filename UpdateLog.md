@@ -1,3 +1,30 @@
+# Infernux v0.4.3-v5 · Hotfix 5: Game Input and Preview Control
+
+This hotfix repairs game UI input in the editor and restores control of the Game preview resolution. The base engine version remains 0.4.3; wheels use build 5, with the matching Hub bundle at 0.4.3-6.
+
+[中文更新日志](UpdateLog-zh.md)
+
+**Baseline for comparison:** [`v0.4.3-v4...v0.4.3-v5`](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v4...v0.4.3-v5).
+
+### Input and Editor Performance
+
+- Process game pointer transitions independently of editor panel redraws, so short clicks reach game UI without rebuilding every editor panel for each click.
+- Request a GUI frame for each physical input batch even while continuous MCP semantic capture holds the frame scheduler active. Input edges no longer disappear before the next panel update.
+- Keep raw editor input separate from game-owned mouse buttons, keys, wheel and text. Resolve actual window occlusion, popups and text editing before assigning new game input; preserve releases for presses already owned by the game.
+- Keep retained UI geometry when an ordinary numeric field is assigned an equal integer or float value, avoiding needless invalidation in animated controls.
+- Expose read-only UI input routing and existing frame timing details through the editor automation host for diagnosis without generating events or submitting UI work.
+
+### Preview, Fonts and Plugins
+
+- Restore the Game resolution selector when a project has a fixed render output. Users choose fixed or custom preview resolutions independently of project output and camera settings.
+- Add Auto resolution, which follows the Game panel's available area and framebuffer scale. Fixed resolution previews retain their selected dimensions across Play and Stop.
+- Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios.
+- Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking.
+- Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views.
+- Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces.
+
+---
+
 # Infernux v0.4.3-v4 · Hotfix 4: Character Geometry and Color Composition
 
 This hotfix completes the native text interfaces used by the independent animation plugins. The base engine version remains 0.4.3; wheels use build 4, with the matching Hub bundle at 0.4.3-5.

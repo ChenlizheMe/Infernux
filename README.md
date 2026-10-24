@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="Infernux logo"></a>
 </p>
 
-**0.4.3 hotfix 4** extends native character animation to three dimensions and corrects character color, opacity and editor preview composition. See the [changelog](UpdateLog.md).
+**0.4.3 hotfix 5** fixes missed game UI clicks, reduces input-triggered editor work, and restores user-controlled Game preview resolutions with Auto sizing. See the [changelog](UpdateLog.md).
 
 <h1 align="center">Infernux · 熔炉</h1>
 
