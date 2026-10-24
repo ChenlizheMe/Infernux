@@ -1047,7 +1047,12 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
             // A material GUID does not imply a custom UI program. Existing
             // Standard/Unlit and ordinary mesh materials still use the fixed
             // UI vertex format, texture descriptor and tint pipeline.
-            const auto declaredDomain = InspectMaterialShaderDomain(material);
+            std::optional<ShaderProgramDomain> declaredDomain;
+            try {
+                declaredDomain = InspectMaterialShaderDomain(material);
+            } catch (const std::exception &error) {
+                throw UIShaderMaterialError(error.what());
+            }
             if (!declaredDomain ||
                 (*declaredDomain != ShaderProgramDomain::ScreenUI && *declaredDomain != ShaderProgramDomain::WorldUI))
                 return false;
@@ -3734,6 +3739,12 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             auto mat = resolveMaterial(dependentGuid);
             if (!mat)
                 return;
+            if (m_renderer) {
+                if (auto *ui = m_renderer->GetScreenUIRenderer())
+                    ui->InvalidateMaterialRejection(dependentGuid);
+                if (event == AssetEvent::Deleted)
+                    m_renderer->InvalidateUIMaterialProgram({mat->GetVertShaderName(), mat->GetFragShaderName()});
+            }
             mat->MarkPipelineDirty();
             INXLOG_INFO("AssetGraph: marked material '", mat->GetName(), "' pipeline dirty (shader changed)");
         });

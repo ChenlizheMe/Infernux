@@ -199,6 +199,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         m_materialTextureGenerationResolver = std::move(resolver);
     }
     void InvalidateMaterialProgram(const ShaderStagePair &stages);
+    void InvalidateMaterialRejection(const std::string &materialGuid);
     [[nodiscard]] size_t GetMaterialPipelineVariantCount() const noexcept
     {
         return m_materialPipelineVariants.size();

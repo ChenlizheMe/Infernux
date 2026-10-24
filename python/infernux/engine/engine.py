@@ -922,6 +922,13 @@ class Engine():
         except Exception as exc:
             Debug.log_suppressed("Engine.exit.MainThreadCommandQueue", exc)
 
+        # Pending script imports still need the plugins' live modules.
+        if self._resources_manager:
+            from infernux.core.assets import AssetManager
+
+            AssetManager.flush_all_asset_writes()
+            self._resources_manager.cleanup()
+
         self._shutdown_plugins_for_exit()
 
         if self._runtime_scene_manager is not None:
@@ -977,11 +984,6 @@ class Engine():
                 Debug.log_suppressed("Engine.exit.HeadlessUndoManager", exc)
             finally:
                 self._headless_undo_manager = None
-
-        # 1. Stop the observer and commit any events it already delivered while
-        #    AssetDatabase, AssetRegistry, renderer, and editor caches are alive.
-        if self._resources_manager:
-            self._resources_manager.cleanup()
 
         # Native AssetDatabase/AssetRegistry bindings become dangling as soon
         # as C++ cleanup starts. Release Python caches while those objects are

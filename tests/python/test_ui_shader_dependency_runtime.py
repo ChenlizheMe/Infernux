@@ -6,7 +6,7 @@ import pytest
 from infernux.core.assets import AssetManager
 from infernux.core.material import Material
 from infernux.debug import DebugConsole, LogType
-from infernux.lib import InxMaterial, ScreenUIList, Vector3
+from infernux.lib import ConsolePanel, InxMaterial, ScreenUIList, Vector3
 from infernux.engine.runtime_screen_ui_pipeline import RuntimeScreenUIRenderPipeline
 from infernux.renderstack import RenderStackPipeline
 from infernux.ui.ui_render_dispatch import _bind_runtime_material
@@ -103,6 +103,116 @@ void main() {
 WORLD_FRAGMENT = (FRAGMENT[:FRAGMENT.index('layout(push_constant)')]
                   + WORLD_PUSH_CONSTANTS
                   + FRAGMENT[FRAGMENT.index('layout(location=0) out vec4'):])
+
+
+def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, scene, dependency_sources):
+    prefix, create, _ = dependency_sources
+    vertex_name, fragment_name = prefix + ' Vertex', prefix + ' Fragment'
+    _, vertex_guid = create('Vertex', '.vert',
+        f'ShaderInfo {{ Name "{vertex_name}" Capabilities [ScreenUI] }}\n' + VERTEX)
+    fragment, fragment_guid = create('Fragment', '.frag',
+        f'ShaderInfo {{ Name "{fragment_name}" Capabilities [ScreenUI] }}\n'
+        + FRAGMENT.replace('dependencyColor()', 'vec4(0,0,1,1)'))
+    document = InxMaterial.create_default_lit().serialize_document()
+    document.update(builtin=False, name=prefix + ' Missing UI material')
+    document['shaders'] = {
+        'vertex': {'guid': vertex_guid, 'shader_id': vertex_name},
+        'fragment': {'guid': fragment_guid, 'shader_id': fragment_name},
+    }
+    _, material_guid = create('Material', '.mat', json.dumps(document))
+    material = AssetManager.load(material_guid, Material)
+    metadata = fragment.with_suffix('.frag.meta')
+    source_bytes, metadata_bytes = fragment.read_bytes(), metadata.read_bytes()
+
+    def remove_shader():
+        fragment.unlink()
+        removed = AssetManager.delete_asset(str(fragment))
+        assert removed, removed.error
+        assert not engine.get_asset_database().get_path_from_guid(fragment_guid)
+
+    def restore_shader():
+        metadata.write_bytes(metadata_bytes)
+        fragment.write_bytes(source_bytes)
+        imported = AssetManager.import_asset(str(fragment))
+        assert imported and imported.guid == fragment_guid, imported.error
+
+    console = ConsolePanel()
+    remove_shader()
+    camera = scene.create_game_object('Missing UI shader camera')
+    camera.transform.position = Vector3(0, 0, -2)
+    camera.add_component('Camera')
+    previous_samples = engine.get_msaa_samples()
+    engine.set_msaa_samples(4)
+    engine.resize_game_render_target(64, 64)
+    state = {'phase': 0, 'ticket': None, 'frames': 0}
+    errors = []
+
+    class Submission:
+        def submit(self):
+            renderer = engine.get_screen_ui_renderer()
+            renderer.begin_frame(64, 64)
+            renderer.begin_command_packet()
+            try:
+                _bind_runtime_material(renderer, ScreenUIList.Overlay, {})
+                renderer.add_filled_rect(ScreenUIList.Overlay, 4, 4, 16, 16)
+                _bind_runtime_material(renderer, ScreenUIList.Overlay, {'_native': material._native})
+                renderer.add_filled_rect(ScreenUIList.Overlay, 28, 28, 60, 60)
+                packet = renderer.end_command_packet()
+            except BaseException:
+                renderer.abort_command_packet()
+                raise
+            renderer.append_command_packets([packet])
+
+    def after_draw():
+        try:
+            state['frames'] += 1
+            assert state['frames'] <= 100, 'UI shader recovery readback never completed'
+            if state['ticket'] is None:
+                state['ticket'] = engine.request_render_target_readback(True)
+                return
+            ticket = state['ticket']
+            if not ticket.done:
+                return
+            assert not ticket.error, ticket.error
+            pixels = ticket.result_numpy()
+            assert min(pixels[8, 8, :3]) >= .95, 'A rejected material suppressed healthy UI'
+            sample = pixels[42, 42, :3].tolist()
+            draws = engine.get_screen_ui_renderer().last_submitted_draw_count(ScreenUIList.Overlay)
+            if state['phase'] % 2 == 0:
+                assert draws == 1, 'Missing UI shader was rendered using a default material'
+                restore_shader()
+            else:
+                assert draws == 2
+                assert sample[2] >= .95 and max(sample[:2]) <= .02, sample
+                if state['phase'] == 1:
+                    remove_shader()
+                else:
+                    engine.exit()
+            state['phase'] += 1
+            state['ticket'] = None
+        except BaseException as error:
+            errors.append(error)
+            engine.exit()
+
+    try:
+        engine.set_game_camera_enabled(True)
+        engine.set_render_pipeline(RuntimeScreenUIRenderPipeline(Submission(), RenderStackPipeline()))
+        engine.set_post_draw_callback(after_draw)
+        engine.run()
+        assert not errors, repr(errors)
+        assert state['phase'] == 4
+    finally:
+        engine.set_post_draw_callback(None)
+        engine.set_render_pipeline(None)
+        engine.set_game_camera_enabled(False)
+        engine.get_screen_ui_renderer().begin_frame(64, 64)
+        engine.set_msaa_samples(previous_samples)
+        if not fragment.exists():
+            restore_shader()
+    rejected = [entry for entry in console._get_visible_log_snapshot(1000)
+                if 'Material shader GUID cannot be resolved' in entry['message']]
+    assert len(rejected) == 2, rejected
+    assert all(fragment_guid in entry['message'] for entry in rejected)
 
 
 @pytest.mark.parametrize('draw_list', (ScreenUIList.Overlay, ScreenUIList.Camera, ScreenUIList.World),

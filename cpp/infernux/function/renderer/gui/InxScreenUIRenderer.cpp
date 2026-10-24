@@ -1901,6 +1901,11 @@ void InxScreenUIRenderer::RetireMaterialDescriptor(const std::string &guid)
     m_deletionQueue->Retire([resource = std::move(resource)] {});
 }
 
+void InxScreenUIRenderer::InvalidateMaterialRejection(const std::string &materialGuid)
+{
+    m_rejectedMaterialGenerations.erase(materialGuid);
+}
+
 void InxScreenUIRenderer::InvalidateMaterialProgram(const ShaderStagePair &stages)
 {
     m_rejectedMaterialGenerations.clear();

@@ -891,7 +891,7 @@ def test_real_observer_is_owned_joinable_and_commits_on_main(monkeypatch, tmp_pa
     assert manager._observer is None
 
 
-def test_engine_exit_drains_resources_before_native_cleanup():
+def test_engine_exit_drains_resources_before_plugin_and_native_cleanup(monkeypatch):
     order = []
     engine = Engine.__new__(Engine)
     engine._mode = RuntimeMode.Headless
@@ -903,10 +903,11 @@ def test_engine_exit_drains_resources_before_native_cleanup():
     engine._resources_manager = SimpleNamespace(cleanup=lambda: order.append("resources"))
     engine._engine = SimpleNamespace(cleanup=lambda: order.append("native"))
     engine._gui_objects = {}
+    monkeypatch.setattr(engine, "_shutdown_plugins_for_exit", lambda: order.append("plugins"))
 
     engine.exit()
 
-    assert order == ["resources", "native"]
+    assert order == ["resources", "plugins", "native"]
     assert engine._resources_manager is None
     assert engine._engine is None
 
