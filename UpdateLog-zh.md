@@ -4,7 +4,7 @@
 
 [English changelog](UpdateLog.md)
 
-**对比基线：** `v0.4.3-v3...v0.4.3-v4`。
+**对比基线：** [`v0.4.3-v3...v0.4.3-v4`](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v3...v0.4.3-v4)。
 
 ### 文本与渲染
 

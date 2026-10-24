@@ -4,7 +4,7 @@ This hotfix completes the native text interfaces used by the independent animati
 
 [中文更新日志](UpdateLog-zh.md)
 
-**Baseline for comparison:** `v0.4.3-v3...v0.4.3-v4`.
+**Baseline for comparison:** [`v0.4.3-v3...v0.4.3-v4`](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v3...v0.4.3-v4).
 
 ### Text and Rendering
 
