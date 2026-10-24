@@ -64,7 +64,8 @@
     </header>
 
     <main class="page-shell changelog-page" id="main-content">
-<article class="container release-article" data-page-language="en"><a href="../roadmap.html#release-log">← All releases</a><header class="changelog-heading"><span class="mini-tag">v0.4.3-v5 · Release in preparation</span><h1>Hotfix 5: Game Input and Preview Control</h1>
+<article class="container release-article" data-page-language="en"><a href="../roadmap.html#release-log">← All releases</a><header class="changelog-heading"><span class="mini-tag">v0.4.3-v5 · 2026-10-24</span><h1>Hotfix 5: Game Input and Preview Control</h1>
+<a href="https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v5">GitHub Release ↗</a>
 </header><div class="release-prose"><p>This hotfix repairs game UI input in the editor and restores control of the Game preview resolution. The base engine version remains 0.4.3; wheels use build 5, with the matching Hub bundle at 0.4.3-6.</p>
 <p><strong>Baseline for comparison:</strong> <a href="https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v4...v0.4.3-v5"><code>v0.4.3-v4...v0.4.3-v5</code></a>.</p>
 <h2 id="en-input-and-editor-performance">Input and Editor Performance</h2>
@@ -81,12 +82,23 @@
 <li>Add Auto resolution, which follows the Game panel's available area and framebuffer scale. Fixed resolution previews retain their selected dimensions across Play and Stop.</li>
 <li>Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios.</li>
 <li>Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking.</li>
+<li>Keep the renderer running when a UI material references a missing shader. Skip only the affected draw, report it once until the dependency changes, and resume after a successful import.</li>
+<li>Drain pending asset imports while their plugin modules are still loaded, before unloading plugins and releasing native resources during shutdown.</li>
 <li>Retire native Player scenes before releasing the asset catalog, so component disable and destroy callbacks can still resolve their font and other asset references during shutdown.</li>
+<li>Preserve signal handlers owned by embedded native hosts, avoiding an Android exit exception that interrupted normal engine cleanup.</li>
 <li>Ignore access-time and attribute-only script notifications when the recorded modification time and size are unchanged, preventing needless plugin restarts during Windows Player builds.</li>
+<li>Reload changed plugin helpers even when equal-size edits share an integer-second timestamp, while retaining unchanged import caches.</li>
+<li>Report unmatched GUI tree pops before changing layout or ID state, preventing malformed custom panels from leaving errors in subsequent frames.</li>
 <li>Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views.</li>
 <li>Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces.</li>
+</ul>
+<h2 id="en-hub">Hub</h2>
+<ul>
+<li>Preserve complete editor startup errors and include the process exit code. Wait for the stderr reader to finish without blocking the Hub, so the final exception is not lost.</li>
+<li>Give the Show details button the standard visible button border.</li>
 </ul></div></article>
-<article class="container release-article" data-page-language="zh" hidden><a href="../roadmap.html#release-log">← 全部版本</a><header class="changelog-heading"><span class="mini-tag">v0.4.3-v5 · 正在准备发布</span><h1>热修 5：游戏输入与预览控制</h1>
+<article class="container release-article" data-page-language="zh" hidden><a href="../roadmap.html#release-log">← 全部版本</a><header class="changelog-heading"><span class="mini-tag">v0.4.3-v5 · 2026-10-24</span><h1>热修 5：游戏输入与预览控制</h1>
+<a href="https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v5">GitHub Release ↗</a>
 </header><div class="release-prose"><p>本次热修修复编辑器中的游戏 UI 输入，并恢复 Game 预览分辨率的选择权。引擎基础版本保持 0.4.3，wheel 使用构建号 5，配套 Hub 为 0.4.3-6。</p>
 <p><strong>对比基线：</strong> <a href="https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v4...v0.4.3-v5"><code>v0.4.3-v4...v0.4.3-v5</code></a>。</p>
 <h2 id="zh-_1">输入与编辑器性能</h2>
@@ -103,10 +115,20 @@
 <li>新增 Auto，根据 Game 面板可用区域与 framebuffer 缩放决定分辨率并填满预览区域；固定分辨率在 Play、Stop 前后保持所选尺寸。</li>
 <li>分别换算横纵两个方向的鼠标坐标，使小数缩放和不同宽高比下的 UI 点击位置与预览一致。</li>
 <li>复制序列化 UI 样式时保留字体资产句柄，维持原生资产身份和 Player 依赖追踪。</li>
+<li>UI 材质引用的着色器缺失时保持渲染循环运行，只跳过受影响的绘制，在依赖变化前仅报告一次，并在成功导入后恢复显示。</li>
+<li>退出时先在插件模块仍可用的阶段处理完待导入资产，再卸载插件并释放原生资源。</li>
 <li>Player 退出时先销毁原生场景，再释放资产目录，使组件停用、销毁回调仍能正确解析字体等资产引用。</li>
+<li>保留嵌入式原生宿主持有的信号处理，修复 Android 正常退出时的异常，确保引擎清理能够完成。</li>
 <li>脚本修改时间与大小未变时，忽略仅访问时间或文件属性变化的通知，避免 Windows 构建过程中无意义地重启插件。</li>
+<li>插件辅助文件在同一整数秒内作等长修改时也能正确重载，保留未修改文件的导入缓存。</li>
+<li>GUI 树节点没有对应的展开操作时，先报告错误再拒绝弹出，避免自定义面板的一次错误调用持续污染后续帧。</li>
 <li>登记独立发布的 Text Animator 0.1.2 和 MCP 0.1.21。Text Animator 对字符缓冲区视图原地缩放，也支持只有 getter 的原生视图。</li>
 <li>为更新后的原生输入接口重建匹配的 Windows、Linux、Android、Web Player 插件。</li>
+</ul>
+<h2 id="zh-hub">Hub</h2>
+<ul>
+<li>保留完整的编辑器启动错误并显示进程退出码，以非阻塞方式等待标准错误读取完成，避免丢失最后的异常信息。</li>
+<li>“显示详情”按钮使用标准的可见边框。</li>
 </ul></div></article>
     </main>
 
