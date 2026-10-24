@@ -151,3 +151,34 @@ def test_failed_player_load_keeps_resident_origins(player_worlds, mode):
     SceneManager.unload_scene(state.first)
     assert SceneManager.get_active_scene() is state.second
     assert state.service.active_scene_path == state.paths["Second"]
+
+
+def test_player_shutdown_retires_scenes_before_asset_resolvers(scene, tmp_path):
+    from infernux.components import InxComponent
+    from infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.project_context import (
+        resolve_runtime_asset_guid,
+        set_runtime_asset_resolver,
+        using_project_root,
+    )
+
+    events = []
+
+    class ShutdownWitness(InxComponent):
+        def on_disable(self):
+            events.append(("disable", resolve_runtime_asset_guid("font")))
+
+        def on_destroy(self):
+            events.append(("destroy", resolve_runtime_asset_guid("font")))
+
+    native = NativeSceneManager.instance()
+    scene.create_game_object("ShutdownWitness").add_py_component(ShutdownWitness())
+    native.play()
+    with using_project_root(str(tmp_path)):
+        set_runtime_asset_resolver(lambda guid: "cooked-font.ttf" if guid == "font" else None)
+        session = PlayerRuntimeSession(scheduler=SimpleNamespace(clear=lambda: None))
+        session._state = "playing"
+        session.shutdown()
+        assert events == [("disable", "cooked-font.ttf"), ("destroy", "cooked-font.ttf")]
+        assert native.scene_count == 0
+        assert resolve_runtime_asset_guid("font") is None

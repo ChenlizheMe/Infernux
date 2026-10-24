@@ -309,31 +309,17 @@ class PlayerRuntimeSession:
         return delta_time
 
     def shutdown(self) -> None:
-        """Stop runtime callbacks without restoring or saving editor state."""
-        if self._state != "stopped":
-            try:
-                from infernux.lib import SceneManager
+        """Retire Player scenes while their resource catalog is still bound."""
+        from infernux.lib import SceneManager
 
-                SceneManager.instance().stop()
-            except Exception as exc:
-                Debug.log_suppressed("PlayerRuntimeSession.stop_scene", exc)
-        try:
-            from infernux.components.component import InxComponent
-
-            for comp_list in list(InxComponent._active_instances.values()):
-                for component in list(comp_list):
-                    try:
-                        component._call_on_destroy()
-                    except Exception as exc:
-                        Debug.log_suppressed(
-                            f"PlayerRuntimeSession.on_destroy[{type(component).__name__}]",
-                            exc,
-                        )
-            InxComponent._clear_all_instances()
-        except Exception as exc:
-            Debug.log_suppressed("PlayerRuntimeSession.clear_components", exc)
-        self._execution_scheduler.clear()
         self._scene_service.cancel_pending_load()
+        native = SceneManager.instance()
+        native.stop()
+        # Native destruction owns OnDisable -> OnDestroy and Python bindings.
+        # Retiring only Python mirrors leaves native callbacks until GPU cleanup.
+        while native.scene_count:
+            native.unload_scene(native.get_scene_at(native.scene_count - 1))
+        self._execution_scheduler.clear()
         if self._scene_service_installed:
             try:
                 from infernux.scene import SceneManager as RuntimeSceneManager

@@ -20,6 +20,7 @@ This hotfix repairs game UI input in the editor and restores control of the Game
 - Add Auto resolution, which follows the Game panel's available area and framebuffer scale. Fixed resolution previews retain their selected dimensions across Play and Stop.
 - Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios.
 - Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking.
+- Retire native Player scenes before releasing the asset catalog, so component disable and destroy callbacks can still resolve their font and other asset references during shutdown.
 - Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views.
 - Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces.
 
