@@ -583,9 +583,15 @@ class Engine():
         # Raising inside a Python render callback is handled as a script error
         # by the native callback boundary. Request loop termination instead,
         # and propagate the interrupt only after the current frame completes.
-        owns_signals = threading.current_thread() is threading.main_thread()
+        # Embedded hosts can own SIGINT in native code (getsignal returns None).
+        # Python cannot restore that handler, so leave it with the host.
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        owns_signals = (
+            previous_sigint is not None
+            and threading.current_thread() is threading.main_thread()
+        )
         if owns_signals:
-            previous_sigint = signal.signal(signal.SIGINT, interrupt_loop)
+            signal.signal(signal.SIGINT, interrupt_loop)
         gc_was_enabled = gc.isenabled()
         previous_threshold = gc.get_threshold()
         if gc_was_enabled:

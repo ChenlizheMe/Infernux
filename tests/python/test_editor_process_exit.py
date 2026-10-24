@@ -72,11 +72,20 @@ def test_temporary_cook_host_does_not_unload_callers_plugins(monkeypatch, owner)
 
 
 @pytest.mark.parametrize(
-    "gc_enabled,error", [(True, None), (True, RuntimeError("frame failed")), (False, KeyboardInterrupt())]
+    "gc_enabled,error,native_sigint",
+    [
+        (True, None, False),
+        (True, RuntimeError("frame failed"), False),
+        (False, KeyboardInterrupt(), False),
+        (True, None, True),
+    ],
 )
-def test_native_loop_always_exits_and_restores_gc(error, gc_enabled):
+def test_native_loop_always_exits_and_restores_gc(monkeypatch, error, gc_enabled, native_sigint):
     calls = []
     engine = Engine.__new__(Engine)
+    if native_sigint:
+        monkeypatch.setattr(signal, "getsignal", lambda _: None)
+        monkeypatch.setattr(signal, "signal", lambda *_: pytest.fail("replaced native SIGINT handler"))
 
     def run():
         assert gc.isenabled() is gc_enabled

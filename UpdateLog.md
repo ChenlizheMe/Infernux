@@ -21,6 +21,7 @@ This hotfix repairs game UI input in the editor and restores control of the Game
 - Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios.
 - Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking.
 - Retire native Player scenes before releasing the asset catalog, so component disable and destroy callbacks can still resolve their font and other asset references during shutdown.
+- Preserve signal handlers owned by embedded native hosts, avoiding an Android exit exception that interrupted normal engine cleanup.
 - Ignore access-time and attribute-only script notifications when the recorded modification time and size are unchanged, preventing needless plugin restarts during Windows Player builds.
 - Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views.
 - Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces.
