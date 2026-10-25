@@ -80,6 +80,7 @@
 <ul>
 <li>Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses.</li>
 <li>Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths.</li>
+<li>Open projects using earlier installed SDKs through their own startup entry; enable dependency preparation only when the installed SDK provides it.</li>
 <li>Respect the automatic-update preference when opening the engine installation page; manual update checks remain available.</li>
 <li>Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix.</li>
 </ul></div></article>
@@ -99,6 +100,7 @@
 <ul>
 <li>先完成项目锁交接，再允许编辑器准备依赖或启动替代进程；“停止”和“重试”同时结束替代编辑器与安装子进程。</li>
 <li>重启时保留 Windows 短路径 Python 宿主和项目私有 Python 环境，支持长路径及非 ASCII 项目目录。</li>
+<li>已安装较早 SDK 的项目继续使用其自身启动入口；仅在对应 SDK 提供依赖准备入口时启用该流程。</li>
 <li>打开引擎安装页时遵守“自动检查更新”设置，手动检查仍可使用。</li>
 <li>SDK 发布前确认已公开的 Windows／Linux Player 与热修版本完全匹配，并重新构建配套桌面平台包。</li>
 </ul></div></article>
