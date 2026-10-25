@@ -1,140 +1,51 @@
 {
   "schema_version": 1,
   "version": "0.4.3",
-  "tag": "v0.4.3-v5",
-  "title": "Infernux v0.4.3-v5 · Hotfix 5: Game Input and Preview Control",
-  "codename": "Hotfix 5: Game Input and Preview Control",
+  "tag": "v0.4.3-v6",
+  "title": "Infernux v0.4.3-v6 · Hotfix 6: Portable Plugin Updates",
+  "codename": "Hotfix 6: Portable Plugin Updates",
   "language": "en",
-  "published_at": "2026-10-24T23:27:27Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v5",
+  "published_at": "2026-10-25T07:23:35Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v6",
   "source": "UpdateLog.md",
-  "summary": "This hotfix repairs game UI input in the editor and restores control of the Game preview resolution. The base engine version remains 0.4.3; wheels use build 5, with the matching Hub bundle at 0.4.3-6.",
+  "summary": "This hotfix repairs plugin updates after cloning or moving a project to a machine with an empty package cache. It also fixes default MCP updates that could prevent an existing project from opening after an engine hotfix upgrade. The base engine version remains 0.4.3; wheels use build 6, with the matching Hub bundle at 0.4.3-7.",
   "comparison": {
-    "from": "0.4.3-v4",
-    "to": "0.4.3-v5",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v4...v0.4.3-v5"
+    "from": "0.4.3-v5",
+    "to": "0.4.3-v6",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v5...v0.4.3-v6"
   },
-  "section_count": 3,
-  "item_count": 20,
+  "section_count": 1,
+  "item_count": 5,
   "sections": [
     {
-      "id": "input-and-editor-performance",
-      "title": "Input and Editor Performance",
+      "id": "plugins-and-collaboration",
+      "title": "Plugins and Collaboration",
       "kind": "changes",
       "items": [
         {
-          "title": "Process game pointer transitions independently of editor panel redraws, so short clicks reach game UI without rebuilding every editor panel for each click.",
+          "title": "Restore an evicted original package from its pinned URL, GitHub release tag or Git commit before planning an update. Unchanged project files are no longer misclassified as local edits just because another machine lacks the original cache.",
           "detail": "",
-          "text": "Process game pointer transitions independently of editor panel redraws, so short clicks reach game UI without rebuilding every editor panel for each click."
+          "text": "Restore an evicted original package from its pinned URL, GitHub release tag or Git commit before planning an update. Unchanged project files are no longer misclassified as local edits just because another machine lacks the original cache."
         },
         {
-          "title": "Request a GUI frame for each physical input batch even while continuous MCP semantic capture holds the frame scheduler active. Input edges no longer disappear before the next panel update.",
+          "title": "Retain published release URLs for bundled official plugins. Existing cache-only built-in records can recover their original official release, allowing default MCP upgrades to preserve both file GUIDs and genuine project edits.",
           "detail": "",
-          "text": "Request a GUI frame for each physical input batch even while continuous MCP semantic capture holds the frame scheduler active. Input edges no longer disappear before the next panel update."
+          "text": "Retain published release URLs for bundled official plugins. Existing cache-only built-in records can recover their original official release, allowing default MCP upgrades to preserve both file GUIDs and genuine project edits."
         },
         {
-          "title": "Keep raw editor input separate from game-owned mouse buttons, keys, wheel and text. Resolve actual window occlusion, popups and text editing before assigning new game input; preserve releases for presses already owned by the game.",
+          "title": "Acquire original and incoming archives in the plugin panel's background download step. Publication uses the prepared cache and preserves the installed pin when actual edits require user attention.",
           "detail": "",
-          "text": "Keep raw editor input separate from game-owned mouse buttons, keys, wheel and text. Resolve actual window occlusion, popups and text editing before assigning new game input; preserve releases for presses already owned by the game."
+          "text": "Acquire original and incoming archives in the plugin panel's background download step. Publication uses the prepared cache and preserves the installed pin when actual edits require user attention."
         },
         {
-          "title": "Keep retained UI geometry when an ordinary numeric field is assigned an equal integer or float value, avoiding needless invalidation in animated controls.",
+          "title": "Keep local-only packages local: an unavailable original archive must be supplied before updating, including when overwrite was explicitly selected.",
           "detail": "",
-          "text": "Keep retained UI geometry when an ordinary numeric field is assigned an equal integer or float value, avoiding needless invalidation in animated controls."
+          "text": "Keep local-only packages local: an unavailable original archive must be supplied before updating, including when overwrite was explicitly selected."
         },
         {
-          "title": "Expose read-only UI input routing and existing frame timing details through the editor automation host for diagnosis without generating events or submitting UI work.",
+          "title": "Refresh the offline official catalog with the independently published Tween 0.1.2 and Text Animator 0.1.3 releases.",
           "detail": "",
-          "text": "Expose read-only UI input routing and existing frame timing details through the editor automation host for diagnosis without generating events or submitting UI work."
-        }
-      ]
-    },
-    {
-      "id": "preview-fonts-and-plugins",
-      "title": "Preview, Fonts and Plugins",
-      "kind": "changes",
-      "items": [
-        {
-          "title": "Restore the Game resolution selector when a project has a fixed render output. Users choose fixed or custom preview resolutions independently of project output and camera settings.",
-          "detail": "",
-          "text": "Restore the Game resolution selector when a project has a fixed render output. Users choose fixed or custom preview resolutions independently of project output and camera settings."
-        },
-        {
-          "title": "Add Auto resolution, which follows the Game panel's available area and framebuffer scale. Fixed resolution previews retain their selected dimensions across Play and Stop.",
-          "detail": "",
-          "text": "Add Auto resolution, which follows the Game panel's available area and framebuffer scale. Fixed resolution previews retain their selected dimensions across Play and Stop."
-        },
-        {
-          "title": "Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios.",
-          "detail": "",
-          "text": "Map pointer coordinates independently on both axes, keeping game UI hit testing aligned with the preview at fractional scales and different aspect ratios."
-        },
-        {
-          "title": "Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking.",
-          "detail": "",
-          "text": "Preserve font asset handles when copying serialized UI styling, retaining their native asset identity and Player dependency tracking."
-        },
-        {
-          "title": "Keep the renderer running when a UI material references a missing shader. Skip only the affected draw, report it once until the dependency changes, and resume after a successful import.",
-          "detail": "",
-          "text": "Keep the renderer running when a UI material references a missing shader. Skip only the affected draw, report it once until the dependency changes, and resume after a successful import."
-        },
-        {
-          "title": "Drain pending asset imports while their plugin modules are still loaded, before unloading plugins and releasing native resources during shutdown.",
-          "detail": "",
-          "text": "Drain pending asset imports while their plugin modules are still loaded, before unloading plugins and releasing native resources during shutdown."
-        },
-        {
-          "title": "Retire native Player scenes before releasing the asset catalog, so component disable and destroy callbacks can still resolve their font and other asset references during shutdown.",
-          "detail": "",
-          "text": "Retire native Player scenes before releasing the asset catalog, so component disable and destroy callbacks can still resolve their font and other asset references during shutdown."
-        },
-        {
-          "title": "Preserve signal handlers owned by embedded native hosts, avoiding an Android exit exception that interrupted normal engine cleanup.",
-          "detail": "",
-          "text": "Preserve signal handlers owned by embedded native hosts, avoiding an Android exit exception that interrupted normal engine cleanup."
-        },
-        {
-          "title": "Ignore access-time and attribute-only script notifications when the recorded modification time and size are unchanged, preventing needless plugin restarts during Windows Player builds.",
-          "detail": "",
-          "text": "Ignore access-time and attribute-only script notifications when the recorded modification time and size are unchanged, preventing needless plugin restarts during Windows Player builds."
-        },
-        {
-          "title": "Reload changed plugin helpers even when equal-size edits share an integer-second timestamp, while retaining unchanged import caches.",
-          "detail": "",
-          "text": "Reload changed plugin helpers even when equal-size edits share an integer-second timestamp, while retaining unchanged import caches."
-        },
-        {
-          "title": "Report unmatched GUI tree pops before changing layout or ID state, preventing malformed custom panels from leaving errors in subsequent frames.",
-          "detail": "",
-          "text": "Report unmatched GUI tree pops before changing layout or ID state, preventing malformed custom panels from leaving errors in subsequent frames."
-        },
-        {
-          "title": "Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views.",
-          "detail": "",
-          "text": "Register the independently released Text Animator 0.1.2 and MCP 0.1.21 packages. Text Animator scales its writable character-buffer views in place, including getter-only native views."
-        },
-        {
-          "title": "Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces.",
-          "detail": "",
-          "text": "Rebuild the matching Windows, Linux, Android and Web Player packages for the updated native input interfaces."
-        }
-      ]
-    },
-    {
-      "id": "hub",
-      "title": "Hub",
-      "kind": "changes",
-      "items": [
-        {
-          "title": "Preserve complete editor startup errors and include the process exit code. Wait for the stderr reader to finish without blocking the Hub, so the final exception is not lost.",
-          "detail": "",
-          "text": "Preserve complete editor startup errors and include the process exit code. Wait for the stderr reader to finish without blocking the Hub, so the final exception is not lost."
-        },
-        {
-          "title": "Give the Show details button the standard visible button border.",
-          "detail": "",
-          "text": "Give the Show details button the standard visible button border."
+          "text": "Refresh the offline official catalog with the independently published Tween 0.1.2 and Text Animator 0.1.3 releases."
         }
       ]
     }
