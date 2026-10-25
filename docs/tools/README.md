@@ -28,8 +28,7 @@ loads only the selected category. The shell still uses `i18n-source.json`.
 `live` denotes an implemented capability, `planned` a remaining or unverified goal, `progress`
 explicitly confirmed active work, and `future` a longer-term research direction.
 Only `progress` receives the slow GSAP pulse; do not infer it from partial completion.
-Mixed branches with implemented leaves derive the static `partial` status. See
-`docs/roadmap-status-audit.md` for implementation evidence and scope of the status review.
+Mixed branches with implemented leaves derive the static `partial` status.
 Only implemented planets use the category color. Remaining planets are charcoal;
 partial parents show their implemented leaf fraction as a colored arc. Detailed
 goals never inherit completion from an implemented, broader capability.
@@ -38,8 +37,9 @@ constitute completion or a promised release date. `roadmap-layout.js` lays out
 the actual branch sizes radially with a stable seed and reserved bilingual label
 footprints. Run `node docs/tools/test-roadmap-data.mjs` after edits to catch duplicate
 goals, missing translations, disconnected nodes and overlapping footprints.
-Remove goals that duplicate another map or describe no engine work; promote a goal to `live` only with a code
-reference recorded in the audit document.
+Remove goals that duplicate another map or describe no engine work. Promote a goal
+to `live` only after checking the implementation and its scope. Keep internal review
+notes in the ignored `dev/` directory.
 
 The GitHub workflows in `.github/workflows/build-wiki.yml` and
 `.github/workflows/website-quality.yml` define the authoritative execution

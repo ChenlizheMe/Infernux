@@ -1,5 +1,5 @@
 /* Category index. Bilingual goals and statuses live in docs/data/roadmap/*.json.
- * Load one map at a time; implementation evidence: docs/roadmap-status-audit.md. */
+ * Load one map at a time. */
 const GALAXIES = [
     {
         "key": "foundation",
