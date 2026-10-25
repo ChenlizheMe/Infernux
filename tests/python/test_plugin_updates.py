@@ -221,36 +221,80 @@ def test_update_registry_failure_restores_previous_files_and_pin(installed, monk
     assert Path(manager.registry.path).read_bytes() == registry_before
 
 
-def test_missing_original_cache_does_not_silently_overwrite(installed):
+def test_missing_local_original_cache_requires_the_pinned_archive(installed):
     manager, source, root = installed
     record = manager.registry.installed_record("vendor/plugin")
     Path(manager._installed_archive_path(record)).unlink()
-    with pytest.raises(PackageUpdateConflict):
-        manager.install_package(next_package(source), update=True, install_dependencies=False)
+    package = next_package(source)
+    for overwrite in (False, True):
+        with pytest.raises(FileNotFoundError, match="pinned local package archive"):
+            manager.install_package(package, update=True, overwrite_modified=overwrite, install_dependencies=False)
     assert (root / "runtime/note.txt").read_text() == "first"
 
 
-def test_cloned_project_updates_using_the_new_users_cache(installed, tmp_path, monkeypatch):
+@pytest.mark.parametrize("modified", [False, True])
+@pytest.mark.parametrize("source_type", ["url", "github"])
+def test_cloned_project_updates_using_the_new_users_cache(installed, tmp_path, monkeypatch, modified, source_type):
     from infernux.plugins.cache import SharedPackageCache
 
     manager, source, root = installed
     original_project = Path(manager.project_root)
+    pinned_url = "https://example.test/vendor/plugin/1.0.0.inxpkg" if source_type == "url" else "https://github.com/vendor/plugin"
+    origin = {"type": source_type, "location": pinned_url}
+    if source_type == "github":
+        origin["release_tag"] = "original-release"
+    document = manager.registry.load()
+    for item in (*document["packages"], *document["installed"]):
+        if item["reference"] == "vendor/plugin":
+            item["source"].update(origin)
+    manager.registry.save(document)
     record = manager.registry.installed_record("vendor/plugin")
     original_archive = manager._installed_archive_path(record)
     clone = tmp_path / "another-checkout"
     shutil.copytree(original_project, clone, ignore=shutil.ignore_patterns("Library", "Cache", ".runtime"))
     new_cache = SharedPackageCache(tmp_path / "another-user-cache")
-    new_archive = new_cache.store(original_archive, reference="vendor/plugin", version="1.0.0")
+    new_archive = Path(new_cache.root) / new_cache.relative_path("vendor/plugin", "1.0.0")
+    assert not new_archive.exists()
     monkeypatch.setenv("INFERNUX_PACKAGE_CACHE_ROOT", new_cache.root)
     registry_text = (clone / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
     assert str(original_project) not in registry_text
     assert str(tmp_path / "hub-package-cache") not in registry_text
     cloned_manager = PluginManager(str(clone), runtime=False)
-    cloned_manager.install_package(next_package(source), update=True, install_dependencies=False)
-    assert (clone / "Packages/vendor/plugin/runtime/note.txt").read_text() == "second"
+    note = clone / "Packages/vendor/plugin/runtime/note.txt"
+    if modified:
+        note.write_text("local change", encoding="utf-8")
+    before = cloned_manager.registry.installed_record("vendor/plugin")
+    materialize_source = cloned_manager._materialize_source
+    downloads = []
+
+    def materialize(descriptor, workspace, **kwargs):
+        if descriptor["location"] == pinned_url:
+            assert descriptor["reference"] == "vendor/plugin"
+            if source_type == "github":
+                assert descriptor["release_tag"] == "original-release"
+            downloads.append((pinned_url, threading.get_ident()))
+            return original_archive, descriptor
+        return materialize_source(descriptor, workspace, **kwargs)
+
+    monkeypatch.setattr(cloned_manager, "_materialize_source", materialize)
+    package = next_package(source)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(threading.get_ident).result(timeout=30)
+        acquired = executor.submit(cloned_manager.download_source, package, update=True).result(timeout=30)
+    assert downloads == [(pinned_url, worker)] and worker != threading.get_ident()
+    assert cloned_manager.registry.installed_record("vendor/plugin") == before
+    monkeypatch.setattr(cloned_manager, "_materialize_source", lambda *args, **kwargs: pytest.fail("download during publication"))
+    if modified:
+        with pytest.raises(PackageUpdateConflict, match="runtime/note.txt"):
+            cloned_manager.install_package(acquired["path"], source=acquired["source"], update=True, install_dependencies=False)
+        assert cloned_manager.registry.installed_record("vendor/plugin") == before
+        assert note.read_text() == "local change"
+    else:
+        cloned_manager.install_package(acquired["path"], source=acquired["source"], update=True, install_dependencies=False)
+        assert note.read_text() == "second"
     assert (root / "runtime/note.txt").read_text() == "first"
     assert cloned_manager.registry.installed_record("vendor/plugin")["control"]["guid"] == record["control"]["guid"]
-    assert Path(new_archive).is_file()
+    assert new_archive.is_file()
 
 
 def test_missing_synced_package_file_blocks_player_startup(installed):

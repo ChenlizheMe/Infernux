@@ -842,7 +842,7 @@ class PluginPanel(EditorPanel):
         if update:
             if kind != "source":
                 raise ValueError("Only an InxPackage source can be updated")
-            work = lambda report: manager.download_source(syntax, progress=report)
+            work = lambda report: manager.download_source(syntax, progress=report, update=True)
         elif kind == "source":
             work = lambda report: manager.install_source(syntax, progress=report)
         else:

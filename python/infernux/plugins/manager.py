@@ -579,8 +579,11 @@ class PluginManager:
         if update:
             if selected is not None:
                 raise ValueError("An update preserves the existing package selection")
+            previous_path = self._prepare_update_baseline(
+                current, progress=_scaled_progress(progress, 0.36, 0.40),
+            )
             planned, control, removed = self._plan_update(
-                current, preview, overwrite_modified=overwrite_modified,
+                current, preview, previous_path=previous_path, overwrite_modified=overwrite_modified,
             )
         requirements = self._plan_requirements(preview)
         dependencies = list(requirements.references)
@@ -1014,7 +1017,8 @@ class PluginManager:
         self, reference: str, release_tag: str, *, progress: _InstallProgress | None = None,
     ) -> dict[str, object]:
         """Stage an explicitly selected release without changing any project pin."""
-        if self.registry.installed_record(reference) is None:
+        current = self.registry.installed_record(reference)
+        if current is None:
             raise KeyError(f"Plugin is not installed: {reference}")
         if not release_tag.strip():
             raise ValueError("Plugin updates require an explicit release tag")
@@ -1024,9 +1028,10 @@ class PluginManager:
         from .github_releases import resolve_github_release
 
         with self._package_cache().workspace("update") as workspace:
+            self._prepare_update_baseline(current, progress=_scaled_progress(progress, 0.0, 0.35))
             release = resolve_github_release(
                 repository, workspace, expected_reference=reference,
-                release_tag=release_tag, progress=progress,
+                release_tag=release_tag, progress=_scaled_progress(progress, 0.35, 1.0),
             )
             assert release is not None  # An exact tag requires the release protocol.
             path, _relative = self._cache_package(
@@ -1070,12 +1075,30 @@ class PluginManager:
         return self._archive_reads.get((reference, location, version), prepare)
 
     def _installed_archive_path(self, record: Mapping[str, object]) -> str:
-        source = record.get("source", {})
-        if isinstance(source, Mapping) and source.get("cache_scope") == "hub":
-            location = SharedPackageCache.validate_location(str(source.get("cache_location", "")))
-            return resolved_path(os.path.join(self._package_cache().root, *location.split("/")))
-        # Compatibility with project registries written before portable caches.
-        return resolved_path(str(record.get("package_path", "")))
+        location = SharedPackageCache.validate_location(str(record["source"]["cache_location"]))
+        return resolved_path(os.path.join(self._package_cache().root, *location.split("/")))
+
+    def _prepare_update_baseline(
+        self, record: Mapping[str, object], *, progress: _InstallProgress | None = None,
+    ) -> str:
+        path = self._installed_archive_path(record)
+        if os.path.isfile(path):
+            return path
+        source = self._source_descriptor(record["source"])
+        source["reference"] = str(record["reference"])
+        if source["type"] in {"git", "github"}:
+            if source["type"] == "git" or source.get("source_snapshot"):
+                if not source.get("commit"):
+                    raise ValueError("Restoring a pinned Git package requires its exact commit")
+            elif not source.get("release_tag"):
+                raise ValueError("Restoring a pinned GitHub package requires its exact release tag")
+        with self._package_cache().workspace("update-baseline") as workspace:
+            acquired, _source = self._materialize_source(source, workspace, progress=progress)
+            preview = InxPackage.inspect(acquired)
+            reference, version = str(record["reference"]), str(record["version"])
+            _require_package_identity(preview.metadata, expected_reference=reference, expected_version=version)
+            path, _relative = self._cache_package(acquired, reference, version)
+            return path
 
     def download_reference(
         self,
@@ -1157,6 +1180,7 @@ class PluginManager:
 
     def download_source(
         self, source: Mapping[str, object] | str, *, progress: _InstallProgress | None = None,
+        update: bool = False,
     ) -> dict[str, object]:
         """Acquire a source into the shared cache without publishing project state."""
         _report_progress(progress, "resolve_source", 0.04)
@@ -1167,6 +1191,11 @@ class PluginManager:
             preview = InxPackage.inspect(package_path)
             reference = validate_reference(str(preview.metadata["reference"]))
             path, _relative = self._cache_package(package_path, reference, str(preview.metadata["version"]))
+            if update:
+                current = self.registry.installed_record(reference)
+                if current is None:
+                    raise KeyError(f"Plugin is not installed: {reference}")
+                self._prepare_update_baseline(current, progress=_scaled_progress(progress, 0.36, 0.40))
             return {"reference": reference, "path": path, "source": acquired_source}
 
     def install_source(
@@ -2124,16 +2153,16 @@ class PluginManager:
 
     def _plan_update(
         self, current: Mapping[str, object], preview: InxPackagePreview, *,
+        previous_path: str,
         overwrite_modified: bool,
     ) -> tuple[list[_PlannedFile], dict[str, object], list[str]]:
         """Compare only at the update boundary; reuse the normal GUID routing."""
         reference = str(current["reference"])
-        previous_path = self._installed_archive_path(current)
-        previous = InxPackage.inspect(previous_path) if os.path.isfile(previous_path) else None
+        previous = InxPackage.inspect(previous_path)
         old_files = {str(item["guid"]).casefold(): item for item in current["files"]}
         old_contents = {
             str(item["guid"]).casefold(): item for item in previous.file_records
-        } if previous else {}
+        }
         old_logical = {str(item["logical_path"]): str(item["guid"]).casefold()
                        for item in current["files"]}
         for item in preview.file_records:
@@ -2245,7 +2274,7 @@ class PluginManager:
                     conflicts.append(portable_path(relative_path(path + ".meta", self.project_root)))
                 removed.append(path)
         control_path = str(control["absolute_path"])
-        old_control = (json.dumps(previous.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8") if previous else None
+        old_control = (json.dumps(previous.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         new_control = (json.dumps(preview.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         check_edit(control_path, old_control, new_control)
         if not bool(current["control"].get("owned", True)):
