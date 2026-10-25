@@ -19,6 +19,7 @@ This hotfix prepares Python dependency replacements before editor startup, keepi
 
 - Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses.
 - Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths.
+- Open projects using earlier installed SDKs through their own startup entry; enable dependency preparation only when the installed SDK provides it.
 - Respect the automatic-update preference when opening the engine installation page; manual update checks remain available.
 - Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix.
 

@@ -51,7 +51,7 @@ def test_sdk_publication_requires_matching_published_desktop_players(monkeypatch
         package = next(item for item in registry["packages"] if item["repository"].endswith(command[5]))
         document = {
             "reference": package["reference"], "version": package["version"],
-            "engine_release": engine, "artifact": {"name": package["artifact"]},
+            "engine_release": engine, "artifact": {"name": package["artifact"], "size": 123},
         }
         if change is not None:
             document[change] = "unmatched-release"

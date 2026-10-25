@@ -76,9 +76,10 @@ def verify_player_releases(registry: dict) -> None:
         ], text=True))
         expected = {
             "reference": package["reference"], "version": package["version"],
-            "engine_release": engine_release, "artifact": {"name": package["artifact"]},
+            "engine_release": engine_release,
         }
-        if any(document.get(key) != value for key, value in expected.items()):
+        if (any(document.get(key) != value for key, value in expected.items())
+                or document["artifact"]["name"] != package["artifact"]):
             raise ValueError(f"Rebuild and publish {repository}/{tag} for Infernux {engine_release}")
         print(f"{package['reference']} {package['version']}: Infernux {engine_release}")
 

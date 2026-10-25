@@ -5,6 +5,7 @@ installed distribution determine the layout, not the Hub's own release number.
 """
 
 from pathlib import PurePosixPath
+from textwrap import indent
 import zipfile
 
 
@@ -50,7 +51,12 @@ def editor_launch_script(*, installed: bool) -> str:
         "if infernux_editor.prepare(sys.argv[1]):\n"
         "    raise SystemExit(infernux_editor.launch_clean(sys.argv[1]))\n"
     )
-    return preparation + runtime_package_script(installed=installed) + (
+    if installed:
+        preparation = (
+            "if any(str(path) == 'infernux_editor.py' for path in (_distribution.files or ())):\n"
+            + indent(preparation, "    ")
+        )
+    return runtime_package_script(installed=installed) + preparation + (
         "import sys\n"
         "_engine = importlib.import_module(_engine_package + '.engine')\n"
         "_lib = importlib.import_module(_engine_package + '.lib')\n"

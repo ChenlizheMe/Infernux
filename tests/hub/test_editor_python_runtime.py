@@ -9,8 +9,41 @@ import time
 import pytest
 
 from python_execution import editor_python_runtime
+from engine_wheel import editor_launch_script
 from PySide6.QtWidgets import QApplication
 from splash_screen import EngineSplashScreen
+
+
+@pytest.mark.parametrize("preparation", ["absent", "ready", "pending"])
+def test_hub_uses_the_installed_sdks_startup_entry_without_importing_unprovided_modules(tmp_path, preparation):
+    site = tmp_path / 'installed-sdk'
+    package = site / 'infernux'
+    package.mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    report = tmp_path / 'startup.txt'
+    (package / 'engine.py').write_text(
+        'from pathlib import Path\n'
+        f'def release_engine(*, engine_log_level, project_path):\n    Path({str(report)!r}).write_text("engine")\n',
+        encoding='utf-8',
+    )
+    (package / 'lib.py').write_text('class LogLevel:\n    Info = 1\n')
+    files = ['infernux/__init__.py', 'infernux/engine.py', 'infernux/lib.py']
+    if preparation != 'absent':
+        files.append('infernux_editor.py')
+        (site / 'infernux_editor.py').write_text(
+            'import sys\nfrom pathlib import Path\n'
+            f'def prepare(project):\n    assert "infernux" not in sys.modules\n    return {preparation == "pending"}\n'
+            f'def launch_clean(project):\n    Path({str(report)!r}).write_text("fresh")\n    return 0\n',
+            encoding='utf-8',
+        )
+    metadata = site / 'infernux-0.4.3.dist-info'
+    metadata.mkdir()
+    (metadata / 'METADATA').write_text('Metadata-Version: 2.1\nName: infernux\nVersion: 0.4.3\n')
+    (metadata / 'RECORD').write_text(''.join(name + ',,\n' for name in files))
+    bootstrap = f'import sys;sys.path.insert(0,{str(site)!r});exec({editor_launch_script(installed=True)!r})'
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', bootstrap, str(tmp_path)], capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert report.read_text() == ('fresh' if preparation == 'pending' else 'engine')
 
 
 def test_failed_launch_preserves_complete_stderr_and_exit_code(tmp_path, monkeypatch):

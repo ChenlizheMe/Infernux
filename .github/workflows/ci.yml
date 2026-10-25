@@ -78,7 +78,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install ruff==0.17.0
-      - run: python -m ruff check python/infernux packaging scripts cmake
+      - run: python -m ruff check python packaging scripts cmake
 
   portable-hub:
     name: Portable Hub regressions (${{ matrix.os }})
