@@ -752,10 +752,11 @@ class InstallsView(QWidget):
 
     runtime_install_requested = Signal(str)
 
-    def __init__(self, version_manager, queue: InstallQueue, parent=None):
+    def __init__(self, version_manager, queue: InstallQueue, parent=None, *, settings=None):
         super().__init__(parent)
         self._vm = version_manager
         self._queue = queue
+        self._settings = settings
         self._install_dialog = None
         self._fetch_thread = None
         self._updates_checked = False
@@ -802,7 +803,8 @@ class InstallsView(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not self._updates_checked:
+        automatic = self._settings is None or self._settings.get_setting("automatic_update_checks", "enabled") == "enabled"
+        if not self._updates_checked and automatic:
             self.check_updates()
 
     def check_updates(self):

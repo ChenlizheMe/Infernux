@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,34 @@ def test_official_plugin_reference_must_match_its_registered_repository(monkeypa
     package["repository"] = "https://github.com/InfernuxEngine/infernux_text_animator"
     with pytest.raises(ValueError, match="registered"):
         plugins.release_identity(package)
+
+
+@pytest.mark.parametrize("change", [None, "engine_release", "reference"])
+def test_sdk_publication_requires_matching_published_desktop_players(monkeypatch, change):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts/release"))
+    plugins = importlib.import_module("publish_plugin_objects")
+    registry = json.loads(plugins.REGISTRY.read_text(encoding="utf-8"))
+    engine = runpy.run_path(str(ROOT / "python/infernux/version.py"))["ENGINE_RELEASE"]
+    calls = []
+
+    def download(command, **_):
+        calls.append(command)
+        package = next(item for item in registry["packages"] if item["repository"].endswith(command[5]))
+        document = {
+            "reference": package["reference"], "version": package["version"],
+            "engine_release": engine, "artifact": {"name": package["artifact"]},
+        }
+        if change is not None:
+            document[change] = "unmatched-release"
+        return json.dumps(document)
+
+    monkeypatch.setattr(plugins.subprocess, "check_output", download)
+    if change is None:
+        plugins.verify_player_releases(registry)
+        assert len(calls) == 2
+    else:
+        with pytest.raises(ValueError, match="Rebuild and publish"):
+            plugins.verify_player_releases(registry)
 
 
 @pytest.fixture

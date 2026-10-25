@@ -9,6 +9,7 @@ package metadata retain their ordinary spelling (including pip's RECORD paths).
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -43,7 +44,11 @@ class EditorPythonRuntime:
     @property
     def environment(self) -> dict[str, str]:
         return {"PYTHONHOME": self.home, "PYTHONPATH": "",
-                "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"}
+                "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1",
+                "_INFERNUX_EDITOR_RUNTIME": json.dumps({
+                    "executable": self.executable, "home": self.home,
+                    "project_executable": self.project_executable,
+                })}
 
     def bootstrap(self, script: str, project_path: str) -> str:
         # CPython has already resolved its private home before this code runs.

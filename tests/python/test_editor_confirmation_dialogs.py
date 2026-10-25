@@ -11,6 +11,54 @@ def _project_delete_confirmation() -> ProjectDeleteConfirmationCoordinator:
     return ProjectDeleteConfirmationCoordinator(ModalService())
 
 
+def test_dependency_restart_uses_shared_modal_and_cancelling_save_prevents_restart(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.ui.dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
+    from infernux.engine.ui.plugin_install_confirmation import PluginInstallConfirmationCoordinator
+    import infernux_editor
+
+    core = EditorInteractionCore()
+    monkeypatch.setattr(EditorInteractionCore, "_instance", core)
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    scene = SceneFileManager()
+    confirmations, native_events, restarts = [], [], []
+    monkeypatch.setattr(scene, "_native_engine_for_close", lambda: SimpleNamespace(
+        confirm_close=lambda: native_events.append("close"),
+        cancel_close=lambda: native_events.append("cancel"),
+    ))
+    monkeypatch.setattr(scene, "_is_play_mode", lambda: False)
+    dirty = DirtyPanelConfirmationCoordinator.instance()
+    monkeypatch.setattr(dirty, "request_exit", lambda complete, cancel: confirmations.append((complete, cancel)))
+    monkeypatch.setattr(infernux_editor, "restart_after_exit", lambda project: restarts.append(project))
+    manager = SimpleNamespace(project_root=str(tmp_path), pending_install={"loaded": ["anyio"]})
+    coordinator = PluginInstallConfirmationCoordinator(core.modals)
+    try:
+        assert coordinator.request_restart(manager)
+        ctx = _ProjectDeleteSemanticContext()
+        assert coordinator.render(ctx)
+        assert coordinator.MODAL_ID in ctx.semantics
+        next(callback for label, callback in ctx.buttons.items() if label.endswith("##cancel"))()
+        assert not confirmations and manager.pending_install is not None
+
+        for cancel_save in (True, False):
+            assert coordinator.request_restart(manager)
+            ctx = _ProjectDeleteSemanticContext()
+            coordinator.render(ctx)
+            next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
+            assert not restarts
+            complete, cancel = confirmations[-1]
+            if cancel_save:
+                cancel()
+                assert native_events == ["cancel"] and not restarts
+            else:
+                complete()
+                assert restarts == [str(tmp_path)] and native_events[-1] == "close"
+    finally:
+        core.shutdown()
+
+
 class _ProjectDeleteSemanticContext:
     def __init__(self) -> None:
         self.opened: list[str] = []

@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="熔炉标志"></a>
 </p>
 
-**0.4.3 热修 6** 修复克隆、迁移项目后的插件更新，包括更新引擎热修时默认 MCP 插件的更新。详见[更新日志](UpdateLog-zh.md)。
+**0.4.3 热修 7** 完善依赖更新与重启控制、插件分类列表及桌面 Player 配套发行。详见[更新日志](UpdateLog-zh.md)。
 
 <h1 align="center">熔炉 · Infernux</h1>
 

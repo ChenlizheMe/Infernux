@@ -209,6 +209,7 @@ class GameEngineLauncher(QMainWindow):
             self.version_manager,
             self.install_queue,
             parent=installs_page,
+            settings=self.db,
         )
         self.python_view = PythonRuntimesView(
             self.runtime_manager, self.install_queue, settings=self.db

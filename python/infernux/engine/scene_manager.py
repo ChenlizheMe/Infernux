@@ -202,6 +202,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Guard against repeated request_close() calls while the shared
         # document close transaction is active.
         self._close_in_progress: bool = False
+        self._close_on_confirmed: Optional[Callable[[], None]] = None
 
         # Prefab Mode state
         self.is_prefab_mode = False
@@ -1307,7 +1308,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             return
         self._begin_deferred_new()
 
-    def request_close(self):
+    def request_close(self, *, on_confirmed: Optional[Callable[[], None]] = None):
         """Called when the window close button is pressed.
 
         If the scene is dirty, shows a save-confirmation popup.
@@ -1325,6 +1326,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if self._close_in_progress:
             return
         self._close_in_progress = True
+        self._close_on_confirmed = on_confirmed
 
         from infernux.engine.ui.dirty_panel_confirmation import (
             DirtyPanelConfirmationCoordinator,
@@ -1340,30 +1342,33 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if native:
             native.cancel_close()
         self._close_in_progress = False
+        self._close_on_confirmed = None
 
     def _continue_close_after_dirty_panels(self) -> None:
         """Continue the existing scene close transaction after panel decisions."""
         if self._is_play_mode():
-            native = self._native_engine_for_close()
-            if native:
-                native.confirm_close()
+            self._confirm_close()
             return
 
         # The global close transaction has already visited the active Prefab
         # and its suspended Scene as separate documents. Closing the process
         # needs no scene swap and must not perform another implicit save.
         if self.is_prefab_mode:
-            native = self._native_engine_for_close()
-            if native:
-                native.confirm_close()
+            self._confirm_close()
             return
 
         # Always persist camera state before closing
         if self._current_scene_path:
             self._save_camera_state(self._current_scene_path)
 
+        self._confirm_close()
+
+    def _confirm_close(self) -> None:
         native = self._native_engine_for_close()
         if native:
+            callback, self._close_on_confirmed = self._close_on_confirmed, None
+            if callback is not None:
+                callback()
             native.confirm_close()
 
     def load_last_scene_or_default(self):

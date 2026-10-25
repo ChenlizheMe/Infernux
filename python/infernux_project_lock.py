@@ -177,7 +177,9 @@ def reserve(project: str, pid: int, token: str, mode: str, state: str, *, probe=
             # its running state or overwrite another process with this token.
             if current["pid"] == pid and current.get("state") == "running" and state == "launching":
                 return path
-            if current["pid"] != os.getpid() or current.get("state") != "preparing":
+            if current["pid"] != os.getpid() or (
+                current.get("state") != "preparing" and not (pid == os.getpid() and state == "preparing")
+            ):
                 raise RuntimeError(f"Project is already open in another Infernux process:\n{project}")
         _publish(path, payload)
     return path

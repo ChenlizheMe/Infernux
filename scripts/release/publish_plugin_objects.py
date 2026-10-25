@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import urllib.parse
 import urllib.request
@@ -59,11 +60,38 @@ def stage(package: dict, destination: Path) -> tuple[Path, str]:
     return path, key
 
 
+def verify_player_releases(registry: dict) -> None:
+    """Require the advertised desktop Players to carry this exact SDK release."""
+    references = {"infernux/platform-windows", "infernux/platform-linux"}
+    packages = [item for item in registry["packages"] if item["reference"] in references]
+    if {item["reference"] for item in packages} != references:
+        raise ValueError("The official registry must include both desktop Player packages")
+    engine_release = runpy.run_path(str(ROOT / "python/infernux/version.py"))["ENGINE_RELEASE"]
+    for package in packages:
+        repository, tag, _ = release_identity(package)
+        name = Path(package["artifact"]).with_suffix(".release.json").name
+        document = json.loads(subprocess.check_output([
+            "gh", "release", "download", tag, "--repo", repository,
+            "--pattern", name, "--output", "-",
+        ], text=True))
+        expected = {
+            "reference": package["reference"], "version": package["version"],
+            "engine_release": engine_release, "artifact": {"name": package["artifact"]},
+        }
+        if any(document.get(key) != value for key, value in expected.items()):
+            raise ValueError(f"Rebuild and publish {repository}/{tag} for Infernux {engine_release}")
+        print(f"{package['reference']} {package['version']}: Infernux {engine_release}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", default="", help="Publish one reference, or all official packages; always update the registry last")
+    parser.add_argument("--check-player-releases", action="store_true", help="Check matching published desktop Players without uploading")
     args = parser.parse_args()
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    if args.check_player_releases:
+        verify_player_releases(registry)
+        return
     packages = [item for item in registry["packages"] if not args.reference or item["reference"] == args.reference]
     if not packages:
         raise ValueError(f"No matching official package: {args.reference}")

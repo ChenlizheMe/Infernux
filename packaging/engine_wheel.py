@@ -44,7 +44,13 @@ def runtime_package_script(*, installed: bool) -> str:
 
 
 def editor_launch_script(*, installed: bool) -> str:
-    return runtime_package_script(installed=installed) + (
+    preparation = (
+        "import os, sys\n"
+        "import infernux_editor\n"
+        "if infernux_editor.prepare(sys.argv[1]):\n"
+        "    raise SystemExit(infernux_editor.launch_clean(sys.argv[1]))\n"
+    )
+    return preparation + runtime_package_script(installed=installed) + (
         "import sys\n"
         "_engine = importlib.import_module(_engine_package + '.engine')\n"
         "_lib = importlib.import_module(_engine_package + '.lib')\n"

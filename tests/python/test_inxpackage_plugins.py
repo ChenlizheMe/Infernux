@@ -1155,6 +1155,12 @@ def test_pip_side_effect_rolls_back_when_file_registry_transaction_fails(tmp_pat
                 (),
                 {"stdout": json.dumps([{"name": name, "version": version} for name, version in environment.items()])},
             )()
+        if "--dry-run" in command:
+            Path(command[command.index("--report") + 1]).write_text(json.dumps({"install": [{
+                "metadata": {"name": "shared-wheel", "version": "1.0"},
+                "download_info": {"url": "https://example.test/shared_wheel-1.0-py3-none-any.whl"},
+            }]}), encoding="utf-8")
+            return SimpleNamespace(stdout="Would install shared-wheel-1.0")
         if command[2:4] == ["pip", "install"]:
             environment["shared-wheel"] = "1.0"
         elif command[2:4] == ["pip", "uninstall"]:
@@ -1175,8 +1181,11 @@ def test_pip_side_effect_rolls_back_when_file_registry_transaction_fails(tmp_pat
 
     assert environment == {}
     assert manager.registry.installed() == ()
+    assert manager.registry.load()["python_dependencies"] == []
+    assert sum(command[2:4] == ["pip", "install"] and "--dry-run" not in command for command in commands) == 1
     assert any(command[2:4] == ["pip", "uninstall"] for command in commands)
     assert not (project / "Assets/Plugins/Data.bin").exists()
+    assert not (project / "Assets/Plugins/Data.bin.meta").exists()
 
 
 def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(tmp_path, monkeypatch):
@@ -1199,6 +1208,12 @@ def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(tmp_pat
                 (),
                 {"stdout": json.dumps([{"name": name, "version": version} for name, version in environment.items()])},
             )()
+        if "--dry-run" in command:
+            Path(command[command.index("--report") + 1]).write_text(json.dumps({"install": [{
+                "metadata": {"name": "shared-wheel", "version": "1.0"},
+                "download_info": {"url": "https://example.test/shared_wheel-1.0-py3-none-any.whl"},
+            }]}), encoding="utf-8")
+            return SimpleNamespace(stdout="Would install shared-wheel-1.0")
         if command[2:4] == ["pip", "install"]:
             environment["shared-wheel"] = "1.0"
         elif command[2:4] == ["pip", "uninstall"]:
@@ -1218,6 +1233,9 @@ def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(tmp_pat
 
     manager.uninstall("vendor/first")
     assert environment == {"shared-wheel": "1.0"}
+    assert manager.registry.load()["python_dependencies"][0]["owners"] == [
+        {"reference": "vendor/second", "requirements": ["shared-wheel==1.0"]},
+    ]
     assert not any(command[2:4] == ["pip", "uninstall"] for command in commands)
     manager.uninstall("vendor/second")
     assert environment == {}
@@ -1227,6 +1245,8 @@ def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(tmp_pat
 
 @pytest.mark.parametrize("preinstalled", (False, True))
 def test_startup_restores_installed_plugin_requirements_in_new_environment(tmp_path, monkeypatch, preinstalled):
+    from infernux_editor import _write_pending, pending_path, resolved_arguments
+
     source = _source(tmp_path / "source", "vendor/portable-python")
     (source / "requirements.txt").write_text("shared-wheel>=1,<2\n", encoding="utf-8")
     (source / "Data.bin").write_bytes(b"payload")
@@ -1246,10 +1266,17 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(tmp_p
                 (),
                 {"stdout": json.dumps([{"name": name, "version": version} for name, version in environment.items()])},
             )()
-        if command[2:4] == ["pip", "install"]:
-            text = Path(command[-1]).read_text(encoding="utf-8")
+        if "--dry-run" in command:
+            text = Path(command[command.index("-r") + 1]).read_text(encoding="utf-8")
             restored_files.append(text)
-            environment["shared-wheel"] = "1.5" if "shared-wheel==1.5" in text else next_available_version
+            version = "1.5" if "shared-wheel==1.5" in text else next_available_version
+            Path(command[command.index("--report") + 1]).write_text(json.dumps({"install": [{
+                "metadata": {"name": "shared-wheel", "version": version},
+                "download_info": {"url": f"https://example.test/shared_wheel-{version}-py3-none-any.whl"},
+            }]}), encoding="utf-8")
+            return SimpleNamespace(stdout=f"Would install shared-wheel-{version}")
+        if command[2:4] == ["pip", "install"]:
+            environment["shared-wheel"] = "1.5" if "shared_wheel-1.5-" in command[-1] else next_available_version
         return type("Result", (), {"stdout": "ok"})()
 
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
@@ -1266,12 +1293,33 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(tmp_p
     environment.clear()
     commands.clear()
 
-    assert manager._reconcile_python_requirements_for_startup() == ("vendor/portable-python",)
+    with pytest.raises(RuntimeError, match="prepare"):
+        manager._reconcile_python_requirements_for_startup()
+    assert environment == {}
+    assert not any(command[2:4] == ["pip", "install"] for command in commands)
+
+    def prepare_startup():
+        before = dict(environment)
+        operation = manager._plan_startup_python()
+        assert environment == before
+        assert operation["request"]["requirements"] == ["shared-wheel>=1,<2", "shared-wheel==1.5"]
+        assert operation["install"][0]["metadata"] == {"name": "shared-wheel", "version": "1.5"}
+        assert "shared-wheel==1.5" in restored_files[-1]
+        run(["project-python", "-m", "pip", "install", "--no-deps", "--force-reinstall",
+             *resolved_arguments(operation["install"])], cwd=str(project))
+        _write_pending(str(project), {**operation, "prepared": True})
+        publication = PluginManager(str(project), installation_only=True)
+        monkeypatch.setattr(publication, "_project_python_executable", lambda: "project-python")
+        monkeypatch.setattr(publication, "_run_process", run)
+        monkeypatch.setattr(publication.preloads, "catch_up", lambda: pytest.fail("Startup publication must not preload"))
+        publication._complete_pending_install()
+        pending_path(str(project)).unlink()
+
+    prepare_startup()
     assert environment == {"shared-wheel": "1.5"}
-    assert "shared-wheel==1.5" in restored_files[-1]
     assert Path(manager.registry.path).read_bytes() == shared_registry
     assert Path(manager.registry.lock_path).read_bytes() == shared_lock
-    assert sum(command[2:4] == ["pip", "install"] for command in commands) == 1
+    assert sum(command[2:4] == ["pip", "install"] and "--dry-run" not in command for command in commands) == 1
     ledger = manager.registry.load()["python_dependencies"]
     assert ledger[0]["owners"] == [
         {
@@ -1288,10 +1336,16 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(tmp_p
     commands.clear()
     assert manager._reconcile_python_requirements_for_startup() == ()
     assert not any(command[2:4] == ["pip", "install"] for command in commands)
+    assert manager._plan_startup_python() is None
 
     environment["shared-wheel"] = "1.8"
-    assert manager._reconcile_python_requirements_for_startup() == ("vendor/portable-python",)
+    prepare_startup()
     assert environment == {"shared-wheel": "1.5"}
+    commands.clear()
+    assert manager._reconcile_python_requirements_for_startup() == ()
+    assert not any(command[2:4] == ["pip", "install"] for command in commands)
+    assert Path(manager.registry.path).read_bytes() == shared_registry
+    assert Path(manager.registry.lock_path).read_bytes() == shared_lock
 
 
 def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):

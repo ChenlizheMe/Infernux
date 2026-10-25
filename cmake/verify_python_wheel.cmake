@@ -31,6 +31,8 @@ file(MAKE_DIRECTORY "${_verify_root}")
 file(ARCHIVE_EXTRACT INPUT "${_wheel}" DESTINATION "${_verify_root}")
 
 foreach(_public_file IN ITEMS
+    "infernux_project_lock.py"
+    "infernux_editor.py"
     "infernux/__init__.py"
     "infernux/__init__.pyi"
     "infernux/py.typed"

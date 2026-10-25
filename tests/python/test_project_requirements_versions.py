@@ -45,16 +45,12 @@ def test_editor_stops_before_native_initialization_when_dependencies_are_missing
         EditorBootstrap._ensure_project_requirements(SimpleNamespace(project_path=str(tmp_path)))
 
 
-def test_inherited_install_flag_does_not_block_a_new_checkout(tmp_path, monkeypatch):
+def test_dependency_check_does_not_replace_a_live_environment(tmp_path, monkeypatch):
     path = tmp_path / "ProjectSettings" / "requirements.txt"
     path.parent.mkdir()
     path.write_text("demo==2.0\n", encoding="utf-8")
     monkeypatch.setenv("_INFERNUX_PROJECT_REQS_CHECKED", "1")
-    installed = []
-    monkeypatch.setattr(requirements, "_has_requirement", lambda *_args: bool(installed))
-    monkeypatch.setattr(requirements, "_ensure_pip", lambda: True)
-    monkeypatch.setattr(requirements, "_install_packages", lambda specs, **_kwargs: installed.extend(specs) or True)
+    monkeypatch.setattr(requirements, "_has_requirement", lambda *_args: False)
     before = path.read_bytes()
-    assert requirements.ensure_project_requirements(str(tmp_path))
-    assert installed == ["demo==2.0"]
+    assert not requirements.ensure_project_requirements(str(tmp_path))
     assert path.read_bytes() == before

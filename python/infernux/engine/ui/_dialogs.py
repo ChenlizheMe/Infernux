@@ -259,22 +259,12 @@ def pick_file_dialog(title: str, win32_filter: str = "",
         root.destroy()
 
 
+
+
 def show_system_error_dialog(title: str, message: str) -> None:
-    if sys.platform == "win32":
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10 | 0x0)
-        return
+    from infernux_editor import show_system_error_dialog as show_error
 
-    import tkinter as tk
-    from tkinter import messagebox
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    try:
-        messagebox.showerror(title, message, parent=root)
-    finally:
-        root.destroy()
+    show_error(title, message)
 
 
 def ask_save_discard_cancel(title: str, message: str) -> str:

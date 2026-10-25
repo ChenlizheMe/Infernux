@@ -6,6 +6,7 @@ import random
 import zlib
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -456,6 +457,14 @@ class EngineSplashScreen(QWidget):
         executable = runtime.executable if runtime else python_executable_path(python_exe)
         if runtime is not None:
             script = runtime.bootstrap(script, project_path)
+        script = (
+            "import sys\n"
+            "if sys.stdin.buffer.read(1) != b'1':\n"
+            "    raise SystemExit('Project launch handoff was cancelled.')\n"
+        ) + script
+        popen_kwargs["stdin"] = subprocess.PIPE
+        if sys.platform != "win32":
+            popen_kwargs["start_new_session"] = True
 
         if detached:
             # Engine has its own Console panel — never inherit stdout/stderr
@@ -463,7 +472,6 @@ class EngineSplashScreen(QWidget):
             # crash messages; a background thread drains it continuously to
             # prevent the OS pipe-buffer from filling up and deadlocking the
             # engine process.
-            popen_kwargs["stdin"] = subprocess.DEVNULL
             popen_kwargs["stdout"] = subprocess.DEVNULL
             popen_kwargs["stderr"] = subprocess.PIPE
             if sys.platform == "win32":
@@ -471,13 +479,10 @@ class EngineSplashScreen(QWidget):
                 flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
                 flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 popen_kwargs["creationflags"] = flags
-            else:
-                popen_kwargs["start_new_session"] = True
         else:
             # Dev mode — spawn a visible console so developers can read
             # stdout/stderr directly.  stderr is still piped for the
             # crash-message dialog.
-            popen_kwargs["stdin"] = subprocess.DEVNULL
             popen_kwargs["stdout"] = None          # inherit → visible console
             popen_kwargs["stderr"] = subprocess.PIPE
             if sys.platform == "win32":
@@ -517,11 +522,14 @@ class EngineSplashScreen(QWidget):
         )
         self._stderr_thread.start()
 
-        # The lock must refer to the engine process, not the still-running Hub.
+        # Publish ownership before the child can prepare packages or hand off
+        # to a fresh interpreter. Popen returning alone does not order them.
         try:
             write_project_lock(
                 project_path, self._process.pid, self._lock_token, "editor", "launching",
             )
+            self._process.stdin.write(b"1")
+            self._process.stdin.close()
         except (OSError, RuntimeError, ValueError) as exc:
             self._stop_process()
             detail = f"The project launch reservation could not be transferred.\n\n{exc}"
@@ -695,10 +703,19 @@ class EngineSplashScreen(QWidget):
     def _stop_process(self):
         process = self._process
         if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
+            if sys.platform == "win32":
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if result.returncode and process.poll() is None:
+                    raise RuntimeError(result.stderr.decode(errors="replace"))
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
         if self._project_path and self._owns_launch_reservation:
             remove_project_lock(self._project_path, self._lock_token)
 

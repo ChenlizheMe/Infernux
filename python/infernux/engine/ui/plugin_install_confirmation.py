@@ -51,7 +51,7 @@ class PluginInstallConfirmationCoordinator:
     def request(self, kind: str, value: str, callback: Callable[[], None]) -> bool:
         normalized_kind = str(kind or "").strip().casefold()
         normalized_value = str(value or "").strip()
-        if self.is_active or normalized_kind not in {"source", "pip"}:
+        if self.is_active or normalized_kind not in {"source", "pip", "restart"}:
             return False
         if not normalized_value or not callable(callback):
             return False
@@ -63,10 +63,22 @@ class PluginInstallConfirmationCoordinator:
         self._requested = True
         return True
 
+    def request_restart(self, manager) -> bool:
+        def restart() -> None:
+            from infernux.engine.scene_manager import SceneFileManager
+            from infernux_editor import restart_after_exit
+
+            SceneFileManager.instance().request_close(
+                on_confirmed=lambda: restart_after_exit(manager.project_root),
+            )
+
+        return self.request("restart", ", ".join(manager.pending_install["loaded"]), restart)
+
     def render(self, ctx) -> bool:
         if not self.is_active:
             return False
-        title = t("plugins.install_confirm.title")
+        restarting = self._kind == "restart"
+        title = t("plugins.restart.title" if restarting else "plugins.install_confirm.title")
         request_open = self._requested
         self._requested = False
         if not begin_editor_modal(
@@ -79,21 +91,22 @@ class PluginInstallConfirmationCoordinator:
             height=230.0,
         ):
             return False
-        ctx.text_wrapped(t(f"plugins.install_confirm.{self._kind}"))
+        ctx.text_wrapped(t("plugins.restart.message" if restarting else f"plugins.install_confirm.{self._kind}"))
         ctx.spacing()
         ctx.text_wrapped(self._value)
         ctx.spacing()
-        ctx.text_wrapped(t("plugins.install_confirm.side_effects"))
+        if not restarting:
+            ctx.text_wrapped(t("plugins.install_confirm.side_effects"))
         render_editor_modal_actions(
             ctx,
             (
                 EditorModalAction(
-                    t("plugins.install_confirm.install"),
+                    t("plugins.restart.now" if restarting else "plugins.install_confirm.install"),
                     "confirm",
                     lambda: self._confirm(ctx),
                 ),
                 EditorModalAction(
-                    t("editor.modal.cancel"),
+                    t("plugins.restart.later" if restarting else "editor.modal.cancel"),
                     "cancel",
                     lambda: self._cancel(ctx),
                 ),

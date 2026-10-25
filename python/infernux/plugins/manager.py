@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib.metadata
+import importlib.machinery
 import json
 import os
 import posixpath
@@ -16,6 +18,7 @@ import uuid
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Callable, Iterable, Mapping, TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
@@ -151,6 +154,12 @@ class PackageUpdateConflict(PackageConflictError):
         super().__init__("Plugin update would replace local edits: " + ", ".join(self.paths))
 
 
+class _DependencyInUse(RuntimeError):
+    def __init__(self, names: Iterable[str]) -> None:
+        self.names = tuple(names)
+        super().__init__("Loaded Python dependencies require an editor restart: " + ", ".join(self.names))
+
+
 @dataclass(slots=True)
 class PluginState:
     reference: str
@@ -236,13 +245,21 @@ class PluginManager:
     _instance: "PluginManager | None" = None
 
     def __init__(
-        self, project_root: str, *, engine: Any = None, runtime: bool = False
+        self, project_root: str, *, engine: Any = None, runtime: bool = False,
+        installation_only: bool = False,
     ) -> None:
         self.project_root = resolved_path(project_root)
         if not self.project_root:
             raise ValueError("PluginManager requires a project root")
         self.engine = engine
         self.runtime = bool(runtime)
+        self.installation_only = installation_only
+        self._prepared_python_baseline: dict[str, str] | None = None
+        self.pending_install = None
+        if not self.runtime:
+            from infernux_editor import read_pending
+
+            self.pending_install = read_pending(self.project_root)
         self.official_catalog_error = ""
         self.python_requirement_error = ""
         self.registry = PluginRegistry(self.project_root)
@@ -373,6 +390,8 @@ class PluginManager:
         reference = validate_reference(reference)
         if self.registry.installed_record(reference) is None:
             raise KeyError(f"Plugin is not installed: {reference}")
+        if self.installation_only:
+            return PluginState(reference, package_control_root(self.project_root, reference))
         self.preloads.reload_package(reference)
         self._rebuild_states()
         if self.states[reference.casefold()].loaded:
@@ -535,6 +554,8 @@ class PluginManager:
         expected_reference: str = "",
         expected_version: str = "",
     ) -> PluginState:
+        if self.pending_install is not None and not self.installation_only:
+            raise RuntimeError("Complete or cancel the pending dependency installation first.")
         _report_progress(progress, "inspect_package", 0.36)
         package_path = resolved_path(package_path)
         preview = InxPackage.inspect(package_path)
@@ -594,6 +615,12 @@ class PluginManager:
             reference, dependencies, enabled=enabled,
             require_installed=not install_dependencies,
         )
+        if install_dependencies and not self.installation_only and not self._installing:
+            if self._defer_package_python(
+                preview, current, selected=selected, source=source, update=update,
+                overwrite_modified=overwrite_modified,
+            ):
+                return PluginState(reference, package_control_root(self.project_root, reference), restart_required=True)
         installed_before = {
             str(item.get("reference", "")).casefold()
             for item in self.registry.installed()
@@ -613,7 +640,7 @@ class PluginManager:
             self._validate_dependency_plan(
                 reference, dependencies, enabled=enabled, require_installed=True,
             )
-            if threading.current_thread() is threading.main_thread() and any(
+            if not self.installation_only and threading.current_thread() is threading.main_thread() and any(
                 dependency.casefold() not in self.states for dependency in dependencies
             ):
                 # A fresh manager can see installed files before its startup
@@ -621,7 +648,7 @@ class PluginManager:
                 # dependencies, including when installation was skipped.
                 self.preloads.catch_up()
                 self._rebuild_states()
-            if update:
+            if update and not self.installation_only:
                 failures = self.preloads.unload_package(reference)
                 if failures:
                     raise RuntimeError("Plugin lifecycle could not be stopped; restart required: "
@@ -757,8 +784,9 @@ class PluginManager:
                     self.registry.restore(registry_before)
                 raise
             self._prune_package_directories(removed)
-            self._acknowledge_installed_scripts(planned)
-            if threading.current_thread() is threading.main_thread():
+            if not self.installation_only:
+                self._acknowledge_installed_scripts(planned)
+            if not self.installation_only and threading.current_thread() is threading.main_thread():
                 _report_progress(progress, "refresh_assets", 0.90)
                 self._refresh_editor_assets()
                 _report_progress(progress, "preload_plugin", 0.95)
@@ -771,7 +799,7 @@ class PluginManager:
             _report_progress(progress, "complete", 1.0)
             return state
         except BaseException as install_error:
-            if committed:
+            if committed or self.installation_only:
                 raise
             self._rollback_pip_effect(pip_effect)
             if python_baseline is not None:
@@ -789,6 +817,12 @@ class PluginManager:
                 ) from install_error
             if stopped:
                 self.reload(reference)
+            if isinstance(install_error, _DependencyInUse) and len(self._installing) == 1:
+                if self._defer_package_python(
+                    preview, current, selected=selected, source=source, update=update,
+                    overwrite_modified=overwrite_modified,
+                ):
+                    return PluginState(reference, package_control_root(self.project_root, reference), restart_required=True)
             raise
         finally:
             self._installing.discard(key)
@@ -854,8 +888,9 @@ class PluginManager:
                 if registry_changed:
                     self.registry.restore(registry_before)
                 raise
-            self._acknowledge_installed_scripts(planned)
-            if threading.current_thread() is threading.main_thread():
+            if not self.installation_only:
+                self._acknowledge_installed_scripts(planned)
+            if not self.installation_only and threading.current_thread() is threading.main_thread():
                 self._refresh_editor_assets()
                 state = self.reload(reference)
             else:
@@ -1239,6 +1274,8 @@ class PluginManager:
         *,
         progress: _InstallProgress | None = None,
     ) -> dict[str, object]:
+        if self.pending_install is not None:
+            raise RuntimeError("Complete or cancel the pending dependency installation first.")
         _report_progress(progress, "parse_pip", 0.08)
         raw = str(syntax or "").strip()
         if not raw:
@@ -1258,18 +1295,27 @@ class PluginManager:
         executable = self._project_python_executable()
         _report_progress(progress, "inspect_python_environment", 0.22)
         before = self._python_environment_snapshot(executable)
-        command = [executable, "-m", "pip", "install", *arguments]
+        requirements = _pip_requirement_targets(arguments)
+        install = self._resolve_python_install(arguments, project_targets=(item["name"] for item in requirements))
+        from infernux_editor import resolved_arguments
+
+        command = [executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", *resolved_arguments(install)]
         try:
             _report_progress(progress, "install_python_dependencies", 0.46)
-            result = self._run_process(command, cwd=self.project_root)
+            result = (
+                self._run_python_change(command, {canonicalize_name(item["metadata"]["name"]) for item in install} & before.keys()) if install else
+                subprocess.CompletedProcess(command, 0, "Requirements already satisfied.")
+            )
             _report_progress(progress, "verify_python_environment", 0.86)
             after = self._python_environment_snapshot(executable)
-            requirements = _pip_requirement_targets(arguments)
             requested = tuple(item["requirement"] for item in requirements)
             if not _requirements_satisfied(requested, after):
                 raise RuntimeError("pip completed but requested Python requirements remain unresolved")
             changes = _python_environment_changes(before, after)
-            self._activate_installed_python_paths(before, after, executable=executable)
+            self._activate_installed_python_paths(
+                before, after, executable=executable,
+                reinstalled=(canonicalize_name(item["metadata"]["name"]) for item in install),
+            )
             self.registry.record_python_install(
                 syntax=raw,
                 command=command,
@@ -1280,6 +1326,13 @@ class PluginManager:
                 owner="@project",
                 python_environment=after,
             )
+        except _DependencyInUse as used:
+            self._stage_python_install({
+                "request": {"kind": "pip", "syntax": raw, "arguments": arguments},
+                "before": before, "install": install, "loaded": used.names,
+            })
+            _report_progress(progress, "complete", 1.0)
+            return {"ok": True, "restart_required": True}
         except BaseException as install_error:
             try:
                 self._restore_python_environment(before, executable=executable)
@@ -1296,6 +1349,213 @@ class PluginManager:
             "output": result.stdout[-4000:],
         }
 
+    def _resolve_python_install(
+        self, arguments: Iterable[str], *, replacing: Iterable[str] = (), project_targets: Iterable[str] = (),
+    ) -> list[dict]:
+        replacing = self._installing | {name.casefold() for name in replacing}
+        project_targets = set(project_targets)
+        constraints = list(importlib.metadata.distribution("infernux").requires or ())
+        for dependency in self.registry.load()["python_dependencies"]:
+            for owner in dependency["owners"]:
+                reference = str(owner["reference"]).casefold()
+                if reference in replacing or (reference.startswith("@") and dependency["name"] in project_targets):
+                    continue
+                constraints.extend(owner["requirements"])
+        with self._package_cache().workspace("python-plan") as workspace:
+            report = Path(workspace) / "report.json"
+            constraint = Path(workspace) / "constraints.txt"
+            normalized = []
+            for value in constraints:
+                requirement = Requirement(value)
+                requirement.extras.clear()
+                normalized.append(str(requirement))
+            constraint.write_text("\n".join(dict.fromkeys(normalized)) + "\n", encoding="utf-8")
+            self._run_process([
+                self._project_python_executable(), "-m", "pip", "install",
+                "--dry-run", "--report", str(report), "--constraint", str(constraint), *arguments,
+            ], cwd=self.project_root)
+            return [{
+                "metadata": {key: item["metadata"][key] for key in ("name", "version")},
+                "download_info": {key: value for key, value in item["download_info"].items()
+                                  if key in {"url", "vcs_info", "dir_info", "subdirectory"}},
+            } for item in json.loads(report.read_text(encoding="utf-8"))["install"]]
+
+    def _stage_python_install(self, operation: dict) -> None:
+        from infernux_editor import save_pending
+
+        save_pending(self.project_root, operation)
+        self.pending_install = {**operation, "prepared": False}
+        from infernux.engine.interaction import EditorInteractionCore
+
+        if self.engine is not None and EditorInteractionCore.instance() is not None:
+            from infernux.engine.runtime_event_queue import enqueue
+
+            def prompt() -> None:
+                from infernux.engine.ui.plugin_install_confirmation import PluginInstallConfirmationCoordinator
+
+                if self.pending_install is not None:
+                    PluginInstallConfirmationCoordinator.instance().request_restart(self)
+
+            enqueue(prompt)
+
+    @contextmanager
+    def _python_change_scope(self, names: Iterable[str]):
+        from importlib._bootstrap import _ModuleLockManager
+
+        executable = self._project_python_executable()
+        if not (same_path(executable, sys.executable) or same_path(os.path.dirname(executable), sys.prefix)):
+            yield ()
+            return
+        distributions = {name: importlib.metadata.distribution(name) for name in sorted(set(names))}
+        paths: dict[str, set[str]] = {}
+        modules: set[str] = set()
+        for name, distribution in distributions.items():
+            files = distribution.files or ()
+            paths[name] = {path_key(distribution.locate_file(file)) for file in files}
+            for file in files:
+                parts = str(file).replace("\\", "/").split("/")
+                filename = parts[-1]
+                for suffix in [".py", ".pyc", *importlib.machinery.EXTENSION_SUFFIXES]:
+                    if filename.endswith(suffix):
+                        parts[-1] = filename[:-len(suffix)]
+                        if parts[-1] == "__init__":
+                            parts.pop()
+                        if parts and all(part.isidentifier() for part in parts):
+                            modules.update(".".join(parts[:i]) for i in range(1, len(parts) + 1))
+                        break
+        # Serialize with CPython's actual loaders, including imports in flight.
+        with ExitStack() as locks:
+            for name in sorted(modules):
+                locks.enter_context(_ModuleLockManager(name))
+            loaded_paths = set()
+            for module in tuple(sys.modules.values()):
+                if isinstance(module, ModuleType):
+                    filename = object.__getattribute__(module, "__dict__").get("__file__")
+                    if filename:
+                        loaded_paths.add(path_key(filename))
+            yield tuple(name for name, files in paths.items() if files & loaded_paths)
+
+    def _run_python_change(self, command: list[str], names: Iterable[str]):
+        with self._python_change_scope(names) as loaded:
+            if loaded:
+                raise _DependencyInUse(loaded)
+            return self._run_process(command, cwd=self.project_root)
+
+    def _python_dependencies_in_use(self, names: Iterable[str]) -> tuple[str, ...]:
+        with self._python_change_scope(names) as loaded:
+            return loaded
+
+    def cancel_pending_install(self) -> None:
+        from infernux_editor import pending_path
+
+        pending_path(self.project_root).unlink()
+        self.pending_install = None
+
+    def _defer_package_python(
+        self, preview: InxPackagePreview, current: Mapping[str, object] | None,
+        *, selected: Iterable[str] | None, source: Mapping[str, object] | None,
+        update: bool, overwrite_modified: bool,
+    ) -> bool:
+        python_lines: list[str] = []
+        visiting: set[str] = set()
+        incoming: set[str] = set()
+
+        def collect(package: InxPackagePreview) -> None:
+            reference = str(package.metadata["reference"])
+            if reference in visiting:
+                raise RuntimeError(f"Circular plugin dependency: {reference}")
+            visiting.add(reference)
+            incoming.add(reference)
+            plan = self._plan_requirements(package)
+            python_lines.extend(plan.python_lines)
+            for dependency in plan.plugins:
+                installed = self.registry.installed_record(dependency.reference)
+                if dependency.archive is not None:
+                    if installed is None or not _same_install(installed, dependency.preview):
+                        with self._package_cache().workspace("nested-plan") as workspace:
+                            path = Path(workspace) / "dependency.inxpkg"
+                            path.write_bytes(dependency.archive)
+                            collect(InxPackage.inspect(str(path)))
+                elif installed is None:
+                    record = self.registry.find(dependency.reference)
+                    if record is None:
+                        raise KeyError(f"Plugin reference was not found: {dependency.reference}")
+                    acquired = self.download_source(record["source"])
+                    child = InxPackage.inspect(str(acquired["path"]))
+                    _require_package_identity(
+                        child.metadata, expected_reference=dependency.reference,
+                        expected_version=str(record.get("version", "")),
+                    )
+                    collect(child)
+            visiting.remove(reference)
+
+        collect(preview)
+        keep = {item["name"] for item in _pip_requirement_targets(self._plan_requirements(preview).python_lines)}
+        restore, uninstall = self._python_dependency_release(str(preview.metadata["reference"]), keep_names=keep) if current else ([], [])
+        python_lines.extend(restore)
+        if not uninstall and not any(line.strip() and not line.lstrip().startswith("#") for line in python_lines):
+            return False
+        before = self._python_environment_snapshot()
+        install: list[dict] = []
+        requested = tuple(item["requirement"] for item in _pip_requirement_targets(python_lines))
+        if python_lines and (not requested or not _requirements_satisfied(requested, before)):
+            with self._pip_requirement_file(python_lines) as path:
+                install = self._resolve_python_install(["-r", path], replacing=incoming)
+        if not install and not uninstall:
+            return False
+        changed = ({canonicalize_name(item["metadata"]["name"]) for item in install} & before.keys()) | set(uninstall)
+        loaded = self._python_dependencies_in_use(changed)
+        if not loaded:
+            return False
+        reference = str(preview.metadata["reference"])
+        path, _ = self._cache_package(preview.package_path, reference, str(preview.metadata["version"]))
+        self._stage_python_install({
+            "request": {"kind": "package", "path": path, "options": {
+                "selected": list(selected) if selected is not None else None,
+                "source": dict(source or (current.get("source", {}) if current else {})),
+                "update": update, "overwrite_modified": overwrite_modified,
+                "expected_reference": reference, "expected_version": str(preview.metadata["version"]),
+            }},
+            "before": before, "install": install, "uninstall": uninstall, "loaded": loaded,
+        })
+        return True
+
+    def _complete_pending_install(self) -> None:
+        from infernux_editor import read_pending
+
+        operation = read_pending(self.project_root)
+        if not self.installation_only or operation is None or not operation["prepared"]:
+            raise RuntimeError("Dependency publication requires a prepared installation.")
+        self._prepared_python_baseline = operation["before"]
+        request = operation["request"]
+        if request["kind"] == "pip":
+            after = self._python_environment_snapshot()
+            requirements = _pip_requirement_targets(request["arguments"])
+            if not _requirements_satisfied(tuple(item["requirement"] for item in requirements), after):
+                raise RuntimeError("Prepared Python requirements remain unresolved")
+            self.registry.record_python_install(
+                syntax=request["syntax"], command=operation["command"],
+                output=operation.get("output", ""), requirements=request["arguments"],
+                dependency_requirements=requirements,
+                changes=_python_environment_changes(operation["before"], after),
+                owner="@project", python_environment=after,
+            )
+        elif request["kind"] == "package":
+            self.install_package(request["path"], **request["options"])
+        elif request["kind"] == "uninstall":
+            self.uninstall(request["reference"])
+        elif request["kind"] == "startup":
+            after = self._python_environment_snapshot()
+            if not _requirements_satisfied(request["requirements"], after, check_sources=True):
+                raise RuntimeError("Prepared startup requirements remain unresolved")
+            self.registry.record_python_reconciliation(
+                requirements=request["requirements"],
+                changes=_python_environment_changes(operation["before"], after),
+                python_environment=after, owners=request["owners"],
+            )
+        else:
+            raise ValueError(f"Unknown pending installation: {request['kind']}")
+
     def finalize_background_install(self, reference: str) -> PluginState:
         """Publish worker-written plugin assets and preload them on the editor thread."""
 
@@ -1310,100 +1570,62 @@ class PluginManager:
             self._publish_package_runtime_scripts(normalized)
         return self.states[normalized.casefold()]
 
-    def _reconcile_python_requirements_for_startup(self) -> tuple[str, ...]:
-        """Restore enabled plugin requirements before any plugin preload runs.
-
-        The project registry travels with a project, while its Python environment
-        may be recreated or moved to another host.  Installation-time dependency
-        records therefore need to be checked against the active project runtime
-        on every editor startup.
-        """
-
-        self.python_requirement_error = ""
-        requirements_by_plugin: dict[str, tuple[str, ...]] = {}
-        all_requirements: list[str] = []
-        for record in self.registry.installed():
-            if not bool(record.get("enabled", True)):
-                continue
-            reference = str(record.get("reference", "")).strip()
-            requirements = tuple(
-                str(item.get("requirement", "")).strip()
-                for item in record.get("python_requirements", [])
-                if isinstance(item, Mapping)
-                and str(item.get("requirement", "")).strip()
-            )
-            if requirements:
-                requirements_by_plugin[reference] = requirements
-                all_requirements.extend(requirements)
-        project_requirements = tuple(dict.fromkeys(
+    def _startup_python_requirements(self) -> dict[str, tuple[str, ...]]:
+        requirements = {
+            str(record["reference"]): tuple(str(item["requirement"]) for item in record.get("python_requirements", ()))
+            for record in self.registry.installed() if record.get("enabled", True)
+        }
+        project = tuple(dict.fromkeys(
             str(requirement)
             for dependency in self.registry.load()["python_dependencies"]
-            for owner in dependency["owners"]
-            if str(owner["reference"]).startswith("@")
+            for owner in dependency["owners"] if str(owner["reference"]).startswith("@")
             for requirement in owner["requirements"]
         ))
-        if project_requirements:
-            requirements_by_plugin["@project"] = project_requirements
-            all_requirements.extend(project_requirements)
-        if not all_requirements:
-            return ()
+        from infernux.engine.project_requirements import _parse_requirements, requirements_path
 
-        active_names = {item["name"] for item in _pip_requirement_targets(all_requirements)}
-        for dependency in self.registry.load()["python_dependencies"]:
-            version = str(dependency.get("installed_version", "")).strip()
-            if version and dependency["name"] in active_names:
-                all_requirements.append(f"{dependency['name']}=={version}")
-
-        try:
-            executable = self._project_python_executable()
-            before = self._python_environment_snapshot(executable)
-            missing = tuple(
-                dict.fromkeys(
-                    requirement
-                    for requirement in all_requirements
-                    if not _requirements_satisfied((requirement,), before)
-                )
-            )
-            if not missing:
-                return ()
-            self._run_pip_requirement_file(
-                tuple(dict.fromkeys(all_requirements)), executable=executable
-            )
-            after = self._python_environment_snapshot(executable)
-            unresolved = tuple(
-                requirement
-                for requirement in all_requirements
-                if not _requirements_satisfied((requirement,), after)
-            )
-            if unresolved:
-                raise RuntimeError(
-                    "pip completed but plugin requirements remain unresolved: "
-                    + ", ".join(unresolved)
-                )
-            changes = _python_environment_changes(before, after)
-            self.registry.record_python_reconciliation(
-                requirements=missing,
-                changes=changes,
-                python_environment=after,
-                owners={
-                    reference: _pip_requirement_targets(requirements)
-                    for reference, requirements in requirements_by_plugin.items()
-                },
-            )
-            self._activate_installed_python_paths(before, after, executable=executable)
-        except Exception as exc:
-            self.python_requirement_error = str(exc)
-            raise RuntimeError(
-                "Installed plugin Python requirements could not be restored: "
-                f"{exc}"
-            ) from exc
-
-        restored_names = {item["name"] for item in _pip_requirement_targets(missing)}
-        return tuple(
-            reference
-            for reference, requirements in requirements_by_plugin.items()
-            if any(item["name"] in restored_names for item in _pip_requirement_targets(requirements))
+        path = requirements_path(self.project_root)
+        authored = tuple(spec for spec, _ in _parse_requirements(path)) if os.path.isfile(path) else ()
+        authored_names = {item["name"] for item in _pip_requirement_targets(authored)}
+        requirements["@project"] = authored + tuple(
+            spec for spec in project if canonicalize_name(Requirement(spec).name) not in authored_names
         )
+        return {reference: values for reference, values in requirements.items() if values}
+
+    def _plan_startup_python(self) -> dict | None:
+        owners = self._startup_python_requirements()
+        requirements = list(dict.fromkeys(spec for values in owners.values() for spec in values))
+        if not requirements:
+            return None
+        targets = _pip_requirement_targets(requirements)
+        for dependency in self.registry.load()["python_dependencies"]:
+            name, version = dependency["name"], dependency["installed_version"]
+            constraints = [item["requirement"] for item in targets if item["name"] == name]
+            if (version and constraints and not any(Requirement(spec).url for spec in constraints)
+                    and _requirements_satisfied(constraints, {name: version})):
+                requirements.append(f"{name}=={version}")
+        before = self._python_environment_snapshot()
+        if _requirements_satisfied(requirements, before, check_sources=True):
+            return None
+        with self._pip_requirement_file(requirements) as path:
+            install = self._resolve_python_install(["-r", path], replacing=owners)
+        return {
+            "request": {"kind": "startup", "requirements": requirements,
+                        "owners": {key: _pip_requirement_targets(values) for key, values in owners.items()}},
+            "before": before, "install": install,
+        }
+
+    def _reconcile_python_requirements_for_startup(self) -> tuple[str, ...]:
+        """Launch preparation owns installation; the live host only checks its result."""
+        requirements = [spec for values in self._startup_python_requirements().values() for spec in values]
+        before = self._python_environment_snapshot() if requirements else {}
+        missing = [spec for spec in requirements if not _requirements_satisfied((spec,), before, check_sources=True)]
+        self.python_requirement_error = (
+            "Open this project from Hub or 'python -m infernux_editor <project>' to prepare: " + ", ".join(missing)
+            if missing else ""
+        )
+        if missing:
+            raise RuntimeError(self.python_requirement_error)
+        return ()
 
     def _install_pip_lines(
         self, lines: Iterable[str]
@@ -1413,6 +1635,13 @@ class PluginManager:
         before = self._python_environment_snapshot(executable)
         requirements = _pip_requirement_targets(values)
         requested = tuple(item["requirement"] for item in requirements)
+        if self.installation_only:
+            if not _requirements_satisfied(requested, before):
+                raise RuntimeError("Prepared plugin Python requirements remain unresolved")
+            return _PipInstallEffect(
+                self._prepared_python_baseline, before, requirements, (),
+                "Dependencies prepared before editor startup.",
+            )
         if requested and _requirements_satisfied(requested, before):
             return _PipInstallEffect(
                 before,
@@ -1423,12 +1652,19 @@ class PluginManager:
             )
         try:
             with self._pip_requirement_file(values) as filtered:
-                command = (executable, "-m", "pip", "install", "-r", filtered)
-                result = self._run_process(list(command), cwd=self.project_root)
+                install = self._resolve_python_install(["-r", filtered])
+            from infernux_editor import resolved_arguments
+
+            command = (executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", *resolved_arguments(install))
+            changed = {canonicalize_name(item["metadata"]["name"]) for item in install} & before.keys()
+            result = self._run_python_change(list(command), changed)
             after = self._python_environment_snapshot(executable)
             if not _requirements_satisfied(requested, after):
                 raise RuntimeError("pip completed but requested Python requirements remain unresolved")
-            self._activate_installed_python_paths(before, after, executable=executable)
+            self._activate_installed_python_paths(
+                before, after, executable=executable,
+                reinstalled=(canonicalize_name(item["metadata"]["name"]) for item in install),
+            )
             return _PipInstallEffect(
                 before,
                 after,
@@ -1436,6 +1672,8 @@ class PluginManager:
                 command,
                 result.stdout,
             )
+        except _DependencyInUse:
+            raise
         except BaseException as install_error:
             try:
                 self._restore_python_environment(before, executable=executable)
@@ -1452,6 +1690,7 @@ class PluginManager:
         after: Mapping[str, str],
         *,
         executable: str,
+        reinstalled: Iterable[str] = (),
     ) -> None:
         """Publish newly installed site hooks before importing plugin lifecycles.
 
@@ -1461,9 +1700,11 @@ class PluginManager:
         not hard-coded dependency paths or a second pass over unrelated hooks.
         An installation into a different interpreter must not affect this one.
         """
-        if not same_path(executable, sys.executable):
+        if not (same_path(executable, sys.executable) or same_path(os.path.dirname(executable), sys.prefix)):
             return
-        changed = sorted(name for name, version in after.items() if before.get(name) != version)
+        changed = sorted(set(reinstalled) | {
+            name for name, version in after.items() if before.get(name) != version
+        })
         if not changed:
             return
 
@@ -1502,7 +1743,7 @@ class PluginManager:
         # running in, enumerate installed distributions in-process instead of
         # spawning `python -m pip list` (which costs seconds on every editor
         # startup, under the "Preloading project plugins…" splash step).
-        same_interpreter = same_path(python, sys.executable)
+        same_interpreter = same_path(python, sys.executable) or same_path(os.path.dirname(python), sys.prefix)
         if same_interpreter:
             import importlib.metadata
 
@@ -1568,9 +1809,9 @@ class PluginManager:
                 cwd=self.project_root,
             )
 
-    def _release_python_dependencies(
+    def _python_dependency_release(
         self, reference: str, *, keep_names: set[str] | None = None,
-    ) -> dict[str, str] | None:
+    ) -> tuple[list[str], list[str]]:
         plan = self.registry.python_release_plan(reference)
         actionable = [
             item
@@ -1579,9 +1820,7 @@ class PluginManager:
             and str(item.get("name", "")) not in (keep_names or set())
         ]
         if not actionable:
-            return None
-        executable = self._project_python_executable()
-        baseline = self._python_environment_snapshot(executable)
+            return [], []
         remaining_requirements: list[str] = []
         uninstall: list[str] = []
         restore: list[str] = []
@@ -1604,37 +1843,54 @@ class PluginManager:
                 restore.append(f"{name}=={previous}")
             elif name:
                 uninstall.append(name)
-        try:
-            if remaining_requirements and not _requirements_satisfied(
-                remaining_requirements, baseline
-            ):
-                self._run_pip_requirement_file(
-                    remaining_requirements,
-                    executable=executable,
-                )
-            if uninstall:
-                self._run_process(
-                    [executable, "-m", "pip", "uninstall", "-y", *sorted(set(uninstall))],
-                    cwd=self.project_root,
-                )
-            if restore:
-                self._run_process(
-                    [executable, "-m", "pip", "install", *sorted(set(restore))],
-                    cwd=self.project_root,
-                )
-        except BaseException:
-            self._restore_python_environment(baseline, executable=executable)
-            raise
+        return [*remaining_requirements, *restore], sorted(set(uninstall))
+
+    def _release_python_dependencies(
+        self, reference: str, *, keep_names: set[str] | None = None,
+    ) -> dict[str, str] | None:
+        requirements, uninstall = self._python_dependency_release(reference, keep_names=keep_names)
+        if not requirements and not uninstall:
+            return None
+        if self.installation_only:
+            return self._prepared_python_baseline
+        from infernux_editor import resolved_arguments
+
+        executable = self._project_python_executable()
+        baseline = self._python_environment_snapshot(executable)
+        install = self._resolve_python_install(requirements, replacing=(reference,)) if requirements and not _requirements_satisfied(requirements, baseline) else []
+        uninstall = [name for name in uninstall if name in baseline]
+        changed = ({canonicalize_name(item["metadata"]["name"]) for item in install} & baseline.keys()) | set(uninstall)
+        with self._python_change_scope(changed) as loaded:
+            if loaded:
+                raise _DependencyInUse(loaded)
+            try:
+                if install:
+                    self._run_process([
+                        executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", *resolved_arguments(install),
+                    ], cwd=self.project_root)
+                if uninstall:
+                    self._run_process([executable, "-m", "pip", "uninstall", "-y", *uninstall], cwd=self.project_root)
+            except BaseException:
+                self._restore_python_environment(baseline, executable=executable)
+                raise
         return baseline
 
-    def _run_pip_requirement_file(
-        self, requirements: Iterable[str], *, executable: str
-    ) -> None:
-        with self._pip_requirement_file(requirements) as path:
-            self._run_process(
-                [executable, "-m", "pip", "install", "-r", path],
-                cwd=self.project_root,
-            )
+    def _defer_uninstall_python(self, reference: str) -> bool:
+        requirements, uninstall = self._python_dependency_release(reference)
+        if not requirements and not uninstall:
+            return False
+        before = self._python_environment_snapshot()
+        install = self._resolve_python_install(requirements, replacing=(reference,)) if requirements and not _requirements_satisfied(requirements, before) else []
+        uninstall = [name for name in uninstall if name in before]
+        changed = ({canonicalize_name(item["metadata"]["name"]) for item in install} & before.keys()) | set(uninstall)
+        loaded = self._python_dependencies_in_use(changed)
+        if not loaded:
+            return False
+        self._stage_python_install({
+            "request": {"kind": "uninstall", "reference": reference},
+            "before": before, "install": install, "uninstall": uninstall, "loaded": loaded,
+        })
+        return True
 
     @contextmanager
     def _pip_requirement_file(self, requirements: Iterable[str]):
@@ -1693,6 +1949,8 @@ class PluginManager:
         return self.reload(reference)
 
     def uninstall(self, reference: str) -> dict[str, object]:
+        if self.pending_install is not None and not self.installation_only:
+            raise RuntimeError("Complete or cancel the pending dependency installation first.")
         reference = validate_reference(reference)
         record = self.registry.installed_record(reference)
         if record is None:
@@ -1710,7 +1968,9 @@ class PluginManager:
             raise RuntimeError(
                 f"Plugin {reference} is required by: {', '.join(sorted(blockers))}"
             )
-        failures = self.preloads.unload_package(reference)
+        if not self.installation_only and self._defer_uninstall_python(reference):
+            return {"reference": reference, "restart_required": True}
+        failures = self.preloads.unload_package(reference) if not self.installation_only else ()
         if failures:
             raise RuntimeError(
                 "Plugin lifecycle could not be stopped; uninstall aborted and restart required: "
@@ -1719,9 +1979,11 @@ class PluginManager:
         python_baseline: dict[str, str] | None = None
         try:
             python_baseline = self._release_python_dependencies(reference)
-        except BaseException:
+        except BaseException as error:
             self.preloads.reload_package(reference)
             self._rebuild_states()
+            if isinstance(error, _DependencyInUse) and self._defer_uninstall_python(reference):
+                return {"reference": reference, "restart_required": True}
             raise
         removed: list[str] = []
         preserved: list[str] = []
@@ -1749,22 +2011,24 @@ class PluginManager:
                 removed.append(path)
             registry_changed = True
             self.registry.remove_install(reference)
-            self._retire_package_runtime_scripts(record)
+            if not self.installation_only:
+                self._retire_package_runtime_scripts(record)
             transaction.commit()
         except BaseException as uninstall_error:
             transaction.rollback()
             if registry_changed:
                 self.registry.restore(registry_before)
             python_rollback_error = None
-            if python_baseline is not None:
+            if python_baseline is not None and not self.installation_only:
                 try:
                     self._restore_python_environment(python_baseline)
                 except Exception as python_error:
                     python_rollback_error = python_error
-            try:
-                self.reload(reference)
-            except Exception as reload_error:
-                Debug.log_suppressed("PluginManager.uninstall.rollback_reload", reload_error)
+            if not self.installation_only:
+                try:
+                    self.reload(reference)
+                except Exception as reload_error:
+                    Debug.log_suppressed("PluginManager.uninstall.rollback_reload", reload_error)
             if python_rollback_error is not None:
                 raise RuntimeError(
                     "Plugin uninstall failed and Python environment rollback "
@@ -1772,6 +2036,8 @@ class PluginManager:
                 ) from uninstall_error
             raise
         self._prune_package_directories([*removed, *removed_caches])
+        if self.installation_only:
+            return {**record, "removed_files": removed, "preserved_shared_files": preserved}
         from infernux.core.assets import AssetManager
 
         for path in removed:
@@ -2596,7 +2862,7 @@ class PluginManager:
         return [paths[key] for key in sorted(paths)]
 
     def _refresh_editor_assets(self) -> None:
-        if threading.current_thread() is not threading.main_thread():
+        if self.installation_only or threading.current_thread() is not threading.main_thread():
             return
         database = _asset_database(self.engine)
         if database is not None and same_path(database.project_root, self.project_root):
@@ -2900,7 +3166,9 @@ def _pip_requirement_targets(
                 )
                 if basename.casefold().endswith(".whl"):
                     try:
-                        name = str(parse_wheel_filename(basename)[0])
+                        wheel_name, wheel_version, _, _ = parse_wheel_filename(basename)
+                        name = str(wheel_name)
+                        requirement = f"{name}=={wheel_version}"
                     except Exception:
                         name = ""
         canonical = canonicalize_name(name) if name else ""
@@ -2917,7 +3185,7 @@ def _pip_requirement_targets(
 
 
 def _requirements_satisfied(
-    requirements: Iterable[str], environment: Mapping[str, str]
+    requirements: Iterable[str], environment: Mapping[str, str], *, check_sources: bool = False,
 ) -> bool:
     for value in requirements:
         targets = _pip_requirement_targets((value,))
@@ -2935,6 +3203,14 @@ def _requirements_satisfied(
             version, prereleases=True
         ):
             return False
+        if check_sources and parsed.url:
+            try:
+                distribution = importlib.metadata.distribution(parsed.name)
+            except importlib.metadata.PackageNotFoundError:
+                return False
+            direct_url = distribution.read_text("direct_url.json")
+            if direct_url is None or json.loads(direct_url).get("url") != parsed.url:
+                return False
     return True
 
 

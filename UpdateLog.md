@@ -1,3 +1,29 @@
+# Infernux v0.4.3-v7 · Hotfix 7: Dependency Updates and Restart Control
+
+This hotfix prepares Python dependency replacements before editor startup, keeping loaded libraries intact until the editor closes. The base engine version remains 0.4.3; wheels use build 7, with Hub 0.4.3-8.
+
+[中文更新日志](UpdateLog-zh.md)
+
+**Baseline for comparison:** [`v0.4.3-v6...v0.4.3-v7`](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v6...v0.4.3-v7).
+
+### Dependencies and Plugins
+
+- Ask to restart only when an installation would replace a library already loaded by the editor, including transitive dependencies. Unloaded libraries install without a restart prompt.
+- Keep the current environment and plugin registration intact when choosing Later. Restart Now uses the existing save/discard/cancel workflow; cancelling keeps the editor open and the installation pending.
+- Resume the prepared installation after the old editor exits, then launch a fresh interpreter so new site hooks and package paths take effect normally.
+- Restore missing project and plugin requirements during launch preparation, preserving locked versions and keeping dependency installation out of the running editor's startup checks.
+- Respect direct-URL source changes and the requirements of other dependency owners when restoring a plugin's previous libraries during uninstall.
+- Group the plugin package list under category headers when All is selected, retaining search, sorting within each category, selection and details.
+
+### Hub and Release Delivery
+
+- Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses.
+- Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths.
+- Respect the automatic-update preference when opening the engine installation page; manual update checks remain available.
+- Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix.
+
+---
+
 # Infernux v0.4.3-v6 · Hotfix 6: Portable Plugin Updates
 
 This hotfix repairs plugin updates after cloning or moving a project to a machine with an empty package cache. It also fixes default MCP updates that could prevent an existing project from opening after an engine hotfix upgrade. The base engine version remains 0.4.3; wheels use build 6, with the matching Hub bundle at 0.4.3-7.

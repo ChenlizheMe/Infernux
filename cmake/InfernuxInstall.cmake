@@ -222,6 +222,7 @@ install(
 install(
     FILES
         "${CMAKE_SOURCE_DIR}/python/infernux_project_lock.py"
+        "${CMAKE_SOURCE_DIR}/python/infernux_editor.py"
     DESTINATION "python"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )

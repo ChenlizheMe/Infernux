@@ -307,10 +307,13 @@ def test_missing_synced_package_file_blocks_player_startup(installed):
 
 
 def test_player_plugin_state_uses_cooked_guids_without_editor_control_manifest(installed, monkeypatch):
+    import sys
     from infernux.application import Application
     from infernux.engine import project_context
 
     manager, source, root = installed
+    monkeypatch.setitem(sys.modules, "infernux_editor", None)
+    manager = PluginManager(manager.project_root, runtime=True)
     record = manager.registry.installed_record("vendor/plugin")
     payloads = {item["guid"].casefold(): f"cooked/{item['guid']}.inxasset" for item in record["files"]}
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
@@ -360,7 +363,7 @@ def test_update_relinquishes_dropped_python_dependency_and_preserves_other_owner
     ]
     manager.registry.save(document)
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "python")
-    monkeypatch.setattr(manager, "_python_environment_snapshot", lambda executable: {"old-dep": "1"})
+    monkeypatch.setattr(manager, "_python_environment_snapshot", lambda *_: {"old-dep": "1"})
     monkeypatch.setattr(
         manager, "_run_process", lambda *args, **kwargs: pytest.fail("The other owner still needs old-dep")
     )
@@ -370,7 +373,8 @@ def test_update_relinquishes_dropped_python_dependency_and_preserves_other_owner
     assert ledger[0]["owners"] == [{"reference": "vendor/other", "requirements": ["old-dep==1"]}]
 
 
-def test_update_failure_restores_released_python_environment(installed, monkeypatch):
+def test_update_defers_dependency_removal_and_failed_publication_retains_the_plan(installed, monkeypatch):
+    from infernux_editor import read_pending, _write_pending
     manager, source, root = installed
     document = manager.registry.load()
     document["installed"][0]["python_requirements"] = [{"name": "old-dep", "requirement": "old-dep==1"}]
@@ -386,19 +390,33 @@ def test_update_failure_restores_released_python_environment(installed, monkeypa
     manager.registry.save(document)
     environment = {"old-dep": "1"}
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "python")
-    monkeypatch.setattr(manager, "_python_environment_snapshot", lambda executable: dict(environment))
-    monkeypatch.setattr(manager, "_run_process", lambda *args, **kwargs: environment.pop("old-dep"))
-    monkeypatch.setattr(manager, "_restore_python_environment", lambda baseline, **kwargs: environment.update(baseline))
+    monkeypatch.setattr(manager, "_python_environment_snapshot", lambda *_: dict(environment))
+    monkeypatch.setattr(manager, "_run_process", lambda *args, **kwargs: pytest.fail("old runtime is still live"))
+    monkeypatch.setattr(manager, "_python_dependencies_in_use", lambda _: ("old-dep",))
+    assert manager.install_package(next_package(source), update=True).restart_required
+    assert environment == {"old-dep": "1"}
+    assert manager.registry.load() == document
+    assert (root / "runtime/note.txt").read_text() == "first"
+    pending = read_pending(manager.project_root)
+    assert pending["uninstall"] == ["old-dep"]
+    environment.clear()
+    pending["prepared"] = True
+    _write_pending(manager.project_root, pending)
+    publication = PluginManager(manager.project_root, installation_only=True)
+    monkeypatch.setattr(publication, "_python_environment_snapshot", lambda *_: dict(environment))
+    monkeypatch.setattr(publication, "_run_process", lambda *args, **kwargs: pytest.fail("publication must not run pip"))
 
     def fail(*args, **kwargs):
         assert environment == {}
         raise OSError("publication failed")
 
-    monkeypatch.setattr(manager.registry, "record_install", fail)
+    monkeypatch.setattr(publication.registry, "record_install", fail)
     with pytest.raises(OSError, match="publication failed"):
-        manager.install_package(next_package(source), update=True)
-    assert environment == {"old-dep": "1"}
+        publication._complete_pending_install()
+    assert environment == {}
     assert manager.registry.load() == document
+    assert (root / "runtime/note.txt").read_text() == "first"
+    assert read_pending(manager.project_root)["before"] == {"old-dep": "1"}
 
 
 def test_update_with_real_binary_archives_and_shared_cache(tmp_path):

@@ -588,7 +588,7 @@ def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch)
     assert not (project / "Assets" / "Second.unloaded").exists()
 
 
-def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tmp_path):
+def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tmp_path, monkeypatch):
     source = _source(tmp_path / "source", "vendor/lifecycle")
     runtime = source / "runtime"
     runtime.mkdir()
@@ -620,6 +620,15 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     assert state.loaded is True
     assert state.restart_required is True
     assert state.lifecycle[0]["restart_reason"] == "native test state"
+    from infernux.engine.ui.plugin_panel import PluginPanel
+    from infernux.engine.i18n import t
+
+    monkeypatch.setattr(PluginManager, "_instance", manager)
+    panel = PluginPanel()
+    panel._run_now(lambda: state, "install")
+    assert manager.pending_install is None
+    assert panel._selected_reference == state.reference
+    assert panel._message == t("plugins.action_ok").format(action="install", reference=state.reference)
     original_identity = state.lifecycle[0]["identity"]
 
     old = project / "Packages/vendor/lifecycle/runtime/startup.py"
@@ -847,7 +856,13 @@ def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatc
     def run(command, cwd=None):
         calls.append((command, cwd))
         if command[2:4] == ["pip", "install"]:
-            environment["third-party-wheel"] = "1.0"
+            if "--dry-run" in command:
+                Path(command[command.index("--report") + 1]).write_text(json.dumps({"install": [{
+                    "metadata": {"name": "third-party-wheel", "version": "1.0"},
+                    "download_info": {"url": "https://example.test/third_party_wheel-1.0-py3-none-any.whl"},
+                }]}), encoding="utf-8")
+            else:
+                environment["third-party-wheel"] = "1.0"
         return SimpleNamespace(
             stdout=json.dumps([{"name": name, "version": version} for name, version in environment.items()])
             if command[2:5] == ["pip", "list", "--format=json"]
@@ -860,6 +875,7 @@ def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatc
         "vendor/dependency",
         "vendor/parent",
     }
-    install_calls = [command for command, _cwd in calls if command[2:4] == ["pip", "install"]]
+    install_calls = [command for command, _cwd in calls
+                     if command[2:4] == ["pip", "install"] and "--dry-run" not in command]
     assert len(install_calls) == 1
     assert install_calls[0][:4] == ["project-python", "-m", "pip", "install"]

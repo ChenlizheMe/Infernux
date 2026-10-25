@@ -177,6 +177,15 @@ class PluginPanel(EditorPanel):
             ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.text_wrapped(t("plugins.official_unavailable"))
             ctx.pop_style_color()
+        if manager.pending_install is not None:
+            ctx.text_wrapped(t("plugins.dependencies_pending"))
+            if ctx.button(t("plugins.close_for_dependencies") + "##plugin_dependency_close"):
+                from .plugin_install_confirmation import PluginInstallConfirmationCoordinator
+
+                PluginInstallConfirmationCoordinator.instance().request_restart(manager)
+            ctx.same_line()
+            if ctx.button(t("plugins.cancel_dependencies") + "##plugin_dependency_cancel"):
+                self._run(manager.cancel_pending_install, "cancel")
         self._render_add_popup(ctx, manager)
 
     def _render_add_popup(self, ctx, manager: PluginManager) -> None:
@@ -314,6 +323,9 @@ class PluginPanel(EditorPanel):
             )
         else:
             filtered.sort(key=name_key, reverse=self._sort_index == 1)
+        if self._category_index == 0:
+            category_order = {key: index for index, key in enumerate(OFFICIAL_PLUGIN_CATEGORIES)}
+            filtered.sort(key=lambda row: category_order[row["_category_key"]])
         return filtered
 
     def _render_package_list(self, ctx, manager: PluginManager, rows: list[dict[str, object]]) -> None:
@@ -343,7 +355,17 @@ class PluginPanel(EditorPanel):
                     _metric(ctx, Theme.TREE_ITEM_SPC[0]),
                     _metric(ctx, Theme.TREE_ITEM_SPC[1]),
                 )
+                previous_category = None
                 for row in rows:
+                    category = row["_category_key"]
+                    if self._category_index == 0 and category != previous_category:
+                        if previous_category is not None:
+                            ctx.dummy(0.0, section_gap)
+                        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
+                        ctx.label(t(f"plugins.category.{category}"))
+                        ctx.pop_style_color()
+                        ctx.separator()
+                        previous_category = category
                     reference = str(row.get("reference", ""))
                     key = reference.casefold()
                     state = manager.states.get(key)
@@ -880,6 +902,12 @@ class PluginPanel(EditorPanel):
                     self._message = f"{type(exc).__name__}: {exc}"
                     Debug.log_error(f"Plugin update failed for {label}: {self._message}")
                     return
+            if manager.pending_install is not None:
+                self._message = t("plugins.dependencies_pending")
+                from .plugin_install_confirmation import PluginInstallConfirmationCoordinator
+
+                PluginInstallConfirmationCoordinator.instance().request_restart(manager)
+                return
             reference = str(getattr(result, "reference", ""))
             if reference:
                 try:
@@ -928,6 +956,10 @@ class PluginPanel(EditorPanel):
     def _run_now(self, callback, action: str) -> None:
         try:
             result = callback()
+            manager = PluginManager.instance()
+            if manager is not None and manager.pending_install is not None:
+                self._message = t("plugins.dependencies_pending")
+                return
             reference = getattr(result, "reference", "")
             if reference:
                 self._selected_reference = str(reference)
@@ -1007,6 +1039,12 @@ class InxPackageImportPanel(EditorPanel):
                 self._message = message or t("inxpackage.import_failed")
                 return
             state = result.get("state")
+            if manager.pending_install is not None:
+                self._message = t("plugins.dependencies_pending")
+                from .plugin_install_confirmation import PluginInstallConfirmationCoordinator
+
+                PluginInstallConfirmationCoordinator.instance().request_restart(manager)
+                return
             reference = str(getattr(state, "reference", ""))
             self._message = t("inxpackage.imported").format(reference=reference)
 

@@ -120,6 +120,26 @@ def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, 
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+@pytest.mark.parametrize("automatic", [False, True])
+def test_install_page_respects_automatic_update_preference_and_allows_manual_check(engine_dialog, monkeypatch, automatic):
+    dialog, _, _ = engine_dialog
+    calls = []
+    monkeypatch.setattr(installs_view.InstallsView, "check_updates", lambda self: calls.append("check"))
+    settings = SimpleNamespace(get_setting=lambda *_: "enabled" if automatic else "disabled")
+    page = installs_view.InstallsView(dialog._vm, dialog._queue, settings=settings)
+    try:
+        page.show()
+        QCoreApplication.processEvents()
+        assert calls == (["check"] if automatic else [])
+        calls.clear()
+        page.btn_check.click()
+        assert calls == ["check"]
+    finally:
+        page.close()
+        page.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.mark.parametrize("failure", [None, "installation failed", ""])
 def test_runtime_install_completion_follows_worker_cleanup(failure):
     app = QApplication.instance() or QApplication([])

@@ -42,12 +42,13 @@ Issues = "https://github.com/ChenlizheMe/Infernux/issues"
 
 [project.scripts]
 inx = "infernux.plugins.cli:main"
+infernux-editor = "infernux_editor:main"
 
 [project.optional-dependencies]
 launcher = ["PySide6>=6.5.0"]
 
 [tool.infernux.hub]
-build-number = 7
+build-number = 8
 
 [tool.ruff]
 target-version = "py313"
@@ -58,7 +59,7 @@ extend-exclude = ["*.pyi"]
 select = ["E9", "F601", "F821", "F822", "F823"]
 
 [tool.setuptools]
-py-modules = ["infernux_project_lock"]
+py-modules = ["infernux_project_lock", "infernux_editor"]
 packages = {find = {where = ["python"], exclude = ["test", "test.*", "*.test", "*.test.*", "*.tests", "*.tests.*", "*.__pycache__", "*.__pycache__.*"]}}
 package-dir = {"" = "python"}
 include-package-data = true
