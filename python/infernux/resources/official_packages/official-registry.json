@@ -230,7 +230,7 @@
     {
       "reference": "infernux/tween",
       "name": "Infernux Tween",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "intro": "Tween values and compose animation sequences using the Infernux frame scheduler.",
       "intros": {
         "zh-CN": "使用引擎帧调度进行属性补间和动画序列编排。"
@@ -258,7 +258,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_tween",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.tween/0.1.2/infernux.tween.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.tween/0.1.3/infernux.tween.inxpkg"
       }
     }
   ]
