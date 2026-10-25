@@ -1,51 +1,88 @@
 {
   "schema_version": 1,
   "version": "0.4.3",
-  "tag": "v0.4.3-v6",
-  "title": "Infernux v0.4.3-v6 · Hotfix 6: Portable Plugin Updates",
-  "codename": "Hotfix 6: Portable Plugin Updates",
+  "tag": "v0.4.3-v7",
+  "title": "Infernux v0.4.3-v7 · Hotfix 7: Dependency Updates and Restart Control",
+  "codename": "Hotfix 7: Dependency Updates and Restart Control",
   "language": "en",
-  "published_at": "2026-10-25T07:23:35Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v6",
+  "published_at": "2026-10-25T17:25:00Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v7",
   "source": "UpdateLog.md",
-  "summary": "This hotfix repairs plugin updates after cloning or moving a project to a machine with an empty package cache. It also fixes default MCP updates that could prevent an existing project from opening after an engine hotfix upgrade. The base engine version remains 0.4.3; wheels use build 6, with the matching Hub bundle at 0.4.3-7.",
+  "summary": "This hotfix prepares Python dependency replacements before editor startup, keeping loaded libraries intact until the editor closes. The base engine version remains 0.4.3; wheels use build 7, with Hub 0.4.3-8.",
   "comparison": {
-    "from": "0.4.3-v5",
-    "to": "0.4.3-v6",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v5...v0.4.3-v6"
+    "from": "0.4.3-v6",
+    "to": "0.4.3-v7",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v6...v0.4.3-v7"
   },
-  "section_count": 1,
-  "item_count": 5,
+  "section_count": 2,
+  "item_count": 11,
   "sections": [
     {
-      "id": "plugins-and-collaboration",
-      "title": "Plugins and Collaboration",
+      "id": "dependencies-and-plugins",
+      "title": "Dependencies and Plugins",
       "kind": "changes",
       "items": [
         {
-          "title": "Restore an evicted original package from its pinned URL, GitHub release tag or Git commit before planning an update. Unchanged project files are no longer misclassified as local edits just because another machine lacks the original cache.",
+          "title": "Ask to restart only when an installation would replace a library already loaded by the editor, including transitive dependencies. Unloaded libraries install without a restart prompt.",
           "detail": "",
-          "text": "Restore an evicted original package from its pinned URL, GitHub release tag or Git commit before planning an update. Unchanged project files are no longer misclassified as local edits just because another machine lacks the original cache."
+          "text": "Ask to restart only when an installation would replace a library already loaded by the editor, including transitive dependencies. Unloaded libraries install without a restart prompt."
         },
         {
-          "title": "Retain published release URLs for bundled official plugins. Existing cache-only built-in records can recover their original official release, allowing default MCP upgrades to preserve both file GUIDs and genuine project edits.",
+          "title": "Keep the current environment and plugin registration intact when choosing Later. Restart Now uses the existing save/discard/cancel workflow; cancelling keeps the editor open and the installation pending.",
           "detail": "",
-          "text": "Retain published release URLs for bundled official plugins. Existing cache-only built-in records can recover their original official release, allowing default MCP upgrades to preserve both file GUIDs and genuine project edits."
+          "text": "Keep the current environment and plugin registration intact when choosing Later. Restart Now uses the existing save/discard/cancel workflow; cancelling keeps the editor open and the installation pending."
         },
         {
-          "title": "Acquire original and incoming archives in the plugin panel's background download step. Publication uses the prepared cache and preserves the installed pin when actual edits require user attention.",
+          "title": "Resume the prepared installation after the old editor exits, then launch a fresh interpreter so new site hooks and package paths take effect normally.",
           "detail": "",
-          "text": "Acquire original and incoming archives in the plugin panel's background download step. Publication uses the prepared cache and preserves the installed pin when actual edits require user attention."
+          "text": "Resume the prepared installation after the old editor exits, then launch a fresh interpreter so new site hooks and package paths take effect normally."
         },
         {
-          "title": "Keep local-only packages local: an unavailable original archive must be supplied before updating, including when overwrite was explicitly selected.",
+          "title": "Restore missing project and plugin requirements during launch preparation, preserving locked versions and keeping dependency installation out of the running editor's startup checks.",
           "detail": "",
-          "text": "Keep local-only packages local: an unavailable original archive must be supplied before updating, including when overwrite was explicitly selected."
+          "text": "Restore missing project and plugin requirements during launch preparation, preserving locked versions and keeping dependency installation out of the running editor's startup checks."
         },
         {
-          "title": "Refresh the offline official catalog with the independently published Tween 0.1.2 and Text Animator 0.1.3 releases.",
+          "title": "Respect direct-URL source changes and the requirements of other dependency owners when restoring a plugin's previous libraries during uninstall.",
           "detail": "",
-          "text": "Refresh the offline official catalog with the independently published Tween 0.1.2 and Text Animator 0.1.3 releases."
+          "text": "Respect direct-URL source changes and the requirements of other dependency owners when restoring a plugin's previous libraries during uninstall."
+        },
+        {
+          "title": "Group the plugin package list under category headers when All is selected, retaining search, sorting within each category, selection and details.",
+          "detail": "",
+          "text": "Group the plugin package list under category headers when All is selected, retaining search, sorting within each category, selection and details."
+        }
+      ]
+    },
+    {
+      "id": "hub-and-release-delivery",
+      "title": "Hub and Release Delivery",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses.",
+          "detail": "",
+          "text": "Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses."
+        },
+        {
+          "title": "Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths.",
+          "detail": "",
+          "text": "Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths."
+        },
+        {
+          "title": "Open projects using earlier installed SDKs through their own startup entry; enable dependency preparation only when the installed SDK provides it.",
+          "detail": "",
+          "text": "Open projects using earlier installed SDKs through their own startup entry; enable dependency preparation only when the installed SDK provides it."
+        },
+        {
+          "title": "Respect the automatic-update preference when opening the engine installation page; manual update checks remain available.",
+          "detail": "",
+          "text": "Respect the automatic-update preference when opening the engine installation page; manual update checks remain available."
+        },
+        {
+          "title": "Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix.",
+          "detail": "",
+          "text": "Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix."
         }
       ]
     }
