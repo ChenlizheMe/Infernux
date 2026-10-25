@@ -4,7 +4,7 @@
     {
       "reference": "infernux/text_animator",
       "name": "Infernux Text Animator",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "intro": "Animate native UIText characters and reveal text with a Unicode-aware typewriter.",
       "intros": {
         "zh-CN": "为原生 UIText 添加逐字变形、持续字效和字素打字机。"
@@ -32,7 +32,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_text_animator",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.text_animator/0.1.2/infernux.text_animator.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.text_animator/0.1.3/infernux.text_animator.inxpkg"
       }
     },
     {
