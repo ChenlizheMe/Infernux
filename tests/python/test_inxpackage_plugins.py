@@ -573,7 +573,11 @@ def test_startup_never_force_overwrites_an_edited_builtin_package(tmp_path):
     assert Path(str(authored) + ".meta").read_bytes() == original_meta
 
 
-def test_new_project_installs_builtins_before_resolving_default_registry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("catalog_source", [
+    {"type": "git", "location": "https://example.invalid/must-not-clone.git"},
+    {"type": "url", "location": "https://example.invalid/releases/default.inxpkg"},
+])
+def test_new_project_installs_builtins_before_resolving_default_registry(tmp_path, monkeypatch, catalog_source):
     source = _source(tmp_path / "source", "infernux/default-fixture")
     (source / "runtime").mkdir()
     (source / "runtime" / "fixture.py").write_text("DEFAULT_FIXTURE = True\n", encoding="utf-8")
@@ -596,10 +600,7 @@ def test_new_project_installs_builtins_before_resolving_default_registry(tmp_pat
                         "dependencies": [],
                         "pages": [],
                         "intros": {},
-                        "source": {
-                            "type": "git",
-                            "location": "https://example.invalid/must-not-clone.git",
-                        },
+                        "source": catalog_source,
                     }
                 ],
             }
@@ -626,7 +627,8 @@ def test_new_project_installs_builtins_before_resolving_default_registry(tmp_pat
     states = bootstrap_new_project(str(project))
 
     assert [state.reference for state in states] == ["infernux/default-fixture"]
-    assert PluginRegistry(str(project)).installed_record("infernux/default-fixture") is not None
+    record = PluginRegistry(str(project)).installed_record("infernux/default-fixture")
+    assert record is not None and record["source"]["type"] == "local"
 
 
 def test_shared_guid_reuses_existing_asset_without_duplicate_import(tmp_path):

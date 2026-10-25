@@ -107,6 +107,57 @@ def test_matching_pin_installs_and_then_reloads_without_acquisition(package_proj
         assert requests == (["/plugin.inxpkg"] if mode == "url" else [])
 
 
+@pytest.mark.parametrize("modified", [False, True])
+def test_builtin_release_updates_with_an_empty_original_cache(package_project, tmp_path, monkeypatch, modified):
+    from infernux.plugins.official import install_bundled_packages
+
+    root, manager, _ = package_project
+    reference = "test/catalog-builtin"
+    old_marker, new_marker = tmp_path / "old", tmp_path / "new"
+    archive, source = archive_at(tmp_path, reference, "1.0.0", old_marker)
+    manager.install_package(str(archive), source={"type": "local", "location": str(archive), "builtin": True},
+                            install_dependencies=False)
+    before = manager.registry.installed_record(reference)
+    baseline = Path(manager._installed_archive_path(before))
+    baseline.unlink()
+    resources = tmp_path / "resources"
+    (resources / "official_packages").mkdir(parents=True)
+    manifest = source / "inx_package.json"
+    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+    metadata["version"] = "2.0.0"
+    manifest.write_text(json.dumps(metadata), encoding="utf-8")
+    entry = source / "runtime/entry.py"
+    entry.write_text(entry.read_text(encoding="utf-8").replace(repr(str(old_marker)), repr(str(new_marker))),
+                     encoding="utf-8")
+    InxPackage.export_source(str(source), str(resources / "test.catalog-builtin.inxpkg"))
+    authored = root / "Packages/test/catalog-builtin/runtime/entry.py"
+    if modified:
+        authored.write_text(authored.read_text(encoding="utf-8") + "LOCAL_EDIT = True\n", encoding="utf-8")
+    monkeypatch.setattr("infernux.resources.get_package_resources_path", lambda: str(resources))
+    with local_archive_server(archive) as (url, requests):
+        published = url.replace("/plugin.inxpkg", "/2.0.0/plugin.inxpkg")
+        catalog = {"$schema": "infernux.official_plugin_registry", "packages": [
+            {"reference": reference, "version": "2.0.0", "source": {"type": "url", "location": published}},
+        ]}
+        (resources / "official_packages/official-registry.json").write_text(json.dumps(catalog), encoding="utf-8")
+        if modified:
+            from infernux.plugins import PackageUpdateConflict
+
+            with pytest.raises(PackageUpdateConflict, match="runtime/entry.py"):
+                install_bundled_packages(str(root), resources_root=str(resources), manager=manager)
+            assert manager.registry.installed_record(reference) == before
+            assert authored.read_text(encoding="utf-8").endswith("LOCAL_EDIT = True\n")
+            assert not new_marker.exists()
+        else:
+            install_bundled_packages(str(root), resources_root=str(resources), manager=manager)
+            record = manager.registry.installed_record(reference)
+            assert record["version"] == "2.0.0" and new_marker.read_text() == "executed"
+            assert record["control"]["guid"] == before["control"]["guid"]
+            assert record["source"]["location"] == published and record["source"]["builtin"]
+            assert install_bundled_packages(str(root), resources_root=str(resources), manager=manager) == ()
+        assert requests == ["/1.0.0/plugin.inxpkg"] and baseline.is_file()
+
+
 @pytest.mark.parametrize("mismatch", ["reference", "version"])
 def test_registry_dependency_rejection_does_not_install_parent(package_project, tmp_path, mismatch):
     root, manager, _ = package_project

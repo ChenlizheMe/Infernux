@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="熔炉标志"></a>
 </p>
 
-**0.4.3 热修 5** 修复游戏 UI 点击丢失，减少输入触发的编辑器开销，并恢复由用户选择的 Game 预览分辨率，新增 Auto 自适应。详见[更新日志](UpdateLog-zh.md)。
+**0.4.3 热修 6** 修复克隆、迁移项目后的插件更新，包括更新引擎热修时默认 MCP 插件的更新。详见[更新日志](UpdateLog-zh.md)。
 
 <h1 align="center">熔炉 · Infernux</h1>
 

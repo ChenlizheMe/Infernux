@@ -1,3 +1,21 @@
+# Infernux v0.4.3-v6 · Hotfix 6: Portable Plugin Updates
+
+This hotfix repairs plugin updates after cloning or moving a project to a machine with an empty package cache. It also fixes default MCP updates that could prevent an existing project from opening after an engine hotfix upgrade. The base engine version remains 0.4.3; wheels use build 6, with the matching Hub bundle at 0.4.3-7.
+
+[中文更新日志](UpdateLog-zh.md)
+
+**Baseline for comparison:** [`v0.4.3-v5...v0.4.3-v6`](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v5...v0.4.3-v6).
+
+### Plugins and Collaboration
+
+- Restore an evicted original package from its pinned URL, GitHub release tag or Git commit before planning an update. Unchanged project files are no longer misclassified as local edits just because another machine lacks the original cache.
+- Retain published release URLs for bundled official plugins. Existing cache-only built-in records can recover their original official release, allowing default MCP upgrades to preserve both file GUIDs and genuine project edits.
+- Acquire original and incoming archives in the plugin panel's background download step. Publication uses the prepared cache and preserves the installed pin when actual edits require user attention.
+- Keep local-only packages local: an unavailable original archive must be supplied before updating, including when overwrite was explicitly selected.
+- Refresh the offline official catalog with the independently published Tween 0.1.2 and Text Animator 0.1.3 releases.
+
+---
+
 # Infernux v0.4.3-v5 · Hotfix 5: Game Input and Preview Control
 
 This hotfix repairs game UI input in the editor and restores control of the Game preview resolution. The base engine version remains 0.4.3; wheels use build 5, with the matching Hub bundle at 0.4.3-6.

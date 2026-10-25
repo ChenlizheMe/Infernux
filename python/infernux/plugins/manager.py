@@ -1085,6 +1085,12 @@ class PluginManager:
         if os.path.isfile(path):
             return path
         source = self._source_descriptor(record["source"])
+        if source["type"] == "local" and source.get("builtin"):
+            from .official import official_release_source
+
+            published = official_release_source(str(record["reference"]), str(record["version"]))
+            if published is not None:
+                source = published
         source["reference"] = str(record["reference"])
         if source["type"] in {"git", "github"}:
             if source["type"] == "git" or source.get("source_snapshot"):

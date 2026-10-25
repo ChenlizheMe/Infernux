@@ -96,6 +96,30 @@ def _remote_source(raw: object, *, reference: str) -> dict[str, object]:
     return source
 
 
+def official_release_source(
+    reference: str, version: str, *, resources_root: str | None = None,
+) -> dict[str, object] | None:
+    """Resolve a pinned official release using the catalog's versioned payload URL."""
+    catalog = os.path.join(_official_packages_root(resources_root), OFFICIAL_REGISTRY_FILENAME)
+    if not os.path.isfile(catalog):
+        return None
+    document = _read_document(catalog, OFFICIAL_REGISTRY_SCHEMA, "packages")
+    for entry in document["packages"]:
+        if str(entry["reference"]).casefold() != reference.casefold():
+            continue
+        source = _remote_source(entry["source"], reference=reference)
+        if source["type"] != "url":
+            return None
+        parent, artifact = str(source["location"]).rsplit("/", 1)
+        base, current_version = parent.rsplit("/", 1)
+        if current_version != str(entry["version"]):
+            return None
+        source.update(location=f"{base}/{Version(version)}/{artifact}", reference=reference,
+                      repository=str(entry.get("repository", "")), release_tag=f"v{version}")
+        return source
+    return None
+
+
 def sync_official_registry(
     project_root: str,
     *,
@@ -294,14 +318,10 @@ def install_bundled_packages(
     resources_root: str | None = None,
     manager: PluginManager | None = None,
 ) -> tuple[PluginState, ...]:
-    """Install every wheel-mandatory InxPackage from the resources root.
+    """Install wheel-owned defaults while preserving project edits.
 
-    A direct child named ``*.inxpkg`` is part of the host wheel's built-in
-    package set.  The set is authoritative and local: startup never replaces a
-    missing artifact with a network download.  Existing non-built-in packages
-    are preserved because they may originate from another supported source;
-    installed built-ins are synchronized transactionally from the wheel-owned
-    artifact.
+    Direct ``*.inxpkg`` children are mandatory in this wheel. Existing external
+    installations remain user-owned; built-ins retain their published origins.
     """
 
     project = resolved_path(project_root)
@@ -356,11 +376,19 @@ def install_bundled_packages(
     try:
         # Publish the complete local set before installation so one built-in
         # package can resolve another regardless of filename ordering.
+        sources: dict[str, dict[str, object]] = {}
         for package_path, preview in previews:
             metadata = preview.metadata
             _cached, cache_location = manager._cache_package(
                 package_path, str(metadata["reference"]), str(metadata.get("version", ""))
             )
+            source = official_release_source(
+                str(metadata["reference"]), str(metadata["version"]), resources_root=resources_root,
+            )
+            if source is None:
+                source = {"type": "local", "location": cache_location}
+            source.update(cache_scope="hub", cache_location=cache_location, builtin=True)
+            sources[str(metadata["reference"])] = source
             manager.registry.add_package(
                 str(metadata["reference"]),
                 name=str(metadata.get("name", "")),
@@ -370,13 +398,7 @@ def install_bundled_packages(
                 intro=str(metadata.get("intro", "")),
                 intros=metadata.get("intros", {}),
                 pages=metadata.get("pages", ()),
-                source={
-                    "type": "local",
-                    "location": cache_location,
-                    "cache_scope": "hub",
-                    "cache_location": cache_location,
-                    "builtin": True,
-                },
+                source=source,
             )
         installed: list[PluginState] = []
         for package_path, preview in previews:
@@ -393,11 +415,7 @@ def install_bundled_packages(
             installed.append(
                 manager.install_package(
                     package_path,
-                    source={
-                        "type": "local",
-                        "location": package_path,
-                        "builtin": True,
-                    },
+                    source=sources[reference],
                     update=True,
                     overwrite_modified=False,
                 )
