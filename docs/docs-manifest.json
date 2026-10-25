@@ -8,9 +8,9 @@
   "last_verified": "2026-10-25",
   "build": {
     "status": "stamped",
-    "source_commit": "7600238c6cea50ab989404bf4733d04d20925115",
-    "source_url": "https://github.com/ChenlizheMe/Infernux/commit/7600238c6cea50ab989404bf4733d04d20925115",
-    "generated_at": "2026-10-25T05:19:48.000Z",
+    "source_commit": "1bf2028ffa8a3d42ab7dda32e0ddc4b6faef7627",
+    "source_url": "https://github.com/ChenlizheMe/Infernux/commit/1bf2028ffa8a3d42ab7dda32e0ddc4b6faef7627",
+    "generated_at": "2026-10-25T12:44:30.000Z",
     "timestamp_source": "source-commit"
   },
   "languages": [
