@@ -49,7 +49,9 @@ class CandidateImportTransaction:
 
     ``load`` inserts an empty module into ``modules`` before executing it, so
     normal circular imports observe the same object.  The module table is
-    never exposed through ``sys.modules`` until ``commit`` is called.
+    never exposed through ``sys.modules`` until ``commit`` is called. The owner
+    calls ``finalize`` only after its outer publication becomes durable; import
+    hooks then resolve current published modules and no longer retain history.
     """
 
     def __init__(self) -> None:
@@ -71,6 +73,12 @@ class CandidateImportTransaction:
         self._effect_before = {}
         self._committed = False
         self._rolled_back = False
+        self._finalized = False
+        self._published_names: frozenset[str] = frozenset()
+
+    @property
+    def finalized(self) -> bool:
+        return self._finalized
 
     @property
     def modules(self) -> dict[str, types.ModuleType]:
@@ -98,6 +106,8 @@ class CandidateImportTransaction:
         source: bytes | str | None = None,
         code: types.CodeType | None = None,
     ) -> None:
+        if self._rolled_back or self._committed:
+            raise CandidateImportError("cannot register modules after candidate publication or rollback")
         if not name or not isinstance(name, str):
             raise ValueError("candidate module name must be non-empty")
         if name in self._specs:
@@ -114,6 +124,18 @@ class CandidateImportTransaction:
     def load(self, name: str) -> types.ModuleType:
         if self._rolled_back:
             raise CandidateImportError("candidate import transaction has been rolled back")
+        if self._finalized:
+            # Functions retain the import hook captured when they were compiled.
+            # After the rollback window closes it must resolve current published
+            # modules, without retaining or re-executing a historical candidate.
+            module = self._reuse_project_lkg(name)
+            if module is not None:
+                return module
+            if self._is_external_module(name):
+                return self._load_external(name)
+            if self._has_lkg_descendant(name):
+                return self._create_namespace(name)
+            raise CandidateImportError(f"project dependency '{name}' has no published module")
         if name in self._modules:
             return self._modules[name]
         spec = self._specs.get(name)
@@ -174,7 +196,13 @@ class CandidateImportTransaction:
         module.__file__ = None
         module.__spec__ = None
         module.__builtins__ = self._builtins_for(module)
-        self._modules[name] = module
+        if self._finalized:
+            # A child can have been loaded directly, without importing its
+            # namespace parent during staging. Ordinary runtime imports may
+            # materialize that parent, but never stage another private revision.
+            module = sys.modules.setdefault(name, module)
+        else:
+            self._modules[name] = module
         self._attach_child(name, module)
         return module
 
@@ -204,13 +232,29 @@ class CandidateImportTransaction:
         return overlay
 
     def _reuse_project_lkg(self, name: str) -> types.ModuleType | None:
-        if name in self._reused_lkg:
+        if not self._finalized and name in self._reused_lkg:
             return self._reused_lkg[name]
         module = sys.modules.get(name)
         if module is None:
             return None
+        if self._finalized and name in self._published_names:
+            # These names were proved while staging. Keep only their identities,
+            # never module objects: a later owner publication wins, and a source
+            # or package-control save cannot invalidate the live revision first.
+            return module
         module_path = resolved_path(getattr(module, "__file__", "") or "")
         project_roots = self._roots
+        if (
+            self._finalized
+            and module_path
+            and any(is_path_within(module_path, root) for root in project_roots)
+            and not is_preload_python_library(module_path)
+            and get_script_module_name(module_path) == name
+        ):
+            # A save/rename/delete on disk is not a runtime publication. Keep
+            # using the current LKG until its owner replaces/retires sys.modules,
+            # including the gap between an atomic save's unlink and replacement.
+            return module
         if not module_path or not os.path.isfile(module_path):
             # InxPreload creates path-bound namespace parents for isolated
             # package names. Their synthetic ``__file__`` names an absent
@@ -223,21 +267,32 @@ class CandidateImportTransaction:
                 for path in (getattr(module, "__path__", ()) or ())
                 if path
             )
-            for candidate_name, spec in self._specs.items():
+            candidates = ((candidate_name, spec.file_path) for candidate_name, spec in self._specs.items())
+            if self._finalized:
+                # Synthetic preload/namespace parents have no real __init__.py.
+                # Prove them against current children instead of retaining the
+                # transaction's source snapshots or old namespace overlays.
+                candidates = (
+                    (candidate_name, resolved_path(getattr(child, "__file__", "") or ""))
+                    for candidate_name, child in tuple(sys.modules.items())
+                    if candidate_name.startswith(name + ".") and getattr(child, "__file__", None)
+                )
+            for candidate_name, candidate_path in candidates:
                 if not candidate_name.startswith(name + "."):
                     continue
                 if not any(
-                    is_path_within(spec.file_path, search_path, allow_root=False)
+                    is_path_within(candidate_path, search_path, allow_root=False)
                     and any(is_path_within(search_path, root) for root in project_roots)
                     for search_path in search_paths
                 ):
                     continue
-                expected = get_script_module_name(spec.file_path)
+                expected = get_script_module_name(candidate_path)
                 if candidate_name != expected:
                     raise CandidateImportError(
                         f"registered project module '{candidate_name}' has a path/name mismatch"
                     )
-                self._reused_lkg[name] = module
+                if not self._finalized:
+                    self._reused_lkg[name] = module
                 return module
             return None
         if not any(is_path_within(module_path, root) for root in project_roots):
@@ -252,7 +307,8 @@ class CandidateImportTransaction:
             raise CandidateImportError(
                 f"preloaded project module '{name}' has a path/name mismatch"
             )
-        self._reused_lkg[name] = module
+        if not self._finalized:
+            self._reused_lkg[name] = module
         return module
 
     def _is_external_module(self, name: str) -> bool:
@@ -408,6 +464,11 @@ class CandidateImportTransaction:
         parent_name, _, child_name = name.rpartition(".")
         if not parent_name:
             return
+        if self._finalized:
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                setattr(parent, child_name, module)
+            return
         parent = self._modules.get(parent_name)
         if parent is None:
             live_parent = self._reuse_project_lkg(parent_name)
@@ -546,6 +607,8 @@ class CandidateImportTransaction:
     def rollback(self) -> None:
         if self._rolled_back:
             return
+        if self._finalized:
+            raise CandidateImportError("candidate import transaction is durable and cannot be rolled back")
         if self._committed:
             from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
@@ -580,6 +643,40 @@ class CandidateImportTransaction:
         self._parent_before_keys.clear()
         self._rolled_back = True
         self._committed = False
+
+    def finalize(self) -> None:
+        """Close the rollback window without keeping candidate history alive.
+
+        Published functions and importlib proxies can retain this importer.
+        Only proven names, project roots and external classification remain
+        useful to runtime imports; all module tables, source snapshots and registry
+        before-images belong to the completed publication, not to those hooks.
+        """
+        if self._rolled_back:
+            raise CandidateImportError("candidate import transaction has been rolled back")
+        if not self._committed:
+            raise CandidateImportError("candidate import transaction must commit before finalization")
+        if self._finalized:
+            return
+        from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+
+        assert_runtime_dispatch_safe_point()
+        self._published_names = frozenset((*self._modules, *self._reused_lkg))
+        self._finalized = True
+        self._before.clear()
+        self._parent_before.clear()
+        self._parent_before_keys.clear()
+        self._serializable_before.clear()
+        self._effect_before.clear()
+        self._specs.clear()
+        self._modules.clear()
+        self._reused_lkg.clear()
+        self._trusted_proxies.clear()
+        self._overlay_names.clear()
+        self._serializable_types.clear()
+        self._effect_features.clear()
+        self._effect_sources.clear()
+        self._effect_module_sources.clear()
 
 
 _MODULE_ABSENT = object()
