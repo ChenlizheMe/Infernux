@@ -74,6 +74,10 @@ class TransformECSStore
 
     void RebindOwner(Handle handle, Transform *owner);
 
+    /// Scene ownership participates in Transform batch identity even when the
+    /// storage slot and native address remain unchanged during a Scene move.
+    void NotifyOwnerWorldChanged(Handle handle);
+
     /// Pre-allocate capacity for all SoA arrays to avoid incremental growth.
     void Reserve(size_t capacity);
 
@@ -263,6 +267,7 @@ class TransformECSStore
     {
         return m_aliveCount;
     }
+    /// Slot, native owner, and Scene-world identity revision.
     [[nodiscard]] uint64_t GetStructuralVersion() const
     {
         return m_structuralVersion;
@@ -292,6 +297,8 @@ class TransformECSStore
 
     /// Gather world positions — computes via GetWorldPosition() on each Transform.
     void GatherWorldPositions(Transform *const *transforms, float *out, size_t count) const;
+    /// World scatters establish the final world value of every target,
+    /// independent of hierarchy order. The last row wins for repeated targets.
     void ScatterWorldPositions(Transform *const *transforms, const float *in, size_t count);
 
     void GatherWorldEulerAngles(Transform *const *transforms, float *out, size_t count) const;
@@ -386,7 +393,9 @@ class TransformECSStore
     void SyncAllWorldMatrices();
     void EnsureFrameCacheSlot(uint32_t slotIndex);
     void MarkFrameCacheDirty(uint32_t slotIndex, uint8_t bits);
+    void InvalidateWorldMatrixCache(uint32_t slotIndex);
     void MarkWorldMatrixDirty(uint32_t slotIndex);
+    void InvalidateFrameCacheDescendants(Transform *root, bool rotation);
 
     // ── SoA arrays (all the same length == Capacity()) ───────────────
     std::vector<glm::vec3> m_localPositions;
@@ -398,7 +407,12 @@ class TransformECSStore
     std::vector<glm::vec3> m_localScales;
     std::vector<uint8_t> m_dirty;
     std::vector<glm::mat4> m_cachedWorldMatrices;
-    std::vector<uint8_t> m_worldMatrixDirty;
+    // Dirty derived matrices may reflect staged world overrides that have not
+    // published any committed Transform change. Keep that state distinct so a
+    // later real write still advances the committed serial, even without a read.
+    static constexpr uint8_t kWorldMatrixPublishedDirty = 1;
+    static constexpr uint8_t kWorldMatrixStagedDirty = 2;
+    std::vector<uint8_t> m_worldMatrixDirty; // 0 = clean; otherwise one of the states above.
     std::vector<uint8_t> m_worldMatrixDirtyListed;
     std::vector<uint32_t> m_worldMatrixDirtyIndices;
     std::vector<Transform *> m_owners;
@@ -429,6 +443,8 @@ class TransformECSStore
     std::vector<uint32_t> m_fcDirtyIndices;
     // Retained sparse work list: only dirty non-root transforms need ordering.
     std::vector<std::pair<uint32_t, uint32_t>> m_fcChildCommits;
+    // Preserve explicit world Euler representations across ancestor commits.
+    std::vector<std::pair<Handle, glm::vec3>> m_fcExactEulerCommits;
     uint64_t m_frameCacheSerial = 0;
     bool m_frameCacheActive = false;
     bool m_fcPublishedPhysicsPose = false;

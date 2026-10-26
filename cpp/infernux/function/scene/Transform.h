@@ -116,9 +116,12 @@ class Transform : public Component
     [[nodiscard]] glm::vec3 GetLocalEulerAngles() const
     {
         auto &store = TransformECSStore::Instance();
-        if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle))
+        if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle)) {
+            if (!GetParentTransformSafe() && store.GetWorldEulerExact(m_ecsHandle))
+                return ToPublicEulerAngles(store.GetCachedWorldEulerAngles(m_ecsHandle));
             return ToPublicEulerAngles(
                 ExtractEulerAnglesNear(GetLocalRotation(), store.GetLocalEulerAngles(m_ecsHandle)));
+        }
         return ToPublicEulerAngles(store.GetLocalEulerAngles(m_ecsHandle));
     }
 
