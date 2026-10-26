@@ -61,15 +61,18 @@ _GRID_COLOR2 = (0.18, 0.18, 0.19, 1.0)
 
 _NODE_ROUNDING = 5.0
 _NODE_BORDER_THICKNESS = 1.0
-# Typography is locked to 18px for every on-node label (title, pins, A/B/X…).
+# Titles lead the hierarchy; ports and metadata remain visually subordinate.
 _NODE_FONT = 18.0
-_NODE_HEADER_H = 30.0
-_CONTEXT_HEADER_H = 30.0
-_NODE_PIN_ROW_H = 24.0
+_PIN_FONT = 15.0
+_SUBTITLE_FONT = 13.0
+_NODE_HEADER_H = 34.0
+_CONTEXT_HEADER_H = 34.0
+_NODE_SUBTITLE_H = 22.0
+_NODE_PIN_ROW_H = 28.0
 _NODE_PAD_X = 12.0
 _NODE_BODY_MIN_H = 12.0
 _CONTEXT_BODY_MIN_H = 32.0
-_DETACHED_FIELD_ROW_H = 24.0
+_DETACHED_FIELD_ROW_H = 28.0
 _PIN_RADIUS = 5.0
 _PIN_HIT_RADIUS = 12.0
 # Compact inline value box hugging an unconnected input pin (Unity style):
@@ -99,8 +102,8 @@ _LINK_SEGMENTS = 28
 # NASA-style: near-black panels, neutral gray; selection uses editor theme red
 _BG_COLOR = (0.07, 0.07, 0.08, 1.0)
 _NODE_BODY_COLOR = (0.13, 0.13, 0.14, 1.0)
-_GRAPH_NODE_BODY_COLOR = (0.075, 0.075, 0.078, 0.98)
-_GRAPH_NODE_HEADER_COLOR = (0.105, 0.105, 0.11, 1.0)
+_GRAPH_NODE_BODY_COLOR = (0.10, 0.10, 0.115, 1.0)
+_GRAPH_NODE_HEADER_COLOR = (0.15, 0.15, 0.17, 1.0)
 # Unity VFX-style context: saturated header, recessed body slot.
 _GRAPH_NODE_CONTEXT_BODY = (0.055, 0.055, 0.058, 0.98)
 _GRAPH_NODE_CONTEXT_SLOT = (0.085, 0.085, 0.090, 0.95)
@@ -108,8 +111,8 @@ _NODE_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.5)
 _NODE_BORDER_COLOR = (0.28, 0.28, 0.30, 1.0)
 _PIN_HOVER_COLOR = (0.88, 0.88, 0.90, 0.75)
 
-_LINK_DEFAULT_COLOR = (0.42, 0.42, 0.44, 0.88)
-_LINK_HOVER_COLOR = (0.55, 0.55, 0.58, 1.0)
+_LINK_DEFAULT_COLOR = (0.58, 0.59, 0.63, 1.0)
+_LINK_HOVER_COLOR = (0.85, 0.86, 0.90, 1.0)
 _PENDING_LINK_COLOR = (0.65, 0.65, 0.68, 0.5)
 
 _NODE_GRAPH_EDIT_CONTEXT_MENU = (
@@ -131,8 +134,8 @@ _NODE_GRAPH_EDIT_CONTEXT_MENU = (
 _NODE_GRAPH_CONTEXT_MENU_BUILDER = ContextMenuBuilder()
 
 _TEXT_COLOR = (0.90, 0.91, 0.92, 1.0)
-_TEXT_DIM_COLOR = (0.52, 0.53, 0.55, 1.0)
-_TEXT_BODY_COLOR = (0.62, 0.63, 0.65, 1.0)
+_TEXT_DIM_COLOR = (0.76, 0.77, 0.80, 1.0)
+_TEXT_BODY_COLOR = (0.64, 0.66, 0.70, 1.0)
 
 _ZOOM_MIN = 0.3
 _ZOOM_MAX = 2.5
@@ -582,6 +585,26 @@ class NodeGraphView:
     def _body_min_height(cls, typedef: NodeTypeDef) -> float:
         return _CONTEXT_BODY_MIN_H if cls._is_context_style(typedef) else _NODE_BODY_MIN_H
 
+    def _pin_area_top(self, node: GraphNode, typedef: NodeTypeDef) -> float:
+        subtitle_height = (
+            _NODE_SUBTITLE_H
+            if not self._is_context_style(typedef) and node.data.get("subtitle")
+            else 0.0
+        )
+        return self._header_height(typedef) + subtitle_height
+
+    def _pin_area_bottom(self, node: GraphNode, typedef: NodeTypeDef) -> float:
+        rows = max(len(typedef.input_pins()), len(typedef.output_pins()), 1)
+        return self._pin_area_top(node, typedef) + rows * _NODE_PIN_ROW_H
+
+    def _node_height(self, node: GraphNode, typedef: NodeTypeDef) -> float:
+        extra_pad = (
+            self._detached_field_rows(node, typedef) * _DETACHED_FIELD_ROW_H
+            if typedef.inline_fields
+            else typedef.body_bottom_pad
+        )
+        return self._pin_area_bottom(node, typedef) + self._body_min_height(typedef) + extra_pad
+
     @staticmethod
     def _node_type(graph, node):
         resolver = getattr(graph, "get_node_type", None)
@@ -591,20 +614,15 @@ class NodeGraphView:
         if not self.graph or not self.graph.nodes:
             return
         bounds = []
+        text_widths = {}
+        left_reserve = self._stable_pin_hug_pad() / self.zoom
         for node in self.graph.nodes:
             typedef = self._node_type(self.graph, node)
             if typedef is None:
                 continue
-            max_pins = max(len(typedef.input_pins()), len(typedef.output_pins()), 1)
-            extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
-            width = self._natural_node_width(node, typedef)
-            height = (
-                self._header_height(typedef)
-                + max_pins * _NODE_PIN_ROW_H
-                + self._body_min_height(typedef)
-                + extra_pad
-            )
-            bounds.append((node.pos_x, node.pos_y, node.pos_x + width, node.pos_y + height))
+            width = self._natural_node_width(node, typedef, text_widths)
+            height = self._node_height(node, typedef)
+            bounds.append((node.pos_x - left_reserve, node.pos_y, node.pos_x + width, node.pos_y + height))
         if not bounds:
             return
 
@@ -619,6 +637,7 @@ class NodeGraphView:
         usable_h = max(self._canvas_h - padding * 2.0, 1.0)
         self.zoom = max(_ZOOM_MIN, min(1.0, usable_w / bounds_w, usable_h / bounds_h))
         self.pan_x = (self._canvas_w - bounds_w * self.zoom) * 0.5 - min_x * self.zoom
+        self.pan_x -= self._stable_pin_hug_pad()
         self.pan_y = (self._canvas_h - bounds_h * self.zoom) * 0.5 - min_y * self.zoom
 
     # ── Main render ───────────────────────────────────────────────────
@@ -828,36 +847,41 @@ class NodeGraphView:
             and not self._inline_field_is_hidden(node, field_def)
         )
 
-    def _natural_node_width(self, node: GraphNode, typedef: NodeTypeDef) -> float:
+    def _natural_node_width(
+        self, node: GraphNode, typedef: NodeTypeDef,
+        text_widths: dict[tuple[str, float], float] | None = None,
+    ) -> float:
         """Measure enough room for titles and pin labels without clipping them."""
         ctx = getattr(self, "_layout_measure_context", None)
-        measure = getattr(ctx, "calc_text_width", None)
+        widths = {} if text_widths is None else text_widths
 
-        def text_width(value: object) -> float:
+        def text_width(value: object, font_size: float) -> float:
             text = str(value or "")
-            if callable(measure):
-                try:
-                    return float(measure(text))
-                except (RuntimeError, TypeError, ValueError):
-                    pass
-            return float(len(text)) * (_NODE_FONT * 0.52)
+            key = (text, font_size)
+            if key not in widths:
+                if ctx is not None:
+                    widths[key] = float(ctx.calc_text_size(text, self._zoom_font(font_size))[0]) / self.zoom
+                else:
+                    # Before the first GUI frame there is no font atlas to measure.
+                    widths[key] = float(len(text)) * (font_size * 0.52)
+            return widths[key]
 
         node_data = getattr(node, "data", {})
         title = t(str(node_data.get("label", getattr(typedef, "label", ""))))
         header_reserve = (
-            _HEADER_COLOR_SWATCH_SIZE + _HEADER_COLOR_SWATCH_PAD * 2.0
+            _NODE_PAD_X + _HEADER_COLOR_SWATCH_SIZE + _HEADER_COLOR_SWATCH_PAD + 6.0
             if getattr(typedef, "show_header_color_swatch", True)
             else _NODE_PAD_X * 2.0
         )
-        width = max(float(typedef.min_width), text_width(title) + header_reserve)
+        width = max(float(typedef.min_width), text_width(title, _NODE_FONT) + header_reserve)
 
         inputs = typedef.input_pins()
         outputs = typedef.output_pins()
         input_width = max(
-            (text_width(t(getattr(pin, "label", ""))) for pin in inputs), default=0.0
+            (text_width(t(pin.label), _PIN_FONT) for pin in inputs), default=0.0
         )
         output_width = max(
-            (text_width(t(getattr(pin, "label", ""))) for pin in outputs), default=0.0
+            (text_width(t(pin.label), _PIN_FONT) for pin in outputs), default=0.0
         )
         pin_reserve = _NODE_PAD_X + _PIN_RADIUS * 2.0 + 8.0
 
@@ -868,6 +892,18 @@ class NodeGraphView:
             width = max(width, (output_width + pin_reserve) / 0.45)
         if input_width and output_width:
             width = max(width, input_width + output_width + pin_reserve * 2.0)
+
+        # Detached controls occupy the right 52% of the body, while their
+        # labels occupy the left 40%. Size both columns before drawing them.
+        input_ids = {pin.id for pin in inputs}
+        for field_def in typedef.inline_fields:
+            if field_def.id in input_ids or self._inline_field_is_hidden(node, field_def):
+                continue
+            width = max(
+                width,
+                (text_width(field_def.label, _PIN_FONT) + _NODE_PAD_X) / 0.40,
+                (self._pin_hug_field_width(field_def.data_type) + _NODE_PAD_X) / 0.52,
+            )
         return width
 
     def _pin_hug_field_width(self, data_type) -> float:
@@ -915,6 +951,9 @@ class NodeGraphView:
 
         z = self.zoom
         hug_pad = self._stable_pin_hug_pad()
+        # Only share measurements within this layout pass: edits, locale, DPI
+        # and font changes must be reflected on the next rendered frame.
+        text_widths = {}
         for node in graph.nodes:
             typedef = self._node_type(graph, node)
             if typedef is None:
@@ -924,22 +963,8 @@ class NodeGraphView:
             out_pins = typedef.output_pins()
             max_pins = max(len(in_pins), len(out_pins), 1)
 
-            w = self._natural_node_width(node, typedef) * z
-            if getattr(typedef, "inline_fields", ()):
-                # Reserve exactly the rows the inline pass will draw. The
-                # typedef's static pad also counts fields that visibility rules
-                # hide, which left nodes with dead space below their content.
-                extra_pad = (
-                    self._detached_field_rows(node, typedef) * _DETACHED_FIELD_ROW_H
-                )
-            else:
-                extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
-            h = (
-                self._header_height(typedef)
-                + max_pins * _NODE_PIN_ROW_H
-                + self._body_min_height(typedef)
-                + extra_pad
-            ) * z
+            w = self._natural_node_width(node, typedef, text_widths) * z
+            h = self._node_height(node, typedef) * z
 
             sx = self._origin_x + node.pos_x * z + self.pan_x + hug_pad
             sy = self._origin_y + node.pos_y * z + self.pan_y
@@ -947,18 +972,18 @@ class NodeGraphView:
             layout = _NodeLayout(node=node, typedef=typedef, sx=sx, sy=sy, w=w, h=h,
                                  left_reserve=hug_pad)
 
-            hdr_h = self._header_height(typedef) * z
+            pin_top = self._pin_area_top(node, typedef) * z
             row_h = _NODE_PIN_ROW_H * z
             pin_area_h = max_pins * row_h
 
             for i, pdef in enumerate(in_pins):
                 slot = pin_area_h / max(len(in_pins), 1)
-                cy = sy + hdr_h + slot * (i + 0.5)
+                cy = sy + pin_top + slot * (i + 0.5)
                 layout.input_pins.append(_PinLayout(pin_def=pdef, cx=sx, cy=cy))
 
             for i, pdef in enumerate(out_pins):
                 slot = pin_area_h / max(len(out_pins), 1)
-                cy = sy + hdr_h + slot * (i + 0.5)
+                cy = sy + pin_top + slot * (i + 0.5)
                 layout.output_pins.append(_PinLayout(pin_def=pdef, cx=sx + w, cy=cy))
 
             self._layouts[node.uid] = layout
@@ -1129,21 +1154,21 @@ class NodeGraphView:
                 2.0 * z,
             )
 
-        # Subtitle (e.g. clip path) — same 18px face as the rest of the node.
+        # Metadata has its own row above the ports.
         subtitle = "" if is_context else layout.node.data.get("subtitle", "")
         if subtitle:
-            body_top = sy + hdr_h + 2 * z
+            body_top = sy + hdr_h
             sub_inset = 1.0 * z
             ctx.draw_text_aligned(
                 sx + pad_x,
                 body_top + sub_inset,
                 sx + w - pad_x,
-                body_top + _NODE_PIN_ROW_H * z - sub_inset,
+                body_top + _NODE_SUBTITLE_H * z - sub_inset,
                 subtitle,
                 *_TEXT_BODY_COLOR,
                 0.0,
-                0.0,
-                font_sz,
+                0.5,
+                self._zoom_font(_SUBTITLE_FONT),
                 True,
             )
 
@@ -1176,8 +1201,8 @@ class NodeGraphView:
             self._draw_pin(ctx, pl, PinKind.OUTPUT, pin_r, node_uid)
         self._record_pin_semantics(ctx, layout, str(label))
 
-        # Pin labels (A / B / …) — same 18px face as the title.
-        dim_font = self._zoom_font(_NODE_FONT)
+        # Port labels use a smaller face while retaining contrast.
+        dim_font = self._zoom_font(_PIN_FONT)
         row_h = _NODE_PIN_ROW_H * z
         label_half = max(row_h * 0.5 - 1.0 * z, dim_font * 0.5)
         for pl in layout.input_pins:
@@ -1196,8 +1221,7 @@ class NodeGraphView:
         # Custom body renderer
         renderer = self._body_renderers.get(layout.typedef.type_id)
         if renderer:
-            body_y = (sy + hdr_h
-                      + max(len(layout.input_pins), len(layout.output_pins)) * row_h)
+            body_y = sy + self._pin_area_bottom(layout.node, layout.typedef) * z
             renderer(ctx, layout.node, sx + pad_x, body_y, w - pad_x * 2)
 
     def _zoom_font(self, base: float) -> float:
@@ -1254,7 +1278,7 @@ class NodeGraphView:
                 # would otherwise be submitted at far-off cursor positions.
                 if (
                     layout.sx + layout.w < self._origin_x
-                    or layout.sx > self._origin_x + self._canvas_w
+                    or layout.sx - layout.left_reserve > self._origin_x + self._canvas_w
                     or layout.sy + layout.h < self._origin_y
                     or layout.sy > self._origin_y + self._canvas_h
                 ):
@@ -1275,14 +1299,7 @@ class NodeGraphView:
                     if row_y is None:
                         row_y = (
                             layout.sy
-                            + self._header_height(layout.typedef) * self.zoom
-                            + max(
-                                len(layout.input_pins),
-                                len(layout.output_pins),
-                                1,
-                            )
-                            * _NODE_PIN_ROW_H
-                            * self.zoom
+                            + self._pin_area_bottom(layout.node, layout.typedef) * self.zoom
                             + (detached_index + 0.5) * _DETACHED_FIELD_ROW_H * self.zoom
                         )
                         detached_index += 1
@@ -1352,7 +1369,7 @@ class NodeGraphView:
                 *_TEXT_DIM_COLOR,
                 0.0,
                 0.5,
-                self._zoom_font(_NODE_FONT),
+                self._zoom_font(_PIN_FONT),
                 True,
             )
         # Non-detached (pin-backed) fields keep their label inside the node at
@@ -2044,36 +2061,24 @@ class NodeGraphView:
     # ── Minimap ───────────────────────────────────────────────────────
 
     def _draw_minimap(self, ctx, cx0, cy0, cx1, cy1):
-        if not self.graph or not self.graph.nodes:
+        if not self._layouts:
             return
 
-        # Compute graph-space bounding box of all nodes
-        nodes = self.graph.nodes
-        n_x0 = min(n.pos_x for n in nodes)
-        n_x1 = max(n.pos_x + 160 for n in nodes)
-        n_y0 = min(n.pos_y for n in nodes)
-        n_y1 = max(n.pos_y + 80 for n in nodes)
-
-        # Compute visible graph-space viewport
-        v_gx0 = -self.pan_x / self.zoom
-        v_gy0 = -self.pan_y / self.zoom
-        v_gx1 = v_gx0 + self._canvas_w / self.zoom
-        v_gy1 = v_gy0 + self._canvas_h / self.zoom
-
-        # Union of nodes and viewport — this is the total extent we must show
-        total_x0 = min(n_x0, v_gx0) - 20
-        total_y0 = min(n_y0, v_gy0) - 20
-        total_x1 = max(n_x1, v_gx1) + 20
-        total_y1 = max(n_y1, v_gy1) + 20
+        # Use the exact canvas rectangles, including measured text, subtitle
+        # and field rows, pan, zoom and hanging-control padding.
+        layouts = tuple(self._layouts.values())
+        total_x0 = min(cx0, min(layout.sx for layout in layouts)) - 20 * self.zoom
+        total_y0 = min(cy0, min(layout.sy for layout in layouts)) - 20 * self.zoom
+        total_x1 = max(cx1, max(layout.sx + layout.w for layout in layouts)) + 20 * self.zoom
+        total_y1 = max(cy1, max(layout.sy + layout.h for layout in layouts)) + 20 * self.zoom
         total_w = max(total_x1 - total_x0, 1.0)
         total_h = max(total_y1 - total_y0, 1.0)
 
-        # Auto-size minimap to aspect ratio (capped)
-        aspect = total_w / total_h
-        mm_w = _MINIMAP_SIZE
-        mm_h = mm_w / max(aspect, 0.3)
-        mm_h = min(mm_h, _MINIMAP_SIZE)
-        mm_w = min(mm_w, mm_h * aspect) if aspect < 0.3 else mm_w
+        # A stable frame avoids tiny, unreadable maps for very wide graphs.
+        mm_w = min(_MINIMAP_SIZE * 1.4, cx1 - cx0 - _MINIMAP_PAD * 2)
+        mm_h = min(_MINIMAP_SIZE, cy1 - cy0 - _MINIMAP_PAD * 2)
+        if mm_w <= 12.0 or mm_h <= 12.0:
+            return
 
         mm_x = cx1 - mm_w - _MINIMAP_PAD
         mm_y = cy1 - mm_h - _MINIMAP_PAD
@@ -2085,7 +2090,7 @@ class NodeGraphView:
         # Clip minimap contents to its bounds
         ctx.push_draw_list_clip_rect(mm_x, mm_y, mm_x + mm_w, mm_y + mm_h)
 
-        # Compute mapping: graph coords → minimap screen coords
+        # Canvas screen coordinates → minimap screen coordinates.
         pad = 6.0
         inner_w = mm_w - pad * 2
         inner_h = mm_h - pad * 2
@@ -2095,19 +2100,20 @@ class NodeGraphView:
         off_x = mm_x + pad + (inner_w - total_w * s) * 0.5
         off_y = mm_y + pad + (inner_h - total_h * s) * 0.5
 
-        # Draw node rectangles
-        for n in nodes:
-            nx = off_x + (n.pos_x - total_x0) * s
-            ny = off_y + (n.pos_y - total_y0) * s
-            nw = max(3, 120 * s)
-            nh = max(2, 50 * s)
+        for layout in layouts:
+            nx = off_x + (layout.sx - total_x0) * s
+            ny = off_y + (layout.sy - total_y0) * s
+            nw = layout.w * s
+            nh = layout.h * s
             ctx.draw_filled_rect(nx, ny, nx + nw, ny + nh, *_MINIMAP_NODE, 1.0)
+            if layout.node.uid in self.selected_nodes:
+                ctx.draw_rect(nx, ny, nx + nw, ny + nh, *_TEXT_COLOR, 1.5, 1.0)
 
         # Draw viewport rectangle
-        vx0 = off_x + (v_gx0 - total_x0) * s
-        vy0 = off_y + (v_gy0 - total_y0) * s
-        vx1 = off_x + (v_gx1 - total_x0) * s
-        vy1 = off_y + (v_gy1 - total_y0) * s
+        vx0 = off_x + (cx0 - total_x0) * s
+        vy0 = off_y + (cy0 - total_y0) * s
+        vx1 = off_x + (cx1 - total_x0) * s
+        vy1 = off_y + (cy1 - total_y0) * s
         accent = Theme.APPLY_BUTTON
         ctx.draw_rect(
             vx0,
