@@ -594,10 +594,50 @@ jobs:
 
       - uses: android-actions/setup-android@v3
         with:
+          cmdline-tools-version: "12266719"
           # The legacy SDK "tools" package was removed from Google's current
           # repository.  setup-android defaults to requesting it, which now
           # fails before our explicitly pinned SDK packages are installed.
           packages: platform-tools
+
+      - name: Keep emulator setup on the selected Android command-line tools
+        run: |
+          sdk_root="$(realpath -e -- "$ANDROID_SDK_ROOT")"
+          android_home="$(realpath -e -- "$ANDROID_HOME")"
+          if [[ "$sdk_root" != "$android_home" ]]; then
+            echo "::error::ANDROID_HOME and ANDROID_SDK_ROOT resolve to different SDKs."
+            exit 1
+          fi
+          selected_manager="$(realpath -e -- "$(command -v sdkmanager)")"
+          selected_tools="$(dirname -- "$(dirname -- "$selected_manager")")"
+          if [[ ! -x "$selected_manager" || "$(dirname -- "$selected_tools")" != "$sdk_root/cmdline-tools" || "$selected_manager" != "$selected_tools/bin/sdkmanager" ]]; then
+            echo "::error::setup-android selected sdkmanager outside this SDK's command-line tools."
+            exit 1
+          fi
+          if [[ "$("$selected_manager" --version)" != "16.0" ]]; then
+            echo "::error::The selected sdkmanager is not version 16.0."
+            exit 1
+          fi
+          # emulator-runner prepends latest/bin to PATH. Keep it on the same
+          # tools instead of silently returning to the runner's old SDK manager.
+          latest_tools="$sdk_root/cmdline-tools/latest"
+          if [[ "$(realpath -m -- "$latest_tools")" != "$selected_tools" ]]; then
+            if [[ -e "$latest_tools" || -L "$latest_tools" ]]; then
+              backup_root="$(mktemp -d "$sdk_root/.infernux-cmdline-tools-backup.XXXXXX")"
+              mv -- "$latest_tools" "$backup_root/latest"
+            fi
+            ln -s -- "$selected_tools" "$latest_tools"
+          fi
+          if [[ "$(realpath -e -- "$latest_tools/bin/sdkmanager")" != "$selected_manager" ]]; then
+            echo "::error::emulator-runner would use different Android command-line tools."
+            exit 1
+          fi
+          resolved_version="$("$latest_tools/bin/sdkmanager" --version)"
+          if [[ "$resolved_version" != "16.0" ]]; then
+            echo "::error::emulator-runner would use sdkmanager $resolved_version instead of 16.0."
+            exit 1
+          fi
+          echo "Android command-line tools: $selected_manager (version $resolved_version)"
 
       - name: Install pinned Android SDK
         run: |
