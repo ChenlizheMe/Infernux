@@ -10,7 +10,12 @@ from typing import Any, Callable, List
 
 
 class UndoCommand(ABC):
-    """Base class for all undoable editor commands."""
+    """Base class for all undoable editor commands.
+
+    execute, undo and redo must leave their own state unchanged when they raise.
+    Transaction abort and compound compensation can then safely retry a failed
+    operation without guessing whether its individual mutation took effect.
+    """
 
     supports_redo: bool = True
     marks_dirty: bool = True
