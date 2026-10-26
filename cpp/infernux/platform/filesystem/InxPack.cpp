@@ -302,9 +302,20 @@ class ExtractionTree
 #else
         if (parent && ::mkdirat(parent->descriptor, name.c_str(), 0777) != 0 && errno != EEXIST)
             throw std::system_error(errno, std::generic_category(), "InxPack cannot create extraction directory");
+#if defined(__linux__) || defined(__ANDROID__)
+        // Anchors are only used by *at operations, never for directory reads.
+        // Android's /data ancestors are searchable but not readable by apps.
+        constexpr int accessMode = O_PATH;
+#elif defined(O_SEARCH) && !defined(__EMSCRIPTEN__)
+        constexpr int accessMode = O_SEARCH;
+#else
+        constexpr int accessMode = O_RDONLY;
+#endif
+        // O_DIRECTORY is essential with O_PATH: O_NOFOLLOW alone can return
+        // a descriptor for the symlink itself instead of rejecting it.
+        constexpr int directoryFlags = accessMode | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
         directory->descriptor =
-            parent ? ::openat(parent->descriptor, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                   : ::open(name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            parent ? ::openat(parent->descriptor, name.c_str(), directoryFlags) : ::open(name.c_str(), directoryFlags);
         if (directory->descriptor < 0)
             throw std::system_error(errno, std::generic_category(), "InxPack cannot pin extraction directory");
 #endif

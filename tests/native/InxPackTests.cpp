@@ -21,6 +21,10 @@
 #endif
 #include <Windows.h>
 #include <winioctl.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace
@@ -362,6 +366,47 @@ int main()
 #endif
 
 #ifndef _WIN32
+#if defined(__linux__) || defined(__ANDROID__) || (defined(O_SEARCH) && !defined(__EMSCRIPTEN__))
+        phase = "search-only extraction directories";
+        std::cerr << "[InxPackTests] " << phase << '\n' << std::flush;
+        const auto searchOnlyAncestor = root / "search-only-ancestor";
+        const auto searchOnlyOutput = searchOnlyAncestor / "owned-output";
+        std::filesystem::create_directories(searchOnlyOutput);
+        // Android's /data and /data/user ancestors permit app traversal but
+        // not directory reads. The owned output itself only needs write/search
+        // permission: extraction never enumerates directory entries.
+        std::filesystem::permissions(searchOnlyAncestor, std::filesystem::perms::owner_exec,
+                                     std::filesystem::perm_options::replace);
+        std::filesystem::permissions(searchOnlyOutput,
+                                     std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec,
+                                     std::filesystem::perm_options::replace);
+        const auto restorePermissions = [&]() {
+            std::error_code error;
+            std::filesystem::permissions(searchOnlyAncestor, std::filesystem::perms::owner_all, error);
+            std::filesystem::permissions(searchOnlyOutput, std::filesystem::perms::owner_all, error);
+        };
+        try {
+            // Root bypasses DAC checks. On ordinary CI accounts prove this
+            // fixture really rejects the read access the extractor must avoid.
+            if (::geteuid() != 0) {
+                for (const auto &directory : {searchOnlyAncestor, searchOnlyOutput}) {
+                    const int readable = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY);
+                    const int error = errno;
+                    if (readable >= 0)
+                        ::close(readable);
+                    Require(readable < 0 && error == EACCES, "search-only directory unexpectedly permits reads");
+                }
+            }
+            Extract(confinedPackage, searchOnlyOutput);
+            Require(ReadFile(searchOnlyOutput / "Assets/value.bin") == replacementBytes,
+                    "extraction requires read access to an ancestor or output directory");
+        } catch (...) {
+            restorePermissions();
+            throw;
+        }
+        restorePermissions();
+#endif
+
         std::filesystem::remove(atomicRoot / "Assets/value.bin");
         std::filesystem::create_symlink(sentinel, atomicRoot / "Assets/value.bin");
         RequireExtractFailure(confinedPackage, atomicRoot);
