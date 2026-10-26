@@ -30,6 +30,20 @@ extending a real workflow over another default snapshot or mock-only matrix.
 The current API and file formats are authoritative; historical migrations do not
 need a parallel test suite.
 
+For publication, recovery and batch correctness changes, these focused suites
+cover finalized reload history collection and runtime imports, retryable editor
+rollback, Scene-bound batch identity, and final world poses across hierarchies:
+
+```sh
+python -m pytest tests/python/test_candidate_import_transaction.py tests/python/test_play_mode_component_body_reload.py tests/python/test_editor_transactions.py tests/python/test_transform_batch_boundaries.py tests/python/test_inxpack_compression.py -q -ra
+ctest --preset windows-msvc-release -R "inxpack|runtime_frame_barrier|ui_transform_dependencies" --output-on-failure
+```
+
+Use the matching `linux-clang-release` preset on Linux. The native cases also
+check that staged world writes preserve the committed Transform serial until a
+real change is published, and that extraction rejects output directory links,
+replaces hard-linked outputs safely, and preserves old files on decode failure.
+
 ## Portable Hub
 
 No compiled engine or Vulkan device is required:
