@@ -95,6 +95,40 @@ if [[ "$mode" == "build" || "$mode" == "all" ]]; then
 fi
 
 if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
+    mkdir -p out/test-results
+    # Preserve early startup errors before Android's logcat ring buffer wraps.
+    adb -s emulator-5554 logcat -b all -v threadtime \
+        > out/test-results/android-player.logcat.txt 2>&1 < /dev/null &
+    android_logcat_pid=$!
+    finish_android_evidence() {
+        local exit_status=$?
+        local attempt
+        trap - EXIT
+        set +e
+        if [[ "$exit_status" -ne 0 ]]; then
+            timeout --kill-after=2s 10s adb -s emulator-5554 \
+                shell pidof "$target_package" \
+                > out/test-results/android-player-failure-pid.txt 2>&1
+            timeout --kill-after=2s 10s adb -s emulator-5554 \
+                shell dumpsys activity activities \
+                > out/test-results/android-player-failure-activity.txt 2>&1
+            timeout --kill-after=2s 10s adb -s emulator-5554 \
+                shell dumpsys window windows \
+                > out/test-results/android-player-failure-window.txt 2>&1
+        fi
+        kill "$android_logcat_pid" 2>/dev/null
+        for attempt in $(seq 1 10); do
+            if ! kill -0 "$android_logcat_pid" 2>/dev/null; then
+                break
+            fi
+            sleep 0.1
+        done
+        kill -KILL "$android_logcat_pid" 2>/dev/null
+        wait "$android_logcat_pid" 2>/dev/null
+        exit "$exit_status"
+    }
+    trap finish_android_evidence EXIT
+
     # The emulator is deliberately launched only after all native/Gradle work
     # finishes. A software-only API 36 AVD cannot stay responsive while the
     # two-core hosted runner is saturated by the Android native build.
