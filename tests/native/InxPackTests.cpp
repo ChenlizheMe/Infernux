@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +20,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <winioctl.h>
 #endif
 
 namespace
@@ -56,6 +59,54 @@ void RequireNoTemporaryFiles(const std::filesystem::path &root)
         const std::string name = infernux::FromFsPath(entry.path().filename());
         Require(name.find(".tmp.inxpkg.") == std::string::npos, "InxPack left a temporary output file behind");
     }
+}
+
+void MakeDirectoryLink(const std::filesystem::path &link, const std::filesystem::path &target)
+{
+#ifdef _WIN32
+    // Junctions need no symlink privilege, so the confinement regression also
+    // runs on ordinary Windows CI accounts. Both paths remain in the test root.
+    struct MountPoint
+    {
+        DWORD tag;
+        WORD length, reserved, substituteOffset, substituteLength, printOffset, printLength;
+        wchar_t names[1];
+    };
+    const auto print = std::filesystem::absolute(target).wstring();
+    const auto substitute = L"\\??\\" + print;
+    const auto namesBytes = (substitute.size() + print.size() + 2) * sizeof(wchar_t);
+    std::vector<uint8_t> bytes(offsetof(MountPoint, names) + namesBytes, 0);
+    auto *point = reinterpret_cast<MountPoint *>(bytes.data());
+    point->tag = IO_REPARSE_TAG_MOUNT_POINT;
+    point->length = static_cast<WORD>(bytes.size() - 8);
+    point->substituteLength = static_cast<WORD>(substitute.size() * sizeof(wchar_t));
+    point->printOffset = point->substituteLength + sizeof(wchar_t);
+    point->printLength = static_cast<WORD>(print.size() * sizeof(wchar_t));
+    std::memcpy(point->names, substitute.c_str(), point->substituteLength);
+    std::memcpy(reinterpret_cast<uint8_t *>(point->names) + point->printOffset, print.c_str(), point->printLength);
+    std::filesystem::create_directory(link);
+    HANDLE handle = ::CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                  FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    Require(handle != INVALID_HANDLE_VALUE, "cannot open test junction");
+    DWORD returned = 0;
+    const bool created = ::DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, bytes.data(),
+                                           static_cast<DWORD>(bytes.size()), nullptr, 0, &returned, nullptr) != FALSE;
+    ::CloseHandle(handle);
+    Require(created, "cannot create test junction");
+#else
+    std::filesystem::create_directory_symlink(target, link);
+#endif
+}
+
+void RequireExtractFailure(const std::filesystem::path &package, const std::filesystem::path &destination)
+{
+    bool rejected = false;
+    try {
+        infernux::inxpack::Extract(package, destination);
+    } catch (const std::exception &) {
+        rejected = true;
+    }
+    Require(rejected, "extraction unexpectedly succeeded");
 }
 } // namespace
 
@@ -226,7 +277,9 @@ int main()
         std::vector<uint8_t> large(5 * 1024 * 1024 + 19);
         uint32_t random = 1234567;
         for (auto &value : large) {
-            random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
             value = static_cast<uint8_t>(random);
         }
         const auto largeSource = root / "large.bin";
@@ -239,13 +292,82 @@ int main()
         Require(largeManifest.entries[1].codec == Codec::Zstandard, "large source must use streamed compression");
         Require(ReadEntry(largePack, "Library/large.bin") == large, "large random payload changed");
         Extract(largePack, root / "stream-extracted");
-        Require(ReadFile(root / "stream-extracted/Library/large.bin") == large, "streamed Zstd extraction changed bytes");
-        Require(ReadFile(root / "stream-extracted/Library/audio.mp3") == large, "streamed Store extraction changed bytes");
+        Require(ReadFile(root / "stream-extracted/Library/large.bin") == large,
+                "streamed Zstd extraction changed bytes");
+        Require(ReadFile(root / "stream-extracted/Library/audio.mp3") == large,
+                "streamed Store extraction changed bytes");
         std::fill(large.begin(), large.end(), 0);
         WriteSource(largeSource, large);
         Write(largePack, {{"Library/large.bin", largeSource}});
         Extract(largePack, root / "stream-zeros");
         Require(ReadFile(root / "stream-zeros/Library/large.bin") == large, "high-ratio output was not fully drained");
+
+        phase = "extraction confinement and atomic publication";
+        for (const auto &unsafe : {"Assets/.. /value.bin", "Assets/value.bin.", "Assets/NUL.txt", "Assets/NUL .txt",
+                                   "Assets/CONOUT$", "Assets/COM1"}) {
+            bool rejected = false;
+            try {
+                Write(root / "unsafe.inxpkg", {{unsafe, replacementSource}});
+            } catch (const std::invalid_argument &) {
+                rejected = true;
+            }
+            Require(rejected, "package accepted a nonportable output path");
+        }
+        const auto confinedPackage = root / "confined.inxpkg";
+        Write(confinedPackage, {{"Assets/value.bin", replacementSource}});
+        const auto outside = root / "link-target";
+        std::filesystem::create_directory(outside);
+        const auto linkedOutput = root / "linked-output";
+        std::filesystem::create_directory(linkedOutput);
+        MakeDirectoryLink(linkedOutput / "Assets", outside);
+        RequireExtractFailure(confinedPackage, linkedOutput);
+        Require(!std::filesystem::exists(outside / "value.bin"), "extraction followed an output directory link");
+        std::filesystem::remove(linkedOutput / "Assets");
+        MakeDirectoryLink(root / "linked-root", outside);
+        RequireExtractFailure(confinedPackage, root / "linked-root");
+        Extract(confinedPackage, root / "linked-root/nested");
+        Require(ReadFile(outside / "nested/Assets/value.bin") == replacementBytes,
+                "caller-selected destination ancestor alias was not resolved");
+        std::filesystem::remove(root / "linked-root");
+
+        const auto atomicRoot = root / "atomic-output";
+        std::filesystem::create_directories(atomicRoot / "Assets");
+        const auto sentinel = outside / "sentinel.bin";
+        WriteSource(sentinel, expected);
+        std::filesystem::create_hard_link(sentinel, atomicRoot / "Assets/value.bin");
+        Extract(confinedPackage, atomicRoot);
+        Require(ReadFile(sentinel) == expected, "extraction modified the other name of a hard-linked output");
+        Require(ReadFile(atomicRoot / "Assets/value.bin") == replacementBytes,
+                "atomic extraction did not publish entry");
+
+        const auto brokenPackage = root / "broken.inxpkg";
+        const auto brokenManifest = Write(brokenPackage, {{"Assets/value.bin", largeSource}});
+        Require(brokenManifest.entries.front().storedBytes > 1, "truncated test payload is too small");
+        // Shorten the encoded frame in its TOC, keeping the physical archive
+        // intact, so the decode fails after an output file has been opened.
+        {
+            std::fstream broken(brokenPackage, std::ios::binary | std::ios::in | std::ios::out);
+            const uint64_t shortened = brokenManifest.entries.front().storedBytes - 1;
+            broken.seekp(128 + 24 + 24);
+            broken.write(reinterpret_cast<const char *>(&shortened), sizeof(shortened));
+            Require(static_cast<bool>(broken), "cannot shorten test entry");
+        }
+        RequireExtractFailure(brokenPackage, atomicRoot);
+        Require(ReadFile(atomicRoot / "Assets/value.bin") == replacementBytes, "failed extraction damaged old entry");
+        RequireNoTemporaryFiles(atomicRoot / "Assets");
+#ifdef _WIN32
+        const auto collisionPackage = root / "collision.inxpkg";
+        Write(collisionPackage, {{"Assets/value.bin", replacementSource}, {"Assets/Value.bin", sourcePath}});
+        RequireExtractFailure(collisionPackage, root / "collision-output");
+#endif
+
+#ifndef _WIN32
+        std::filesystem::remove(atomicRoot / "Assets/value.bin");
+        std::filesystem::create_symlink(sentinel, atomicRoot / "Assets/value.bin");
+        RequireExtractFailure(confinedPackage, atomicRoot);
+        Require(ReadFile(sentinel) == expected, "extraction followed an output file symlink");
+        std::filesystem::remove(atomicRoot / "Assets/value.bin");
+#endif
 
         phase = "cleanup";
         std::cerr << "[InxPackTests] " << phase << '\n' << std::flush;

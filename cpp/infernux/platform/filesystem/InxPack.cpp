@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -33,6 +34,7 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -210,6 +212,263 @@ bool IsTransientReplaceError(const std::error_code &error) noexcept
     return error.value() == EACCES || error.value() == EAGAIN || error.value() == EBUSY;
 #endif
 }
+
+// Keep every directory in the output path pinned for the entire extraction.
+// POSIX writes are relative to directory descriptors; Windows denies deletion
+// of the opened ancestors so path-based writes cannot be redirected by rename.
+// Reparse points/symlinks are never traversed, including in destination itself.
+struct ExtractionDirectory
+{
+    std::filesystem::path path;
+#ifdef _WIN32
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    ~ExtractionDirectory()
+    {
+        if (handle != INVALID_HANDLE_VALUE)
+            ::CloseHandle(handle);
+    }
+#else
+    int descriptor = -1;
+    ~ExtractionDirectory()
+    {
+        if (descriptor >= 0)
+            ::close(descriptor);
+    }
+#endif
+};
+
+class ExtractionTree
+{
+  public:
+    explicit ExtractionTree(const std::filesystem::path &destination)
+    {
+        auto absolute = std::filesystem::absolute(destination.empty() ? std::filesystem::path(".") : destination)
+                            .lexically_normal();
+        while (absolute != absolute.root_path() && absolute.filename().empty())
+            absolute = absolute.parent_path();
+        // Resolve aliases selected by the caller above the destination (e.g.
+        // /var on macOS), without following the destination entry itself.
+        if (absolute != absolute.root_path())
+            absolute = std::filesystem::weakly_canonical(absolute.parent_path()) / absolute.filename();
+        root_ = OpenDirectory(nullptr, absolute.root_path());
+        directories_.emplace(root_->path, root_);
+        for (const auto &part : absolute.relative_path()) {
+            if (!part.empty() && part != ".")
+                root_ = Child(root_, part);
+        }
+    }
+
+    std::shared_ptr<ExtractionDirectory> Root() const
+    {
+        return root_;
+    }
+
+    std::shared_ptr<ExtractionDirectory> Child(const std::shared_ptr<ExtractionDirectory> &parent,
+                                               const std::filesystem::path &name)
+    {
+        const auto path = parent->path / name;
+        const auto found = directories_.find(path);
+        if (found != directories_.end())
+            return found->second;
+        auto directory = OpenDirectory(parent, name);
+        directories_.emplace(path, directory);
+        return directory;
+    }
+
+  private:
+    static std::shared_ptr<ExtractionDirectory> OpenDirectory(const std::shared_ptr<ExtractionDirectory> &parent,
+                                                              const std::filesystem::path &name)
+    {
+        auto directory = std::make_shared<ExtractionDirectory>();
+        directory->path = parent ? parent->path / name : name;
+#ifdef _WIN32
+        if (parent && !::CreateDirectoryW(directory->path.c_str(), nullptr) && ::GetLastError() != ERROR_ALREADY_EXISTS)
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "InxPack cannot create extraction directory");
+        directory->handle =
+            ::CreateFileW(directory->path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (directory->handle == INVALID_HANDLE_VALUE)
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "InxPack cannot pin extraction directory");
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        if (!::GetFileInformationByHandleEx(directory->handle, FileAttributeTagInfo, &attributes, sizeof(attributes)))
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "InxPack cannot inspect extraction directory");
+        if (!(attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            throw std::runtime_error("InxPack extraction directory is not a plain directory: " +
+                                     FromFsPath(directory->path));
+#else
+        if (parent && ::mkdirat(parent->descriptor, name.c_str(), 0777) != 0 && errno != EEXIST)
+            throw std::system_error(errno, std::generic_category(), "InxPack cannot create extraction directory");
+        directory->descriptor =
+            parent ? ::openat(parent->descriptor, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                   : ::open(name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (directory->descriptor < 0)
+            throw std::system_error(errno, std::generic_category(), "InxPack cannot pin extraction directory");
+#endif
+        return directory;
+    }
+
+    std::shared_ptr<ExtractionDirectory> root_;
+    std::map<std::filesystem::path, std::shared_ptr<ExtractionDirectory>> directories_;
+};
+
+struct ExtractionTarget
+{
+    std::shared_ptr<ExtractionDirectory> directory;
+    std::filesystem::path name;
+};
+
+// Stream into an exclusively created sibling, then publish the complete entry.
+// Besides preserving an old file on decode failure, replacement avoids writing
+// through an existing hard link to a file outside the extraction tree.
+class ExtractedFile
+{
+  public:
+    explicit ExtractedFile(const ExtractionTarget &target) : target_(target)
+    {
+        CheckTarget();
+        static std::atomic<uint64_t> sequence{0};
+        const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (unsigned attempt = 0; attempt < 1024; ++attempt) {
+            temporary_ = target_.name;
+            temporary_ += ".tmp.inxpkg." + std::to_string(nonce) + "." +
+                          std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+#ifdef _WIN32
+            handle_ = ::CreateFileW((target_.directory->path / temporary_).c_str(), GENERIC_WRITE | DELETE, 0, nullptr,
+                                    CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (handle_ != INVALID_HANDLE_VALUE)
+                return;
+            const auto error = ::GetLastError();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+                throw std::system_error(static_cast<int>(error), std::system_category(), "InxPack cannot create entry");
+#else
+            descriptor_ = ::openat(target_.directory->descriptor, temporary_.c_str(),
+                                   O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+            if (descriptor_ >= 0)
+                return;
+            if (errno != EEXIST)
+                throw std::system_error(errno, std::generic_category(), "InxPack cannot create entry");
+#endif
+        }
+        throw std::runtime_error("InxPack exhausted unique extraction names");
+    }
+
+    ~ExtractedFile()
+    {
+        Close();
+        if (!published_) {
+#ifdef _WIN32
+            ::DeleteFileW((target_.directory->path / temporary_).c_str());
+#else
+            ::unlinkat(target_.directory->descriptor, temporary_.c_str(), 0);
+#endif
+        }
+    }
+
+    void Write(const char *data, size_t size)
+    {
+        while (size) {
+#ifdef _WIN32
+            DWORD count = 0;
+            if (!::WriteFile(handle_, data, static_cast<DWORD>(std::min<size_t>(size, MAXDWORD)), &count, nullptr))
+                throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                        "InxPack cannot write entry");
+#else
+            const auto count = ::write(descriptor_, data, size);
+            if (count < 0) {
+                if (errno == EINTR)
+                    continue;
+                throw std::system_error(errno, std::generic_category(), "InxPack cannot write entry");
+            }
+#endif
+            if (count == 0)
+                throw std::runtime_error("InxPack entry write made no progress");
+            data += count;
+            size -= count;
+        }
+    }
+
+    void Publish()
+    {
+        CheckTarget();
+#ifdef _WIN32
+        if (!::FlushFileBuffers(handle_))
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "InxPack cannot flush entry");
+        const auto name = (target_.directory->path / target_.name).native();
+        const auto nameBytes = name.size() * sizeof(wchar_t);
+        std::vector<uint8_t> bytes(offsetof(FILE_RENAME_INFO, FileName) + nameBytes + sizeof(wchar_t), 0);
+        auto *rename = reinterpret_cast<FILE_RENAME_INFO *>(bytes.data());
+        rename->ReplaceIfExists = TRUE;
+        // Win32 FileRenameInfo requires a null RootDirectory. All ancestors
+        // of this absolute destination remain pinned against write/delete.
+        rename->RootDirectory = nullptr;
+        rename->FileNameLength = static_cast<DWORD>(nameBytes);
+        std::memcpy(rename->FileName, name.data(), nameBytes);
+        // Keep the exclusive handle through publication so the temporary
+        // entry cannot be replaced between validation and rename.
+        if (!::SetFileInformationByHandle(handle_, FileRenameInfo, rename, static_cast<DWORD>(bytes.size())))
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "InxPack cannot publish entry");
+#else
+        // write() is unbuffered; report close errors before publishing the file.
+        const int descriptor = std::exchange(descriptor_, -1);
+        if (::close(descriptor) != 0)
+            throw std::system_error(errno, std::generic_category(), "InxPack cannot close entry");
+        if (::renameat(target_.directory->descriptor, temporary_.c_str(), target_.directory->descriptor,
+                       target_.name.c_str()) != 0)
+            throw std::system_error(errno, std::generic_category(), "InxPack cannot publish entry");
+#endif
+        published_ = true;
+    }
+
+  private:
+    void CheckTarget() const
+    {
+#ifdef _WIN32
+        const DWORD attributes = ::GetFileAttributesW((target_.directory->path / target_.name).c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            const auto error = ::GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND)
+                throw std::system_error(static_cast<int>(error), std::system_category(),
+                                        "InxPack cannot inspect entry");
+        } else if (attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) {
+            throw std::runtime_error("InxPack extraction target is not a plain file");
+        }
+#else
+        struct stat status{};
+        if (::fstatat(target_.directory->descriptor, target_.name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno != ENOENT)
+                throw std::system_error(errno, std::generic_category(), "InxPack cannot inspect entry");
+        } else if (!S_ISREG(status.st_mode)) {
+            throw std::runtime_error("InxPack extraction target is not a plain file");
+        }
+#endif
+    }
+
+    void Close() noexcept
+    {
+#ifdef _WIN32
+        if (handle_ != INVALID_HANDLE_VALUE)
+            ::CloseHandle(std::exchange(handle_, INVALID_HANDLE_VALUE));
+#else
+        if (descriptor_ >= 0)
+            ::close(std::exchange(descriptor_, -1));
+#endif
+    }
+
+    ExtractionTarget target_;
+    std::filesystem::path temporary_;
+    bool published_ = false;
+#ifdef _WIN32
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+    int descriptor_ = -1;
+#endif
+};
 
 class Sha256
 {
@@ -411,8 +670,22 @@ std::string NormalizePath(const std::string &path)
     while (begin <= normalized.size()) {
         const size_t end = normalized.find('/', begin);
         const std::string part = normalized.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-        if (part.empty() || part == "." || part == "..")
+        if (part.empty() || part == "." || part == ".." || part.back() == '.' || part.back() == ' ' ||
+            part.find_first_of("<>\"|?*") != std::string::npos ||
+            std::any_of(part.begin(), part.end(), [](unsigned char value) { return value < 32; }))
             throw std::invalid_argument("InxPack path contains an unsafe component: " + path);
+        std::string stem = part.substr(0, part.find('.'));
+        while (!stem.empty() && stem.back() == ' ')
+            stem.pop_back();
+        std::transform(stem.begin(), stem.end(), stem.begin(),
+                       [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
+        const bool devicePrefix = stem.compare(0, 3, "COM") == 0 || stem.compare(0, 3, "LPT") == 0;
+        const bool numberedDevice = stem.size() == 4 && devicePrefix && stem[3] >= '1' && stem[3] <= '9';
+        const bool superscriptDevice = devicePrefix && (stem.substr(3) == "\xc2\xb9" || stem.substr(3) == "\xc2\xb2" ||
+                                                        stem.substr(3) == "\xc2\xb3");
+        if (stem == "CON" || stem == "CONIN$" || stem == "CONOUT$" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+            numberedDevice || superscriptDevice)
+            throw std::invalid_argument("InxPack path contains a reserved device name: " + path);
         parts.push_back(part);
         if (end == std::string::npos)
             break;
@@ -855,34 +1128,45 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
     if (!manifestInput)
         throw std::runtime_error("InxPack cannot open package: " + FromFsPath(path));
     const Manifest manifest = ParseManifest(manifestInput, path);
-    const auto &targetRoot = destination;
-    if (!targetRoot.empty())
-        std::filesystem::create_directories(targetRoot);
     HeaderDisk header{};
     manifestInput.seekg(0);
     ReadExact(manifestInput, &header, sizeof(header));
 
-    // Resolve and create the complete directory tree before workers start.
-    // Apart from avoiding duplicate create_directories calls, this keeps the
-    // parallel phase limited to independent package reads, decompression,
-    // validation and file writes.
-    std::vector<std::filesystem::path> outputs;
+    // Pin the complete directory tree before workers start. Workers only open
+    // exclusive temporary files beneath these directories and publish entries
+    // after validating the entire decoded payload.
+    ExtractionTree tree(destination);
+    std::vector<ExtractionTarget> outputs;
     outputs.reserve(manifest.entries.size());
+#ifdef _WIN32
+    const auto ignoreCaseLess = [](const std::wstring &left, const std::wstring &right) {
+        return ::CompareStringOrdinal(left.c_str(), static_cast<int>(left.size()), right.c_str(),
+                                      static_cast<int>(right.size()), TRUE) == CSTR_LESS_THAN;
+    };
+    std::set<std::wstring, decltype(ignoreCaseLess)> outputNames(ignoreCaseLess);
+#endif
     for (const auto &entry : manifest.entries) {
         if (!IsAllowedRoot(entry.path, allowedRoots))
             throw std::runtime_error("InxPack entry root is not allowed: " + entry.path);
-        std::filesystem::path output = targetRoot;
+#ifdef _WIN32
+        if (!outputNames.insert(ToFsPath(entry.path).wstring()).second)
+            throw std::runtime_error("InxPack entries collide on a case-insensitive filesystem: " + entry.path);
+#endif
+        auto directory = tree.Root();
+        std::filesystem::path name;
         size_t begin = 0;
         while (begin < entry.path.size()) {
             const size_t end = entry.path.find('/', begin);
-            output /= ToFsPath(entry.path.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
-            if (end == std::string::npos)
+            const auto part =
+                ToFsPath(entry.path.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+            if (end == std::string::npos) {
+                name = part;
                 break;
+            }
+            directory = tree.Child(directory, part);
             begin = end + 1;
         }
-        if (!output.parent_path().empty())
-            std::filesystem::create_directories(output.parent_path());
-        outputs.push_back(std::move(output));
+        outputs.push_back({std::move(directory), std::move(name)});
     }
 
     const auto extractEntry = [&](std::ifstream &input, size_t index) {
@@ -893,9 +1177,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
             throw std::runtime_error("InxPack entry offset is outside the package: " + entry.path);
         if (entry.codec != Codec::Store && entry.codec != Codec::Zstandard)
             throw std::runtime_error("InxPack entry uses an unsupported codec: " + entry.path);
-        std::ofstream destinationFile(outputs[index], std::ios::binary | std::ios::trunc);
-        if (!destinationFile)
-            throw std::runtime_error("InxPack cannot extract entry: " + entry.path);
+        ExtractedFile destinationFile(outputs[index]);
         std::vector<char> stored(ZSTD_DStreamInSize()), raw(ZSTD_DStreamOutSize());
         std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> decoder(
             entry.codec == Codec::Zstandard ? ZSTD_createDCtx() : nullptr, &ZSTD_freeDCtx);
@@ -910,7 +1192,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
             if (entry.codec == Codec::Store) {
                 if (count > entry.rawBytes - written)
                     throw std::runtime_error("InxPack stored size mismatch: " + entry.path);
-                WriteExact(destinationFile, stored.data(), count);
+                destinationFile.Write(stored.data(), count);
                 written += count;
             } else {
                 ZSTD_inBuffer in{stored.data(), count, 0};
@@ -919,7 +1201,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
                     pending = ZSTD_decompressStream(decoder.get(), &out, &in);
                     if (ZSTD_isError(pending) || out.pos > entry.rawBytes - written)
                         throw std::runtime_error("InxPack zstd decompression failed: " + entry.path);
-                    WriteExact(destinationFile, raw.data(), out.pos);
+                    destinationFile.Write(raw.data(), out.pos);
                     written += out.pos;
                     // Drain a full output buffer even when all input was consumed.
                     if (in.pos == in.size && out.pos < out.size)
@@ -929,9 +1211,7 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
         }
         if (pending != 0 || written != entry.rawBytes)
             throw std::runtime_error("InxPack truncated or mismatched entry: " + entry.path);
-        destinationFile.flush();
-        if (!destinationFile)
-            throw std::runtime_error("InxPack cannot flush entry: " + entry.path);
+        destinationFile.Publish();
     };
 
     // Archive entries are independently compressed. Browser builds
