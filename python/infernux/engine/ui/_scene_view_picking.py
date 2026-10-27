@@ -502,20 +502,12 @@ class SceneViewPickingMixin:
 
             manager = SceneManager.instance()
             active_scene = manager.get_active_scene()
-            # World-space Billboard UI is rendered against the Game Camera
-            # basis even while the Scene view is using its independent editor
-            # camera.  Feed the same camera into projection so clicking the
-            # visible text surface selects the text itself.
-            billboard_camera = (
-                getattr(active_scene, "effective_game_camera", None)
-                if active_scene is not None else None
-            )
             world_ui_ids = pick_world_ui_object_ids(
                 active_scene,
                 (float(ray[0]), float(ray[1]), float(ray[2])),
                 (float(ray[3]), float(ray[4]), float(ray[5])),
                 manager.get_runtime_persistent_scene(),
-                camera=billboard_camera or getattr(self._engine, "editor_camera", None),
+                camera=self._engine.editor_camera,
                 viewport_height=vp.height,
             )
             self._last_world_ui_pick_ids = tuple(world_ui_ids)
