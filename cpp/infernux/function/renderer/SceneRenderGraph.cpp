@@ -2034,7 +2034,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                         ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView, materialPass.RenderingSignature(),
                         vkCore->GetCurrentFrameSlot(),
                         worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
-                        m_drawView, m_cachedProj);
+                        m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
@@ -5207,7 +5207,8 @@ void SceneRenderGraph::BuildRenderGraph()
                                 ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
                                 uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
                                 worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
-                                m_drawView, m_cachedProj, run.firstOrdinal, run.endOrdinal);
+                                m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView,
+                                run.firstOrdinal, run.endOrdinal);
                         };
                     });
                     currentColor = writtenColor;

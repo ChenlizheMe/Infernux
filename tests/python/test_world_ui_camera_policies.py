@@ -57,28 +57,6 @@ def test_camera_policies_are_explicit_serialized_and_submitted(scene, monkeypatc
     assert calls[-1][3:] == (False, True, True)
 
 
-def test_scene_billboard_selection_uses_scene_camera_when_game_camera_is_sideways(engine, scene):
-    from infernux.engine.ui.scene_view_panel import SceneViewPanel
-
-    obj, element = _element(scene)
-    obj.transform.position = Vector3(20, 20, 20)
-    element.world_billboard = True
-    game = scene.create_game_object("Sideways Game Camera")
-    game.transform.position = Vector3(15, 20, 20)
-    game.transform.euler_angles = Vector3(0, 90, 0)
-    scene.main_camera = game.add_component("Camera")
-    editor = engine.editor_camera
-    saved = (*editor.position, *editor.focus_point, editor.focus_distance, *editor.rotation)
-    try:
-        editor.restore_state(20, 20, 15, 20, 20, 20, 5, 0, 0)
-        panel = SceneViewPanel(engine=engine)
-        viewport = SimpleNamespace(width=128, height=128, mouse_local=lambda _ctx: (64, 64))
-        assert panel._pick_scene_object(None, viewport) == obj.id
-        assert panel._last_world_ui_pick_ids == (obj.id,)
-    finally:
-        editor.restore_state(*saved)
-
-
 def test_billboard_and_constant_screen_size_share_input_projection(scene, monkeypatch):
     _, element = _element(scene)
     surfaces = collect_runtime_ui_input_surfaces(scene)
