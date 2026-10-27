@@ -116,6 +116,6 @@ ${VERTEX_CALL}
     if (shadowUBO.light_vector.w < 0.5) {
         // Directional shadow pancaking preserves casters that cross the light
         // near plane while maximizing the usable depth range of each cascade.
-        gl_Position.z = max(gl_Position.z, 0.0);
+        gl_Position.z = min(gl_Position.z, gl_Position.w);
     }
 }

@@ -30,6 +30,7 @@
 #include "particle/ParticleGpuViewDiagnostics.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
+#include "vk/ViewGlobalsBinding.h"
 #include "vk/VkDescriptorManager.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -94,7 +95,7 @@ struct ScenePassConfig
     bool clearColor = true;
     bool clearDepth = true;
     float clearColorValue[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    float clearDepthValue = 1.0f;
+    float clearDepthValue = 0.0f;
 
     // Output settings for readback
     bool hasOwnRenderTarget = false; ///< If true, creates dedicated render target for this pass
@@ -724,6 +725,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
     [[nodiscard]] rhi::BindGroupHandle GetPerViewBindGroup() const;
+    [[nodiscard]] vk::ViewGlobalsBinding &GetViewGlobalsBinding();
     [[nodiscard]] rhi::BindGroupHandle GetEditorOverlayBindGroup() const;
 
     /// Build immutable lighting and shadow state owned by this camera graph.
@@ -1005,6 +1007,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     struct PerViewFrameState
     {
+        vk::ViewGlobalsBinding globals;
         vk::DescriptorLease geometryDescriptor;
         vk::DescriptorLease particleDescriptor;
         vk::DescriptorLease editorOverlayDescriptor;

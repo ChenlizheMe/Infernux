@@ -6,7 +6,7 @@ ShaderInfo {
 // Shaders importing this library declare Capabilities [Fullscreen, PassBuffers].
 // UV (0,0) is the upper-left pixel of this View; UV (1,1) is the lower-right.
 // Use the selected buffer's textureSize for pixel offsets at reduced resolution.
-// Depth is Vulkan device depth in [0,1]. Read these buffers only in graph
+// Device depth is reversed-Z: 1 at near, 0 at far. Read these buffers only in graph
 // passes ordered after their opaque producer; graph barriers own visibility.
 
 vec4 samplePassColor(vec2 uv) {

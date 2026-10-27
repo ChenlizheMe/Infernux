@@ -43,6 +43,7 @@ REQUIRED_TESTS = tuple('infernux.' + name for name in (
     'render_effect_group_order_gpu',
     'camera_commit_grade_screen_gpu',
     'camera_commit_grade_asset_gpu',
+    'view_globals_gpu',
     'shared_camera_forward_gpu',
     'shared_camera_forward_plus_gpu',
     'shared_camera_deferred_gpu',

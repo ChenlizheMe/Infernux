@@ -245,10 +245,6 @@ class FullscreenTestHost final : public FullscreenRendererHost
     {
         return {};
     }
-    rhi::BindGroupHandle GetCurrentGlobalsGroup() override
-    {
-        return {};
-    }
     rhi::ShaderModuleHandle AcquireShaderModule(const std::string &, rhi::ShaderStage stage, uint32_t,
                                                 uint32_t) override
     {
@@ -407,7 +403,7 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
                     builder.SetDepthTest(true);
                     builder.SetRenderArea(desc.width, desc.height);
                     return [&, pipeline, parameters](vk::RenderContext &render) {
-                        renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, {}, {}, parameters, 20);
+                        renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, {}, {}, {}, parameters, 20);
                     };
                 });
             }
@@ -524,7 +520,7 @@ static void CheckFullscreenSamples(vk::VkDeviceContext &context, VkCommandBuffer
         builder.SetDepthTest(true);
         builder.SetRenderArea(desc.width, desc.height);
         return [&, writePipeline](vk::RenderContext &ctx) {
-            writer.Draw(ctx.GetGraphicsCommandEncoder(), writePipeline, {}, {}, {}, 0);
+            writer.Draw(ctx.GetGraphicsCommandEncoder(), writePipeline, {}, {}, {}, {}, 0);
         };
     });
     key.shaderName = "sample-read";
@@ -548,7 +544,7 @@ static void CheckFullscreenSamples(vk::VkDeviceContext &context, VkCommandBuffer
                 {ctx.GetTextureView(depth), rhi::PixelFormat::D32SFloat, true}};
             const auto group = reader.AllocateBindGroup(readPipeline.inputLayout, inputs, 2, reader.GetLinearSampler());
             assert(group.IsValid());
-            reader.Draw(ctx.GetGraphicsCommandEncoder(), readPipeline, group, {}, {}, 0);
+            reader.Draw(ctx.GetGraphicsCommandEncoder(), readPipeline, group, {}, {}, {}, 0);
         };
     });
     rhi::BufferDesc buffer;
@@ -670,7 +666,7 @@ static void CheckFullscreenStorageRead(vk::VkDeviceContext &context, VkCommandBu
             input.byteSize = sourceDesc.byteSize;
             const auto group = renderer.AllocateBindGroup(pipeline.inputLayout, &input, 1, renderer.GetLinearSampler());
             assert(group.IsValid());
-            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, 0);
+            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, {}, 0);
         };
     });
     graph.AddTransferPass("storage-readback", [&](vk::PassBuilder &builder) {
@@ -834,7 +830,7 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
             const auto group =
                 renderer.AllocateBindGroup(pipeline.inputLayout, &resource, 1, renderer.GetLinearSampler());
             assert(group.IsValid());
-            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, 0);
+            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, {}, 0);
         };
     });
     graph.AddTransferPass("volume-readback", [&](vk::PassBuilder &builder) {

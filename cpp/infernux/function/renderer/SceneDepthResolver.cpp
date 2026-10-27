@@ -168,9 +168,9 @@ void main() {
     ivec2 pixel = ivec2(coordinate);
     float depth = texelFetch(source_depth, pixel, 0).r;
     for (uint sample_index = 1u; sample_index < pc.sample_count; ++sample_index) {
-        // Infernux currently uses conventional 0-near/1-far depth with LESS.
+        // Reversed-Z: the largest sample is the nearest covered surface.
         // The nearest covered sample gives conservative soft-particle edges.
-        depth = min(depth, texelFetch(source_depth, pixel, int(sample_index)).r);
+        depth = max(depth, texelFetch(source_depth, pixel, int(sample_index)).r);
     }
     imageStore(resolved_depth, pixel, vec4(depth, 0.0, 0.0, 1.0));
 }

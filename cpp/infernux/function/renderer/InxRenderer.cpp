@@ -1,5 +1,6 @@
 #include "InxRenderer.h"
 #include "CaptureService.h"
+#include <core/math/DepthConvention.h>
 // Explicit includes for all subsystem types that were forward-declared in
 // InxRenderer.h. These are required here so that unique_ptr destructors,
 // make_unique calls, and member-function calls all have complete types.
@@ -896,7 +897,7 @@ void InxRenderer::PreparePipeline()
                 if (view.scene && m_scenePickingService && m_scenePickingService->HasPendingRecord())
                     m_scenePickingService->Record(cmdBuf, m_sceneRenderTarget->GetWidth(),
                                                   m_sceneRenderTarget->GetHeight(), graph->GetPerViewBindGroup(),
-                                                  graph->GetCachedView());
+                                                  graph->GetViewGlobalsBinding(), graph->GetCachedView());
 #if INFERNUX_FRAME_PROFILE
                 const double elapsed =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -1012,9 +1013,9 @@ void InxRenderer::PreparePipeline()
                         graph->CommitCameraHistory();
                         if (sceneView && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
                             m_sceneRenderTarget) {
-                            m_scenePickingService->Record(commandBuffer, m_sceneRenderTarget->GetWidth(),
-                                                          m_sceneRenderTarget->GetHeight(),
-                                                          graph->GetPerViewBindGroup(), graph->GetCachedView());
+                            m_scenePickingService->Record(
+                                commandBuffer, m_sceneRenderTarget->GetWidth(), m_sceneRenderTarget->GetHeight(),
+                                graph->GetPerViewBindGroup(), graph->GetViewGlobalsBinding(), graph->GetCachedView());
                         }
                         return true;
                     },
@@ -1616,7 +1617,7 @@ void InxRenderer::DrawFrame()
     _fp.stamp(); // [7] after Outline+GraphBuild+UBO staging
 #endif
 
-    // Descriptor set 2 is shared by every render graph recorded this frame.
+    // Instance streams are shared by the camera-local descriptor sets.
     // Grow all instance streams before vkBeginCommandBuffer so a picking or
     // motion pass cannot rewrite an already-bound descriptor set.
     {
@@ -2251,28 +2252,7 @@ void InxRenderer::StageEngineGlobalsUBO()
     globals.sinTime = glm::vec4(std::sin(t / 20.0f), std::sin(t / 4.0f), std::sin(t * 2.0f), std::sin(t * 3.0f));
     globals.cosTime = glm::vec4(std::cos(t / 20.0f), std::cos(t / 4.0f), std::cos(t * 2.0f), std::cos(t * 3.0f));
 
-    // Screen params (from scene render target or window)
-    float w = 1.0f, h = 1.0f;
-    if (m_sceneRenderTarget && m_sceneRenderTarget->GetWidth() > 0) {
-        w = static_cast<float>(m_sceneRenderTarget->GetWidth());
-        h = static_cast<float>(m_sceneRenderTarget->GetHeight());
-    }
-    globals.screenParams = glm::vec4(w, h, 1.0f / w, 1.0f / h);
-
-    // Camera
-    globals.worldSpaceCameraPos = glm::vec4(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2], 1.0f);
-
-    float nearClip = 0.01f, farClip = 5000.0f;
-    Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
-    if (editorCam) {
-        nearClip = editorCam->GetNearClip();
-        farClip = editorCam->GetFarClip();
-    }
-    globals.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
-
-    // ZBuffer linearization helpers (reversed-Z compatible)
-    float fn = farClip / nearClip;
-    globals.zBufferParams = glm::vec4(1.0f - fn, fn, (1.0f - fn) / farClip, fn / farClip);
+    // Camera and screen fields are populated by each RenderView.
 
     // Frame
     float dt = m_deltaTime > kEpsilon ? m_deltaTime : kEpsilon;

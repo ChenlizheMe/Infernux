@@ -1423,9 +1423,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     }
     // Every geometry surface may use camera helpers, including an Unlit
     // surface that calls getViewDir() directly. The engine globals set is
-    // shared by Scene and Game graphs and is staged from the editor camera,
-    // so it is never a valid per-view camera source. Geometry fragments use
-    // the camera-local set-1 UBO regardless of their lighting model.
+    // camera-local, as is the set-1 lighting UBO used by geometry fragments.
     const bool needsCameraLocalView = !fullscreenDomain && !particleSpriteDomain && desc.isFragmentShader &&
                                       (desc.hasExplicitType || hasSurfaceFunc) && target != ShaderCompileTarget::Shadow;
     if (needsLightingUBO || needsCameraLocalView) {

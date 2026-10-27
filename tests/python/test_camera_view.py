@@ -100,11 +100,11 @@ def test_custom_view_ray_and_gizmo_match_rendered_projection(camera, orthographi
         origin, direction = np.array(tuple(origin)), np.array(tuple(direction))
         assert np.linalg.norm(direction) == pytest.approx(1)
         near_clip = vp @ np.append(origin, 1)
-        assert near_clip[2] / near_clip[3] == pytest.approx(0, abs=2e-6)
+        assert near_clip[2] / near_clip[3] == pytest.approx(1, abs=2e-6)
         for distance in (0, 5, 30):
             point = origin + direction * distance
             np.testing.assert_allclose(tuple(camera.world_to_screen_point(*point)), [x, y], atol=0.003)
     positions, indices = Camera._frustum_wire_geometry(camera.projection_matrix, camera.view_matrix, 1000)
     clips = np.column_stack((positions[:4], np.ones(4))) @ vp.T
-    np.testing.assert_allclose(clips[:, :3] / clips[:, 3:], [[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], atol=2e-6)
+    np.testing.assert_allclose(clips[:, :3] / clips[:, 3:], [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], atol=2e-6)
     assert indices.shape == (12, 2)

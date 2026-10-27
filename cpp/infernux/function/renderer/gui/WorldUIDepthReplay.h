@@ -46,7 +46,7 @@ struct WorldUIDepthReplay
             continue;
         if (source || !command || pass.type != GraphPassType::Raster || pass.commands.size() != 1 ||
             command->type != GraphCommandType::DrawRenderers || command->shaderTarget != ShaderCompileTarget::Forward ||
-            !pass.clearDepth || pass.clearDepthValue != 1.0f || command->rendererSelection ||
+            !pass.clearDepth || pass.clearDepthValue != 0.0f || command->rendererSelection ||
             !command->overrideMaterial.empty() || command->materialFilter != GraphMaterialFilter::All)
             return std::nullopt;
         source = WorldUIDepthReplay{pass.name, *command};

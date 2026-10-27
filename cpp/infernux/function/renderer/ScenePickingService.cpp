@@ -208,7 +208,8 @@ void ScenePickingService::DestroyTarget()
 }
 
 void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight,
-                                 rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix)
+                                 rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals,
+                                 const glm::mat4 &viewMatrix)
 {
     if (!m_hasPending || !m_core || commandBuffer == VK_NULL_HANDLE)
         return;
@@ -288,7 +289,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+    depthAttachment.clearValue.depthStencil = {0.0f, 0};
     VkRenderingInfo rendering{};
     rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     rendering.renderArea.extent = {target.width, target.height};
@@ -316,8 +317,8 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
-    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewMatrix, 0, 5000,
-                              "front_to_back", {}, {}, &pickingPass);
+    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewGlobals, viewMatrix, 0,
+                              5000, "front_to_back", {}, {}, &pickingPass);
     if (particleEntries && !particleEntries->empty()) {
         Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
         if (camera) {

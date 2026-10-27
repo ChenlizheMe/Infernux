@@ -215,6 +215,127 @@ def test_game_capture_is_resolved_before_component_update(engine, scene, button,
     assert down_samples == [(True, not occluded)]
 
 
+@pytest.mark.parametrize("button", [1, 2], ids=["look", "pan"])
+def test_scene_camera_keeps_captured_motion_on_gui_frames(engine, button):
+    from infernux.engine.ui.scene_view_panel import SceneViewPanel
+
+    manager = InputManager.instance()
+    panel = SceneViewPanel(engine=engine)
+    camera = engine.editor_camera
+    initial_position = tuple(camera.position)
+    initial_rotation = tuple(camera.rotation)
+    initial_focus = tuple(camera.focus_point)
+    initial_distance = float(camera.focus_distance)
+    state = {"frame": 0, "gui_motion": False}
+
+    class CameraInputView(InxGUIRenderable):
+        def on_render(self, ctx):
+            if manager.is_editor_mouse_capture_active:
+                state["gui_motion"] |= Input.get_mouse_delta() == (20.0, 5.0)
+                panel._process_camera_input(ctx, 1.0 / 60.0)
+
+    view = CameraInputView()
+
+    def on_update(_delta_time):
+        state["frame"] += 1
+        if state["frame"] == 1:
+            engine.queue_synthetic_mouse_button_input(button, True, 32.0, 32.0)
+        elif state["frame"] == 3:
+            manager.set_editor_mouse_capture(True)
+            panel._camera_capture_active = True
+            panel._was_right_down = button == 1
+            panel._was_middle_down = button == 2
+            engine.queue_synthetic_mouse_motion_input(32.0, 32.0, 20.0, 5.0)
+        elif state["frame"] == 5:
+            state["position"] = tuple(camera.position)
+            state["rotation"] = tuple(camera.rotation)
+            engine.queue_synthetic_mouse_button_input(button, False, 32.0, 32.0)
+        elif state["frame"] == 7:
+            engine.exit()
+
+    engine.register_gui_renderable("test.scene_camera_input", view)
+    try:
+        engine.set_pre_scene_update_callback(on_update)
+        engine.run()
+    finally:
+        engine.set_pre_scene_update_callback(None)
+        engine.unregister_gui_renderable("test.scene_camera_input")
+        manager.set_editor_mouse_capture(False)
+        panel._force_camera_input_release()
+        camera.restore_state(
+            *initial_position, *initial_focus, initial_distance, *initial_rotation,
+        )
+
+    assert state["gui_motion"], "Motion must share a frame with the editor GUI"
+    if button == 1:
+        assert state["rotation"] != pytest.approx(initial_rotation)
+        assert state["position"] == pytest.approx(initial_position)
+    else:
+        assert state["position"] != pytest.approx(initial_position)
+        assert state["rotation"] == pytest.approx(initial_rotation)
+
+
+@pytest.mark.parametrize("playing,focus", [(True, "Game"), (True, "Editor"), (False, "Game")])
+def test_game_keyboard_does_not_navigate_editor_controls(engine, playing, focus):
+    from infernux.engine.ui.imgui_keys import KEY_ENTER, KEY_F2, KEY_LEFT_CTRL, KEY_S, KEY_TAB
+
+    manager = InputManager.instance()
+    keys = {43: KEY_TAB, 59: KEY_F2, 224: KEY_LEFT_CTRL, 22: KEY_S, 40: KEY_ENTER}
+    observed = {"gui": set(), "game": set(), "text": "", "frame": 0, "renders": 0}
+    sent_at = None
+    deadline = time.monotonic() + 5.0
+
+    class KeyboardView(InxGUIRenderable):
+        def on_render(self, ctx):
+            for name in ("Game", "Editor"):
+                ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
+                ctx.set_next_window_size(64.0, 64.0, 0)
+                if name == focus:
+                    ctx.set_next_window_focus()
+                if ctx.begin_window(name + "###keyboard_" + name, True, 1 << 12):
+                    if name == "Game":
+                        manager.set_editor_game_viewport((0, 0, 64, 64), (0, 0, 64, 64))
+                    ctx.button(name + " control")
+                ctx.end_window()
+            observed["gui"].update(key for key in keys if ctx.is_key_pressed(keys[key]))
+            observed["renders"] += 1
+
+    view = KeyboardView()
+
+    def on_update(_delta_time):
+        nonlocal sent_at
+        observed["frame"] += 1
+        if sent_at is None and observed["renders"] >= 3:
+            sent_at = observed["frame"]
+            for key in keys:
+                engine.queue_synthetic_key_input(key, True)
+            engine.queue_synthetic_text_input("game-text")
+        elif sent_at is not None and observed["frame"] == sent_at + 2:
+            for key in keys:
+                engine.queue_synthetic_key_input(key, False)
+        elif observed["renders"] >= 7 or time.monotonic() >= deadline:
+            engine.exit()
+        observed["game"].update(key for key in keys if manager.get_game_key_down(key))
+        observed["text"] += manager.input_string
+
+    engine.register_gui_renderable("test.keyboard_ownership", view)
+    try:
+        manager.set_editor_cursor_capture_allowed(True)
+        engine.set_play_mode_rendering(playing)
+        engine.set_pre_scene_update_callback(on_update)
+        engine.run()
+    finally:
+        engine.set_pre_scene_update_callback(None)
+        engine.set_play_mode_rendering(False)
+        engine.unregister_gui_renderable("test.keyboard_ownership")
+        manager.set_editor_game_viewport((0, 0, 0, 0), (0, 0, 0, 0))
+        manager.reset_all()
+
+    assert observed["game"] == set(keys)
+    assert observed["text"] == "game-text"
+    assert observed["gui"] == (set() if playing and focus == "Game" else set(keys))
+
+
 def test_semantic_snapshot_request_captures_exactly_one_rendered_frame(engine):
     class _SemanticProbe(InxGUIRenderable):
         def on_render(self, ctx) -> None:

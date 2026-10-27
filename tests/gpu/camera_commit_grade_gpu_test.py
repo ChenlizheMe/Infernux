@@ -27,7 +27,7 @@ class GradePipeline(inx.renderstack.RenderPipeline):
         g.add_pass('ProduceGrade').write_color(graded).fullscreen_quad('Tutorial Commit Grade Source')
         exec(compile(commit[0],str(ROOT/'docs/learn/rendergraph-advanced.md'),'exec'),{'graph':g,'camera_color':color,'graded':graded})
         depth=g.create_texture('depth',format=f.D32_SFLOAT,samples=1)
-        g.add_pass('DrawAfterCommit').write_color(color).write_depth(depth).set_clear(depth=1).draw_renderers(queue_range=(0,2500))
+        g.add_pass('DrawAfterCommit').write_color(color).write_depth(depth).set_clear(depth=0.0).draw_renderers(queue_range=(0,2500))
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
     def render_camera(self,context,camera,culling):
         self.views[camera.component_id]={'graph_instance_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples),'visible_objects':int(culling.visible_object_count)}
@@ -77,7 +77,7 @@ def main():
                 if path==mesh:mesh_guid=imported.guid
             scene=SceneManager.instance().get_active_scene()
             for obj in scene.get_root_objects():scene.destroy_game_object(obj)
-            owner=scene.create_game_object('Commit Camera');owner.transform.position=Vector3(0,0,-5);producer=owner.add_component(inx.Camera);producer.culling_mask=1;producer.depth=1
+            owner=scene.create_game_object('Commit Camera');owner.transform.position=Vector3(0,0,-5);producer=owner.add_component(inx.Camera);producer.culling_mask=1;producer.depth=0.0
             router.producer_id=producer.component_id
             obj=scene.create_game_object('Draw After Commit');obj.transform.position=Vector3(-.4,0,0)
             renderer=obj.add_component(inx.MeshRenderer);renderer.set_mesh_asset_guid(mesh_guid)

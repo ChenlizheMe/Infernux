@@ -123,7 +123,7 @@ inline bool Run()
     GizmosDrawCallBuffer::IconMaterials materials;
     // Truth-only material route, never dereferenced by GetIconDrawCalls.
     materials.fallback = std::shared_ptr<InxMaterial>(reinterpret_cast<InxMaterial *>(1), [](InxMaterial *) {});
-    const auto projection = glm::perspective(glm::radians(60.0f), 1.0f, .1f, 100.0f);
+    const auto projection = glm::perspective(glm::radians(60.0f), 1.0f, 100.0f, .1f);
     auto icons = [&]() { return buffer.GetIconDrawCalls(materials, {0, 0, -10}, {1, 0, 0}, {0, 1, 0}, projection, 800, 1); };
     buffer.SetIconData({{{0, 0, 0}, 42}, {{1, 0, 0}, 0x10000002AULL}});
     auto iconDraws = icons();

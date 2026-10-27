@@ -1,3 +1,4 @@
+#include <core/math/DepthConvention.h>
 /**
  * @file GPUMeshPreview.cpp
  * @brief GPU mesh preview — renders an arbitrary InxMesh with per-submesh
@@ -122,6 +123,17 @@ struct FitCameraResult
     glm::vec3 cameraPos;
 };
 
+void SetPreviewDepthParams(UniformBufferObject &ubo, const glm::mat4 &projection)
+{
+    const auto inverse = glm::inverse(glm::dmat4(projection));
+    const auto nearPoint = inverse * glm::dvec4(0, 0, depth::Near, 1);
+    const auto farPoint = inverse * glm::dvec4(0, 0, depth::Far, 1);
+    const float nearClip = static_cast<float>(std::abs(nearPoint.z / nearPoint.w));
+    const float farClip = static_cast<float>(std::abs(farPoint.z / farPoint.w));
+    ubo.projectionParams = {nearClip, farClip, 1.0f / farClip, nearClip / farClip};
+    ubo.zBufferParams = depth::LinearizationParams(nearClip, farClip);
+}
+
 FitCameraResult FitCameraToBounds(const glm::vec3 &boundsMin, const glm::vec3 &boundsMax, float fovDeg)
 {
     const glm::vec3 center = (boundsMin + boundsMax) * 0.5f;
@@ -143,7 +155,7 @@ FitCameraResult FitCameraToBounds(const glm::vec3 &boundsMin, const glm::vec3 &b
     FitCameraResult result;
     result.cameraPos = cameraPos;
     result.view = glm::lookAt(cameraPos, lookAt, glm::vec3(0.0f, 1.0f, 0.0f));
-    result.proj = glm::perspective(glm::radians(fovDeg), 1.0f, distance * 0.01f, distance * 4.0f);
+    result.proj = glm::perspective(glm::radians(fovDeg), 1.0f, distance * 4.0f, distance * 0.01f);
     result.proj[1][1] *= -1.0f; // Vulkan Y-flip
     return result;
 }
@@ -342,8 +354,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     sceneUBO.proj = proj;
     sceneUBO.previousViewProj = proj * view;
     sceneUBO.inverseViewProj = glm::inverse(proj * view);
-    sceneUBO.projectionParams = glm::vec4(0.1f, 100.0f, 0.01f, 0.001f);
-    sceneUBO.zBufferParams = glm::vec4(-999.0f, 1000.0f, -9.99f, 10.0f);
+    SetPreviewDepthParams(sceneUBO, proj);
 
     // ── Lighting UBO ─────────────────────────────────────────────────
     ShaderLightingUBO lightingUBO{};
@@ -367,7 +378,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
 
     // ── Engine globals UBO ───────────────────────────────────────────
     EngineGlobalsUBO globalsUBO{};
-    memset(&globalsUBO, 0, sizeof(globalsUBO));
+    globalsUBO.projectionParams = sceneUBO.projectionParams;
+    globalsUBO.zBufferParams = sceneUBO.zBufferParams;
     globalsUBO.screenParams =
         glm::vec4(static_cast<float>(renderSize), static_cast<float>(renderSize), 1.0f / renderSize, 1.0f / renderSize);
     globalsUBO.worldSpaceCameraPos = glm::vec4(cameraPos, 1.0f);
@@ -436,7 +448,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     // ── Begin the RHI-selected graphics attachment path ─────────────
     VkClearValue clearValues[2];
     clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clearValues[1].depthStencil = {1.0f, 0};
+    clearValues[1].depthStencil = {0.0f, 0};
 
     vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
                                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -1073,8 +1085,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     sceneUBO.proj = proj;
     sceneUBO.previousViewProj = proj * view;
     sceneUBO.inverseViewProj = glm::inverse(proj * view);
-    sceneUBO.projectionParams = glm::vec4(0.1f, 100.0f, 0.01f, 0.001f);
-    sceneUBO.zBufferParams = glm::vec4(-999.0f, 1000.0f, -9.99f, 10.0f);
+    SetPreviewDepthParams(sceneUBO, proj);
 
     ShaderLightingUBO lightingUBO{};
     memset(&lightingUBO, 0, sizeof(lightingUBO));
@@ -1094,7 +1105,8 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     EngineGlobalsUBO globalsUBO{};
-    memset(&globalsUBO, 0, sizeof(globalsUBO));
+    globalsUBO.projectionParams = sceneUBO.projectionParams;
+    globalsUBO.zBufferParams = sceneUBO.zBufferParams;
     globalsUBO.screenParams =
         glm::vec4(static_cast<float>(renderSize), static_cast<float>(renderSize), 1.0f / renderSize, 1.0f / renderSize);
     globalsUBO.worldSpaceCameraPos = glm::vec4(cameraPos, 1.0f);
@@ -1170,7 +1182,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
 
     VkClearValue clearValues[2];
     clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clearValues[1].depthStencil = {1.0f, 0};
+    clearValues[1].depthStencil = {0.0f, 0};
     vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
                                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     if (m_depth.HasView()) {

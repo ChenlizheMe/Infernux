@@ -36,7 +36,7 @@ class DefaultProbePipeline(inx.renderstack.RenderPipeline):
         color = graph.create_texture("color", camera_target=True)
         depth = graph.create_texture("depth", format=inx.rendergraph.Format.D32_SFLOAT, samples=1)
         graph.add_pass("DefaultBindings").write_color(color).write_depth(depth).set_clear(
-            color=(0, 0, 0, 0), depth=1,
+            color=(0, 0, 0, 0), depth=0.0,
         ).draw_renderers(queue_range=(0, 2500))
         graph.screen_ui_section(resources={"color"})
         graph.set_output(color)

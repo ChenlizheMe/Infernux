@@ -84,16 +84,19 @@ class SceneViewCameraMixin:
         mouse_delta_x = 0.0
         mouse_delta_y = 0.0
         
-        if (right_down or middle_down) and not right_just_pressed and not middle_just_pressed:
-            if self._camera_capture_active:
-                mouse_delta_x, mouse_delta_y = mgr.consume_editor_mouse_delta()
-            else:
-                raw_dx = ctx.get_mouse_pos_x() - self._last_mouse_x
-                raw_dy = ctx.get_mouse_pos_y() - self._last_mouse_y
-                if abs(raw_dx) > 0.1:
-                    mouse_delta_x = raw_dx
-                if abs(raw_dy) > 0.1:
-                    mouse_delta_y = raw_dy
+        # SceneManager consumes captured motion once per engine frame.
+        if (
+            not self._camera_capture_active
+            and (right_down or middle_down)
+            and not right_just_pressed
+            and not middle_just_pressed
+        ):
+            raw_dx = ctx.get_mouse_pos_x() - self._last_mouse_x
+            raw_dy = ctx.get_mouse_pos_y() - self._last_mouse_y
+            if abs(raw_dx) > 0.1:
+                mouse_delta_x = raw_dx
+            if abs(raw_dy) > 0.1:
+                mouse_delta_y = raw_dy
 
         # Keep local tracking in sync for picking and non-captured deltas.
         self._last_mouse_x = ctx.get_mouse_pos_x()

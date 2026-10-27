@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <core/log/InxLog.h>
+#include <core/math/DepthConvention.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <limits>
@@ -186,10 +187,10 @@ SemanticTypeDescriptor DescribeCamera()
         {"camera.clear.skybox", "camera.clear.solid_color", "camera.clear.depth_only", "camera.clear.dont_clear"});
     type.fields.back().attributes["header"] = "camera.section.clear";
     add("background_color", "backgroundColor", "COLOR", {0.1, 0.1, 0.1, 1.0});
-    add("dithering", "dithering", "BOOL", false)["document_required"] = false;
     auto &stopNaNs = add("stop_nans", "stopNaNs", "BOOL", false);
     stopNaNs["header"] = "camera.section.output";
     stopNaNs["document_required"] = false;
+    add("dithering", "dithering", "BOOL", false)["document_required"] = false;
     auto &target = add("target_texture", "targetTextureGuid", "ASSET",
                        {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}});
     target["asset_type"] = "RenderTexture";
@@ -611,28 +612,28 @@ glm::mat4 Camera::GetProjectionMatrix() const
 
 void Camera::UpdateProjectionMatrix() const
 {
-    m_cachedProjection = BuildProjectionMatrix(m_aspectRatio);
+    m_cachedProjection = glm::mat4(BuildProjectionMatrix(m_aspectRatio));
     m_projectionDirty = false;
     m_inverseRayProjectionDirty = true;
 }
 
-glm::mat4 Camera::BuildProjectionMatrix(float aspect) const
+glm::dmat4 Camera::BuildProjectionMatrix(double aspect) const
 {
-    glm::mat4 projection;
+    glm::dmat4 projection;
     if (m_projectionMode == CameraProjection::Perspective && !m_usePhysicalProperties) {
-        float fovRad = glm::radians(m_fov);
-        projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
+        double fovRad = glm::radians(double(m_fov));
+        projection = glm::perspective<double>(fovRad, aspect, m_farClip, m_nearClip);
     } else if (m_projectionMode == CameraProjection::Orthographic) {
-        float halfWidth = m_orthoSize * aspect;
-        float halfHeight = m_orthoSize;
-        projection = glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, m_nearClip, m_farClip);
+        double halfWidth = m_orthoSize * aspect;
+        double halfHeight = m_orthoSize;
+        projection = glm::ortho<double>(-halfWidth, halfWidth, -halfHeight, halfHeight, m_farClip, m_nearClip);
     } else {
         // Physical camera. glm::perspective expects a vertical FOV, so derive
         // it from the selected film/resolution gate rather than passing the
         // horizontal FOV directly (which distorts wide and portrait views).
-        const float sensorWidth = std::max(m_sensorSize.x, 0.001f);
-        const float sensorHeight = std::max(m_sensorSize.y, 0.001f);
-        const float sensorAspect = sensorWidth / sensorHeight;
+        const double sensorWidth = std::max(m_sensorSize.x, 0.001f);
+        const double sensorHeight = std::max(m_sensorSize.y, 0.001f);
+        const double sensorAspect = sensorWidth / sensorHeight;
         bool fitVertical = false;
         switch (m_gateFit) {
         case PhysicalGateFit::Vertical:
@@ -651,11 +652,11 @@ glm::mat4 Camera::BuildProjectionMatrix(float aspect) const
             fitVertical = true;
             break;
         }
-        const float gateWidth =
+        const double gateWidth =
             m_gateFit == PhysicalGateFit::None ? sensorWidth : (fitVertical ? sensorHeight * aspect : sensorWidth);
-        const float gateHeight = m_gateFit == PhysicalGateFit::None ? sensorHeight : gateWidth / aspect;
-        const float fovRad = 2.0f * std::atan(gateHeight / (2.0f * m_focalLength));
-        projection = glm::perspective(fovRad, aspect, m_nearClip, m_farClip);
+        const double gateHeight = m_gateFit == PhysicalGateFit::None ? sensorHeight : gateWidth / aspect;
+        const double fovRad = 2.0f * std::atan(gateHeight / (2.0f * m_focalLength));
+        projection = glm::perspective<double>(fovRad, aspect, m_farClip, m_nearClip);
         projection[2][0] += m_lensShift.x * 2.0f * sensorWidth / gateWidth;
         projection[2][1] += m_lensShift.y * 2.0f * sensorHeight / gateHeight;
     }
@@ -688,8 +689,8 @@ const glm::dmat4 &Camera::GetInverseRayProjection(float aspect) const
     if (m_inverseRayProjectionDirty || m_rayProjectionAspect != aspect) {
         // Explicit viewport dimensions change the default aspect only; an
         // authored asymmetric/oblique override remains authoritative.
-        m_inverseRayProjection = glm::inverse(
-            glm::dmat4(!m_projectionOverride && aspect != m_aspectRatio ? BuildProjectionMatrix(aspect) : projection));
+        m_inverseRayProjection =
+            glm::inverse(!m_projectionOverride ? BuildProjectionMatrix(aspect) : glm::dmat4(projection));
         m_rayProjectionAspect = aspect;
         m_inverseRayProjectionDirty = false;
     }
@@ -711,12 +712,12 @@ glm::mat4 Camera::CalculateObliqueMatrix(const glm::vec4 &clipPlane) const
     double maximum = 0.0;
     for (double x : {-1.0, 1.0})
         for (double y : {-1.0, 1.0})
-            maximum = std::max(maximum, glm::dot(plane, inverse * glm::dvec4(x, y, 1.0, 1.0)));
+            maximum = std::max(maximum, glm::dot(plane, inverse * glm::dvec4(x, y, depth::Far, 1.0)));
     if (maximum <= 0.0)
         throw std::invalid_argument("Camera oblique clip plane excludes the complete far plane");
     const glm::vec4 nearRow(plane / maximum);
     for (int column = 0; column < 4; ++column)
-        projection[column][2] = nearRow[column]; // z >= 0, not z >= -w.
+        projection[column][2] = projection[column][3] - nearRow[column];
     return projection;
 }
 
@@ -785,12 +786,12 @@ std::pair<glm::vec3, glm::vec3> Camera::ScreenPointToRay(const glm::vec2 &screen
     const auto &inverse = GetInverseRayProjection(viewportWidth / viewportHeight);
     const double x = 2.0 * screenPos.x / viewportWidth - 1.0;
     const double y = 2.0 * screenPos.y / viewportHeight - 1.0;
-    const glm::dvec4 nearH = inverse * glm::dvec4(x, y, 0.0, 1.0);
+    const glm::dvec4 nearH = inverse * glm::dvec4(x, y, depth::Near, 1.0);
     const glm::dvec4 middleH = inverse * glm::dvec4(x, y, 0.5, 1.0);
     if (nearH.w == 0.0 || middleH.w == 0.0)
         throw std::invalid_argument("Camera ray has no finite origin in this projection");
     const auto nearPoint = glm::dvec3(nearH) / nearH.w;
-    // Never unproject z=1 to build the ray: far can legitimately be at infinity.
+    // The far plane (z=0) can be at infinity; use an interior point.
     const auto direction = glm::normalize(glm::dvec3(middleH) / middleH.w - nearPoint);
     const auto cameraToWorld = GetCameraToWorldMatrix();
     return {glm::vec3(cameraToWorld * glm::vec4(glm::vec3(nearPoint), 1.0f)),

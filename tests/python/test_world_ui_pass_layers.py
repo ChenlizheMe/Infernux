@@ -14,7 +14,7 @@ def make_graph():
     graph.create_texture("color", format=rg.Format.RGBA16_SFLOAT)
     graph.create_texture("depth", format=rg.Format.D32_SFLOAT)
     graph.add_pass("Opaque").write_color("color").write_depth("depth").set_clear(
-        color=(0.0, 0.0, 0.0, 1.0), depth=1.0
+        color=(0.0, 0.0, 0.0, 1.0), depth=0.0
     ).draw_renderers()
     graph.set_output("color")
     return graph

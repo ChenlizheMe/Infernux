@@ -136,7 +136,7 @@ class OutlineRenderer
 
     /// @brief Record selected-object draws inside the active graph mask pass.
     void RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls,
-                         rhi::BindGroupHandle perViewGroup);
+                         rhi::BindGroupHandle perViewGroup, VkBuffer viewGlobalsBuffer);
 
     /// @brief Record the fullscreen edge composite inside the active graph pass.
     void RecordCompositeDraw(VkCommandBuffer cmdBuf);

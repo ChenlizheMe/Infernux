@@ -933,7 +933,7 @@ int main(int argc, char **argv)
         uint32_t frameSlot = 0;
         uint32_t cullingMask = 0xffffffffu;
         bool isolateSlots = false;
-        float clearDepth = 1.0f;
+        float clearDepth = 0.0f;
         double renderMs = 0;
         InxScreenUIRenderer *activeRenderer = &renderer;
         vk::RenderGraph graph;
@@ -1059,13 +1059,13 @@ int main(int argc, char **argv)
             return std::array<uint8_t, 4>{readback[policySample], readback[policySample + 1],
                                           readback[policySample + 2], readback[policySample + 3]};
         };
-        clearDepth = 0.0f;
+        clearDepth = 1.0f;
         buildGraph();
         const auto hiddenByScene = drawWorldPolicy(false);
         const auto overScene = drawWorldPolicy(true);
         assert(hiddenByScene[3] == 0);
         assert(overScene[0] == 0 && overScene[1] == 255 && overScene[3] == 255);
-        clearDepth = 1.0f;
+        clearDepth = 0.0f;
         buildGraph();
         const auto defaultAgain = drawWorldPolicy(false);
         assert(defaultAgain[0] == 255 && defaultAgain[1] == 0 && defaultAgain[3] == 255);
@@ -1112,7 +1112,7 @@ int main(int argc, char **argv)
             assert(device.ReadBuffer(output, 0, image.data(), image.size()));
             return worldBounds(image);
         };
-        cameraProjection = glm::perspectiveRH_ZO(glm::radians(90.f), 1.f, .1f, 10.f);
+        cameraProjection = glm::perspectiveRH_ZO(glm::radians(90.f), 1.f, 10.f, .1f);
         camera = cameraProjection * cameraView;
         buildGraph();
         const auto nearPixels = cameraPolicyBounds(2.f, true, true, true);
@@ -1136,7 +1136,7 @@ int main(int argc, char **argv)
         assert(sideCameraPixels == nearPixels);
         cameraView = glm::mat4(1.f);
         billboardView = cameraView;
-        cameraProjection = glm::orthoRH_ZO(-1.f, 1.f, -1.f, 1.f, .1f, 10.f);
+        cameraProjection = glm::orthoRH_ZO(-1.f, 1.f, -1.f, 1.f, 10.f, .1f);
         camera = cameraProjection * cameraView;
         buildGraph();
         assert(cameraPolicyBounds(2.f, true, true, true) == cameraPolicyBounds(4.f, true, true, true));
@@ -1164,7 +1164,9 @@ int main(int argc, char **argv)
             assert(device.ReadBuffer(output, 0, image.data(), image.size()));
             return worldBounds(image);
         };
-        clearDepth = .7f;
+        camera[2][2] = -1;
+        camera[3][2] = 1;
+        clearDepth = .3f;
         buildGraph();
         for (bool billboard : {false, true}) {
             const auto visible = worldTextPacket(billboard, 0);
@@ -1188,7 +1190,8 @@ int main(int argc, char **argv)
                 assert(readWorldText() == farText);
             }
         }
-        clearDepth = 1.f;
+        camera = glm::mat4(1.f);
+        clearDepth = 0.f;
         buildGraph();
 
         // A retained UI packet carries an asset identity contract alongside

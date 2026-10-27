@@ -1949,7 +1949,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     //   CW winding is front-facing. From inside the cube the camera sees indices
     //   wound CW → front faces. Back-face culling removes the outside faces.
     // - No depth write (skybox should always be behind everything)
-    // - Depth test <= (skybox writes z=1.0, passes only where nothing closer exists)
+    // - Logical depth test <= maps to reversed-Z >= at the pipeline boundary (sky z=0)
     // - renderQueue = EngineConfig::skyboxQueue (last; after opaque+transparent
     //   and outside the shadow-caster range so it never casts shadows)
     RenderState state;

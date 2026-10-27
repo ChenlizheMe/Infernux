@@ -39,7 +39,7 @@ class ParticleMotionPipeline(RenderPipeline):
         depth = graph.create_texture("depth", format=Format.D32_SFLOAT, samples=1)
         motion = graph.create_texture("motion", format=Format.RG16_SFLOAT, samples=1)
         graph.add_pass("Particles").write_color(source).write_depth(depth).set_clear(
-            color=(0, 0, 0, 0), depth=1,
+            color=(0, 0, 0, 0), depth=0.0,
         ).draw_renderers()
         graph.add_pass("ParticleMotion").read(depth).write_color(motion).set_clear(
             color=(0, 0, 0, 0),

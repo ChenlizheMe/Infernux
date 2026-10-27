@@ -276,6 +276,35 @@ def test_imported_non_looping_clip_cannot_be_forced_to_wrap_by_fsm(monkeypatch):
     assert outgoing["weight"] == incoming["weight"] == pytest.approx(0.5)
 
 
+@pytest.mark.parametrize("explicit_stop", [False, True])
+def test_completed_state_can_transition_when_landing_arrives_later(monkeypatch, explicit_stop):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    owner = _HierarchyOwner(renderer=_RendererBinding(native))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    grounded = AnimParameter(name="grounded", value_type=TypeRef(ValueType.BOOL), default=False)
+    jump = AnimState(name="Jump", loop=False, transitions=[AnimTransition(
+        target_state="Idle", duration=.2, conditions=[_condition(grounded)],
+    )])
+    animator._fsm = AnimStateMachine(
+        states=[jump, AnimState(name="Idle")], default_state="Jump", parameters=[grounded],
+    )
+    animator._clip_cache = {"Jump": _FakeClip("Jump", duration_hint=1.0), "Idle": _FakeClip("Idle")}
+    assert animator.play("Jump")
+    animator.update(1.1)
+    assert animator.current_state == "Jump" and not animator.is_playing
+    animator.update(.2)
+    assert animator._elapsed == 1.0
+    if explicit_stop:
+        animator.stop()
+    animator.set_bool("grounded", True)
+    animator.update(.1)
+    assert animator.current_state == ("Jump" if explicit_stop else "Idle")
+    assert animator.is_playing is not explicit_stop
+    if not explicit_stop:
+        assert animator._blend_from_elapsed == 1.0
+
+
 def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
     animator = _make_animator()
     stale = _RendererBinding(None)

@@ -339,7 +339,7 @@ class Camera : public Component
 
     /// @brief Get projection matrix
     [[nodiscard]] glm::mat4 GetProjectionMatrix() const;
-    /// Runtime override in engine clip space: left-handed, depth [0,1], Y down.
+    /// Runtime override in engine clip space: left-handed, reversed depth [1 near, 0 far], Y down.
     /// Authoring FOV/clip/aspect settings resume when the override is reset.
     void SetProjectionMatrix(const glm::mat4 &projection);
     void ResetProjectionMatrix();
@@ -361,7 +361,7 @@ class Camera : public Component
     // Utility
     // ========================================================================
 
-    /// @brief Convert screen coordinates to world ray
+    /// Unproject top-left screen pixels at device depth (1 near, 0 far).
     [[nodiscard]] glm::vec3 ScreenToWorldPoint(const glm::vec2 &screenPos, float depth = 0.0f) const;
 
     /// @brief Convert world position to screen coordinates
@@ -380,7 +380,7 @@ class Camera : public Component
     void AssignTargetTexture(std::shared_ptr<rhi::RenderTexture> target, const std::string &guid);
     void InvalidateOutput();
     void UpdateProjectionMatrix() const;
-    [[nodiscard]] glm::mat4 BuildProjectionMatrix(float aspect) const;
+    [[nodiscard]] glm::dmat4 BuildProjectionMatrix(double aspect) const;
     [[nodiscard]] const glm::dmat4 &GetInverseRayProjection(float aspect) const;
 
     CameraProjection m_projectionMode = CameraProjection::Perspective;

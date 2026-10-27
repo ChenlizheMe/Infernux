@@ -116,7 +116,7 @@ class WhiteBalancePipeline(RenderPipeline):
         graph.set_msaa_samples(1)
         source = graph.create_texture('input', format=Format.RGBA16_SFLOAT, samples=1)
         depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
-        graph.add_pass('Color patches').write_color(source).write_depth(depth).set_clear(depth=1.).fullscreen_quad('White Balance Acceptance Input')
+        graph.add_pass('Color patches').write_color(source).write_depth(depth).set_clear(depth=0.0).fullscreen_quad('White Balance Acceptance Input')
         bus = ResourceBus({'color': source}, graph=graph)
         if self.use_effect:
             if self.library:

@@ -24,7 +24,7 @@ ShaderInfo {
 }
 void main() {
     float forwardHit = texture(coverageColor, inUV).r > 0.9 ? 1.0 : 0.0;
-    float depthHit = texture(coverageDepth, inUV).r < 1.0 ? 1.0 : 0.0;
+    float depthHit = texture(coverageDepth, inUV).r > 0.0 ? 1.0 : 0.0;
     outColor = vec4(forwardHit, depthHit, abs(forwardHit - depthHit), 1.0);
 }
 '''
@@ -54,8 +54,8 @@ class DepthCoveragePipeline(RenderPipeline):
         forward_depth = graph.create_texture('forward_depth', format=Format.D32_SFLOAT, samples=1)
         depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
         graph.add_pass('Forward coverage').write_color(forward).write_depth(forward_depth).set_clear(
-            color=(0,0,0,0), depth=1.).draw_renderers(material_pass='forward')
-        graph.add_pass('Depth coverage').write_depth(depth).set_clear(depth=1.).draw_renderers(material_pass='depth')
+            color=(0,0,0,0), depth=0.0).draw_renderers(material_pass='forward')
+        graph.add_pass('Depth coverage').write_depth(depth).set_clear(depth=0.0).draw_renderers(material_pass='depth')
         graph.add_pass('Compare coverage').write_color(color).set_texture('coverageColor', forward).set_texture(
             'coverageDepth', depth).fullscreen_quad('Surface Discard Depth Monitor')
         graph.screen_ui_section(resources={'color'})

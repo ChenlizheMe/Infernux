@@ -38,7 +38,7 @@ class ContractPipeline(inx.renderstack.RenderPipeline):
         color=g.create_texture('surface',format=f.RGBA16_SFLOAT,samples=1)
         normal=g.create_texture('normal',format=f.RGBA16_SFLOAT,samples=1)
         base=g.create_texture('base',format=f.RGBA16_SFLOAT,samples=1)
-        g.add_pass('LitSurface').write_color(color).write_depth(depth).set_clear(color=(0,0,0,0),depth=1).draw_renderers(queue_range=(0,2500))
+        g.add_pass('LitSurface').write_color(color).write_depth(depth).set_clear(color=(0,0,0,0),depth=0.0).draw_renderers(queue_range=(0,2500))
         for name,texture,material_pass in [('Normal',normal,'normal'),('Base',base,'base_color')]:
             g.add_pass(name).read(depth).write_color(texture).set_clear(color=(0,0,0,0)).draw_renderers(queue_range=(0,2500),material_pass=material_pass)
         target=g.create_texture('color',camera_target=True)

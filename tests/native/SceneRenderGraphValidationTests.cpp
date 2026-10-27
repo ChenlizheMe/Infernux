@@ -51,7 +51,7 @@ void CheckWorldUIDepthReplay()
     invalid.passes[0].clearDepth = false;
     assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
-    invalid.passes[0].clearDepthValue = 0.0f;
+    invalid.passes[0].clearDepthValue = 1.0f;
     assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].commands[0].type = GraphCommandType::FullscreenQuad;

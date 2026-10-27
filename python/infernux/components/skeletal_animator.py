@@ -114,6 +114,7 @@ class SkeletalAnimator(InxComponent):
     _group_weights: list[float] = per_instance(list)
     _elapsed: float = 0.0
     _playing: bool = False
+    _state_completed: bool = False
     _playback_revision: int = 0
     _blend_from_clip: Optional[AnimationClip3D] = None
     _blend_from_take_name: str = ""
@@ -147,6 +148,7 @@ class SkeletalAnimator(InxComponent):
         self._group_weights = []
         self._elapsed = 0.0
         self._playing = False
+        self._state_completed = False
         self._update_accum = 0.0
         self._skinned_renderers = []
         self._native_renderers = []
@@ -177,10 +179,14 @@ class SkeletalAnimator(InxComponent):
                 return
             delta_time = self._update_accum
             self._update_accum = 0.0
+        if not self._playing:
+            if self._state_completed:
+                self._try_auto_transition()
+            return
         if self._current_timeline is not None:
             self._update_timeline(delta_time)
             return
-        if not self._playing or not self._current_clip:
+        if not self._current_clip:
             return
 
         if self._current_state.kind == "group":
@@ -223,6 +229,7 @@ class SkeletalAnimator(InxComponent):
                 self._try_auto_transition()
                 if self._playback_revision == playback_revision:
                     self._playing = False
+                    self._state_completed = True
                 self._sync_native_runtime_playback()
                 return
         else:
@@ -364,6 +371,7 @@ class SkeletalAnimator(InxComponent):
     def stop(self):
         self._playback_revision += 1
         self._playing = False
+        self._state_completed = False
         self._clear_blend_state()
         self._last_native_pose_key = None
         self._sync_native_runtime_playback()
@@ -570,6 +578,7 @@ class SkeletalAnimator(InxComponent):
                     else:
                         self._elapsed = dur
                         self._playing = False
+                        self._state_completed = True
                     self._apply_timeline(tl, self._elapsed)
                 return
         self._apply_timeline(tl, self._elapsed)
@@ -650,6 +659,7 @@ class SkeletalAnimator(InxComponent):
         self._try_auto_transition()
         if self._playback_revision == revision and not state.loop and self._elapsed >= duration:
             self._playing = False
+            self._state_completed = True
         self._sync_native_runtime_playback()
 
     def _enter_state(
@@ -686,6 +696,7 @@ class SkeletalAnimator(InxComponent):
             self._elapsed = 0.0
             self._prev_event_norm = 0.0
             self._playing = True
+            self._state_completed = False
             self._capture_timeline_base()  # additive deltas apply on top of this
             self._last_timeline_pose = None
             self._apply_timeline(self._current_timeline, 0.0)
@@ -693,7 +704,7 @@ class SkeletalAnimator(InxComponent):
             return True
 
         previous_state = self._get_current_state()
-        previous_clip = self._current_clip if self._playing else None
+        previous_clip = self._current_clip if self._playing or self._state_completed else None
         previous_elapsed = self._elapsed
         previous_speed = self._clip_effective_speed(previous_state, previous_clip)
 
@@ -723,6 +734,7 @@ class SkeletalAnimator(InxComponent):
         self._elapsed = next_elapsed
         self._prev_event_norm = (next_elapsed / self._clip_duration(clip)) if next_elapsed > 0.0 else None
         self._playing = True
+        self._state_completed = False
         self._sample_imported_curves(clip, self.normalized_time)
         self._sync_native_runtime_playback()
         return True

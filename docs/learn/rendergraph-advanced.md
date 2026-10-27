@@ -97,7 +97,7 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
 
         with graph.add_pass("DepthPrepass") as render_pass:
             render_pass.write_depth(depth)
-            render_pass.set_clear(depth=1.0)
+            render_pass.set_clear(depth=0.0)
             render_pass.draw_renderers(
                 queue_range=(0, 2500),
                 sort_mode="front_to_back",
@@ -169,7 +169,7 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         ) as render_pass:
             render_pass.write_depth(context.sample("depth"))
             render_pass.write_color(target)
-            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=0.0)
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
@@ -207,7 +207,7 @@ object_index = self.sample_buffer(result, requested)
 
 A `PassResult` is a source-scoped map from semantic names such as `color`, `depth`, `normal`, and `motion` to texture handles. `source` must be unique within one graph build. The graph assigns an increasing `revision` each time it publishes or derives a result.
 
-In the built-in Forward and Forward+ pipelines, an effect requiring `normal` or `motion` causes a raster pass after opaque depth is complete. The pass tests against that View's opaque depth without changing it. `normal` is encoded world-space XYZ in `[0,1]` with alpha `1` on covered samples and `0` on the cleared background; `motion` is current minus previous screen UV, so previous UV is `uv - motion`. `color`, `depth`, `normal`, and `motion` use the View render resolution. With MSAA, normal and motion raster targets match the depth sample count and their published handles are single-sample color resolves; normal alpha may be fractional at coverage edges. A fullscreen `Texture2D` depth input resolves to the nearest covered sample (minimum device depth). The `PassBuffers` shader helpers in `lib/pass_buffers.glsl` take upper-left-origin UVs, reconstruct world position from Vulkan `[0,1]` device depth and this View's inverse view-projection, and use the selected buffer's size for pixel motion. Sample these resources in an effect stage after their producer, such as `after_opaque`; an unavailable semantic fails binding instead of supplying a previous frame.
+In the built-in Forward and Forward+ pipelines, an effect requiring `normal` or `motion` causes a raster pass after opaque depth is complete. The pass tests against that View's opaque depth without changing it. `normal` is encoded world-space XYZ in `[0,1]` with alpha `1` on covered samples and `0` on the cleared background; `motion` is current minus previous screen UV, so previous UV is `uv - motion`. `color`, `depth`, `normal`, and `motion` use the View render resolution. With MSAA, normal and motion raster targets match the depth sample count and their published handles are single-sample color resolves; normal alpha may be fractional at coverage edges. A fullscreen `Texture2D` depth input resolves to the nearest covered sample (maximum device depth, because cameras use reversed-Z). The `PassBuffers` shader helpers in `lib/pass_buffers.glsl` take upper-left-origin UVs, reconstruct world position from Vulkan `[0,1]` device depth and this View's inverse view-projection, and use the selected buffer's size for pixel motion. Sample these resources in an effect stage after their producer, such as `after_opaque`; an unavailable semantic fails binding instead of supplying a previous frame.
 
 ```python
 before = self.publish_result(
@@ -351,7 +351,7 @@ depth = graph.create_texture(
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(color)
     render_pass.write_depth(depth)
-    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=0.0)
     if samples > 1:
         render_pass.write_resolve(resolved)
     render_pass.draw_renderers(queue_range=(0, 2500))
@@ -375,7 +375,7 @@ selection.set(target_renderer, parameters=parameters)
 with graph.add_pass("SelectedMask") as p:
     p.write_color(mask)
     p.write_depth(mask_depth)
-    p.set_clear(color=(0, 0, 0, 0), depth=1.0)
+    p.set_clear(color=(0, 0, 0, 0), depth=0.0)
     p.draw_renderers(renderer_selection=selection)
 ```
 
@@ -470,7 +470,7 @@ For a per-sample fullscreen effect, use `gl_SampleID` and `gl_SamplePosition`, w
 
 The root pipeline's viewport-sized `depth` is the conventional Camera depth attachment. Other depth texture names create independent images, even when their dimensions match the viewport; use separate names for an object's mask depth or a depth snapshot. Fixed-size, reduced-size and imported RenderTexture depth keep their own resource identity.
 
-`depth_test` accepts `DepthCompare` values such as `LESS_EQUAL` or `ALWAYS`; `None` disables it. Depth writes require a comparison, including `ALWAYS` for unconditional writes. A fragment shader can write `gl_FragDepth` in the current Vulkan view's device-depth range (0–1), not linear eye depth. Assign it on every non-discarded path when overriding depth.
+`depth_test` accepts `DepthCompare` values such as `LESS_EQUAL` or `ALWAYS`; `None` disables it. Depth writes require a comparison, including `ALWAYS` for unconditional writes. A fragment shader can write `gl_FragDepth` in the current Vulkan view's reversed device-depth range (1 at near, 0 at far), not linear eye depth. Clear scene and shadow depth to `0.0`. Material and graph `LESS_EQUAL` comparisons retain the logical “closer or equal” meaning and map to a GPU greater-or-equal test; low-level RHI comparisons use raw device values. Assign it on every non-discarded path when overriding depth.
 
 Alpha blending uses straight-alpha source-over: `src.rgb * src.a + dst.rgb * (1-src.a)` and `src.a + dst.a * (1-src.a)`. Do not pre-composite the background into the shader's output. Blending and depth-tested passes preserve earlier color unless explicitly cleared; new transient attachments require a clear or an earlier producer. Non-fullscreen consumers of multisampled color still require a resolved input, such as one produced with `write_resolve()`. These states belong to the ordinary graph; no effect-specific engine renderer is needed.
 
@@ -623,7 +623,7 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
 
         with graph.add_pass("DepthPrepass") as render_pass:
             render_pass.write_depth(depth)
-            render_pass.set_clear(depth=1.0)
+            render_pass.set_clear(depth=0.0)
             render_pass.draw_renderers(
                 queue_range=(0, 2500),
                 sort_mode="front_to_back",
@@ -695,7 +695,7 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         ) as render_pass:
             render_pass.write_depth(context.sample("depth"))
             render_pass.write_color(target)
-            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=0.0)
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
@@ -733,7 +733,7 @@ object_index = self.sample_buffer(result, requested)
 
 `PassResult` 是带 Source 作用域的语义映射，把 `color`、`depth`、`normal`、`motion` 等名称指向 Texture Handle。`source` 在一次 Graph 构建中必须唯一。每次发布或派生 Result 时，Graph 都会分配递增的 `revision`。
 
-内置 Forward 与 Forward+ 管线中，Effect 声明需要 `normal` 或 `motion` 时，会在当前 View 的不透明深度完成后生成光栅 Pass；这些 Pass 读取深度进行测试，不改写深度。`normal` 的 RGB 是映射到 `[0,1]` 的世界空间法线，覆盖采样点的 A 为 `1`，清空背景为 `0`；`motion` 为当前屏幕 UV 减去前一帧屏幕 UV，因此前一帧 UV 是 `uv - motion`。`color`、`depth`、`normal`、`motion` 都使用 View 渲染分辨率。启用 MSAA 时，法线与运动的绘制目标与深度采样数一致，对外发布的是单采样颜色 Resolve；覆盖边缘的法线 A 可能是分数。全屏 `Texture2D` 深度输入解析为最近的覆盖采样点（最小设备深度）。`lib/pass_buffers.glsl` 的 `PassBuffers` 帮助函数使用左上角为原点的 UV、Vulkan `[0,1]` 设备深度及当前 View 的逆视图投影矩阵重建世界坐标，像素运动量按所选纹理尺寸换算。应在生产者之后的 EffectStage（如 `after_opaque`）采样；语义缺失时报绑定错误，不会提供旧帧资源。
+内置 Forward 与 Forward+ 管线中，Effect 声明需要 `normal` 或 `motion` 时，会在当前 View 的不透明深度完成后生成光栅 Pass；这些 Pass 读取深度进行测试，不改写深度。`normal` 的 RGB 是映射到 `[0,1]` 的世界空间法线，覆盖采样点的 A 为 `1`，清空背景为 `0`；`motion` 为当前屏幕 UV 减去前一帧屏幕 UV，因此前一帧 UV 是 `uv - motion`。`color`、`depth`、`normal`、`motion` 都使用 View 渲染分辨率。启用 MSAA 时，法线与运动的绘制目标与深度采样数一致，对外发布的是单采样颜色 Resolve；覆盖边缘的法线 A 可能是分数。全屏 `Texture2D` 深度输入解析为最近的覆盖采样点（reversed-Z 中的最大设备深度）。`lib/pass_buffers.glsl` 的 `PassBuffers` 帮助函数使用左上角为原点的 UV、Vulkan `[0,1]` 设备深度及当前 View 的逆视图投影矩阵重建世界坐标，像素运动量按所选纹理尺寸换算。应在生产者之后的 EffectStage（如 `after_opaque`）采样；语义缺失时报绑定错误，不会提供旧帧资源。
 
 ```python
 before = self.publish_result(
@@ -877,7 +877,7 @@ depth = graph.create_texture(
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(color)
     render_pass.write_depth(depth)
-    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=0.0)
     if samples > 1:
         render_pass.write_resolve(resolved)
     render_pass.draw_renderers(queue_range=(0, 2500))
@@ -901,7 +901,7 @@ selection.set(target_renderer, parameters=parameters)
 with graph.add_pass("SelectedMask") as p:
     p.write_color(mask)
     p.write_depth(mask_depth)
-    p.set_clear(color=(0, 0, 0, 0), depth=1.0)
+    p.set_clear(color=(0, 0, 0, 0), depth=0.0)
     p.draw_renderers(renderer_selection=selection)
 ```
 

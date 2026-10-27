@@ -11,6 +11,7 @@
 #include "VkTextureCache.h"
 #include "rhi/GpuRetirementQueue.h"
 #include "rhi/RhiComputeBuffer.h"
+#include "vk/ViewGlobalsBinding.h"
 #include "vk/VkCore.h"
 #include "vk/VulkanBindlessTextureTable.h"
 #include "vk/VulkanComputeQueue.h"
@@ -307,8 +308,9 @@ class InxVkCoreModular
      * @param overrideMaterial If non-empty, all objects use this material name
      */
     void DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, rhi::BindGroupHandle perViewGroup,
-                           const glm::mat4 &viewMatrix, int queueMin, int queueMax, const std::string &sortMode = "",
-                           const std::string &overrideMaterial = "", const std::string &passTag = "",
+                           vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix, int queueMin, int queueMax,
+                           const std::string &sortMode = "", const std::string &overrideMaterial = "",
+                           const std::string &passTag = "",
                            const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr,
                            GraphMaterialFilter materialFilter = GraphMaterialFilter::All,
                            const RendererSelection *selection = nullptr, uint64_t excludedObjectId = 0,
@@ -340,8 +342,9 @@ class InxVkCoreModular
     void DestroyShadowCameraResources(ShadowCameraResourceId resourceId) noexcept;
 
     void DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
-                           ShadowCameraResourceId resourceId, const lighting::ShadowFrame &shadowFrame,
-                           int lightIndex = 0, VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+                           ShadowCameraResourceId resourceId, VkBuffer viewGlobalsBuffer,
+                           const lighting::ShadowFrame &shadowFrame, int lightIndex = 0,
+                           VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
                            const ShadowViewDrawCallback &additionalDraws = {});
 
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
@@ -363,27 +366,17 @@ class InxVkCoreModular
     /// @brief Stage per-frame engine globals (called by InxRenderer each frame).
     void StageGlobals(const EngineGlobalsUBO &globals);
 
+    [[nodiscard]] const EngineGlobalsUBO &GetStagedGlobals() const noexcept
+    {
+        return m_stagedGlobals;
+    }
+
+    [[nodiscard]] rhi::BindGroupHandle ResolveViewGlobalsBinding(vk::ViewGlobalsBinding &view);
+
     /// @brief Get the engine-globals descriptor set layout (set 2) for pipeline creation.
     [[nodiscard]] VkDescriptorSetLayout GetGlobalsDescSetLayout() const
     {
         return m_globalsDescSetLayout;
-    }
-
-    /// @brief Get the engine-globals descriptor set for the current frame.
-    [[nodiscard]] VkDescriptorSet GetCurrentGlobalsDescSet() const
-    {
-        if (m_globalsDescSets.empty())
-            return VK_NULL_HANDLE;
-        uint32_t idx = GetCurrentFrameSlot() % static_cast<uint32_t>(m_globalsDescSets.size());
-        return m_globalsDescSets[idx];
-    }
-
-    /// @brief Get the globals UBO VkBuffer for a specific frame index.
-    [[nodiscard]] VkBuffer GetGlobalsBuffer(uint32_t frameIndex) const
-    {
-        if (frameIndex >= m_globalsBuffers.size() || !m_globalsBuffers[frameIndex])
-            return VK_NULL_HANDLE;
-        return m_globalsBuffers[frameIndex]->GetBuffer();
     }
 
     /// @brief Get max frames in flight.
@@ -1849,6 +1842,7 @@ class InxVkCoreModular
             };
 
             VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+            VkBuffer globalsBuffer = VK_NULL_HANDLE;
             std::unique_ptr<vk::VkBufferHandle> instanceBuffer;
             std::unique_ptr<vk::VkBufferHandle> skinInstanceBuffer;
             std::unique_ptr<vk::VkBufferHandle> skinPaletteBuffer;
@@ -1928,7 +1922,7 @@ class InxVkCoreModular
     bool EnsureShadowCameraResources(ShadowCameraResourceId resourceId);
     bool EnsureShadowCameraStreamCapacity(ShadowCameraResources &resources, uint32_t frameIndex, size_t instanceCount,
                                           size_t skinPaletteCount);
-    void UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame, uint32_t frameIndex);
+    void UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame);
     void DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept;
     [[nodiscard]] ShadowDescriptorAllocation AllocateShadowMaterialDescriptorSet();
     [[nodiscard]] VkDescriptorSet EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
@@ -1959,29 +1953,17 @@ class InxVkCoreModular
     // ========================================================================
     GpuRetirementQueue m_deletionQueue;
 
-    // ========================================================================
-    // Staged UBO data (CPU-side cache → GPU via vkCmdUpdateBuffer)
-    // ========================================================================
-
-    // ========================================================================
-    // Engine Globals UBO (set 2, binding 0) — per-frame time/screen/camera
-    // ========================================================================
-    std::vector<std::unique_ptr<vk::VkBufferHandle>> m_globalsBuffers;
+    // Shared instance descriptors; camera globals live in each RenderView.
     VkDescriptorSetLayout m_globalsDescSetLayout = VK_NULL_HANDLE;
     std::vector<vk::DescriptorLease> m_globalsDescriptorLeases;
     std::vector<VkDescriptorSet> m_globalsDescSets;
 
     EngineGlobalsUBO m_stagedGlobals{};
-    bool m_globalsDirty = false;
 
-    /// @brief Create globals UBO buffers (one per frame-in-flight).
-    void CreateGlobalsBuffers();
     /// @brief Create globals descriptor set layout, pool, and sets.
     bool CreateGlobalsDescriptorResources();
     /// @brief Destroy globals descriptor resources.
     void DestroyGlobalsDescriptorResources();
-    /// @brief Push staged globals to GPU via vkCmdUpdateBuffer.
-    void CmdUpdateGlobals(VkCommandBuffer cmdBuf);
 
     // ========================================================================
     // Instance Buffer (set 2, binding 1) — per-frame instanced transforms

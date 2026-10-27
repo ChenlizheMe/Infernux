@@ -50,7 +50,7 @@ void main() {
     bool color=texelFetch(colorTex,p,0).a>0.9;
     bool normal=texelFetch(normalTex,p,0).a>0.9;
     bool base=texelFetch(baseTex,p,0).a>0.9;
-    bool depth=texelFetch(depthTex,p,0).r<0.99999;
+    bool depth=texelFetch(depthTex,p,0).r>0.0;
     uvec2 id=texelFetch(pickingTex,p,0).rg;
     bool picking=id==uvec2(uint(pc.expected_object),0u) ||
         (pc.secondary_object>0.0 && id==uvec2(uint(pc.secondary_object),0u));
@@ -73,7 +73,7 @@ class VariantsPipeline(inx.renderstack.RenderPipeline):
         fmt=inx.rendergraph.Format
         depth=graph.create_texture('depth',format=fmt.D32_SFLOAT,samples=1)
         color=graph.create_texture('color_data',format=fmt.RGBA16_SFLOAT,samples=1)
-        graph.add_pass('Color').write_color(color).write_depth(depth).set_clear(color=(0,0,0,0),depth=1.).draw_renderers(queue_range=(0,2500))
+        graph.add_pass('Color').write_color(color).write_depth(depth).set_clear(color=(0,0,0,0),depth=0.0).draw_renderers(queue_range=(0,2500))
         normal=graph.create_texture('normal',format=fmt.RGBA16_SFLOAT,samples=1)
         base=graph.create_texture('base',format=fmt.RGBA16_SFLOAT,samples=1)
         motion=graph.create_texture('motion',format=fmt.RG16_SFLOAT,samples=1)
@@ -81,7 +81,7 @@ class VariantsPipeline(inx.renderstack.RenderPipeline):
             graph.add_pass(name).read(depth).write_color(texture).set_clear(color=(0,0,0,0)).draw_renderers(queue_range=(0,2500),material_pass=material_pass)
         picking=graph.create_texture('picking',format=fmt.RG32_UINT,samples=1)
         picking_depth=graph.create_texture('picking_depth',format=fmt.D32_SFLOAT,samples=1)
-        graph.add_pass('Picking').write_color(picking).write_depth(picking_depth).set_clear(color=(0,0,0,0),depth=1.).draw_renderers(queue_range=(0,2500),material_pass='picking')
+        graph.add_pass('Picking').write_color(picking).write_depth(picking_depth).set_clear(color=(0,0,0,0),depth=0.0).draw_renderers(queue_range=(0,2500),material_pass='picking')
         target=graph.create_texture('color',camera_target=True)
         p=graph.add_pass('CompareVariants').write_color(target)
         for key,texture in (('colorTex',color),('normalTex',normal),('baseTex',base),('depthTex',depth),('motionTex',motion),('pickingTex',picking)):

@@ -33,7 +33,7 @@ class SwatchPipeline(RenderPipeline):
         depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
         with graph.add_pass("EmptyDepth") as render_pass:
             render_pass.write_depth(depth)
-            render_pass.set_clear(depth=1.0)
+            render_pass.set_clear(depth=0.0)
             render_pass.draw_renderers(material_pass="depth")
         with graph.add_pass("SampleSwatch") as render_pass:
             render_pass.set_texture("_SourceTex", sampled)

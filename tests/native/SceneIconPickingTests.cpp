@@ -10,7 +10,7 @@ int main()
     const glm::vec3 eye(0.0f, 0.0f, -10.0f);
     const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::mat4 cameraToWorld = glm::inverse(view);
-    glm::mat4 projection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f);
+    glm::mat4 projection = glm::perspective(glm::radians(60.0f), 1.0f, 100.0f, 0.1f);
     projection[1][1] *= -1.0f;
 
     const auto ordinary =

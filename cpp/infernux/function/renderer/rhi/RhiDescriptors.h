@@ -60,6 +60,22 @@ enum class CompareFunction : uint8_t
     Always,
 };
 
+[[nodiscard]] constexpr CompareFunction ReverseDepthCompare(CompareFunction value) noexcept
+{
+    switch (value) {
+    case CompareFunction::Less:
+        return CompareFunction::Greater;
+    case CompareFunction::LessEqual:
+        return CompareFunction::GreaterEqual;
+    case CompareFunction::Greater:
+        return CompareFunction::Less;
+    case CompareFunction::GreaterEqual:
+        return CompareFunction::LessEqual;
+    default:
+        return value;
+    }
+}
+
 enum class FilterMode : uint8_t
 {
     Nearest,
@@ -336,7 +352,7 @@ struct DepthState
 {
     bool testEnabled = false;
     bool writeEnabled = false;
-    CompareFunction compare = CompareFunction::LessEqual;
+    CompareFunction compare = CompareFunction::GreaterEqual;
 };
 
 struct ColorTargetState

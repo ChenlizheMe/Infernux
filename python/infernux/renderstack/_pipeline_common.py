@@ -124,7 +124,7 @@ def add_shadow_caster_pass(
 ) -> None:
     with graph.add_pass(name) as p:
         p.write_depth(SHADOW_MAP_TEXTURE)
-        p.set_clear(depth=1.0)
+        p.set_clear(depth=0.0)
         p.draw_shadow_casters(
             queue_range=queue_range or shadow_caster_queue_range(),
             light_index=light_index,
@@ -142,7 +142,7 @@ def add_forward_opaque_pass(
     with graph.add_pass(name) as p:
         p.write_color(COLOR_TEXTURE)
         p.write_depth(DEPTH_TEXTURE)
-        p.set_clear(color=clear_color, depth=1.0)
+        p.set_clear(color=clear_color, depth=0.0)
         p.set_texture("shadowMap", SHADOW_MAP_TEXTURE)
         p.draw_renderers(
             queue_range=queue_range or opaque_queue_range(),

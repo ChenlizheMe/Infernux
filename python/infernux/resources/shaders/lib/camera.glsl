@@ -25,10 +25,9 @@ ivec2 getPixelCoord() {
 // ---- Camera ----
 
 // Structured shaders receive a camera source selected by the shader linker.
-// Geometry surface fragments, including Unlit, resolve this to the camera-local
-// set-1 LightingUBO. Never read _WorldSpaceCameraPos directly
-// here: that buffer is shared by Scene and Game graphs and is staged from the
-// editor camera.
+// Geometry surface fragments use the camera-local set-1 LightingUBO;
+// fullscreen shaders use their view's set-2 globals. Particle shaders supply
+// their own domain binding.
 #ifndef INX_SHADING_CAMERA_POSITION
 #define INX_SHADING_CAMERA_POSITION _Globals._WorldSpaceCameraPos.xyz
 #endif
@@ -56,10 +55,10 @@ float getCameraFar() {
 // ---- Depth linearization ----
 
 // Linearize depth buffer value to view-space distance (eye depth)
-// rawDepth: value sampled from depth buffer [0,1]
+// Perspective device depth: 1 at near, 0 at far
 // Returns positive eye-space distance
 float linearEyeDepth(float rawDepth) {
-    // _ZBufferParams: x = 1 - far/near, y = far/near, z = x/far, w = y/far
+    // _ZBufferParams: x = far/near - 1, y = 1, z = x/far, w = 1/far
     return 1.0 / (_Globals._ZBufferParams.z * rawDepth + _Globals._ZBufferParams.w);
 }
 

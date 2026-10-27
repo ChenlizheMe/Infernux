@@ -123,11 +123,10 @@ ${VERTEX_CALL}
     v_Color     = v.color;
     v_TexCoord  = v.texCoord;
     v_TexCoord1 = v.texCoord1;
-    // GLM_FORCE_LEFT_HANDED view space looks down +Z, so (view * pos).z is
-    // already the positive eye depth. Take abs() so CSM cascade selection and
-    // depth helpers always receive a positive linear depth regardless of the
-    // view-matrix handedness.
-    v_ViewDepth = abs((ubo.view * worldPos).z);
+    // Keep depth signed until after clipping and interpolation. Taking abs()
+    // here corrupts visible depths on triangles crossing the camera plane,
+    // selecting distant shadow cascades on nearby ground.
+    v_ViewDepth = (ubo.view * worldPos).z;
     v_LineColor = inxLineVertex ? vec4(v.color, inBoneWeights.y) : vec4(1.0);
     gl_Position = ubo.proj * ubo.view * worldPos;
 ${PASS_VERTEX_OUTPUT}

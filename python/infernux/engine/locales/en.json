@@ -750,7 +750,7 @@
   "environment.skybox_material": "Skybox Material",
   "environment.builtin_sky": "Procedural Sky (Built-in)",
   "environment.missing_material": "Missing Material",
-  "environment.custom_sky_hint": "Custom sky material — edit its parameters in the Inspector.",
+  "environment.custom_sky_hint": "Use Skybox Panoramic for an equirectangular sky texture. Edit material parameters in the Inspector.",
   "environment.sky_top_color": "Sky Color",
   "environment.sky_horizon_color": "Horizon Color",
   "environment.sky_ground_color": "Ground Color",

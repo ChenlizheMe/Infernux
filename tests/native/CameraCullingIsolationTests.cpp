@@ -266,7 +266,7 @@ static void TestEffectiveProjectionShadowCoverage(SceneManager &manager)
                 for (double x : {-0.85, 0.0, 0.85})
                     for (double y : {-0.85, 0.0, 0.85}) {
                         const double depth = glm::mix(double(view.splitNear), double(view.splitFar), fraction);
-                        const auto h0 = inverse * glm::dvec4(x, y, 0, 1);
+                        const auto h0 = inverse * glm::dvec4(x, y, 1, 1);
                         const auto h1 = inverse * glm::dvec4(x, y, 0.5, 1);
                         assert(h0.w != 0 && h1.w != 0);
                         const auto p0 = glm::dvec3(h0) / h0.w;
@@ -308,8 +308,8 @@ static void TestEffectiveProjectionShadowCoverage(SceneManager &manager)
             } else if (kind == 3) {
                 projection = camera->CalculateObliqueMatrix({0.3f, 0.1f, 1.0f, -1.0f});
             } else if (kind == 4) { // Left-handed ZO infinite far plane.
-                projection[2][2] = 1.0f;
-                projection[3][2] = -0.1f;
+                projection[2][2] = 0.0f;
+                projection[3][2] = 0.1f;
             }
             const auto ordinary = collect();
             if (kind <= 1)

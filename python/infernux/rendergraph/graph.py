@@ -13,7 +13,7 @@ Design: builder pattern with a fluent API for straightforward authoring.
     with graph.add_pass("Opaque") as p:
         p.write_color("color")
         p.write_depth("depth")
-        p.set_clear(color=(0.1, 0.1, 0.1, 1.0), depth=1.0)
+        p.set_clear(color=(0.1, 0.1, 0.1, 1.0), depth=0.0)
         p.draw_renderers(queue_range=(0, 2500), sort_mode="front_to_back")
 
     graph.set_output("color")
@@ -380,7 +380,7 @@ class RenderPassBuilder:
 
         Args:
             color: RGBA clear color tuple, or None to not clear color.
-            depth: Depth clear value, or None to not clear depth.
+            depth: Reversed device depth (0 clears to far), or None to preserve depth.
         """
         self._clear_color = color
         self._clear_depth = depth
@@ -682,7 +682,7 @@ class RenderGraph:
         with graph.add_pass("OpaquePass") as p:
             p.write_color("color")
             p.write_depth("depth")
-            p.set_clear(color=(0.1, 0.1, 0.1, 1.0), depth=1.0)
+            p.set_clear(color=(0.1, 0.1, 0.1, 1.0), depth=0.0)
             p.draw_renderers(queue_range=(0, 2500), sort_mode="front_to_back")
 
         graph.injection_point("after_opaque", resources={"color", "depth"})

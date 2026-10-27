@@ -1,12 +1,14 @@
 #pragma once
 
+#include <core/math/DepthConvention.h>
+
 #include <glm/glm.hpp>
 
 namespace infernux
 {
 
 /**
- * @brief Engine-owned per-frame parameter domain exposed via set 2.
+ * @brief Engine time and camera-local parameters exposed via set 2.
  *
  * Layout matches globals_ubo.glsl (std140).  Each field is a vec4 for
  * alignment simplicity — UE5-style naming conventions.
@@ -46,8 +48,8 @@ struct EngineGlobalsUBO
     alignas(16) glm::vec4 projectionParams{0.01f, 5000.0f, 0.0002f, 0.000002f};
 
     /// Linearization helpers for reversed-Z depth buffer.
-    /// x = 1 - far/near, y = far/near, z = x/far, w = y/far
-    alignas(16) glm::vec4 zBufferParams{1.0f, 0.0f, 0.0f, 0.0f};
+    /// x = far/near - 1, y = 1, z = x/far, w = 1/far
+    alignas(16) glm::vec4 zBufferParams = depth::LinearizationParams(0.01f, 5000.0f);
 
     // ─── Frame ──────────────────────────────────────────────────────
     /// x = frame count (float), y = smoothDeltaTime, z = 1/deltaTime, w = unused

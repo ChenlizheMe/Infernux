@@ -243,7 +243,6 @@ InxVkCoreModular::~InxVkCoreModular()
     m_canonicalLightGpuBuffer.Shutdown();
     m_materialUbo.reset();
     m_materialUboMapped = nullptr;
-    m_globalsBuffers.clear();
 
     m_depthImage.reset();
 
@@ -1167,9 +1166,8 @@ void InxVkCoreModular::CreateUniformBuffers()
         }
     }
 
-    // Create engine globals UBO buffers (set 2, binding 0)
-    CreateGlobalsBuffers();
-    CreateGlobalsDescriptorResources();
+    if (!CreateGlobalsDescriptorResources())
+        throw std::runtime_error("Failed to create engine instance descriptors");
 }
 
 bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imageIndex)
@@ -1185,7 +1183,6 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
     const auto gpuFrameRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 #endif
 
-    CmdUpdateGlobals(cmdBuf);
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[4] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();

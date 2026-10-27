@@ -4,11 +4,9 @@
 #include "shader/ShaderReflection.h"
 #include "vk/VulkanRhiDevice.h"
 
-#include <algorithm>
 #include <core/error/InxError.h>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace infernux
 {
@@ -24,14 +22,10 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
     {
         m_perViewLayout = m_device.RegisterBindingLayout(core.GetPerViewDescSetLayout());
         m_globalsLayout = m_device.RegisterBindingLayout(core.GetGlobalsDescSetLayout());
-        m_globalsGroups.resize(std::max(1u, core.GetMaxFramesInFlight()));
-        m_nativeGlobals.resize(m_globalsGroups.size(), VK_NULL_HANDLE);
     }
 
     ~VulkanFullscreenRendererHost() override
     {
-        for (const auto group : m_globalsGroups)
-            m_device.Release(group);
         m_device.Release(m_perViewLayout);
         m_device.Release(m_globalsLayout);
     }
@@ -43,12 +37,12 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
 
     [[nodiscard]] uint32_t GetFrameCount() const noexcept override
     {
-        return static_cast<uint32_t>(m_globalsGroups.size());
+        return m_core.GetMaxFramesInFlight();
     }
 
     [[nodiscard]] uint32_t GetCurrentFrame() const noexcept override
     {
-        return m_core.GetCurrentFrameSlot() % static_cast<uint32_t>(m_globalsGroups.size());
+        return m_core.GetCurrentFrameSlot();
     }
 
     [[nodiscard]] rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,
@@ -96,18 +90,6 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
         return m_globalsLayout;
     }
 
-    [[nodiscard]] rhi::BindGroupHandle GetCurrentGlobalsGroup() override
-    {
-        const uint32_t frame = GetCurrentFrame();
-        const VkDescriptorSet native = m_core.GetCurrentGlobalsDescSet();
-        if (m_nativeGlobals[frame] != native) {
-            m_device.Release(m_globalsGroups[frame]);
-            m_globalsGroups[frame] = m_device.RegisterBindGroup(native);
-            m_nativeGlobals[frame] = native;
-        }
-        return m_globalsGroups[frame];
-    }
-
     void ReportError(const std::string &message) override
     {
         INXLOG_ERROR(message);
@@ -123,8 +105,6 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
     vk::VulkanRhiDevice &m_device;
     rhi::BindingLayoutHandle m_perViewLayout;
     rhi::BindingLayoutHandle m_globalsLayout;
-    std::vector<rhi::BindGroupHandle> m_globalsGroups;
-    std::vector<VkDescriptorSet> m_nativeGlobals;
 };
 
 } // namespace

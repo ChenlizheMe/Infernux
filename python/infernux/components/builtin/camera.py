@@ -315,7 +315,7 @@ class Camera(BuiltinComponent):
     def projection_matrix(self):
         """NumPy (4,4) matrix copy, indexed [row, column].
 
-        Engine clip space is left-handed (+Z forward), depth [0,1], with
+        Engine clip space is left-handed (+Z forward), reversed depth (1 near, 0 far), with
         projection Y inverted for top-left pixels. Assignment installs a
         runtime override; FOV/aspect/clip edits resume after reset. No scene
         fields are overwritten. Unlike Unity's CPU projection matrix, this
@@ -392,7 +392,7 @@ class Camera(BuiltinComponent):
     def screen_to_world_point(
         self, x: float, y: float, depth: float = 0.0
     ) -> Optional[Tuple[float, float, float]]:
-        """Convert top-left screen pixels and normalized depth [0..1] to world position."""
+        """Convert top-left screen pixels and device depth (1 near, 0 far) to world position."""
         cpp = self._cpp_component
         if cpp is not None:
             return cpp.screen_to_world_point(x, y, depth)
@@ -469,12 +469,12 @@ class Camera(BuiltinComponent):
         """Use the rendered projection, including asymmetric/oblique near planes."""
         import numpy as np
 
-        clip = np.array([[-1, -1, 0, 1], [1, -1, 0, 1],
-                         [1, 1, 0, 1], [-1, 1, 0, 1]], dtype=np.float64)
+        clip = np.array([[-1, -1, 1, 1], [1, -1, 1, 1],
+                         [1, 1, 1, 1], [-1, 1, 1, 1]], dtype=np.float64)
         inverse = np.linalg.inv(np.asarray(projection, dtype=np.float64))
         near_h = clip @ inverse.T
         near = near_h[:, :3] / near_h[:, 3:4]
-        clip[:, 2] = 1
+        clip[:, 2] = 0
         far_h = clip @ inverse.T
         direction = far_h[:, :3] - near * far_h[:, 3:4]
         lengths = np.linalg.norm(direction, axis=1, keepdims=True)
