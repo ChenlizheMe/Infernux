@@ -1009,10 +1009,14 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     cameraBufferDesc.byteSize = sizeof(UniformBufferObject);
     cameraBufferDesc.usage = rhi::BufferUsageFlags::Uniform;
     cameraBufferDesc.memory = rhi::BufferMemory::Upload;
+    rhi::BufferDesc globalsBufferDesc = cameraBufferDesc;
+    globalsBufferDesc.byteSize = sizeof(EngineGlobalsUBO);
     for (auto &frame : m_perViewFrames) {
+        frame.globals.buffer = rhiDevice.CreateBuffer(globalsBufferDesc);
         frame.cameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
         frame.editorOverlayCameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
-        if (!frame.cameraMatrix.IsValid() || !frame.editorOverlayCameraMatrix.IsValid()) {
+        if (!frame.globals.buffer.IsValid() || !frame.cameraMatrix.IsValid() ||
+            !frame.editorOverlayCameraMatrix.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local matrix UBO");
             return false;
         }
@@ -1333,6 +1337,9 @@ void SceneRenderGraph::Destroy()
         auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
         auto &descriptorManager = rhiDevice.GetDescriptorManager();
         for (auto &frame : m_perViewFrames) {
+            rhiDevice.Release(frame.globals.group);
+            descriptorManager.Retire(frame.globals.descriptor);
+            rhiDevice.Release(frame.globals.buffer);
             rhiDevice.Release(frame.geometryGroup);
             rhiDevice.Release(frame.particleGroup);
             rhiDevice.Release(frame.editorOverlayGroup);
@@ -1574,6 +1581,11 @@ rhi::BindGroupHandle SceneRenderGraph::GetEditorOverlayBindGroup() const
     return m_perViewFrames[frameIndex].editorOverlayGroup;
 }
 
+vk::ViewGlobalsBinding &SceneRenderGraph::GetViewGlobalsBinding()
+{
+    return m_perViewFrames[m_vkCore->GetCurrentFrameSlot()].globals;
+}
+
 void SceneRenderGraph::SetCameraInvertCulling(bool invert)
 {
     if (m_cameraInvertCulling == invert)
@@ -1668,7 +1680,7 @@ glm::mat4 SceneRenderGraph::ProjectionForPass(const glm::mat4 &projection, const
 bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj,
                                            const glm::mat4 *previousViewProj)
 {
-    if (!m_vkCore)
+    if (!m_vkCore || !m_cachedCamera)
         return false;
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
@@ -1682,11 +1694,22 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     camera.previousViewProj =
         previousViewProj ? *previousViewProj : (m_cameraHistoryValid ? m_previousViewProj : proj * view);
     camera.inverseViewProj = glm::inverse(proj * view);
-    const float nearClip = m_cachedCamera ? std::max(m_cachedCamera->GetNearClip(), 1.0e-5f) : 0.01f;
-    const float farClip = m_cachedCamera ? std::max(m_cachedCamera->GetFarClip(), nearClip + 1.0e-4f) : 5000.0f;
+    const float nearClip = m_cachedCamera->GetNearClip();
+    const float farClip = m_cachedCamera->GetFarClip();
     camera.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
     camera.zBufferParams = depth::LinearizationParams(nearClip, farClip);
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+    EngineGlobalsUBO globals = m_vkCore->GetStagedGlobals();
+    const float width = static_cast<float>(m_width);
+    const float height = static_cast<float>(m_height);
+    globals.screenParams = glm::vec4(width, height, 1.0f / width, 1.0f / height);
+    globals.worldSpaceCameraPos = glm::vec4(glm::vec3(glm::inverse(view)[3]), 1.0f);
+    globals.projectionParams = camera.projectionParams;
+    globals.zBufferParams = camera.zBufferParams;
+    if (!rhiDevice.WriteBuffer(frame.globals.buffer, 0, &globals, sizeof(globals))) {
+        INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local globals UBO");
+        return false;
+    }
     if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
         return false;
@@ -1985,22 +2008,25 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                                             materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (commandType) {
             case GraphCommandType::DrawRenderers:
-                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, queueMin,
-                                          queueMax, sortMode, overrideMaterial, passTag, &materialPass, materialFilter,
-                                          rendererSelection.get());
+                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
+                                          m_drawView, queueMin, queueMax, sortMode, overrideMaterial, passTag,
+                                          &materialPass, materialFilter, rendererSelection.get());
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
-                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, skyboxQueue,
-                                          skyboxQueue, "", "", "__infernux_internal_skybox", &materialPass);
+                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
+                                          m_drawView, skyboxQueue, skyboxQueue, "", "", "__infernux_internal_skybox",
+                                          &materialPass);
                 break;
             }
             case GraphCommandType::DrawShadowCasters:
                 // Shadow caster pass: draw filtered objects using shadow pipeline
                 // with lightVP from SceneLightCollector. The shadow pipeline is
                 // lazily created inside DrawShadowCasters().
-                vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
-                                          m_cameraLightCollector.GetShadowFrame(), lightIndex);
+                vkCore->DrawShadowCasters(
+                    ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
+                    m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(GetViewGlobalsBinding().buffer),
+                    m_cameraLightCollector.GetShadowFrame(), lightIndex);
                 break;
             case GraphCommandType::DrawWorldUI:
                 if (m_screenUIRenderer)
@@ -2008,7 +2034,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                         ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView, materialPass.RenderingSignature(),
                         vkCore->GetCurrentFrameSlot(),
                         worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
-                        m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView);
+                        m_drawView, m_cachedProj);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
@@ -2041,16 +2067,18 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 #if INFERNUX_FRAME_PROFILE
         const auto region = vkCore->BeginGpuProfileRegion(ctx.GetCommandBuffer(), "_ComponentGizmos");
         try {
-            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
-                                      COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(),
+                                      GetViewGlobalsBinding(), m_drawView, COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX,
+                                      "", "", "", &editorOverlayPass);
         } catch (...) {
             vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
             throw;
         }
         vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
 #else
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
-                                  COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), GetViewGlobalsBinding(),
+                                  m_drawView, COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "",
+                                  &editorOverlayPass);
 #endif
     };
 
@@ -2066,8 +2094,8 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static const std::string kEditorGizmosPassName = "_EditorGizmos";
     m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                  uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
-                                  GIZMO_QUEUE_MIN, GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), GetViewGlobalsBinding(),
+                                  m_drawView, GIZMO_QUEUE_MIN, GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
     };
 
     // ========================================================================
@@ -2080,8 +2108,8 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static const std::string kEditorToolsPassName = "_EditorTools";
     m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                 uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
-                                  TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), GetViewGlobalsBinding(),
+                                  m_drawView, TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
     };
 
     // Store description for BuildRenderGraph()'s topology traversal. Exact
@@ -3361,8 +3389,9 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
                 return;
             const RendererList *list = context.GetRendererList(rendererList);
             if (list)
-                m_outlineRenderer->RecordMaskDraws(context.GetCommandBuffer(), list->DrawCalls(),
-                                                   GetPerViewBindGroup());
+                m_outlineRenderer->RecordMaskDraws(
+                    context.GetCommandBuffer(), list->DrawCalls(), GetPerViewBindGroup(),
+                    m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(GetViewGlobalsBinding().buffer));
         };
     });
 
@@ -5041,7 +5070,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         }
 
                         fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),
-                                         drawPushConstants, drawPushConstantSize);
+                                         vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()), drawPushConstants,
+                                         drawPushConstantSize);
                     };
                 });
                 if (fullscreenShadowInput.IsValid()) {
@@ -5143,10 +5173,10 @@ void SceneRenderGraph::BuildRenderGraph()
                             if (!vkCore->UsesDrawCalls(draws))
                                 vkCore->SetDrawCalls(draws);
                             vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(),
-                                                      m_drawView, opaqueCommand.queueMin, opaqueCommand.queueMax,
-                                                      opaqueCommand.sortMode, "", opaqueCommand.passTag,
-                                                      &replayPipeline, opaqueCommand.materialFilter, nullptr,
-                                                      excludedId, true);
+                                                      GetViewGlobalsBinding(), m_drawView, opaqueCommand.queueMin,
+                                                      opaqueCommand.queueMax, opaqueCommand.sortMode, "",
+                                                      opaqueCommand.passTag, &replayPipeline,
+                                                      opaqueCommand.materialFilter, nullptr, excludedId, true);
                         };
                     });
                     alternateDepths.emplace(excludedId, writtenAlternateDepth);
@@ -5177,8 +5207,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
                                 uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
                                 worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
-                                m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView,
-                                run.firstOrdinal, run.endOrdinal);
+                                m_drawView, m_cachedProj, run.firstOrdinal, run.endOrdinal);
                         };
                     });
                     currentColor = writtenColor;
@@ -5456,8 +5485,10 @@ void SceneRenderGraph::BuildRenderGraph()
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         localVkCore->DrawShadowCasters(
                             ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
-                            m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(), shadowLightIndex,
-                            shadowDepthFormat, [&](uint32_t, const lighting::ShadowView &activeShadowView) {
+                            m_shadowCameraResourceId,
+                            m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(GetViewGlobalsBinding().buffer),
+                            m_cameraLightCollector.GetShadowFrame(), shadowLightIndex, shadowDepthFormat,
+                            [&](uint32_t, const lighting::ShadowView &activeShadowView) {
                                 particle::GpuParticleViewConstants shadowView;
                                 std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
                                             sizeof(activeShadowView.viewProjection));

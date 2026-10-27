@@ -192,7 +192,9 @@ try {
             const uint32_t primeSimulation = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
                 rhi::PipelineStage::ComputeShader, setupDependencies,
-                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); },
+                [this]([[maybe_unused]] VkCommandBuffer commandBuffer) {
+                    return m_frameAsyncSimulationExecutor(commandBuffer);
+                },
                 "GpuParticle/PrimeSimulation");
             particleComputeWork = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
@@ -230,7 +232,7 @@ try {
                 "GpuParticle/InlineSimulation");
         }
 
-        // Frame/Setup only updates globals. Waiting here for Simulation plus
+        // Frame/Setup starts frame accounting. Waiting here for Simulation plus
         // queuing OwnershipRelease after Setup deadlocks the independent
         // compute family when a newly selected emitter first touches exclusive
         // Graphics buffers (Game-only six-way preview).
@@ -243,7 +245,6 @@ try {
                 m_composedFrameTimestampRegion =
                     m_gpuTimestampQueries.BeginRegion(commandBuffer, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 #endif
-                CmdUpdateGlobals(commandBuffer);
                 return true;
             },
             "Frame/Setup");
@@ -735,8 +736,9 @@ void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
 // ============================================================================
 
 void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
-                                         rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix, int queueMin,
-                                         int queueMax, const std::string &sortMode, const std::string &overrideMaterial,
+                                         rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals,
+                                         const glm::mat4 &viewMatrix, int queueMin, int queueMax,
+                                         const std::string &sortMode, const std::string &overrideMaterial,
                                          const std::string &passTag,
                                          const MaterialPassPipelineDescriptor *pipelineDescriptor,
                                          GraphMaterialFilter materialFilter, const RendererSelection *selection,
@@ -1461,6 +1463,11 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         return resolved;
     };
 
+    // Instance preparation can replace the shared streams. Resolve their
+    // revision now while keeping this view's camera UBO immutable.
+    const VkDescriptorSet globalsDescSet =
+        m_backend.Device().GetRhiDevice().Resolve(ResolveViewGlobalsBinding(viewGlobals));
+
     // Batch accumulation: consecutive entries sharing (pipeline, descriptorSet, VB, IB, submesh) are
     // emitted as a single vkCmdDrawIndexed with instanceCount > 1.
     const bool allowBatching = (sortMode != "back_to_front" && sortMode != "preserve");
@@ -1716,14 +1723,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             }
 
             if (program && program->HasDeclaredDescriptorSet(2)) {
-                if (frameIndex < m_globalsDescSets.size()) {
-                    VkDescriptorSet globalsDescSet = m_globalsDescSets[frameIndex];
-                    if (globalsDescSet != VK_NULL_HANDLE) {
-                        vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set2", cmdBuf,
-                                                              VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1,
-                                                              &globalsDescSet, 0, nullptr);
-                    }
-                }
+                vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set2", cmdBuf,
+                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1,
+                                                      &globalsDescSet, 0, nullptr);
             }
 
             // Bindless material shaders opt into the canonical device-global
@@ -1810,7 +1812,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 // ============================================================================
 
 void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
-                                         int queueMax, ShadowCameraResourceId resourceId,
+                                         int queueMax, ShadowCameraResourceId resourceId, VkBuffer viewGlobalsBuffer,
                                          const lighting::ShadowFrame &shadowFrame, int lightIndex, VkFormat depthFormat,
                                          const ShadowViewDrawCallback &additionalDraws)
 {
@@ -1845,6 +1847,12 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 #endif
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
+
+    auto &stream = cameraResources.streamFrames[frameIndex];
+    if (stream.globalsBuffer != viewGlobalsBuffer) {
+        stream.globalsBuffer = viewGlobalsBuffer;
+        UpdateShadowCameraStreamDescriptor(stream);
+    }
 
     for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
         const uint32_t bufferIndex = frameIndex * lighting::MaxShadowViews + viewIndex;
@@ -2637,15 +2645,14 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
     return true;
 }
 
-void InxVkCoreModular::UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame,
-                                                          uint32_t frameIndex)
+void InxVkCoreModular::UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame)
 {
-    if (frame.descriptorSet == VK_NULL_HANDLE || frameIndex >= m_globalsBuffers.size() ||
-        !m_globalsBuffers[frameIndex] || !frame.instanceBuffer || !frame.skinInstanceBuffer || !frame.skinPaletteBuffer)
+    if (frame.descriptorSet == VK_NULL_HANDLE || frame.globalsBuffer == VK_NULL_HANDLE || !frame.instanceBuffer ||
+        !frame.skinInstanceBuffer || !frame.skinPaletteBuffer)
         return;
 
     std::array<VkDescriptorBufferInfo, 4> infos{};
-    infos[0] = {m_globalsBuffers[frameIndex]->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
+    infos[0] = {frame.globalsBuffer, 0, sizeof(EngineGlobalsUBO)};
     infos[1] = {frame.instanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[2] = {frame.skinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[3] = {frame.skinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
@@ -2717,7 +2724,7 @@ bool InxVkCoreModular::EnsureShadowCameraStreamCapacity(ShadowCameraResources &r
     frame.skinPaletteMapped = newSkinPaletteMapped;
     frame.instanceCapacity = newInstanceCapacity;
     frame.skinPaletteCapacity = newPaletteCapacity;
-    UpdateShadowCameraStreamDescriptor(frame, frameIndex);
+    UpdateShadowCameraStreamDescriptor(frame);
     return true;
 }
 

@@ -354,7 +354,8 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
 
 void FullscreenRenderer::Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
                               rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
-                              const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize)
+                              rhi::BindGroupHandle globalsGroup, const FullscreenPushConstants &pushConstants,
+                              uint32_t pushConstantSize)
 {
     if (!m_impl || !entry.pipeline.IsValid())
         return;
@@ -363,11 +364,8 @@ void FullscreenRenderer::Draw(rhi::GraphicsCommandEncoder &encoder, const Fullsc
         encoder.BindGroup(entry.pipeline, 0, inputGroup);
     if (entry.hasPerView && perViewGroup.IsValid())
         encoder.BindGroup(entry.pipeline, 1, perViewGroup);
-    if (entry.hasGlobals) {
-        const auto globalsGroup = m_impl->host->GetCurrentGlobalsGroup();
-        if (globalsGroup.IsValid())
-            encoder.BindGroup(entry.pipeline, 2, globalsGroup);
-    }
+    if (entry.hasGlobals)
+        encoder.BindGroup(entry.pipeline, 2, globalsGroup);
     encoder.PushConstants(entry.pipeline, rhi::ShaderStage::Fragment, pushConstantSize, pushConstants.values);
     encoder.Draw(3);
 }

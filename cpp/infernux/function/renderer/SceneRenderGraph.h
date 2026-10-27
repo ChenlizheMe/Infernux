@@ -30,6 +30,7 @@
 #include "particle/ParticleGpuViewDiagnostics.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
+#include "vk/ViewGlobalsBinding.h"
 #include "vk/VkDescriptorManager.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -584,13 +585,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     /// @brief Cache camera VP matrices (called by SubmitCulling)
     void SetCachedCameraVP(const Camera *camera, const glm::mat4 &view, const glm::mat4 &proj);
-    /// World UI billboards follow the active Game Camera even in Scene View.
-    /// Scene geometry and editor picking continue to use the cached view.
-    void SetBillboardViewMatrix(const glm::mat4 &view)
-    {
-        m_billboardView = view;
-        m_hasBillboardView = true;
-    }
     /// Published with SetupCameraProperties, before graph revision checks.
     void SetCameraInvertCulling(bool invert);
 
@@ -724,6 +718,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
     [[nodiscard]] rhi::BindGroupHandle GetPerViewBindGroup() const;
+    [[nodiscard]] vk::ViewGlobalsBinding &GetViewGlobalsBinding();
     [[nodiscard]] rhi::BindGroupHandle GetEditorOverlayBindGroup() const;
 
     /// Build immutable lighting and shadow state owned by this camera graph.
@@ -969,8 +964,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::array<float, 24> m_particleFrustumPlanes{};
     bool m_hasCachedCameraVP = false;
     glm::mat4 m_drawView{1.0f};
-    glm::mat4 m_billboardView{1.0f};
-    bool m_hasBillboardView = false;
     glm::mat4 m_previousViewProj{1.0f};
     bool m_cameraHistoryValid = false;
     const Camera *m_cachedCamera = nullptr;
@@ -1005,6 +998,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     struct PerViewFrameState
     {
+        vk::ViewGlobalsBinding globals;
         vk::DescriptorLease geometryDescriptor;
         vk::DescriptorLease particleDescriptor;
         vk::DescriptorLease editorOverlayDescriptor;

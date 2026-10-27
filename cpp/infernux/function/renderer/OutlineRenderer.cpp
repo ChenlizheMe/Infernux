@@ -471,14 +471,6 @@ void OutlineRenderer::CreateOutlineMaterialResources()
             m_outlineGlobalsDescSets[i] = lease.set;
             m_outlineGlobalsDescLeases.push_back(lease);
 
-            // Binding 0: globals UBO (same as engine frame i)
-            VkDescriptorBufferInfo uboBufInfo{};
-            uboBufInfo.buffer = m_core->GetGlobalsBuffer(i);
-            uboBufInfo.offset = 0;
-            uboBufInfo.range = VK_WHOLE_SIZE;
-            vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], 0,
-                                                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, uboBufInfo);
-
             // Binding 1: transforms for selected draws
             VkDescriptorBufferInfo ssboBufInfo{};
             ssboBufInfo.buffer = m_outlineInstanceBufs[i].buffer;
@@ -686,7 +678,7 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
 // ============================================================================
 
 void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls,
-                                      rhi::BindGroupHandle perViewGroup)
+                                      rhi::BindGroupHandle perViewGroup, VkBuffer viewGlobalsBuffer)
 {
     if (!m_resourcesReady || !HasActiveOutline() || cmdBuf == VK_NULL_HANDLE ||
         m_outlineMaskPipeline == VK_NULL_HANDLE || m_outlineInstanceBufs.empty()) {
@@ -708,6 +700,9 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
             selectedBoneCount += dc.skinBoneMatrices->size();
     }
     EnsureOutlineBufferCapacity(frameIdx, selectedDrawCount, selectedBoneCount);
+    const VkDescriptorBufferInfo globals{viewGlobalsBuffer, 0, sizeof(EngineGlobalsUBO)};
+    vkrender::UpdateDescriptorSetWithBuffer(m_core->GetDevice(), m_outlineGlobalsDescSets[frameIdx], 0,
+                                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, globals);
     uint32_t instanceIndex = 0, boneOffset = 0;
 
     // Render the selected object

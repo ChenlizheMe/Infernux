@@ -208,7 +208,8 @@ void ScenePickingService::DestroyTarget()
 }
 
 void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight,
-                                 rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix)
+                                 rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals,
+                                 const glm::mat4 &viewMatrix)
 {
     if (!m_hasPending || !m_core || commandBuffer == VK_NULL_HANDLE)
         return;
@@ -316,8 +317,8 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
-    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewMatrix, 0, 5000,
-                              "front_to_back", {}, {}, &pickingPass);
+    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewGlobals, viewMatrix, 0,
+                              5000, "front_to_back", {}, {}, &pickingPass);
     if (particleEntries && !particleEntries->empty()) {
         Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
         if (camera) {

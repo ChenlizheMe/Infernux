@@ -23,7 +23,8 @@ class ParticleGpuDrawRegistry;
 namespace vk
 {
 class VkImageHandle;
-}
+struct ViewGlobalsBinding;
+} // namespace vk
 
 /// On-demand object-ID rendering for the editor Scene View. No pass or
 /// readback work is recorded until a request exists.
@@ -50,7 +51,7 @@ class ScenePickingService
     /// Record one picking render and one-pixel copy into the current graphics
     /// command buffer. Completion is published after the frame fence retires.
     void Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight,
-                rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix);
+                rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix);
 
   private:
     struct TargetGeneration;

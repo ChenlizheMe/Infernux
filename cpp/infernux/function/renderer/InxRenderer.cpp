@@ -897,7 +897,7 @@ void InxRenderer::PreparePipeline()
                 if (view.scene && m_scenePickingService && m_scenePickingService->HasPendingRecord())
                     m_scenePickingService->Record(cmdBuf, m_sceneRenderTarget->GetWidth(),
                                                   m_sceneRenderTarget->GetHeight(), graph->GetPerViewBindGroup(),
-                                                  graph->GetCachedView());
+                                                  graph->GetViewGlobalsBinding(), graph->GetCachedView());
 #if INFERNUX_FRAME_PROFILE
                 const double elapsed =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -1013,9 +1013,9 @@ void InxRenderer::PreparePipeline()
                         graph->CommitCameraHistory();
                         if (sceneView && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
                             m_sceneRenderTarget) {
-                            m_scenePickingService->Record(commandBuffer, m_sceneRenderTarget->GetWidth(),
-                                                          m_sceneRenderTarget->GetHeight(),
-                                                          graph->GetPerViewBindGroup(), graph->GetCachedView());
+                            m_scenePickingService->Record(
+                                commandBuffer, m_sceneRenderTarget->GetWidth(), m_sceneRenderTarget->GetHeight(),
+                                graph->GetPerViewBindGroup(), graph->GetViewGlobalsBinding(), graph->GetCachedView());
                         }
                         return true;
                     },
@@ -1470,17 +1470,6 @@ void InxRenderer::DrawFrame()
             ScriptableRenderContext ctx(m_vkCore.get(), m_sceneRenderGraph.get(), gizmoCtx);
             Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
 
-            // World-space Billboard UI is gameplay-facing UI.  The Scene view
-            // still renders meshes and receives editor rays through editorCam,
-            // while billboard expansion explicitly follows the active Game
-            // Camera used by scripts and the Game panel.
-            if (m_sceneRenderGraph) {
-                Camera *gameBillboardCam = FindGameCameraCached();
-                m_sceneRenderGraph->SetBillboardViewMatrix(
-                    gameBillboardCam ? gameBillboardCam->GetViewMatrix()
-                                     : (editorCam ? editorCam->GetViewMatrix() : glm::mat4(1.0f)));
-            }
-
 #if INFERNUX_FRAME_PROFILE
             auto _srpT0 = std::chrono::high_resolution_clock::now();
 #endif
@@ -1515,8 +1504,6 @@ void InxRenderer::DrawFrame()
                 if (GameObject *cameraObject = gameCam->GetGameObject())
                     gameContentCtx.activeScene = cameraObject->GetScene();
                 ScriptableRenderContext gameCtx(m_vkCore.get(), graph, gameContentCtx);
-
-                graph->SetBillboardViewMatrix(gameCam->GetViewMatrix());
 
                 m_renderPipeline->Render(gameCtx, gameCam);
             }
@@ -1617,7 +1604,7 @@ void InxRenderer::DrawFrame()
     _fp.stamp(); // [7] after Outline+GraphBuild+UBO staging
 #endif
 
-    // Descriptor set 2 is shared by every render graph recorded this frame.
+    // Instance streams are shared by the camera-local descriptor sets.
     // Grow all instance streams before vkBeginCommandBuffer so a picking or
     // motion pass cannot rewrite an already-bound descriptor set.
     {
@@ -2252,27 +2239,7 @@ void InxRenderer::StageEngineGlobalsUBO()
     globals.sinTime = glm::vec4(std::sin(t / 20.0f), std::sin(t / 4.0f), std::sin(t * 2.0f), std::sin(t * 3.0f));
     globals.cosTime = glm::vec4(std::cos(t / 20.0f), std::cos(t / 4.0f), std::cos(t * 2.0f), std::cos(t * 3.0f));
 
-    // Screen params (from scene render target or window)
-    float w = 1.0f, h = 1.0f;
-    if (m_sceneRenderTarget && m_sceneRenderTarget->GetWidth() > 0) {
-        w = static_cast<float>(m_sceneRenderTarget->GetWidth());
-        h = static_cast<float>(m_sceneRenderTarget->GetHeight());
-    }
-    globals.screenParams = glm::vec4(w, h, 1.0f / w, 1.0f / h);
-
-    // Camera
-    globals.worldSpaceCameraPos = glm::vec4(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2], 1.0f);
-
-    float nearClip = 0.01f, farClip = 5000.0f;
-    Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
-    if (editorCam) {
-        nearClip = editorCam->GetNearClip();
-        farClip = editorCam->GetFarClip();
-    }
-    globals.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
-
-    // ZBuffer linearization helpers (reversed-Z compatible)
-    globals.zBufferParams = depth::LinearizationParams(nearClip, farClip);
+    // Camera and screen fields are populated by each RenderView.
 
     // Frame
     float dt = m_deltaTime > kEpsilon ? m_deltaTime : kEpsilon;

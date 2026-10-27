@@ -3,14 +3,11 @@
  * @brief InxVkCoreModular — Engine globals UBO (set 2, binding 0)
  *
  * Split from InxVkCoreModular.cpp for maintainability.
- * Contains: StageGlobals, CreateGlobalsBuffers,
- *           CreateGlobalsDescriptorResources, DestroyGlobalsDescriptorResources,
- *           CmdUpdateGlobals.
+ * Owns frame time and shared instance descriptors. Camera UBOs belong to RenderViews.
  */
 
 #include "InxError.h"
 #include "InxVkCoreModular.h"
-#include "vk/VkRenderUtils.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
 
@@ -26,23 +23,46 @@ namespace infernux
 void InxVkCoreModular::StageGlobals(const EngineGlobalsUBO &globals)
 {
     m_stagedGlobals = globals;
-    m_globalsDirty = true;
 }
 
-// ============================================================================
-// Buffer creation
-// ============================================================================
-
-void InxVkCoreModular::CreateGlobalsBuffers()
+rhi::BindGroupHandle InxVkCoreModular::ResolveViewGlobalsBinding(vk::ViewGlobalsBinding &view)
 {
-    constexpr VkDeviceSize bufferSize = sizeof(EngineGlobalsUBO);
+    const uint32_t frameIndex = GetCurrentFrameSlot();
+    const auto &source = m_globalsDescriptorLeases[frameIndex];
+    if (view.instanceSourceLeaseId == source.id && view.group.IsValid())
+        return view.group;
 
-    m_globalsBuffers.resize(m_maxFramesInFlight);
-    for (size_t i = 0; i < m_maxFramesInFlight; ++i) {
-        m_globalsBuffers[i] = m_resourceManager.CreateUniformBuffer(bufferSize);
+    auto &device = m_backend.Device().GetRhiDevice();
+    auto &descriptors = device.GetDescriptorManager();
+    const auto replacement = descriptors.Allocate(m_globalsDescSetLayout, vk::DescriptorArena::ViewPersistent);
+    if (!replacement.IsValid())
+        throw std::runtime_error("Failed to allocate camera-local globals descriptor");
+
+    VkDescriptorBufferInfo buffer{device.Resolve(view.buffer), 0, sizeof(EngineGlobalsUBO)};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = replacement.set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &buffer;
+    std::array<VkCopyDescriptorSet, 4> copies{};
+    for (uint32_t index = 0; index < copies.size(); ++index) {
+        auto &copy = copies[index];
+        copy.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+        copy.srcSet = source.set;
+        copy.srcBinding = index + 1;
+        copy.dstSet = replacement.set;
+        copy.dstBinding = index + 1;
+        copy.descriptorCount = 1;
     }
-
-    INXLOG_INFO("Created engine globals UBO buffers: ", bufferSize, " bytes x ", m_maxFramesInFlight, " frames");
+    vkUpdateDescriptorSets(GetDevice(), 1, &write, static_cast<uint32_t>(copies.size()), copies.data());
+    device.Release(view.group);
+    descriptors.Retire(view.descriptor);
+    view.descriptor = replacement;
+    view.group = device.RegisterBindGroup(replacement.set);
+    view.instanceSourceLeaseId = source.id;
+    return view.group;
 }
 
 // ============================================================================
@@ -106,28 +126,11 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     ShaderProgram::SetGlobalsDescSetLayout(m_globalsDescSetLayout);
 
     auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
-    m_globalsDescriptorLeases.clear();
-    m_globalsDescriptorLeases.reserve(m_maxFramesInFlight);
-    m_globalsDescSets.resize(m_maxFramesInFlight);
-    for (size_t index = 0; index < m_maxFramesInFlight; ++index) {
-        auto lease = descriptorManager.Allocate(m_globalsDescSetLayout, vk::DescriptorArena::Persistent);
-        if (!lease.IsValid()) {
-            INXLOG_ERROR("Failed to allocate globals descriptor set ", index);
-            for (const auto &allocated : m_globalsDescriptorLeases)
-                descriptorManager.Retire(allocated);
-            m_globalsDescriptorLeases.clear();
-            m_globalsDescSets.clear();
-            vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
-            m_globalsDescSetLayout = VK_NULL_HANDLE;
-            ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
-            return false;
-        }
-        m_globalsDescSets[index] = lease.set;
-        m_globalsDescriptorLeases.push_back(lease);
-    }
+    m_globalsDescriptorLeases.resize(m_maxFramesInFlight);
+    m_globalsDescSets.resize(m_maxFramesInFlight, VK_NULL_HANDLE);
 
-    // Write each descriptor set to point at the corresponding globals buffer
-    // and a placeholder instance SSBO
+    // These sets publish only the shared instance streams. Binding 0 is
+    // supplied by each view when copying this revision into its own set.
     m_instanceBuffers.resize(m_maxFramesInFlight);
     m_skinInstanceBuffers.resize(m_maxFramesInFlight);
     m_skinPaletteBuffers.resize(m_maxFramesInFlight);
@@ -154,7 +157,7 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         if (!m_instanceBuffers[i].buffer || !m_skinInstanceBuffers[i].buffer || !m_skinPaletteBuffers[i].buffer ||
             !m_instanceAuxBuffers[i].buffer) {
             INXLOG_ERROR("Failed to create globals SSBOs for frame ", i);
-            continue;
+            return false;
         }
 
         m_instanceBuffers[i].mapped = m_instanceBuffers[i].buffer->Map();
@@ -162,78 +165,8 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         m_skinPaletteBuffers[i].mapped = m_skinPaletteBuffers[i].buffer->Map();
         m_instanceAuxBuffers[i].mapped = m_instanceAuxBuffers[i].buffer->Map();
 
-        VkWriteDescriptorSet writes[5]{};
-
-        // Binding 0: Globals UBO
-        VkDescriptorBufferInfo uboBufInfo{};
-        if (m_globalsBuffers[i]) {
-            uboBufInfo.buffer = m_globalsBuffers[i]->GetBuffer();
-            uboBufInfo.offset = 0;
-            uboBufInfo.range = sizeof(EngineGlobalsUBO);
-        }
-
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = m_globalsDescSets[i];
-        writes[0].dstBinding = 0;
-        writes[0].dstArrayElement = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &uboBufInfo;
-
-        // Binding 1: Instance SSBO
-        VkDescriptorBufferInfo ssboBufInfo{};
-        ssboBufInfo.buffer = m_instanceBuffers[i].buffer->GetBuffer();
-        ssboBufInfo.offset = 0;
-        ssboBufInfo.range = VK_WHOLE_SIZE;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = m_globalsDescSets[i];
-        writes[1].dstBinding = 1;
-        writes[1].dstArrayElement = 0;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].descriptorCount = 1;
-        writes[1].pBufferInfo = &ssboBufInfo;
-
-        VkDescriptorBufferInfo skinInstanceInfo{};
-        skinInstanceInfo.buffer = m_skinInstanceBuffers[i].buffer->GetBuffer();
-        skinInstanceInfo.offset = 0;
-        skinInstanceInfo.range = VK_WHOLE_SIZE;
-
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = m_globalsDescSets[i];
-        writes[2].dstBinding = 2;
-        writes[2].dstArrayElement = 0;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].descriptorCount = 1;
-        writes[2].pBufferInfo = &skinInstanceInfo;
-
-        VkDescriptorBufferInfo skinPaletteInfo{};
-        skinPaletteInfo.buffer = m_skinPaletteBuffers[i].buffer->GetBuffer();
-        skinPaletteInfo.offset = 0;
-        skinPaletteInfo.range = VK_WHOLE_SIZE;
-
-        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[3].dstSet = m_globalsDescSets[i];
-        writes[3].dstBinding = 3;
-        writes[3].dstArrayElement = 0;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[3].descriptorCount = 1;
-        writes[3].pBufferInfo = &skinPaletteInfo;
-
-        VkDescriptorBufferInfo instanceAuxInfo{};
-        instanceAuxInfo.buffer = m_instanceAuxBuffers[i].buffer->GetBuffer();
-        instanceAuxInfo.offset = 0;
-        instanceAuxInfo.range = VK_WHOLE_SIZE;
-
-        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[4].dstSet = m_globalsDescSets[i];
-        writes[4].dstBinding = 4;
-        writes[4].dstArrayElement = 0;
-        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[4].descriptorCount = 1;
-        writes[4].pBufferInfo = &instanceAuxInfo;
-
-        vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+        if (!PublishGlobalsDescriptorRevision(static_cast<uint32_t>(i)))
+            return false;
     }
 
     INXLOG_INFO("Created globals descriptor set layout, pool, and ", m_maxFramesInFlight,
@@ -484,17 +417,15 @@ bool InxVkCoreModular::PublishGlobalsDescriptorRevision(uint32_t frameIndex)
     VkDevice device = GetDevice();
     if (device == VK_NULL_HANDLE || m_globalsDescSetLayout == VK_NULL_HANDLE ||
         frameIndex >= m_globalsDescSets.size() || frameIndex >= m_globalsDescriptorLeases.size() ||
-        frameIndex >= m_globalsBuffers.size() || frameIndex >= m_instanceBuffers.size() ||
-        frameIndex >= m_skinInstanceBuffers.size() || frameIndex >= m_skinPaletteBuffers.size() ||
-        frameIndex >= m_instanceAuxBuffers.size())
+        frameIndex >= m_instanceBuffers.size() || frameIndex >= m_skinInstanceBuffers.size() ||
+        frameIndex >= m_skinPaletteBuffers.size() || frameIndex >= m_instanceAuxBuffers.size())
         return false;
 
-    const auto &globals = m_globalsBuffers[frameIndex];
     const auto &instances = m_instanceBuffers[frameIndex];
     const auto &skinInstances = m_skinInstanceBuffers[frameIndex];
     const auto &skinPalette = m_skinPaletteBuffers[frameIndex];
     const auto &instanceAux = m_instanceAuxBuffers[frameIndex];
-    if (!globals || !instances.buffer || !skinInstances.buffer || !skinPalette.buffer || !instanceAux.buffer)
+    if (!instances.buffer || !skinInstances.buffer || !skinPalette.buffer || !instanceAux.buffer)
         return false;
 
     auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
@@ -504,26 +435,20 @@ bool InxVkCoreModular::PublishGlobalsDescriptorRevision(uint32_t frameIndex)
         return false;
     }
 
-    VkDescriptorBufferInfo bufferInfos[5]{};
-    bufferInfos[0] = {globals->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
-    bufferInfos[1] = {instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-    bufferInfos[2] = {skinInstances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-    bufferInfos[3] = {skinPalette.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-    bufferInfos[4] = {instanceAux.buffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-
-    constexpr VkDescriptorType descriptorTypes[5] = {
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32_t binding = 0; binding < 5; ++binding) {
-        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[binding].dstSet = replacement.set;
-        writes[binding].dstBinding = binding;
-        writes[binding].descriptorType = descriptorTypes[binding];
-        writes[binding].descriptorCount = 1;
-        writes[binding].pBufferInfo = &bufferInfos[binding];
+    VkDescriptorBufferInfo bufferInfos[4] = {{instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                             {skinInstances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                             {skinPalette.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                             {instanceAux.buffer->GetBuffer(), 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t index = 0; index < 4; ++index) {
+        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[index].dstSet = replacement.set;
+        writes[index].dstBinding = index + 1;
+        writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[index].descriptorCount = 1;
+        writes[index].pBufferInfo = &bufferInfos[index];
     }
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
 
     const auto retired = m_globalsDescriptorLeases[frameIndex];
     m_globalsDescriptorLeases[frameIndex] = replacement;
@@ -579,38 +504,6 @@ bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t inst
         auxiliary.flags |= kGPUInstanceAuxFlagNoReceiveShadows;
     static_cast<GPUInstanceAuxData *>(frame.mapped)[instanceIndex] = auxiliary;
     return true;
-}
-
-// ============================================================================
-// Command-buffer inline update
-// ============================================================================
-
-void InxVkCoreModular::CmdUpdateGlobals(VkCommandBuffer cmdBuf)
-{
-    if (!m_globalsDirty)
-        return;
-
-    // Update ALL per-frame globals buffers so every frame-in-flight sees the
-    // latest values.  Each m_globalsDescSets[i] points at m_globalsBuffers[i],
-    // so we must write to every buffer — not just buffer 0.
-    for (size_t i = 0; i < m_globalsBuffers.size(); ++i) {
-        if (!m_globalsBuffers[i])
-            continue;
-
-        VkBuffer buffer = m_globalsBuffers[i]->GetBuffer();
-
-        // Barrier: ensure previous shader reads from the globals UBO are complete
-        vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-        // Update the globals UBO inline in the command buffer
-        // vkCmdUpdateBuffer has a 65536-byte limit; EngineGlobalsUBO is 128 bytes.
-        vkCmdUpdateBuffer(cmdBuf, buffer, 0, sizeof(EngineGlobalsUBO), &m_stagedGlobals);
-
-        // Barrier: ensure write is visible before subsequent shader reads
-        vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
-    }
-
-    m_globalsDirty = false;
 }
 
 } // namespace infernux

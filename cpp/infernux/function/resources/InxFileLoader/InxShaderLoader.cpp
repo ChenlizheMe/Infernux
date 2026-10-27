@@ -1423,9 +1423,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     }
     // Every geometry surface may use camera helpers, including an Unlit
     // surface that calls getViewDir() directly. The engine globals set is
-    // shared by Scene and Game graphs and is staged from the editor camera,
-    // so it is never a valid per-view camera source. Geometry fragments use
-    // the camera-local set-1 UBO regardless of their lighting model.
+    // camera-local, as is the set-1 lighting UBO used by geometry fragments.
     const bool needsCameraLocalView = !fullscreenDomain && !particleSpriteDomain && desc.isFragmentShader &&
                                       (desc.hasExplicitType || hasSurfaceFunc) && target != ShaderCompileTarget::Shadow;
     if (needsLightingUBO || needsCameraLocalView) {
@@ -1434,12 +1432,6 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "#define INX_SHADING_CAMERA_POSITION vec3(0.0)\n";
     } else {
         result << "#define INX_SHADING_CAMERA_POSITION _Globals._WorldSpaceCameraPos.xyz\n";
-    }
-    const bool cameraLocalDepth =
-        !userHasLayoutDecls && !particleSpriteDomain && desc.isFragmentShader && target != ShaderCompileTarget::Shadow;
-    if (cameraLocalDepth) {
-        result << "#define INX_CAMERA_PROJECTION_PARAMS ubo.projectionParams\n"
-                  "#define INX_CAMERA_ZBUFFER_PARAMS ubo.zBufferParams\n";
     }
 
     // ================================================================
@@ -1644,7 +1636,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         }
     }
 
-    if (!userHasLayoutDecls && (hasCapability("CameraMatrices") || passBuffersDomain || cameraLocalDepth)) {
+    if (!userHasLayoutDecls && (hasCapability("CameraMatrices") || passBuffersDomain)) {
         result << "\n// Auto-generated camera matrices interface\n";
         result << LoadTemplate("camera_matrices_ubo.glsl") << "\n";
     }

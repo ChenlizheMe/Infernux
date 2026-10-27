@@ -34,7 +34,6 @@ class FullscreenRendererHost
                                                                       uint32_t inputBufferMask) = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept = 0;
-    [[nodiscard]] virtual rhi::BindGroupHandle GetCurrentGlobalsGroup() = 0;
     virtual void ReportError(const std::string &message)
     {
         (void)message;
@@ -135,7 +134,7 @@ class FullscreenRenderer
                                            uint32_t inputCount, rhi::SamplerHandle colorSampler);
 
     void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-              rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
+              rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup, rhi::BindGroupHandle globalsGroup,
               const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize);
 
     void ResetPool();

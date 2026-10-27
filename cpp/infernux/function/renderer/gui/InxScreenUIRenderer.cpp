@@ -2381,8 +2381,7 @@ std::vector<InxScreenUIRenderer::WorldDepthRun> InxScreenUIRenderer::GetWorldDep
 void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
                                       const glm::mat4 &viewProjection, const rhi::GraphicsRenderingSignature &target,
                                       uint32_t frameSlot, uint32_t cullingMask, const glm::mat4 &view,
-                                      const glm::mat4 &projection, const glm::mat4 &billboardView,
-                                      uint32_t firstOrdinal, uint32_t endOrdinal)
+                                      const glm::mat4 &projection, uint32_t firstOrdinal, uint32_t endOrdinal)
 {
     constexpr ScreenUIList list = ScreenUIList::World;
     constexpr int listIndex = 2;
@@ -2528,7 +2527,7 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     const bool hasConstantSize = std::any_of(elementOrder.begin(), elementOrder.end(), [&](const ElementDepth &entry) {
         return m_worldElementSpans[entry.index].constantScreenSize;
     });
-    const glm::mat4 cameraToWorld = hasBillboard ? glm::inverse(billboardView) : glm::mat4(1.0f);
+    const glm::mat4 cameraToWorld = hasBillboard ? glm::inverse(view) : glm::mat4(1.0f);
     const glm::vec4 cameraRight(glm::vec3(cameraToWorld[0]), 0.0f);
     const glm::vec4 cameraUp(glm::vec3(cameraToWorld[1]), 0.0f);
     const float screenPixelScale =

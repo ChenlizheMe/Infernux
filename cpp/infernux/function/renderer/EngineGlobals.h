@@ -8,7 +8,7 @@ namespace infernux
 {
 
 /**
- * @brief Engine-owned per-frame parameter domain exposed via set 2.
+ * @brief Engine time and camera-local parameters exposed via set 2.
  *
  * Layout matches globals_ubo.glsl (std140).  Each field is a vec4 for
  * alignment simplicity — UE5-style naming conventions.

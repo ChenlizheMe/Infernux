@@ -1,8 +1,8 @@
-#include "GizmoIdentityTests.h"
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/resources/AssetDatabase/BuiltinSceneIconMetadata.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
+#include "GizmoIdentityTests.h"
 
 #include <cassert>
 #include <cmath>

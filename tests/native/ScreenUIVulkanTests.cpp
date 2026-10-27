@@ -928,7 +928,6 @@ int main(int argc, char **argv)
         renderer.SetMaterialProgramResolver(resolveMaterialProgram);
         glm::mat4 camera(1.f);
         glm::mat4 cameraView(1.f);
-        glm::mat4 billboardView(1.f);
         glm::mat4 cameraProjection(1.f);
         uint32_t frameSlot = 0;
         uint32_t cullingMask = 0xffffffffu;
@@ -965,7 +964,7 @@ int main(int argc, char **argv)
                     }
                     if (list == ScreenUIList::World)
                         activeRenderer->RenderWorld(ctx.GetCommandBuffer(), 128, 128, camera, signature, frameSlot,
-                                                    cullingMask, cameraView, cameraProjection, billboardView);
+                                                    cullingMask, cameraView, cameraProjection);
                     else
                         activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, frameSlot);
                     renderMs =
@@ -1126,16 +1125,10 @@ int main(int argc, char **argv)
         cameraView = glm::lookAtRH(glm::vec3(2.f, 0.f, -2.f), glm::vec3(0.f, 0.f, -2.f), glm::vec3(0.f, 1.f, 0.f));
         camera = cameraProjection * cameraView;
         buildGraph();
-        // The Game Camera remains at identity while the Scene Camera looks
-        // edge-on at its billboard plane. Identity is a real camera matrix,
-        // never a sentinel requesting the Scene Camera basis.
-        const auto gameFacingEdge = cameraPolicyBounds(2.f, true, true, true);
-        assert(gameFacingEdge[2] - gameFacingEdge[0] < nearPixels[2] - nearPixels[0]);
-        billboardView = cameraView;
+        // The same retained billboard faces whichever camera is rendering it.
         const auto sideCameraPixels = cameraPolicyBounds(2.f, true, true, true);
         assert(sideCameraPixels == nearPixels);
         cameraView = glm::mat4(1.f);
-        billboardView = cameraView;
         cameraProjection = glm::orthoRH_ZO(-1.f, 1.f, -1.f, 1.f, 10.f, .1f);
         camera = cameraProjection * cameraView;
         buildGraph();
@@ -1183,10 +1176,10 @@ int main(int argc, char **argv)
             if (billboard) {
                 // The same retained geometry must follow the camera's depth
                 // axis without rebuilding or projecting the glyphs on the CPU.
-                billboardView = glm::rotate(glm::mat4(1.f), glm::radians(180.f), glm::vec3(0, 1, 0));
+                cameraView = glm::rotate(glm::mat4(1.f), glm::radians(180.f), glm::vec3(0, 1, 0));
                 const auto reverseFacing = readWorldText();
                 assert(reverseFacing[2] >= reverseFacing[0]);
-                billboardView = glm::mat4(1.f);
+                cameraView = glm::mat4(1.f);
                 assert(readWorldText() == farText);
             }
         }
