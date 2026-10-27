@@ -533,8 +533,8 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
     // releases flowing to the backend so keys held before focusing Game cannot
     // remain stuck in ImGui. Escape is resolved after gameplay by the editor's
     // shortcut adapter, independently of ImGui navigation.
-    if (keyboard && m_isPlayMode && input.IsEditorInputManaged() && gameInput &&
-        !ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+    if (keyboard && m_isPlayMode && input.IsEditorInputManaged() && gameInput && !ImGui::GetIO().WantTextInput &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
         InxGUISemantics::ReceivesKeyboard(input.GetEditorGameWindowId()) && event.type != SDL_EVENT_KEY_UP)
         forwardToImGui = false;
     // Mouse releases still reach the SDL backend to clear its held-button
