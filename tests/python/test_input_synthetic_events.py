@@ -215,6 +215,66 @@ def test_game_capture_is_resolved_before_component_update(engine, scene, button,
     assert down_samples == [(True, not occluded)]
 
 
+@pytest.mark.parametrize("button", [1, 2], ids=["look", "pan"])
+def test_scene_camera_keeps_captured_motion_on_gui_frames(engine, button):
+    from infernux.engine.ui.scene_view_panel import SceneViewPanel
+
+    manager = InputManager.instance()
+    panel = SceneViewPanel(engine=engine)
+    camera = engine.editor_camera
+    initial_position = tuple(camera.position)
+    initial_rotation = tuple(camera.rotation)
+    initial_focus = tuple(camera.focus_point)
+    initial_distance = float(camera.focus_distance)
+    state = {"frame": 0, "gui_motion": False}
+
+    class CameraInputView(InxGUIRenderable):
+        def on_render(self, ctx):
+            if manager.is_editor_mouse_capture_active:
+                state["gui_motion"] |= Input.get_mouse_delta() == (20.0, 5.0)
+                panel._process_camera_input(ctx, 1.0 / 60.0)
+
+    view = CameraInputView()
+
+    def on_update(_delta_time):
+        state["frame"] += 1
+        if state["frame"] == 1:
+            engine.queue_synthetic_mouse_button_input(button, True, 32.0, 32.0)
+        elif state["frame"] == 3:
+            manager.set_editor_mouse_capture(True)
+            panel._camera_capture_active = True
+            panel._was_right_down = button == 1
+            panel._was_middle_down = button == 2
+            engine.queue_synthetic_mouse_motion_input(32.0, 32.0, 20.0, 5.0)
+        elif state["frame"] == 5:
+            state["position"] = tuple(camera.position)
+            state["rotation"] = tuple(camera.rotation)
+            engine.queue_synthetic_mouse_button_input(button, False, 32.0, 32.0)
+        elif state["frame"] == 7:
+            engine.exit()
+
+    engine.register_gui_renderable("test.scene_camera_input", view)
+    try:
+        engine.set_pre_scene_update_callback(on_update)
+        engine.run()
+    finally:
+        engine.set_pre_scene_update_callback(None)
+        engine.unregister_gui_renderable("test.scene_camera_input")
+        manager.set_editor_mouse_capture(False)
+        panel._force_camera_input_release()
+        camera.restore_state(
+            *initial_position, *initial_focus, initial_distance, *initial_rotation,
+        )
+
+    assert state["gui_motion"], "Motion must share a frame with the editor GUI"
+    if button == 1:
+        assert state["rotation"] != pytest.approx(initial_rotation)
+        assert state["position"] == pytest.approx(initial_position)
+    else:
+        assert state["position"] != pytest.approx(initial_position)
+        assert state["rotation"] == pytest.approx(initial_rotation)
+
+
 def test_semantic_snapshot_request_captures_exactly_one_rendered_frame(engine):
     class _SemanticProbe(InxGUIRenderable):
         def on_render(self, ctx) -> None:
