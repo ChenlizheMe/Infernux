@@ -252,6 +252,7 @@ class ComponentBodyReloadTransaction:
         # successful body/CDS publication.  Preserve the exact old handles
         # until that durable edge has finalized the native schema.
         _retire_transaction_old_slots(self)
+        self._candidate_import.finalize()
         self._finalized = True
 
     def rollback(self) -> None:

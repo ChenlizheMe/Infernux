@@ -260,6 +260,9 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
     auto &store = TransformECSStore::Instance();
     if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldRotation(m_ecsHandle.index, worldRot);
+        store.SetCachedWorldEulerAngles(m_ecsHandle, euler);
+        store.SetHasCachedWorldEulerAngles(m_ecsHandle, true);
+        store.SetWorldEulerExact(m_ecsHandle, true);
         return;
     }
 

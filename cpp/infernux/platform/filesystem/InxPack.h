@@ -79,6 +79,10 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
 Manifest ReadManifest(const std::filesystem::path &path);
 
 /// Validate and extract the package.  Empty allowedRoots means no root filter.
+/// The destination and its descendants must be plain directories (no links).
+/// Ancestors of the destination are resolved before pinning the output tree.
+/// Each decoded entry replaces its output atomically; extraction of the whole
+/// archive is not transactional, so earlier successful entries can remain on failure.
 Manifest Extract(const std::filesystem::path &path, const std::filesystem::path &destination,
                  const std::vector<std::string> &allowedRoots = {});
 

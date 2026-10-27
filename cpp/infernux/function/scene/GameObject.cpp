@@ -7,6 +7,7 @@
 #include "PyComponentProxy.h"
 #include "Rigidbody.h"
 #include "Scene.h"
+#include "TransformECSStore.h"
 #include "function/audio/AudioSource.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
@@ -100,6 +101,8 @@ void GameObject::SetLayer(int layer)
 
 void GameObject::SetScene(Scene *scene)
 {
+    if (m_scene != scene)
+        TransformECSStore::Instance().NotifyOwnerWorldChanged(m_transform.GetECSHandle());
     m_scene = scene;
     InvalidateComponentExecutionCache(); // Dispatch handles include the owning world ID.
     m_transform.SetGameObject(this);

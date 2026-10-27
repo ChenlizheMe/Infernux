@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import dataclasses
+import gc
 import importlib.util
 import os
 import sys
 import types
+import weakref
 from pathlib import Path
 
 import pytest
@@ -396,3 +398,210 @@ def test_execution_failure_restores_existing_module_entry(candidate_project):
         sys.modules.pop("failure_candidate", None)
     else:
         sys.modules["failure_candidate"] = previous
+
+
+def test_durable_body_reload_releases_previous_modules(candidate_project, monkeypatch):
+    from infernux.components.script_loader import (
+        ComponentBodyReloadRequest,
+        stage_component_body_reload_batch,
+    )
+
+    name = "durable_reload_helper"
+    path = candidate_project / f"{name}.py"
+    path.write_text("VALUE = -1\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    revisions = []
+    for value in range(12):
+        transaction = stage_component_body_reload_batch((
+            ComponentBodyReloadRequest(
+                str(path),
+                source=f"VALUE = {value}\nPAYLOAD = bytearray(65536)\ndef read(): return VALUE\n",
+            ),
+        ))
+        transaction.commit()
+        transaction.finalize()
+        assert transaction.finalized
+        revisions.append(weakref.ref(sys.modules[name]))
+        del transaction
+
+    gc.collect()
+    assert sys.modules[name].read() == 11
+    assert all(reference() is None for reference in revisions[:-1])
+    assert revisions[-1]() is sys.modules[name]
+
+
+@pytest.mark.parametrize("kind", ["package", "namespace", "plugin"])
+def test_finalized_import_hooks_follow_published_relative_and_dynamic_dependencies(
+    candidate_project, monkeypatch, kind,
+):
+    if kind == "plugin":
+        control = candidate_project.parent / "Packages" / "durable" / "tool"
+        control.mkdir(parents=True)
+        (control / "inx_package.json").write_text("{}\n", encoding="utf-8")
+        package = control / "runtime"
+    else:
+        package = candidate_project / "durable_imports"
+    package.mkdir(parents=True)
+    entry = package / "entry.py"
+    helper = package / "helper.py"
+    entry.write_text(
+        "import importlib\nimport dataclasses\n"
+        "def read():\n"
+        "    from . import helper\n"
+        "    from .helper import VALUE\n"
+        "    return helper.VALUE, VALUE, importlib.import_module('.helper', __package__).VALUE\n"
+        "def record():\n"
+        "    @dataclasses.dataclass\n"
+        "    class Record:\n"
+        "        value: int = 7\n"
+        "    return Record()\n",
+        encoding="utf-8",
+    )
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    entry_name = get_script_module_name(str(entry))
+    helper_name = get_script_module_name(str(helper))
+    parent_name = entry_name.rpartition(".")[0]
+    for name in (parent_name, entry_name, helper_name):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    initial_parent = sys.modules[parent_name]
+    initial_parent.__path__ = [str(package)]
+    initial_parent.__file__ = None
+    broker = CandidateImportTransaction()
+    if kind == "package":
+        (package / "__init__.py").write_text("MARKER = 'package'\n", encoding="utf-8")
+        broker.register(parent_name, str(package / "__init__.py"))
+    broker.register(entry_name, str(entry))
+    broker.register(helper_name, str(helper))
+    broker.load(parent_name)
+    module = broker.load(entry_name)
+    original_helper = broker.load(helper_name)
+    previous_helper = weakref.ref(original_helper)
+    del original_helper
+    broker.commit()
+    broker.finalize()
+    assert module.read() == (1, 1, 1)
+    assert module.record().value == 7
+    helper.unlink()
+    assert module.read() == (1, 1, 1)
+    helper.write_text("VALUE = 2\n", encoding="utf-8")
+    if kind == "plugin":
+        manifest = control / "inx_package.json"
+        manifest.unlink()
+        assert module.read() == (1, 1, 1)
+        manifest.write_text("{}\n", encoding="utf-8")
+
+    replacement = CandidateImportTransaction()
+    replacement.register(helper_name, str(helper), source="VALUE = 2\n")
+    replacement.load(helper_name)
+    replacement.commit()
+    replacement.finalize()
+    gc.collect()
+    # The old entry's captured builtins/importlib proxy still work, without
+    # pinning either the old helper or a private overlay of its live parent.
+    assert module.read() == (2, 2, 2)
+    assert module.record().value == 7
+    assert previous_helper() is None
+
+
+def test_finalization_preserves_published_data_and_effect_registries(candidate_project, monkeypatch):
+    from infernux.components.serializable_object import (
+        _restore_serializable_types,
+        get_serializable_class,
+    )
+    from infernux.renderstack.render_effect_compiler import (
+        _retire_source_effect_features,
+        _snapshot_effect_features,
+    )
+
+    name = "durable_registry_owner"
+    identity = name + ":Rules"
+    effect_id = "tests.candidate.durable-registry"
+
+    def effect_type():
+        # Inspect publication itself: the public getter independently scans
+        # authored files and can replace declarations under a discovery name.
+        return _snapshot_effect_features((effect_id,), ())[effect_id].effect_class
+
+    monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    source = (
+        "from infernux.components import SerializableObject\n"
+        "from infernux.renderstack import render_effect_feature\n"
+        "class Rules(SerializableObject):\n    value: int = 1\n"
+        f"@render_effect_feature('{effect_id}')\n"
+        "class Effect:\n    value = 1\n"
+    )
+    live = _broker(candidate_project, name, source)
+    try:
+        original = live.load(name)
+        live.commit()
+        live.finalize()
+        assert get_serializable_class(identity) is original.Rules
+        assert effect_type() is original.Effect
+
+        candidate = _broker(candidate_project, name, source.replace("= 1", "= 2"))
+        changed = candidate.load(name)
+        candidate.commit()
+        assert get_serializable_class(identity) is changed.Rules
+        assert effect_type() is changed.Effect
+        candidate.rollback()
+        assert sys.modules[name] is original
+        assert get_serializable_class(identity) is original.Rules
+        assert effect_type() is original.Effect
+
+        durable = _broker(candidate_project, name, source.replace("= 1", "= 3"))
+        current = durable.load(name)
+        durable.commit()
+        durable.finalize()
+        assert get_serializable_class(identity) is current.Rules
+        assert effect_type() is current.Effect
+        with pytest.raises(CandidateImportError, match="durable"):
+            durable.rollback()
+        assert get_serializable_class(identity) is current.Rules
+        assert effect_type() is current.Effect
+    finally:
+        _restore_serializable_types({identity: None})
+        _retire_source_effect_features(str(candidate_project / f"{name}.py"))
+
+
+def test_candidate_finalization_requires_commit_and_closes_rollback(candidate_project):
+    broker = _broker(candidate_project, "durable_states", "VALUE = 1\n")
+    with pytest.raises(CandidateImportError, match="must commit"):
+        broker.finalize()
+    broker.load("durable_states")
+    broker.commit()
+    broker.finalize()
+    broker.finalize()
+    broker.commit()
+    try:
+        with pytest.raises(CandidateImportError, match="durable"):
+            broker.rollback()
+        with pytest.raises(CandidateImportError, match="cannot register"):
+            broker.register("another", str(candidate_project / "durable_states.py"))
+        with pytest.raises(CandidateImportError, match="no published module"):
+            broker.load("not_published_project_module")
+    finally:
+        sys.modules.pop("durable_states", None)
+
+    rejected = _broker(candidate_project, "rolled_back_states", "VALUE = 1\n")
+    rejected.load("rolled_back_states")
+    rejected.rollback()
+    with pytest.raises(CandidateImportError, match="rolled back"):
+        rejected.finalize()
+
+
+def test_rejected_finalization_preserves_the_rollback_window(candidate_project):
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+
+    broker = _broker(candidate_project, "finalize_safe_point", "VALUE = 1\n")
+    broker.load("finalize_safe_point")
+    broker.commit()
+    scheduler = RuntimeExecutionScheduler()
+    frame = scheduler.begin_frame()
+    try:
+        with pytest.raises(RuntimeError, match="safe point"):
+            broker.finalize()
+        assert not broker.finalized
+    finally:
+        frame.close()
+        broker.rollback()
+    assert "finalize_safe_point" not in sys.modules

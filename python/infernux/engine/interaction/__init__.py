@@ -140,7 +140,7 @@ from .project_settings import (
     ensure_project_settings_document,
     normalize_build_settings,
 )
-from .transactions import EditorTransaction
+from .transactions import EditorTransaction, TransactionRollbackError
 from .panels import (
     BoundPanelCommand,
     ExternalDropKind,
@@ -272,6 +272,7 @@ __all__ = [
     "CommandSource",
     "CommandStatus",
     "EditorTransaction",
+    "TransactionRollbackError",
     "HistoryEntrySnapshot",
     "HistoryModel",
     "HistorySnapshot",

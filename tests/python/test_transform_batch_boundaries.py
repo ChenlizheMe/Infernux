@@ -142,6 +142,179 @@ def test_empty_handle_has_explicit_element_shape(mode, prop):
         batch_write(target, np.empty((0, width + 1), dtype=np.float32), prop)
 
 
+@pytest.mark.parametrize("mode", ["strict", "compact"])
+@pytest.mark.parametrize("warm_cache", [False, True])
+@pytest.mark.parametrize("prop", ["local_position", "local_rotation"])
+def test_scene_transfer_invalidates_batch_world_identity_without_other_allocations(scene, mode, warm_cache, prop):
+    manager = lib.SceneManager.instance()
+    destination = manager.create_scene("Batch move destination")
+    moved = scene.create_game_object("Moved root")
+    child = scene.create_game_object("Moved descendant")
+    child.set_parent(moved, False)
+    first = scene.create_game_object("First survivor")
+    second = scene.create_game_object("Second survivor")
+    transforms = [moved.transform, first.transform, child.transform, second.transform]
+    handle = create_batch_handle(transforms, mode=mode)
+    before = batch_read(transforms, prop).copy()
+    if warm_cache:
+        batch_read(handle, prop)
+
+    manager.move_game_object_to_scene(moved, destination)
+    values = np.asarray(
+        [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]] if prop == "local_position" else
+        [[0, 0, 0, 1], [0, 0.6, 0, 0.8], [0.6, 0, 0, 0.8], [0, 0, 0.6, 0.8]],
+        dtype=np.float32,
+    )
+    expected_mask = np.asarray([False, True, False, True])
+    if mode == "strict":
+        with pytest.raises(RuntimeError, match="stale transform"):
+            batch_read(handle, prop)
+        with pytest.raises(RuntimeError, match="stale transform"):
+            batch_write(handle, values, prop)
+        np.testing.assert_array_equal(batch_read(transforms, prop), before)
+    else:
+        gathered, mask = batch_read(handle, prop)
+        np.testing.assert_array_equal(mask, expected_mask)
+        np.testing.assert_array_equal(gathered, before[expected_mask])
+        np.testing.assert_array_equal(batch_write(handle, values, prop), expected_mask)
+        gathered, mask = batch_read(handle, prop)
+        np.testing.assert_array_equal(mask, expected_mask)
+        np.testing.assert_allclose(gathered, values[expected_mask], atol=1e-5)
+        # Both the moved root and its moved child retain their original values;
+        # compact rows still address the original input indices 1 and 3.
+        np.testing.assert_array_equal(batch_read(transforms, prop)[~expected_mask], before[~expected_mask])
+
+    # An unrelated allocation must not change the outcome of world validation.
+    destination.create_game_object("Unrelated")
+    if mode == "strict":
+        with pytest.raises(RuntimeError, match="stale transform"):
+            batch_read(handle, prop)
+    else:
+        np.testing.assert_array_equal(batch_read(handle, prop)[1], expected_mask)
+        manager.move_game_object_to_scene(first, destination)
+        manager.move_game_object_to_scene(second, destination)
+        gathered, mask = batch_read(handle, prop)
+        assert gathered.shape == (0, values.shape[1])
+        np.testing.assert_array_equal(mask, False)
+        np.testing.assert_array_equal(batch_write(handle, values, prop), False)
+        with pytest.raises(ValueError):
+            batch_write(handle, values[:, :-1], prop)
+        manager.move_game_object_to_scene(first, scene)
+        manager.move_game_object_to_scene(second, scene)
+
+    # Returning to the captured world revives the same generational identities.
+    manager.move_game_object_to_scene(moved, scene)
+    mask = batch_write(handle, values, prop)
+    if mode == "compact":
+        np.testing.assert_array_equal(mask, True)
+    np.testing.assert_allclose(batch_read(transforms, prop), values, atol=1e-5)
+
+
+def hierarchy_targets(scene):
+    parent = scene.create_game_object("Batch parent")
+    spacer = scene.create_game_object("Untargeted ancestor")
+    spacer.set_parent(parent, False)
+    spacer.transform.local_position = lib.Vector3(1, 2, 3)
+    spacer.transform.local_euler_angles = lib.Vector3(13, 24, 8)
+    child = scene.create_game_object("Batch child")
+    child.set_parent(spacer, False)
+    leaf = scene.create_game_object("Batch grandchild")
+    leaf.set_parent(child, False)
+    for owner in (parent, child, leaf):
+        owner.transform.euler_angles = lib.Vector3(5, 10, 15)
+    return [parent.transform, child.transform, leaf.transform]
+
+
+@pytest.mark.parametrize("mode", ["list", "strict", "compact"])
+@pytest.mark.parametrize("prop", ["position", "rotation", "euler_angles"])
+@pytest.mark.parametrize("during_frame", [False, True])
+@pytest.mark.parametrize("layout", ["extra_rows", "readonly_strided"])
+def test_hierarchy_world_batches_publish_final_values_and_keep_input_unchanged(
+    engine, scene, mode, prop, during_frame, layout,
+):
+    transforms = hierarchy_targets(scene)
+    indices = [2, 0, 1, 0, 2]
+    targets = [transforms[index] for index in indices]
+    handle = targets if mode == "list" else create_batch_handle(targets, mode=mode)
+    desired = np.asarray({
+        "position": [[3, 8, -2], [-5, 7, 13], [19, -3, 11]],
+        "rotation": [[0, 0.6, 0, 0.8], [0.6, 0, 0, 0.8], [0, 0, 0.6, 0.8]],
+        "euler_angles": [[120, 330, 15], [25, 58, 29], [31, 320, 74]],
+    }[prop], dtype=np.float32)
+    values = desired[indices].copy()
+    values[:2] = [0, 0, 0, 1] if prop == "rotation" else [9, 27, 35]
+    if layout == "extra_rows":
+        values = np.vstack((values, values[:1]))
+    else:
+        storage = np.full((len(values), values.shape[1] * 2), -999, dtype=np.float32)
+        storage[:, ::2] = values
+        values = storage[:, ::2]
+        values.flags.writeable = False
+    original = values.copy()
+    observed = []
+
+    def publish(_delta=0.0):
+        write_mask = batch_write(handle, values, prop)
+        observed.append((write_mask, batch_read(handle, prop)))
+
+    if during_frame:
+        from infernux.runtime_services import register_update
+
+        manager = lib.SceneManager.instance()
+        registration = register_update(publish)
+        try:
+            manager.play()
+            engine.tick(0.0)
+        finally:
+            registration.close()
+            manager.stop()
+    else:
+        publish()
+    assert len(observed) == 1
+    write_mask, immediate = observed[0]
+    if mode == "compact":
+        np.testing.assert_array_equal(write_mask, True)
+        immediate, mask = immediate
+        np.testing.assert_array_equal(mask, True)
+    np.testing.assert_allclose(immediate, desired[indices], atol=1e-4)
+    np.testing.assert_allclose(batch_read(transforms, prop), desired, atol=1e-4)
+    np.testing.assert_array_equal(values, original)
+
+
+@pytest.mark.parametrize("mode,prop", [("list", "position"), ("strict", "rotation"), ("compact", "euler_angles")])
+@pytest.mark.parametrize("layout", ["wide", "rank1", "short_rows"])
+def test_hierarchy_world_batch_shape_rejection_leaves_every_target_unchanged(scene, mode, prop, layout):
+    transforms = hierarchy_targets(scene)
+    targets = [transforms[2], transforms[0], transforms[1]]
+    handle = targets if mode == "list" else create_batch_handle(targets, mode=mode)
+    before = batch_read(transforms, prop).copy()
+    width = 4 if prop == "rotation" else 3
+    values = np.ones((3, width), dtype=np.float32)
+    if layout == "wide":
+        values = np.column_stack((values, values[:, :1]))
+    elif layout == "rank1":
+        values = values.reshape(-1)
+    else:
+        values = values[:2]
+    original = values.copy()
+    with pytest.raises(ValueError):
+        batch_write(handle, values, prop)
+    np.testing.assert_array_equal(batch_read(transforms, prop), before)
+    np.testing.assert_array_equal(values, original)
+
+
+@pytest.mark.parametrize("prop", ["local_position", "local_scale", "local_rotation", "local_euler_angles"])
+def test_hierarchical_local_batch_values_keep_local_assignment_semantics(scene, prop):
+    transforms = hierarchy_targets(scene)
+    targets = [transforms[2], transforms[0], transforms[1], transforms[0]]
+    values = np.asarray(
+        [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]] if prop != "local_rotation" else
+        [[0, 0, 0, 1], [0, 0.6, 0, 0.8], [0.6, 0, 0, 0.8], [0, 0, 0.6, 0.8]], dtype=np.float32,
+    )
+    batch_write(targets, values, prop)
+    np.testing.assert_allclose(batch_read(transforms, prop), values[[3, 2, 0]], atol=1e-4)
+
+
 @pytest.mark.parametrize(
     "entry,invalid", [("strict", "null"), ("compact", "wrong_type"), ("read", "null"), ("write", "wrong_type")]
 )

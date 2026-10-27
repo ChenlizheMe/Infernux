@@ -67,6 +67,29 @@ glm::quat RotationFromAffine(const glm::mat4 &world)
         axisZ /= lengthZ;
     return glm::normalize(glm::quat_cast(glm::mat3(axisX, axisY, axisZ)));
 }
+
+template <typename Apply>
+void ApplyWorldBatchInHierarchyOrder(Transform *const *transforms, size_t count, const Apply &apply)
+{
+    // Independent roots retain the allocation-free linear path. Nested rows
+    // use the full ancestor depth, including parents absent from the batch.
+    // The input row breaks depth ties, so duplicate targets keep last-row wins
+    // without reordering or modifying the caller's value array.
+    std::vector<std::pair<size_t, size_t>> nested;
+    for (size_t row = 0; row < count; ++row) {
+        size_t depth = 0;
+        for (const Transform *parent = transforms[row]->GetParent(); parent; parent = parent->GetParent())
+            ++depth;
+        if (depth != 0)
+            nested.emplace_back(depth, row);
+    }
+    std::sort(nested.begin(), nested.end());
+    for (size_t row = 0; row < count; ++row)
+        if (!transforms[row]->GetParent())
+            apply(row);
+    for (const auto &[depth, row] : nested)
+        apply(row);
+}
 } // namespace
 
 TransformECSStore &TransformECSStore::Instance()
@@ -167,6 +190,12 @@ void TransformECSStore::RebindOwner(Handle handle, Transform *owner)
     }
 }
 
+void TransformECSStore::NotifyOwnerWorldChanged(Handle handle)
+{
+    if (IsValid(handle))
+        ++m_structuralVersion;
+}
+
 void TransformECSStore::Reserve(size_t capacity)
 {
     m_localPositions.reserve(capacity);
@@ -246,7 +275,10 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     // cached data as stale.
     auto &self = const_cast<TransformECSStore &>(*this);
     self.MarkWorldMatrixDirty(idx);
-    if (clearWorldEulerExact) {
+    // A cached world rotation pins this node independently of an ancestor's
+    // local rotation. Local writes clear their own override before reaching
+    // this invalidation, so only still-authoritative world channels survive.
+    if (clearWorldEulerExact && !(m_frameCacheActive && HasFrameCacheWorldRotationOverride(handle))) {
         self.m_worldEulerExact[idx] = 0;
         self.m_fcRotationValid[idx] = 0;
     }
@@ -477,7 +509,7 @@ void TransformECSStore::GatherWorldPositions(Transform *const *transforms, float
 void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, const float *in, size_t count)
 {
     bool requiresMatrixSync = false;
-    for (size_t i = 0; i < count; ++i) {
+    const auto write = [&](size_t i) {
         Transform *t = transforms[i];
         Transform *parent = t->GetParent();
         glm::vec3 wp(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
@@ -485,7 +517,7 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
 
         if (m_frameCacheActive) {
             SetCachedWorldPosition(idx, wp);
-            continue;
+            return;
         }
 
         GameObject *gameObject = t->GetGameObject();
@@ -494,8 +526,6 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
             m_localPositions[idx] = wp;
             m_cachedWorldMatrices[idx][3] = glm::vec4(wp, 1.0f);
             m_worldMatrixDirty[idx] = 0;
-            if (m_frameCacheActive)
-                m_fcWorldPositions[idx] = wp;
             if (m_invalidationObserver)
                 m_invalidationObserver(t);
         } else {
@@ -510,10 +540,18 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
             InvalidateSubtree(t, false);
         }
         m_dirty[idx] = 1;
+    };
+    if (m_frameCacheActive) {
+        // World overrides are already staged; EndFrameCache resolves their
+        // local poses against the final parents in hierarchy order.
+        for (size_t i = 0; i < count; ++i)
+            write(i);
+    } else {
+        ApplyWorldBatchInHierarchyOrder(transforms, count, write);
     }
     if (requiresMatrixSync)
         m_anyWorldMatrixDirty = true;
-    if (count > 0)
+    if (count > 0 && !m_frameCacheActive)
         ++m_globalTransformSerial;
 }
 
@@ -529,8 +567,14 @@ void TransformECSStore::GatherWorldEulerAngles(Transform *const *transforms, flo
 
 void TransformECSStore::ScatterWorldEulerAngles(Transform *const *transforms, const float *in, size_t count)
 {
-    for (size_t i = 0; i < count; ++i) {
+    const auto write = [&](size_t i) {
         transforms[i]->SetWorldEulerAngles(glm::vec3(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]));
+    };
+    if (m_frameCacheActive) {
+        for (size_t i = 0; i < count; ++i)
+            write(i);
+    } else {
+        ApplyWorldBatchInHierarchyOrder(transforms, count, write);
     }
 }
 
@@ -547,8 +591,14 @@ void TransformECSStore::GatherWorldRotations(Transform *const *transforms, float
 
 void TransformECSStore::ScatterWorldRotations(Transform *const *transforms, const float *in, size_t count)
 {
-    for (size_t i = 0; i < count; ++i) {
+    const auto write = [&](size_t i) {
         transforms[i]->SetWorldRotation(glm::quat(in[i * 4 + 3], in[i * 4], in[i * 4 + 1], in[i * 4 + 2]));
+    };
+    if (m_frameCacheActive) {
+        for (size_t i = 0; i < count; ++i)
+            write(i);
+    } else {
+        ApplyWorldBatchInHierarchyOrder(transforms, count, write);
     }
 }
 
@@ -590,6 +640,15 @@ bool TransformECSStore::EndFrameCache()
 
     m_frameCacheActive = false;
     bool requiresFullSync = false;
+
+    // Ancestor publication invalidates descendant Euler caches. Preserve
+    // explicit world Euler writes before that invalidation, then restore only
+    // their final representations after every parent/local pose is committed.
+    m_fcExactEulerCommits.clear();
+    for (const uint32_t i : m_fcDirtyIndices) {
+        if (i < m_alive.size() && m_alive[i] && (m_fcDirty[i] & 0x02) != 0 && m_worldEulerExact[i])
+            m_fcExactEulerCommits.emplace_back(Handle{i, m_generations[i]}, m_cachedWorldEulerAngles[i]);
+    }
 
     const auto commitSlot = [&](uint32_t i) {
         const uint8_t d = m_fcDirty[i];
@@ -689,6 +748,18 @@ bool TransformECSStore::EndFrameCache()
     for (const auto &[depth, i] : m_fcChildCommits)
         commitSlot(i);
 
+    for (const auto &[handle, euler] : m_fcExactEulerCommits) {
+        if (IsValid(handle)) {
+            m_cachedWorldEulerAngles[handle.index] = euler;
+            m_hasCachedWorldEulerAngles[handle.index] = 1;
+            m_worldEulerExact[handle.index] = 1;
+            const Transform *owner = m_owners[handle.index];
+            if (owner && !owner->GetParent())
+                m_localEulerAngles[handle.index] = euler;
+        }
+    }
+    m_fcExactEulerCommits.clear();
+
     m_fcDirtyIndices.clear();
 
     // Pre-sync world matrices now so CollectRenderables hits clean
@@ -723,21 +794,30 @@ void TransformECSStore::MarkFrameCacheDirty(uint32_t slotIndex, uint8_t bits)
     m_fcDirty[slotIndex] |= bits;
 }
 
-void TransformECSStore::MarkWorldMatrixDirty(uint32_t slotIndex)
+void TransformECSStore::InvalidateWorldMatrixCache(uint32_t slotIndex)
 {
     if (slotIndex >= m_worldMatrixDirty.size())
         return;
-    const bool newlyDirty = m_worldMatrixDirty[slotIndex] == 0;
-    m_worldMatrixDirty[slotIndex] = 1;
+    if (m_worldMatrixDirty[slotIndex] == 0)
+        m_worldMatrixDirty[slotIndex] = kWorldMatrixStagedDirty;
     if (!m_worldMatrixDirtyListed[slotIndex]) {
         m_worldMatrixDirtyListed[slotIndex] = 1;
         m_worldMatrixDirtyIndices.push_back(slotIndex);
     }
     m_anyWorldMatrixDirty = true;
-    // Inspector and physics consumers key off this serial. Batch scatter and
-    // frame-cache writes mark dirty here without going through InvalidateSubtree
-    // while already dirty, so the bump belongs at this chokepoint.
-    if (newlyDirty)
+}
+
+void TransformECSStore::MarkWorldMatrixDirty(uint32_t slotIndex)
+{
+    if (slotIndex >= m_worldMatrixDirty.size())
+        return;
+    const bool newlyPublished = m_worldMatrixDirty[slotIndex] != kWorldMatrixPublishedDirty;
+    InvalidateWorldMatrixCache(slotIndex);
+    m_worldMatrixDirty[slotIndex] = kWorldMatrixPublishedDirty;
+    // Staged invalidation affects live matrix reads without publishing a
+    // committed change. The first real write must publish even when a staged
+    // ancestor already invalidated this slot and no intervening read occurred.
+    if (newlyPublished)
         ++m_globalTransformSerial;
 }
 
@@ -772,14 +852,20 @@ void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::ve
     EnsureFrameCacheSlot(slotIndex);
     m_fcWorldPositions[slotIndex] = v;
     MarkFrameCacheDirty(slotIndex, 0x41);
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], false);
 }
 
 void TransformECSStore::SetCachedWorldRotation(uint32_t slotIndex, const glm::quat &q)
 {
+    const Transform *owner = m_owners[slotIndex];
+    const bool rotationChanged = !owner || owner->GetWorldRotation() != q;
     EnsureFrameCacheSlot(slotIndex);
     m_fcWorldRotations[slotIndex] = q;
     m_fcRotationValid[slotIndex] = 1;
+    if (rotationChanged)
+        m_worldEulerExact[slotIndex] = 0;
     MarkFrameCacheDirty(slotIndex, 0x42);
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], rotationChanged);
 }
 
 void TransformECSStore::SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const glm::vec3 &position,
@@ -792,7 +878,26 @@ void TransformECSStore::SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const 
     if (applyRotation) {
         m_fcWorldRotations[slotIndex] = rotation;
         m_fcRotationValid[slotIndex] = 1;
+        m_worldEulerExact[slotIndex] = 0;
         MarkFrameCacheDirty(slotIndex, 0x02);
+    }
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], applyRotation);
+}
+
+void TransformECSStore::InvalidateFrameCacheDescendants(Transform *root, bool rotation)
+{
+    GameObject *owner = root ? root->GetGameObject() : nullptr;
+    if (!owner)
+        return;
+    for (const auto &child : owner->GetChildren()) {
+        Transform *transform = child->GetTransform();
+        const Handle handle = transform->GetECSHandle();
+        InvalidateWorldMatrixCache(handle.index);
+        if (rotation && !HasFrameCacheWorldRotationOverride(handle)) {
+            m_worldEulerExact[handle.index] = 0;
+            m_fcRotationValid[handle.index] = 0;
+        }
+        InvalidateFrameCacheDescendants(transform, rotation);
     }
 }
 

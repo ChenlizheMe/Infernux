@@ -168,17 +168,25 @@ class UndoManager:
     def transaction(self, description: str):
         from infernux.engine.interaction import EditorTransaction
 
-        transaction = EditorTransaction(description)
-        try:
-            with self.suppress():
+        transaction = EditorTransaction(description, rollback_scope=self.suppress)
+        with self.suppress():
+            try:
                 yield transaction
-        except Exception:
-            transaction.rollback()
-            raise
-        else:
-            command = transaction.commit()
-            if command is not None:
-                self.record(command, transaction_id=transaction.transaction_id)
+            except Exception as error:
+                # execute() already attempted rollback before propagating its
+                # error. A second automatic attempt would hide recovery failure
+                # and may repeat non-idempotent undo operations.
+                if not transaction.is_closed:
+                    transaction._rollback_after_error(error)
+                raise
+        if transaction.rollback_error is not None:
+            # A caller may have caught execute()'s error inside the with body.
+            # Leaving a partially reverted transaction must still report its
+            # recovery handle rather than looking like a successful commit.
+            raise transaction.rollback_error
+        command = transaction.commit()
+        if command is not None:
+            self.record(command, transaction_id=transaction.transaction_id)
 
     def execute(
         self,

@@ -9,6 +9,7 @@
 #include "CompoundColliderPublicationTests.h"
 #include "PhysicsQueryDefaultMaskTests.h"
 #include "TransformHierarchyPublicationTests.h"
+#include "TransformWorldBatchTests.h"
 #include <cassert>
 #include <vector>
 
@@ -215,6 +216,7 @@ int main()
     });
 
     TestTransformHierarchyPublication(*scene);
+    TestTransformWorldBatchPublication(*scene);
 
     manager.ClearRuntimeLifecycleCallbacks();
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);

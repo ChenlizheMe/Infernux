@@ -452,6 +452,13 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any = None):
         ranges and boolean values follow normal field assignment semantics.
     prop : str | descriptor
         Same property specifier used for ``batch_read``.
+
+    Transform world-space writes (``position``, ``rotation``, ``euler_angles``)
+    establish each target's final world value independently of parent/child
+    row order, including writes during a frame. Repeated targets use their last
+    input row. Untargeted descendants follow their final parent transforms;
+    local-space properties retain ordinary local assignment semantics. Euler
+    reads use the public angle convention. The input array is never modified.
     """
     if isinstance(targets, ComponentFieldBatch):
         targets.write(data)
