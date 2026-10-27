@@ -1,8 +1,8 @@
+#include "GizmoIdentityTests.h"
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/resources/AssetDatabase/BuiltinSceneIconMetadata.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
-#include "GizmoIdentityTests.h"
 
 #include <cassert>
 #include <cmath>
@@ -65,7 +65,7 @@ int main()
     auto token = std::shared_ptr<infernux::InxMaterial>(reinterpret_cast<infernux::InxMaterial *>(1),
                                                         [](infernux::InxMaterial *) {});
     materials.fallback = token;
-    const glm::mat4 iconProjection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f);
+    const glm::mat4 iconProjection = glm::perspective(glm::radians(60.0f), 1.0f, 100.0f, 0.1f);
     // Infernux Transform.forward is +Z; the editor camera is behind an icon
     // at the origin when it sits at -Z. This was previously tested backwards,
     // allowing billboards to collapse to a subpixel quad in the real editor.

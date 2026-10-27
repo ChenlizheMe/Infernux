@@ -1,9 +1,9 @@
 #pragma once
 
+#include <cstring>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <glm/gtc/matrix_transform.hpp>
-#include <cstring>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -21,40 +21,115 @@ class MetadataDevice final : public Device
     DeviceCaps caps;
     std::shared_ptr<DeviceLifetime> lifetime = std::make_shared<DeviceLifetime>();
     uint32_t next = 1;
+
   public:
-    const DeviceCaps &GetCapabilities() const noexcept override { return caps; }
-    std::shared_ptr<DeviceLifetime> GetLifetime() const noexcept override { return lifetime; }
-    BufferHandle CreateBuffer(const BufferDesc &) override { return {next++, ComposeHandleGeneration(1, 1)}; }
-    TextureHandle CreateTexture(const TextureDesc &) override { throw std::logic_error("unexpected texture"); }
-    TextureViewHandle CreateTextureView(const TextureViewDesc &) override { throw std::logic_error("unexpected view"); }
-    SamplerHandle CreateSampler(const SamplerDesc &) override { throw std::logic_error("unexpected sampler"); }
-    ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc &) override { throw std::logic_error("unexpected shader"); }
-    BindingLayoutHandle CreateBindingLayout(const BindingLayoutDesc &) override { throw std::logic_error("unexpected layout"); }
-    BindGroupHandle CreateBindGroup(const BindGroupDesc &) override { throw std::logic_error("unexpected group"); }
-    GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &) override { throw std::logic_error("unexpected pipeline"); }
-    ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc &) override { throw std::logic_error("unexpected compute"); }
-    bool WriteBuffer(BufferHandle, uint64_t, const void *, uint64_t) override { throw std::logic_error("unexpected upload"); }
-    void Release(BufferHandle) noexcept override {}
-    void Release(TextureHandle) noexcept override {}
-    void Release(TextureViewHandle) noexcept override {}
-    void Release(SamplerHandle) noexcept override {}
-    void Release(ShaderModuleHandle) noexcept override {}
-    void Release(BindingLayoutHandle) noexcept override {}
-    void Release(BindGroupHandle) noexcept override {}
-    void Release(GraphicsPipelineHandle) noexcept override {}
-    void Release(ComputePipelineHandle) noexcept override {}
+    const DeviceCaps &GetCapabilities() const noexcept override
+    {
+        return caps;
+    }
+    std::shared_ptr<DeviceLifetime> GetLifetime() const noexcept override
+    {
+        return lifetime;
+    }
+    BufferHandle CreateBuffer(const BufferDesc &) override
+    {
+        return {next++, ComposeHandleGeneration(1, 1)};
+    }
+    TextureHandle CreateTexture(const TextureDesc &) override
+    {
+        throw std::logic_error("unexpected texture");
+    }
+    TextureViewHandle CreateTextureView(const TextureViewDesc &) override
+    {
+        throw std::logic_error("unexpected view");
+    }
+    SamplerHandle CreateSampler(const SamplerDesc &) override
+    {
+        throw std::logic_error("unexpected sampler");
+    }
+    ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc &) override
+    {
+        throw std::logic_error("unexpected shader");
+    }
+    BindingLayoutHandle CreateBindingLayout(const BindingLayoutDesc &) override
+    {
+        throw std::logic_error("unexpected layout");
+    }
+    BindGroupHandle CreateBindGroup(const BindGroupDesc &) override
+    {
+        throw std::logic_error("unexpected group");
+    }
+    GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc &) override
+    {
+        throw std::logic_error("unexpected pipeline");
+    }
+    ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc &) override
+    {
+        throw std::logic_error("unexpected compute");
+    }
+    bool WriteBuffer(BufferHandle, uint64_t, const void *, uint64_t) override
+    {
+        throw std::logic_error("unexpected upload");
+    }
+    void Release(BufferHandle) noexcept override
+    {
+    }
+    void Release(TextureHandle) noexcept override
+    {
+    }
+    void Release(TextureViewHandle) noexcept override
+    {
+    }
+    void Release(SamplerHandle) noexcept override
+    {
+    }
+    void Release(ShaderModuleHandle) noexcept override
+    {
+    }
+    void Release(BindingLayoutHandle) noexcept override
+    {
+    }
+    void Release(BindGroupHandle) noexcept override
+    {
+    }
+    void Release(GraphicsPipelineHandle) noexcept override
+    {
+    }
+    void Release(ComputePipelineHandle) noexcept override
+    {
+    }
 };
 
 class MetadataQueue final : public ComputeQueue
 {
   public:
-    SubmissionTicket Submit(const Recorder &, std::shared_ptr<void>) override { throw std::logic_error("unexpected submit"); }
-    void Wait(SubmissionTicket) override { throw std::logic_error("unexpected wait"); }
-    bool IsComplete(SubmissionTicket) override { throw std::logic_error("unexpected ticket"); }
-    void Collect() override {}
-    bool SetProfilingEnabled(bool) override { return false; }
-    GpuTimestampFrame GetProfile() const override { return {}; }
-    uint64_t GetPendingSubmissionCount() const noexcept override { return 0; }
+    SubmissionTicket Submit(const Recorder &, std::shared_ptr<void>) override
+    {
+        throw std::logic_error("unexpected submit");
+    }
+    void Wait(SubmissionTicket) override
+    {
+        throw std::logic_error("unexpected wait");
+    }
+    bool IsComplete(SubmissionTicket) override
+    {
+        throw std::logic_error("unexpected ticket");
+    }
+    void Collect() override
+    {
+    }
+    bool SetProfilingEnabled(bool) override
+    {
+        return false;
+    }
+    GpuTimestampFrame GetProfile() const override
+    {
+        return {};
+    }
+    uint64_t GetPendingSubmissionCount() const noexcept override
+    {
+        return 0;
+    }
 };
 
 inline bool Run()
@@ -105,13 +180,14 @@ inline bool Run()
     buffer.SetResidentData({resident(1, 5), resident(0x100000001ULL), resident(UINT64_MAX)});
     auto stable = buffer.GetDrawCalls(nullptr);
     check(stable.drawCalls[2].objectId == wide.drawCalls[2].objectId &&
-          stable.drawCalls[2].identity == wide.drawCalls[2].identity &&
-          stable.drawCalls[2].worldMatrix[3].x == 5, "stable_resident_move");
+              stable.drawCalls[2].identity == wide.drawCalls[2].identity && stable.drawCalls[2].worldMatrix[3].x == 5,
+          "stable_resident_move");
     buffer.SetData(std::vector<Vertex>(2), {0, 1}, {cpu(5), cpu(6)});
     check(buffer.GetDrawCalls(nullptr).drawCalls[1].identity == mixed.drawCalls[1].identity, "stable_cpu_move");
     buffer.SetResidentData({});
     buffer.SetResidentData({resident(1)});
-    check(buffer.GetDrawCalls(nullptr).drawCalls[2].identity != mixed.drawCalls[2].identity, "retired_resident_not_reused");
+    check(buffer.GetDrawCalls(nullptr).drawCalls[2].identity != mixed.drawCalls[2].identity,
+          "retired_resident_not_reused");
     GizmosDrawCallBuffer second;
     second.SetData(std::vector<Vertex>(2), {0, 1}, {cpu(0)});
     second.SetResidentData({resident(1)});
@@ -123,8 +199,10 @@ inline bool Run()
     GizmosDrawCallBuffer::IconMaterials materials;
     // Truth-only material route, never dereferenced by GetIconDrawCalls.
     materials.fallback = std::shared_ptr<InxMaterial>(reinterpret_cast<InxMaterial *>(1), [](InxMaterial *) {});
-    const auto projection = glm::perspective(glm::radians(60.0f), 1.0f, .1f, 100.0f);
-    auto icons = [&]() { return buffer.GetIconDrawCalls(materials, {0, 0, -10}, {1, 0, 0}, {0, 1, 0}, projection, 800, 1); };
+    const auto projection = glm::perspective(glm::radians(60.0f), 1.0f, 100.0f, .1f);
+    auto icons = [&]() {
+        return buffer.GetIconDrawCalls(materials, {0, 0, -10}, {1, 0, 0}, {0, 1, 0}, projection, 800, 1);
+    };
     buffer.SetIconData({{{0, 0, 0}, 42}, {{1, 0, 0}, 0x10000002AULL}});
     auto iconDraws = icons();
     check(iconDraws.drawCalls.size() == 2 && unique(iconDraws), "icon_full_owner_identity");

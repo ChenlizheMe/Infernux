@@ -178,7 +178,7 @@ void RegisterCommandBufferBindings(py::module_ &m)
             py::arg("color"), py::arg("depth"),
             "Unsupported: raises RuntimeError. Declare RenderGraph pass attachments with write_color/write_depth.")
         .def("clear_render_target", &CommandBuffer::ClearRenderTarget, py::arg("clear_color"), py::arg("clear_depth"),
-             py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("depth") = 1.0f,
+             py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("depth") = 0.0f,
              "Unsupported: raises RuntimeError. Declare RenderGraph pass clear values with set_clear.")
         .def(
             "draw_mesh",
