@@ -24,7 +24,7 @@ ShaderInfo {
 }
 void main() {
     float forwardHit = texture(coverageColor, inUV).r > 0.9 ? 1.0 : 0.0;
-    float depthHit = texture(coverageDepth, inUV).r < 1.0 ? 1.0 : 0.0;
+    float depthHit = texture(coverageDepth, inUV).r > 0.0 ? 1.0 : 0.0;
     outColor = vec4(forwardHit, depthHit, abs(forwardHit - depthHit), 1.0);
 }
 '''
