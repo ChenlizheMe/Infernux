@@ -1309,7 +1309,7 @@ class Camera(Component):
     """Camera component with Unity-like API."""
 
     def set_clip_planes(self, near_clip: float, far_clip: float) -> None: ...
-    projection_matrix: Any  # NumPy float32 (4,4), [row,column], LH/ZO/Y-down
+    projection_matrix: Any  # NumPy float32 (4,4), [row,column], LH/reversed-Z/Y-down
     @property
     def view_matrix(self) -> Any: ...
     @view_matrix.setter

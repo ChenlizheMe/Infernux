@@ -172,7 +172,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             p.write_depth(DEPTH_TEXTURE)
             p.set_clear(
                 color=DEFERRED_GBUFFER_CLEAR_COLOR,
-                depth=1.0,
+                depth=0.0,
             )
             p.draw_renderers(
                 queue_range=opaque_queue_range(),

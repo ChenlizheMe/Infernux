@@ -190,12 +190,12 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
     with graph.add_pass("FrameClear") as render_pass:
         render_pass.write_color(camera_color)
         render_pass.write_depth(depth)
-        render_pass.set_clear(color=_CLEAR_SCENE, depth=1.0)
+        render_pass.set_clear(color=_CLEAR_SCENE, depth=0.0)
 
     if shadow_map is not None:
         with graph.add_pass("ShadowCasterPass") as render_pass:
             render_pass.write_depth(shadow_map)
-            render_pass.set_clear(depth=1.0)
+            render_pass.set_clear(depth=0.0)
             render_pass.draw_shadow_casters(queue_range=(0, 2999))
 
     opaque_domain = next(

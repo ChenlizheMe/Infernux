@@ -17,7 +17,7 @@ Usage::
     with graph.add_pass("OpaquePass") as p:
         p.write_color("color")
         p.write_depth("depth")
-        p.set_clear(color=(0.1, 0.1, 0.1, 1.0), depth=1.0)
+        p.set_clear(color=(0.1, 0.1, 0.1, 1.0), depth=0.0)
         p.draw_renderers(queue_range=(0, 2500), sort_mode="front_to_back")
 
     with graph.add_pass("SkyboxPass") as p:

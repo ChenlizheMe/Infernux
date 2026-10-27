@@ -137,7 +137,7 @@ struct PipelineConfig
     // Depth/stencil state
     bool depthTestEnable = true;
     bool depthWriteEnable = true;
-    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS;
+    VkCompareOp depthCompareOp = VK_COMPARE_OP_GREATER;
 
     // Blending
     bool blendEnable = false;

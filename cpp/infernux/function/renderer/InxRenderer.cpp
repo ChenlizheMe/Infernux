@@ -1,5 +1,6 @@
 #include "InxRenderer.h"
 #include "CaptureService.h"
+#include <core/math/DepthConvention.h>
 // Explicit includes for all subsystem types that were forward-declared in
 // InxRenderer.h. These are required here so that unique_ptr destructors,
 // make_unique calls, and member-function calls all have complete types.
@@ -2271,8 +2272,7 @@ void InxRenderer::StageEngineGlobalsUBO()
     globals.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
 
     // ZBuffer linearization helpers (reversed-Z compatible)
-    float fn = farClip / nearClip;
-    globals.zBufferParams = glm::vec4(1.0f - fn, fn, (1.0f - fn) / farClip, fn / farClip);
+    globals.zBufferParams = depth::LinearizationParams(nearClip, farClip);
 
     // Frame
     float dt = m_deltaTime > kEpsilon ? m_deltaTime : kEpsilon;

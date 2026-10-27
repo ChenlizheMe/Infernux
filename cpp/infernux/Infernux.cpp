@@ -3353,7 +3353,7 @@ bool Infernux::ExecuteTimelineCubePreviewRender(float px, float py, float pz, fl
     const glm::vec3 dir(cp * glm::sin(camYaw), glm::sin(camPitch), cp * glm::cos(camYaw));
     const glm::vec3 camPos = target + dir * dist;
     glm::mat4 view = glm::lookAt(camPos, target, glm::vec3(0.0f, 1.0f, 0.0f));
-    glm::mat4 proj = glm::perspective(glm::radians(35.0f), 1.0f, 0.05f, 100.0f);
+    glm::mat4 proj = glm::perspective(glm::radians(35.0f), 1.0f, 100.0f, 0.05f);
     proj[1][1] *= -1.0f;
 
     std::vector<unsigned char> pixels;
@@ -4367,8 +4367,26 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     const ShaderDescriptor fragmentDescriptor = compiler.ParseShaderSource(fragmentSource, fragmentCompilePath);
 
     if (IsDirectStructuredStage(vertexDescriptor) || IsDirectStructuredStage(fragmentDescriptor)) {
-        // Explicit main() stages are independently compiled and registered.
-        // They must never leave a failed material-artifact cache entry behind.
+        // Explicit main() stages use the standalone importer, not the linker.
+        // Publish cold stages here too: only the default sky is preloaded at startup.
+        const auto publishStage = [&](const std::string &path, const std::string &id, const char *stage) {
+            if (m_renderer->HasShader(id, stage))
+                return true;
+            auto *database = GetAssetDatabase();
+            auto &registry = AssetRegistry::Instance();
+            const auto guid = database->GetGuidFromCatalogPath(path);
+            const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+            if (!asset || asset->shaderId != id || asset->shaderType != stage)
+                return false;
+            RegisterShaderToRenderer(*asset);
+            return m_renderer->HasShader(id, stage);
+        };
+        if (!publishStage(vertexPath, stages.vertexShaderId, "vertex") ||
+            !publishStage(fragmentPath, stages.fragmentShaderId, "fragment")) {
+            const std::string error = "Standalone material shader stages could not be published";
+            rememberFailure(error);
+            return {true, false, error};
+        }
         m_linkedShaderProgramCache.erase(stages);
         return {};
     }

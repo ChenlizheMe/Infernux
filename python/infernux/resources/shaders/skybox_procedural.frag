@@ -5,7 +5,7 @@ ShaderInfo {
     Queue 32767
     Cull Back
     DepthWrite Off
-    DepthTest LessEqual
+    DepthTest Less_Equal
     PassTag Skybox
     CastShadows Off
     Imports ["Math"]

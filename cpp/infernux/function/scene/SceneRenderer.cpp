@@ -78,7 +78,7 @@ glm::mat4 SceneRenderer::GetProjectionMatrix() const
 {
     const auto frame = m_renderWorld.Acquire();
     return frame && frame->PrimaryView().valid ? frame->PrimaryView().projection
-                                               : glm::perspective(glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 1000.0f);
+                                               : glm::perspective(glm::radians(60.0f), 16.0f / 9.0f, 1000.0f, 0.1f);
 }
 
 glm::vec3 SceneRenderer::GetCameraPosition() const

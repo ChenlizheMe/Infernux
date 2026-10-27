@@ -1435,6 +1435,12 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     } else {
         result << "#define INX_SHADING_CAMERA_POSITION _Globals._WorldSpaceCameraPos.xyz\n";
     }
+    const bool cameraLocalDepth =
+        !userHasLayoutDecls && !particleSpriteDomain && desc.isFragmentShader && target != ShaderCompileTarget::Shadow;
+    if (cameraLocalDepth) {
+        result << "#define INX_CAMERA_PROJECTION_PARAMS ubo.projectionParams\n"
+                  "#define INX_CAMERA_ZBUFFER_PARAMS ubo.zBufferParams\n";
+    }
 
     // ================================================================
     // Inject engine globals UBO — always available except shadow
@@ -1638,7 +1644,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         }
     }
 
-    if (!userHasLayoutDecls && (hasCapability("CameraMatrices") || passBuffersDomain)) {
+    if (!userHasLayoutDecls && (hasCapability("CameraMatrices") || passBuffersDomain || cameraLocalDepth)) {
         result << "\n// Auto-generated camera matrices interface\n";
         result << LoadTemplate("camera_matrices_ubo.glsl") << "\n";
     }

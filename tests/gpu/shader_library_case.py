@@ -35,7 +35,7 @@ ShaderInfo {
     Name "Shader Library Geometry"
     ShadingModel Unlit
     Cull Off
-    Imports ["Lib Common", "Lib Vertex Utils", "Lib Shapes"]
+    Imports ["Lib Common", "Lib Vertex Utils", "Lib Shapes", "Lib Camera"]
     Properties {
         Float mode = 0.0
         Float3 value = [1,0,0]
@@ -48,7 +48,9 @@ ShaderInfo {
 }
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
-    if (material.mode < 1.5) {
+    if (material.mode > 2.5) {
+        s.albedo = vec3(getCameraNear(), getCameraFar() / 1000.0, linearEyeDepth(gl_FragCoord.z) / 6.0);
+    } else if (material.mode < 1.5) {
         vec3 value = material.mode < 0.5
             ? rotateAboutAxis(material.value, material.axis, material.angle)
             : rotateAroundAxis(material.value, material.axis, material.angle);
@@ -86,7 +88,7 @@ class LibraryPipeline(RenderPipeline):
         color = graph.create_texture('color', camera_target=True)
         depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
         graph.add_pass('Library surface').write_color(color).write_depth(depth).set_clear(
-            color=(0,0,0,0), depth=1.).draw_renderers(material_pass='forward')
+            color=(0,0,0,0), depth=0.0).draw_renderers(material_pass='forward')
         graph.screen_ui_section(resources={'color'})
         graph.set_output(color)
 
@@ -127,7 +129,10 @@ class ShaderLibraryCase:
         self.material.frag_shader_name = 'Shader Library Geometry'
         renderer.set_material(0, self.material.native)
         self.pipeline = LibraryPipeline()
-        self.phases = len(ROTATIONS)*2 if kind == 'rotation' else len(CROSSES)
+        self.phases = len(ROTATIONS)*2 if kind == 'rotation' else 3 if kind == 'depth' else len(CROSSES)
+        if kind == 'depth':
+            self.camera.projection_mode = CameraProjection.Perspective
+            self.objects[-1].transform.local_scale = Vector3(10,10,10)
         self.change(0)
 
     def change(self, phase):
@@ -139,6 +144,9 @@ class ShaderLibraryCase:
             self.material.set_vector3('value', *value)
             self.material.set_vector3('axis', *axis)
             self.material.set_float('angle', angle)
+        elif self.kind == 'depth':
+            self.camera.set_clip_planes(.5 if phase == 1 else .25, 150 if phase == 1 else 75)
+            self.material.set_float('mode', 3.)
         else:
             center, extent, thickness = CROSSES[phase]
             self.material.set_float('mode', 2.)
@@ -156,6 +164,10 @@ class ShaderLibraryCase:
             actual = (linear - .5) * 8.
             np.testing.assert_allclose(actual, np.broadcast_to(expected, actual.shape), atol=.015)
             result = dict(phase=self.phase, actual=actual[actual.shape[0]//2,actual.shape[1]//2].tolist(), expected=expected.tolist())
+        elif self.kind == 'depth':
+            expected = [.5, .15, .5] if self.phase == 1 else [.25, .075, .5]
+            np.testing.assert_allclose(linear, np.broadcast_to(expected, linear.shape), atol=.002)
+            result = dict(phase=self.phase, expected=expected, actual=linear[64,64].tolist())
         else:
             center, extent, thickness = CROSSES[self.phase]
             uv = linear[...,1:3]

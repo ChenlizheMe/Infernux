@@ -49,7 +49,7 @@ void main() {
     // them independently blends material data across silhouettes.
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     float depth = texelFetch(_SceneDepth, pixel, 0).r;
-    if (depth >= 0.999999) {
+    if (depth <= 0.0) {
         outColor = vec4(0.0);
         return;
     }

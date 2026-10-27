@@ -241,7 +241,7 @@ struct GraphPassDesc
     float clearColorG = 0.0f;
     float clearColorB = 0.0f;
     float clearColorA = 1.0f;
-    float clearDepthValue = 1.0f;
+    float clearDepthValue = 0.0f;
 
     // === Typed command IR ===
     // Empty is valid for a resource-only pass. The current executor accepts

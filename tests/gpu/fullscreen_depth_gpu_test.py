@@ -34,7 +34,7 @@ class DepthAudit(RenderPipeline):
         resolved = graph.create_texture('resolved',format=Format.RGBA16_SFLOAT,samples=1) if samples>1 else scene_color
         with graph.add_pass('Initialize') as p:
             p.write_color(scene_color).write_depth(scene_depth)
-            p.set_clear(color=(0,0,0,0),depth=1.0)
+            p.set_clear(color=(0,0,0,0),depth=0.0)
             p.fullscreen_quad('Tutorial Initialize',depth_test=DepthCompare.ALWAYS,depth_write=True)
         graph.add_copy_pass('PreserveSceneDepth').copy_texture(scene_depth,previous_depth)
         with graph.add_pass('DepthAwareOverlay') as p:
@@ -65,11 +65,11 @@ def main():
         for directory in ('Assets','Packages','ProjectSettings'):
             (project/directory).mkdir()
         sources = {
-            'Initialize':shader('Tutorial Initialize','outColor=vec4(0,0,1,1); gl_FragDepth=0.8;'),
+            'Initialize':shader('Tutorial Initialize','outColor=vec4(0,0,1,1); gl_FragDepth=0.2;'),
             'Overlay':shader('Tutorial Overlay','''float d = texture(sceneDepthTex,inUV).r;
-                outColor = abs(d-0.8)<0.001 ? vec4(0,1,0,0.5) : vec4(1,0,1,1);
-                gl_FragDepth=0.4;''','Resources { Texture2D sceneDepthTex }'),
-            'Probe':shader('Tutorial Probe','outColor=vec4(1,0,0,1); gl_FragDepth=0.6;'),
+                outColor = abs(d-0.2)<0.001 ? vec4(0,1,0,0.5) : vec4(1,0,1,1);
+                gl_FragDepth=0.6;''','Resources { Texture2D sceneDepthTex }'),
+            'Probe':shader('Tutorial Probe','outColor=vec4(1,0,0,1); gl_FragDepth=0.4;'),
         }
         for name,content in sources.items():
             (project/f'Assets/{name}.frag').write_text(content,encoding='ascii')

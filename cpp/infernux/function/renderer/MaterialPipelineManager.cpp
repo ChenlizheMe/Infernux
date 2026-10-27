@@ -737,7 +737,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
         // Geometry buffer passes replay the visible opaque geometry against the
         // camera depth attachment.  Exact equality is unnecessarily brittle:
         // a semantic shader variant can produce a sub-ULP clip-depth change
-        // even though it covers the same surface.  LESS_OR_EQUAL preserves
+        // even though it covers the same surface. Logical LessOrEqual preserves
         // hidden-surface rejection while allowing that visible surface to
         // publish its motion, normal or base color.
         effectiveState.depthCompareOp = MaterialCompareOp::LessOrEqual;
@@ -784,9 +784,9 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     rasterizer.cullMode = vk::ToVkCullMode(effectiveState.cullMode);
     rasterizer.frontFace = vk::ToVkFrontFace(effectiveState.frontFace);
     rasterizer.depthBiasEnable = effectiveState.depthBiasEnable ? VK_TRUE : VK_FALSE;
-    rasterizer.depthBiasConstantFactor = effectiveState.depthBiasConstantFactor;
-    rasterizer.depthBiasSlopeFactor = effectiveState.depthBiasSlopeFactor;
-    rasterizer.depthBiasClamp = effectiveState.depthBiasClamp;
+    rasterizer.depthBiasConstantFactor = -effectiveState.depthBiasConstantFactor;
+    rasterizer.depthBiasSlopeFactor = -effectiveState.depthBiasSlopeFactor;
+    rasterizer.depthBiasClamp = -effectiveState.depthBiasClamp;
 
     // Color blending — create one blend attachment per color output for MRT.
     // Opaque forward passes also need alpha writes so intermediate scene
@@ -816,7 +816,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = effectiveState.depthTestEnable ? VK_TRUE : VK_FALSE;
     depthStencil.depthWriteEnable = effectiveState.depthWriteEnable ? VK_TRUE : VK_FALSE;
-    depthStencil.depthCompareOp = vk::ToVkCompareOp(effectiveState.depthCompareOp);
+    depthStencil.depthCompareOp = vk::ToVkDepthCompareOp(effectiveState.depthCompareOp);
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = effectiveState.stencilTestEnable ? VK_TRUE : VK_FALSE;
     depthStencil.front = vk::ToVkStencilOpState(effectiveState.stencilFront);

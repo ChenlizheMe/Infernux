@@ -1,3 +1,4 @@
+#include <core/math/DepthConvention.h>
 /**
  * @file SceneRenderGraph.cpp
  * @brief Implementation of RenderGraph-based scene rendering
@@ -6,13 +7,13 @@
  * No more imperative BeginRenderPass/EndRenderPass calls.
  */
 
-#include "SceneRenderGraph.h"
 #include "Frustum.h"
 #include "FullscreenRenderer.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
 #include "RendererSelection.h"
+#include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "gui/WorldUIDepthReplay.h"
@@ -1683,10 +1684,8 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     camera.inverseViewProj = glm::inverse(proj * view);
     const float nearClip = m_cachedCamera ? std::max(m_cachedCamera->GetNearClip(), 1.0e-5f) : 0.01f;
     const float farClip = m_cachedCamera ? std::max(m_cachedCamera->GetFarClip(), nearClip + 1.0e-4f) : 5000.0f;
-    const float farOverNear = farClip / nearClip;
     camera.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
-    camera.zBufferParams =
-        glm::vec4(1.0f - farOverNear, farOverNear, (1.0f - farOverNear) / farClip, farOverNear / farClip);
+    camera.zBufferParams = depth::LinearizationParams(nearClip, farClip);
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
@@ -2244,7 +2243,7 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
         const int minimum = skybox ? EngineConfig::Get().skyboxQueue : command->queueMin;
         const int maximum = skybox ? minimum : command->queueMax;
         const auto visit = [&](const DrawCall &draw) {
-            if (!draw.frustumVisible || (skybox && draw.identity.domain != RenderDomain::Skybox))
+            if (!draw.frustumVisible || skybox != (draw.identity.domain == RenderDomain::Skybox))
                 return;
             if (command->rendererSelection && !command->rendererSelection->Find(draw.identity))
                 return;
@@ -2257,7 +2256,7 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                 (material->GetRenderTextures().empty() && material->GetBuffers().empty() && !hasParameterBuffers))
                 return;
             const auto &source = draw.material ? draw.material : material;
-            if (source->GetRenderQueue() < minimum || source->GetRenderQueue() > maximum)
+            if (!skybox && (source->GetRenderQueue() < minimum || source->GetRenderQueue() > maximum))
                 return;
             const auto &tag = source->GetPassTag();
             if (!skybox && !command->passTag.empty() &&
@@ -4800,7 +4799,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 FullscreenRenderer *fsRenderer = &m_fullscreenRenderer;
                 std::string shaderName = command->shaderName;
                 std::string parameterBlock = command->parameterBlock;
-                const rhi::DepthState fsDepthState{command->depthTest, command->depthWrite, command->depthCompare};
+                const rhi::DepthState fsDepthState{command->depthTest, command->depthWrite,
+                                                   rhi::ReverseDepthCompare(command->depthCompare)};
                 const bool fsAlphaBlend = command->alphaBlend;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
@@ -5135,7 +5135,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                          rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
                         writtenAlternateDepth = builder.WriteDepth(alternateDepth);
                         builder.SetRenderArea(width, height);
-                        builder.SetClearDepth(1.0f, 0);
+                        builder.SetClearDepth(0.0f, 0);
                         return [this, vkCore, opaqueCommand, replayPipeline, excludedId, width,
                                 height](vk::RenderContext &ctx) {
                             const auto *list = ctx.GetRendererList(m_visibleRendererList);
@@ -5446,7 +5446,7 @@ void SceneRenderGraph::BuildRenderGraph()
                             return;
                         VkClearAttachment clearAttachment{};
                         clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                        clearAttachment.clearValue.depthStencil = {1.0f, 0};
+                        clearAttachment.clearValue.depthStencil = {0.0f, 0};
                         VkClearRect clearRect{};
                         clearRect.rect.offset = {0, 0};
                         clearRect.rect.extent = {passWidth, passHeight};

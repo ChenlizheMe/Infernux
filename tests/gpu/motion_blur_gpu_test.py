@@ -54,7 +54,7 @@ class BlurPipeline(inx.renderstack.RenderPipeline):
         source=graph.create_texture('original',format=fmt.RGBA16_SFLOAT,samples=1)
         depth=graph.create_texture('depth',format=fmt.D32_SFLOAT,samples=1)
         motion=graph.create_texture('motion',format=fmt.RG16_SFLOAT,samples=1)
-        graph.add_pass('Original').write_color(source).write_depth(depth).set_clear(color=(0,0,0,0),depth=1.).draw_renderers(queue_range=(0,2500))
+        graph.add_pass('Original').write_color(source).write_depth(depth).set_clear(color=(0,0,0,0),depth=0.0).draw_renderers(queue_range=(0,2500))
         graph.add_pass('Motion').read(depth).write_color(motion).set_clear(color=(0,0,0,0)).draw_renderers(queue_range=(0,2500),material_pass='motion')
         bus=ResourceBus()
         for name,handle in (('color',source),('depth',depth),('motion',motion)):

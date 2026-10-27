@@ -175,7 +175,7 @@ int main()
         // and GLM_FORCE_DEPTH_ZERO_TO_ONE. Camera::GetViewMatrix uses
         // glm::lookAt, so a point in front of the camera must land at a
         // *positive* view-space z, and glm::perspective must map the near
-        // plane to NDC z = 0. The lit-pass vertex template (v_ViewDepth) and
+        // plane to NDC z = 1. The lit-pass vertex template (v_ViewDepth) and
         // the CSM frustum-corner reconstruction both depend on this.
         const glm::vec3 eye(1.0f, 2.0f, 3.0f);
         const glm::vec3 forward(0.0f, 0.0f, 1.0f);
@@ -183,11 +183,11 @@ int main()
         const glm::vec4 inFront = view * glm::vec4(eye + forward * 5.0f, 1.0f);
         assert(inFront.z > 4.99f && inFront.z < 5.01f);
 
-        const glm::mat4 proj = glm::perspective(glm::radians(60.0f), 1.5f, 0.1f, 100.0f);
+        const glm::mat4 proj = glm::perspective(glm::radians(60.0f), 1.5f, 100.0f, 0.1f);
         const glm::vec4 nearClip = proj * (view * glm::vec4(eye + forward * 0.1f, 1.0f));
-        assert(std::abs(nearClip.z / nearClip.w) < 0.001f);
+        assert(std::abs(nearClip.z / nearClip.w - 1.0f) < 0.001f);
         const glm::vec4 farClip = proj * (view * glm::vec4(eye + forward * 100.0f, 1.0f));
-        assert(std::abs(farClip.z / farClip.w - 1.0f) < 0.001f);
+        assert(std::abs(farClip.z / farClip.w) < 0.001f);
     }
 
     {

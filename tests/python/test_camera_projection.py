@@ -12,6 +12,27 @@ def camera(scene):
     return scene.create_game_object("Projection Camera").add_component("Camera")
 
 
+@pytest.mark.parametrize("mode", ["Perspective", "Orthographic", "Physical"])
+def test_default_projection_uses_reversed_depth(camera, mode):
+    camera.projection_mode = getattr(lib.CameraProjection, "Perspective" if mode == "Physical" else mode)
+    camera.use_physical_properties = mode == "Physical"
+    camera.set_clip_planes(0.01, 5000)
+    projection = np.asarray(camera.projection_matrix, dtype=np.float64)
+    distances = np.array([camera.near_clip, 1, 100, camera.far_clip])
+    points = np.column_stack((np.zeros((4, 2)), distances, np.ones(4)))
+    clip = points @ projection.T
+    depth = clip[:, 2] / clip[:, 3]
+    np.testing.assert_allclose(depth[[0, -1]], [1, 0], atol=1e-7)
+    assert np.all(np.diff(depth) < 0)
+    if mode != "Orthographic":
+        quantized = np.float32(depth[2])
+        adjacent = np.nextafter(quantized, np.float32(1))
+        inverse = np.linalg.inv(projection)
+        world = np.array([[0, 0, quantized, 1], [0, 0, adjacent, 1]]) @ inverse.T
+        # One depth-buffer ULP at 100 m stays below 0.1 mm with a 1 cm near plane.
+        assert abs(np.diff(world[:, 2] / world[:, 3])[0]) < 0.0001
+
+
 def test_override_is_copied_and_preserves_authoring_until_reset(camera):
     before = camera.serialize_document()
     projection = camera.projection_matrix
@@ -66,7 +87,7 @@ def test_ray_reprojects_to_same_pixel_and_starts_on_rendered_near_plane(camera, 
         assert np.isfinite(origin).all() and np.isfinite(direction).all()
         assert np.linalg.norm(direction) == pytest.approx(1)
         clip = projection @ np.append(origin, 1)
-        assert clip[2] / clip[3] == pytest.approx(0, abs=1e-6)
+        assert clip[2] / clip[3] == pytest.approx(1, abs=1e-6)
         for distance in (0, 3, 100):
             point = origin + direction * distance
             clip = projection @ np.append(point, 1)
@@ -185,10 +206,10 @@ def test_oblique_clips_positive_halfspace_and_gizmos_use_the_same_near_corners(c
     np.testing.assert_array_equal(camera.projection_matrix, initial)  # calculation is pure
     camera.projection_matrix = oblique
     for point in ([0, 0, 1, 1], [0, 0, 4, 1], [1, 1, 2, 1]):
-        assert np.sign((oblique @ point)[2]) == np.sign(plane @ point)
+        assert np.sign((oblique @ point)[3] - (oblique @ point)[2]) == np.sign(plane @ point)
     points, indices = Camera._frustum_wire_geometry(oblique, camera.view_matrix, 1000)
     assert indices.shape == (12, 2) and points.shape == (8, 3)
-    np.testing.assert_allclose(np.column_stack((points[:4], np.ones(4))) @ plane, 0, atol=1e-6)
+    np.testing.assert_allclose(np.column_stack((points[:4], np.ones(4))) @ plane, 0, atol=2e-6)
     if orthographic:
         # Capping display distance must not taper an orthographic volume.
         points, _ = Camera._frustum_wire_geometry(initial, camera.view_matrix, 5)

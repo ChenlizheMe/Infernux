@@ -569,7 +569,7 @@ struct RenderPassData
 
     // Clear values
     VkClearColorValue clearColor = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    VkClearDepthStencilValue clearDepth = {1.0f, 0};
+    VkClearDepthStencilValue clearDepth = {0.0f, 0};
     bool clearColorEnabled = false;
     bool clearDepthEnabled = false;
     bool hasResolveAttachment = false; // True when MSAA resolve is used

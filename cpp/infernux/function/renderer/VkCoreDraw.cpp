@@ -884,7 +884,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
         if (!dc.frustumVisible)
             continue;
-        if (skyboxPass && dc.identity.domain != RenderDomain::Skybox)
+        if (skyboxPass != (dc.identity.domain == RenderDomain::Skybox))
             continue;
 
         const std::shared_ptr<InxMaterial> *materialOwner =
@@ -905,7 +905,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const InxMaterial *sourceMaterial = metadata ? metadata->material : expectedMaterial;
         const int queue = metadata ? metadata->renderQueue
                                    : (sourceMaterial ? sourceMaterial->GetRenderQueue() : material->GetRenderQueue());
-        if (queue < queueMin || queue > queueMax)
+        if (!skyboxPass && (queue < queueMin || queue > queueMax))
             continue;
 
         if (materialFilter != GraphMaterialFilter::All) {
@@ -2191,7 +2191,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         // receiver-side term can express), while the receiver-side
         // normal/light offsets in lighting.glsl absorb quantization. Casters
         // themselves are never moved in world space.
-        vkCmdSetDepthBias(cmdBuf, 1.0f, 0.0f, 2.0f);
+        vkCmdSetDepthBias(cmdBuf, -1.0f, 0.0f, -2.0f);
 
         // The complete shadow descriptor state is bound per batch below. Set 0
         // belongs to this camera and this shadow view.

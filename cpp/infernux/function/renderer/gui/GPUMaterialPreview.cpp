@@ -1,3 +1,4 @@
+#include <core/math/DepthConvention.h>
 /**
  * @file GPUMaterialPreview.cpp
  * @brief GPU material preview — renders a sphere using the material's real
@@ -312,7 +313,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     float aspect = 1.0f;
     glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, kPreviewCameraDistance), glm::vec3(0.0f, 0.0f, 0.0f),
                                  glm::vec3(0.0f, 1.0f, 0.0f));
-    glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 100.0f, 0.1f);
     proj[1][1] *= -1.0f; // Vulkan Y-flip
 
     UniformBufferObject sceneUBO{};
@@ -322,7 +323,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     sceneUBO.previousViewProj = proj * view;
     sceneUBO.inverseViewProj = glm::inverse(proj * view);
     sceneUBO.projectionParams = glm::vec4(0.1f, 100.0f, 0.01f, 0.001f);
-    sceneUBO.zBufferParams = glm::vec4(-999.0f, 1000.0f, -9.99f, 10.0f);
+    sceneUBO.zBufferParams = depth::LinearizationParams(0.1f, 100.0f);
 
     // ------------------------------------------------------------------
     // Prepare preview lighting UBO.
@@ -350,7 +351,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     // Prepare engine globals UBO (minimal)
     // ------------------------------------------------------------------
     EngineGlobalsUBO globalsUBO{};
-    memset(&globalsUBO, 0, sizeof(globalsUBO));
+    globalsUBO.projectionParams = sceneUBO.projectionParams;
+    globalsUBO.zBufferParams = sceneUBO.zBufferParams;
     globalsUBO.screenParams =
         glm::vec4(static_cast<float>(renderSize), static_cast<float>(renderSize), 1.0f / renderSize, 1.0f / renderSize);
     globalsUBO.worldSpaceCameraPos = glm::vec4(0.0f, 0.0f, kPreviewCameraDistance, 1.0f);
@@ -422,7 +424,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     // ------------------------------------------------------------------
     VkClearValue clearValues[2];
     clearValues[0].color = {{kPreviewMatteR, kPreviewMatteG, kPreviewMatteB, kPreviewMatteA}};
-    clearValues[1].depthStencil = {1.0f, 0};
+    clearValues[1].depthStencil = {0.0f, 0};
 
     vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
                                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);

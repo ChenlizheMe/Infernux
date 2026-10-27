@@ -25,8 +25,8 @@ class ProjectionShadowCase:
         elif kind == 'oblique':
             projection = camera.calculate_oblique_matrix((.3, .1, 1., -1.))
         elif kind == 'infinite':
-            projection[2, 2] = 1.
-            projection[2, 3] = -.1
+            projection[2, 2] = 0.
+            projection[2, 3] = .1
         elif kind == 'affine':
             affine = np.eye(4, dtype=np.float32)
             affine[0, 0], affine[0, 1], affine[2, 2] = .9, .1, 1.5

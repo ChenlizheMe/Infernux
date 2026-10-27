@@ -197,17 +197,17 @@ class Frustum
         m_planes[Top].normal.z = viewProj[2][3] - viewProj[2][1];
         m_planes[Top].distance = viewProj[3][3] - viewProj[3][1];
 
-        // Zero-to-one clip depth: near is row2 (z >= 0), not row3 + row2.
-        m_planes[Near].normal.x = viewProj[0][2];
-        m_planes[Near].normal.y = viewProj[1][2];
-        m_planes[Near].normal.z = viewProj[2][2];
-        m_planes[Near].distance = viewProj[3][2];
+        // Reversed-Z far plane: row2 (z >= 0).
+        m_planes[Far].normal.x = viewProj[0][2];
+        m_planes[Far].normal.y = viewProj[1][2];
+        m_planes[Far].normal.z = viewProj[2][2];
+        m_planes[Far].distance = viewProj[3][2];
 
-        // Far plane: row3 - row2
-        m_planes[Far].normal.x = viewProj[0][3] - viewProj[0][2];
-        m_planes[Far].normal.y = viewProj[1][3] - viewProj[1][2];
-        m_planes[Far].normal.z = viewProj[2][3] - viewProj[2][2];
-        m_planes[Far].distance = viewProj[3][3] - viewProj[3][2];
+        // Reversed-Z near plane: row3 - row2 (z <= w).
+        m_planes[Near].normal.x = viewProj[0][3] - viewProj[0][2];
+        m_planes[Near].normal.y = viewProj[1][3] - viewProj[1][2];
+        m_planes[Near].normal.z = viewProj[2][3] - viewProj[2][2];
+        m_planes[Near].distance = viewProj[3][3] - viewProj[3][2];
 
         // Normalize all planes
         for (auto &plane : m_planes) {

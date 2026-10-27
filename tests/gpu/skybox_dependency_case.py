@@ -9,12 +9,22 @@ from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
 from infernux.lib import AssetRegistry
 
 
-def create_skybox_asset(directory, database):
+def create_skybox_asset(directory, database, kind='procedural'):
     source = Path(directory) / 'Skybox.mat'
     source.parent.mkdir(parents=True, exist_ok=True)
     builtin = AssetRegistry.instance().get_builtin_material('SkyboxProcedural')
     assert builtin is not None
     material = Material(builtin.clone())
+    if kind == 'panoramic':
+        from PIL import Image
+        texture = source.with_suffix('.png')
+        Image.new('RGB', (32, 16), (204, 5, 3)).save(texture)
+        imported = AssetManager.import_asset(str(texture), database=database)
+        assert imported.succeeded, imported.error
+        material.set_shader('Skybox Panoramic')
+        material.set_texture_guid('texSampler', imported.guid)
+        material.set_color('tint', 1, 1, 1)
+        material.set_float('rotation', 90)
     for key in ('skyTopColor','skyHorizonColor','groundColor'):
         material.set_color(key,.8,.02,.01)
     material.set_float('exposure',1.)
@@ -50,5 +60,5 @@ def observe_skybox(pixels):
     rgb = pixels[...,:3].astype(np.float32)
     assert np.isfinite(rgb).all()
     red = (rgb[...,0] > rgb[...,1] + .2) & (rgb[...,0] > rgb[...,2] + .2)
-    assert red.all(), f'Expected authored red skybox, observed only {red.mean():.1%} red pixels'
+    assert red.all(), f'Expected authored red skybox, observed {red.mean():.1%}; mean={rgb.mean(axis=(0, 1))}'
     return dict(red_pixels=int(red.sum()),shape=list(pixels.shape),mean=rgb.mean(axis=(0,1)).tolist())

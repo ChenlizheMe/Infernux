@@ -23,7 +23,7 @@ layout(std140, set = 2, binding = 0) uniform InfGlobals {
     vec4 _WorldSpaceCameraPos;
     // x = near, y = far, z = 1/far, w = near/far
     vec4 _ProjectionParams;
-    // Linearization helpers: x = 1 - far/near, y = far/near, z = x/far, w = y/far
+    // Linearization helpers: x = far/near - 1, y = 1, z = x/far, w = 1/far
     vec4 _ZBufferParams;
 
     // ─── Frame ─────────────────────────────────────────────────────

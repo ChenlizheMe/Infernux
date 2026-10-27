@@ -94,7 +94,7 @@ struct ScenePassConfig
     bool clearColor = true;
     bool clearDepth = true;
     float clearColorValue[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    float clearDepthValue = 1.0f;
+    float clearDepthValue = 0.0f;
 
     // Output settings for readback
     bool hasOwnRenderTarget = false; ///< If true, creates dedicated render target for this pass

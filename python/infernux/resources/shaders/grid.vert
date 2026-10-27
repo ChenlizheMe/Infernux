@@ -22,8 +22,8 @@ vec3 unprojectPoint(vec2 ndc, float z) {
 void main() {
     vec2 ndc = inPosition.xy;
 
-    nearPoint = unprojectPoint(ndc, 0.0);
-    farPoint = unprojectPoint(ndc, 1.0);
+    nearPoint = unprojectPoint(ndc, 1.0);
+    farPoint = unprojectPoint(ndc, 0.5);
 
     gl_Position = vec4(ndc, 0.0, 1.0);
 }

@@ -43,29 +43,37 @@ vec3 getViewDirection(vec3 worldPos) {
     return normalize(INX_SHADING_CAMERA_POSITION - worldPos);
 }
 
+// Shader-linker camera bindings are per View; explicit-layout shaders supply
+// their own globals interface instead.
+#ifndef INX_CAMERA_PROJECTION_PARAMS
+#define INX_CAMERA_PROJECTION_PARAMS _Globals._ProjectionParams
+#define INX_CAMERA_ZBUFFER_PARAMS _Globals._ZBufferParams
+#endif
+
 // Camera near plane distance
 float getCameraNear() {
-    return _Globals._ProjectionParams.x;
+    return INX_CAMERA_PROJECTION_PARAMS.x;
 }
 
 // Camera far plane distance
 float getCameraFar() {
-    return _Globals._ProjectionParams.y;
+    return INX_CAMERA_PROJECTION_PARAMS.y;
 }
 
 // ---- Depth linearization ----
 
+
 // Linearize depth buffer value to view-space distance (eye depth)
-// rawDepth: value sampled from depth buffer [0,1]
+// Perspective device depth: 1 at near, 0 at far
 // Returns positive eye-space distance
 float linearEyeDepth(float rawDepth) {
-    // _ZBufferParams: x = 1 - far/near, y = far/near, z = x/far, w = y/far
-    return 1.0 / (_Globals._ZBufferParams.z * rawDepth + _Globals._ZBufferParams.w);
+    // _ZBufferParams: x = far/near - 1, y = 1, z = x/far, w = 1/far
+    return 1.0 / (INX_CAMERA_ZBUFFER_PARAMS.z * rawDepth + INX_CAMERA_ZBUFFER_PARAMS.w);
 }
 
 // Linearize depth to [0,1] range (0 = near, 1 = far)
 float linear01Depth(float rawDepth) {
-    return linearEyeDepth(rawDepth) / _Globals._ProjectionParams.y;
+    return linearEyeDepth(rawDepth) / INX_CAMERA_PROJECTION_PARAMS.y;
 }
 
 // ---- Time helpers ----

@@ -349,7 +349,7 @@ constexpr float MaxStableShadowDistance = 200.0f;
 
     const float nearPlane = 0.1f;
     const float farPlane = eyeDistance + radius + casterMargin;
-    const glm::mat4 projection = glm::orthoRH_ZO(-radius, radius, -radius, radius, nearPlane, farPlane);
+    const glm::mat4 projection = glm::orthoRH_ZO(-radius, radius, -radius, radius, farPlane, nearPlane);
     ShadowView result{};
     result.lightId = lightId;
     result.type = ShadowViewType::DirectionalCascade;
@@ -388,7 +388,7 @@ constexpr float MaxStableShadowDistance = 200.0f;
     const float farPlane = std::max(range, nearPlane + 0.01f);
     const float fov = glm::radians(glm::clamp(outerAngleDegrees, 1.0f, 179.0f));
     const glm::mat4 view = glm::lookAtRH(position, position + rayDirection, up);
-    const glm::mat4 projection = glm::perspectiveRH_ZO(fov, 1.0f, nearPlane, farPlane);
+    const glm::mat4 projection = glm::perspectiveRH_ZO(fov, 1.0f, farPlane, nearPlane);
     const float footprint = 2.0f * farPlane * std::tan(fov * 0.5f);
     const float worldUnitsPerTexel = footprint / static_cast<float>(std::max(atlas.InnerSize(), 1u));
     ShadowView result{};
@@ -416,7 +416,7 @@ constexpr float MaxStableShadowDistance = 200.0f;
                                               glm::vec3(0, 0, -1), glm::vec3(0, -1, 0), glm::vec3(0, -1, 0)};
     const float nearPlane = std::max(0.01f, range * 0.001f);
     const float farPlane = std::max(range, nearPlane + 0.01f);
-    const glm::mat4 projection = glm::perspectiveRH_ZO(glm::half_pi<float>(), 1.0f, nearPlane, farPlane);
+    const glm::mat4 projection = glm::perspectiveRH_ZO(glm::half_pi<float>(), 1.0f, farPlane, nearPlane);
     std::array<ShadowView, 6> views{};
     for (uint32_t face = 0; face < views.size(); ++face) {
         const glm::mat4 view = glm::lookAtRH(position, position + directions[face], ups[face]);

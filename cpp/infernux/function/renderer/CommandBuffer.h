@@ -105,7 +105,7 @@ struct ClearRenderTargetParams
     bool clearColor = true;
     bool clearDepth = true;
     float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
-    float depth = 1.0f;
+    float depth = 0.0f;
 };
 
 struct DrawMeshParams
@@ -182,7 +182,7 @@ class CommandBuffer
     void SetRenderTarget(RenderTargetHandle colorTarget, RenderTargetHandle depthTarget);
 
     /// @brief Unsupported: throws std::logic_error; use RenderGraph pass clear values.
-    void ClearRenderTarget(bool clearColor, bool clearDepth, float r, float g, float b, float a, float depth = 1.0f);
+    void ClearRenderTarget(bool clearColor, bool clearDepth, float r, float g, float b, float a, float depth = 0.0f);
 
     /// @brief Record one explicit mesh draw and capture parameter values now.
     void DrawMesh(const std::shared_ptr<InxMesh> &mesh, const glm::mat4 &worldMatrix,

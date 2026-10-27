@@ -118,7 +118,7 @@ float shadowBilinearPcf(vec2 atlasUv, float receiverDepth, vec2 tileMin, vec2 ti
     vec2 gatherUv = (base + vec2(1.0)) * inverseAtlas;
     gatherUv = clamp(gatherUv, tileMin + inverseAtlas * 0.5, tileMax - inverseAtlas * 0.5);
     vec4 depths = textureGather(shadowMap, gatherUv, 0);
-    vec4 comparison = step(vec4(receiverDepth), depths);
+    vec4 comparison = step(depths, vec4(receiverDepth));
     float lower = mix(comparison.w, comparison.z, fraction.x);
     float upper = mix(comparison.x, comparison.y, fraction.x);
     return mix(lower, upper, fraction.y);

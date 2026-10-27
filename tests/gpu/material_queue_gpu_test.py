@@ -23,7 +23,7 @@ class SelectedQueuePipeline(RenderPipelineCallback):
         with graph.add_pass("Clear") as render_pass:
             render_pass.write_color(color)
             render_pass.write_depth(depth)
-            render_pass.set_clear(color=(0.0, 0.0, 0.0, 1.0), depth=1.0)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 1.0), depth=0.0)
         with graph.add_pass("Queue1000") as render_pass:
             render_pass.write_color(color)
             render_pass.write_depth(depth)

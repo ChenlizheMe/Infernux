@@ -4,7 +4,7 @@ ShaderInfo {
     Name "Skybox Procedural"
     Cull Back
     DepthWrite Off
-    DepthTest LessEqual
+    DepthTest Less_Equal
     Capabilities [Standalone]
     Outputs {
         Float3 fragWorldDir
@@ -36,7 +36,6 @@ void main() {
     // Transform the skybox cube
     vec4 clipPos = ubo.proj * viewNoTranslation * vec4(pos, 1.0);
 
-    // Set z = w so depth is always at the far plane (1.0 after perspective divide)
-    // Combined with depth test <= and no depth write, skybox renders behind everything
-    gl_Position = clipPos.xyww;
+    // Reversed-Z far plane. Keep the sky behind all geometry without depth writes.
+    gl_Position = vec4(clipPos.xy, 0.0, clipPos.w);
 }

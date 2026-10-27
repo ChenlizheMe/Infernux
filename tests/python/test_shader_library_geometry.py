@@ -78,7 +78,7 @@ def test_rotation_direction_and_axis_scale(rotation_arithmetic, mode, index):
     np.testing.assert_allclose(np.linalg.norm(actual), np.linalg.norm(ROTATIONS[index][0]), atol=2e-5, rtol=0.0)
 
 
-@pytest.mark.parametrize("kind", ["rotation", "cross"])
+@pytest.mark.parametrize("kind", ["rotation", "cross", "depth"])
 def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch, kind):
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())

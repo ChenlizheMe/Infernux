@@ -17,6 +17,11 @@ void VerifyPersistedValuesMatchVulkan()
     static_assert(vk::ToVkPolygonMode(MaterialPolygonMode::Line) == VK_POLYGON_MODE_LINE);
     static_assert(vk::ToVkPrimitiveTopology(MaterialPrimitiveTopology::LineStrip) == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
     static_assert(vk::ToVkCompareOp(MaterialCompareOp::GreaterOrEqual) == VK_COMPARE_OP_GREATER_OR_EQUAL);
+    static_assert(vk::ToVkDepthCompareOp(MaterialCompareOp::Less) == VK_COMPARE_OP_GREATER);
+    static_assert(vk::ToVkDepthCompareOp(MaterialCompareOp::LessOrEqual) == VK_COMPARE_OP_GREATER_OR_EQUAL);
+    static_assert(vk::ToVkDepthCompareOp(MaterialCompareOp::Greater) == VK_COMPARE_OP_LESS);
+    static_assert(vk::ToVkDepthCompareOp(MaterialCompareOp::GreaterOrEqual) == VK_COMPARE_OP_LESS_OR_EQUAL);
+    static_assert(vk::ToVkDepthCompareOp(MaterialCompareOp::Equal) == VK_COMPARE_OP_EQUAL);
     static_assert(vk::ToVkBlendFactor(MaterialBlendFactor::OneMinusSourceAlpha) == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
     static_assert(vk::ToVkBlendOp(MaterialBlendOp::ReverseSubtract) == VK_BLEND_OP_REVERSE_SUBTRACT);
 }
