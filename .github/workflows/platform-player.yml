@@ -639,16 +639,37 @@ jobs:
           fi
           echo "Android command-line tools: $selected_manager (version $resolved_version)"
 
-      - name: Install pinned Android SDK
+      - name: Install Android build and emulator SDK packages
         run: |
           conda activate infernux
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "cmake;3.30.5" \
-            "ndk;27.3.13750724" \
+          mkdir -p out/test-results
+          sdk_packages=(
+            "platform-tools"
+            "platforms;android-36"
+            "build-tools;36.0.0"
+            "cmake;3.30.5"
+            "ndk;27.3.13750724"
             "ndk;29.0.14206865"
+            # The pinned emulator-runner also requests these packages. Install
+            # them before native builds, with bounded retries and visible logs.
+            "build-tools;37.0.0"
+            "emulator"
+            "system-images;android-36;default;x86_64"
+          )
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "Installing Android SDK packages (attempt $attempt/3)."
+            if sdkmanager --install --channel=0 --verbose "${sdk_packages[@]}" \
+                2>&1 | tee "out/test-results/android-sdk-install-$attempt.log"; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "::warning::Android SDK installation failed; retrying in $((attempt * 10)) seconds."
+              sleep "$((attempt * 10))"
+            fi
+          done
+          echo "::error::Android SDK installation failed after three attempts; see android-sdk-install-*.log."
+          exit 1
 
       - name: Restore Android Python runtime and build intermediates
         if: github.event_name != 'schedule'
