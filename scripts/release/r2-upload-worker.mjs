@@ -1,6 +1,12 @@
 // Source of upload.infernux-engine.com (existing Worker: infernux-r2-upload-040).
 // Explicit release destinations; keep published versions available. Secrets are bindings.
 const ALLOWED_KEYS = new Set([
+  "wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-win_amd64.whl",
+  "wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-manylinux_2_35_x86_64.whl",
+  "plugins/infernux.platform-windows/0.2.21/infernux.platform-windows.inxpkg",
+  "plugins/infernux.platform-linux/0.2.20/infernux.platform-linux.inxpkg",
+  "plugins/infernux.platform-web/0.2.24/infernux.platform-web.inxpkg",
+  "plugins/infernux.platform-android/0.2.20/infernux.platform-android.inxpkg",
   "wheels/0.4.3/build-7/infernux-0.4.3-7-cp313-cp313-win_amd64.whl",
   "wheels/0.4.3/build-7/infernux-0.4.3-7-cp313-cp313-manylinux_2_35_x86_64.whl",
   "plugins/infernux.platform-windows/0.2.20/infernux.platform-windows.inxpkg",
@@ -116,6 +122,12 @@ const ALLOWED_KEYS = new Set([
   "hub/0.4.0/build-2/InfernuxHubInstaller-0.4.0-windows-x64.exe"
 ]);
 const RELEASE_SOURCES = new Map([
+  ["wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-win_amd64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v8/infernux-0.4.3-8-cp313-cp313-win_amd64.whl"],
+  ["wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-manylinux_2_35_x86_64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v8/infernux-0.4.3-8-cp313-cp313-manylinux_2_35_x86_64.whl"],
+  ["plugins/infernux.platform-windows/0.2.21/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.21/infernux.platform-windows.inxpkg"],
+  ["plugins/infernux.platform-linux/0.2.20/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.20/infernux.platform-linux.inxpkg"],
+  ["plugins/infernux.platform-web/0.2.24/infernux.platform-web.inxpkg", "https://github.com/InfernuxEngine/infernux_web/releases/download/v0.2.24/infernux.platform-web.inxpkg"],
+  ["plugins/infernux.platform-android/0.2.20/infernux.platform-android.inxpkg", "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.20/infernux.platform-android.inxpkg"],
   ["wheels/0.4.3/build-7/infernux-0.4.3-7-cp313-cp313-win_amd64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v7/infernux-0.4.3-7-cp313-cp313-win_amd64.whl"],
   ["wheels/0.4.3/build-7/infernux-0.4.3-7-cp313-cp313-manylinux_2_35_x86_64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v7/infernux-0.4.3-7-cp313-cp313-manylinux_2_35_x86_64.whl"],
   ["plugins/infernux.platform-windows/0.2.20/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.20/infernux.platform-windows.inxpkg"],
