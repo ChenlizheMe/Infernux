@@ -340,6 +340,25 @@ jobs:
           --version "$RELEASE_VERSION"
           --build-number "$HUB_BUILD"
 
+      - name: Publish engine wheels to Cloudflare R2
+        env:
+          R2_UPLOAD_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          WHEEL_BUILD: ${{ steps.release.outputs.build }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts/release")
+          from publish_hub_objects import Publisher
+          version = os.environ["RELEASE_VERSION"]
+          build = os.environ["WHEEL_BUILD"]
+          publisher = Publisher(os.environ["R2_UPLOAD_TOKEN"])
+          for wheel in sorted((Path("dist") / version).glob("*.whl")):
+              publisher.upload(wheel, f"wheels/{version}/build-{build}/{wheel.name}")
+          PY
+
       - name: Publish the GitHub Release
         if: steps.github_release.outputs.publish == 'true'
         env:
