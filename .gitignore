@@ -16,6 +16,7 @@
 /packaging/InfernuxHubData/
 # Local research and documentation stay outside version control.
 /dev/
+/research/
 /mcp_captures/
 /packaging/_vendor/
 cmake-build-*/
@@ -114,6 +115,7 @@ $RECYCLE.BIN/
 # ============================================================================
 # Temporary & log files
 # ============================================================================
+/tmp/
 *.tmp
 *.log
 *.bak
