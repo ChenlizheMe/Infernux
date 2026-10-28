@@ -9,17 +9,19 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def source():
+def source(workflow='.github/workflows/release.yml'):
     run = {'status': 'completed', 'conclusion': 'failure', 'event': 'workflow_dispatch',
-           'path': '.github/workflows/release.yml', 'head_sha': 'a' * 40,
+           'path': workflow, 'head_sha': 'a' * 40,
            'head_repository': {'full_name': 'owner/engine'}, 'head_branch': 'master', 'run_attempt': 1}
-    jobs = [{'name': name, 'status': 'completed', 'conclusion': 'success'} for name in module.BUILD_JOBS]
-    jobs.append({'name': module.PUBLISH_JOB, 'status': 'completed', 'conclusion': 'failure'})
+    prefix = module.WORKFLOW_PREFIXES[workflow]
+    jobs = [{'name': prefix + name, 'status': 'completed', 'conclusion': 'success'} for name in module.BUILD_JOBS]
+    jobs.append({'name': prefix + module.PUBLISH_JOB, 'status': 'completed', 'conclusion': 'failure'})
     return run, {'jobs': jobs, 'total_count': len(jobs)}
 
 
-def test_recovery_preserves_original_tested_revision_and_artifact_attempt():
-    run, jobs = source()
+@pytest.mark.parametrize('workflow', module.WORKFLOW_PREFIXES)
+def test_recovery_preserves_original_tested_revision_and_artifact_attempt(workflow):
+    run, jobs = source(workflow)
     paths = ['scripts/release/publish_hub_objects.py', 'docs/tools/build-api-diff.mjs',
              'docs/tools/check-site-information.mjs', 'docs/tools/test-site-information.mjs',
              'docs/tools/verify-site.mjs', 'docs/hub-catalog.json', 'docs/api-snapshots/0.4.3-v2.json',
@@ -28,9 +30,9 @@ def test_recovery_preserves_original_tested_revision_and_artifact_attempt():
         'sha': 'a' * 40, 'publisher_sha': 'b' * 40, 'branch': 'master', 'attempt': 1}
 
 
-@pytest.mark.parametrize('change', ['engine', 'incomplete_jobs', 'build_failed', 'build_skipped', 'missing_gate', 'duplicate', 'wrong_sha', 'fork', 'pr', 'wrong_workflow', 'running', 'public_success'])
+@pytest.mark.parametrize('change', ['engine', 'incomplete_jobs', 'build_failed', 'build_skipped', 'missing_gate', 'ci_missing_gate', 'duplicate', 'wrong_sha', 'fork', 'pr', 'wrong_workflow', 'running', 'public_success'])
 def test_recovery_rejects_unvalidated_or_changed_payloads(change):
-    run, jobs = source()
+    run, jobs = source('.github/workflows/ci.yml' if change == 'ci_missing_gate' else '.github/workflows/release.yml')
     paths = []
     if change == 'engine':
         paths = ['cpp/infernux/engine.cpp']
@@ -38,7 +40,7 @@ def test_recovery_rejects_unvalidated_or_changed_payloads(change):
         jobs['total_count'] += 1
     elif change in ('build_failed', 'build_skipped'):
         jobs['jobs'][0]['conclusion'] = 'failure' if change == 'build_failed' else 'skipped'
-    elif change == 'missing_gate':
+    elif change in ('missing_gate', 'ci_missing_gate'):
         jobs['jobs'].pop(0)
         jobs['total_count'] -= 1
     elif change == 'duplicate':

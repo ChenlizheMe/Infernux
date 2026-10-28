@@ -21,8 +21,11 @@ PUBLICATION_FILES = frozenset({
     'tests/hub/test_release_recovery.py',
     'tests/release/test-r2-upload-worker.mjs',
 })
-PREFIX = 'build-test-publish / '
-BUILD_JOBS = frozenset(PREFIX + name for name in (
+WORKFLOW_PREFIXES = {
+    '.github/workflows/release.yml': 'build-test-publish / ',
+    '.github/workflows/ci.yml': '',
+}
+BUILD_JOBS = frozenset((
     'Portable Hub regressions (ubuntu-22.04)',
     'Portable Hub regressions (windows-2022)',
     'windows-desktop', 'linux-desktop',
@@ -33,16 +36,15 @@ BUILD_JOBS = frozenset(PREFIX + name for name in (
     'Validate Players before publication / web-browser (release, web-release-player-build)',
     'Validate Players before publication / web-browser (development, web-player-build)',
 ))
-PUBLISH_JOB = PREFIX + 'Publish verified distributions / publish'
+PUBLISH_JOB = 'Publish verified distributions / publish'
 
 
 def validate(run: dict, jobs: dict, repository: str, expected_sha: str,
              publisher_sha: str, changed_files: list[str]) -> dict:
     if not all(re.fullmatch('[0-9a-f]{40}', value) for value in (expected_sha, publisher_sha)):
         raise ValueError('Recovery requires exact source and publisher revisions')
-    if (run['status'], run['conclusion'], run['event'], run['path']) != (
-        'completed', 'failure', 'workflow_dispatch', '.github/workflows/release.yml'
-    ):
+    if ((run['status'], run['conclusion'], run['event']) != ('completed', 'failure', 'workflow_dispatch')
+            or run['path'] not in WORKFLOW_PREFIXES):
         raise ValueError('Recovery requires a failed official release workflow')
     if run['head_repository']['full_name'] != repository or run['head_branch'] not in ('master', 'main'):
         raise ValueError('Recovery source must be the official release branch')
@@ -52,11 +54,14 @@ def validate(run: dict, jobs: dict, repository: str, expected_sha: str,
         raise ValueError('Engine, build, or payload changes require a new complete release run')
     if jobs['total_count'] != len(jobs['jobs']):
         raise ValueError('Recovery must inspect every source job')
+    prefix = WORKFLOW_PREFIXES[run['path']]
+    required_jobs = {prefix + name for name in BUILD_JOBS}
+    publish_job = prefix + PUBLISH_JOB
     names = [job['name'] for job in jobs['jobs']]
-    if len(names) != len(set(names)) or not BUILD_JOBS <= set(names) or PUBLISH_JOB not in names:
+    if len(names) != len(set(names)) or not required_jobs <= set(names) or publish_job not in names:
         raise ValueError('Required platform acceptance jobs are missing or ambiguous')
     for job in jobs['jobs']:
-        expected = 'failure' if job['name'] == PUBLISH_JOB else 'success'
+        expected = 'failure' if job['name'] == publish_job else 'success'
         if job['status'] != 'completed' or job['conclusion'] != expected:
             raise ValueError('Recovery cannot accept incomplete or failed build/acceptance jobs')
     return {'sha': expected_sha, 'publisher_sha': publisher_sha,
