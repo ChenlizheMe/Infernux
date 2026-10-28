@@ -1,88 +1,110 @@
 {
   "schema_version": 1,
   "version": "0.4.3",
-  "tag": "v0.4.3-v7",
-  "title": "Infernux v0.4.3-v7 · Hotfix 7: Dependency Updates and Restart Control",
-  "codename": "Hotfix 7: Dependency Updates and Restart Control",
+  "tag": "v0.4.3-v8",
+  "title": "Infernux v0.4.3-v8 · Hotfix 8: Camera Rendering and Hub Windows",
+  "codename": "Hotfix 8: Camera Rendering and Hub Windows",
   "language": "en",
-  "published_at": "2026-10-25T17:25:00Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v7",
+  "published_at": "2026-10-28T07:51:48Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.3-v8",
   "source": "UpdateLog.md",
-  "summary": "This hotfix prepares Python dependency replacements before editor startup, keeping loaded libraries intact until the editor closes. The base engine version remains 0.4.3; wheels use build 7, with Hub 0.4.3-8.",
+  "summary": "This hotfix adopts reversed-Z depth rendering, isolates camera state between render views, and fixes custom skies, directional shadows and Hub window behavior. The base engine version remains 0.4.3; wheels use build 8, with Hub 0.4.3-9.",
   "comparison": {
-    "from": "0.4.3-v6",
-    "to": "0.4.3-v7",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v6...v0.4.3-v7"
+    "from": "0.4.3-v7",
+    "to": "0.4.3-v8",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v7...v0.4.3-v8"
   },
-  "section_count": 2,
-  "item_count": 11,
+  "section_count": 3,
+  "item_count": 14,
   "sections": [
     {
-      "id": "dependencies-and-plugins",
-      "title": "Dependencies and Plugins",
+      "id": "rendering-and-cameras",
+      "title": "Rendering and Cameras",
       "kind": "changes",
       "items": [
         {
-          "title": "Ask to restart only when an installation would replace a library already loaded by the editor, including transitive dependencies. Unloaded libraries install without a restart prompt.",
+          "title": "Use reversed-Z for scene depth, with matching projection, clear values, depth comparisons, picking and depth-dependent rendering on Vulkan and WebGPU.",
           "detail": "",
-          "text": "Ask to restart only when an installation would replace a library already loaded by the editor, including transitive dependencies. Unloaded libraries install without a restart prompt."
+          "text": "Use reversed-Z for scene depth, with matching projection, clear values, depth comparisons, picking and depth-dependent rendering on Vulkan and WebGPU."
         },
         {
-          "title": "Keep the current environment and plugin registration intact when choosing Later. Restart Now uses the existing save/discard/cancel workflow; cancelling keeps the editor open and the installation pending.",
+          "title": "Keep camera globals, clipping planes and projection settings local to each Game, Scene and preview render view. Add an editable camera dither option.",
           "detail": "",
-          "text": "Keep the current environment and plugin registration intact when choosing Later. Restart Now uses the existing save/discard/cancel workflow; cancelling keeps the editor open and the installation pending."
+          "text": "Keep camera globals, clipping planes and projection settings local to each Game, Scene and preview render view. Add an editable camera dither option."
         },
         {
-          "title": "Resume the prepared installation after the old editor exits, then launch a fresh interpreter so new site hooks and package paths take effect normally.",
+          "title": "Preserve the existing World UI policy: UI configured to face the camera continues to face the Game camera, including when viewed from the Scene panel.",
           "detail": "",
-          "text": "Resume the prepared installation after the old editor exits, then launch a fresh interpreter so new site hooks and package paths take effect normally."
+          "text": "Preserve the existing World UI policy: UI configured to face the camera continues to face the Game camera, including when viewed from the Scene panel."
         },
         {
-          "title": "Restore missing project and plugin requirements during launch preparation, preserving locked versions and keeping dependency installation out of the running editor's startup checks.",
+          "title": "Correct directional shadow depth so rotating the viewing camera does not change the physical size of a stationary object's shadow.",
           "detail": "",
-          "text": "Restore missing project and plugin requirements during launch preparation, preserving locked versions and keeping dependency installation out of the running editor's startup checks."
+          "text": "Correct directional shadow depth so rotating the viewing camera does not change the physical size of a stationary object's shadow."
         },
         {
-          "title": "Respect direct-URL source changes and the requirements of other dependency owners when restoring a plugin's previous libraries during uninstall.",
+          "title": "Repair custom panoramic sky rendering and its asset dependencies, with sky background depth aligned to reversed-Z.",
           "detail": "",
-          "text": "Respect direct-URL source changes and the requirements of other dependency owners when restoring a plugin's previous libraries during uninstall."
-        },
-        {
-          "title": "Group the plugin package list under category headers when All is selected, retaining search, sorting within each category, selection and details.",
-          "detail": "",
-          "text": "Group the plugin package list under category headers when All is selected, retaining search, sorting within each category, selection and details."
+          "text": "Repair custom panoramic sky rendering and its asset dependencies, with sky background depth aligned to reversed-Z."
         }
       ]
     },
     {
-      "id": "hub-and-release-delivery",
-      "title": "Hub and Release Delivery",
+      "id": "editor-and-runtime",
+      "title": "Editor and Runtime",
       "kind": "changes",
       "items": [
         {
-          "title": "Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses.",
+          "title": "Keep keyboard input inside the focused Game panel, preventing Tab from selecting editor controls during gameplay. Retain Scene camera mouse movement across GUI updates.",
           "detail": "",
-          "text": "Complete project-lock handoff before allowing the editor process to prepare dependencies or start its replacement. Stop and Retry also terminate the replacement editor and installation subprocesses."
+          "text": "Keep keyboard input inside the focused Game panel, preventing Tab from selecting editor controls during gameplay. Retain Scene camera mouse movement across GUI updates."
         },
         {
-          "title": "Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths.",
+          "title": "Allow completed animation states to respond to later transitions, and improve animation node graph readability.",
           "detail": "",
-          "text": "Preserve the short Windows Python host and the project's private Python home during restart, including projects with long or non-ASCII paths."
+          "text": "Allow completed animation states to respond to later transitions, and improve animation node graph readability."
         },
         {
-          "title": "Open projects using earlier installed SDKs through their own startup entry; enable dependency preparation only when the installed SDK provides it.",
+          "title": "Publish coherent hierarchy transforms in batch operations and reject batches bound to a different world before applying changes.",
           "detail": "",
-          "text": "Open projects using earlier installed SDKs through their own startup entry; enable dependency preparation only when the installed SDK provides it."
+          "text": "Publish coherent hierarchy transforms in batch operations and reject batches bound to a different world before applying changes."
         },
         {
-          "title": "Respect the automatic-update preference when opening the engine installation page; manual update checks remain available.",
+          "title": "Keep hot-reload candidate importers alive through durable publication and preserve recoverable editor transaction rollback state.",
           "detail": "",
-          "text": "Respect the automatic-update preference when opening the engine installation page; manual update checks remain available."
+          "text": "Keep hot-reload candidate importers alive through durable publication and preserve recoverable editor transaction rollback state."
         },
         {
-          "title": "Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix.",
+          "title": "Confine package extraction to its destination and publish decoded entries atomically, including packages with search-only directory permissions on Linux.",
           "detail": "",
-          "text": "Require matching published Windows and Linux Player release identities before SDK publication. Rebuild the companion desktop platform packages for this exact hotfix."
+          "text": "Confine package extraction to its destination and publish decoded entries atomically, including packages with search-only directory permissions on Linux."
+        },
+        {
+          "title": "Compare fixed-update timing samples individually in tests, preserving both clock checks and numerical precision under pytest 9.2.",
+          "detail": "",
+          "text": "Compare fixed-update timing samples individually in tests, preserving both clock checks and numerical precision under pytest 9.2."
+        }
+      ]
+    },
+    {
+      "id": "hub-and-distribution",
+      "title": "Hub and Distribution",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Prevent labels, buttons and installation progress controls from appearing as temporary standalone windows while refreshing project cards, opening dialogs or displaying installation jobs.",
+          "detail": "",
+          "text": "Prevent labels, buttons and installation progress controls from appearing as temporary standalone windows while refreshing project cards, opening dialogs or displaying installation jobs."
+        },
+        {
+          "title": "Remove global always-on-top behavior from the editor startup splash while retaining its loading progress and appearance.",
+          "detail": "",
+          "text": "Remove global always-on-top behavior from the editor startup splash while retaining its loading progress and appearance."
+        },
+        {
+          "title": "Rebuild platform Player packages against the new engine release and publish new Windows and Linux wheels, Hub installers and Hub update archives.",
+          "detail": "",
+          "text": "Rebuild platform Player packages against the new engine release and publish new Windows and Linux wheels, Hub installers and Hub update archives."
         }
       ]
     }
