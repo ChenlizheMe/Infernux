@@ -1283,9 +1283,12 @@ class TestFixedTiming:
         manager.step()
 
         fixed_delta = manager.get_fixed_time_step()
-        assert probe.samples == pytest.approx(
-            [(fixed_delta, fixed_delta), (fixed_delta * 2.0, fixed_delta * 2.0)]
-        )
+        assert len(probe.samples) == 2
+        for step_index, sample in enumerate(probe.samples, start=1):
+            expected_time = fixed_delta * step_index
+            assert sample == pytest.approx(
+                (expected_time, expected_time), rel=1e-6, abs=1e-12
+            )
 
 
 class TestCollision:
