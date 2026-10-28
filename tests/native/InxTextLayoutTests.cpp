@@ -233,7 +233,7 @@ int main()
     const std::string latinFont =
         infernux::FromFsPath(repositoryRoot / "external/imgui_for_infernux/misc/fonts/Roboto-Medium.ttf");
     const std::string cjkFont =
-        infernux::FromFsPath(repositoryRoot / "python/infernux/resources/fonts/PingFangSC-Regular.ttf");
+        infernux::FromFsPath(repositoryRoot / "python/infernux/resources/fonts/MapleMono-CN-Regular.ttf");
     assert(std::filesystem::exists(latinFont));
     assert(std::filesystem::exists(cjkFont));
     infernux::textlayout::TextLayoutParams explicitChain{};
@@ -421,7 +421,7 @@ int main()
     assert(infernux::textlayout::ResolveFont("./Roboto-Medium.ttf") == chainedLayout.font);
     std::filesystem::current_path(infernux::ToFsPath(cjkFont).parent_path());
     assert(infernux::textlayout::ResolveFont("Roboto-Medium.ttf") == nullptr);
-    assert(infernux::textlayout::ResolveFont("PingFangSC-Regular.ttf") == chainedLayout.fallbackFonts[0]);
+    assert(infernux::textlayout::ResolveFont("MapleMono-CN-Regular.ttf") == chainedLayout.fallbackFonts[0]);
     std::filesystem::current_path(oldDirectory);
     assert(io.Fonts->Fonts.Size == fontCount);
     ImGui::EndFrame();

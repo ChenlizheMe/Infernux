@@ -1,0 +1,18 @@
+Bundled default font: Maple Mono CN Regular
+Upstream version: v7.9 (font version 7.900)
+Project: https://github.com/subframe7536/maple-font
+Release: https://github.com/subframe7536/maple-font/releases/tag/v7.9
+Archive: https://github.com/subframe7536/maple-font/releases/download/v7.9/MapleMono-CN.zip
+Archive entry: MapleMono-CN-Regular.ttf
+Font SHA-256: e6338c3dca9a3bed3fb81f43c8bb8feca3b6ad54829f5a3229527d030a321dbd
+
+The font is an unmodified upstream hinted static TTF. Only Regular is bundled.
+CN supplies Chinese glyphs with a two-to-one CJK/Latin advance ratio.
+Font coverage does not imply that every Unicode character is supported.
+OpenType programming ligatures require shaping support in the text renderer;
+bundling this font does not enable ligatures in the engine by itself.
+
+Copyright 2022 The Maple Mono Project Authors
+License: SIL Open Font License 1.1; see MapleMono-LICENSE.txt, copied verbatim
+from LICENSE.txt in the same release archive. Retain the copyright and license
+when redistributing the font, including in packaged Editor/Player resources.

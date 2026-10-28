@@ -277,7 +277,7 @@ void InxGUI::ReloadGUIFont()
 
     // This is the single engine font used by both ImGui and UIText when a
     // component has no explicit Font asset. Keeping the exact ImFont pointer
-    // avoids an ambient ImGui default-font path and avoids loading PingFang
+    // avoids an ambient ImGui default-font path and avoids loading the bundled face
     // twice into the atlas.
     textlayout::SetDefaultFont(font);
 

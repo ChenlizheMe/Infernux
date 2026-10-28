@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-FONT_FAMILIES = ("Space Grotesk", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC")
+FONT_FAMILIES = ("Space Grotesk", "Microsoft YaHei UI", "Noto Sans CJK SC")
 FONT_STACK = ", ".join(f'"{family}"' for family in FONT_FAMILIES) + ", sans-serif"
 
 # Logical-pixel type scale; Qt scales it with the display's DPI.

@@ -16,7 +16,7 @@ icon_path: str
 """Absolute path to the engine window icon (``resources/icons/icon.png``)."""
 
 engine_font_path: str
-"""Absolute path to the default Simplified Chinese UI font (``PingFangSC-Regular.ttf``)."""
+"""Absolute path to the bundled CJK monospace font (``MapleMono-CN-Regular.ttf``)."""
 
 engine_lib_path: str
 """Absolute path to the native library directory (``lib/``)."""

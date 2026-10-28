@@ -267,7 +267,7 @@ inline void CollectRetiredFonts()
 }
 
 // The editor/player GUI installs one authoritative engine font at startup.
-// UIText without an authored Font asset must use that same PingFang face,
+// UIText without an authored Font asset must use that same bundled face,
 // rather than inheriting whatever ambient ImGui font happens to be active.
 // The pointer is valid only while the current ImGui atlas is alive; the GUI
 // reload path clears it before rebuilding the atlas.

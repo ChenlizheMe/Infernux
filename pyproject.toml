@@ -10,7 +10,11 @@ authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "MIT"
-license-files = ["LICENSE", "licenses/utf8proc/*.md"]
+license-files = [
+    "LICENSE",
+    "licenses/utf8proc/*.md",
+    "python/infernux/resources/fonts/MapleMono-LICENSE.txt",
+]
 keywords = ["game-engine", "vulkan", "python", "rendergraph", "editor"]
 classifiers = [
     "Development Status :: 3 - Alpha",
