@@ -546,7 +546,7 @@ class PageHeader(QWidget):
         self.title_label = QLabel(title)
         self.title_label.setObjectName("pageTitle")
         text.addWidget(self.title_label)
-        self.subtitle_label = QLabel(subtitle)
+        self.subtitle_label = QLabel(subtitle, self)
         self.subtitle_label.setObjectName("pageSubtitle")
         self.subtitle_label.setWordWrap(True)
         self.subtitle_label.setVisible(bool(subtitle))

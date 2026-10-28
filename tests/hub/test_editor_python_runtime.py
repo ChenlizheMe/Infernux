@@ -14,6 +14,18 @@ from PySide6.QtWidgets import QApplication
 from splash_screen import EngineSplashScreen
 
 
+def test_editor_splash_does_not_force_global_topmost():
+    from PySide6.QtCore import Qt
+
+    application = QApplication.instance() or QApplication([])
+    splash = EngineSplashScreen('', 'Window policy')
+    try:
+        assert not splash.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    finally:
+        splash._spin_timer.stop()
+        splash.close()
+
+
 @pytest.mark.parametrize("preparation", ["absent", "ready", "pending"])
 def test_hub_uses_the_installed_sdks_startup_entry_without_importing_unprovided_modules(tmp_path, preparation):
     site = tmp_path / 'installed-sdk'

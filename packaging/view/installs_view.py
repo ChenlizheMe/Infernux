@@ -106,7 +106,7 @@ class _ModuleCard(AnimatedSurfaceFrame):
         self._outer = outer
 
     def attach_job(self, queue, key: str) -> JobStrip:
-        strip = JobStrip(queue, key)
+        strip = JobStrip(queue, key, self)
         self._outer.addWidget(strip)
         return strip
 
@@ -744,7 +744,7 @@ class _PendingEngineCard(AnimatedSurfaceFrame):
         title = QLabel(job.title)
         title.setObjectName("cardName")
         layout.addWidget(title)
-        layout.addWidget(JobStrip(queue, job.key))
+        layout.addWidget(JobStrip(queue, job.key, self))
 
 
 class InstallsView(QWidget):

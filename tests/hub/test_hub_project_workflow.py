@@ -380,3 +380,56 @@ def test_failed_project_upgrade_preserves_the_existing_bindings(upgrade_project,
     finally:
         if failure == 'locked':
             remove_project_lock(str(project), 'editor-owner')
+
+
+def test_project_refresh_and_hub_controls_do_not_show_unowned_windows(tmp_path, monkeypatch):
+    from PySide6.QtCore import QObject, QEvent
+    from PySide6.QtWidgets import QApplication, QWidget
+    from install_queue import InstallJob, InstallQueue
+    from ui_project_list import ProjectListPane
+    from view.dialogs import HubDialog
+    from view.forge import PageHeader
+    from view.installs_view import _ModuleCard, _PendingEngineCard
+
+    app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    shown_windows = []
+
+    class WindowObserver(QObject):
+        def eventFilter(self, widget, event):
+            if event.type() == QEvent.Type.Show and isinstance(widget, QWidget) and widget.isWindow():
+                shown_windows.append((type(widget).__name__, widget.objectName()))
+            return False
+
+    observer = WindowObserver()
+    app.installEventFilter(observer)
+    try:
+        db = ProjectDatabase(tmp_path / 'hub.db')
+        project = _make_project(tmp_path / 'available')
+        record = db.add_project('Available', str(project))
+        missing_record = db.add_project('Missing', str(tmp_path / 'missing'))
+        db.set_setting('pinned_projects', json.dumps([record.project_id]))
+        pane = ProjectListPane(db, parent=owner)
+        header = PageHeader('01', 'PROJECTS', 'Projects', 'Manage projects', parent=owner)
+        dialog = HubDialog(owner, title='Remove project?', text='Remove only the Hub entry.')
+
+        queue = InstallQueue(owner)
+        job = InstallJob('engine:test', 'Editor installation', lambda _report: None)
+        queue.jobs.append(job)
+        module = _ModuleCard('Runtime', 'Private Python', lamp='idle', parent=owner)
+        strip = module.attach_job(queue, job.key)
+        pending = _PendingEngineCard(queue, job, parent=owner)
+
+        model = ProjectModel(db, runtime_manager=object())
+        controller = ControlPaneViewModel(model, pane, launch_context=HubLaunchContext.SOURCE)
+        monkeypatch.setattr('viewmodel.control_pane_viewmodel.dialogs.confirm', lambda *_args, **_kwargs: True)
+        assert controller.remove_project(owner, record.project_id)
+        assert db.get_project(record.project_id) is None
+        assert (project / 'Assets').is_dir()
+        assert controller.remove_project(owner, missing_record.project_id)
+        assert db.all_projects() == []
+        assert shown_windows == []
+    finally:
+        app.removeEventFilter(observer)
+        owner.deleteLater()
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)

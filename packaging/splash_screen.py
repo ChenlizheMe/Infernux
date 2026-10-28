@@ -123,11 +123,7 @@ class EngineSplashScreen(QWidget):
 
     def __init__(self, icon_path: str, project_name: str, parent=None, *, detail: str = ""):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.Tool
-        )
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
         self.setFixedSize(self._SPLASH_W, self._SPLASH_H)
 
         self._process: subprocess.Popen | None = None
