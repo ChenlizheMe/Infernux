@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="Infernux logo"></a>
 </p>
 
-**0.4.3 hotfix 7** adds safe dependency updates with restart control, grouped plugin lists and matching desktop Player delivery. See the [changelog](UpdateLog.md).
+**0.4.3 hotfix 8** brings reversed-Z rendering, isolated camera settings, repaired skies and shadows, and fixes for Hub window flashes and startup focus. See the [changelog](UpdateLog.md).
 
 <h1 align="center">Infernux · 熔炉</h1>
 

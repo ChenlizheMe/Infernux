@@ -1,3 +1,36 @@
+# Infernux v0.4.3-v8 · Hotfix 8: Camera Rendering and Hub Windows
+
+This hotfix adopts reversed-Z depth rendering, isolates camera state between render views, and fixes custom skies, directional shadows and Hub window behavior. The base engine version remains 0.4.3; wheels use build 8, with Hub 0.4.3-9.
+
+[中文更新日志](UpdateLog-zh.md)
+
+**Baseline for comparison:** [`v0.4.3-v7...v0.4.3-v8`](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v7...v0.4.3-v8).
+
+### Rendering and Cameras
+
+- Use reversed-Z for scene depth, with matching projection, clear values, depth comparisons, picking and depth-dependent rendering on Vulkan and WebGPU.
+- Keep camera globals, clipping planes and projection settings local to each Game, Scene and preview render view. Add an editable camera dither option.
+- Preserve the existing World UI policy: UI configured to face the camera continues to face the Game camera, including when viewed from the Scene panel.
+- Correct directional shadow depth so rotating the viewing camera does not change the physical size of a stationary object's shadow.
+- Repair custom panoramic sky rendering and its asset dependencies, with sky background depth aligned to reversed-Z.
+
+### Editor and Runtime
+
+- Keep keyboard input inside the focused Game panel, preventing Tab from selecting editor controls during gameplay. Retain Scene camera mouse movement across GUI updates.
+- Allow completed animation states to respond to later transitions, and improve animation node graph readability.
+- Publish coherent hierarchy transforms in batch operations and reject batches bound to a different world before applying changes.
+- Keep hot-reload candidate importers alive through durable publication and preserve recoverable editor transaction rollback state.
+- Confine package extraction to its destination and publish decoded entries atomically, including packages with search-only directory permissions on Linux.
+- Compare fixed-update timing samples individually in tests, preserving both clock checks and numerical precision under pytest 9.2.
+
+### Hub and Distribution
+
+- Prevent labels, buttons and installation progress controls from appearing as temporary standalone windows while refreshing project cards, opening dialogs or displaying installation jobs.
+- Remove global always-on-top behavior from the editor startup splash while retaining its loading progress and appearance.
+- Rebuild platform Player packages against the new engine release and publish new Windows and Linux wheels, Hub installers and Hub update archives.
+
+---
+
 # Infernux v0.4.3-v7 · Hotfix 7: Dependency Updates and Restart Control
 
 This hotfix prepares Python dependency replacements before editor startup, keeping loaded libraries intact until the editor closes. The base engine version remains 0.4.3; wheels use build 7, with Hub 0.4.3-8.

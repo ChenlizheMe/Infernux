@@ -48,7 +48,7 @@ infernux-editor = "infernux_editor:main"
 launcher = ["PySide6>=6.5.0"]
 
 [tool.infernux.hub]
-build-number = 8
+build-number = 9
 
 [tool.ruff]
 target-version = "py313"

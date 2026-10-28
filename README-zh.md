@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="熔炉标志"></a>
 </p>
 
-**0.4.3 热修 7** 完善依赖更新与重启控制、插件分类列表及桌面 Player 配套发行。详见[更新日志](UpdateLog-zh.md)。
+**0.4.3 热修 8** 引入 reversed-Z 渲染和独立相机参数，修复天空、阴影、Hub 窗口闪烁及启动界面置顶。详见[更新日志](UpdateLog-zh.md)。
 
 <h1 align="center">熔炉 · Infernux</h1>
 
