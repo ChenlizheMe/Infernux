@@ -1,18 +1,4 @@
-"""
-FilmGrainEffect — Physically-inspired photographic grain.
-
-Models the three properties that make film grain read as film rather than
-digital static: grains have a physical size (soft value-noise clumps),
-the grain is multiplicative so blacks stay clean, and the grain plate
-advances at 24 fps like a real print. Runs after tone mapping so the grain
-modulates the final displayed exposure, matching Unity URP ordering.
-
-Parameters:
-    intensity  — grain strength (0 = off, 1 = heavy)
-    response   — luminance response (0 = uniform, 1 = midtones/shadows only)
-    size       — grain size in pixels (1 = fine modern stock, 3+ = coarse)
-    colored    — independent grain per channel like color negative stock
-"""
+"""Film grain applied to the display exposure with a luminance response."""
 
 from __future__ import annotations
 
@@ -27,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class FilmGrainEffect(FullScreenEffect):
-    """URP-aligned Film Grain post-processing effect."""
+    """Apply a centered grain plate after tone mapping."""
 
     name = "Film Grain"
     injection_point = "after_post_process"
@@ -39,14 +25,14 @@ class FilmGrainEffect(FullScreenEffect):
     intensity: float = serialized_field(default=0.2, range=(0.0, 1.0), slider=False)
     response: float = serialized_field(default=0.8, range=(0.0, 1.0), slider=False)
     size: float = serialized_field(
-        default=1.6,
+        default=1.0,
         range=(0.5, 4.0),
         slider=False,
         tooltip="Grain size in pixels (1 = fine modern stock, 3+ = coarse vintage)",
     )
     colored: bool = serialized_field(
         default=False,
-        tooltip="Independent grain per RGB channel, like color negative film",
+        tooltip="Add a subtle independent grain component to each color channel",
     )
 
     def get_shader_list(self) -> List[str]:
