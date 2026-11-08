@@ -7,10 +7,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <core/config/InxPlatform.h>
 #ifndef INX_PLATFORM_WINDOWS
