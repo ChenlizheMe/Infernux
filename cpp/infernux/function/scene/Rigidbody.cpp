@@ -2,15 +2,8 @@
  * @file Rigidbody.cpp
  * @brief Rigidbody component — drives dynamic/kinematic physics simulation.
  *
- * Lifecycle:
- *   Awake  → (Collider has already registered its body as static)
- *   OnEnable → Tell sibling Colliders to switch body to Dynamic/Kinematic,
- *              apply mass/drag/gravity settings.
- *   OnDisable → Tell sibling Colliders to switch body back to Static.
- *   OnDestroy → Same as OnDisable.
- *
- * The Jolt body is owned by the Collider, not the Rigidbody. Rigidbody
- * merely configures the body's motion type and dynamics properties.
+ * Rigidbody owns the actor and native body. Colliders contribute shapes;
+ * removing the last shape does not remove motion state or joint endpoints.
  */
 
 #include "Rigidbody.h"
@@ -32,6 +25,7 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -39,37 +33,10 @@ namespace infernux
 namespace
 {
 
-static Collider *GetPrimaryBodyCollider(GameObject *go)
-{
-    if (!go)
-        return nullptr;
-
-    const uint32_t bodyId = Collider::GetSharedBodyId(go);
-    if (bodyId == 0xFFFFFFFF)
-        return nullptr;
-    Collider *allocatedBody = nullptr;
-    for (const auto &component : go->GetAllComponents()) {
-        auto *col = dynamic_cast<Collider *>(component.get());
-        if (!col || col->GetBodyId() != bodyId)
-            continue;
-        allocatedBody = col;
-        if (col->IsEnabled())
-            return col;
-    }
-    // A disabled Collider keeps its Jolt body allocation so re-enabling is
-    // cheap, but that body is not resident in the broadphase. Rigidbody
-    // properties must fall back to Transform state until an enabled Collider
-    // makes the shared body operational again.
-    if (allocatedBody)
-        return nullptr;
-    throw std::logic_error("Physics actor body exists without an owning collider");
-}
-
-/// Returns the first valid body ID for this game object, or 0xFFFFFFFF.
 static uint32_t GetPrimaryBodyId(GameObject *go)
 {
-    auto *col = GetPrimaryBodyCollider(go);
-    return (col && col->GetBodyId() != 0xFFFFFFFF) ? col->GetBodyId() : 0xFFFFFFFF;
+    auto *body = go ? go->GetComponent<Rigidbody>() : nullptr;
+    return body ? body->GetBodyId() : 0xFFFFFFFF;
 }
 
 static bool RotationChanged(const glm::quat &current, const glm::quat &previous)
@@ -110,6 +77,39 @@ static bool IsFiniteRotation(const glm::quat &value)
 {
     return std::isfinite(value.w) && std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) &&
            glm::dot(value, value) > 1e-12f;
+}
+
+static RigidbodyMassProperties ValidateMassProperties(const glm::vec3 &center, const glm::vec3 &moments,
+                                                      const glm::quat &rotation)
+{
+    if (!IsFinite(center) || !IsFinite(moments) || glm::any(glm::lessThanEqual(moments, glm::vec3(0.0f))))
+        throw std::invalid_argument("mass properties require a finite center and positive finite principal moments");
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(1.0f / moments[i]))
+            throw std::invalid_argument("principal inverse inertia must be representable");
+    const double largest = std::max({double(moments.x), double(moments.y), double(moments.z)});
+    if (2.0 * largest > (double(moments.x) + double(moments.y) + double(moments.z)) + 1e-6 * largest)
+        throw std::invalid_argument("principal inertia moments must satisfy the physical triangle inequality");
+    if (!IsFiniteRotation(rotation))
+        throw std::invalid_argument("principal inertia rotation must be a finite nonzero quaternion");
+    return {center, moments, glm::quat(glm::normalize(glm::dquat(rotation)))};
+}
+
+static std::optional<RigidbodyMassProperties> ReadMassProperties(const nlohmann::json &document)
+{
+    const auto entry = document.find("mass_properties");
+    if (entry == document.end())
+        return std::nullopt; // Absence means geometry-derived COM and inertia.
+    using namespace component_document_validation;
+    if (!entry->is_object() || entry->size() != 3)
+        throw std::invalid_argument("mass_properties requires center, moments and rotation");
+    RequireFiniteVector(*entry, "center", 3, "Rigidbody.mass_properties");
+    RequireFiniteVector(*entry, "moments", 3, "Rigidbody.mass_properties");
+    RequireFiniteVector(*entry, "rotation", 4, "Rigidbody.mass_properties");
+    const auto &c = entry->at("center"), &i = entry->at("moments"), &q = entry->at("rotation");
+    return ValidateMassProperties({c[0].get<float>(), c[1].get<float>(), c[2].get<float>()},
+                                  {i[0].get<float>(), i[1].get<float>(), i[2].get<float>()},
+                                  {q[3].get<float>(), q[0].get<float>(), q[1].get<float>(), q[2].get<float>()});
 }
 
 static void ValidateForceMode(ForceMode mode)
@@ -200,32 +200,38 @@ template <typename Fn> void Rigidbody::ForEachBody(Fn &&fn)
         fn(*pw, bodyId);
 }
 
-void Rigidbody::TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot)
+void Rigidbody::TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot,
+                               bool publishTransform)
 {
-    if (auto *transform = go->GetTransform()) {
-        transform->SetPosition(pos);
-        transform->SetWorldRotation(rot);
-    }
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *col : colliders) {
-        if (col && col->GetBodyId() != 0xFFFFFFFF)
-            col->SetLastSyncedTransform(pos, rot);
+    auto &d = DataMut();
+    if (publishTransform) {
+        auto *transform = go->GetTransform();
+        transform->ApplyWorldPoseFromPhysics(pos, rot, true);
+        if (!TransformECSStore::Instance().IsFrameCacheActive())
+            SceneManager::Instance().PublishPhysicsTransformsToRenderer();
+        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
+        CacheActorPose(pos, rot);
+        d.lastSyncedPosition = pos;
+        d.lastSyncedRotation = rot;
+        d.hasSyncedOnce = true;
+    } else if (!d.hasSyncedOnce) {
+        auto *transform = go->GetTransform();
+        d.lastSyncedPosition = transform->GetPosition();
+        d.lastSyncedRotation = transform->GetWorldRotation();
+        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
+        d.hasSyncedOnce = true;
     }
     const uint32_t bodyId = GetPrimaryBodyId(go);
     if (bodyId != 0xFFFFFFFF) {
-        pw.SetBodyPosition(bodyId, pos, rot);
+        pw.SetBodyPosition(bodyId, pos, rot, publishTransform);
         pw.ActivateBody(bodyId);
     }
-    auto &d = DataMut();
     d.previousPhysicsPosition = pos;
     d.previousPhysicsRotation = rot;
     d.currentPhysicsPosition = pos;
     d.currentPhysicsRotation = rot;
     d.hasPhysicsPose = true;
     d.wasSleeping = false;
-    d.lastSyncedPosition = pos;
-    d.lastSyncedRotation = rot;
-    d.hasSyncedOnce = true;
 }
 
 // ============================================================================
@@ -239,93 +245,128 @@ Rigidbody::Rigidbody()
 
 Rigidbody::~Rigidbody()
 {
-    // Safety-net unregister (idempotent — no-op if already done by OnDisable).
-    // NOTE: Do NOT call GetComponents<Collider>() here — during
-    // ~GameObject → m_components.clear(), sibling unique_ptrs may already be
-    // destroyed, so iterating the vector and calling dynamic_cast on dangling
-    // pointers is undefined behaviour.  OnDisable() already clears
-    // cachedRigidbody on every sibling Collider before we reach this point.
-
-    // Release pool slot
     PhysicsECSStore::Instance().ReleaseRigidbody(m_ecsHandle);
 }
 
-// ============================================================================
-// Lifecycle
-// ============================================================================
+uint32_t Rigidbody::GetBodyId() const
+{
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = Data().actorHandle;
+    return store.IsValid(handle) ? store.GetActor(handle).bodyId : 0xFFFFFFFF;
+}
+
+uint32_t Rigidbody::GetParticipatingBodyId() const
+{
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = Data().actorHandle;
+    return store.IsValid(handle) && store.GetActor(handle).bodyInBroadphase ? store.GetActor(handle).bodyId
+                                                                            : 0xFFFFFFFF;
+}
+
+std::optional<std::tuple<uint32_t, uint32_t, uint64_t, uint64_t>> Rigidbody::GetResultTargetEpoch() const
+{
+    const auto &store = PhysicsECSStore::Instance();
+    const auto handle = Data().actorHandle;
+    if (!IsEnabled() || !GetGameObject() || !GetGameObject()->IsActiveInHierarchy() || !store.IsValid(handle))
+        return std::nullopt;
+    // A Jolt body is created at most once for an actor. The actor handle is
+    // already assigned when Start or FixedUpdate first registers a result.
+    return std::tuple{handle.index, handle.generation, store.GetActor(handle).shapeRevision, m_resultEpoch};
+}
 
 void Rigidbody::Awake()
 {
-    // Nothing here — Collider::Awake() creates the body as static.
-    // OnEnable (called right after Awake) will switch it to dynamic.
+    PhysicsECSStore::Instance().AttachRigidbody(this);
+}
+
+void Rigidbody::OnHierarchyPublished()
+{
+    PhysicsECSStore::Instance().AttachRigidbody(this);
 }
 
 void Rigidbody::OnEnable()
 {
-
-    // Cache this Rigidbody pointer on all sibling Colliders
-    if (auto *go = GetGameObject()) {
-        auto colliders = go->GetComponents<Collider>();
-        for (auto *col : colliders)
-            if (col)
-                col->SetCachedRigidbody(this);
-    }
-
+    auto &store = PhysicsECSStore::Instance();
+    if (!store.IsValid(Data().actorHandle))
+        store.AttachRigidbody(this);
     NotifyCollidersBodyTypeChanged();
 }
 
 void Rigidbody::OnDisable()
 {
-
-    // Clear cached Rigidbody pointer on sibling Colliders
-    auto *go = GetGameObject();
-    if (!go)
+    ++m_resultEpoch;
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = Data().actorHandle;
+    if (!store.IsValid(handle))
         return;
-
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *col : colliders)
-        if (col)
-            col->SetCachedRigidbody(nullptr);
-
-    auto *pw = &PhysicsWorld::Instance();
-    if (!pw->IsInitialized())
-        return;
-
-    // Rebuild shapes — MeshCollider may switch back to MeshShape now
-    // that there is no dynamic Rigidbody.  Must happen before setting
-    // motionType to Static so the shape matches the new body type.
-    for (auto *col : colliders) {
-        if (col && col->IsEnabled() && col->GetBodyId() != 0xFFFFFFFF) {
-            pw->UpdateBodyShape(col);
-            break; // shared body — one rebuild is enough
-        }
-    }
-
-    const uint32_t bodyId = GetPrimaryBodyId(go);
-    if (bodyId != 0xFFFFFFFF) {
-        pw->SetBodyMotionType(bodyId, 0); // 0 = Static
-    }
+    const auto bodyId = GetBodyId();
+    if (bodyId != 0xFFFFFFFF)
+        PhysicsWorld::Instance().DestroyConstraintsForBody(bodyId);
+    if (!IsBeingDestroyed())
+        store.RefreshActor(handle);
 }
 
 void Rigidbody::OnDestroy()
 {
-    // Ensure bodies revert to static before Rigidbody goes away.
-    // Use CallOnDisable() (not OnDisable()) so the m_wasEnabled guard
-    // prevents double-execution when ~GameObject calls OnDisable + OnDestroy.
-    CallOnDisable();
+    PhysicsECSStore::Instance().DetachRigidbody(this);
 }
 
 // ============================================================================
 // Property setters
 // ============================================================================
 
-void Rigidbody::SetMass(float mass)
+std::optional<RigidbodyMassProperties> Rigidbody::PrepareMass(float mass) const
 {
     if (!std::isfinite(mass) || mass < 0.001f)
         throw std::invalid_argument("mass must be finite and at least 0.001");
+    const auto &d = Data();
+    auto properties = m_massProperties;
+    if (properties) {
+        const glm::vec3 moments = glm::vec3(glm::dvec3(properties->moments) * (double(mass) / d.mass));
+        if (!IsFinite(moments) || glm::any(glm::lessThanEqual(moments, glm::vec3(0.0f))))
+            throw std::invalid_argument("mass change produces unrepresentable inertia");
+        properties->moments = moments;
+    }
+    PhysicsWorld::Instance().ValidateBodyMassProperties(*this, mass, properties ? &*properties : nullptr);
+    return properties;
+}
+
+void Rigidbody::ValidateMass(float mass) const
+{
+    (void)PrepareMass(mass);
+}
+
+void Rigidbody::SetMass(float mass)
+{
+    const auto properties = PrepareMass(mass);
     auto &d = DataMut();
     d.mass = mass;
+    m_massProperties = properties;
     ApplyConstraints();
+}
+
+void Rigidbody::SetMassProperties(float mass, const glm::vec3 &center, const glm::vec3 &moments,
+                                  const glm::quat &rotation)
+{
+    if (!std::isfinite(mass) || mass < 0.001f)
+        throw std::invalid_argument("mass must be finite and at least 0.001");
+    const auto properties = ValidateMassProperties(center, moments, rotation);
+    PhysicsWorld::Instance().ValidateBodyMassProperties(*this, mass, &properties);
+    auto &data = DataMut();
+    data.mass = mass;
+    m_massProperties = properties;
+    auto &store = PhysicsECSStore::Instance();
+    if (store.IsValid(Data().actorHandle))
+        store.RefreshActor(Data().actorHandle);
+}
+
+void Rigidbody::ResetMassProperties()
+{
+    PhysicsWorld::Instance().ValidateBodyMassProperties(*this, Data().mass, nullptr);
+    m_massProperties.reset();
+    auto &store = PhysicsECSStore::Instance();
+    if (store.IsValid(Data().actorHandle))
+        store.RefreshActor(Data().actorHandle);
 }
 
 void Rigidbody::SetDrag(float drag)
@@ -360,8 +401,10 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     if (d.isKinematic == kinematic)
         return;
     bool wasKinematic = d.isKinematic;
+    if (!kinematic && m_massProperties)
+        PhysicsWorld::Instance().ValidateBodyMassProperties(*this, d.mass, &*m_massProperties);
     d.isKinematic = kinematic;
-    NotifyCollidersBodyTypeChanged();
+    NotifyCollidersBodyTypeChanged(false);
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     // When switching kinematic → dynamic, synchronise interpolation caches
@@ -389,6 +432,7 @@ void Rigidbody::SetIsKinematic(bool kinematic)
             if (tf) {
                 d.lastSyncedPosition = tf->GetPosition();
                 d.lastSyncedRotation = tf->GetWorldRotation();
+                d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
                 d.hasSyncedOnce = true;
             }
         }
@@ -403,6 +447,7 @@ void Rigidbody::SetConstraints(int constraints)
     auto &d = DataMut();
     if (d.constraints == constraints)
         return;
+    PhysicsWorld::Instance().ValidateBodyMassProperties(*this, d.mass, m_massProperties ? &*m_massProperties : nullptr);
     d.constraints = constraints;
     ApplyConstraints();
 }
@@ -503,6 +548,7 @@ void Rigidbody::SetAngularVelocity(const glm::vec3 &vel)
             data.hasAngularVelocity = false;
         }
     }
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 // ============================================================================
@@ -539,6 +585,8 @@ void Rigidbody::AddForceAtPosition(const glm::vec3 &force, const glm::vec3 &posi
 
 void Rigidbody::SubmitForceCommand(ForceCommand command)
 {
+    if (command.value == glm::vec3(0.0f))
+        return;
     const uint32_t bodyId = GetPrimaryBodyId(GetGameObject());
     auto &world = PhysicsWorld::Instance();
     if (!world.IsBodyInBroadphase(bodyId)) {
@@ -641,7 +689,7 @@ void Rigidbody::MovePosition(const glm::vec3 &position)
 
     const uint32_t bodyId = GetPrimaryBodyId(go);
     if (bodyId == 0xFFFFFFFF)
-        throw std::logic_error("MovePosition requires an enabled Collider body");
+        throw std::logic_error("MovePosition requires a resident Rigidbody");
 
     pw->MoveBodyKinematicPosition(bodyId, position, dt);
 }
@@ -661,7 +709,7 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
     float dt = SceneManager::Instance().GetFixedTimeStep();
     const uint32_t bodyId = GetPrimaryBodyId(go);
     if (bodyId == 0xFFFFFFFF)
-        throw std::logic_error("MoveRotation requires an enabled Collider body");
+        throw std::logic_error("MoveRotation requires a resident Rigidbody");
 
     pw->MoveBodyKinematicRotation(bodyId, glm::normalize(rotation), dt);
 }
@@ -678,7 +726,79 @@ glm::vec3 Rigidbody::GetWorldCenterOfMass() const
 
 PhysicsBodyMotionState Rigidbody::GetMotionState() const
 {
-    return PhysicsWorld::Instance().GetBodyMotionState(GetPrimaryBodyId(GetGameObject()));
+    return GetMotionState(PhysicsStateFields::All);
+}
+
+PhysicsBodyMotionState Rigidbody::GetMotionState(PhysicsStateFields fields) const
+{
+    const uint32_t bodyId = GetBodyId();
+    auto state = PhysicsWorld::Instance().GetBodyMotionState(bodyId, fields);
+    // ECS actor metadata is owner-thread state, not protected by Jolt's body
+    // lock. The physics boundary serializes shape publication with this read.
+    if (HasPhysicsStateField(fields, PhysicsStateFields::ShapeRevision))
+        state.shapeRevision = PhysicsECSStore::Instance().GetActor(Data().actorHandle).shapeRevision;
+    return state;
+}
+
+void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::vector<PhysicsBodyMotionState> states)
+{
+    auto &world = PhysicsWorld::Instance();
+    world.RequireResetPhase(); // Before accessing any scene/component state.
+    if (bodies.size() != states.size())
+        throw std::invalid_argument("reset requires one motion state per Rigidbody");
+    std::unordered_set<uint32_t> identities;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        auto *body = bodies[i];
+        auto &state = states[i];
+        if (!body || !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject())
+            throw std::invalid_argument("reset requires live enabled Rigidbodies");
+        if (!IsFinite(state.position) || !IsFiniteRotation(state.rotation) || !IsFinite(state.linearVelocity) ||
+            !IsFinite(state.angularVelocity))
+            throw std::invalid_argument("reset requires finite poses/velocities and nonzero rotations");
+        state.bodyId = body->GetMotionState(PhysicsStateFields::None).bodyId;
+        if (!identities.insert(state.bodyId).second)
+            throw std::invalid_argument("reset cannot contain duplicate bodies");
+        state.rotation = glm::quat(glm::normalize(glm::dquat(state.rotation)));
+    }
+    world.ResetBodyMotionStates(states);
+    // Initialize all physical caches before publishing any parent Transform.
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        auto &data = bodies[i]->DataMut();
+        const auto &state = states[i];
+        ++bodies[i]->m_resultEpoch;
+        bodies[i]->m_pendingForceCommands.clear();
+        data.linearVelocity = state.linearVelocity;
+        data.angularVelocity = state.angularVelocity;
+        data.hasLinearVelocity = data.hasAngularVelocity = false;
+        data.previousPhysicsPosition = data.currentPhysicsPosition = state.position;
+        data.previousPhysicsRotation = data.currentPhysicsRotation = state.rotation;
+        data.hasPhysicsPose = true;
+        data.wasSleeping = false;
+    }
+    std::vector<std::pair<size_t, size_t>> publicationOrder;
+    publicationOrder.reserve(bodies.size());
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        size_t depth = 0;
+        for (auto *parent = bodies[i]->GetGameObject()->GetParent(); parent; parent = parent->GetParent())
+            ++depth;
+        publicationOrder.emplace_back(depth, i);
+    }
+    std::sort(publicationOrder.begin(), publicationOrder.end());
+    for (const auto &[depth, i] : publicationOrder) {
+        auto *body = bodies[i];
+        const auto &state = states[i];
+        auto *go = body->GetGameObject();
+        auto *transform = go->GetTransform();
+        transform->ApplyWorldPoseFromPhysics(state.position, state.rotation, true);
+        auto &data = body->DataMut();
+        data.lastSyncedPosition = state.position;
+        data.lastSyncedRotation = transform->GetWorldRotation();
+        data.hasSyncedOnce = true;
+        body->CacheActorPose(data.lastSyncedPosition, data.lastSyncedRotation);
+        body->PreserveDescendantPhysicsPoses();
+    }
+    if (!bodies.empty())
+        SceneManager::Instance().PublishPhysicsTransformsToRenderer();
 }
 
 glm::vec3 Rigidbody::GetPosition() const
@@ -714,7 +834,7 @@ void Rigidbody::SetPosition(const glm::vec3 &position)
     const glm::quat rotation =
         hasBody ? glm::normalize(world.GetBodyRotation(bodyId)) : glm::normalize(transform->GetWorldRotation());
     if (hasBody) {
-        TeleportBodies(world, go, position, rotation);
+        TeleportBodies(world, go, position, rotation, !SceneManager::Instance().IsPlaying());
     } else {
         transform->SetPosition(position);
         auto &d = DataMut();
@@ -724,6 +844,7 @@ void Rigidbody::SetPosition(const glm::vec3 &position)
         d.wasSleeping = false;
         d.lastSyncedPosition = position;
         d.lastSyncedRotation = rotation;
+        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
         d.hasSyncedOnce = true;
     }
 }
@@ -761,7 +882,7 @@ void Rigidbody::SetRotation(const glm::quat &rotation)
     const bool hasBody = world.IsInitialized() && bodyId != 0xFFFFFFFF;
     const glm::vec3 position = hasBody ? world.GetBodyPosition(bodyId) : transform->GetPosition();
     if (hasBody) {
-        TeleportBodies(world, go, position, normalized);
+        TeleportBodies(world, go, position, normalized, !SceneManager::Instance().IsPlaying());
     } else {
         transform->SetWorldRotation(normalized);
         auto &d = DataMut();
@@ -771,6 +892,7 @@ void Rigidbody::SetRotation(const glm::quat &rotation)
         d.wasSleeping = false;
         d.lastSyncedPosition = position;
         d.lastSyncedRotation = normalized;
+        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
         d.hasSyncedOnce = true;
     }
 }
@@ -862,22 +984,14 @@ void Rigidbody::SyncPhysicsToTransform()
         // that the cached value matches what SyncExternalMovesToPhysics() will
         // later read via GetWorldRotation() (avoids float round-trip mismatch).
         d.lastSyncedRotation = tf->GetWorldRotation();
+        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
         d.hasSyncedOnce = true;
     }
 
-    // Also update the cached transform on ALL sibling colliders so that
-    // SyncTransformToPhysics() won't see a spurious delta next step.
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *c : colliders) {
-        if (c && c->GetBodyId() != 0xFFFFFFFF) {
-            const glm::vec3 cachePos = (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
-                                           ? bodyPos
-                                           : d.lastSyncedPosition;
-            // Use the same reconstructed rotation we cached above.
-            const glm::quat cacheRot = d.lastSyncedRotation;
-            c->SetLastSyncedTransform(cachePos, cacheRot);
-        }
-    }
+    CacheActorPose((d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
+                       ? bodyPos
+                       : d.lastSyncedPosition,
+                   d.lastSyncedRotation);
     if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
         PreserveDescendantPhysicsPoses();
 }
@@ -915,14 +1029,10 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     // Read back reconstructed rotation so the cache matches what
     // SyncExternalMovesToPhysics() will see via GetWorldRotation().
     d.lastSyncedRotation = tf->GetWorldRotation();
+    d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
     d.hasSyncedOnce = true;
 
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *c : colliders) {
-        if (c && c->GetBodyId() != 0xFFFFFFFF) {
-            c->SetLastSyncedTransform(presentedPos, d.lastSyncedRotation);
-        }
-    }
+    CacheActorPose(presentedPos, d.lastSyncedRotation);
     PreserveDescendantPhysicsPoses();
 }
 
@@ -936,8 +1046,7 @@ void Rigidbody::PreserveDescendantPhysicsPoses()
         if (!child->IsActive())
             return;
         auto *body = child->GetComponent<Rigidbody>();
-        if (body && body->IsEnabled() && !body->IsKinematic() && body->Data().hasPhysicsPose &&
-            body->HasLinkedColliders()) {
+        if (body && body->IsEnabled() && !body->IsKinematic() && body->Data().hasPhysicsPose && body->HasBody()) {
             const auto handle = child->GetTransform()->GetECSHandle();
             // An already published solver/interpolated or authored target is
             // authoritative. Do not replace it with an older interpolation
@@ -968,6 +1077,7 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
 
     glm::vec3 currentPos = tf->GetPosition();
     glm::quat currentRot = tf->GetWorldRotation();
+    const auto authoredRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
 
     const float posEps = 1e-4f;
 
@@ -976,6 +1086,7 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     // the body position (e.g. instantiate then set position).  If so,
     // teleport the body immediately instead of waiting one more tick.
     if (!d.hasSyncedOnce) {
+        d.lastAuthoredPoseRevision = authoredRevision;
         d.lastSyncedPosition = currentPos;
         d.lastSyncedRotation = currentRot;
         d.hasSyncedOnce = true;
@@ -1006,11 +1117,17 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
         return;
     }
 
-    bool posDiff = glm::length(currentPos - d.lastSyncedPosition) > posEps;
-    bool rotDiff = RotationChanged(currentRot, d.lastSyncedRotation);
+    const bool positionAuthored = authoredRevision[0] != d.lastAuthoredPoseRevision[0];
+    const bool rotationAuthored = authoredRevision[1] != d.lastAuthoredPoseRevision[1];
+    bool posDiff =
+        positionAuthored ? currentPos != d.lastSyncedPosition : glm::length(currentPos - d.lastSyncedPosition) > posEps;
+    bool rotDiff =
+        rotationAuthored ? currentRot != d.lastSyncedRotation : RotationChanged(currentRot, d.lastSyncedRotation);
 
-    if (!posDiff && !rotDiff)
-        return; // Transform unchanged since last physics write — nothing to do
+    if (!posDiff && !rotDiff) {
+        d.lastAuthoredPoseRevision = authoredRevision;
+        return;
+    }
 
     auto &pw = PhysicsWorld::Instance();
     if (!pw.IsInitialized())
@@ -1026,23 +1143,20 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
         pw.MoveBodyKinematic(bodyId, currentPos, currentRot, fixedDeltaTime, PhysicsWorld::kMaxTransformDriveSpeed);
         d.lastSyncedPosition = currentPos;
         d.lastSyncedRotation = currentRot;
-        auto colliders = go->GetComponents<Collider>();
-        for (auto *collider : colliders) {
-            if (collider && collider->GetBodyId() != 0xFFFFFFFF)
-                collider->SetLastSyncedTransform(currentPos, currentRot);
-        }
+        CacheActorPose(currentPos, currentRot);
     } else {
         // Dynamic bodies and frame-authored kinematic poses use teleport
         // semantics. TeleportBodies also resets interpolation history.
         TeleportBodies(pw, go, currentPos, currentRot);
     }
 
+    d.lastAuthoredPoseRevision = authoredRevision;
     // Update cache
     d.lastSyncedPosition = currentPos;
     d.lastSyncedRotation = currentRot;
 }
 
-bool Rigidbody::HasLinkedColliders() const
+bool Rigidbody::HasBody() const
 {
     auto *go = GetGameObject();
     if (!go)
@@ -1064,46 +1178,41 @@ PhysicsWorld *Rigidbody::GetActivePhysicsWorld(GameObject *&outGo) const
     return pw.IsInitialized() ? &pw : nullptr;
 }
 
-void Rigidbody::NotifyCollidersBodyTypeChanged()
+void Rigidbody::NotifyCollidersBodyTypeChanged(bool refreshShape)
 {
-    GameObject *go = GetGameObject();
-    if (!go)
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = Data().actorHandle;
+    if (!store.IsValid(handle))
         return;
-
-    const auto &d = Data();
-
-    if (!d.isKinematic) {
-        for (auto *meshCollider : go->GetComponents<MeshCollider>()) {
-            if (meshCollider && meshCollider->IsEnabled() && !meshCollider->IsConvex())
-                meshCollider->SetConvex(true);
+    if (!Data().isKinematic) {
+        for (auto *collider : store.GetActor(handle).colliders) {
+            auto *mesh = dynamic_cast<MeshCollider *>(collider);
+            if (mesh && mesh->IsEnabled() && !mesh->IsConvex())
+                mesh->SetConvex(true);
         }
     }
-
-    auto &physicsWorld = PhysicsWorld::Instance();
-    if (!physicsWorld.IsInitialized())
-        return;
-    auto *pw = &physicsWorld;
-
-    // Rebuild shapes first — some colliders (e.g. MeshCollider) produce
-    // different shape types depending on whether a dynamic Rigidbody exists.
-    // This must happen BEFORE SetBodyMotionType so Jolt never sees a
-    // MeshShape on a dynamic body.
-    auto colliders = go->GetComponents<Collider>();
-    for (auto *col : colliders) {
-        if (col && col->IsEnabled() && col->GetBodyId() != 0xFFFFFFFF) {
-            pw->UpdateBodyShape(col);
-            break; // shared body — one rebuild is enough
-        }
+    const auto bodyId = GetBodyId();
+    if (refreshShape || bodyId == 0xFFFFFFFF)
+        store.RefreshActor(handle);
+    else {
+        // A motion-mode edit leaves the installed shapes and their identities
+        // intact. Actual mesh convexification above publishes its own geometry.
+        auto &world = PhysicsWorld::Instance();
+        world.SetBodyMotionType(bodyId, IsEnabled() ? (Data().isKinematic ? 1 : 2) : 0);
+        if (IsEnabled())
+            ApplyConfigurationToBody(bodyId);
     }
-
-    // motionType: 0=Static, 1=Kinematic, 2=Dynamic
-    int motionType = d.isKinematic ? 1 : 2;
-
-    const uint32_t bodyId = GetPrimaryBodyId(go);
-    if (bodyId != 0xFFFFFFFF) {
-        pw->SetBodyMotionType(bodyId, motionType);
-        ApplyConfigurationToBody(bodyId);
+    if (GetBodyId() != 0xFFFFFFFF)
         FlushPendingForceCommands();
+}
+
+void Rigidbody::CacheActorPose(const glm::vec3 &position, const glm::quat &rotation)
+{
+    auto &store = PhysicsECSStore::Instance();
+    if (store.IsValid(Data().actorHandle)) {
+        auto &actor = store.GetActor(Data().actorHandle);
+        actor.lastSyncedPos = position;
+        actor.lastSyncedRot = rotation;
     }
 }
 
@@ -1116,6 +1225,14 @@ void Rigidbody::ApplyConfigurationToBody(uint32_t bodyId)
         throw std::runtime_error("cannot configure a body before PhysicsWorld initialization");
 
     auto &data = DataMut();
+    if (!data.hasSyncedOnce) {
+        auto *transform = GetGameObject()->GetTransform();
+        data.lastSyncedPosition = transform->GetPosition();
+        data.lastSyncedRotation = transform->GetWorldRotation();
+        data.lastAuthoredPoseRevision =
+            TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
+        data.hasSyncedOnce = true;
+    }
     world.SetBodyDamping(bodyId, data.drag, data.angularDrag);
     world.SetBodyGravityFactor(bodyId, data.useGravity ? 1.0f : 0.0f);
     const int allowedDofs = 0x3F & ~(data.constraints >> 1);
@@ -1174,6 +1291,12 @@ nlohmann::json Rigidbody::SerializeDocument() const
     const auto &d = Data();
     auto j = Component::SerializeDocument();
     j["mass"] = d.mass;
+    if (m_massProperties) {
+        const auto &p = *m_massProperties;
+        j["mass_properties"] = {{"center", {p.center.x, p.center.y, p.center.z}},
+                                {"moments", {p.moments.x, p.moments.y, p.moments.z}},
+                                {"rotation", {p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w}}};
+    }
     j["drag"] = d.drag;
     j["angular_drag"] = d.angularDrag;
     j["use_gravity"] = d.useGravity;
@@ -1192,7 +1315,9 @@ void Rigidbody::ValidateSerializedDocument(const nlohmann::json &j)
     ValidateComponentDocument(j, "Rigidbody",
                               {"mass", "drag", "angular_drag", "use_gravity", "is_kinematic", "constraints",
                                "collision_detection_mode", "interpolation", "max_angular_velocity",
-                               "max_linear_velocity"});
+                               "max_linear_velocity"},
+                              {"mass_properties"});
+    (void)ReadMassProperties(j);
 
     const float mass = RequireFiniteFloat(j, "mass", "Rigidbody");
     const float drag = RequireFiniteFloat(j, "drag", "Rigidbody");
@@ -1229,6 +1354,7 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
 
         RigidbodyECSData staged = Data();
         staged.mass = j.at("mass").get<float>();
+        const auto properties = ReadMassProperties(j);
         staged.drag = j.at("drag").get<float>();
         staged.angularDrag = j.at("angular_drag").get<float>();
         staged.useGravity = j.at("use_gravity").get<bool>();
@@ -1239,9 +1365,12 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
         staged.maxAngularVelocity = j.at("max_angular_velocity").get<float>();
         staged.maxLinearVelocity = j.at("max_linear_velocity").get<float>();
 
+        PhysicsWorld::Instance().ValidateBodyMassProperties(*this, staged.mass, properties ? &*properties : nullptr);
+
         if (!Component::DeserializeDocument(j))
             return false;
         DataMut() = staged;
+        m_massProperties = properties;
 
         // Propagate all settings to Jolt bodies (e.g. when edited in Inspector during play)
         NotifyCollidersBodyTypeChanged();
@@ -1261,6 +1390,7 @@ std::unique_ptr<Component> Rigidbody::Clone() const
     const auto &src = Data();
     auto &dst = clone->DataMut();
     dst.mass = src.mass;
+    clone->m_massProperties = m_massProperties;
     dst.drag = src.drag;
     dst.angularDrag = src.angularDrag;
     dst.useGravity = src.useGravity;

@@ -2,11 +2,11 @@
 
 #include <core/log/InxLog.h>
 #include <core/types/Guid.h>
+#include <function/resources/AssetRegistry/AssetSource.h>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPath.h>
 
-#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -22,6 +22,18 @@ namespace infernux
 
 namespace
 {
+constexpr std::string_view kSourceObservationKeys[] = {"last_modified",  "content_hash", "file_size",       "file_type",
+                                                       "file_extension", "line_count",   "character_count", "encoding",
+                                                       "size_category",  "binary_type",  "language"};
+
+bool IsSourceObservation(std::string_view key)
+{
+    for (const auto entry : kSourceObservationKeys)
+        if (entry == key)
+            return true;
+    return false;
+}
+
 ResourceType ParseResourceTypeName(std::string_view value)
 {
     if (value == "Meta")
@@ -90,26 +102,6 @@ std::string_view ResourceTypeName(ResourceType value)
     throw std::invalid_argument("invalid ResourceType metadata value");
 }
 
-std::string ComputeContentHashHex(const char *content, size_t contentSize)
-{
-    // Stable FNV-1a 64-bit hash
-    const uint64_t fnvOffset = 14695981039346656037ull;
-    const uint64_t fnvPrime = 1099511628211ull;
-    uint64_t hash = fnvOffset;
-
-    if (content && contentSize > 0) {
-        const unsigned char *ptr = reinterpret_cast<const unsigned char *>(content);
-        for (size_t i = 0; i < contentSize; ++i) {
-            hash ^= static_cast<uint64_t>(ptr[i]);
-            hash *= fnvPrime;
-        }
-    }
-
-    std::stringstream ss;
-    ss << std::hex << std::setfill('0') << std::setw(16) << hash;
-    return ss.str();
-}
-
 std::string NormalizeMetadataFilePath(const std::string &filePath)
 {
     return ResolveFilesystemPath(filePath);
@@ -148,10 +140,8 @@ void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRo
         // Source observations belong to the local import index. Persisting
         // them makes unrelated scene/script edits collide in their sidecars.
         // Keep the complete in-memory document for inspectors and the index.
-        for (const auto *key :
-             {"last_modified", "content_hash", "file_size", "file_type", "file_extension", "line_count",
-              "character_count", "encoding", "size_category", "binary_type", "language"})
-            fields->erase(key);
+        for (const auto key : kSourceObservationKeys)
+            fields->erase(std::string(key));
         // Default loaders report readability as an observation. Models use
         // the same name for their authored CPU Read/Write import setting.
         const auto resourceType = fields->find("resource_type");
@@ -187,39 +177,23 @@ void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRo
 // ----------------------------------
 void InxResourceMeta::Init(const char *content, size_t contentSize, const std::string &filePath, ResourceType type)
 {
+    AssetSource source(filePath, {content ? content : "", content ? contentSize : 0});
+    InitFromSource(source, type);
+}
+
+void InxResourceMeta::InitFromSource(AssetSource &source, ResourceType type)
+{
     // Store resource path in metadata (always forward-slash UTF-8 for stable lookups)
-    AddMetadata("file_path", NormalizeFilePath(filePath));
+    AddMetadata("file_path", NormalizeFilePath(source.Path()));
     // Set resource type
     AddMetadata("resource_type", type);
 
     // Calculate content hash (for change detection)
-    AddMetadata("content_hash", ComputeContentHashHex(content, contentSize));
+    AddMetadata("content_hash", source.ContentHash());
 
     // Generate a random GUID (stable once stored in .meta)
     // This remains unchanged across moves/renames because the meta is preserved.
     AddMetadata("guid", GenerateGuid());
-
-    // Get file modification time
-    std::string modTimeStr;
-    try {
-        if (std::filesystem::exists(ToFsPath(filePath))) {
-            auto fileTime = std::filesystem::last_write_time(ToFsPath(filePath));
-            auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                fileTime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
-            auto time_t = std::chrono::system_clock::to_time_t(sctp);
-            modTimeStr = std::to_string(time_t);
-        } else {
-            auto now = std::chrono::system_clock::now();
-            auto time_t = std::chrono::system_clock::to_time_t(now);
-            modTimeStr = std::to_string(time_t);
-        }
-    } catch (const std::exception &e) {
-        INXLOG_WARN("Failed to get file time: ", e.what());
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        modTimeStr = std::to_string(time_t);
-    }
-    AddMetadata("last_modified", modTimeStr);
 }
 
 void InxResourceMeta::AddMetadata(const std::string &key, const std::string &value)
@@ -272,15 +246,12 @@ void InxResourceMeta::AddMetadata(const std::string &key, const nlohmann::json &
     throw std::invalid_argument("metadata JSON value must be an array or object: " + key);
 }
 
-bool InxResourceMeta::CopyMetadataIfMissing(const InxResourceMeta &source, const std::string &key)
+void InxResourceMeta::InheritSettings(const InxResourceMeta &source)
 {
-    if (HasKey(key))
-        return false;
-    const auto sourceEntry = source.m_metadata.find(key);
-    if (sourceEntry == source.m_metadata.end())
-        return false;
-    m_metadata.emplace(key, sourceEntry->second);
-    return true;
+    for (const auto &[key, value] : source.m_metadata)
+        if (key != "guid" && !IsSourceObservation(key) &&
+            (key != "is_readable" || GetResourceType() == ResourceType::Mesh))
+            m_metadata.try_emplace(key, value);
 }
 
 const std::string &InxResourceMeta::GetResourceName() const
@@ -377,19 +348,6 @@ void InxResourceMeta::UpdateFilePath(const std::string &newFilePath)
     // Update file_path but keep the same GUID
     // This is used for move/rename operations
     AddMetadata("file_path", NormalizeFilePath(newFilePath));
-
-    // Update last_modified time
-    try {
-        if (std::filesystem::exists(ToFsPath(newFilePath))) {
-            auto fileTime = std::filesystem::last_write_time(ToFsPath(newFilePath));
-            auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                fileTime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
-            auto time_t = std::chrono::system_clock::to_time_t(sctp);
-            AddMetadata("last_modified", std::to_string(time_t));
-        }
-    } catch (const std::exception &e) {
-        INXLOG_WARN("Failed to update modification time: ", e.what());
-    }
 }
 
 const InxResourceMeta::MetadataMap &InxResourceMeta::GetMetadata() const

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import IntEnum, IntFlag
-from typing import Any, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 from numpy import float32
 from numpy.typing import NDArray
 
@@ -108,6 +108,11 @@ class Rigidbody(BuiltinComponent):
         ...
     @max_linear_velocity.setter
     def max_linear_velocity(self, value: float) -> None: ...
+
+    @property
+    def mass_properties(self) -> Optional[dict]: ...
+    def set_mass_properties(self, mass: float, center: Any, moments: Any, rotation: Any = ...) -> None: ...
+    def reset_mass_properties(self) -> None: ...
 
     # ---- Convenience properties ----
 

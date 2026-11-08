@@ -19,6 +19,7 @@ void RegisterSceneBindings(pybind11::module_ &m)
     BindMeshRenderer(m);
     BindLineRenderer(m);
     BindSkinnedMeshRenderer(m);
+    BindSkeletonInstance(m);
     BindSpriteRenderer(m);
     BindLight(m);
     BindPyComponentProxy(m);

@@ -9,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <limits>
+#include <utility>
 
 namespace infernux
 {
@@ -58,6 +59,7 @@ void NotifyState(const std::shared_ptr<JobHandle::State> &state) noexcept
 } // namespace
 
 thread_local JobSystem::ExecutionContext *JobSystem::s_currentContext = nullptr;
+thread_local JobSystem *JobSystem::s_workerSystem = nullptr;
 
 bool JobHandle::IsComplete() const noexcept
 {
@@ -78,6 +80,33 @@ bool JobHandle::Cancel() noexcept
     m_state->cancelRequested.store(true, std::memory_order_release);
     NotifyState(m_state);
     return true;
+}
+
+JobCompletionEvent::JobCompletionEvent(JobDomain domain)
+    : m_domain(domain), m_state(std::make_shared<JobHandle::State>(1))
+{
+}
+
+bool JobCompletionEvent::IsComplete() const noexcept
+{
+    return m_state->remaining.load(std::memory_order_acquire) == 0;
+}
+
+void JobCompletionEvent::Complete()
+{
+    if (m_state->remaining.exchange(0, std::memory_order_acq_rel) == 0)
+        throw std::logic_error("completion event completed twice");
+    NotifyState(m_state);
+}
+
+bool JobCompletionEvent::WaitUntil(std::chrono::steady_clock::time_point deadline) const
+{
+    std::unique_lock lock(m_state->completionMutex);
+    if (deadline == std::chrono::steady_clock::time_point::max()) {
+        m_state->completionCv.wait(lock, [this] { return IsComplete(); });
+        return true;
+    }
+    return m_state->completionCv.wait_until(lock, deadline, [this] { return IsComplete(); });
 }
 
 TaskGroup::TaskGroup(JobDomain domain, JobPriority priority)
@@ -220,6 +249,34 @@ bool JobSystem::IsAvailable() noexcept
     return g_instance.load(std::memory_order_acquire) != nullptr;
 }
 
+JobSystem::ExternalWork::ExternalWork(ExternalWork &&other) noexcept : m_system(std::exchange(other.m_system, nullptr))
+{
+}
+
+JobSystem::ExternalWork::~ExternalWork()
+{
+    if (m_system) {
+        std::lock_guard lock(m_system->m_queueMutex);
+        --m_system->m_externalWork;
+        m_system->m_queueCv.notify_all();
+    }
+}
+
+JobHandle JobSystem::ExternalWork::Schedule(JobFn job, JobDomain domain, JobPriority priority,
+                                            JobAffinity affinity) const
+{
+    return m_system->Schedule(std::move(job), domain, priority, affinity);
+}
+
+JobSystem::ExternalWork JobSystem::RetainExternalWork()
+{
+    std::lock_guard lock(m_queueMutex);
+    if (!m_accepting)
+        throw std::runtime_error("JobSystem is shutting down");
+    ++m_externalWork;
+    return ExternalWork(*this);
+}
+
 JobSystem::~JobSystem()
 {
     StopAndJoin();
@@ -241,9 +298,9 @@ std::shared_ptr<JobSystem::ProfilerState> JobSystem::ProfilerForDomain(JobDomain
     return entry;
 }
 
-JobHandle JobSystem::Schedule(JobFn job, JobDomain domain, JobPriority priority)
+JobHandle JobSystem::Schedule(JobFn job, JobDomain domain, JobPriority priority, JobAffinity affinity)
 {
-    return ScheduleInternal(std::move(job), domain, priority, nullptr);
+    return ScheduleInternal(std::move(job), domain, priority, nullptr, affinity);
 }
 
 JobHandle JobSystem::Schedule(TaskGroup &group, JobFn job)
@@ -270,15 +327,19 @@ JobHandle JobSystem::Schedule(TaskGroup &group, JobFn job, JobPriority priority)
 }
 
 JobHandle JobSystem::ScheduleInternal(JobFn job, JobDomain domain, JobPriority priority,
-                                      std::shared_ptr<JobHandle::State> groupState)
+                                      std::shared_ptr<JobHandle::State> groupState, JobAffinity affinity)
 {
     if (!job) {
         throw std::invalid_argument("JobSystem::Schedule requires a callable");
     }
+    if (m_inline && affinity == JobAffinity::WorkerOnly) {
+        throw std::runtime_error("WorkerOnly work requires a worker JobSystem");
+    }
 
     auto state = std::make_shared<JobHandle::State>(1);
     auto profiler = ProfilerForDomain(domain);
-    Task task{std::move(job), std::move(state), std::move(groupState), std::move(profiler), domain, priority, 0};
+    Task task{std::move(job), std::move(state), std::move(groupState), std::move(profiler), domain, priority, 0,
+              affinity};
     auto handleState = task.state;
     auto taskProfiler = task.profiler;
 
@@ -469,9 +530,11 @@ void JobSystem::AcquirePermitLocked(JobDomain domain)
 
 void JobSystem::ReleasePermit(JobDomain domain) noexcept
 {
+    bool limited;
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
-        auto it = m_domainActive.find(DomainKey(domain));
+        const auto key = DomainKey(domain);
+        const auto it = m_domainActive.find(key);
         if (it != m_domainActive.end()) {
             if (it->second > 1) {
                 --it->second;
@@ -479,8 +542,13 @@ void JobSystem::ReleasePermit(JobDomain domain) noexcept
                 m_domainActive.erase(it);
             }
         }
+        limited = m_domainLimits.find(key) != m_domainLimits.end();
     }
-    m_queueCv.notify_all();
+    // Returning an unlimited permit cannot make work runnable.
+    if (limited) {
+        m_queueCv.notify_all();
+        m_permitCv.notify_all();
+    }
 }
 
 bool JobSystem::DequeueTask(Task &task, const std::function<bool(const Task &)> &allowed)
@@ -496,13 +564,17 @@ bool JobSystem::DequeueTask(Task &task, const std::function<bool(const Task &)> 
     size_t bestIndex = 0;
     bool found = false;
     const bool fastPath = !allowed && m_domainLimits.empty();
+    const bool worker = s_workerSystem == this;
 
     for (size_t queueIndex = 0; queueIndex < m_queues.size(); ++queueIndex) {
         const auto &queue = m_queues[queueIndex];
         hasQueued = hasQueued || !queue.empty();
-        const size_t candidateCount = fastPath ? std::min<size_t>(queue.size(), 1u) : queue.size();
+        const size_t candidateCount = fastPath && worker ? std::min<size_t>(queue.size(), 1u) : queue.size();
         for (size_t index = 0; index < candidateCount; ++index) {
             const Task &candidate = queue[index];
+            if (candidate.affinity == JobAffinity::WorkerOnly && !worker) {
+                continue;
+            }
             if (allowed && !allowed(candidate)) {
                 continue;
             }
@@ -524,6 +596,12 @@ bool JobSystem::DequeueTask(Task &task, const std::function<bool(const Task &)> 
                 bestSequence = candidate.sequence;
                 bestQueue = queueIndex;
                 bestIndex = index;
+            }
+            // The first eligible task dominates later tasks at this priority.
+            // Owner help must look past WorkerOnly heads, without scanning an
+            // entire ordinary queue when there are no other restrictions.
+            if (fastPath) {
+                break;
             }
         }
     }
@@ -557,15 +635,17 @@ bool JobSystem::TryRunOne()
     return true;
 }
 
-bool JobSystem::TryRunOneForWait(const JobHandle &handle)
+bool JobSystem::TryRunOneForWait(const JobHandle &handle, WaitPolicy policy)
 {
     Task task;
-    auto allowed = [this, &handle](const Task &candidate) {
-        auto *context = s_currentContext;
-        if (context == nullptr || context->system != this) {
+    auto allowed = [this, &handle, policy](const Task &candidate) {
+        if (candidate.state == handle.m_state || candidate.groupState == handle.m_state) {
             return true;
         }
-        if (candidate.state == handle.m_state || candidate.groupState == handle.m_state) {
+        if (policy == WaitPolicy::HelpDependency)
+            return false;
+        auto *context = s_currentContext;
+        if (context == nullptr || context->system != this) {
             return true;
         }
         if (context->groupState &&
@@ -587,19 +667,8 @@ bool JobSystem::SuspendCurrentPermit()
     if (context == nullptr || context->system != this || !context->ownsPermit) {
         return false;
     }
-    {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
-        auto it = m_domainActive.find(DomainKey(context->domain));
-        if (it != m_domainActive.end()) {
-            if (it->second > 1) {
-                --it->second;
-            } else {
-                m_domainActive.erase(it);
-            }
-        }
-        context->ownsPermit = false;
-    }
-    m_queueCv.notify_all();
+    context->ownsPermit = false;
+    ReleasePermit(context->domain);
     return true;
 }
 
@@ -610,7 +679,9 @@ void JobSystem::ResumeCurrentPermit()
         return;
     }
     std::unique_lock<std::mutex> lock(m_queueMutex);
-    m_queueCv.wait(lock, [this, context] {
+    // A single task submission must wake a worker, even when a limited
+    // domain has an execution context waiting to reacquire its permit.
+    m_permitCv.wait(lock, [this, context] {
         return CanRunDomainLocked(context->domain) || m_state.load(std::memory_order_acquire) == State::Stopped;
     });
     if (m_state.load(std::memory_order_acquire) != State::Stopped) {
@@ -658,11 +729,17 @@ void JobSystem::PropagateFailureAndCancellation(const JobHandle &handle)
 
 void JobSystem::Wait(const JobHandle &handle)
 {
-    WaitForCompletion(handle, true);
+    WaitForCompletion(handle, WaitPolicy::HelpEligible);
     PropagateFailureAndCancellation(handle);
 }
 
-void JobSystem::WaitForCompletion(const JobHandle &handle, bool executePendingWork)
+void JobSystem::WaitDependency(const JobHandle &handle)
+{
+    WaitForCompletion(handle, WaitPolicy::HelpDependency);
+    PropagateFailureAndCancellation(handle);
+}
+
+void JobSystem::WaitForCompletion(const JobHandle &handle, WaitPolicy policy)
 {
     if (!handle.IsValid()) {
         return;
@@ -670,7 +747,7 @@ void JobSystem::WaitForCompletion(const JobHandle &handle, bool executePendingWo
 
     const bool suspended = SuspendCurrentPermit();
     while (!WaitSatisfied(handle)) {
-        if (!executePendingWork || !TryRunOneForWait(handle)) {
+        if (policy == WaitPolicy::Passive || !TryRunOneForWait(handle, policy)) {
             std::unique_lock<std::mutex> lock(handle.m_state->completionMutex);
             handle.m_state->completionCv.wait_for(lock, std::chrono::milliseconds(1),
                                                   [this, &handle] { return WaitSatisfied(handle); });
@@ -695,7 +772,33 @@ void JobSystem::WaitPassive(const JobHandle &handle)
 
 void JobSystem::WaitPassiveCompletion(const JobHandle &handle)
 {
-    WaitForCompletion(handle, m_inline);
+    WaitForCompletion(handle, m_inline ? WaitPolicy::HelpEligible : WaitPolicy::Passive);
+}
+
+bool JobSystem::AwaitCompletion(const JobCompletionEvent &event, std::chrono::steady_clock::time_point deadline)
+{
+    const bool suspended = SuspendCurrentPermit();
+    try {
+        if (s_workerSystem != this && !m_inline) {
+            event.WaitUntil(deadline);
+        } else {
+            while (!event.IsComplete() && std::chrono::steady_clock::now() < deadline) {
+                Task task;
+                if (DequeueTask(task, [&event](const Task &candidate) { return candidate.domain == event.m_domain; }))
+                    Execute(std::move(task), true);
+                else
+                    event.WaitUntil(
+                        std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
+            }
+        }
+    } catch (...) {
+        if (suspended)
+            ResumeCurrentPermit();
+        throw;
+    }
+    if (suspended)
+        ResumeCurrentPermit();
+    return event.IsComplete();
 }
 
 void JobSystem::WaitPassive(TaskGroup &group)
@@ -715,6 +818,7 @@ void JobSystem::SetDomainConcurrency(JobDomain domain, uint32_t maxConcurrency)
         }
     }
     m_queueCv.notify_all();
+    m_permitCv.notify_all();
 }
 
 uint32_t JobSystem::GetDomainConcurrency(JobDomain domain) const
@@ -804,6 +908,7 @@ size_t JobSystem::GetQueuedTaskCount() const
 
 void JobSystem::WorkerLoop()
 {
+    s_workerSystem = this;
     for (;;) {
         Task task;
         {
@@ -821,6 +926,7 @@ void JobSystem::WorkerLoop()
                 hasQueued = hasQueued || !queue.empty();
             }
             if (m_stopRequested && !hasQueued) {
+                s_workerSystem = nullptr;
                 return;
             }
         }
@@ -926,8 +1032,13 @@ void JobSystem::StopAndJoin() noexcept
         }
     }
     m_workers.clear();
-    m_state.store(State::Stopped, std::memory_order_release);
+    {
+        std::unique_lock lock(m_queueMutex);
+        m_queueCv.wait(lock, [this] { return m_externalWork == 0; });
+        m_state.store(State::Stopped, std::memory_order_release);
+    }
     m_queueCv.notify_all();
+    m_permitCv.notify_all();
 }
 
 } // namespace infernux

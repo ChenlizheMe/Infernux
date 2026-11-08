@@ -82,6 +82,42 @@ class SetPropertyCommand(UndoCommand):
 BuiltinPropertyCommand = SetPropertyCommand
 
 
+class RelatedComponentPropertyCommand(SetPropertyCommand):
+    """Replay the actual component edits produced by an aggregate setter."""
+
+    def __init__(self, target, prop_name, old_value, new_value, description, related):
+        super().__init__(target, prop_name, old_value, new_value, description)
+        self._before = target.serialize_document()
+        self._related = tuple(
+            (component, name, _snapshot_value(getattr(component, name)))
+            for component, names in related for name in names
+        )
+        self._replay = None
+
+    def execute(self):
+        from infernux.engine.undo._base import CompoundCommand
+
+        super().execute()
+        self._replay = CompoundCommand([
+            GenericComponentCommand(self._live(), self._before, self._live().serialize_document(),
+                                    self.description, mergeable=False),
+            *[
+                SetPropertyCommand(component, name, before, after, self.description)
+                for component, name, before in self._related
+                if before != (after := getattr(component, name))
+            ],
+        ], self.description)
+
+    def undo(self):
+        self._replay.undo()
+
+    def redo(self):
+        self._replay.redo()
+
+    def can_merge(self, other):
+        return False
+
+
 class GenericComponentCommand(UndoCommand):
     """Undo/redo for a native component document edit."""
 

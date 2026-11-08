@@ -4,21 +4,7 @@ from __future__ import annotations
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
 from infernux.components.fields import FieldType
-
-
-def _to_native_rigidbody(value):
-    if value is None:
-        return None
-    getter = getattr(value, "_require_cpp_component", None)
-    return getter() if getter is not None else value
-
-
-def _from_native_rigidbody(value):
-    if value is None:
-        return None
-    from .rigidbody import Rigidbody
-
-    return Rigidbody._get_or_create_wrapper(value, value.game_object)
+from ._joint_fields import joint_fields
 
 
 class HingeJoint(BuiltinComponent):
@@ -27,21 +13,26 @@ class HingeJoint(BuiltinComponent):
     _cpp_type_name = "HingeJoint"
     _component_category_ = "Physics"
 
-    anchor = CppProperty.from_native("HingeJoint", "anchor")
+    anchor, connected_body, enable_collision = joint_fields("HingeJoint")
     axis = CppProperty.from_native("HingeJoint", "axis")
-    connected_body = CppProperty.from_native(
-        "HingeJoint", "connected_body",
-        get_converter=_from_native_rigidbody,
-        set_converter=_to_native_rigidbody,
-    )
-    connected_body.metadata.component_type = "Rigidbody"
     use_limits = CppProperty.from_native("HingeJoint", "use_limits")
     minimum_angle = CppProperty.from_native("HingeJoint", "minimum_angle")
     maximum_angle = CppProperty.from_native("HingeJoint", "maximum_angle")
-    enable_collision = CppProperty.from_native("HingeJoint", "enable_collision")
+    motor_enabled = CppProperty.from_native("HingeJoint", "motor_enabled")
+    motor_target_angle = CppProperty.from_native("HingeJoint", "motor_target_angle")
+    motor_stiffness = CppProperty.from_native("HingeJoint", "motor_stiffness")
+    motor_damping = CppProperty.from_native("HingeJoint", "motor_damping")
+    motor_max_torque = CppProperty.from_native("HingeJoint", "motor_max_torque")
+    joint_damping = CppProperty.from_native("HingeJoint", "joint_damping")
+    friction_torque = CppProperty.from_native("HingeJoint", "friction_torque")
+    armature = CppProperty.from_native("HingeJoint", "armature")
     current_angle = CppProperty(
         "current_angle", FieldType.FLOAT, default=0.0, readonly=True,
         tooltip="Current hinge angle in degrees",
+    )
+    current_angular_velocity = CppProperty(
+        "current_angular_velocity", FieldType.FLOAT, default=0.0, readonly=True,
+        tooltip="Relative angular velocity about the hinge axis in degrees per second",
     )
 
     def on_draw_gizmos_selected(self):

@@ -79,20 +79,54 @@ def render_animation_transport(ctx, transport, duration):
                              numeric_value=transport.frame(duration)[0])
 
 
+def _prepared_model_mesh(state, source_path, signature):
+    """Poll the registry's shared preparation; drawing never waits for disk IO."""
+    from infernux.core.assets import AssetManager
+    from infernux.lib import AssetLoadSuperseded, AssetRegistry
+
+    registry = AssetRegistry.instance()
+    guid = AssetManager.require_asset_database().get_guid_from_path(source_path)
+    mesh = registry.get_mesh(guid) if guid else None
+    if mesh is not None or not guid:
+        state.extra.pop("model_preview_load", None)
+        return mesh, ""
+    key = (guid, signature)
+    pending = state.extra.get("model_preview_load")
+    if pending is None or pending[0] != key:
+        try:
+            pending = (key, registry.begin_load_mesh_by_guid(guid), "")
+        except RuntimeError as error:
+            pending = (key, None, str(error))
+        state.extra["model_preview_load"] = pending
+    _, ticket, error = pending
+    if ticket is not None:
+        try:
+            if registry.try_commit_asset_load(ticket, allow_stale_if_unloaded=True):
+                state.extra.pop("model_preview_load", None)
+                return registry.get_mesh(guid), ""
+        except AssetLoadSuperseded:
+            state.extra.pop("model_preview_load", None)
+            return None, ""
+        except RuntimeError as failure:
+            error = str(failure)
+            state.extra["model_preview_load"] = (key, None, error)
+    return None, error
+
+
 def render_model_animation_preview(ctx, panel, state, clips, *, source_path=None):
     """Read published clips only; controls never modify import drafts or the scene."""
     from infernux.core.assets import AssetManager
     from infernux.engine.i18n import t
-    from infernux.lib import AssetRegistry
     from .asset_resource_preview import _resolve_native_engine
 
     if not clips:
         ctx.text_wrapped(t("asset.animation_preview_empty"))
         return
     source_path = source_path or state.file_path
-    mesh = AssetRegistry.instance().load_mesh(source_path)
+    signature = AssetManager.preview_dependency_signature(source_path)
+    mesh, error = _prepared_model_mesh(state, source_path, signature)
     if mesh is None or mesh.vertex_count == 0:
-        ctx.text_wrapped(t("asset.animation_preview_needs_mesh"))
+        ctx.text_wrapped(error or t("asset.animation_preview_needs_mesh"))
         return
     transport = state.extra.setdefault("model_animation_transport", AnimationPreviewTransport())
     ids = [clip["id"] for clip in clips]
@@ -108,7 +142,7 @@ def render_model_animation_preview(ctx, panel, state, clips, *, source_path=None
     size = int(min(width, 320.0))
     texture = native.render_model_animation_preview(
         mesh, transport.clip_id, transport.seconds, size,
-        AssetManager.preview_dependency_signature(source_path))
+        signature)
     if texture:
         ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + (width - size) * .5)
         ctx.image(texture, float(size), float(size))

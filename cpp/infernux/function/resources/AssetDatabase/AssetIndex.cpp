@@ -13,9 +13,9 @@ namespace infernux
 namespace
 {
 
-// Revision 1 includes authoritative Prefab Variant dependencies. Older
-// catalogs cannot be reused even when the source timestamps are unchanged.
-constexpr int kImportRevision = 1;
+// Direct Prefab component and nested-source dependencies now share Scene's
+// reference rules. Rebuild catalogs containing the former incomplete edges.
+constexpr int kImportRevision = 2;
 
 void RequireExactFields(const nlohmann::json &object, std::initializer_list<const char *> fields,
                         const std::string &location)
@@ -87,12 +87,11 @@ bool AssetIndex::Load(const std::string &path, const std::string &normalizedProj
     return true;
 }
 
-void AssetIndex::Save(const std::string &path) const
+void AssetIndex::Save(const std::string &path, const PathWriteScope &parentScope) const
 {
-    const std::filesystem::path filePath = ToFsPath(path);
-    if (filePath.has_parent_path())
-        std::filesystem::create_directories(filePath.parent_path());
-    DocumentStore::Instance().WriteAndWait(path, SerializeDocument().dump(2) + "\n");
+    DocumentWriteOptions options;
+    options.writeScope = PathWriteScope::BeginWrite({path}, parentScope);
+    DocumentStore::Instance().WriteAndWait(path, SerializeDocument().dump(2) + "\n", options);
 }
 
 const AssetIndexEntry *AssetIndex::Find(const std::string &normalizedPath) const

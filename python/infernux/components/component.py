@@ -455,6 +455,11 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         pass
 
     @_default_lifecycle_method
+    def animation_update(self, delta_time: float):
+        """Evaluate animation after Update and before LateUpdate bone overrides."""
+        pass
+
+    @_default_lifecycle_method
     def late_update(self, delta_time: float):
         """
         Called every frame after all update() calls.

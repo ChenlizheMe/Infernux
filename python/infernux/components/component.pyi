@@ -116,6 +116,9 @@ class InxComponent:
     def physics_post_step(self, fixed_delta_time: float) -> None:
         """Called after Jolt results and Rigidbody transforms are published."""
         ...
+    def animation_update(self, delta_time: float) -> None:
+        """Evaluate animation after Update and before LateUpdate bone overrides."""
+        ...
     def late_update(self, delta_time: float) -> None:
         """Called every frame after all Update calls."""
         ...

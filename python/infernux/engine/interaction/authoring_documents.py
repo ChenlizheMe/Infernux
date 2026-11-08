@@ -31,12 +31,13 @@ class AuthoringAssetSnapshot:
     submit_write: Callable[..., Any] | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _PendingAuthoringWrite:
     io_ticket: Any
     save_ticket_id: str
     snapshot: AuthoringAssetSnapshot
     save_as: bool
+    finishing: bool = False
 
 
 class AuthoringDocumentController:
@@ -57,6 +58,9 @@ class AuthoringDocumentController:
         self._resource_owner = None
         self._pending_writes: dict[int, _PendingAuthoringWrite] = {}
         self._publication_error = ""
+        # The dialog owns a save session, not the lifetime of an IO attempt.
+        # A failed attempt stays terminal while the same dialog may retry.
+        self._save_as_ticket_id = ""
 
     @property
     def view(self) -> Any:
@@ -85,6 +89,77 @@ class AuthoringDocumentController:
     def publication_error(self) -> str:
         return self._publication_error
 
+    # ------------------------------------------------------------------
+    # Save-as target selection (stage A; IO publication stays in
+    # continue_save_to_resource / poll_pending_writes below)
+    # ------------------------------------------------------------------
+
+    @property
+    def has_save_as(self) -> bool:
+        return bool(self._save_as_ticket_id)
+
+    def begin_save_as(self, ticket, show_dialog: Callable[[], bool]) -> DocumentActionResult:
+        """Bind one dialog to its document before the user chooses a target."""
+        self._save_as_ticket_id = ticket.ticket_id
+        if show_dialog():
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        self._save_as_ticket_id = ""
+        return DocumentActionResult(
+            DocumentActionStatus.REJECTED,
+            "no project root is available",
+        )
+
+    def cancel_pending_save(self) -> None:
+        """Cancel the pending save-as ticket exactly once."""
+        ticket_id = self._save_as_ticket_id
+        self._save_as_ticket_id = ""
+        if not ticket_id:
+            return
+        DocumentRegistry.instance().complete_save(
+            ticket_id,
+            success=False,
+            cancelled=True,
+            message="save was cancelled",
+        )
+
+    def confirm_save_as(self, resource_path: str) -> DocumentActionResult:
+        """Submit one user confirmation; retry failed IO without reopening UI."""
+        registry = DocumentRegistry.instance()
+        anchor = registry.get_save_ticket(self._save_as_ticket_id)
+        document = self._save_document(anchor) if anchor is not None else None
+        if document is None:
+            self.cancel_pending_save()
+            return DocumentActionResult(DocumentActionStatus.REJECTED, "the Save As document is no longer open")
+        if anchor.is_pending:
+            result = self.continue_save_to_resource(anchor.ticket_id, resource_path)
+        elif anchor.status is SaveTicketStatus.FAILED:
+            # This entry retains the registry's capability, snapshot and target
+            # checks, but does not try to activate the already-open dialog.
+            if registry.active_save_ticket(document.document_id) is not None:
+                return DocumentActionResult(DocumentActionStatus.REJECTED, "a document save is already pending")
+            result = registry.request_save_to_resource(document.document_id, resource_path)
+        else:
+            return DocumentActionResult(DocumentActionStatus.REJECTED, "the Save As session has ended")
+        if result.accepted:
+            self._save_as_ticket_id = ""
+        return result
+
+    def _save_document(self, ticket):
+        document = DocumentRegistry.instance().get(ticket.document_id)
+        if (document is not None and document.controller is self
+                and document.document_id == self.document_id):
+            return document
+        return None
+
+    def cancel_pending_writes(self) -> None:
+        """Retire Editor publication; accepted IO keeps its own worker lifetime."""
+        self.cancel_pending_save()
+        registry = DocumentRegistry.instance()
+        pending, self._pending_writes = self._pending_writes, {}
+        for write in pending.values():
+            registry.complete_save(write.save_ticket_id, success=False, cancelled=True,
+                                   message="the authoring document was closed")
+
     def continue_save_to_resource(
         self,
         save_ticket_id: str,
@@ -98,6 +173,10 @@ class AuthoringDocumentController:
                 DocumentActionStatus.REJECTED,
                 "the authoring save ticket is no longer pending",
             )
+        if self._save_document(ticket) is None:
+            return DocumentActionResult(DocumentActionStatus.REJECTED, "the save belongs to another document")
+        if any(write.save_ticket_id == ticket.ticket_id for write in self._pending_writes.values()):
+            return DocumentActionResult(DocumentActionStatus.PENDING)
         target = str(resource_path or "").strip()
         if not target:
             return DocumentActionResult(
@@ -166,110 +245,118 @@ class AuthoringDocumentController:
         return self.continue_save_to_resource(ticket.ticket_id, resource_path)
 
     def poll_pending_writes(self) -> int:
-        """Finalize durable writes and publish runtime changes on the Editor thread."""
+        """Finalize ready writes once, including reentrant asset publications."""
         registry = DocumentRegistry.instance()
         completed = 0
         for key, pending in tuple(self._pending_writes.items()):
-            io_ticket = pending.io_ticket
-            if not bool(getattr(io_ticket, "is_complete", False)):
+            if pending.finishing or not pending.io_ticket.is_complete:
                 continue
-            self._pending_writes.pop(key, None)
+            pending.finishing = True
             completed += 1
-            ticket = registry.get_save_ticket(pending.save_ticket_id)
-            if ticket is None or not ticket.is_pending:
-                continue
-            status = str(getattr(io_ticket, "status", "") or "").casefold()
-            if status != "succeeded":
-                message = str(getattr(io_ticket, "error", "") or "").strip()
-                conflict = "changed outside the editor" in message.casefold()
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=False,
-                    cancelled=status == "cancelled",
-                    conflict=conflict,
-                    message=message or f"authoring asset persistence {status or 'failed'}",
-                )
-                continue
-
-            self._publication_error = ""
-            publication_start_revision = registry.require(
-                ticket.document_id
-            ).revision
             try:
-                publication = self._call(
-                    "publish_authoring_save_snapshot",
-                    pending.snapshot,
-                )
-                if publication:
-                    self._publication_error = str(publication)
+                self._finish_write(pending, registry)
             except Exception as exc:
                 self._publication_error = str(exc)
+                registry.complete_save(pending.save_ticket_id, success=False, message=str(exc))
+            finally:
+                self._pending_writes.pop(key, None)
+        return completed
 
-            published_document = registry.get(ticket.document_id)
-            if (
-                not self._publication_error
-                and published_document is not None
-                and published_document.revision != publication_start_revision
-            ):
-                registry.mark_save_publication_bookkeeping(ticket.ticket_id)
-
-            document = registry.get(ticket.document_id)
-            if document is None:
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=False,
-                    cancelled=True,
-                    message="the authoring document closed before publication",
-                )
-                continue
-            if self._publication_error:
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=False,
-                    message=self._publication_error,
-                )
-                continue
-            current_token = str(
-                self._call("current_authoring_content_token") or ""
-            )
-            key_update = None
-            if (
-                pending.save_as
-                or not document.resource_path
-                or document.key.identity_kind is DocumentIdentityKind.SESSION
-            ):
-                try:
-                    from infernux.core.assets import AssetManager
-
-                    database = AssetManager.require_asset_database()
-                    asset_guid = str(
-                        database.get_guid_from_path(pending.snapshot.target_path) or ""
-                    ).strip()
-                except (AttributeError, RuntimeError, TypeError, ValueError):
-                    asset_guid = ""
-                if not asset_guid:
-                    registry.complete_save(
-                        ticket.ticket_id,
-                        success=False,
-                        message="saved authoring asset was not registered",
-                    )
-                    continue
-                key_update = DocumentKey.asset(document.kind, asset_guid)
+    def _finish_write(self, pending: _PendingAuthoringWrite, registry: DocumentRegistry) -> None:
+        io_ticket = pending.io_ticket
+        ticket = registry.get_save_ticket(pending.save_ticket_id)
+        if ticket is None or not ticket.is_pending:
+            return
+        document = self._save_document(ticket)
+        if document is None:
+            registry.complete_save(ticket.ticket_id, success=False, cancelled=True,
+                                   message="the authoring document closed before publication")
+            return
+        status = str(getattr(io_ticket, "status", "") or "").casefold()
+        if status != "succeeded":
+            message = str(getattr(io_ticket, "error", "") or "").strip()
+            conflict = "changed outside the editor" in message.casefold()
             registry.complete_save(
                 ticket.ticket_id,
-                success=True,
-                key=key_update,
-                resource_path=pending.snapshot.target_path,
-                title=pending.snapshot.title,
-                content_token=current_token,
-                committed_file_state=getattr(
-                    io_ticket,
-                    "committed_file_state",
-                    None,
-                ),
+                success=False,
+                cancelled=status == "cancelled",
+                conflict=conflict,
+                message=message or f"authoring asset persistence {status or 'failed'}",
+            )
+            return
+
+        self._publication_error = ""
+        publication_start_revision = document.revision
+        publication = self._call("publish_authoring_save_snapshot", pending.snapshot)
+        if publication:
+            self._publication_error = str(publication)
+
+        if not ticket.is_pending:
+            return
+        published_document = self._save_document(ticket)
+        if (
+            not self._publication_error
+            and published_document is not None
+            and published_document.revision != publication_start_revision
+        ):
+            registry.mark_save_publication_bookkeeping(ticket.ticket_id)
+
+        document = published_document
+        if document is None:
+            registry.complete_save(
+                ticket.ticket_id,
+                success=False,
+                cancelled=True,
+                message="the authoring document closed before publication",
+            )
+            return
+        if self._publication_error:
+            registry.complete_save(
+                ticket.ticket_id,
+                success=False,
                 message=self._publication_error,
             )
-        return completed
+            return
+        current_token = str(
+            self._call("current_authoring_content_token") or ""
+        )
+        key_update = None
+        if (
+            pending.save_as
+            or not document.resource_path
+            or document.key.identity_kind is DocumentIdentityKind.SESSION
+        ):
+            try:
+                from infernux.core.assets import AssetManager
+
+                database = AssetManager.require_asset_database()
+                asset_guid = str(
+                    database.get_guid_from_path(pending.snapshot.target_path) or ""
+                ).strip()
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                asset_guid = ""
+            if not asset_guid:
+                registry.complete_save(
+                    ticket.ticket_id,
+                    success=False,
+                    message="saved authoring asset was not registered",
+                )
+                return
+            key_update = DocumentKey.asset(document.kind, asset_guid)
+        registry.complete_save(
+            ticket.ticket_id,
+            success=True,
+            key=key_update,
+            resource_path=pending.snapshot.target_path,
+            title=pending.snapshot.title,
+            content_token=current_token,
+            committed_file_state=getattr(
+                io_ticket,
+                "committed_file_state",
+                None,
+            ),
+            message=self._publication_error,
+        )
 
     def poll_save(self, ticket):
         self.poll_pending_writes()

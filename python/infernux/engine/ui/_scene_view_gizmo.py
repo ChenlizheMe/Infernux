@@ -320,7 +320,7 @@ class SceneViewGizmoMixin:
         if getattr(self, "_gizmo_drag_rigidbodies", None):
             from infernux.lib._Infernux import Physics
 
-            Physics.sync_transforms()
+            Physics._sync_dragged_transforms()
 
     def _apply_gizmo_position(self, obj, new_pos):
         from infernux.lib._Infernux import Physics, Vector3
@@ -331,7 +331,7 @@ class SceneViewGizmoMixin:
         target = Vector3(new_pos[0], new_pos[1], new_pos[2])
         obj.transform.position = target
         if rb is not None:
-            Physics.sync_transforms()
+            Physics._sync_dragged_transforms()
 
     def _apply_gizmo_rotation(self, obj, rotation):
         from infernux.lib._Infernux import Physics
@@ -341,7 +341,7 @@ class SceneViewGizmoMixin:
         rb = self._gizmo_drag_rigidbody
         obj.transform.rotation = rotation
         if rb is not None:
-            Physics.sync_transforms()
+            Physics._sync_dragged_transforms()
 
     def _get_gizmo_drag_objects(self, scene, primary_id: int):
         del scene

@@ -12,18 +12,16 @@
 #include "function/scene/PrimitiveMeshes.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
+#include "function/scene/SkeletonInstance.h"
 #include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/SphereCollider.h"
 #include "function/scene/Transform.h"
 #include "function/scene/physics/PhysicsECSStore.h"
 #include <algorithm>
-#include <cctype>
+#include <core/math/TransformPose.h>
 #include <glm/gtc/quaternion.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/gtx/matrix_decompose.hpp>
 #include <mutex>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -93,7 +91,7 @@ std::shared_ptr<InxMesh> GetBuiltinPrimitiveMeshAsset(const std::string &name)
     const char *defaultName = "Primitive";
     GetPrimitiveMeshData(type->second, vertices, indices, defaultName);
     auto mesh = std::make_shared<InxMesh>(defaultName);
-    mesh->SetGuid("builtin-mesh:" + name);
+    mesh->SetGuid(BuiltinMeshGuidPrefix + name);
     mesh->SetData(std::vector<Vertex>(vertices->begin(), vertices->end()),
                   std::vector<uint32_t>(indices->begin(), indices->end()), {});
     cache.emplace(name, mesh);
@@ -231,8 +229,6 @@ py::object InstantiateGameObjectsBatch(Scene &scene, GameObject *source, const F
 {
     if (!source)
         throw std::invalid_argument("Instantiate batch requires a source GameObject");
-    if (source->GetScene() != &scene)
-        throw std::invalid_argument("Instantiate batch source belongs to another Scene");
     if (positions.ndim() != 2 || positions.shape(1) != 3)
         throw std::invalid_argument("Instantiate positions must have shape (N, 3)");
 
@@ -249,123 +245,43 @@ py::object InstantiateGameObjectsBatch(Scene &scene, GameObject *source, const F
     const float *scaleData = hasScales ? scales->data() : nullptr;
 
     const size_t batchCount = static_cast<size_t>(count);
-    try {
-        scene.ReserveCapacity(batchCount);
-    } catch (const std::exception &exc) {
-        throw std::runtime_error("Instantiate batch Scene reserve failed for " + std::to_string(batchCount) +
-                                 " objects: " + exc.what());
-    }
-    try {
-        auto &transforms = TransformECSStore::Instance();
-        transforms.Reserve(transforms.Capacity() + batchCount);
-    } catch (const std::exception &exc) {
-        throw std::runtime_error("Instantiate batch Transform reserve failed for " + std::to_string(batchCount) +
-                                 " objects: " + exc.what());
-    }
-    try {
-        Component::ReserveRegistry(Component::GetInstanceCount() + batchCount * 3);
-    } catch (const std::exception &exc) {
-        throw std::runtime_error("Instantiate batch Component registry reserve failed for " +
-                                 std::to_string(batchCount) + " objects: " + exc.what());
-    }
-    try {
-        SceneManager::Instance().ReserveRendererCapacity(batchCount);
-    } catch (const std::exception &exc) {
-        throw std::runtime_error("Instantiate batch renderer registry reserve failed for " +
-                                 std::to_string(batchCount) + " objects: " + exc.what());
-    }
+    scene.ReserveCapacity(batchCount);
+    auto &transforms = TransformECSStore::Instance();
+    transforms.Reserve(transforms.Capacity() + batchCount);
+    Component::ReserveRegistry(Component::GetInstanceCount() + batchCount * 3);
+    SceneManager::Instance().ReserveRendererCapacity(batchCount);
 
     RendererRegistryTransaction transaction;
     py::list result;
-    for (py::ssize_t index = 0; index < count; ++index) {
-        GameObject *created = nullptr;
-        try {
-            created = scene.InstantiateGameObject(source, parent, instantiateInWorldSpace);
-        } catch (const std::exception &exc) {
-            throw std::runtime_error("Instantiate batch clone failed at object " + std::to_string(index) + "/" +
-                                     std::to_string(count) + ": " + exc.what());
+    std::vector<GameObject *> created;
+    created.reserve(batchCount);
+    try {
+        for (py::ssize_t index = 0; index < count; ++index) {
+            InstantiationIds ids;
+            auto *object = scene.InstantiateGameObject(source, ids, parent, instantiateInWorldSpace);
+            created.push_back(object);
+            auto *transform = object->GetTransform();
+            const float *position = positionData + index * 3;
+            transform->SetWorldPosition(glm::vec3(position[0], position[1], position[2]));
+            if (hasRotations) {
+                const float *rotation = rotationData + index * 4;
+                transform->SetWorldRotation(glm::quat(rotation[3], rotation[0], rotation[1], rotation[2]));
+            }
+            if (hasScales) {
+                const float *scale = scaleData + index * 3;
+                transform->SetLocalScale(glm::vec3(scale[0], scale[1], scale[2]));
+            }
+            if (returnObjects)
+                result.append(py::cast(object, py::return_value_policy::reference));
         }
-        if (!created)
-            throw std::runtime_error("Instantiate batch failed while cloning source GameObject");
-        Transform *transform = created->GetTransform();
-        const float *position = positionData + index * 3;
-        transform->SetWorldPosition(glm::vec3(position[0], position[1], position[2]));
-        if (hasRotations) {
-            const float *rotation = rotationData + index * 4;
-            transform->SetWorldRotation(glm::quat(rotation[3], rotation[0], rotation[1], rotation[2]));
-        }
-        if (hasScales) {
-            const float *scale = scaleData + index * 3;
-            transform->SetLocalScale(glm::vec3(scale[0], scale[1], scale[2]));
-        }
-        if (returnObjects)
-            result.append(py::cast(created, py::return_value_policy::reference));
+    } catch (...) {
+        for (auto item = created.rbegin(); item != created.rend(); ++item)
+            scene.RemoveGameObject(*item);
+        throw;
     }
     if (returnObjects)
         return std::move(result);
     return py::int_(count);
-}
-
-/**
- * @brief Helper function to create a GameObject from a mesh asset GUID.
- */
-static std::string TrimCopy(std::string s)
-{
-    auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
-    while (!s.empty() && !notSpace(static_cast<unsigned char>(s.front())))
-        s.erase(s.begin());
-    while (!s.empty() && !notSpace(static_cast<unsigned char>(s.back())))
-        s.pop_back();
-    return s;
-}
-
-static std::vector<std::string> SplitCommaList(const std::string &csv)
-{
-    std::vector<std::string> out;
-    std::stringstream ss(csv);
-    std::string item;
-    while (std::getline(ss, item, ',')) {
-        item = TrimCopy(item);
-        if (!item.empty())
-            out.push_back(item);
-    }
-    return out;
-}
-
-std::shared_ptr<const InxResourceMeta> GetModelMeta(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
-{
-    auto *adb = AssetRegistry::Instance().GetAssetDatabase();
-    if (!adb)
-        return nullptr;
-    if (!guid.empty()) {
-        if (auto meta = adb->GetMetaByGuid(guid))
-            return meta;
-    }
-    if (mesh && !mesh->GetFilePath().empty())
-        return adb->GetMetaByPath(mesh->GetFilePath());
-    return nullptr;
-}
-
-static int TryGetMetaInt(const InxResourceMeta *meta, const std::string &key, int fallback = 0)
-{
-    if (!meta || !meta->HasKey(key))
-        return fallback;
-    try {
-        return meta->GetDataAs<int>(key);
-    } catch (...) {
-        return fallback;
-    }
-}
-
-static std::string TryGetMetaString(const InxResourceMeta *meta, const std::string &key)
-{
-    if (!meta || !meta->HasKey(key))
-        return {};
-    try {
-        return meta->GetDataAs<std::string>(key);
-    } catch (...) {
-        return {};
-    }
 }
 
 std::string GetModelSubresourceId(const std::shared_ptr<const InxResourceMeta> &meta,
@@ -388,29 +304,6 @@ std::string GetModelSubresourceId(const std::shared_ptr<const InxResourceMeta> &
     return {};
 }
 
-static std::vector<std::string> GetAnimationTakeNames(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
-{
-    const auto meta = GetModelMeta(guid, mesh);
-    return SplitCommaList(TryGetMetaString(meta.get(), "animation_names_csv"));
-}
-
-static bool ShouldUseSkinnedRenderer(const std::string &guid, const std::shared_ptr<InxMesh> &mesh)
-{
-    // The loaded mesh is authoritative. Freshly discovered model assets can be
-    // instantiated before the asynchronous importer has enriched their .meta
-    // file with animation_count/bone_count, while MeshLoader has already
-    // attached the validated skin companion data to the runtime mesh.
-    if (mesh && mesh->HasSkinnedData())
-        return true;
-
-    const auto meta = GetModelMeta(guid, mesh);
-    if (!meta)
-        return false;
-    if (TryGetMetaInt(meta.get(), "animation_count", 0) > 0)
-        return true;
-    return !GetAnimationTakeNames(guid, mesh).empty();
-}
-
 GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::string &name)
 {
     auto &registry = AssetRegistry::Instance();
@@ -421,9 +314,8 @@ GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::
         if (!source)
             throw std::invalid_argument("Model mesh source cannot be loaded");
         const int32_t sourceNode = source->RequireModelNode(nodePath);
-        const auto metadata = GetModelMeta(sourceGuid, source);
-        const bool generateCollider = !ShouldUseSkinnedRenderer(sourceGuid, source) && metadata &&
-                                      metadata->HasKey("generate_colliders") &&
+        const auto &metadata = source->GetImportMetadata();
+        const bool generateCollider = !source->HasSkinnedData() && metadata && metadata->HasKey("generate_colliders") &&
                                       metadata->GetDataAs<bool>("generate_colliders");
         auto *object = scene->CreateGameObject(name.empty() ? nodePath.back() : name);
         if (!object)
@@ -454,19 +346,14 @@ GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::
 
     uint32_t nodeGroupCount = mesh->GetNodeGroupCount();
     const auto &nodeNames = mesh->GetNodeNames();
-    const bool useSkinnedRenderer = ShouldUseSkinnedRenderer(guid, mesh);
-    const auto metadata = GetModelMeta(guid, mesh);
+    const bool useSkinnedRenderer = mesh->HasSkinnedData();
+    const auto &metadata = mesh->GetImportMetadata();
     const bool generateColliders = !useSkinnedRenderer && metadata && metadata->HasKey("generate_colliders") &&
                                    metadata->GetDataAs<bool>("generate_colliders");
 
     const auto &nodes = mesh->GetModelNodes();
     if (!useSkinnedRenderer && mesh->GetModelSourceGeometry() && !nodes.empty()) {
-        struct Pose
-        {
-            glm::vec3 position, scale;
-            glm::quat rotation;
-        };
-        std::vector<Pose> poses;
+        std::vector<TransformPose> poses;
         poses.reserve(nodes.size());
         std::vector<std::vector<std::string>> paths;
         std::set<std::vector<std::string>> geometryPaths;
@@ -478,20 +365,7 @@ GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::
             if (!geometryPaths.insert(path).second)
                 throw std::invalid_argument("Model geometry node path is ambiguous: " + node.name);
             paths.push_back(std::move(path));
-            Pose pose;
-            glm::vec3 skew;
-            glm::vec4 perspective;
-            if (!glm::decompose(node.localTransform, pose.scale, pose.rotation, pose.position, skew, perspective))
-                throw std::invalid_argument("Model node has a non-decomposable transform: " + node.name);
-            const glm::mat4 rebuilt = glm::translate(glm::mat4(1), pose.position) * glm::mat4_cast(pose.rotation) *
-                                      glm::scale(glm::mat4(1), pose.scale);
-            for (int column = 0; column < 4; ++column)
-                for (int row = 0; row < 4; ++row)
-                    if (std::abs(rebuilt[column][row] - node.localTransform[column][row]) >
-                        1e-5f * std::max(1.0f, std::abs(node.localTransform[column][row])))
-                        throw std::invalid_argument("Model node shear requires baking before instantiation: " +
-                                                    node.name);
-            poses.push_back(pose);
+            poses.push_back(DecomposeTransformPose(node.localTransform, node.name));
         }
         GameObject *container = scene->CreateGameObject(objName);
         if (!container)
@@ -531,54 +405,39 @@ GameObject *CreateModelObject(Scene *scene, const std::string &guid, const std::
         return container;
     }
 
-    if (nodeGroupCount <= 1) {
-        // Single node — one object with the mesh asset.
-        GameObject *obj = scene->CreateGameObject(objName);
-        if (!obj)
-            return nullptr;
-        if (useSkinnedRenderer) {
-            auto *renderer = obj->AddComponent<SkinnedMeshRenderer>();
-            if (renderer) {
-                renderer->SetSourceModelGuid(guid);
-            }
-        } else {
-            MeshRenderer *renderer = obj->AddComponent<MeshRenderer>();
-            if (renderer) {
-                renderer->SetMeshAsset(guid, mesh);
-                if (generateColliders)
-                    obj->AddComponent<MeshCollider>();
-            }
-        }
-        return obj;
-    }
-
-    // Multiple nodes — container + one child per node group.
+    // Both single and multi-mesh instances have one owner and one skeleton.
     GameObject *container = scene->CreateGameObject(objName);
-    if (!container)
-        return nullptr;
-
-    for (uint32_t g = 0; g < nodeGroupCount; ++g) {
-        std::string childName =
-            (g < nodeNames.size() && !nodeNames[g].empty()) ? nodeNames[g] : "Node_" + std::to_string(g);
-        GameObject *child = scene->CreateGameObject(childName);
-        if (!child)
-            continue;
-        child->GetTransform()->SetParent(container->GetTransform());
-        if (useSkinnedRenderer) {
-            auto *renderer = child->AddComponent<SkinnedMeshRenderer>();
-            if (renderer) {
-                renderer->SetSourceModelGuid(guid);
-                renderer->SetNodeGroup(static_cast<int32_t>(g));
+    try {
+        if (useSkinnedRenderer)
+            container->AddComponent<SkeletonInstance>()->SetSourceModelGuid(guid);
+        const uint32_t count = std::max(1u, nodeGroupCount);
+        for (uint32_t group = 0; group < count; ++group) {
+            GameObject *object = container;
+            if (count > 1) {
+                const auto name = group < nodeNames.size() && !nodeNames[group].empty()
+                                      ? nodeNames[group]
+                                      : "Node_" + std::to_string(group);
+                object = scene->CreateGameObject(name);
+                object->GetTransform()->SetParent(container->GetTransform(), false);
             }
-        } else {
-            MeshRenderer *renderer = child->AddComponent<MeshRenderer>();
-            if (renderer) {
+            if (useSkinnedRenderer) {
+                auto *renderer = object->AddComponent<SkinnedMeshRenderer>();
+                renderer->SetSourceModelGuid(guid);
+                if (count > 1)
+                    renderer->SetNodeGroup(static_cast<int32_t>(group));
+            } else {
+                auto *renderer = object->AddComponent<MeshRenderer>();
                 renderer->SetMeshAsset(guid, mesh);
-                renderer->SetNodeGroup(static_cast<int32_t>(g));
+                if (count > 1)
+                    renderer->SetNodeGroup(static_cast<int32_t>(group));
                 if (generateColliders)
-                    child->AddComponent<MeshCollider>();
+                    object->AddComponent<MeshCollider>();
             }
         }
+    } catch (...) {
+        scene->DestroyGameObject(container);
+        scene->ProcessPendingDestroys();
+        throw;
     }
 
     return container;

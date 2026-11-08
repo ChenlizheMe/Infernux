@@ -63,6 +63,7 @@ if(_pybind11_result EQUAL 0 AND _pybind11_cmakedir)
     find_package(pybind11 3.1.0 EXACT CONFIG REQUIRED
         PATHS "${_pybind11_cmakedir}"
         NO_DEFAULT_PATH
+        NO_CMAKE_FIND_ROOT_PATH
     )
 else()
     find_package(pybind11 3.1.0 EXACT CONFIG REQUIRED)

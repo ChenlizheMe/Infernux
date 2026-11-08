@@ -30,6 +30,8 @@ enum class LineCurveWrapMode : uint8_t
     Clamp = 0,
     Repeat = 1,
     PingPong = 2,
+    Default = 3,
+    Once = 4,
 };
 
 enum class LineGradientMode : uint8_t
@@ -45,6 +47,9 @@ struct LineWidthKey
     float value = 1.0f;
     float inTangent = 0.0f;
     float outTangent = 0.0f;
+    float inWeight = 0.0f;
+    float outWeight = 0.0f;
+    int32_t weightedMode = 0;
 };
 
 struct LineColorKey
@@ -61,7 +66,7 @@ struct LineColorKey
  * compact two-vertex-per-point stream; the final ribbon offset is evaluated
  * per camera in the standard vertex pipeline.
  */
-class LineRenderer final : public MeshRenderer
+class LineRenderer : public MeshRenderer
 {
   public:
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
@@ -87,7 +92,7 @@ class LineRenderer final : public MeshRenderer
     {
         return m_positions;
     }
-    void SetPositions(const std::vector<glm::vec3> &positions);
+    void SetPositions(std::vector<glm::vec3> positions);
 
     [[nodiscard]] float GetStartWidth() const;
     void SetStartWidth(float width);
@@ -191,11 +196,16 @@ class LineRenderer final : public MeshRenderer
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
+    void EnsureProceduralGeometryCurrent() const override;
+    void MarkGeometryDirty();
     [[nodiscard]] bool ShouldSerializeInlineMeshData() const override
     {
         return false;
     }
     void RebuildMesh();
+    bool m_geometryDirty = true;
+    bool m_geometryBuilding = false;
+    bool m_hasPublishedDrawableGeometry = false;
 
     std::vector<glm::vec3> m_positions{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}};
     float m_widthMultiplier = 1.0f;

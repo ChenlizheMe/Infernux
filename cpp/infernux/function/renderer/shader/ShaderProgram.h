@@ -23,6 +23,7 @@ struct MergedDescriptorBinding
     uint32_t descriptorCount;
     VkShaderStageFlags stageFlags; // Combined from all stages using this binding
     std::string name;
+    bool readOnly = false; ///< Storage-buffer input is non-writable in every consuming stage.
 };
 
 /**

@@ -31,6 +31,8 @@ on:
         required: false
       R2_UPLOAD_TOKEN:
         required: false
+      PLATFORM_RELEASE_TOKEN:
+        required: false
       SIGNPATH_API_TOKEN:
         required: false
   workflow_dispatch:
@@ -468,9 +470,17 @@ jobs:
       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     uses: ./.github/workflows/platform-player.yml
 
+  engine-platform-plugins:
+    name: Build matching platform plugins for this engine release
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_release &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/engine-platform-plugins.yml
+
   publish-release:
     name: Publish verified distributions
-    needs: [portable-hub, windows-desktop, linux-desktop, release-player-acceptance]
+    needs: [portable-hub, windows-desktop, linux-desktop, release-player-acceptance, engine-platform-plugins]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.publish_release &&

@@ -153,9 +153,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._scene_document_id: str = ""
         self._previous_scene_document_id: str = ""
         self._on_scene_changed: Optional[Callable[[], None]] = None
-        self._pending_save_path: Optional[str] = None
-        self._pending_save_ticket_id: str = ""
-        self._pending_save_document_id: str = ""
+        self._save_as_ticket_id: str = ""
         # Automation receives an editor modal it can address semantically;
         # desktop users receive the platform-native Save As dialog.
         self._save_as_popup_open: bool = False
@@ -168,6 +166,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._save_as_error: str = ""
         self._save_as_modal_service = None
         self._asset_database = None  # Set via set_asset_database()
+        self._published_prefab_sources: dict[str, dict] = {}
         self._engine = None  # set via set_engine()
 
         # Deferred scene loading — actual load runs on the NEXT frame so
@@ -228,6 +227,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def set_asset_database(self, asset_db):
         """Set the AssetDatabase for GUID→path resolution during scene load."""
+        if self._asset_database is not asset_db:
+            self._published_prefab_sources.clear()
         self._asset_database = asset_db
         if self._current_scene_path and self._scene_document_id:
             from infernux.engine.interaction import (
@@ -1332,10 +1333,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             DirtyPanelConfirmationCoordinator,
         )
 
-        DirtyPanelConfirmationCoordinator.instance().request_exit(
+        if not DirtyPanelConfirmationCoordinator.instance().request_exit(
             self._continue_close_after_dirty_panels,
             self._cancel_close_after_dirty_panels,
-        )
+        ):
+            self._cancel_close_after_dirty_panels()
 
     def _cancel_close_after_dirty_panels(self) -> None:
         native = self._native_engine_for_close()

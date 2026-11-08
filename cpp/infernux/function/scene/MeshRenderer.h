@@ -3,12 +3,14 @@
 #include "Component.h"
 #include "function/renderer/InxRenderStruct.h"
 #include "function/renderer/RendererParameterBlock.h"
+#include <array>
 #include <cstdint>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRef.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -61,7 +63,23 @@ void RecalculateMeshTangents(std::vector<Vertex> &vertices, const std::vector<ui
  */
 class MeshRenderer : public Component
 {
+    struct ImportedMaterialState
+    {
+        std::string guid;
+        uint64_t authoredVersion = 0;
+    };
+
   public:
+    // Opaque in Python: an editor preview owns only material bindings, not a
+    // complete mesh snapshot or a second material asset document.
+    struct MaterialBindingsSnapshot
+    {
+        std::string owner;
+        std::vector<AssetRef<InxMaterial>> materials;
+        std::vector<bool> instanced;
+        std::vector<std::optional<ImportedMaterialState>> imported;
+        std::array<size_t, 3> parameterSizes{};
+    };
     [[nodiscard]] static SemanticTypeDescriptor DescribeSemanticType();
 
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
@@ -98,11 +116,13 @@ class MeshRenderer : public Component
     void SetMesh(const MeshRef &mesh)
     {
         m_mesh = mesh;
+        ++m_geometryVersion;
     }
     void SetMesh(uint64_t meshId)
     {
         m_mesh.meshId = meshId;
         m_useInlineMesh = false;
+        ++m_geometryVersion;
     }
 
     /// @brief Set mesh from inline vertex/index data (for primitives)
@@ -147,7 +167,7 @@ class MeshRenderer : public Component
     void ClearMeshAsset();
 
     /// @brief Handle asset graph notifications for the referenced mesh asset.
-    void OnMeshAssetEvent(const std::string &meshGuid, AssetEvent event);
+    virtual void OnMeshAssetEvent(const std::string &meshGuid, AssetEvent event);
 
     /// @brief Invalidate or reconnect material slots without changing GUIDs.
     void OnMaterialAssetEvent(const std::string &guid, AssetEvent event);
@@ -185,6 +205,7 @@ class MeshRenderer : public Component
     /// @brief Check if this renderer uses inline mesh data
     [[nodiscard]] bool HasInlineMesh() const
     {
+        EnsureProceduralGeometryCurrent();
         return m_useInlineMesh;
     }
 
@@ -194,32 +215,35 @@ class MeshRenderer : public Component
     /// same Cube/Quad data once per GameObject.
     [[nodiscard]] bool HasSharedInlineMesh() const
     {
+        EnsureProceduralGeometryCurrent();
         return m_useInlineMesh && m_sharedVertices != nullptr && m_sharedIndices != nullptr;
     }
 
     /// Stable cache identity for an engine-owned inline primitive.
     [[nodiscard]] std::string GetSharedInlineMeshGuid() const
     {
-        return HasSharedInlineMesh() && !m_inlineMeshName.empty() ? "builtin-mesh:" + m_inlineMeshName : "";
+        return HasSharedInlineMesh() && !m_inlineMeshName.empty() ? BuiltinMeshGuidPrefix + m_inlineMeshName : "";
     }
 
     /// @brief Get inline vertex data
     [[nodiscard]] const std::vector<Vertex> &GetInlineVertices() const
     {
+        EnsureProceduralGeometryCurrent();
         return m_sharedVertices ? *m_sharedVertices : m_inlineVertices;
     }
 
     /// @brief Get inline index data
     [[nodiscard]] const std::vector<uint32_t> &GetInlineIndices() const
     {
+        EnsureProceduralGeometryCurrent();
         return m_sharedIndices ? *m_sharedIndices : m_inlineIndices;
     }
 
-    /// Monotonic identity for runtime geometry publication. Rendering uses
-    /// this instead of hashing the complete vertex/index payload.
-    [[nodiscard]] uint64_t GetInlineMeshVersion() const noexcept
+    /// Identity of the authored geometry used by rendering and pending result bindings.
+    [[nodiscard]] uint64_t GetInlineMeshVersion() const
     {
-        return m_inlineMeshVersion;
+        EnsureProceduralGeometryCurrent();
+        return m_geometryVersion;
     }
 
     /// Bind canonical interleaved Vertex storage owned by inx.buffer. The
@@ -258,6 +282,13 @@ class MeshRenderer : public Component
 
     /// @brief Get material on a specific slot (nullptr if not assigned).
     [[nodiscard]] std::shared_ptr<InxMaterial> GetMaterial(uint32_t slot = 0) const;
+    [[nodiscard]] std::shared_ptr<InxMaterial> GetInstancedMaterial(uint32_t slot = 0);
+    [[nodiscard]] bool IsMaterialInstantiated(uint32_t slot = 0) const
+    {
+        return slot < m_materialInstanced.size() && m_materialInstanced[slot];
+    }
+    [[nodiscard]] MaterialBindingsSnapshot CaptureMaterialBindings() const;
+    void RestoreMaterialBindings(const MaterialBindingsSnapshot &snapshot);
 
     /// @brief Get the effective material for a slot (returns default if none).
     [[nodiscard]] virtual std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const;
@@ -387,10 +418,12 @@ class MeshRenderer : public Component
     /// @brief Get local-space bounding box (from mesh)
     [[nodiscard]] const glm::vec3 &GetLocalBoundsMin() const
     {
+        EnsureProceduralGeometryCurrent();
         return m_localBoundsMin;
     }
     [[nodiscard]] const glm::vec3 &GetLocalBoundsMax() const
     {
+        EnsureProceduralGeometryCurrent();
         return m_localBoundsMax;
     }
 
@@ -413,6 +446,12 @@ class MeshRenderer : public Component
     [[nodiscard]] virtual glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const
     {
         return IsVertexBufferWorldSpace() ? glm::mat4(1.0f) : objectWorldMatrix;
+    }
+
+    /// Static selected meshes are recentered; a skin already supplies its root-space positions.
+    [[nodiscard]] virtual glm::mat4 ResolveSubmeshWorldMatrix(const glm::mat4 &rendererWorldMatrix) const
+    {
+        return GetSubmeshIndex() >= 0 ? glm::translate(rendererWorldMatrix, GetMeshPivotOffset()) : rendererWorldMatrix;
     }
 
     /// Resolve the transform applied to authored bounds. World-space resident
@@ -448,6 +487,18 @@ class MeshRenderer : public Component
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   protected:
+    virtual void OnMeshSourceChanged()
+    {
+    }
+    virtual void ApplyRendererDocumentFields(const nlohmann::json &)
+    {
+    }
+    void CopyMaterialBindingsTo(MeshRenderer &destination) const;
+    /// Procedural authors may coalesce edits until a geometry consumer asks
+    /// for the current snapshot. Ordinary mesh renderers have no pending work.
+    virtual void EnsureProceduralGeometryCurrent() const
+    {
+    }
     static void ValidateSerializedDocumentForType(const nlohmann::json &document, std::string_view expectedType);
 
     // Engine-derived parameters have a component-defined type before a shader
@@ -469,6 +520,12 @@ class MeshRenderer : public Component
     void ResolveModelNodeBinding();
     [[nodiscard]] bool IsUnmodifiedEmbeddedMaterial(size_t slot) const;
 
+    void MarkMeshSourceDirty()
+    {
+        ++m_geometryVersion;
+        MarkMeshBufferDirty();
+    }
+
     MeshRef m_mesh;
 
     // Material slots — one per submesh, GUID-based, resolved via AssetRegistry
@@ -481,13 +538,9 @@ class MeshRenderer : public Component
     using RuntimeParameterOwners = std::unordered_map<std::string, RuntimeParameterLayer>;
 
     std::vector<AssetRef<InxMaterial>> m_materials;
+    std::vector<bool> m_materialInstanced;
     // Imported defaults are derived data. An explicit assignment or a material
     // edit becomes an authored override; untouched defaults follow reimport.
-    struct ImportedMaterialState
-    {
-        std::string guid;
-        uint64_t authoredVersion = 0;
-    };
     std::vector<std::optional<ImportedMaterialState>> m_embeddedMaterialVersions;
     std::vector<std::unordered_map<std::string, MaterialProperty>> m_persistentParameters;
     std::vector<RuntimeParameterOwners> m_runtimeParameters;
@@ -503,6 +556,7 @@ class MeshRenderer : public Component
     // Mesh asset reference (for model-file meshes managed by AssetRegistry)
     AssetRef<InxMesh> m_meshAsset;
     bool m_meshBufferDirty = false;
+    uint64_t m_geometryVersion = 1;
 
     // Inline mesh data (for primitives, not using resource system)
     std::vector<Vertex> m_inlineVertices;
@@ -512,7 +566,6 @@ class MeshRenderer : public Component
     const std::vector<uint32_t> *m_sharedIndices = nullptr;
     bool m_useInlineMesh = false;
     std::string m_inlineMeshName; // display name for inline (primitive) meshes
-    uint64_t m_inlineMeshVersion = 1;
     // Runtime-only GPU vertex storage is deliberately absent from scene
     // serialization and cloning. Scripts recreate it for each Play lifetime.
     std::shared_ptr<rhi::ComputeBuffer> m_vertexBuffer;

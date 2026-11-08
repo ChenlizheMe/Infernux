@@ -89,6 +89,8 @@ def _conversion(source: FieldMetadata, target: FieldMetadata) -> str:
 def build_class_schema_migration(
     target_type: type,
     candidate_type: type,
+    *,
+    replace_authored_values: bool = False,
 ) -> ClassSchemaMigration:
     """Validate one stable-class schema transition without mutating either class."""
     old_fields = get_serialized_fields(target_type)
@@ -123,13 +125,22 @@ def build_class_schema_migration(
             )
         claimed_sources.add(source_name)
         source = old_fields[source_name]
+        try:
+            conversion = _conversion(source, target)
+        except FieldSchemaMigrationError:
+            if not replace_authored_values:
+                raise
+            # A disk scene replacement reads these values from the new
+            # document. Only its retiring instances get temporary defaults.
+            migrations.append(FieldMigration(target_name, target))
+            continue
         migrations.append(
             FieldMigration(
                 target_name,
                 target,
                 source_name,
                 source,
-                _conversion(source, target),
+                conversion,
             )
         )
 

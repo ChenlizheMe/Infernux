@@ -293,6 +293,17 @@ def _restore_component_documents(obj, state: dict, label: str) -> None:
     _notify_gizmos_scene_changed()
 
 
+def _capture_component_hierarchy(root) -> dict:
+    """Component creation can configure existing descendants or create children."""
+    captured = {}
+    def visit(obj):
+        captured[int(obj.id)] = (obj, _capture_component_documents(obj))
+        for child in obj.get_children():
+            visit(child)
+    visit(root)
+    return captured
+
+
 # -- Command classes --
 
 class AddComponentTransactionCommand(UndoCommand):
@@ -360,7 +371,7 @@ class AddComponentTransactionCommand(UndoCommand):
         if self._native_document is not None:
             document = copy.deepcopy(self._native_document)
             document.pop("component_id", None)
-            if not component.deserialize_document(document):
+            if not component.apply_authoring_document(document):
                 raise RuntimeError(
                     f"failed to apply '{self._type_name}' component document"
                 )
@@ -368,7 +379,7 @@ class AddComponentTransactionCommand(UndoCommand):
             self._initializer(component)
         return component
 
-    def _build_compound(self, before: dict, after: dict) -> CompoundCommand:
+    def _build_compound(self, object_id: int, before: dict, after: dict) -> Optional[CompoundCommand]:
         from infernux.engine.undo._property_commands import (
             GenericComponentCommand,
             PythonComponentDocumentCommand,
@@ -408,7 +419,7 @@ class AddComponentTransactionCommand(UndoCommand):
                         old_record["document"],
                         new_record["document"],
                         f"Update {new_record['type_name']} for {self._type_name}",
-                        edit_key=f"component_add:{self._object_id}:{component_id}",
+                        edit_key=f"component_add:{object_id}:{component_id}",
                     )
                 )
 
@@ -419,7 +430,7 @@ class AddComponentTransactionCommand(UndoCommand):
                 record = after["native"][component_id]
                 commands.append(
                     AddNativeComponentCommand(
-                        self._object_id,
+                        object_id,
                         record["type_name"],
                         record["ref"],
                         f"Add {record['type_name']}",
@@ -429,17 +440,13 @@ class AddComponentTransactionCommand(UndoCommand):
                 record = after["python"][component_id]
                 commands.append(
                     AddPyComponentCommand(
-                        self._object_id,
+                        object_id,
                         record["ref"],
                         f"Add {record['type_name']}",
                     )
                 )
 
-        if not commands or before_ids == after_ids:
-            raise RuntimeError(
-                f"component add '{self._type_name}' produced no new component"
-            )
-        return CompoundCommand(commands, self.description)
+        return CompoundCommand(commands, self.description) if commands else None
 
     def _place_added_components(self, obj, before: dict) -> None:
         """Move the complete newly-created component block to the drop position."""
@@ -473,19 +480,39 @@ class AddComponentTransactionCommand(UndoCommand):
         _scene, obj = _require_scene_object(
             self._object_id, f"AddComponent('{self._type_name}').execute"
         )
-        before = _capture_component_documents(obj)
+        before = _capture_component_hierarchy(obj)
         try:
             self._result_component = self._perform_initial_add(obj)
             self._result_component_id = int(
                 getattr(self._result_component, "component_id", 0) or 0
             )
-            self._place_added_components(obj, before)
-            after = _capture_component_documents(obj)
-            self._compound = self._build_compound(before, after)
+            self._place_added_components(obj, before[self._object_id][1])
+            after = _capture_component_hierarchy(obj)
+            from infernux.engine.undo._structural_commands import CreateGameObjectCommand
+            added_objects = set(after) - set(before)
+            commands = [CreateGameObjectCommand(object_id) for object_id in after
+                if object_id in added_objects and int(after[object_id][0].get_parent().id) not in added_objects]
+            # Restore child physics before its controlling root component. This
+            # also keeps ordinary bone GameObjects/Transforms alive across Undo.
+            for object_id in reversed(after):
+                if object_id not in before:
+                    continue
+                command = self._build_compound(object_id, before[object_id][1], after[object_id][1])
+                if command is not None:
+                    commands.append(command)
+            if not commands:
+                raise RuntimeError(f"component add '{self._type_name}' produced no new component")
+            self._compound = CompoundCommand(commands, self.description)
         except Exception:
-            _restore_component_documents(
-                obj, before, f"AddComponent('{self._type_name}').rollback"
-            )
+            current = _capture_component_hierarchy(obj)
+            added_objects = set(current) - set(before)
+            from infernux.engine.undo._helpers import _destroy_game_object_immediately
+            added_roots = [child for object_id, (child, _state) in current.items()
+                if object_id in added_objects and int(child.get_parent().id) not in added_objects]
+            for child in added_roots:
+                _destroy_game_object_immediately(_scene, child)
+            for child, state in before.values():
+                _restore_component_documents(child, state, f"AddComponent('{self._type_name}').rollback")
             raise
         finally:
             self._initializer = None

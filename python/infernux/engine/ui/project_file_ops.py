@@ -78,6 +78,15 @@ def _document_text(document: dict) -> str:
     return json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
 
 
+def _write_source_patch(path, before, after, *, write_scope):
+    from infernux.core.document_store import read_document_text_snapshot, write_document_text
+
+    current, state = read_document_text_snapshot(path)
+    if current != before:
+        raise RuntimeError(f"Asset rename source changed before its content patch: {path}")
+    write_document_text(path, after, expected_file_state=state, write_scope=write_scope)
+
+
 def _new_material_document(name: str) -> dict:
     from infernux.lib import InxMaterial
 
@@ -232,6 +241,7 @@ def _notify_asset_moved(
     origin="system",
     operation_id: str = "",
     publish_interaction: bool = True,
+    write_scope=None,
 ):
     from infernux.core.assets import AssetManager
 
@@ -242,10 +252,31 @@ def _notify_asset_moved(
         origin=origin,
         operation_id=operation_id,
         publish_interaction=publish_interaction,
+        write_scope=write_scope,
     )
     if not result:
         raise RuntimeError(f"AssetDatabase failed to move '{old_path}' to '{new_path}'")
     return result
+
+def asset_mutation_scope(paths, *, directories=(), asset_database=None, delete=False, write_scope=None):
+    """Claim paths before reading rename patches, Undo snapshots or changing disk.
+
+    Directory ranges include future children. Native catalog facts supply the
+    exact derived outputs a delete touches; no Library-wide lock is needed.
+    """
+    from infernux.core.document_store import PathWriteScope
+
+    paths = tuple(str(path) for path in paths)
+    if delete:
+        from infernux.core.assets import AssetManager
+
+        database = asset_database if asset_database is not None else AssetManager._asset_database
+        targets = (database.get_deletion_write_paths(paths) if database is not None else
+                   [target for path in paths for target in (path, path + ".meta")])
+    else:
+        targets = [target for path in paths for target in (path, path + ".meta")]
+    return PathWriteScope.begin_mutation(targets, list(directories), write_scope or PathWriteScope())
+
 
 def move_paths_batch(
     moves,
@@ -254,6 +285,7 @@ def move_paths_batch(
     origin="system",
     operation_id: str = "",
     source_text_patches: dict[str, tuple[str, str]] | None = None,
+    write_scope=None,
 ):
     """Move multiple workspace roots through one editor/catalog transaction."""
     roots: list[tuple[str, str]] = []
@@ -288,147 +320,156 @@ def move_paths_batch(
     if not roots:
         return tuple()
 
-    move_pairs = [
-        pair
-        for old_root, new_root in roots
-        for pair in _iter_asset_move_pairs(old_root, new_root)
-    ]
-    from infernux.core.assets import AssetManager
-    from infernux.engine.interaction import AssetMutationService
+    paths = [path for pair in roots for path in pair]
+    # Workspace roots cover their potential children, including a destination
+    # which does not exist yet; adjacent sidecars are separate exact paths.
+    directories = paths
+    with asset_mutation_scope(paths, directories=directories, write_scope=write_scope) as write_scope:
+        for source, destination in roots:
+            case_only = is_case_only_rename(source, destination)
+            if not os.path.exists(source) or (
+                os.path.exists(destination) and not (case_only and same_path(source, destination))
+            ):
+                return None
+        move_pairs = [
+            pair
+            for old_root, new_root in roots
+            for pair in _iter_asset_move_pairs(old_root, new_root)
+        ]
+        from infernux.core.assets import AssetManager
+        from infernux.engine.interaction import AssetMutationService
 
-    mutations = AssetMutationService.instance()
-    database = AssetManager._mutation_database(asset_database)
-    asset_relocation_entries = tuple(
-        (
-            old_file,
-            new_file,
-            database.get_guid_from_path(old_file) if database is not None else "",
-        )
-        for old_file, new_file in move_pairs
-    )
-    relocation_entries = asset_relocation_entries + tuple(
-        (old_root, new_root, "")
-        for old_root, new_root in roots
-        if os.path.isdir(old_root)
-    )
-    plan = None
-    if mutations is not None and relocation_entries:
-        plan = mutations.prepare_relocation(
-            relocation_entries,
-            origin=origin,
-            operation_id=operation_id,
-        )
-    workspace_moves: list[tuple[str, str]] = []
-    patched_sources: list[tuple[str, tuple[str, str]]] = []
-    database_moves: list[tuple[str, str]] = []
-    try:
-        if source_text_patches:
-            from infernux.core.document_store import write_document_text
-
-            patches_by_key = {
-                path_key(path): patch for path, patch in source_text_patches.items()
-            }
-            for old_abs, _new_abs in roots:
-                patch = patches_by_key.get(path_key(old_abs))
-                if patch is None:
-                    continue
-                write_document_text(old_abs, patch[1])
-                patched_sources.append((old_abs, patch))
-
-        for old_abs, new_abs in roots:
-            os.makedirs(os.path.dirname(new_abs), exist_ok=True)
-            if is_case_only_rename(old_abs, new_abs):
-                os.rename(old_abs, new_abs)
-            else:
-                shutil.move(old_abs, new_abs)
-            workspace_moves.append((old_abs, new_abs))
-
-        use_native_batch = (
-            plan is not None
-            and bool(move_pairs)
-            and hasattr(database, "move_assets_batch")
-            and all(guid for _source, _destination, guid in asset_relocation_entries)
-        )
-        if use_native_batch:
-            results = AssetManager.move_assets_batch(move_pairs, database=database)
-            if len(results) != len(move_pairs) or any(not result for result in results):
-                message = next(
-                    (str(getattr(result, "error", "") or "") for result in results if not result),
-                    "native asset relocation batch failed",
-                )
-                raise RuntimeError(message)
-            database_moves.extend(move_pairs)
-        else:
-            for old_file, new_file in move_pairs:
-                if plan is None and origin == "system" and not operation_id:
-                    _notify_asset_moved(old_file, new_file, database)
-                else:
-                    _notify_asset_moved(
-                        old_file,
-                        new_file,
-                        database,
-                        origin=origin,
-                        operation_id=(plan.operation_id if plan is not None else operation_id),
-                        publish_interaction=plan is None,
-                    )
-                database_moves.append((old_file, new_file))
-        if plan is not None:
-            mutations.commit_relocation(plan)
-    except (OSError, RuntimeError, ValueError) as exc:
-        rollback_failures = []
-        for old_abs, new_abs in reversed(workspace_moves):
-            try:
-                if is_case_only_rename(new_abs, old_abs):
-                    os.rename(new_abs, old_abs)
-                else:
-                    shutil.move(new_abs, old_abs)
-            except OSError as rollback_exc:
-                rollback_failures.append(
-                    RuntimeError(
-                        f"asset workspace rollback failed for '{new_abs}' -> "
-                        f"'{old_abs}': {rollback_exc}"
-                    )
-                )
-        for old_abs, patch in reversed(patched_sources):
-            if not os.path.isfile(old_abs):
-                continue
-            try:
-                from infernux.core.document_store import write_document_text
-
-                write_document_text(old_abs, patch[0])
-            except OSError as rollback_exc:
-                rollback_failures.append(
-                    RuntimeError(
-                        f"asset content rollback failed for '{old_abs}': {rollback_exc}"
-                    )
-                )
-        for old_file, new_file in reversed(database_moves):
-            try:
-                _notify_asset_moved(
-                    new_file,
-                    old_file,
-                    database,
-                    origin="system",
-                    operation_id=(plan.operation_id if plan is not None else operation_id),
-                    publish_interaction=False,
-                )
-            except Exception as rollback_exc:
-                rollback_failures.append(
-                    RuntimeError(
-                        f"asset catalog rollback failed for '{new_file}' -> "
-                        f"'{old_file}': {rollback_exc}"
-                    )
-                )
-        if plan is not None:
-            mutations.abort_relocation(plan)
-        if rollback_failures:
-            raise ExceptionGroup(
-                "asset relocation failed and rollback was incomplete",
-                [exc, *rollback_failures],
+        mutations = AssetMutationService.instance()
+        database = AssetManager._mutation_database(asset_database)
+        asset_relocation_entries = tuple(
+            (
+                old_file,
+                new_file,
+                database.get_guid_from_path(old_file) if database is not None else "",
             )
-        raise
+            for old_file, new_file in move_pairs
+        )
+        relocation_entries = asset_relocation_entries + tuple(
+            (old_root, new_root, "")
+            for old_root, new_root in roots
+            if os.path.isdir(old_root)
+        )
+        plan = None
+        if mutations is not None and relocation_entries:
+            plan = mutations.prepare_relocation(
+                relocation_entries,
+                origin=origin,
+                operation_id=operation_id,
+            )
+        workspace_moves: list[tuple[str, str]] = []
+        patched_sources: list[tuple[str, tuple[str, str]]] = []
+        database_moves: list[tuple[str, str]] = []
+        try:
+            if source_text_patches:
+                patches_by_key = {
+                    path_key(path): patch for path, patch in source_text_patches.items()
+                }
+                for old_abs, _new_abs in roots:
+                    patch = patches_by_key.get(path_key(old_abs))
+                    if patch is None:
+                        continue
+                    _write_source_patch(old_abs, patch[0], patch[1], write_scope=write_scope)
+                    patched_sources.append((old_abs, patch))
 
-    return tuple(destination for _source, destination in roots)
+            for old_abs, new_abs in roots:
+                os.makedirs(os.path.dirname(new_abs), exist_ok=True)
+                if is_case_only_rename(old_abs, new_abs):
+                    os.rename(old_abs, new_abs)
+                else:
+                    shutil.move(old_abs, new_abs)
+                workspace_moves.append((old_abs, new_abs))
+
+            use_native_batch = (
+                plan is not None
+                and bool(move_pairs)
+                and hasattr(database, "move_assets_batch")
+                and all(guid for _source, _destination, guid in asset_relocation_entries)
+            )
+            if use_native_batch:
+                results = AssetManager.move_assets_batch(move_pairs, database=database, write_scope=write_scope)
+                if len(results) != len(move_pairs) or any(not result for result in results):
+                    message = next(
+                        (str(getattr(result, "error", "") or "") for result in results if not result),
+                        "native asset relocation batch failed",
+                    )
+                    raise RuntimeError(message)
+                database_moves.extend(move_pairs)
+            else:
+                for old_file, new_file in move_pairs:
+                    if plan is None and origin == "system" and not operation_id:
+                        _notify_asset_moved(old_file, new_file, database, write_scope=write_scope)
+                    else:
+                        _notify_asset_moved(
+                            old_file,
+                            new_file,
+                            database,
+                            origin=origin,
+                            operation_id=(plan.operation_id if plan is not None else operation_id),
+                            publish_interaction=plan is None,
+                            write_scope=write_scope,
+                        )
+                    database_moves.append((old_file, new_file))
+            if plan is not None:
+                mutations.commit_relocation(plan)
+        except (OSError, RuntimeError, ValueError) as exc:
+            rollback_failures = []
+            for old_abs, new_abs in reversed(workspace_moves):
+                try:
+                    if is_case_only_rename(new_abs, old_abs):
+                        os.rename(new_abs, old_abs)
+                    else:
+                        shutil.move(new_abs, old_abs)
+                except OSError as rollback_exc:
+                    rollback_failures.append(
+                        RuntimeError(
+                            f"asset workspace rollback failed for '{new_abs}' -> "
+                            f"'{old_abs}': {rollback_exc}"
+                        )
+                    )
+            for old_abs, patch in reversed(patched_sources):
+                if not os.path.isfile(old_abs):
+                    continue
+                try:
+                    _write_source_patch(old_abs, patch[1], patch[0], write_scope=write_scope)
+                except (OSError, RuntimeError) as rollback_exc:
+                    rollback_failures.append(
+                        RuntimeError(
+                            f"asset content rollback failed for '{old_abs}': {rollback_exc}"
+                        )
+                    )
+            for old_file, new_file in reversed(database_moves):
+                try:
+                    _notify_asset_moved(
+                        new_file,
+                        old_file,
+                        database,
+                        origin="system",
+                        operation_id=(plan.operation_id if plan is not None else operation_id),
+                        publish_interaction=False,
+                        write_scope=write_scope,
+                    )
+                except Exception as rollback_exc:
+                    rollback_failures.append(
+                        RuntimeError(
+                            f"asset catalog rollback failed for '{new_file}' -> "
+                            f"'{old_file}': {rollback_exc}"
+                        )
+                    )
+            if plan is not None:
+                mutations.abort_relocation(plan)
+            if rollback_failures:
+                raise ExceptionGroup(
+                    "asset relocation failed and rollback was incomplete",
+                    [exc, *rollback_failures],
+                )
+            raise
+
+        return tuple(destination for _source, destination in roots)
 
 
 def move_path(
@@ -439,6 +480,7 @@ def move_path(
     origin="system",
     operation_id: str = "",
     source_text_patch: tuple[str, str] | None = None,
+    write_scope=None,
 ):
     """Move or rename one workspace root through the global transaction."""
     result = move_paths_batch(
@@ -449,6 +491,7 @@ def move_path(
         source_text_patches=(
             {old_path: source_text_patch} if source_text_patch is not None else None
         ),
+        write_scope=write_scope,
     )
     if result is None:
         return None
@@ -579,6 +622,12 @@ def _import_new_asset(path: str, asset_database) -> str:
     result = AssetManager.import_asset(path, database=asset_database)
     if not result or not result.guid:
         raise RuntimeError(result.error or f"AssetDatabase failed to import '{path}'")
+    if path.lower().endswith(".prefab"):
+        from infernux.engine.prefab_manager import _published_prefab_sources_for
+        from infernux.engine.scene_manager import SceneFileManager
+
+        if _published_prefab_sources_for(asset_database) is not None:
+            SceneFileManager.instance().sync_prefab_dependents(result.guid)
     return result.guid
 
 def create_folder(current_path: str, folder_name: str):
@@ -1104,90 +1153,94 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
 # Delete & Rename
 # ---------------------------------------------------------------------------
 
-def delete_item(item_path: str, asset_database=None):
+def delete_item(item_path: str, asset_database=None, *, write_scope=None):
     """Delete a file or directory from the filesystem and notify AssetDatabase."""
     if not item_path or not os.path.exists(item_path):
         return False
 
     is_dir = os.path.isdir(item_path)
-    deleted_children = []
-    if is_dir:
-        from infernux.core.assets import AssetManager
-        database = asset_database if asset_database is not None else AssetManager.require_asset_database()
-        # Capture child identities before deleting their sidecars. Directory
-        # deletion must publish the same retirement as deleting each asset;
-        # waiting for filesystem watcher events permits stale same-path imports.
-        for directory, subdirectories, filenames in os.walk(item_path):
-            subdirectories.sort()
-            for filename in sorted(filenames):
-                if filename.lower().endswith('.meta'):
-                    continue
-                path = os.path.join(directory, filename)
-                guid = database.get_guid_from_path(path)
-                if guid:
-                    deleted_children.append((path, guid))
-    deleted_script_guid = ""
-    if is_dir or item_path.lower().endswith('.py'):
-        from infernux.components.script_loader import clear_deleted_script_errors
-        clear_deleted_script_errors(item_path)
-    if not is_dir and item_path.lower().endswith('.py'):
-        if asset_database is not None:
-            deleted_script_guid = str(asset_database.get_guid_from_path(item_path) or "").strip()
-        if not deleted_script_guid:
-            from infernux.core.asset_types import read_meta_guid
-            deleted_script_guid = read_meta_guid(item_path)
-
-    # Notify BEFORE removing the file — GUID is still resolvable at this point
-    if not is_dir:
-        from infernux.core.assets import AssetManager
-        if not AssetManager.delete_asset(
-            item_path,
-            database=asset_database,
-            guid_hint=deleted_script_guid,
-        ):
-            raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
-    try:
+    with asset_mutation_scope((item_path,), directories=(item_path,),
+                              asset_database=asset_database, delete=True, write_scope=write_scope) as write_scope:
+        is_dir = os.path.isdir(item_path)
+        deleted_children = []
         if is_dir:
-            shutil.rmtree(item_path)
-        else:
-            # On Windows, transient locks (antivirus, indexer, font loader)
-            # can prevent deletion.  Retry with increasing delays.
-            import gc
-            last_exc = None
-            for _attempt in range(5):
-                try:
-                    os.remove(item_path)
-                    last_exc = None
-                    break
-                except PermissionError as pe:
-                    last_exc = pe
-                    gc.collect()
-                    time.sleep(0.15 * (_attempt + 1))
-            if last_exc is not None:
-                Debug.log_warning(
-                    f"Cannot delete '{os.path.basename(item_path)}': "
-                    f"file may be in use by another process. ({last_exc})"
-                )
-                return False
-    except OSError as _exc:
-        Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
-        return False
+            from infernux.core.assets import AssetManager
+            database = asset_database if asset_database is not None else AssetManager.require_asset_database()
+            # Capture child identities before deleting their sidecars. Directory
+            # deletion must publish the same retirement as deleting each asset;
+            # waiting for filesystem watcher events permits stale same-path imports.
+            for directory, subdirectories, filenames in os.walk(item_path):
+                subdirectories.sort()
+                for filename in sorted(filenames):
+                    if filename.lower().endswith('.meta'):
+                        continue
+                    path = os.path.join(directory, filename)
+                    guid = database.get_guid_from_path(path)
+                    if guid:
+                        deleted_children.append((path, guid))
+        deleted_script_guid = ""
+        if is_dir or item_path.lower().endswith('.py'):
+            from infernux.components.script_loader import clear_deleted_script_errors
+            clear_deleted_script_errors(item_path)
+        if not is_dir and item_path.lower().endswith('.py'):
+            if asset_database is not None:
+                deleted_script_guid = str(asset_database.get_guid_from_path(item_path) or "").strip()
+            if not deleted_script_guid:
+                from infernux.core.asset_types import read_meta_guid
+                deleted_script_guid = read_meta_guid(item_path)
 
-    for path, guid in deleted_children:
-        if not AssetManager.delete_asset(path, database=database, guid_hint=guid):
-            raise RuntimeError(f"AssetDatabase failed to delete '{path}'")
+        # Notify BEFORE removing the file — GUID is still resolvable at this point
+        if not is_dir:
+            from infernux.core.assets import AssetManager
+            if not AssetManager.delete_asset(
+                item_path,
+                database=asset_database,
+                guid_hint=deleted_script_guid,
+                write_scope=write_scope,
+            ):
+                raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
+        try:
+            if is_dir:
+                shutil.rmtree(item_path)
+            else:
+                # On Windows, transient locks (antivirus, indexer, font loader)
+                # can prevent deletion.  Retry with increasing delays.
+                import gc
+                last_exc = None
+                for _attempt in range(5):
+                    try:
+                        os.remove(item_path)
+                        last_exc = None
+                        break
+                    except PermissionError as pe:
+                        last_exc = pe
+                        gc.collect()
+                        time.sleep(0.15 * (_attempt + 1))
+                if last_exc is not None:
+                    Debug.log_warning(
+                        f"Cannot delete '{os.path.basename(item_path)}': "
+                        f"file may be in use by another process. ({last_exc})"
+                    )
+                    return False
+        except OSError as _exc:
+            Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
+            return False
 
-    if is_dir:
-        from infernux.engine.interaction import AssetMutationKind, AssetMutationService
+        for path, guid in deleted_children:
+            if not AssetManager.delete_asset(path, database=database, guid_hint=guid, write_scope=write_scope):
+                raise RuntimeError(f"AssetDatabase failed to delete '{path}'")
 
-        mutations = AssetMutationService.instance()
-        if mutations is not None:
-            mutations.publish_content_change(item_path, AssetMutationKind.DELETED)
+        if is_dir:
+            from infernux.engine.interaction import AssetMutationKind, AssetMutationService
 
-    # Invalidate inspector cache so a recreated file won't reuse stale data
-    from . import asset_details_renderer
-    asset_details_renderer.invalidate_asset(item_path)
-    return True
+            mutations = AssetMutationService.instance()
+            if mutations is not None:
+                mutations.publish_content_change(item_path, AssetMutationKind.DELETED)
+
+        # Invalidate inspector cache so a recreated file won't reuse stale data
+        from . import asset_details_renderer
+        asset_details_renderer.invalidate_asset(item_path)
+        return True
 
 
 def rename_destination(old_path: str, new_name: str) -> str:
@@ -1211,26 +1264,28 @@ def do_rename(
     *,
     origin="system",
     operation_id: str = "",
+    write_scope=None,
 ):
     """Rename a file or directory. Returns the new path on success, ``None`` on failure."""
     new_path = rename_destination(old_path, new_name)
     if not new_path:
         return None
-    safe_name = os.path.basename(new_path)
-
     if old_path == new_path:
         return new_path  # Nothing to do
 
-    source_text_patch = _build_rename_content_patch(old_path, new_path)
+    directories = (old_path, new_path)
+    with asset_mutation_scope((old_path, new_path), directories=directories, write_scope=write_scope) as write_scope:
+        source_text_patch = _build_rename_content_patch(old_path, new_path)
 
-    return move_path(
-        old_path,
-        new_path,
-        asset_database,
-        origin=origin,
-        operation_id=operation_id,
-        source_text_patch=source_text_patch,
-    )
+        return move_path(
+            old_path,
+            new_path,
+            asset_database,
+            origin=origin,
+            operation_id=operation_id,
+            source_text_patch=source_text_patch,
+            write_scope=write_scope,
+        )
 
 
 def _build_rename_content_patch(old_path: str, new_path: str) -> tuple[str, str] | None:

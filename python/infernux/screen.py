@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from operator import index as _integer_index
 from typing import Optional, Tuple
 
 from infernux.lib import InputManager as _NativeInputManager
@@ -10,10 +11,66 @@ from infernux.lib import InputManager as _NativeInputManager
 
 @dataclass(frozen=True, slots=True)
 class Rect:
-    x: int
-    y: int
-    width: int
-    height: int
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def __iter__(self):
+        return iter((self.x, self.y, self.width, self.height))
+
+    def __len__(self):
+        return 4
+
+    def __getitem__(self, index):
+        return (self.x, self.y, self.width, self.height)[index]
+
+
+@dataclass(slots=True, eq=False)
+class RectOffset:
+    """Mutable integer edges around a rectangle, following Unity's value API.
+
+    This is a reference object, distinct from the immutable OS ``Insets``.
+    Negative edges are valid. Tween playback captures a separate start value.
+    """
+
+    left: int = 0
+    right: int = 0
+    top: int = 0
+    bottom: int = 0
+
+    @classmethod
+    def _from_int32(cls, values):
+        """Construct from four already validated native-width channels."""
+        result = object.__new__(cls)
+        object.__setattr__(result, "left", values[0])
+        object.__setattr__(result, "right", values[1])
+        object.__setattr__(result, "top", values[2])
+        object.__setattr__(result, "bottom", values[3])
+        return result
+
+    def __setattr__(self, name, value):
+        if name in ("left", "right", "top", "bottom"):
+            value = _integer_index(value)
+            if not -(2**31) <= value < 2**31:
+                raise OverflowError("RectOffset edges must fit a signed 32-bit integer")
+        object.__setattr__(self, name, value)
+
+    @property
+    def horizontal(self) -> int:
+        return self.left + self.right
+
+    @property
+    def vertical(self) -> int:
+        return self.top + self.bottom
+
+    def add(self, rect: Rect) -> Rect:
+        return Rect(rect.x-self.left, rect.y-self.top,
+                    rect.width+self.horizontal, rect.height+self.vertical)
+
+    def remove(self, rect: Rect) -> Rect:
+        return Rect(rect.x+self.left, rect.y+self.top,
+                    rect.width-self.horizontal, rect.height-self.vertical)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,4 +155,4 @@ class Screen(metaclass=_ScreenMeta):
     """
 
 
-__all__ = ["Insets", "Rect", "Screen"]
+__all__ = ["Insets", "Rect", "RectOffset", "Screen"]

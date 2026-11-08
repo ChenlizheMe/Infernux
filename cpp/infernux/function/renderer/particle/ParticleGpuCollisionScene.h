@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
@@ -51,6 +53,8 @@ struct alignas(16) GpuParticleColliderRecord
     /// Mesh payload: vertex offset, reordered index offset, BVH root, triangle count.
     std::array<uint32_t, 4> geometry{};
     std::array<float, 4> linearVelocity{};
+    std::array<float, 4> angularVelocity{};
+    std::array<float, 4> centerOfMass{};
     std::array<float, 4> material{};
     std::array<float, 4> worldAabbMin{};
     std::array<float, 4> worldAabbMax{};
@@ -112,24 +116,25 @@ class ParticleGpuCollisionScene
     static constexpr uint32_t DefaultMeshBvhNodeCapacity = 262144;
 
     ParticleGpuCollisionScene() = default;
-    ~ParticleGpuCollisionScene();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuCollisionScene();
 
     ParticleGpuCollisionScene(const ParticleGpuCollisionScene &) = delete;
     ParticleGpuCollisionScene &operator=(const ParticleGpuCollisionScene &) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, uint32_t capacity = DefaultCapacity,
-                              uint32_t meshVertexCapacity = DefaultMeshVertexCapacity,
-                              uint32_t meshIndexCapacity = DefaultMeshIndexCapacity,
-                              uint32_t meshBvhNodeCapacity = DefaultMeshBvhNodeCapacity);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, uint32_t capacity = DefaultCapacity,
+                                                            uint32_t meshVertexCapacity = DefaultMeshVertexCapacity,
+                                                            uint32_t meshIndexCapacity = DefaultMeshIndexCapacity,
+                                                            uint32_t meshBvhNodeCapacity = DefaultMeshBvhNodeCapacity);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool Publish(const GpuParticleCollisionSceneSnapshot &snapshot, std::string *error = nullptr);
-    [[nodiscard]] bool RecordPendingUpload(const rhi::TransferCommandEncoder &encoder);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Publish(const GpuParticleCollisionSceneSnapshot &snapshot,
+                                                             std::string *error = nullptr);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordPendingUpload(const rhi::TransferCommandEncoder &encoder);
     /// Report the actual submission result, not completion of command recording.
     /// A rejected submission keeps all prepared data available for the next frame.
-    void NotifySubmission(bool submitted) noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void NotifySubmission(bool submitted) noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] bool HasPendingUpload() const noexcept
     {
         return m_uploadPending;
@@ -249,20 +254,22 @@ static_assert(sizeof(GpuParticleAffineTransform) == 48);
 static_assert(offsetof(GpuParticleAffineTransform, row0) == 0);
 static_assert(offsetof(GpuParticleAffineTransform, row1) == 16);
 static_assert(offsetof(GpuParticleAffineTransform, row2) == 32);
-static_assert(sizeof(GpuParticleColliderRecord) == 304);
+static_assert(sizeof(GpuParticleColliderRecord) == 336);
 static_assert(offsetof(GpuParticleColliderRecord, colliderToWorld) == 0);
 static_assert(offsetof(GpuParticleColliderRecord, worldToCollider) == 48);
 static_assert(offsetof(GpuParticleColliderRecord, previousWorldToCollider) == 96);
 static_assert(offsetof(GpuParticleColliderRecord, shape) == 144);
 static_assert(offsetof(GpuParticleColliderRecord, geometry) == 160);
 static_assert(offsetof(GpuParticleColliderRecord, linearVelocity) == 176);
-static_assert(offsetof(GpuParticleColliderRecord, material) == 192);
-static_assert(offsetof(GpuParticleColliderRecord, worldAabbMin) == 208);
-static_assert(offsetof(GpuParticleColliderRecord, worldAabbMax) == 224);
-static_assert(offsetof(GpuParticleColliderRecord, previousWorldAabbMin) == 240);
-static_assert(offsetof(GpuParticleColliderRecord, previousWorldAabbMax) == 256);
-static_assert(offsetof(GpuParticleColliderRecord, metadata) == 272);
-static_assert(offsetof(GpuParticleColliderRecord, identity) == 288);
+static_assert(offsetof(GpuParticleColliderRecord, angularVelocity) == 192);
+static_assert(offsetof(GpuParticleColliderRecord, centerOfMass) == 208);
+static_assert(offsetof(GpuParticleColliderRecord, material) == 224);
+static_assert(offsetof(GpuParticleColliderRecord, worldAabbMin) == 240);
+static_assert(offsetof(GpuParticleColliderRecord, worldAabbMax) == 256);
+static_assert(offsetof(GpuParticleColliderRecord, previousWorldAabbMin) == 272);
+static_assert(offsetof(GpuParticleColliderRecord, previousWorldAabbMax) == 288);
+static_assert(offsetof(GpuParticleColliderRecord, metadata) == 304);
+static_assert(offsetof(GpuParticleColliderRecord, identity) == 320);
 static_assert(sizeof(GpuParticleCollisionSceneHeader) == 64);
 static_assert(sizeof(GpuParticleCollisionBvhNode) == 48);
 

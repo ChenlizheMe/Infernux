@@ -150,6 +150,7 @@ std::unique_ptr<Component> SpriteRenderer::Clone() const
     document.erase("component_id");
     if (!clone->DeserializeDocument(document))
         throw std::runtime_error("SpriteRenderer clone could not restore its authored state");
+    CopyMaterialBindingsTo(*clone);
     return clone;
 }
 

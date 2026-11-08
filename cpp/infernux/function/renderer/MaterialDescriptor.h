@@ -2,6 +2,7 @@
 
 #include "RendererParameterBlock.h"
 #include "rhi/GpuRetirementQueue.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
 #include "vk/VkDescriptorManager.h"
@@ -59,7 +60,7 @@ class MaterialUBO
      * @param material The material containing property values
      */
     void Update(const InxMaterial &material);
-    void Apply(const RendererParameterBlock &parameters);
+    void Apply(const InxMaterial &material, const RendererParameterBlock &parameters);
 
     /**
      * @brief Update a specific property in the UBO
@@ -141,7 +142,7 @@ struct MaterialDescriptorSet
     uint64_t materialUBOVersion = 0;
     std::vector<MergedDescriptorBinding> bindings;
     std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
-    std::unordered_map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> storageBufferBindings;
+    std::unordered_map<uint32_t, std::shared_ptr<rhi::ComputeBufferAllocation>> storageBufferBindings;
 
     // Texture bindings (binding -> imageView, sampler)
     struct TextureBinding
@@ -155,6 +156,15 @@ struct MaterialDescriptorSet
     };
     std::unordered_map<uint32_t, TextureBinding> textureBindings;
     std::vector<rhi::ResourceIndex> bindlessTextureIndices;
+
+    [[nodiscard]] vk::SubmissionReads GetTextureUploadSources() const noexcept
+    {
+        vk::SubmissionReads sources;
+        for (const auto &[binding, texture] : textureBindings)
+            if (texture.gpuView)
+                sources.Add(texture.gpuView->GetUploadSubmission());
+        return sources;
+    }
 
     bool isValid = false;
     bool hasPendingTextures = false;
@@ -196,7 +206,10 @@ using TextureResolver = std::function<TextureResolveResult(
 using BindlessTextureResolver =
     std::function<rhi::ResourceIndex(const std::shared_ptr<const rhi::TextureGpuView> &view)>;
 
-using BufferResolver = std::function<VkDescriptorBufferInfo(const std::shared_ptr<rhi::ComputeBuffer> &buffer)>;
+using BufferResolver =
+    std::function<VkDescriptorBufferInfo(const std::shared_ptr<rhi::ComputeBufferAllocation> &buffer)>;
+using BufferCapture =
+    std::function<std::shared_ptr<rhi::ComputeBufferAllocation>(const std::shared_ptr<rhi::ComputeBuffer> &)>;
 
 /**
  * @brief MaterialDescriptorManager - Manages material-specific descriptor sets
@@ -256,6 +269,10 @@ class MaterialDescriptorManager
     {
         m_bufferResolver = std::move(resolver);
     }
+    void SetBufferCapture(BufferCapture capture)
+    {
+        m_bufferCapture = std::move(capture);
+    }
 
     void SetBindlessMaterialMode(bool enabled) noexcept
     {
@@ -283,19 +300,8 @@ class MaterialDescriptorManager
     GetOrCreateRendererDescriptorSet(const InxMaterial &material, const ShaderProgram &program,
                                      const std::shared_ptr<const RendererParameterBlock> &parameters);
 
-    /**
-     * @brief Update descriptor set with new material values
-     */
-    [[nodiscard]] bool UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material);
-
-    /**
-     * @brief Re-resolve Texture2D properties for an existing descriptor set
-     *
-     * Called when material texture properties change (via set_texture).
-     * Uses the TextureResolver to update sampler bindings.
-     */
-    void ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
-                                  const ShaderProgram &program);
+    /// Resolve numeric values and sampled resources into one immutable set.
+    [[nodiscard]] bool UpdateMaterialProperties(const InxMaterial &material, const ShaderProgram &program);
 
     [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const;
     [[nodiscard]] bool HasUnresolvedExplicitTextureProperties(const std::string &materialName) const;
@@ -312,10 +318,10 @@ class MaterialDescriptorManager
   private:
     /// Publish a fully written replacement set, then retire the previous
     /// lease after its last possible submission. Active sets are immutable.
-    [[nodiscard]] bool PublishDescriptorReplacement(
-        MaterialDescriptorSet &descriptorSet,
-        const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings,
-        const InxMaterial *material = nullptr);
+    [[nodiscard]] bool
+    PublishDescriptorReplacement(MaterialDescriptorSet &descriptorSet,
+                                 std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> textureBindings,
+                                 const InxMaterial *material = nullptr);
 
   public:
     /// Bind submission-serial retirement for descriptor-owned buffers.
@@ -452,9 +458,12 @@ class MaterialDescriptorManager
   public:
     [[nodiscard]] bool IsDescriptorSetLive(VkDescriptorSet ds) const
     {
-        if (ds == VK_NULL_HANDLE)
-            return false;
-        return m_liveDescriptorHandles.find(reinterpret_cast<uint64_t>(ds)) != m_liveDescriptorHandles.end();
+        return FindLiveDescriptorSet(ds) != nullptr;
+    }
+    [[nodiscard]] const MaterialDescriptorSet *FindLiveDescriptorSet(VkDescriptorSet descriptorSet) const noexcept
+    {
+        const auto found = m_liveDescriptorHandles.find(reinterpret_cast<uint64_t>(descriptorSet));
+        return found == m_liveDescriptorHandles.end() ? nullptr : found->second;
     }
     [[nodiscard]] bool IsDescriptorSetComplete(VkDescriptorSet ds) const;
 
@@ -467,6 +476,7 @@ class MaterialDescriptorManager
                                                      MaterialDescriptorSet::TextureBinding &binding) const;
     BindlessTextureResolver m_bindlessTextureResolver;
     BufferResolver m_bufferResolver;
+    BufferCapture m_bufferCapture = [](const auto &buffer) { return buffer ? buffer->GetAllocation() : nullptr; };
 
     // Optional submission-serial queue for descriptor-owned resource cleanup.
     GpuRetirementQueue *m_deletionQueue = nullptr;

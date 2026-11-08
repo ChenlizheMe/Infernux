@@ -1,9 +1,11 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include <string>
 
 namespace infernux
 {
 /// Allocate a persistent author identity, independently of runtime counters.
-[[nodiscard]] std::string GenerateGuid();
+[[nodiscard]] INFERNUX_FOUNDATION_API std::string GenerateGuid();
 } // namespace infernux

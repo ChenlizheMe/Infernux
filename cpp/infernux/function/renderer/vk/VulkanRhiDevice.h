@@ -1,5 +1,7 @@
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiCapabilities.h>
@@ -7,12 +9,15 @@
 #include <function/renderer/rhi/RhiDevice.h>
 
 #include "VkDescriptorManager.h"
+#include "VkHandle.h"
 #include "VulkanFeatureState.h"
 
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -131,11 +136,13 @@ struct VulkanCapabilitySnapshot final
 
     [[nodiscard]] static VulkanCapabilityProbeData QueryProbe(VkPhysicalDevice physicalDevice,
                                                               uint32_t apiVersionLimit = UINT32_MAX);
-    [[nodiscard]] static VulkanCapabilitySnapshot FromProbe(const VulkanCapabilityProbeData &probe) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API static VulkanCapabilitySnapshot
+    FromProbe(const VulkanCapabilityProbeData &probe) noexcept;
 };
 
 /// Required features shared by adapter selection and logical-device creation.
-[[nodiscard]] bool MeetsVulkanDeviceRequirements(const VulkanCapabilityProbeData &probe) noexcept;
+[[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool MeetsVulkanDeviceRequirements(const VulkanCapabilityProbeData &probe,
+                                                                             bool rendering = true) noexcept;
 
 /// Candidates have already passed the surface, queue and swapchain checks.
 struct VulkanPhysicalDeviceCandidate final
@@ -147,8 +154,9 @@ struct VulkanPhysicalDeviceCandidate final
 
 /// Returns a candidate owned by the input vector, or nullptr when none qualify.
 /// Equal scores retain enumeration order; unsupported devices never participate.
-[[nodiscard]] const VulkanPhysicalDeviceCandidate *
-SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &candidates) noexcept;
+[[nodiscard]] INFERNUX_VULKAN_BACKEND_API const VulkanPhysicalDeviceCandidate *
+SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &candidates,
+                           bool rendering = true) noexcept;
 
 /// Builds only the capability feature chain requested by the caller. The
 /// object owns every pNext node, so the returned VkPhysicalDeviceFeatures2
@@ -156,12 +164,12 @@ SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &can
 class VulkanDeviceFeatureChain final
 {
   public:
-    explicit VulkanDeviceFeatureChain(const VulkanCapabilitySnapshot &supported) noexcept;
+    INFERNUX_VULKAN_BACKEND_API explicit VulkanDeviceFeatureChain(const VulkanCapabilitySnapshot &supported) noexcept;
 
     VulkanDeviceFeatureChain(const VulkanDeviceFeatureChain &) = delete;
     VulkanDeviceFeatureChain &operator=(const VulkanDeviceFeatureChain &) = delete;
 
-    [[nodiscard]] bool Enable(const vk::DeviceCapabilityRequest &request) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool Enable(const vk::DeviceCapabilityRequest &request) noexcept;
     [[nodiscard]] const VkPhysicalDeviceFeatures2 &GetFeatures2() const noexcept
     {
         return m_features2;
@@ -209,18 +217,20 @@ class VulkanDeviceFeatureChain final
 class VulkanRhiDevice final : public rhi::Device
 {
   public:
-    VulkanRhiDevice();
-    explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
-                             const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
-                             uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-                             const vk::VulkanFeatureState &capabilityState = {});
+    INFERNUX_VULKAN_BACKEND_API VulkanRhiDevice();
+    INFERNUX_VULKAN_BACKEND_API explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
+                                                         const rhi::DeviceCaps &capabilities = {},
+                                                         uint32_t graphicsQueueFamily = 0,
+                                                         uint32_t computeQueueFamily = 0,
+                                                         uint32_t transferQueueFamily = 0,
+                                                         const vk::VulkanFeatureState &capabilityState = {});
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice(VulkanRhiDevice &&) = delete;
     VulkanRhiDevice &operator=(VulkanRhiDevice &&) = delete;
 
-    ~VulkanRhiDevice();
+    INFERNUX_VULKAN_BACKEND_API ~VulkanRhiDevice();
 
     [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept override
     {
@@ -239,53 +249,142 @@ class VulkanRhiDevice final : public rhi::Device
         return m_lifetime;
     }
 
-    void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
-               const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
-               uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-               const vk::VulkanFeatureState &capabilityState = {}) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
+                                           const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
+                                           uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
+                                           const vk::VulkanFeatureState &capabilityState = {}) noexcept;
 
-    [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0,
-                                                   bool concurrentQueueSharing = false);
-    [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
-    [[nodiscard]] rhi::TextureViewHandle RegisterTextureView(VkImageView view);
-    [[nodiscard]] rhi::SamplerHandle RegisterSampler(VkSampler sampler);
-    [[nodiscard]] rhi::ShaderModuleHandle RegisterShaderModule(VkShaderModule module);
-    [[nodiscard]] rhi::BindingLayoutHandle RegisterBindingLayout(VkDescriptorSetLayout layout);
-    [[nodiscard]] rhi::BindGroupHandle RegisterBindGroup(VkDescriptorSet set);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0,
+                                                                               bool concurrentQueueSharing = false);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BufferHandle
+    RegisterBuffer(VkBuffer buffer, const VkBufferCreateInfo &info, rhi::BufferMemory memory);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BufferHandle RegisterBuffer(rhi::BufferHandle source);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureHandle RegisterTexture(VkImage image);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureHandle RegisterTexture(VkImage image,
+                                                                                 const VkImageCreateInfo &info);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureHandle RegisterTexture(rhi::TextureHandle source);
+    // Registrations are non-owning aliases. Their original native owner must
+    // outlive all graph uses; releasing an alias never releases that owner.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool GetBufferDesc(rhi::BufferHandle handle,
+                                                                 rhi::BufferDesc &desc) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetBufferResidentBytes(rhi::BufferHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool GetTextureDesc(rhi::TextureHandle handle,
+                                                                  rhi::TextureDesc &desc) const noexcept;
+    [[nodiscard]] uint64_t GetTextureResidentBytes(rhi::TextureHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureViewHandle
+    RegisterTextureView(VkImageView view, rhi::TextureHandle texture = {});
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SamplerHandle RegisterSampler(VkSampler sampler);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ShaderModuleHandle RegisterShaderModule(VkShaderModule module);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BindingLayoutHandle
+    RegisterBindingLayout(VkDescriptorSetLayout layout);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BindGroupHandle RegisterBindGroup(VkDescriptorSet set);
     using BindlessTexturePublisher =
         std::function<rhi::ResourceIndex(const std::shared_ptr<const rhi::TextureGpuView> &)>;
     using BindlessTextureUsageMarker = std::function<void(const rhi::ResourceIndex *, size_t, rhi::SubmissionSerial)>;
-    [[nodiscard]] bool ConfigureBindlessTextureTable(VkDescriptorSetLayout layout, VkDescriptorSet set,
-                                                     BindlessTexturePublisher publisher,
-                                                     BindlessTextureUsageMarker usageMarker);
-    void ClearBindlessTextureTable() noexcept;
-    [[nodiscard]] rhi::BindlessTextureTableBinding GetBindlessTextureTableBinding() const noexcept override;
-    [[nodiscard]] rhi::ResourceIndex
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    ConfigureBindlessTextureTable(VkDescriptorSetLayout layout, VkDescriptorSet set, BindlessTexturePublisher publisher,
+                                  BindlessTextureUsageMarker usageMarker);
+    INFERNUX_VULKAN_BACKEND_API void ClearBindlessTextureTable() noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BindlessTextureTableBinding
+    GetBindlessTextureTableBinding() const noexcept override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ResourceIndex
     PublishBindlessTexture(const std::shared_ptr<const rhi::TextureGpuView> &texture) noexcept override;
-    void MarkBindlessTexturesUsed(const rhi::ResourceIndex *resources, size_t count) noexcept override;
-    [[nodiscard]] rhi::GraphicsPipelineHandle RegisterGraphicsPipeline(VkPipeline pipeline, VkPipelineLayout layout);
-    [[nodiscard]] rhi::ComputePipelineHandle RegisterComputePipeline(VkPipeline pipeline, VkPipelineLayout layout);
+    INFERNUX_VULKAN_BACKEND_API void MarkBindlessTexturesUsed(const rhi::ResourceIndex *resources,
+                                                              size_t count) noexcept override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GraphicsPipelineHandle
+    RegisterGraphicsPipeline(VkPipeline pipeline, VkPipelineLayout layout);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputePipelineHandle
+    RegisterComputePipeline(VkPipeline pipeline, VkPipelineLayout layout);
     /// Create a compute pipeline from backend-neutral RHI handles. The
     /// returned pipeline and its layout are owned by this adapter.
-    [[nodiscard]] rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override;
-    [[nodiscard]] rhi::TextureHandle CreateTexture(const rhi::TextureDesc &desc) override;
-    [[nodiscard]] static bool IsValidTextureDesc(const rhi::TextureDesc &desc) noexcept;
-    [[nodiscard]] rhi::TextureViewHandle CreateTextureView(const rhi::TextureViewDesc &desc) override;
-    [[nodiscard]] rhi::SamplerHandle CreateSampler(const rhi::SamplerDesc &desc) override;
-    [[nodiscard]] rhi::ShaderModuleHandle CreateShaderModule(const rhi::ShaderModuleDesc &desc) override;
-    [[nodiscard]] rhi::BindingLayoutHandle CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override;
-    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override;
-    [[nodiscard]] rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
-    [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
-    bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override;
-    [[nodiscard]] void *MapBuffer(rhi::BufferHandle handle, uint64_t offset, uint64_t byteSize,
-                                  rhi::BufferMapAccess access) override;
-    [[nodiscard]] bool UnmapBuffer(rhi::BufferHandle handle, uint64_t offset, uint64_t byteSize,
-                                   rhi::BufferMapAccess access) override;
-    [[nodiscard]] bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureHandle CreateTexture(const rhi::TextureDesc &desc) override;
+    [[nodiscard]] std::optional<rhi::TextureHandle> CreateUploadTexture(const rhi::TextureDesc &desc, bool managed);
+    struct TextureAllocation
+    {
+        rhi::TextureHandle texture;
+        rhi::TextureViewHandle view;
+    };
+    // The graph supplies its exact Vulkan format, sample count and queue sharing.
+    [[nodiscard]] TextureAllocation CreateTransientTexture2D(const VkImageCreateInfo &info);
+    void SetUploadSubmission(rhi::BufferHandle buffer, rhi::SubmissionTicket ticket) noexcept;
+    void SetUploadSubmission(rhi::TextureHandle texture, rhi::SubmissionTicket ticket) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionTicket
+    GetUploadSubmission(rhi::BufferHandle buffer) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionTicket
+    GetUploadSubmission(rhi::TextureHandle texture) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::optional<rhi::BufferHandle>
+    CreatePrivateBuffer(const rhi::BufferDesc &desc, bool managed) override;
+    void PublishPrivateBuffer(rhi::BufferHandle handle) noexcept override;
+    void SetManagedHeapLimits(std::function<VkDeviceSize()> deviceLocal, VkDeviceSize otherHeap = 0)
+    {
+        m_managedDeviceLocalLimit = std::move(deviceLocal);
+        m_managedOtherHeapLimit = otherHeap;
+    }
+    [[nodiscard]] bool HasDeviceLocalAllocationPressure() const noexcept
+    {
+        return m_deviceLocalAllocationPressure != 0;
+    }
+    [[nodiscard]] VkDeviceSize TakeDeviceLocalAllocationPressure() noexcept
+    {
+        const auto bytes = m_deviceLocalAllocationPressure;
+        m_deviceLocalAllocationPressure = 0;
+        return bytes;
+    }
+    struct StagingPoolStatistics
+    {
+        VkDeviceSize bytes = 0;
+        size_t buffers = 0;
+        uint64_t allocations = 0;
+        uint64_t reuses = 0;
+        uint64_t discards = 0;
+    };
+    enum class StagingAccess : uint8_t
+    {
+        Upload,
+        Readback
+    };
+    [[nodiscard]] const StagingPoolStatistics &GetStagingPoolStatistics() const noexcept
+    {
+        return m_stagingStats;
+    }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<VkBufferHandle>
+    AcquireStagingBuffer(VkDeviceSize bytes, bool managed, StagingAccess access = StagingAccess::Upload);
+    INFERNUX_VULKAN_BACKEND_API void RecycleStagingBuffer(std::shared_ptr<VkBufferHandle> buffer,
+                                                          StagingAccess access = StagingAccess::Upload) noexcept;
+    [[nodiscard]] bool AdmitAllocation(uint32_t memoryType, VkDeviceSize bytes);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    CanRetainGraphBuffers(const std::vector<rhi::BufferHandle> &distinctBuffers);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API static bool IsValidTextureDesc(const rhi::TextureDesc &desc) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureViewHandle
+    CreateTextureView(const rhi::TextureViewDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SamplerHandle CreateSampler(const rhi::SamplerDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ShaderModuleHandle
+    CreateShaderModule(const rhi::ShaderModuleDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BindingLayoutHandle
+    CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BindGroupHandle
+    CreateBindGroup(const rhi::BindGroupDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GraphicsPipelineHandle
+    CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputePipelineHandle
+    CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
+    INFERNUX_VULKAN_BACKEND_API bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data,
+                                                 uint64_t byteSize) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API void *MapBuffer(rhi::BufferHandle handle, uint64_t offset,
+                                                              uint64_t byteSize, rhi::BufferMapAccess access) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool UnmapBuffer(rhi::BufferHandle handle, uint64_t offset,
+                                                               uint64_t byteSize, rhi::BufferMapAccess access) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data,
+                                                              uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
-    void UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
+    INFERNUX_VULKAN_BACKEND_API void
+    UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
+    [[nodiscard]] bool UsesSubmissionSerials() const noexcept
+    {
+        return m_resourceRetirementQueue.HasSerialSource();
+    }
     size_t CollectDescriptorRetirements(rhi::SubmissionSerial completedSerial) noexcept
     {
         return m_descriptorManager.Collect(completedSerial);
@@ -307,36 +406,47 @@ class VulkanRhiDevice final : public rhi::Device
         return m_descriptorManager;
     }
 
-    void Release(rhi::BufferHandle handle) noexcept override;
-    void Release(rhi::TextureHandle handle) noexcept override;
-    void Release(rhi::TextureViewHandle handle) noexcept override;
-    void Release(rhi::SamplerHandle handle) noexcept override;
-    void Release(rhi::ShaderModuleHandle handle) noexcept override;
-    void Release(rhi::BindingLayoutHandle handle) noexcept override;
-    void Release(rhi::BindGroupHandle handle) noexcept override;
-    void Release(rhi::GraphicsPipelineHandle handle) noexcept override;
-    void Release(rhi::ComputePipelineHandle handle) noexcept override;
-    void Release(rhi::RenderTargetLayoutHandle handle) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::BufferHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::BufferHandle handle, GpuRetirementQueue *completionDomain) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::TextureHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::TextureViewHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(TextureAllocation allocation, GpuRetirementQueue *completionDomain,
+                                             bool deviceIdle = false) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::SamplerHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::ShaderModuleHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::BindingLayoutHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::BindGroupHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::GraphicsPipelineHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::ComputePipelineHandle handle) noexcept override;
+    INFERNUX_VULKAN_BACKEND_API void Release(rhi::RenderTargetLayoutHandle handle) noexcept;
 
-    [[nodiscard]] VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
-    [[nodiscard]] bool UsesConcurrentQueueSharing(rhi::BufferHandle handle) const noexcept;
-    [[nodiscard]] VkImage Resolve(rhi::TextureHandle handle) const noexcept;
-    [[nodiscard]] bool UsesConcurrentQueueSharing(rhi::TextureHandle handle) const noexcept;
-    [[nodiscard]] VkImageView Resolve(rhi::TextureViewHandle handle) const noexcept;
-    [[nodiscard]] VkSampler Resolve(rhi::SamplerHandle handle) const noexcept;
-    [[nodiscard]] VkShaderModule Resolve(rhi::ShaderModuleHandle handle) const noexcept;
-    [[nodiscard]] VkDescriptorSetLayout Resolve(rhi::BindingLayoutHandle handle) const noexcept;
-    [[nodiscard]] VkDescriptorSet Resolve(rhi::BindGroupHandle handle) const noexcept;
-    [[nodiscard]] VkRenderPass Resolve(rhi::RenderTargetLayoutHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool UsesConcurrentQueueSharing(rhi::BufferHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkImage Resolve(rhi::TextureHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool UsesConcurrentQueueSharing(rhi::TextureHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkImageView Resolve(rhi::TextureViewHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkSampler Resolve(rhi::SamplerHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkShaderModule Resolve(rhi::ShaderModuleHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkDescriptorSetLayout
+    Resolve(rhi::BindingLayoutHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkDescriptorSet Resolve(rhi::BindGroupHandle handle) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkRenderPass Resolve(rhi::RenderTargetLayoutHandle handle) const noexcept;
 
-    [[nodiscard]] rhi::GraphicsCommandEncoder MakeGraphicsCommandEncoder(VulkanGraphicsCommandContext &context,
-                                                                         VkCommandBuffer commandBuffer) noexcept;
-    [[nodiscard]] rhi::ComputeCommandEncoder MakeComputeCommandEncoder(VulkanComputeCommandContext &context,
-                                                                       VkCommandBuffer commandBuffer) noexcept;
-    [[nodiscard]] rhi::TransferCommandEncoder MakeTransferCommandEncoder(VulkanTransferCommandContext &context,
-                                                                         VkCommandBuffer commandBuffer) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GraphicsCommandEncoder
+    MakeGraphicsCommandEncoder(VulkanGraphicsCommandContext &context, VkCommandBuffer commandBuffer) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputeCommandEncoder
+    MakeComputeCommandEncoder(VulkanComputeCommandContext &context, VkCommandBuffer commandBuffer) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TransferCommandEncoder
+    MakeTransferCommandEncoder(VulkanTransferCommandContext &context, VkCommandBuffer commandBuffer) noexcept;
 
   private:
+    std::optional<rhi::BufferHandle> CreateBufferInternal(const rhi::BufferDesc &desc, bool managed,
+                                                          bool submissionOwned = false);
+    std::optional<rhi::TextureHandle>
+    CreateTextureInternal(const rhi::TextureDesc &desc, const AllocationAdmission *admit, bool sampledAsset = false);
+    std::optional<rhi::TextureHandle> AllocateTexture(const rhi::TextureDesc &desc, const VkImageCreateInfo &info,
+                                                      const AllocationAdmission *admit);
+    rhi::TextureViewHandle CreateTextureViewNative(rhi::TextureHandle texture, const VkImageViewCreateInfo &info);
     void CreatePipelineCache() noexcept;
     void SaveAndDestroyPipelineCache() noexcept;
 
@@ -349,6 +459,10 @@ class VulkanRhiDevice final : public rhi::Device
         bool owned = false;
         rhi::BufferMemory memory = rhi::BufferMemory::DeviceLocal;
         bool concurrentQueueSharing = false;
+        rhi::BufferUsageFlags usage = rhi::BufferUsageFlags::None;
+        bool hasCreationInfo = false;
+        bool submissionOwned = false;
+        rhi::SubmissionTicket uploadSubmission{};
     };
 
     struct TexturePayload
@@ -358,12 +472,14 @@ class VulkanRhiDevice final : public rhi::Device
         rhi::TextureDesc desc{};
         bool owned = false;
         bool concurrentQueueSharing = false;
+        rhi::SubmissionTicket uploadSubmission{};
     };
 
     struct TextureViewPayload
     {
         VkImageView view = VK_NULL_HANDLE;
         bool owned = false;
+        rhi::TextureHandle texture{};
     };
 
     struct SamplerPayload
@@ -396,6 +512,7 @@ class VulkanRhiDevice final : public rhi::Device
         VkPipelineLayout layout = VK_NULL_HANDLE;
         bool ownsPipeline = false;
         bool ownsLayout = false;
+        rhi::BindingLayoutHandle computeSetZeroLayout;
     };
 
     template <typename Payload> struct Slot
@@ -416,7 +533,7 @@ class VulkanRhiDevice final : public rhi::Device
 
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::GraphicsPipelineHandle handle) const noexcept;
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
-    void RetireNativeResource(std::function<void()> deleter) noexcept;
+    void RetireNativeResource(std::function<void()> deleter, GpuRetirementQueue *completionDomain = nullptr) noexcept;
     void DestroyOwnedResources() noexcept;
     [[nodiscard]] bool SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32_t pushConstantBytes,
                                               const char *pipelineKind) const;
@@ -431,6 +548,7 @@ class VulkanRhiDevice final : public rhi::Device
     static void DrawIndirect(void *context, rhi::BufferHandle arguments, uint64_t offset, uint32_t drawCount,
                              uint32_t stride);
 
+    static bool CanRecordCompute(void *context, rhi::ComputePipelineHandle pipeline, rhi::BindGroupHandle group);
     static void BindComputePipeline(void *context, rhi::ComputePipelineHandle pipeline);
     static void BindComputeGroup(void *context, rhi::ComputePipelineHandle pipeline, uint32_t setIndex,
                                  rhi::BindGroupHandle group);
@@ -447,6 +565,12 @@ class VulkanRhiDevice final : public rhi::Device
                              uint64_t byteSize);
     static void CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
                             const rhi::TextureCopyRegion &region);
+    static bool CopyTextureToBuffer(void *context, rhi::TextureHandle source, rhi::BufferHandle destination,
+                                    const rhi::TextureBufferCopyRegion &region);
+    static bool CopyBufferToTexture(void *context, rhi::BufferHandle source, rhi::TextureHandle destination,
+                                    const rhi::TextureBufferCopyRegion &region);
+    static bool CopyTextureBuffer(void *context, rhi::TextureHandle texture, rhi::BufferHandle buffer,
+                                  const rhi::TextureBufferCopyRegion &region, bool toBuffer);
     static void ResolveTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
                                const rhi::TextureResolveRegion &region);
 
@@ -459,6 +583,14 @@ class VulkanRhiDevice final : public rhi::Device
     VkPipelineCache m_pipelineCache = VK_NULL_HANDLE;
     std::string m_pipelineCachePath;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    std::function<VkDeviceSize()> m_managedDeviceLocalLimit;
+    using HeapBytes = std::array<VkDeviceSize, VK_MAX_MEMORY_HEAPS>;
+    bool AdmitHeapAllocations(const VkPhysicalDeviceMemoryProperties &memory, const HeapBytes &requested);
+    bool ReclaimStaging(const VkPhysicalDeviceMemoryProperties &memory, HeapBytes needed, VkDeviceSize localNeeded);
+    std::map<std::pair<VkDeviceSize, StagingAccess>, std::vector<std::shared_ptr<VkBufferHandle>>> m_stagingPool;
+    StagingPoolStatistics m_stagingStats;
+    VkDeviceSize m_managedOtherHeapLimit = 0;
+    VkDeviceSize m_deviceLocalAllocationPressure = 0;
     rhi::DeviceCaps m_capabilities{};
     vk::VulkanFeatureState m_capabilityState{};
     uint32_t m_graphicsQueueFamily = 0;

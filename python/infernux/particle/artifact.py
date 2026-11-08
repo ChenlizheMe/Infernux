@@ -145,6 +145,7 @@ class ParticleGraphWriteTicket:
 
 class ParticleArtifactRegistry:
     _artifacts: dict[str, ParticleArtifact] = {}
+    _shader_schema_revisions: dict[str, int] = {}
     # Runtime decoding is immutable and shared by every component referencing
     # the same AOT revision.  Instance parameters, controllers and playback
     # state deliberately remain on ParticleSystem.
@@ -166,6 +167,7 @@ class ParticleArtifactRegistry:
     def clear(cls) -> None:
         with cls._publication_lock, cls._lock:
             cls._artifacts.clear()
+            cls._shader_schema_revisions.clear()
             cls._runtime_decode_cache.clear()
             cls._request_generation.clear()
             cls._revision = 0
@@ -491,9 +493,7 @@ class ParticleArtifactRegistry:
             return None
 
         stable_id = selected.get("stable_id", "")
-        if not stable_id or not all(
-            character.isalnum() or character in "-_" for character in stable_id
-        ):
+        if type(stable_id) is not str or not stable_id.strip():
             raise ParticleArtifactError(
                 f"particle runtime index has an invalid stable_id: {stable_id!r}"
             )
@@ -535,8 +535,14 @@ class ParticleArtifactRegistry:
         expected_file_state=None,
     ) -> ParticleArtifact:
         """Compile and commit one graph snapshot under its request ownership."""
-        prepared = cls.prepare_graph_asset(asset, path, guid=guid)
-        return cls._commit_prepared_graph(prepared, expected_file_state=expected_file_state).artifact
+        from infernux.core.document_store import PathWriteScope
+
+        with PathWriteScope.begin_write([resolved_path(path)]):
+            prepared = cls.prepare_graph_asset(asset, path, guid=guid)
+            write_scope, index_context = cls._prepared_write_scope(prepared)
+            with write_scope:
+                return cls._commit_prepared_graph(prepared, expected_file_state=expected_file_state,
+                    index_context=index_context, write_scope=write_scope).artifact
 
     @classmethod
     def prepare_graph_asset(
@@ -587,6 +593,18 @@ class ParticleArtifactRegistry:
         )
 
     @classmethod
+    def _prepared_write_scope(cls, prepared):
+        from infernux.core.document_store import PathWriteScope
+
+        index_context = cls._runtime_index_context(prepared.source_path, prepared.guid)
+        paths = [prepared.source_path]
+        if prepared.artifact_path:
+            paths.append(prepared.artifact_path)
+        if index_context is not None:
+            paths.append(index_context[0])
+        return PathWriteScope.begin_write(paths), index_context
+
+    @classmethod
     def submit_prepared_graph(
         cls,
         prepared: PreparedParticleGraphArtifact,
@@ -596,14 +614,23 @@ class ParticleArtifactRegistry:
         """Commit a compiled editor snapshot in the background with the same save gate."""
         if not isinstance(prepared, PreparedParticleGraphArtifact):
             raise TypeError("prepared particle graph artifact has an invalid type")
-        with cls._lock:
-            if cls._save_executor is None:
-                from concurrent.futures import ThreadPoolExecutor
+        write_scope, index_context = cls._prepared_write_scope(prepared)
+        try:
+            with cls._lock:
+                if cls._save_executor is None:
+                    from concurrent.futures import ThreadPoolExecutor
 
-                cls._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="particle-save")
-            future = cls._save_executor.submit(
-                cls._commit_prepared_graph, prepared, expected_file_state=expected_file_state,
-            )
+                    cls._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="particle-save")
+                future = cls._save_executor.submit(
+                    cls._commit_prepared_graph, prepared, expected_file_state=expected_file_state,
+                    index_context=index_context, write_scope=write_scope,
+                )
+        except BaseException:
+            write_scope.close()
+            raise
+        # Includes a Future cancelled while still queued: its callable will
+        # never run, but the accepted write intent must still be retired.
+        future.add_done_callback(lambda _done: write_scope.close())
         return ParticleGraphWriteTicket(future, prepared)
 
     @classmethod
@@ -614,7 +641,8 @@ class ParticleArtifactRegistry:
                 raise ParticleArtifactSuperseded("particle graph save was superseded before editor publication")
 
     @classmethod
-    def _commit_prepared_graph(cls, prepared, *, expected_file_state=None) -> _ParticlePublication:
+    def _commit_prepared_graph(cls, prepared, *, expected_file_state=None,
+                               index_context, write_scope) -> _ParticlePublication:
         return cls._publish_compiled(
             prepared.compiled,
             source_path=prepared.source_path,
@@ -624,8 +652,18 @@ class ParticleArtifactRegistry:
             artifact_path=prepared.artifact_path,
             source_text=prepared.source_text,
             expected_file_state=expected_file_state,
-            guid=prepared.guid,
+            index_context=index_context,
+            write_scope=write_scope,
         )
+
+    @classmethod
+    def _compile_for_shader_schema(cls, path: str, guid: str, shader_schema_revision: int) -> ParticleArtifact:
+        """Refresh derived output ports once per graph and shader schema revision."""
+        force_recompile = shader_schema_revision > cls._shader_schema_revisions.get(guid, 0)
+        artifact = cls.compile_path(path, guid=guid, force_recompile=force_recompile)
+        if force_recompile:
+            cls._shader_schema_revisions[guid] = shader_schema_revision
+        return artifact
 
     @classmethod
     def compile_path(
@@ -635,96 +673,101 @@ class ParticleArtifactRegistry:
         guid: str = "",
         force_recompile: bool = False,
         runtime_artifact_path: str = "",
+        write_scope=None,
     ) -> ParticleArtifact:
         source_path = resolved_path(path)
-        try:
-            source = Path(source_path).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ParticleArtifactError(f"failed to read particle source: {exc}") from exc
-        source_kind = "script" if source_path.lower().endswith(".particle.py") else "graph"
-        path_identity = cls._source_key(source_path)
-        key = cls._source_key(source_path, guid)
-        ticket = cls._begin_request(path_identity)
+        from infernux.core.document_store import PathWriteScope
 
-        try:
-            graph_asset = (
-                ParticleGraphAsset.from_json(source) if source_kind == "graph" else None
-            )
-            source_hash = (
-                cls._graph_source_hash(graph_asset)
-                if graph_asset is not None
-                else cls._text_source_hash(source)
-            )
-            stable_id = (
-                graph_asset.stable_id
-                if graph_asset is not None
-                else ParticleScriptCompiler()
-                .parse(source, source_name=source_path)
-                .stable_id
-            )
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
-
-        with cls._lock:
-            existing = cls._current_unlocked(source_path, guid)
-            if (
-                not force_recompile
-                and cls._request_generation.get(path_identity) == ticket
-                and existing is not None
-                and existing.source_hash == source_hash
-                and bool(existing.artifact_path)
-            ):
-                alias = replace(existing, source_key=key)
-                cls._register_unlocked(alias, key, path_identity)
-                return alias
-
-        owner = cls._resolve_source_guid(source_path, guid)
-        publish_path = (
-            resolved_path(runtime_artifact_path)
-            if str(runtime_artifact_path or "").strip()
-            else cls._artifact_path(owner or stable_id)
-        )
-        artifact_path = (
-            cls._existing_artifact_path(
-                guid=owner, source_path=source_path, stable_id=stable_id
-            )
-            or publish_path
-        )
-        if not force_recompile and existing is None and artifact_path:
-            persisted = cls._load_persisted(
-                artifact_path,
-                key=key,
-                source_hash=source_hash,
-                source_kind=source_kind,
-            )
-            if persisted is not None:
-                with cls._lock:
-                    if cls._request_generation.get(path_identity) != ticket:
-                        return cls._superseded_unlocked(source_path, guid)
-                    cls._register_unlocked(persisted, key, path_identity)
-                    cls._revision = max(cls._revision, persisted.revision)
-                    return persisted
-
-        if not force_recompile and existing is not None and existing.source_hash == source_hash:
-            compiled = cls._compiled_from_artifact(existing, stable_id=stable_id)
-        else:
+        with PathWriteScope.begin_write([source_path], write_scope or PathWriteScope()) as source_scope:
             try:
-                compiled = (
-                    cls._compile_script_source(source, source_path)
-                    if graph_asset is None
-                    else cls._compile_graph_asset(graph_asset, source_path)
+                source = Path(source_path).read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ParticleArtifactError(f"failed to read particle source: {exc}") from exc
+            source_kind = "script" if source_path.lower().endswith(".particle.py") else "graph"
+            path_identity = cls._source_key(source_path)
+            key = cls._source_key(source_path, guid)
+            ticket = cls._begin_request(path_identity)
+
+            try:
+                graph_asset = (
+                    ParticleGraphAsset.from_json(source) if source_kind == "graph" else None
+                )
+                source_hash = (
+                    cls._graph_source_hash(graph_asset)
+                    if graph_asset is not None
+                    else cls._text_source_hash(source)
+                )
+                stable_id = (
+                    graph_asset.stable_id
+                    if graph_asset is not None
+                    else ParticleScriptCompiler()
+                    .parse(source, source_name=source_path)
+                    .stable_id
                 )
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
-        return cls._publish_compiled(
-            compiled,
-            source_path=source_path,
-            key=key,
-            path_identity=path_identity,
-            ticket=ticket,
-            artifact_path=publish_path,
-            guid=owner,
-        ).artifact
+
+            with cls._lock:
+                existing = cls._current_unlocked(source_path, guid)
+                if (
+                    not force_recompile
+                    and cls._request_generation.get(path_identity) == ticket
+                    and existing is not None
+                    and existing.source_hash == source_hash
+                    and bool(existing.artifact_path)
+                ):
+                    alias = replace(existing, source_key=key)
+                    cls._register_unlocked(alias, key, path_identity)
+                    return alias
+
+            owner = cls._resolve_source_guid(source_path, guid)
+            publish_path = (
+                resolved_path(runtime_artifact_path)
+                if str(runtime_artifact_path or "").strip()
+                else cls._artifact_path(owner or stable_id)
+            )
+            artifact_path = (
+                cls._existing_artifact_path(
+                    guid=owner, source_path=source_path, stable_id=stable_id
+                )
+                or publish_path
+            )
+            if not force_recompile and existing is None and artifact_path:
+                persisted = cls._load_persisted(
+                    artifact_path,
+                    key=key,
+                    source_hash=source_hash,
+                    source_kind=source_kind,
+                )
+                if persisted is not None:
+                    with cls._lock:
+                        if cls._request_generation.get(path_identity) != ticket:
+                            return cls._superseded_unlocked(source_path, guid)
+                        cls._register_unlocked(persisted, key, path_identity)
+                        cls._revision = max(cls._revision, persisted.revision)
+                        return persisted
+
+            if not force_recompile and existing is not None and existing.source_hash == source_hash:
+                compiled = cls._compiled_from_artifact(existing, stable_id=stable_id)
+            else:
+                try:
+                    compiled = (
+                        cls._compile_script_source(source, source_path)
+                        if graph_asset is None
+                        else cls._compile_graph_asset(graph_asset, source_path)
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
+            return cls._publish_compiled(
+                compiled,
+                source_path=source_path,
+                key=key,
+                path_identity=path_identity,
+                ticket=ticket,
+                artifact_path=publish_path,
+                index_context=cls._runtime_index_context(source_path, owner),
+                write_scope=write_scope if write_scope is not None else source_scope,
+            ).artifact
 
     @classmethod
     def _compile_graph_asset(
@@ -804,75 +847,85 @@ class ParticleArtifactRegistry:
         artifact_path: str,
         source_text: str | None = None,
         expected_file_state=None,
-        guid: str = "",
+        index_context,
+        write_scope=None,
     ) -> _ParticlePublication:
-        with cls._publication_lock:
-            with cls._lock:
-                if cls._request_generation.get(path_identity) != ticket:
-                    if source_text is not None:
-                        raise ParticleArtifactSuperseded(
-                            f"particle graph save for {source_path!r} was superseded by a newer request"
-                        )
-                    return _ParticlePublication(cls._superseded_unlocked(source_path, key))
+        from infernux.core.document_store import PathWriteScope
 
-                current = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
-                if current is not None and current.source_hash == compiled.source_hash:
-                    revision = current.revision
-                else:
-                    revision = cls._revision + 1
+        paths = [path for path in (source_path if source_text is not None else None, artifact_path,
+                                     index_context[0] if index_context is not None else None) if path]
+        independent = [path for path in paths if write_scope is None or not write_scope.covers(path)]
+        with PathWriteScope.begin_write(independent):
+            with cls._publication_lock:
+                with cls._lock:
+                    if cls._request_generation.get(path_identity) != ticket:
+                        if source_text is not None:
+                            raise ParticleArtifactSuperseded(
+                                f"particle graph save for {source_path!r} was superseded by a newer request"
+                            )
+                        return _ParticlePublication(cls._superseded_unlocked(source_path, key))
 
-            artifact = ParticleArtifact(
-                key,
-                compiled.source_hash,
-                compiled.source_kind,
-                revision,
-                compiled.semantic_hash,
-                compiled.behavior_hash,
-                artifact_path,
-                compiled.hir,
-                compiled.kernel_ir,
-                compiled.gpu_glsl,
-                compiled.gpu_spirv,
-            )
+                    current = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
+                    if (
+                        current is not None
+                        and current.source_hash == compiled.source_hash
+                        and current.semantic_hash == compiled.semantic_hash
+                        and current.behavior_hash == compiled.behavior_hash
+                    ):
+                        revision = current.revision
+                    else:
+                        revision = cls._revision + 1
 
-            from infernux.core.document_store import submit_document_text, write_document_text
-
-            source_write = None
-            if source_text is not None:
-                os.makedirs(os.path.dirname(source_path), exist_ok=True)
-                source_write = submit_document_text(
-                    source_path, source_text, expected_file_state=expected_file_state,
-                )
-                source_write.wait()
-            if artifact_path:
-                os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
-                write_document_text(
+                artifact = ParticleArtifact(
+                    key,
+                    compiled.source_hash,
+                    compiled.source_kind,
+                    revision,
+                    compiled.semantic_hash,
+                    compiled.behavior_hash,
                     artifact_path,
-                    json.dumps(
-                        cls._artifact_payload(artifact),
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    + "\n",
-                )
-            if compiled.source_kind == "graph":
-                cls._publish_runtime_index_entry(
-                    source_path,
-                    stable_id=compiled.stable_id,
-                    guid=guid,
+                    compiled.hir,
+                    compiled.kernel_ir,
+                    compiled.gpu_glsl,
+                    compiled.gpu_spirv,
                 )
 
-            with cls._lock:
-                cls._revision = max(cls._revision, revision)
-                cls._register_unlocked(artifact, key, path_identity)
-            return _ParticlePublication(artifact, source_write)
+                from infernux.core.document_store import submit_document_text, write_document_text
+
+                source_write = None
+                if source_text is not None:
+                    source_write = submit_document_text(
+                        source_path, source_text, expected_file_state=expected_file_state,
+                        write_scope=write_scope if write_scope and write_scope.covers(source_path) else None,
+                    )
+                    source_write.wait()
+                if artifact_path:
+                    write_document_text(
+                        artifact_path,
+                        json.dumps(
+                            cls._artifact_payload(artifact),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n",
+                        write_scope=write_scope if write_scope and write_scope.covers(artifact_path) else None,
+                    )
+                if compiled.source_kind == "graph":
+                    cls._publish_runtime_index_entry(
+                        index_context,
+                        stable_id=compiled.stable_id,
+                        write_scope=write_scope,
+                    )
+
+                with cls._lock:
+                    cls._revision = max(cls._revision, revision)
+                    cls._register_unlocked(artifact, key, path_identity)
+                return _ParticlePublication(artifact, source_write)
 
     @staticmethod
-    def _publish_runtime_index_entry(
-        source_path: str, *, stable_id: str, guid: str = ""
-    ) -> None:
-        from infernux.core.document_store import write_document_text
+    def _runtime_index_context(source_path: str, guid: str = ""):
+        """Freeze project-specific output facts before accepting a worker save."""
         from infernux.engine.project_context import get_project_root
 
         project_root = get_project_root()
@@ -891,6 +944,15 @@ class ParticleArtifactRegistry:
             project_root, "Library", "Artifacts", "Particle"
         )
         index_path = os.path.join(artifact_root, PARTICLE_RUNTIME_INDEX_FILENAME)
+        return index_path, path_hint, guid
+
+    @staticmethod
+    def _publish_runtime_index_entry(index_context, *, stable_id: str, write_scope=None) -> None:
+        from infernux.core.document_store import write_document_text
+
+        if index_context is None:
+            return
+        index_path, path_hint, guid = index_context
         entries: list[dict[str, str]] = []
         try:
             current = json.loads(Path(index_path).read_text(encoding="utf-8"))
@@ -920,7 +982,6 @@ class ParticleArtifactRegistry:
             {"guid": guid, "path_hint": path_hint, "stable_id": stable_id}
         )
         entries.sort(key=lambda entry: portable_path(entry["path_hint"]).casefold())
-        os.makedirs(artifact_root, exist_ok=True)
         write_document_text(
             index_path,
             json.dumps(
@@ -930,6 +991,7 @@ class ParticleArtifactRegistry:
                 sort_keys=True,
             )
             + "\n",
+            write_scope=write_scope if write_scope and write_scope.covers(index_path) else None,
         )
 
     @classmethod

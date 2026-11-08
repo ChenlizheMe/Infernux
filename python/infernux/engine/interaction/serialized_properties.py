@@ -581,16 +581,23 @@ def make_attribute_property_transaction(
         raise ValueError("attribute property transaction requires an attribute")
 
     from infernux.engine.undo import SetPropertyCommand
+    from infernux.engine.undo._property_commands import RelatedComponentPropertyCommand
 
     ids = tuple(_serialized_target_id(target) for target in edited_targets)
+
+    def command_for(target, old, new, text):
+        descriptor = getattr(type(target), attr, None)
+        related = getattr(descriptor, "related_components", None)
+        if related is not None:
+            return RelatedComponentPropertyCommand(target, attr, old, new, text, related(target))
+        return SetPropertyCommand(target, attr, old, new, text)
+
     bindings = tuple(
         SerializedPropertyBinding(
             target_id=target_id,
             read=lambda target=target: getattr(target, attr),
             command_factory=(
-                lambda old, new, text, target=target: SetPropertyCommand(
-                    target, attr, old, new, text
-                )
+                lambda old, new, text, target=target: command_for(target, old, new, text)
             ),
             normalize=normalize,
             validate=(

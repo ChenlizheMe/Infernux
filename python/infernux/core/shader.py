@@ -1,12 +1,99 @@
-"""ShaderInfo queries and canonical authoring reloads, without a second cache."""
+"""ShaderInfo queries and runtime shader publication."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
 class Shader:
     """Query published shaders and reimport edited ShaderInfo source assets."""
+
+    _runtime_revision = 0
+    _runtime_revisions: dict[str, int] = {}
+    _surface_metadata: dict[str, tuple] = {}
+    _surface_schemas: dict[str, tuple[tuple, int]] = {}
+    _surface_catalog_generation = None
+
+    @staticmethod
+    def _read_surface_metadata(meta) -> tuple:
+        return (
+            meta.get_string("shader_cull_mode"),
+            meta.get_string("shader_depth_write"),
+            meta.get_string("shader_depth_test"),
+            meta.get_string("shader_blend"),
+            meta.get_int("shader_queue"),
+            meta.get_string("shader_pass_tag"),
+            meta.get_string("shader_stencil"),
+            meta.get_string("shader_alpha_test"),
+        )
+
+    @staticmethod
+    def _read_surface_schema(meta) -> tuple:
+        # File coordinates describe diagnostics, not particle output ports.
+        properties = json.loads(meta.get_string("properties") or "[]")
+        return tuple(
+            (item["name"], item["type"], item.get("default"), bool(item.get("internal")))
+            for item in properties
+        )
+
+    @classmethod
+    def _record_runtime_publication(cls, database, paths) -> None:
+        if database is None:
+            return
+        for path in paths:
+            stage = Path(path).suffix.lower()
+            if stage not in {".vert", ".frag"}:
+                continue
+            meta = database.get_meta_by_path(path)
+            if meta is None or not meta.has_key("shader_id"):
+                continue
+            shader_id = meta.get_string("shader_id")
+            cls._runtime_revision += 1
+            cls._runtime_revisions[shader_id] = cls._runtime_revision
+            if stage == ".frag":
+                cls._surface_metadata[shader_id] = cls._read_surface_metadata(meta)
+                schema = cls._read_surface_schema(meta)
+                if schema != cls._surface_schemas.get(shader_id, ((), 0))[0]:
+                    cls._surface_schemas[shader_id] = (schema, cls._runtime_revision)
+
+    @classmethod
+    def _apply_published_surface(cls, material) -> None:
+        from infernux.core.assets import AssetManager
+
+        database = AssetManager._asset_database
+        if database is None:
+            return
+        shader_id = material.frag_shader_name
+        generation = database.query_generation
+        if shader_id not in cls._surface_metadata and cls._surface_catalog_generation != generation:
+            for path in database.get_all_asset_paths():
+                if not path.lower().endswith(".frag"):
+                    continue
+                meta = database.get_meta_by_path(path)
+                if meta is not None and meta.has_key("shader_id") and meta.has_key("shader_queue"):
+                    name = meta.get_string("shader_id")
+                    if name not in cls._surface_metadata:
+                        cls._surface_metadata[name] = cls._read_surface_metadata(meta)
+                        cls._surface_schemas[name] = (cls._read_surface_schema(meta), 0)
+            cls._surface_catalog_generation = generation
+        state = cls._surface_metadata.get(shader_id)
+        if state is not None:
+            material.native.apply_shader_render_meta(*state)
+
+    @classmethod
+    def _clear_runtime_publications(cls) -> None:
+        cls._runtime_revisions.clear()
+        cls._surface_metadata.clear()
+        cls._surface_schemas.clear()
+        cls._surface_catalog_generation = None
+
+    @staticmethod
+    def property_to_id(name: str) -> int:
+        """Intern a property name for this process; persist the name, not its ID."""
+        from infernux.lib import InxMaterial
+
+        return InxMaterial.property_to_id(name)
 
     @staticmethod
     def _validate_shader_type(shader_type: str) -> str:

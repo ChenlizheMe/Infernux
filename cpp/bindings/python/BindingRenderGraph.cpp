@@ -11,10 +11,12 @@
 
 #include "BindingRegistration.h"
 #include "Infernux.h"
+#include "MatrixPyBridge.h"
 #include "function/renderer/RenderGraphDescription.h"
 #include "function/renderer/RendererSelection.h"
 #include "function/renderer/SceneRenderGraph.h"
 #include "function/renderer/rhi/RhiComputeBuffer.h"
+#include "function/renderer/rhi/RhiComputeKernel.h"
 #include "function/renderer/rhi/RhiRenderTexture.h"
 #include <function/scene/PythonNativeLifetime.h>
 
@@ -29,11 +31,6 @@ namespace infernux
 
 void RegisterRenderGraphBindings(py::module_ &m)
 {
-    // NOTE: ScenePassType and ScenePassConfig are intentionally not exposed to
-    // Python. They are internal C++ implementation details of SceneRenderGraph.
-    // Python uses GraphPassDesc / RenderGraphDescription (via the RenderGraph
-    // builder in infernux.rendergraph) as its exclusive pass-definition API.
-
     // ========================================================================
     // RenderGraph topology binding types
     // ========================================================================
@@ -68,10 +65,14 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("FULLSCREEN_QUAD", GraphCommandType::FullscreenQuad)
         .value("COPY_TEXTURE", GraphCommandType::CopyTexture)
         .value("COPY_BUFFER", GraphCommandType::CopyBuffer)
+        .value("COPY_TEXTURE_TO_BUFFER", GraphCommandType::CopyTextureToBuffer)
+        .value("COPY_BUFFER_TO_TEXTURE", GraphCommandType::CopyBufferToTexture)
+        .value("COMPUTE_WORK", GraphCommandType::ComputeWork)
         .value("PRESENT", GraphCommandType::Present);
 
     py::enum_<GraphPassType>(m, "GraphPassType", "Execution domain of a graph pass")
         .value("RASTER", GraphPassType::Raster)
+        .value("COMPUTE", GraphPassType::Compute)
         .value("COPY", GraphPassType::Copy)
         .value("PRESENT", GraphPassType::Present);
 
@@ -85,10 +86,12 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("STORAGE", GraphBufferUsage::Storage)
         .value("INDIRECT", GraphBufferUsage::Indirect)
         .value("TRANSFER_SOURCE", GraphBufferUsage::TransferSource)
-        .value("TRANSFER_DESTINATION", GraphBufferUsage::TransferDestination);
+        .value("TRANSFER_DESTINATION", GraphBufferUsage::TransferDestination)
+        .value("UNIFORM", GraphBufferUsage::Uniform);
 
     py::enum_<GraphBufferAccessType>(m, "GraphBufferAccessType", "Per-pass graph buffer access")
         .value("STORAGE_READ", GraphBufferAccessType::StorageRead)
+        .value("UNIFORM_READ", GraphBufferAccessType::UniformRead)
         .value("STORAGE_WRITE", GraphBufferAccessType::StorageWrite)
         .value("INDIRECT_READ", GraphBufferAccessType::IndirectRead)
         .value("TRANSFER_READ", GraphBufferAccessType::TransferRead)
@@ -99,7 +102,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("TEMPORAL_READ", GraphTextureRole::TemporalRead)
         .value("TEMPORAL_WRITE", GraphTextureRole::TemporalWrite)
         .value("PERSISTENT", GraphTextureRole::Persistent)
-        .value("ASSET", GraphTextureRole::Asset);
+        .value("ASSET", GraphTextureRole::Asset)
+        .value("CAMERA", GraphTextureRole::Camera);
 
     py::enum_<GraphTextureAttachment>(m, "GraphTextureAttachment")
         .value("COLOR", GraphTextureAttachment::Color)
@@ -130,7 +134,11 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings)
         .def_readwrite("source_resource", &GraphCommandDesc::sourceResource)
         .def_readwrite("destination_resource", &GraphCommandDesc::destinationResource)
-        .def_readwrite("copy_bytes", &GraphCommandDesc::copyBytes);
+        .def_readwrite("copy_bytes", &GraphCommandDesc::copyBytes)
+        .def_readwrite("copy_width", &GraphCommandDesc::copyWidth)
+        .def_readwrite("copy_height", &GraphCommandDesc::copyHeight)
+        .def_readwrite("copy_buffer_offset", &GraphCommandDesc::copyBufferOffset)
+        .def_readwrite("work_binding", &GraphCommandDesc::workBinding);
 
     py::class_<GraphParameterBlockUpdate>(m, "GraphParameterBlockUpdate",
                                           "Revisioned runtime values for a graph parameter block")
@@ -142,36 +150,65 @@ void RegisterRenderGraphBindings(py::module_ &m)
     // GraphTextureDesc struct
     py::class_<GraphTextureDesc>(m, "GraphTextureDesc", "Description of a texture resource in the Python-defined graph")
         .def(py::init<>())
+        .def(py::init<const GraphTextureDesc &>())
+        .def("__eq__", &GraphTextureDesc::operator==, py::is_operator())
+        .def("_bind_render_texture", &GraphTextureDesc::BindRenderTexture, py::arg("owner"), py::arg("attachment"),
+             py::arg("require_current_write") = py::none())
         .def_readwrite("name", &GraphTextureDesc::name, "Unique resource name")
         .def_readwrite("format", &GraphTextureDesc::format, "Backend-neutral pixel format")
-        .def_readwrite("is_backbuffer", &GraphTextureDesc::isBackbuffer,
-                       "If true, refers to the scene's main color target")
-        .def_readwrite("is_depth", &GraphTextureDesc::isDepth, "If true, this is a depth/stencil texture")
+        .def_property_readonly("is_camera_target", &GraphTextureDesc::IsViewAttachment)
+        .def_property_readonly("is_depth", &GraphTextureDesc::IsDepth)
         .def_readwrite("width", &GraphTextureDesc::width, "Custom width (0 = use scene target size)")
         .def_readwrite("height", &GraphTextureDesc::height, "Custom height (0 = use scene target size)")
         .def_readwrite("size_divisor", &GraphTextureDesc::sizeDivisor,
                        "Size divisor relative to scene target (>0: actual = scene / divisor)")
         .def_readwrite("samples", &GraphTextureDesc::samples, "Sample count (0=inherit frame MSAA, otherwise 1/2/4/8)")
-        .def_readwrite("role", &GraphTextureDesc::role, "Transient, temporal read, or temporal write")
+        .def_readwrite("role", &GraphTextureDesc::role, "Ownership and lifetime of this texture")
         .def_readwrite("temporal_key", &GraphTextureDesc::temporalKey, "Stable identity shared by a temporal pair")
         .def_readwrite("render_texture", &GraphTextureDesc::renderTexture, "Persistent RenderTexture owner")
         .def_readwrite("attachment", &GraphTextureDesc::attachment)
+        .def_readwrite("require_current_write", &GraphTextureDesc::requireCurrentWrite)
         .def_readwrite("asset_guid", &GraphTextureDesc::assetGuid, "GUID of a read-only imported Texture asset")
         .def_readwrite("depth", &GraphTextureDesc::depth, "Imported Texture3D depth")
         .def_readwrite("is_volume", &GraphTextureDesc::isVolume, "Whether the imported asset is a Texture3D");
+
+    py::class_<GraphWorkBindingDesc>(m, "GraphWorkBindingDesc")
+        .def(py::init<>())
+        .def_readwrite("name", &GraphWorkBindingDesc::name)
+        .def_readwrite("recipe", &GraphWorkBindingDesc::recipe)
+        .def_readwrite("input_bindings", &GraphWorkBindingDesc::inputBindings);
+
+    py::class_<GraphBufferInput, std::shared_ptr<GraphBufferInput>>(m, "_GraphBufferInput")
+        .def(py::init<const std::shared_ptr<rhi::ComputeBuffer> &, uint64_t, uint64_t>())
+        .def("publish", &GraphBufferInput::Publish)
+        .def("_set_requirement", &GraphBufferInput::SetRequirement)
+        .def_property_readonly("_result_cycle", &GraphBufferInput::HasResultCycle)
+        .def_property_readonly("value", &GraphBufferInput::GetValue);
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())
         .def_readwrite("name", &GraphBufferDesc::name)
         .def_readwrite("byte_size", &GraphBufferDesc::byteSize)
+        .def_readwrite("byte_offset", &GraphBufferDesc::byteOffset)
         .def_readwrite("usage", &GraphBufferDesc::usage)
         .def_readwrite("compute_buffer", &GraphBufferDesc::computeBuffer)
-        .def_readwrite("view_light_list", &GraphBufferDesc::viewLightList);
+        .def_readwrite("input", &GraphBufferDesc::input)
+        .def_readwrite("view_light_list", &GraphBufferDesc::viewLightList)
+        .def_readwrite("work_binding", &GraphBufferDesc::workBinding)
+        .def_readwrite("work_slot", &GraphBufferDesc::workSlot)
+        .def_readwrite("export_layout", &GraphBufferDesc::exportLayout)
+        .def_readwrite("export_shape", &GraphBufferDesc::exportShape);
 
     py::class_<GraphBufferAccessDesc>(m, "GraphBufferAccessDesc", "Typed buffer access declared by a graph pass")
         .def(py::init<>())
         .def_readwrite("resource", &GraphBufferAccessDesc::resource)
         .def_readwrite("type", &GraphBufferAccessDesc::type);
+
+    py::class_<GraphEventDesc>(m, "GraphEventDesc")
+        .def(py::init<>())
+        .def_readwrite("label", &GraphEventDesc::label)
+        .def_readwrite("metadata", &GraphEventDesc::metadata)
+        .def_readwrite("buffers", &GraphEventDesc::buffers);
 
     // GraphPassDesc struct
     py::class_<GraphPassDesc>(m, "GraphPassDesc", "Description of a single render pass in the Python-defined graph")
@@ -186,6 +223,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
                        "Optional single-sample resolve target for color slot 0")
         .def_readwrite("buffer_accesses", &GraphPassDesc::bufferAccesses, "Typed buffer accesses")
         .def_readwrite("side_effect", &GraphPassDesc::sideEffect, "Retain the pass for externally observable work")
+        .def_readwrite("events", &GraphPassDesc::events)
         .def_readwrite("clear_color", &GraphPassDesc::clearColor, "Whether to clear color buffer")
         .def_readwrite("clear_depth", &GraphPassDesc::clearDepth, "Whether to clear depth buffer")
         .def_readwrite("clear_color_r", &GraphPassDesc::clearColorR, "Clear color red")
@@ -198,11 +236,13 @@ void RegisterRenderGraphBindings(py::module_ &m)
     // RenderGraphDescription struct
     py::class_<RenderGraphDescription>(m, "RenderGraphDescription", "Complete render graph topology defined by Python")
         .def(py::init<>())
+        .def("_render_texture_layouts_current", &RenderGraphDescription::RenderTextureLayoutsCurrent)
         .def_readwrite("name", &RenderGraphDescription::name, "Graph name for debugging")
         .def_readwrite("source_revision", &RenderGraphDescription::sourceRevision,
                        "Monotonic Python graph artifact revision")
         .def_readwrite("textures", &RenderGraphDescription::textures, "All texture resources")
         .def_readwrite("buffers", &RenderGraphDescription::buffers, "All buffer resources")
+        .def_readwrite("work_bindings", &RenderGraphDescription::workBindings)
         .def_readwrite("passes", &RenderGraphDescription::passes, "All passes in declaration order")
         .def_readwrite("output_texture", &RenderGraphDescription::outputTexture, "Name of the final output texture")
         .def_readwrite("linear_output_texture", &RenderGraphDescription::linearOutputTexture)
@@ -211,8 +251,90 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("msaa_samples", &RenderGraphDescription::msaaSamples,
                        "MSAA sample count (0=no change, 1=off, 2, 4, 8)");
 
+    py::class_<GraphBufferCapture, std::shared_ptr<GraphBufferCapture>>(m, "GraphBufferCapture")
+        .def_property_readonly(
+            "ready",
+            [](const GraphBufferCapture &capture) { return capture.status == GraphBufferCapture::Status::Accepted; })
+        .def_property_readonly(
+            "done",
+            [](const GraphBufferCapture &capture) { return capture.status != GraphBufferCapture::Status::Pending; })
+        .def_readonly("error", &GraphBufferCapture::error)
+        .def_readonly("shape", &GraphBufferCapture::shape)
+        .def_property_readonly("dtype",
+                               [](const GraphBufferCapture &capture) {
+                                   static const char *names[] = {"float32", "int32", "uint32", "int64"};
+                                   return names[static_cast<size_t>(capture.scalarType)];
+                               })
+        .def_readonly("byte_offset", &GraphBufferCapture::byteOffset)
+        .def_readonly("storage_byte_size", &GraphBufferCapture::storageByteSize)
+        .def_readonly("storage_claim", &GraphBufferCapture::storageClaim)
+        .def_readonly("storage_buffer", &GraphBufferCapture::storageBuffer)
+        .def_readonly("view", &GraphBufferCapture::view)
+        .def_readonly("generation", &GraphBufferCapture::generation)
+        .def_readonly("occurrence", &GraphBufferCapture::occurrence)
+        .def_readonly("name", &GraphBufferCapture::name)
+        .def_property_readonly("value",
+                               [](const GraphBufferCapture &capture) {
+                                   if (capture.status != GraphBufferCapture::Status::Accepted)
+                                       throw std::logic_error("Graph buffer capture has no accepted value");
+                                   return capture.value;
+                               })
+        .def("cancel", [](GraphBufferCapture &capture) { capture.Cancel("capture was cancelled"); });
+
+    py::class_<GraphEventInterest, std::shared_ptr<GraphEventInterest>>(m, "_GraphEventInterest")
+        .def_readwrite("active", &GraphEventInterest::active);
+    py::class_<GraphEventViewSample, std::shared_ptr<GraphEventViewSample>>(m, "_GraphEventViewSample")
+        .def_property_readonly(
+            "extent", [](const GraphEventViewSample &sample) { return py::make_tuple(sample.width, sample.height); })
+        .def_property_readonly(
+            "jitter_ndc",
+            [](const GraphEventViewSample &sample) { return py::make_tuple(sample.jitterNdc.x, sample.jitterNdc.y); })
+        .def_property_readonly("view_matrix",
+                               [](const GraphEventViewSample &sample) { return binding::Matrix4ToPython(sample.view); })
+        .def_property_readonly(
+            "projection_matrix",
+            [](const GraphEventViewSample &sample) { return binding::Matrix4ToPython(sample.projection); })
+        .def_property_readonly(
+            "unjittered_projection_matrix",
+            [](const GraphEventViewSample &sample) { return binding::Matrix4ToPython(sample.unjitteredProjection); })
+        .def_property_readonly("previous_view_projection", [](const GraphEventViewSample &sample) -> py::object {
+            if (sample.previousViewProjection)
+                return binding::Matrix4ToPython(*sample.previousViewProjection);
+            return py::none();
+        });
+    py::class_<GraphEventRecord>(m, "_GraphEventRecord")
+        .def_readonly("label", &GraphEventRecord::label)
+        .def_readonly("metadata", &GraphEventRecord::metadata)
+        .def_readonly("pass_name", &GraphEventRecord::pass)
+        .def_readonly("ordinal", &GraphEventRecord::ordinal)
+        .def_readonly("view", &GraphEventRecord::view)
+        .def_readonly("generation", &GraphEventRecord::generation)
+        .def_readonly("occurrence", &GraphEventRecord::occurrence)
+        .def_readonly("history_epoch", &GraphEventRecord::historyEpoch)
+        .def_readonly("view_sample", &GraphEventRecord::viewSample)
+        .def_readonly("sources", &GraphEventRecord::sources)
+        .def_property_readonly("interest", [](const GraphEventRecord &event) { return event.interest.lock(); })
+        .def_property_readonly("submission", [](const GraphEventRecord &event) {
+            return py::make_tuple(event.submission.device, static_cast<uint32_t>(event.submission.queue),
+                                  event.submission.serial);
+        });
+    m.def("_watch_graph_events", [](Infernux &engine, const std::string &label) {
+        auto *renderer = engine.GetRenderer();
+        if (!renderer)
+            throw std::logic_error("Render graph events require an active graphical renderer");
+        return renderer->WatchGraphEvents(label);
+    });
+    m.def("_take_graph_events", [](Infernux &engine) { return engine.GetRenderer()->TakeGraphEvents(); });
+    m.def("_is_graph_submission_completed",
+          [](const Infernux &engine, std::tuple<rhi::DeviceId, uint8_t, rhi::SubmissionSerial> identity) {
+              const auto [device, queue, serial] = identity;
+              return engine.IsGpuSubmissionCompleted({device, static_cast<rhi::QueueRole>(queue), serial});
+          });
+
     // SceneRenderGraph class
     NativeClass<SceneRenderGraph>(m, "SceneRenderGraph")
+        .def_property_readonly("storage_deferred", &SceneRenderGraph::IsGraphStorageDeferred)
+        .def("capture_buffer", &SceneRenderGraph::CaptureBuffer, py::arg("name"))
         // Pass configuration
         .def("mark_dirty", &SceneRenderGraph::MarkDirty, "Force rebuild of the render graph on next frame")
         // Render graph topology defined from Python

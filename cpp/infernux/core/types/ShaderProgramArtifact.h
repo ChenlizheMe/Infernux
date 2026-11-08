@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include <core/types/ShaderTypes.h>
 
 #include <array>
@@ -45,7 +47,7 @@ struct ShaderStagePair
 
 struct ShaderStagePairHash
 {
-    [[nodiscard]] size_t operator()(const ShaderStagePair &pair) const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API size_t operator()(const ShaderStagePair &pair) const noexcept;
 };
 
 struct ShaderProgramKey
@@ -58,7 +60,7 @@ struct ShaderProgramKey
         return stages.IsValid();
     }
 
-    [[nodiscard]] std::string ToString() const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API std::string ToString() const;
 
     friend bool operator==(const ShaderProgramKey &lhs, const ShaderProgramKey &rhs) noexcept
     {
@@ -73,7 +75,7 @@ struct ShaderProgramKey
 
 struct ShaderProgramKeyHash
 {
-    [[nodiscard]] size_t operator()(const ShaderProgramKey &key) const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API size_t operator()(const ShaderProgramKey &key) const noexcept;
 };
 
 struct ShaderProgramVariantKey
@@ -90,7 +92,7 @@ struct ShaderProgramVariantKey
         return program.IsValid() && target >= ShaderCompileTarget::Forward && target < ShaderCompileTarget::Count;
     }
 
-    [[nodiscard]] std::string ToString() const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API std::string ToString() const;
 
     friend bool operator==(const ShaderProgramVariantKey &lhs, const ShaderProgramVariantKey &rhs) noexcept
     {
@@ -105,7 +107,7 @@ struct ShaderProgramVariantKey
 
 struct ShaderProgramVariantKeyHash
 {
-    [[nodiscard]] size_t operator()(const ShaderProgramVariantKey &key) const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API size_t operator()(const ShaderProgramVariantKey &key) const noexcept;
 };
 
 enum class ShaderProgramStageMask : uint8_t
@@ -181,18 +183,19 @@ struct ShaderProgramArtifact
     };
     std::vector<PassVariant> variants;
 
-    [[nodiscard]] const PassVariant *FindVariant(ShaderCompileTarget target) const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API const PassVariant *FindVariant(ShaderCompileTarget target) const noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool IsValid() const noexcept;
 };
 
-[[nodiscard]] uint64_t ComputeShaderProgramRevision(std::string_view generatedVertexSource,
-                                                    std::string_view generatedFragmentSource,
-                                                    ShaderCompileTarget target,
-                                                    uint64_t compatibilitySignature) noexcept;
+[[nodiscard]] INFERNUX_FOUNDATION_API uint64_t ComputeShaderProgramRevision(std::string_view generatedVertexSource,
+                                                                            std::string_view generatedFragmentSource,
+                                                                            ShaderCompileTarget target,
+                                                                            uint64_t compatibilitySignature) noexcept;
 
 /// Computes the runtime identity of the complete, ordered pass-variant set.
 /// key.revision is deliberately ignored so this can initialize that field.
-[[nodiscard]] uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artifact) noexcept;
+[[nodiscard]] INFERNUX_FOUNDATION_API uint64_t
+ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artifact) noexcept;
 
 } // namespace infernux

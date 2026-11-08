@@ -1,5 +1,6 @@
 #include "BindingRegistration.h"
 #include "JsonPyBridge.h"
+#include "PythonCallback.h"
 #include "ResourceMetaPyView.h"
 #include "function/resources/AssetDatabase/AssetDatabase.h"
 #include "function/resources/AssetDependencyGraph.h"
@@ -47,10 +48,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def_readwrite("query_generation", &AssetMutationResult::queryGeneration)
         .def("__bool__", [](const AssetMutationResult &result) { return result.succeeded; });
 
-    // AssetDependencyGraph singleton
-    py::class_<AssetDependencyGraph, std::unique_ptr<AssetDependencyGraph, py::nodelete>>(m, "AssetDependencyGraph")
-        .def_static("instance", &AssetDependencyGraph::Instance, py::return_value_policy::reference,
-                    "Get the singleton instance")
+    py::class_<AssetDependencyGraph, std::shared_ptr<AssetDependencyGraph>>(m, "AssetDependencyGraph")
+        .def_static("instance", &AssetDependencyGraph::Current, "Get the running world's dependency graph")
         .def("add_asset_dependency", &AssetDependencyGraph::AddAssetDependency, py::arg("asset_guid"),
              py::arg("dependency_guid"), "Register an asset-to-asset dependency")
         .def("remove_asset_dependency", &AssetDependencyGraph::RemoveAssetDependency, py::arg("asset_guid"),
@@ -82,6 +81,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
     // AssetDatabase
     NativeClass<AssetDatabase>(m, "AssetDatabase")
         .def(py::init<>())
+        .def_property_readonly("dependency_graph",
+                               [](const AssetDatabase &database) { return database.GetDependencyGraph(); })
         .def("initialize", &AssetDatabase::Initialize, py::arg("project_root"),
              "Initialize asset database with project root")
         .def("is_owner_thread", &AssetDatabase::IsOwnerThread,
@@ -100,30 +101,62 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Persist a dirty derived AssetIndex")
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
-        .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
+        .def("_begin_runtime_asset_catalog", &AssetDatabase::BeginRuntimeAssetCatalog, py::arg("package_root"),
+             py::arg("content_root"), py::arg("allowed_roots"), py::call_guard<py::gil_scoped_release>())
+        .def("_prepared_runtime_catalog_documents",
+             [](AssetDatabase &database) -> py::object {
+                 const auto *documents = database.GetPreparedRuntimeCatalogDocuments();
+                 return documents ? JsonToPython(*documents) : py::none();
+             })
+        .def("_publish_runtime_asset_catalog", &AssetDatabase::PublishRuntimeAssetCatalog)
+        .def("_discard_runtime_asset_catalog", &AssetDatabase::DiscardRuntimeAssetCatalog)
+        .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), py::kw_only(),
+             py::arg("write_scope") = PathWriteScope{}, py::call_guard<py::gil_scoped_release>(),
              "Import a single asset")
         .def(
             "reimport_asset",
-            [](AssetDatabase &database, const std::string &path, py::object settings) {
+            [](AssetDatabase &database, const std::string &path, py::object settings,
+               const PathWriteScope &writeScope) {
                 const auto snapshot = PythonToJson(settings);
                 py::gil_scoped_release release;
-                return database.ReimportAsset(path, snapshot);
+                return database.ReimportAsset(path, snapshot, writeScope);
             },
-            py::arg("path"), py::arg("settings") = py::none(),
+            py::arg("path"), py::arg("settings") = py::none(), py::kw_only(), py::arg("write_scope") = PathWriteScope{},
             "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
         .def(
             "begin_model_reimport",
-            [](AssetDatabase &database, const std::string &path, py::object settings) {
-                database.BeginModelReimport(path, PythonToJson(settings));
+            [](AssetDatabase &database, const std::string &path, py::object settings, py::object onPublished) {
+                AssetDatabase::ModelReimportPublished published;
+                if (!onPublished.is_none()) {
+                    auto callback = std::make_shared<PythonCallback>(py::cast<py::function>(onPublished));
+                    published = [callback](const AssetMutationResult &result, uint64_t oldVersion,
+                                           std::optional<float> oldScale) {
+                        py::gil_scoped_acquire acquire;
+                        try {
+                            callback->function(AssetMutationResult(result), oldVersion, oldScale);
+                        } catch (const py::error_already_set &error) {
+                            throw std::runtime_error(error.what());
+                        }
+                    };
+                }
+                database.BeginModelReimport(path, PythonToJson(settings), std::move(published));
             },
-            py::arg("path"), py::arg("settings"), "Start model parsing on the native JobSystem")
+            py::arg("path"), py::arg("settings"), py::kw_only(), py::arg("on_published") = py::none(),
+            "Start model cooking on the native JobSystem")
         .def("try_commit_model_reimport", &AssetDatabase::TryCommitModelReimport,
-             "Return None while pending, otherwise publish once and return the mutation result")
+             "Return the model Apply result once publication has completed")
+        .def("complete_pending_model_reimport", &AssetDatabase::CompletePendingModelReimport,
+             py::call_guard<py::gil_scoped_release>(), "Wait for and publish the requested model Apply")
         .def("discard_model_reimport", &AssetDatabase::DiscardModelReimport)
-        .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
-        .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),
-             "Move/rename asset preserving GUID")
-        .def("move_assets_batch", &AssetDatabase::MoveAssetsBatch, py::arg("moves"),
+        .def_property_readonly("model_reimport_pending", &AssetDatabase::IsModelReimportPending)
+        .def_property_readonly("model_reimport_publishing", &AssetDatabase::IsModelReimportPublishing)
+        .def("get_deletion_write_paths", &AssetDatabase::GetDeletionWritePaths, py::arg("roots"))
+        .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), py::kw_only(),
+             py::arg("write_scope") = PathWriteScope{}, "Delete asset and its meta")
+        .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"), py::kw_only(),
+             py::arg("write_scope") = PathWriteScope{}, "Publish completed asset relocation preserving GUID")
+        .def("move_assets_batch", &AssetDatabase::MoveAssetsBatch, py::arg("moves"), py::kw_only(),
+             py::arg("write_scope") = PathWriteScope{},
              "Commit a preflighted asset relocation batch with one catalog publication")
         .def("contains_guid", &AssetDatabase::ContainsGuid, py::arg("guid"), py::call_guard<py::gil_scoped_release>(),
              "Check if GUID exists")
@@ -217,8 +250,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
                                &AssetDatabase::GetLastRefreshOwnerMergeSliceCount)
         .def_property_readonly("last_refresh_metadata_write_ms",
                                &AssetDatabase::GetLastRefreshMetadataWriteMilliseconds)
-        .def_property_readonly("last_refresh_journal_uncompressed_bytes",
-                               &AssetDatabase::GetLastRefreshJournalUncompressedBytes)
+        .def_property_readonly("last_refresh_staged_bytes", &AssetDatabase::GetLastRefreshStagedBytes)
+        .def_property_readonly("last_refresh_staging_ms", &AssetDatabase::GetLastRefreshStagingMilliseconds)
         .def_property_readonly("last_refresh_journal_bytes", &AssetDatabase::GetLastRefreshJournalBytes)
         .def_property_readonly("last_refresh_journal_serialize_ms",
                                &AssetDatabase::GetLastRefreshJournalSerializeMilliseconds)

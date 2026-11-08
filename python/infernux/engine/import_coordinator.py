@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable
+from infernux.lib import NativeDocumentStore
 
 from infernux.engine.path_utils import path_key as _path_key, portable_path, resolved_path
 
@@ -43,15 +43,9 @@ def _absolute_path(path: str) -> str:
     return resolved_path(path)
 
 
-_DOCUMENT_STORE_TEMP_PATTERN = re.compile(r"\.tmp\.\d+\.\d+$")
-
-
 def is_document_store_temporary_path(path: str) -> bool:
     """Return whether *path* uses AtomicFile's exact temporary-file suffix."""
-    if not path:
-        return False
-    normalized = portable_path(path)
-    return _DOCUMENT_STORE_TEMP_PATTERN.search(normalized) is not None
+    return bool(path) and NativeDocumentStore.is_temporary_path(path)
 
 
 def _event_references_temporary_path(event: AssetFsEvent) -> bool:

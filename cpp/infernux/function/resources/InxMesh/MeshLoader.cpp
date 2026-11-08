@@ -1041,21 +1041,12 @@ std::shared_ptr<InxMesh> MeshLoader::ImportSource(const std::string &filePath, c
 // CreateMeta — mesh/binary asset .meta creation
 // =============================================================================
 
-void MeshLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                            InxResourceMeta &metaData) const
+void MeshLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
-    metaData.Init(content, contentSize, filePath, ResourceType::Mesh);
-
-    std::filesystem::path path = ToFsPath(filePath);
-    std::string extension = FromFsPath(path.extension());
-
-    metaData.AddMetadata("file_type", std::string("mesh"));
-    metaData.AddMetadata("file_extension", extension);
+    metaData.InitFromSource(source, ResourceType::Mesh);
     // Read/Write is authored by MeshImportSettings, whose defaults are applied
     // only for a new asset. Source observations must not overwrite that setting
     // when metadata is rebuilt after an edit or on a fresh checkout.
-
-    metaData.AddMetadata("file_size", contentSize);
 }
 
 } // namespace infernux

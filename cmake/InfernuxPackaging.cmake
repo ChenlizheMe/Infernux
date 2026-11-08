@@ -30,10 +30,13 @@ add_custom_target(stage_python_package
         --config "$<CONFIG>"
         --prefix "${INFERNUX_PYTHON_STAGE_DIR}"
         --component ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/cmake/write_player_build_source.py"
+        --source "${CMAKE_SOURCE_DIR}"
+        --output "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux/resources/player-build-source.json"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/release/build_platform_plugins.py"
+        catalog --output "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux/resources/official_packages/official-registry.json"
     DEPENDS
-        _Infernux
-        _InfernuxBootstrap
-        refresh_player_native_contract
+        stage_python_sdk
         infernux_official_plugins
     COMMENT "Assembling the Python wheel source tree after native and official plugin builds"
     VERBATIM
@@ -59,7 +62,7 @@ if(NOT INFERNUX_USE_TARGET_PYTHON AND NOT EMSCRIPTEN)
     endif()
     set_target_properties(InfernuxEditorProgress PROPERTIES
         BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
-    add_custom_command(TARGET InfernuxEditorProgress POST_BUILD
+    add_custom_command(TARGET stage_python_sdk POST_BUILD
         COMMAND ${CMAKE_COMMAND}
             "-DSOURCE=$<TARGET_FILE:InfernuxEditorProgress>"
             "-DDESTINATION=${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:InfernuxEditorProgress>"
@@ -69,9 +72,17 @@ if(NOT INFERNUX_USE_TARGET_PYTHON AND NOT EMSCRIPTEN)
     )
     install(TARGETS InfernuxEditorProgress RUNTIME DESTINATION python/infernux/lib
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
-    add_dependencies(stage_python_package InfernuxEditorProgress)
+    add_dependencies(stage_python_sdk InfernuxEditorProgress)
 endif()
 add_dependencies(prebuild_player_runtime stage_python_package)
+
+add_custom_target(update_native_platform_plugin
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/release/build_platform_plugins.py"
+        package --targets "${_infernux_player_platform}"
+        --payload "${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"
+    DEPENDS prebuild_player_runtime
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    USES_TERMINAL VERBATIM)
 
 add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E echo "Ensuring Python packaging tools are available..."

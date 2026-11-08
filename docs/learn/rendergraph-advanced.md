@@ -254,6 +254,7 @@ half_size = inx.RenderTexture(
     depth_format=PixelFormat.D32_SFLOAT,
     samples=4,
 )
+camera.render_to_texture = True
 camera.target_texture = half_size
 image.texture = half_size
 ```
@@ -275,12 +276,14 @@ class Monitor(inx.InxComponent):
     output: inx.RenderTexture = inx.serialized_field(default=None)
 
     def start(self):
-        self.game_object.get_component(inx.Camera).target_texture = self.output
+        camera = self.game_object.get_component(inx.Camera)
+        camera.render_to_texture = True
+        camera.target_texture = self.output
 ```
 
 Enable a depth format on targets used by Cameras. `inx.RenderTexture.load("Assets/Rendering/Monitor.rendertexture")` and `load_by_guid(guid)` resolve the same GPU owner as serialized references. Reimporting an asset updates existing users rather than replacing their references; removing depth while a Camera owns the target is rejected. Fixed/relative size changes are authored on the asset, whereas runtime `resize()` does not write the source file. Only imported targets have a `guid` and `file_path`; runtime-created targets remain transient.
 
-You can also drag the asset directly into **Camera → Target Texture**, without a script. This slot is saved with the scene and works in Edit mode and Play mode. Removing the asset preserves a missing reference instead of redirecting that camera to the screen; restoring the same GUID reconnects its output. The source file is not read during Player scene decoding: the camera keeps its GUID and the renderer prepares the imported binary description.
+Enable **Camera → Render to Texture** to show the **Target Texture** field. Assign a RenderTexture asset or leave the field empty to use a camera-owned GPU texture at the configured output size. `camera.output_texture` returns the same texture that receives the render. The Inspector displays the asset's published color directly. Disable the checkbox to output to the screen.
 
 Material texture fields also accept imported RenderTextures. Drag the asset into a material's texture slot, or call `material.set_texture("texSampler", target)`: an imported target saves its GUID; an anonymous runtime target only overrides the live binding. Reimport updates existing consumers, including runtime material copies. Deleting a target disconnects those bindings without erasing the saved GUID; restoring the asset reconnects them.
 
@@ -780,6 +783,7 @@ half_size = inx.RenderTexture(
     depth_format=PixelFormat.D32_SFLOAT,
     samples=4,
 )
+camera.render_to_texture = True
 camera.target_texture = half_size
 image.texture = half_size
 ```
@@ -801,12 +805,14 @@ class Monitor(inx.InxComponent):
     output: inx.RenderTexture = inx.serialized_field(default=None)
 
     def start(self):
-        self.game_object.get_component(inx.Camera).target_texture = self.output
+        camera = self.game_object.get_component(inx.Camera)
+        camera.render_to_texture = True
+        camera.target_texture = self.output
 ```
 
 供 Camera 使用的目标需要配置深度格式。`inx.RenderTexture.load("Assets/Rendering/Monitor.rendertexture")`、`load_by_guid(guid)` 和序列化引用解析到同一份 GPU 资源。重导入会更新已有使用者，不要求脚本重新赋值；Camera 仍持有目标时，不允许移除其深度附件。固定/相对尺寸模式在资产上编辑，运行时 `resize()` 不会写回源文件。只有导入的目标具有 `guid` 和 `file_path`，运行时创建的目标仍为瞬态资源。
 
-也可以直接把资产拖到 **Camera → 目标纹理**，不需要写脚本。这个槽位随场景保存，在编辑和运行模式下均有效。删除资产会保留缺失引用，不会把这台相机改成屏幕输出；恢复同一个 GUID 后，输出会重新连接。Player 解码场景时不读取源文件：Camera 保留 GUID，由渲染器准备导入后的二进制描述。
+在 Camera 中开启 **渲染到纹理**，即可设置 **目标纹理**。可以填入 RenderTexture 资产，也可以留空，让相机按配置尺寸持有自己的 GPU 纹理。`camera.output_texture` 返回相机实际写入的那份纹理。Inspector 直接显示资产已经发布的颜色。关闭勾选后恢复屏幕输出。
 
 材质的纹理槽也支持导入的 RenderTexture。可以从 Project 拖入，或调用 `material.set_texture("texSampler", target)`：导入资源保存 GUID，临时创建的资源只覆盖运行时绑定。重导入会更新现有消费者，包括运行时材质副本；删除资源会断开绑定，但保留已保存的 GUID，恢复资产后会重新连接。
 
@@ -1012,16 +1018,21 @@ with graph.add_pass("DepthAwareOverlay") as p:
 - `add_copy_pass()` 创建 Copy Pass，执行 `copy_texture()` 或 `copy_buffer()`。
 - `add_present_pass()` 通过 `present()` 导出 Color Texture。
 
-Compute Dispatch 尚未进入当前 Python API。现有接口没有 `add_compute_pass()`、`dispatch()` 或 Python `GraphPassType.COMPUTE`。Storage 与 Indirect Buffer Usage 标志可用于资源契约，但不会生成 Dispatch 或 Indirect Draw 命令。
+通用 GPU Kernel 可以先通过 `compute.prepare_work()` 形成固定资源和运算配方，再使用 `graph.bind_work()` 绑定图内输入，以 `graph.add_compute_pass()` 和 `compute_work()` 执行。配方本身不执行计算；每个相机视图持有自己的私有存储。输入需要在使用前具有完整的生产证明，不能把声明 Storage Write 当作已经写满缓冲。
 
-可以按工作负载选择当前可用路径：
+`add_copy_pass()` 支持 Texture Copy、Buffer Copy 和单采样 RGBA32F 图像到缓冲的显式传输。Buffer Copy 的长度不能超过任一端的逻辑范围。图像到缓冲使用 `copy_texture_to_buffer(source, destination, size=(width, height))`，不会同时映射或回读数据。任意 Blit、格式转换和自定义 Queue 尚无公开 Builder 入口。
 
-- 图像空间计算适合 Fragment 工作时，使用带 `fullscreen_quad()` 和显式 Texture Input 的 Raster Pass。
-- 普通场景提交使用 `draw_renderers()` 与 Material Queue 过滤；Renderer Batching 与 Draw Submission 由引擎管理。
-- GPU 粒子模拟与 GPU-driven 粒子绘制使用 Particle Graph 子系统，其 Compute 与 Indirect 路径由引擎管理。
-- 通用 Compute Kernel、GPU 生成的 Indirect Draw、自定义 Queue 或自定义 Native Resource Import 当前不适合 Python RenderGraph。项目管线调用这些能力之前，需要先增加引擎管理的 Native Feature 以及新的公开 Binding/IR 契约。
+普通瞬态缓冲、导入缓冲和 Work 输出均可显式声明 `graph.export_buffer(handle, shape=(...), dtype=...)`。导出的是这次图执行的最终值，导出本身构成图编译根，因此其必要生产过程不会因为未连接最终画面而被裁掉。若需要中间 Pass 的值，应先显式复制到另一个缓冲再导出。内置 View Light List 须复制到自己的缓冲后使用。
 
-Transfer 支持范围较窄。Texture Copy 要求两张不同的瞬态 Texture 格式一致，Camera Target 不参与该操作。Buffer Copy 可指定字节数，且不能超过两端较小者。任意 Blit、格式转换、队列选择与自定义 Transfer Command 目前没有公开的 Python Builder 入口。
+在视图已经定义图之后，调用 `rendergraph.capture_buffer(name, camera=camera)` 登记下一次执行的数据源。默认选择主 Game 相机，`scene_view=True` 选择 Scene 视图。名称使用图中资源的完整名称。同一次准备之前的多个登记指向同一次执行；之后的登记等待后续执行，不以旧的 latest 值代替新事件。
+
+数据源 `ready` 表示真实 GPU 提交已经成功受理，不表示 GPU 已完成。此时 `source.buffer()` 返回持有该次内容和完整生产依赖的只读 Buffer；`nn.as_tensor(buffer)` 共用它的显存存储。普通 Kernel、神经程序和 Transfer 消费它时，仍经过各自已有的预算、传输和 GPU 等待路径。需要 CPU 数据时必须安排回读。后续图执行会为仍被读取的输出更换存储，避免覆盖旧值。
+
+`BufferSource` 可以直接传给已经准备的神经程序、`compute.transfer()`，或相同布局的普通 Kernel 只读输入。神经程序的 `prepare()` 可以读取来源布局完成冷编译；普通调用仍同步求值，来源尚未提交时会明确报错，异步工作须使用 `submit()`。请求在提交时固定模型参数状态、训练写者和普通输入，只有缺失的实际数据与必要 IO 延后绑定。等待来源不会重置原宿主帧或毫秒期限，绑定本身也计入原宿主预算。
+
+关闭来源的 `close()` 只释放这个包装；已提交请求持有自己的来源引用。显式 `cancel()` 或创建来源的 ExecutionScope 关闭会撤销尚未发布的 producer。图定义退出、场景重置或视图销毁同样会终止 pending 来源；已经发布的值按自己的内容寿命存活。暂停不停止无关视图渲染，也不会偷偷绑定该暂停请求的数据。
+
+必需的物理或渲染消费者不能等待一个必须在它之后才能产生的图输出。引擎在实际阻塞边界检查这类依赖环，将不成立的消费者标为 `rejected` 并报告原因，不使用旧画面替代，也不重放 FixedUpdate。已经提交、只是 GPU 尚未完成的来源不属于这种环；暂停且暂不阻塞渲染的消费者可以让来源先正常提交。
 
 如果要将后处理结果写回相机，并继续绘制后续 Pass，应使用内置的全屏着色器，而不是 Copy Pass。相机输出到项目中的 RenderTexture 资产时也遵循这一规则：
 

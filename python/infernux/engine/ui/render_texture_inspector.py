@@ -1,4 +1,4 @@
-"""CPU-only RenderTexture authoring using the shared resource document journal."""
+"""RenderTexture document authoring and live color preview."""
 from __future__ import annotations
 
 import json
@@ -35,6 +35,24 @@ class RenderTextureDocument:
 
 def load_document(path: str):
     return RenderTextureDocument(path), {}
+
+
+def render_preview(ctx, panel, state):
+    from infernux.engine.i18n import t
+    from .asset_resource_preview import _draw_preview_image
+    from .editor_services import EditorServices
+
+    guid = (state.meta or {}).get("guid")
+    engine = EditorServices.instance().native_engine
+    if not guid or engine is None:
+        return
+    texture_id, width, height = engine._get_render_texture_preview(guid)
+    if texture_id:
+        available_width = max(1.0, ctx.get_content_region_avail_width())
+        _draw_preview_image(ctx, texture_id, available_width, 160.0, width, height, True, True)
+    else:
+        ctx.label(t("asset.rt_waiting_for_frame"))
+    ctx.separator()
 
 
 def render_body(ctx, panel, state):
@@ -77,11 +95,11 @@ def render_body(ctx, panel, state):
     document["filter"] = combo("filter", ["nearest", "linear"], document["filter"],
                                [t("asset.filter_point"), t("asset.filter_bilinear")])
     field_label(ctx, labels["storage"], label_width)
-    document["storage"] = bool(ctx.checkbox("##rt_storage", document["storage"]))
+    document["storage"] = bool(ctx.checkbox_field("##rt_storage", document["storage"]))
     ctx.record_semantic_item("checkbox", labels["storage"], True, "rt_storage", bool_value=document["storage"])
     if document["depth_format"] != "undefined":
         field_label(ctx, labels["sampled_depth"], label_width)
-        document["sampled_depth"] = bool(ctx.checkbox("##rt_sampled_depth", document["sampled_depth"]))
+        document["sampled_depth"] = bool(ctx.checkbox_field("##rt_sampled_depth", document["sampled_depth"]))
         ctx.record_semantic_item("checkbox", labels["sampled_depth"], True, "rt_sampled_depth",
                                  bool_value=document["sampled_depth"])
     else:

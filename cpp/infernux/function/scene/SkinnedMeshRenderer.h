@@ -15,20 +15,43 @@ namespace infernux
 {
 
 class InxSkinnedMesh;
+class SkeletonInstance;
+class Transform;
 
 /**
  * @brief Renderer component for animated skeletal model instances.
  *
- * Runtime skeleton/animation data is the immutable skinned payload of the
- * referenced InxMesh asset.
- * This
- * component owns playback-facing state and exposes bind-pose vertices plus a per-frame GPU bone palette to the
- * renderer.
+ * Geometry and inverse binds come from an immutable InxMesh asset. An independent
+ * SkeletonInstance owns editable bone Transforms; each skin derives its final
+ * palette from that instance and retains the previous rendered palette.
  */
 class SkinnedMeshRenderer : public MeshRenderer
 {
   public:
+    static ComponentTypeConstraints GetTypeConstraints()
+    {
+        auto constraints = MeshRenderer::GetTypeConstraints();
+        constraints.documentComponentReferences = {"skeleton_component_id"};
+        return constraints;
+    }
     SkinnedMeshRenderer() = default;
+    ~SkinnedMeshRenderer() override;
+    void OnHierarchyPublished() override;
+    void Awake() override;
+    void OnEnable() override;
+    SkeletonInstance *GetSkeletonInstance() const
+    {
+        return m_skeleton;
+    }
+    void SetSkeletonInstance(SkeletonInstance *skeleton);
+    void RemapComponentReferences(const std::unordered_map<uint64_t, uint64_t> &componentIdRemap) override;
+    std::vector<Transform *> GetBones() const;
+    void ForgetSkeleton(SkeletonInstance *skeleton);
+    void PublishSkeletonPalette(const std::vector<glm::mat4> &rootSpaceMatrices);
+    void InvalidateSkeletonPose();
+    glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
+    glm::mat4 ResolveBoundsWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
+    glm::mat4 ResolveSubmeshWorldMatrix(const glm::mat4 &rendererWorldMatrix) const override;
 
     [[nodiscard]] const char *GetTypeName() const override
     {
@@ -116,6 +139,7 @@ class SkinnedMeshRenderer : public MeshRenderer
                                                      bool loop, const std::string &animationSourceGuid = {}) const;
 
     void ReloadSourceModel();
+    void OnMeshAssetEvent(const std::string &guid, AssetEvent event) override;
     [[nodiscard]] bool ReferencesModelGuid(const std::string &guid) const;
 
     [[nodiscard]] bool HasRuntimeSkinnedMesh() const;
@@ -129,14 +153,17 @@ class SkinnedMeshRenderer : public MeshRenderer
     [[nodiscard]] const std::vector<glm::mat4> &GetRuntimeSkinBoneMatrices() const;
     [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>> GetRuntimeSkinBonePalette() const
     {
+        EnsureFinalPose();
         return m_skinPoseHistory.Current();
     }
     [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>> GetPreviousRuntimeSkinBonePalette() const
     {
+        EnsureFinalPose();
         return m_skinPoseHistory.Previous();
     }
     [[nodiscard]] SkinPoseHistory::SnapshotPtr GetRuntimeSkinPoseSnapshot() const
     {
+        EnsureFinalPose();
         return m_skinPoseHistory.Acquire();
     }
     [[nodiscard]] std::vector<std::string> GetSkeletonNodeNames() const;
@@ -151,11 +178,17 @@ class SkinnedMeshRenderer : public MeshRenderer
 
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
     static void ValidateSerializedDocument(const nlohmann::json &document);
-    bool DeserializeDocument(const nlohmann::json &document) override;
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
-    void RefreshRuntimeSkinnedMesh();
+    void OnMeshSourceChanged() override;
+    void ApplyRendererDocumentFields(const nlohmann::json &document) override;
+    std::shared_ptr<const InxSkinnedMesh> GetAnimationSourceModel() const;
+    void RefreshRuntimeSkinnedMesh(bool evaluateAnimation = true);
+    void BindSkeleton();
+    void EnsureFinalPose() const;
+    void RebuildBoneMapping() const;
+    void UpdateAnimationDependencies();
     void ClearRuntimeSkinnedMesh();
     [[nodiscard]] std::shared_ptr<const InxSkinnedMesh> GetOrLoadRuntimeModel() const;
     [[nodiscard]] std::shared_ptr<const InxSkinnedMesh>
@@ -163,6 +196,8 @@ class SkinnedMeshRenderer : public MeshRenderer
 
     std::string m_activeTakeName;
     std::string m_animationSourceGuid;
+    std::unordered_set<std::string> m_animationDependencies;
+    std::string m_dependencyGeometryGuid;
     std::string m_blendAnimationSourceGuid;
     float m_runtimeAnimationTime = 0.0f;
     float m_runtimeAnimationNormalized = 0.0f;
@@ -174,6 +209,13 @@ class SkinnedMeshRenderer : public MeshRenderer
     std::vector<std::shared_ptr<const InxSkinnedMesh>> m_poseStackAnimationSources;
     bool m_usePoseStack = false;
     SkinPoseHistory m_skinPoseHistory;
+    SkeletonInstance *m_skeleton = nullptr;
+    uint64_t m_skeletonComponentId = 0;
+    mutable std::vector<size_t> m_skinBoneNodes;
+    mutable bool m_boneMappingChanged = true;
+    mutable std::string m_skinBindingError;
+    mutable std::shared_ptr<const InxSkinnedMesh> m_boundSkeletonModel;
+    mutable std::shared_ptr<const InxSkinnedMesh> m_boundSkinModel;
     mutable std::shared_ptr<const InxSkinnedMesh> m_boundsModel;
     mutable SkinPoseHistory::PalettePtr m_boundsPalette;
     mutable int32_t m_boundsNodeGroup = -1;

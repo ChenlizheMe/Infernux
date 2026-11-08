@@ -9,6 +9,8 @@ class Time:
     """The time in seconds since the start of the game."""
     delta_time: float
     """The time in seconds since the last frame."""
+    smooth_delta_time: float
+    """Smoothed scaled game-frame duration; unaffected by fixed-step sampling."""
     unscaled_time: float
     """The unscaled time in seconds since the start of the game."""
     unscaled_delta_time: float

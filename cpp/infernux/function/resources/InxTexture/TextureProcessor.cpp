@@ -37,6 +37,24 @@ float LinearToSrgb(float value)
     return value <= 0.0031308f ? value * 12.92f : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
 }
 
+bool UsesSrgbTransfer(const TextureCpuData &texture)
+{
+    return TextureFormatIsSrgb(texture.format) &&
+           (texture.semantic == TextureSemantic::Color || texture.semantic == TextureSemantic::UserInterface ||
+            texture.semantic == TextureSemantic::Sprite);
+}
+
+const std::array<float, 256> &Srgb8ToLinear()
+{
+    static const auto values = [] {
+        std::array<float, 256> table;
+        for (size_t index = 0; index < table.size(); ++index)
+            table[index] = SrgbToLinear(static_cast<float>(index) / 255.0f);
+        return table;
+    }();
+    return values;
+}
+
 uint8_t QuantizeUNorm(float value)
 {
     return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
@@ -76,17 +94,12 @@ std::array<float, 4> ReadTexel(const TextureCpuData &texture, const TextureMipLe
     const uint64_t texel = static_cast<uint64_t>(z) * mip.slicePitch + static_cast<uint64_t>(y) * mip.rowPitch;
     if (IsRgba8(texture.format)) {
         const uint8_t *value = texture.bytes.data() + mip.byteOffset + texel + static_cast<uint64_t>(x) * 4U;
-        std::array<float, 4> result{};
-        for (size_t channel = 0; channel < result.size(); ++channel)
-            result[channel] = static_cast<float>(value[channel]) / 255.0f;
-        if (TextureFormatIsSrgb(texture.format) &&
-            (texture.semantic == TextureSemantic::Color || texture.semantic == TextureSemantic::UserInterface ||
-             texture.semantic == TextureSemantic::Sprite)) {
-            result[0] = SrgbToLinear(result[0]);
-            result[1] = SrgbToLinear(result[1]);
-            result[2] = SrgbToLinear(result[2]);
+        if (UsesSrgbTransfer(texture)) {
+            const auto &linear = Srgb8ToLinear();
+            return {linear[value[0]], linear[value[1]], linear[value[2]], static_cast<float>(value[3]) / 255.0f};
         }
-        return result;
+        return {static_cast<float>(value[0]) / 255.0f, static_cast<float>(value[1]) / 255.0f,
+                static_cast<float>(value[2]) / 255.0f, static_cast<float>(value[3]) / 255.0f};
     }
     if (texture.format != TextureFormat::Rgba32Float)
         throw std::invalid_argument("mip generation cannot read a block-compressed source");
@@ -101,9 +114,7 @@ void WriteTexel(TextureCpuData &texture, const TextureMipLevel &mip, uint32_t x,
 {
     const uint64_t texel = static_cast<uint64_t>(z) * mip.slicePitch + static_cast<uint64_t>(y) * mip.rowPitch;
     if (IsRgba8(texture.format)) {
-        if (TextureFormatIsSrgb(texture.format) &&
-            (texture.semantic == TextureSemantic::Color || texture.semantic == TextureSemantic::UserInterface ||
-             texture.semantic == TextureSemantic::Sprite)) {
+        if (UsesSrgbTransfer(texture)) {
             value[0] = LinearToSrgb(value[0]);
             value[1] = LinearToSrgb(value[1]);
             value[2] = LinearToSrgb(value[2]);
@@ -142,42 +153,50 @@ void GenerateMipChain(TextureCpuData &texture)
 {
     if (texture.mipLevels.size() != 1 || TextureFormatIsBlockCompressed(texture.format))
         throw std::invalid_argument("mip generation requires one uncompressed base level");
+    uint64_t byteEnd = texture.bytes.size();
     while (texture.mipLevels.back().width > 1 || texture.mipLevels.back().height > 1 ||
            texture.mipLevels.back().depth > 1) {
-        const TextureMipLevel previous = texture.mipLevels.back();
+        const auto &previous = texture.mipLevels.back();
         const uint32_t width = (std::max)(1U, previous.width / 2U);
         const uint32_t height = (std::max)(1U, previous.height / 2U);
         const uint32_t depth =
             texture.dimension == TextureDimension::Texture3D ? (std::max)(1U, previous.depth / 2U) : 1U;
-        const TextureMipLevel current = MakeUncompressedMip(width, height, depth, texture.bytes.size(), texture.format);
-        texture.bytes.resize(static_cast<size_t>(current.byteOffset + current.byteSize));
+        const auto current = MakeUncompressedMip(width, height, depth, byteEnd, texture.format);
+        byteEnd += current.byteSize;
         texture.mipLevels.push_back(current);
+    }
+    texture.bytes.resize(static_cast<size_t>(byteEnd));
 
-        for (uint32_t z = 0; z < depth; ++z) {
-            for (uint32_t y = 0; y < height; ++y) {
-                for (uint32_t x = 0; x < width; ++x) {
+    const auto sourceRange = [](uint32_t outputIndex, uint32_t outputSize, uint32_t inputSize) {
+        const auto begin = static_cast<uint32_t>(static_cast<uint64_t>(outputIndex) * inputSize / outputSize);
+        const auto end =
+            static_cast<uint32_t>((static_cast<uint64_t>(outputIndex + 1U) * inputSize + outputSize - 1U) / outputSize);
+        return std::pair{begin, (std::min)(inputSize, end)};
+    };
+    std::vector<std::pair<uint32_t, uint32_t>> columns;
+    for (size_t level = 1; level < texture.mipLevels.size(); ++level) {
+        const auto &previous = texture.mipLevels[level - 1];
+        const auto &current = texture.mipLevels[level];
+        columns.resize(current.width);
+        for (uint32_t x = 0; x < current.width; ++x)
+            columns[x] = sourceRange(x, current.width, previous.width);
+        for (uint32_t z = 0; z < current.depth; ++z) {
+            const auto [zBegin, zEnd] = sourceRange(z, current.depth, previous.depth);
+            for (uint32_t y = 0; y < current.height; ++y) {
+                const auto [yBegin, yEnd] = sourceRange(y, current.height, previous.height);
+                for (uint32_t x = 0; x < current.width; ++x) {
+                    const auto [xBegin, xEnd] = columns[x];
                     std::array<float, 4> value{};
-                    uint32_t sampleCount = 0;
-                    const auto sourceRange = [](uint32_t outputIndex, uint32_t outputSize, uint32_t inputSize) {
-                        const uint32_t begin =
-                            static_cast<uint32_t>(static_cast<uint64_t>(outputIndex) * inputSize / outputSize);
-                        const uint32_t end = static_cast<uint32_t>(
-                            (static_cast<uint64_t>(outputIndex + 1U) * inputSize + outputSize - 1U) / outputSize);
-                        return std::pair{begin, (std::min)(inputSize, end)};
-                    };
-                    const auto [xBegin, xEnd] = sourceRange(x, width, previous.width);
-                    const auto [yBegin, yEnd] = sourceRange(y, height, previous.height);
-                    const auto [zBegin, zEnd] = sourceRange(z, depth, previous.depth);
                     for (uint32_t sz = zBegin; sz < zEnd; ++sz) {
                         for (uint32_t sy = yBegin; sy < yEnd; ++sy) {
                             for (uint32_t sx = xBegin; sx < xEnd; ++sx) {
                                 const auto sample = ReadTexel(texture, previous, sx, sy, sz);
                                 for (size_t channel = 0; channel < value.size(); ++channel)
                                     value[channel] += sample[channel];
-                                ++sampleCount;
                             }
                         }
                     }
+                    const auto sampleCount = (xEnd - xBegin) * (yEnd - yBegin) * (zEnd - zBegin);
                     for (float &channel : value)
                         channel /= static_cast<float>(sampleCount);
                     if (texture.semantic == TextureSemantic::Normal)
@@ -197,19 +216,20 @@ void ComputeValueRange(TextureCpuData &texture)
     for (uint32_t z = 0; z < base.depth; ++z) {
         for (uint32_t y = 0; y < base.height; ++y) {
             for (uint32_t x = 0; x < base.width; ++x) {
-                auto value = ReadTexel(texture, base, x, y, z);
-                if (TextureFormatIsSrgb(texture.format) &&
-                    (texture.semantic == TextureSemantic::Color || texture.semantic == TextureSemantic::UserInterface ||
-                     texture.semantic == TextureSemantic::Sprite)) {
-                    value[0] = LinearToSrgb(value[0]);
-                    value[1] = LinearToSrgb(value[1]);
-                    value[2] = LinearToSrgb(value[2]);
-                }
+                const auto value = ReadTexel(texture, base, x, y, z);
                 for (size_t channel = 0; channel < value.size(); ++channel) {
                     texture.valueMin[channel] = (std::min)(texture.valueMin[channel], value[channel]);
                     texture.valueMax[channel] = (std::max)(texture.valueMax[channel], value[channel]);
                 }
             }
+        }
+    }
+    // The transfer is monotone. Convert the three extrema back to stored
+    // sRGB after reducing instead of encoding every sample again.
+    if (UsesSrgbTransfer(texture)) {
+        for (size_t channel = 0; channel < 3; ++channel) {
+            texture.valueMin[channel] = LinearToSrgb(texture.valueMin[channel]);
+            texture.valueMax[channel] = LinearToSrgb(texture.valueMax[channel]);
         }
     }
 }
@@ -273,15 +293,15 @@ TextureFormat CompressedFormat(TextureFormat source, TextureCompression compress
 }
 
 TextureMipLevel MakeCompressedMip(uint32_t width, uint32_t height, uint32_t depth, uint64_t offset,
-                                  TextureFormat format)
+                                  rhi::PixelFormatLayout layout)
 {
     TextureMipLevel mip;
     mip.width = width;
     mip.height = height;
     mip.depth = depth;
     mip.byteOffset = offset;
-    mip.rowPitch = static_cast<uint64_t>((std::max)(1U, (width + 3U) / 4U)) * TextureFormatBlockBytes(format);
-    mip.slicePitch = mip.rowPitch * (std::max)(1U, (height + 3U) / 4U);
+    mip.rowPitch = layout.RowBytes(width);
+    mip.slicePitch = mip.rowPitch * layout.RowCount(height);
     mip.byteSize = mip.slicePitch * depth;
     return mip;
 }
@@ -302,14 +322,15 @@ TextureCpuData CompressTexture(const TextureCpuData &source, TextureCompression 
     result.valueMin = source.valueMin;
     result.valueMax = source.valueMax;
     const int dxtMode = quality == TextureCompressionQuality::Fast ? STB_DXT_NORMAL : STB_DXT_HIGHQUAL;
+    const auto layout = GetTextureFormatLayout(result.format);
 
     for (const TextureMipLevel &sourceMip : source.mipLevels) {
         const TextureMipLevel destinationMip =
-            MakeCompressedMip(sourceMip.width, sourceMip.height, sourceMip.depth, result.bytes.size(), result.format);
+            MakeCompressedMip(sourceMip.width, sourceMip.height, sourceMip.depth, result.bytes.size(), layout);
         result.bytes.resize(static_cast<size_t>(destinationMip.byteOffset + destinationMip.byteSize));
         result.mipLevels.push_back(destinationMip);
-        const uint32_t blocksX = (std::max)(1U, (sourceMip.width + 3U) / 4U);
-        const uint32_t blocksY = (std::max)(1U, (sourceMip.height + 3U) / 4U);
+        const auto blocksX = destinationMip.rowPitch / layout.bytesPerBlock;
+        const auto blocksY = layout.RowCount(sourceMip.height);
         for (uint32_t blockY = 0; blockY < blocksY; ++blockY) {
             for (uint32_t blockX = 0; blockX < blocksX; ++blockX) {
                 std::array<uint8_t, 64> rgba{};
@@ -330,7 +351,7 @@ TextureCpuData CompressTexture(const TextureCpuData &source, TextureCompression 
                 }
                 uint8_t *destination = result.bytes.data() + destinationMip.byteOffset +
                                        static_cast<uint64_t>(blockY) * destinationMip.rowPitch +
-                                       static_cast<uint64_t>(blockX) * TextureFormatBlockBytes(result.format);
+                                       static_cast<uint64_t>(blockX) * layout.bytesPerBlock;
                 switch (compression) {
                 case TextureCompression::BC1:
                     stb_compress_dxt_block(destination, rgba.data(), 0, dxtMode);

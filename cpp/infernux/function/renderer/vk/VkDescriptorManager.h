@@ -1,5 +1,9 @@
 #pragma once
 
+#include "VulkanBackendApi.h"
+
+#include "VulkanSubmissionWaits.h"
+
 #include <function/renderer/rhi/RhiSubmission.h>
 
 #include <array>
@@ -61,31 +65,39 @@ class VkDescriptorManager
     };
 
     VkDescriptorManager() = default;
-    VkDescriptorManager(VkDevice device, rhi::DeviceId deviceId) noexcept;
-    ~VkDescriptorManager();
+    INFERNUX_VULKAN_BACKEND_API VkDescriptorManager(VkDevice device, rhi::DeviceId deviceId) noexcept;
+    INFERNUX_VULKAN_BACKEND_API ~VkDescriptorManager();
 
     VkDescriptorManager(const VkDescriptorManager &) = delete;
     VkDescriptorManager &operator=(const VkDescriptorManager &) = delete;
 
-    void Reset(VkDevice device = VK_NULL_HANDLE, rhi::DeviceId deviceId = rhi::InvalidDeviceId) noexcept;
-    [[nodiscard]] DescriptorLease Allocate(VkDescriptorSetLayout layout,
-                                           DescriptorArena arena = DescriptorArena::Persistent);
+    INFERNUX_VULKAN_BACKEND_API void Reset(VkDevice device = VK_NULL_HANDLE,
+                                           rhi::DeviceId deviceId = rhi::InvalidDeviceId) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API DescriptorLease
+    Allocate(VkDescriptorSetLayout layout, DescriptorArena arena = DescriptorArena::Persistent);
     /// Allocate one variable-count descriptor set from the manager-owned
     /// bindless arena. The layout must expose a variable-count binding.
     [[nodiscard]] DescriptorLease AllocateBindlessTextureSet(VkDescriptorSetLayout layout, uint32_t descriptorCount);
     /// Returns a manager-owned pool for a third-party allocator such as ImGui.
     /// Sets allocated from this pool remain externally owned and are not leases.
-    [[nodiscard]] VkDescriptorPool AcquireExternalPool(DescriptorArena arena);
-    void MarkUsed(const DescriptorLease &lease, rhi::SubmissionSerial serial) noexcept;
-    void MarkUsed(VkDescriptorSet set, rhi::SubmissionSerial serial) noexcept;
-    void MarkUsed(const VkDescriptorSet *sets, uint32_t count, rhi::SubmissionSerial serial) noexcept;
-    void UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
-    void Retire(const DescriptorLease &lease, rhi::SubmissionSerial retireAfter = 0) noexcept;
-    size_t Collect(rhi::SubmissionSerial completedSerial) noexcept;
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkDescriptorPool AcquireExternalPool(DescriptorArena arena);
+    INFERNUX_VULKAN_BACKEND_API void MarkUsed(const DescriptorLease &lease, rhi::SubmissionSerial serial) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void MarkUsed(VkDescriptorSet set, rhi::SubmissionSerial serial) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void MarkUsed(const VkDescriptorSet *sets, uint32_t count, rhi::SubmissionSerial serial,
+                                              VkCommandBuffer commands = VK_NULL_HANDLE,
+                                              VkPipelineStageFlags stages = 0) noexcept;
+    /// Publish the upload sources with a newly allocated descriptor set.
+    INFERNUX_VULKAN_BACKEND_API void SetUploadSources(const DescriptorLease &lease, const SubmissionReads &sources);
+    INFERNUX_VULKAN_BACKEND_API void SetExternalUploadSource(VkDescriptorSet set, rhi::SubmissionTicket source);
+    INFERNUX_VULKAN_BACKEND_API void
+    UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
+    INFERNUX_VULKAN_BACKEND_API void Retire(const DescriptorLease &lease,
+                                            rhi::SubmissionSerial retireAfter = 0) noexcept;
+    INFERNUX_VULKAN_BACKEND_API size_t Collect(rhi::SubmissionSerial completedSerial) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
-    [[nodiscard]] bool Owns(const DescriptorLease &lease) const noexcept;
-    [[nodiscard]] Stats GetStats() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool Owns(const DescriptorLease &lease) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API Stats GetStats() const noexcept;
 
   private:
     struct PoolPage
@@ -101,6 +113,7 @@ class VkDescriptorManager
         rhi::SubmissionSerial lastUse = 0;
         rhi::SubmissionSerial retireAfter = 0;
         bool retired = false;
+        SubmissionReads uploadSources{};
     };
 
     [[nodiscard]] VkDescriptorPool CreatePool(DescriptorArena arena, uint32_t bindlessDescriptorCount = 0) const;
@@ -118,6 +131,7 @@ class VkDescriptorManager
     std::array<std::vector<PoolPage>, static_cast<size_t>(DescriptorArena::Count)> m_pools;
     std::unordered_map<uint64_t, LeaseState> m_leases;
     std::unordered_map<uint64_t, uint64_t> m_nativeLeaseIds;
+    std::unordered_map<VkDescriptorSet, rhi::SubmissionTicket> m_externalUploadSources;
     size_t m_peakLiveSets = 0;
     uint64_t m_allocationFailures = 0;
     std::function<rhi::SubmissionSerial()> m_retirementSerialSource;

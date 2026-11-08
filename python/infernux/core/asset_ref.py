@@ -27,13 +27,14 @@ class AssetRefBase:
     ``AssetManager``.
     """
 
-    __slots__ = ("_guid", "_cached", "_path_hint")
+    __slots__ = ("_guid", "_cached", "_path_hint", "_cache_revision")
 
     def __init__(self, guid: str = "", path_hint: str = ""):
         from .asset_reference_types import canonical_asset_reference_identity
 
         self._guid, self._path_hint = canonical_asset_reference_identity(guid, path_hint)
         self._cached = None
+        self._cache_revision = None
 
     # ── GUID ───────────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ class AssetRefBase:
         value = str(value or "").strip()
         if value != self._guid:
             self._guid = value
-            self._cached = None
+            self.invalidate()
 
     @property
     def path_hint(self) -> str:
@@ -84,12 +85,26 @@ class AssetRefBase:
         Returns the asset object, or ``None`` if not found.
         Subclasses override ``_do_resolve``.
         """
-        if self._cached is not None:
+        revision = self._cache_revision
+        if self._cached is not None and (revision is None or revision.current):
             return self._cached
         if not self._guid:
             return None
+        from infernux.core.assets import AssetManager
+
+        self._cache_revision = AssetManager._reference_revision(self._guid)
+        self._cached = None
         self._cached = self._do_resolve()
         return self._cached
+
+    def _seed_cache(self, asset) -> None:
+        """Keep an assigned object until its GUID is republished."""
+        self._cached = asset
+        self._cache_revision = None
+        if asset is not None and self._guid:
+            from infernux.core.assets import AssetManager
+
+            self._cache_revision = AssetManager._reference_revision(self._guid)
 
     def _do_resolve(self):
         """Override in subclass to call the appropriate AssetManager loader."""
@@ -98,6 +113,7 @@ class AssetRefBase:
     def invalidate(self):
         """Clear the cached resolved object (GUID is kept)."""
         self._cached = None
+        self._cache_revision = None
 
     # ── Serialization ──────────────────────────────────────────────────
 
@@ -235,11 +251,47 @@ class DataAssetRef(AssetRefBase):
 class PhysicMaterialRef(AssetRefBase):
     """Reference to the current shared Python PhysicMaterial proxy."""
 
+    __slots__ = ("_is_instance",)
+
+    def __init__(self, guid: str = "", path_hint: str = ""):
+        super().__init__(guid, path_hint)
+        self._is_instance = False
+
+    def __copy__(self):
+        copied = type(self)(guid=self._guid, path_hint=self._path_hint)
+        copied._cached, copied._is_instance = self._cached, self._is_instance
+        return copied
+
+    def __deepcopy__(self, memo):
+        copied = self.__copy__()
+        memo[id(self)] = copied
+        return copied
+
+    def __bool__(self):
+        return bool(self._guid) or self._cached is not None
+
+    def __eq__(self, other):
+        if isinstance(other, PhysicMaterialRef):
+            if self._guid or other._guid:
+                return self._guid == other._guid
+            return self._cached is other._cached and self._is_instance == other._is_instance
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self._guid) if self._guid else hash((id(self._cached), self._is_instance))
+
+    @property
+    def display_name(self):
+        if not self._guid and self._cached is not None:
+            return self._cached.name or "Surface instance"
+        return super().display_name
+
     def resolve(self):
         # The native registry owns publication/deletion. A GUID-local cache
         # would keep returning a deleted or replaced resource. Runtime-only
         # materials have no catalog identity and retain their assigned proxy.
         if self._guid:
+            self._is_instance = False
             self._cached = self._do_resolve()
         return self._cached
 
@@ -289,24 +341,13 @@ class RenderEffectRef(AssetRefBase):
         effect_guid = str(getattr(effect, "guid", "") or guid)
         effect_path = str(getattr(effect, "file_path", "") or path_hint)
         super().__init__(guid=effect_guid, path_hint=effect_path)
-        self._cached = effect
-
-    def resolve(self):
-        if self._cached is not None:
-            return self._cached
-        self._cached = self._do_resolve()
-        return self._cached
+        self._seed_cache(effect)
 
     def _do_resolve(self):
         from infernux.core.assets import AssetManager
         from infernux.renderstack.render_effect import RenderEffect
 
-        if self._guid:
-            # GUID is the asset identity; never fall back to a path when the
-            # GUID lookup fails.
-            return AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
-        # Runtime-created effects carry no GUID; the live object is the identity.
-        return self._cached
+        return AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
 
     def __bool__(self):
         return bool(self._guid or self._cached is not None)
@@ -322,6 +363,7 @@ class RenderEffectRef(AssetRefBase):
     def __copy__(self):
         copied = RenderEffectRef(guid=self._guid, path_hint=self._path_hint)
         copied._cached = self._cached
+        copied._cache_revision = self._cache_revision
         return copied
 
     def __deepcopy__(self, memo):
@@ -548,32 +590,21 @@ class MaterialRef(AssetRefBase):
             elif not isinstance(material, Material):
                 raise TypeError("MaterialRef requires a Material, native InxMaterial, string, or None")
             super().__init__(guid=material.guid, path_hint=path_hint or material.file_path or "")
-            self._cached = material
+            self._seed_cache(material)
         else:
             super().__init__(guid=guid, path_hint=path_hint)
 
     def resolve(self):
         """Return the loaded Material, or ``None`` if missing."""
-        mat = self._cached
-        if mat is not None:
-            if mat._disposed:
-                self._cached = None
-                return self._do_resolve()
-            return mat
-        return self._do_resolve()
+        if self._cached is not None and self._cached._disposed:
+            self.invalidate()
+        return super().resolve()
 
     def _do_resolve(self):
-        if not self._guid:
-            # Runtime-created materials (e.g. via Clone/Instantiate) have no
-            # GUID. Keep the cached reference alive instead of discarding
-            # it — there is no asset database entry to re-resolve.
-            return self._cached
         from infernux.core.assets import AssetManager
         from infernux.core.material import Material
 
-        mat = AssetManager.load_by_guid(self._guid, asset_type=Material)
-        self._cached = mat
-        return mat
+        return AssetManager.load_by_guid(self._guid, asset_type=Material)
 
     def __bool__(self):
         """True if the ref points to a valid material (asset or runtime)."""

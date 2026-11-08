@@ -1,4 +1,5 @@
 #include "BindingRegistration.h"
+#include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/rhi/RhiTypes.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
@@ -93,7 +94,9 @@ void RegisterRhiBindings(py::module_ &m)
         .value("D32_SFLOAT", rhi::PixelFormat::D32SFloat)
         .value("D24_UNORM_S8_UINT", rhi::PixelFormat::D24UNormS8UInt)
         .value("D32_SFLOAT_S8_UINT", rhi::PixelFormat::D32SFloatS8UInt)
-        .def_property_readonly("is_depth", [](rhi::PixelFormat format) { return rhi::IsDepthFormat(format); });
+        .def_property_readonly("is_depth", [](rhi::PixelFormat format) { return rhi::IsDepthFormat(format); })
+        .def_property_readonly("buffer_copy_texel_bytes", &rhi::TextureBufferCopyRegion::TexelBytes,
+                               "Bytes per texel for a packed buffer copy, or zero for unsupported formats");
 
     py::enum_<rhi::SampleCount>(m, "SampleCount", "Backend-neutral MSAA sample count")
         .value("COUNT_1", rhi::SampleCount::One)

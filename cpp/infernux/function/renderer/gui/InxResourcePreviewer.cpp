@@ -9,7 +9,6 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
-#include <function/resources/InxMesh/InxMesh.h>
 
 #include <algorithm>
 #include <cctype>
@@ -719,7 +718,7 @@ static void DownsampleRGBA(const unsigned char *src, int srcW, int srcH, int dst
 }
 
 /// Build a TextureResolver that uses AssetDatabase to resolve GUIDs → file paths → pixels.
-static PreviewTextureResolver MakeTextureResolver(AssetDatabase *adb)
+static PreviewTextureResolver MakeTextureResolver(const AssetDatabase *adb)
 {
     if (!adb)
         return nullptr;
@@ -845,17 +844,6 @@ std::vector<std::pair<std::string, std::string>> MaterialPreviewer::GetMetadata(
     return result;
 }
 
-std::shared_ptr<InxMaterial> MaterialPreviewer::BuildPreviewMaterialFromFile(const std::string &matFilePath,
-                                                                             AssetDatabase *adb)
-{
-    std::ifstream file(ToFsPath(matFilePath));
-    if (!file.is_open())
-        return nullptr;
-
-    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return BuildPreviewMaterialFromJson(jsonStr, adb);
-}
-
 std::shared_ptr<InxMaterial> MaterialPreviewer::BuildPreviewMaterialFromJson(const std::string &materialJson,
                                                                              AssetDatabase *adb)
 {
@@ -865,39 +853,24 @@ std::shared_ptr<InxMaterial> MaterialPreviewer::BuildPreviewMaterialFromJson(con
     auto sourceMaterial = std::make_shared<InxMaterial>();
     if (!sourceMaterial->Deserialize(materialJson))
         return nullptr;
-    ClearMissingTextureBindings(sourceMaterial.get(), adb);
-    return sourceMaterial->Clone();
+    return ClonePreviewMaterial(sourceMaterial, adb);
 }
 
-void MaterialPreviewer::RenderCpuPreview(const std::shared_ptr<InxMaterial> &material, int size,
-                                         std::vector<unsigned char> &outPixels, AssetDatabase *adb)
+std::shared_ptr<InxMaterial> MaterialPreviewer::ClonePreviewMaterial(const std::shared_ptr<InxMaterial> &material,
+                                                                     AssetDatabase *adb)
 {
-    if (!material || size <= 0) {
-        outPixels.clear();
-        return;
-    }
+    auto preview = material->Clone();
+    ClearMissingTextureBindings(preview.get(), adb);
+    return preview;
+}
+
+void MaterialPreviewer::RenderCpuPreview(const InxMaterial &material, int size, std::vector<unsigned char> &outPixels,
+                                         const AssetDatabase *adb)
+{
     PreviewTextureResolver resolver = MakeTextureResolver(adb);
-    std::string fragId = material->GetFragShaderName();
-    ShaderPreviewMapping mapping = GetShaderPreviewMapping(fragId, adb);
+    ShaderPreviewMapping mapping = GetShaderPreviewMapping(material.GetFragShaderReference(), adb);
     const ShaderPreviewMapping *pMapping = mapping.IsEmpty() ? nullptr : &mapping;
-    MaterialPreviewRenderer::RenderPreview(*material, size, outPixels, resolver, pMapping);
-}
-
-std::shared_ptr<InxMaterial> MaterialPreviewer::BuildEmbeddedPreviewMaterial(const std::string &modelPath,
-                                                                             uint32_t slotIndex)
-{
-    if (modelPath.empty())
-        return nullptr;
-
-    auto mesh = AssetRegistry::Instance().LoadAssetByPath<InxMesh>(modelPath, ResourceType::Mesh);
-    if (!mesh)
-        return nullptr;
-
-    const auto &slotDataVec = mesh->GetMaterialSlotData();
-    if (slotIndex >= static_cast<uint32_t>(slotDataVec.size()))
-        return nullptr;
-
-    return mesh->CreateMaterialCopy(slotIndex);
+    MaterialPreviewRenderer::RenderPreview(material, size, outPixels, resolver, pMapping);
 }
 
 } // namespace infernux

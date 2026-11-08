@@ -389,9 +389,10 @@ class _ImportSettingsController:
     def cancel_pending_writes(self) -> None:
         if self._pending_model_save is not None:
             database = self._pending_model_save[0]
-            database.discard_model_reimport()
+            cancelled = database.discard_model_reimport()
             self._pending_model_save = None
-            _ImportSettingsBatch.model_save_completed(self.document_id, False, "model Apply was cancelled")
+            message = "model Apply was cancelled" if cancelled else "model Apply is completing its accepted write"
+            _ImportSettingsBatch.model_save_completed(self.document_id, False, message)
 
     def discard(self, *, document_id: str):
 
@@ -1120,11 +1121,12 @@ def _ensure_categories():
         autosave_debounce=0.2,
     )
 
-    from .render_texture_inspector import load_document, render_body
+    from .render_texture_inspector import load_document, render_body, render_preview
     _categories["render_texture"] = AssetCategoryDef(
         display_name="asset.display_render_texture",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
         load_fn=load_document,
+        custom_header_fn=render_preview,
         custom_body_fn=render_body,
         autosave_debounce=0.35,
     )

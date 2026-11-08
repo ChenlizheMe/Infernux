@@ -24,6 +24,9 @@ class FullScreenEffect(RenderPass):
     _serialized_fields_: ClassVar[Dict[str, Any]]
 
     def __init__(self, enabled: bool = ...) -> None: ...
+    def get_pass_parameters(self) -> tuple[Mapping[str, float], ...] | None:
+        """Optionally supply push constants in the order of this effect's passes."""
+        ...
     def setup_passes(self, graph: RenderGraph, bus: ResourceBus) -> None:
         """Override to add fullscreen passes to the render graph."""
         ...

@@ -10,154 +10,34 @@ from __future__ import annotations
 
 import ast
 import copy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import importlib.util
-import inspect
 import json
 import linecache
 import os
 from pathlib import Path
 import struct
 import sys
-import textwrap
 import threading
 
 import numpy as np
 
 from . import CompilerInstallationError, _vendor_dir, load_native
-from ..kernel_contract import (
-    attribute_name,
-    execution_domain,
-    implicit_receiver_attribute,
-    implicit_receiver_name,
-    receiver_field_names,
-    receiver_issue,
-)
+from ..kernel_contract import WORK_ITEM_FAST_MATH, attribute_name
+from ..work_item import WorkItem, _function_source, normalize_work_item, receiver_bindings, receiver_fields
 from ..cache import compiler_cache_root, prune_cache_files
-from .compile_inputs import snapshot_compilation_values
+from ..gpu_artifact import (
+    _CACHE_ABI, _CACHE_MAGIC, CompilerArtifact, RangeContract, ArtifactAbiMismatchError,
+    parameter_key, _specialization_identity, _compilation_request, _read_artifact, _decode_artifact, _encode_artifact,
+)
 
 
 _VENDOR_NAME = "infernux._compiler.taichi._vendor.taichi"
 _lock = threading.RLock()
 _vendor = None
-_CACHE_MAGIC = b"INXGPU\x01"
-_CACHE_ABI = "infernux-gpu-kernel-contract-v2"
 _CACHE_FILE_LIMIT = 128
 _CACHE_BYTE_LIMIT = 256 * 1024 * 1024
-
-
-def _kernel_qualified_name(function) -> str:
-    """Return the stable source identity shown in kernel diagnostics."""
-    module = str(getattr(function, "__module__", "") or "<module>")
-    qualified = str(
-        getattr(function, "__qualname__", None)
-        or getattr(function, "__name__", "<kernel>")
-    )
-    return f"{module}.{qualified}"
-
-
-def _kernel_target() -> str:
-    """Describe the active compiler target without importing the engine eagerly."""
-    explicit = os.environ.get("INFERNUX_COMPUTE_TARGET", "").strip()
-    if explicit:
-        return explicit
-    try:
-        from infernux.application import Application
-
-        return "Player/Desktop" if Application.is_player() else "Editor/Desktop"
-    except Exception:
-        return "Editor/Desktop"
-
-
-def _kernel_diagnostic(
-    function,
-    reason: str,
-    advice: str,
-    *,
-    target: str | None = None,
-    line: int | None = None,
-    column: int = 1,
-) -> str:
-    code = getattr(function, "__code__", None)
-    path = str(getattr(code, "co_filename", "<unknown>"))
-    line = int(line if line is not None else getattr(code, "co_firstlineno", 0) or 0)
-    qualified = _kernel_qualified_name(function)
-    compiler_target = target or _kernel_target()
-    return (
-        f"GPU kernel '{qualified}' at {path}:{line}:{column} is invalid for "
-        f"target '{compiler_target}': {reason}. Rewrite: {advice}"
-    )
-
-
-def _is_class_qualified(function) -> bool:
-    qualified = str(getattr(function, "__qualname__", ""))
-    parts = qualified.split(".")
-    # ``test.<locals>.Kernel.step`` is still a class method; only a plain
-    # nested function has ``<locals>`` as the component immediately before
-    # the function name.
-    return len(parts) >= 2 and parts[-2] != "<locals>"
-
-
-def _validate_kernel_method(
-    function,
-    definition: ast.FunctionDef,
-    *,
-    target: str | None = None,
-    receiver_fields: tuple[str, ...] | None = None,
-) -> None:
-    """Validate class identity and keep Python objects out of the GPU ABI."""
-    if not _is_class_qualified(function):
-        return
-    first = implicit_receiver_name(definition, in_class=True)
-    if first is not None and receiver_fields is None:
-        raise TypeError(_kernel_diagnostic(
-            function,
-            f"class-contained kernels cannot use an implicit instance receiver '{first}'",
-            "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
-            target=target,
-            line=definition.lineno,
-            column=definition.col_offset + 1,
-        ))
-    issue = receiver_issue(definition)
-    if issue is not None:
-        node, reason = issue
-        raise TypeError(_kernel_diagnostic(
-            function, reason, "read numeric fields or mutate inx.buffer elements only",
-            target=target, line=node.lineno, column=node.col_offset + 1,
-        ))
-    access = implicit_receiver_attribute(definition)
-    if access is not None and access[1].attr not in (receiver_fields or ()):
-        receiver, attribute = access
-        raise TypeError(_kernel_diagnostic(
-            function,
-            f"class-contained kernels cannot access unbound receiver field '{receiver}.{attribute.attr}'",
-            "pass the required scalar or inx.buffer explicitly, or put @staticmethod above @inx.compute.kernel",
-            target=target,
-            line=attribute.lineno,
-            column=attribute.col_offset + 1,
-        ))
-
-
-class _ReceiverLowering(ast.NodeTransformer):
-    """Replace the small, explicit instance receiver ABI with parameters."""
-
-    def __init__(self, receiver: str, fields: tuple[str, ...]):
-        self._receiver = receiver
-        self._fields = frozenset(fields)
-
-    def visit_Attribute(self, node: ast.Attribute):
-        node = self.generic_visit(node)
-        if (
-            isinstance(node.value, ast.Name)
-            and node.value.id == self._receiver
-            and node.attr in self._fields
-        ):
-            return ast.copy_location(
-                ast.Name(id=f"_infernux_receiver_{node.attr}", ctx=node.ctx),
-                node,
-            )
-        return node
 
 
 class _IntrinsicLowering(ast.NodeTransformer):
@@ -252,7 +132,8 @@ class _SerialLoopPairLowering(ast.NodeTransformer):
     def __init__(self, definition: ast.FunctionDef):
         self._counter = 0
         self._used_names = {
-            node.id for node in ast.walk(definition) if isinstance(node, ast.Name)
+            node.id if isinstance(node, ast.Name) else node.arg for node in ast.walk(definition)
+            if isinstance(node, (ast.Name, ast.arg))
         }
 
     def _fresh(self, role: str) -> str:
@@ -463,233 +344,65 @@ def _attribute_name(node: ast.expr) -> str | None:
     return value or None
 
 
-def _buffer_annotation(ti, value):
-    scalar = {
-        np.dtype(np.float32): ti.f32,
-        np.dtype(np.int32): ti.i32,
-        np.dtype(np.uint32): ti.u32,
-    }[value._dtype.scalar]
+def _buffer_annotation(ti, value, *, needs_grad=False):
+    scalar = getattr(ti.types.primitive_types, value._dtype.scalar.name)
     dtype = ti.types.vector(value._dtype.lanes, scalar) if value._dtype.lanes > 1 else scalar
-    return ti.types.external_buffer(dtype=dtype, ndim=len(value.shape))
+    return ti.types.external_buffer(dtype=dtype, ndim=len(value.shape), needs_grad=needs_grad)
 
 
-def parameter_key(params) -> tuple:
-    """Return the bounded specialization key; runtime sizes are not compiled in."""
-    from infernux.compute import Buffer
-
-    key = []
-    for value in params:
-        if isinstance(value, Buffer):
-            key.append(("buffer", value.dtype, len(value.shape)))
-        elif isinstance(value, (bool, int, np.integer)):
-            key.append(("int32",))
-        elif isinstance(value, (float, np.floating)):
-            key.append(("float32",))
-        else:
-            raise TypeError("GPU kernel parameters must be inx.buffer values or numeric scalars")
-    return tuple(key)
 
 
-def _function_definition(value, *, kind: str) -> ast.FunctionDef:
-    if value.__closure__:
-        raise TypeError(f"GPU {kind} cannot capture Python closure values")
-    source = _function_source(value)
-    tree = ast.parse(source)
-    definition = next(
-        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
-        None,
-    )
-    if not isinstance(definition, ast.FunctionDef):
-        raise TypeError(f"GPU {kind} must be a synchronous Python function")
-    definition.decorator_list = []
-    return definition
 
 
-def _function_source(value) -> str:
-    records = value.__globals__.get("__infernux_compute_sources__", {})
-    embedded = records.get(value.__qualname__) if isinstance(records, dict) else None
-    if embedded is not None:
-        if not isinstance(embedded, str) or not embedded.strip():
-            raise TypeError(f"GPU source metadata is invalid for {value.__qualname__}")
-        return textwrap.dedent(embedded)
-    return textwrap.dedent(inspect.getsource(value))
 
 
-def receiver_fields(function) -> tuple[str, ...]:
-    """Analyze a declaration once; no receiver or live values are cached."""
-
-    source = _function_source(function)
-    tree = ast.parse(source)
-    definition = next(
-        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
-        None,
-    )
-    if not isinstance(definition, ast.FunctionDef):
-        raise TypeError("GPU kernel must be a synchronous Python function")
-    positional = (*definition.args.posonlyargs, *definition.args.args)
-    if not positional or positional[0].arg not in {"self", "cls"}:
-        raise TypeError("instance GPU kernel receiver is not a conventional self/cls parameter")
-    names = receiver_field_names(definition)
-    _validate_kernel_method(function, definition, receiver_fields=names)
-    return names
-
-
-def receiver_bindings(function, receiver, fields: tuple[str, ...]) -> tuple[tuple[str, object], ...]:
-    """Snapshot numeric fields/buffer owners once at the launch boundary."""
-    from infernux.compute import Buffer
-
-    bindings: list[tuple[str, object]] = []
-    for name in fields:
-        try:
-            value = getattr(receiver, name)
-        except AttributeError as exception:
-            raise TypeError(_kernel_diagnostic(
-                function, f"receiver field '{name}' is not initialized",
-                "initialize the scalar or inx.buffer before prepare/launch",
-            )) from exception
-        if not isinstance(value, (Buffer, bool, int, float, np.integer, np.floating)):
-            raise TypeError(_kernel_diagnostic(
-                function, f"receiver field '{name}' has unsupported type {type(value).__name__}",
-                "pass an inx.buffer or numeric scalar; Python objects cannot enter the GPU ABI",
-            ))
-        bindings.append((name, value))
-    return tuple(bindings)
-
-
-def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict) -> list[ast.FunctionDef]:
-    """Collect explicitly declared helpers and reject recursive call graphs."""
-    from infernux.compute import Function
-
-    ordered: list[ast.FunctionDef] = []
-    states: dict[str, str] = {}
-
-    def visit(definition: ast.FunctionDef) -> None:
-        for call in (node for node in ast.walk(definition) if isinstance(node, ast.Call)):
-            if not isinstance(call.func, ast.Name):
-                continue
-            name = call.func.id
-            helper = globals_map.get(name)
-            if not isinstance(helper, Function):
-                continue
-            state = states.get(name)
-            if state == "visiting":
-                raise TypeError(f"GPU compute helper recursion is not supported: {name}")
-            if state == "done":
-                continue
-            states[name] = "visiting"
-            helper_definition = _function_definition(helper.function, kind="compute helper")
-            helper_definition.name = name
-            visit(helper_definition)
-            helper_definition.decorator_list = [ast.Name(id="_infernux_gpu_function", ctx=ast.Load())]
-            ordered.append(helper_definition)
-            states[name] = "done"
-
-    visit(kernel_definition)
-    return ordered
-
-
-@dataclass(slots=True)
-class CompilerArtifact:
-    spirv_tasks: tuple[bytes, ...]
-    task_metadata: tuple[dict, ...]
-    domain_parameter: int
-    argument_layout: dict
-    required_capabilities: dict
-    diagnostic_locations: tuple[dict, ...]
-
-    def argument_bytes(self, params) -> bytes:
-        from infernux.compute import Buffer
-
-        layouts = tuple(self.argument_layout["parameters"])
-        if len(layouts) != len(params):
-            raise RuntimeError("GPU compiler argument layout does not match the kernel parameters")
-        payload = bytearray(int(self.argument_layout["size"]))
-        for layout, value in zip(layouts, params):
-            kind = layout["kind"]
-            if kind == "external_buffer":
-                if not isinstance(value, Buffer):
-                    raise TypeError("Compiled GPU buffer layout does not match the launch parameters")
-                offsets = tuple(layout["shape_offsets"])
-                if len(offsets) != len(value.shape):
-                    raise RuntimeError("GPU compiler buffer rank does not match the launch parameters")
-                for offset, size in zip(offsets, value.shape):
-                    struct.pack_into("<i", payload, int(offset), int(size))
-                struct.pack_into(
-                    "<Q", payload, int(layout["byte_offset_offset"]),
-                    int(value.description.byte_offset),
-                )
-            elif kind == "int32":
-                struct.pack_into("<i", payload, int(layout["offset"]), int(value))
-            elif kind == "float32":
-                struct.pack_into("<f", payload, int(layout["offset"]), float(value))
-            else:
-                raise RuntimeError(f"Unsupported GPU compiler argument layout kind: {kind}")
-        return bytes(payload)
 
 
 def _cache_root() -> Path:
     return compiler_cache_root()
 
 
-def _artifact_key(function, definition, helpers, params, compile_values) -> str:
+def _artifact_key(function, definition, helpers, params, compile_values, *, autodiff_mode="none", gradient_parameters=(),
+                  ordered_body=None) -> str:
     source_tree = ast.Module(body=[*helpers, definition], type_ignores=[])
     payload = {
         "abi": _CACHE_ABI,
+        "fast_math": WORK_ITEM_FAST_MATH,
+        "float_not_equal": "unordered",
         "module": function.__module__,
         "qualname": function.__qualname__,
         "source": ast.dump(source_tree, include_attributes=False),
         "parameters": parameter_key(params),
         "compile_values": compile_values,
+        "autodiff_mode": autodiff_mode,
+        "gradient_parameters": gradient_parameters,
         "target": "vulkan-1.2-spirv-1.5",
     }
+    if ordered_body is not None:
+        # Lowering removes the original loop bound and epilogue from some
+        # stages. Their source proof must still distinguish cached contracts.
+        payload["ordered_body"] = ordered_body
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _specialization_identity(params) -> str:
-    return json.dumps(parameter_key(params), separators=(",", ":"))
 
 
-def _decode_artifact(path: Path, *, specialization: str | None = None) -> CompilerArtifact | None:
-    if not path.is_file():
-        return None
-    payload = path.read_bytes()
-    if not payload.startswith(_CACHE_MAGIC):
-        raise RuntimeError(f"Invalid Infernux GPU compiler cache artifact: {path}")
-    header_size = struct.unpack_from("<I", payload, len(_CACHE_MAGIC))[0]
-    header_begin = len(_CACHE_MAGIC) + 4
-    header_end = header_begin + header_size
-    header = json.loads(payload[header_begin:header_end].decode("utf-8"))
-    if specialization is not None and header.get("specialization") != specialization:
-        # Artifacts written before the direct AOT contract are compiler cache,
-        # not valid Player inputs. The Editor recompiles and replaces them.
-        return None
-    tasks = []
-    cursor = header_end
-    for size in header["task_sizes"]:
-        end = cursor + int(size)
-        tasks.append(payload[cursor:end])
-        cursor = end
-    if cursor != len(payload):
-        raise RuntimeError(f"Invalid Infernux GPU compiler cache artifact size: {path}")
-    return CompilerArtifact(
-        spirv_tasks=tuple(tasks),
-        task_metadata=tuple(dict(item) for item in header["task_metadata"]),
-        domain_parameter=int(header["domain_parameter"]),
-        argument_layout=dict(header["argument_layout"]),
-        required_capabilities=dict(header["required_capabilities"]),
-        diagnostic_locations=tuple(
-            dict(item) for item in header["diagnostic_locations"]
-        ),
-    )
 
 
-def _load_artifact(key: str, params) -> CompilerArtifact | None:
+
+
+
+
+
+
+def _load_artifact(key: str, params, *, autodiff_mode="none", gradient_parameters=()) -> CompilerArtifact | None:
     path = _cache_root() / f"{key}.inxgpu"
-    return _decode_artifact(path, specialization=_specialization_identity(params))
+    return _decode_artifact(path, specialization=_specialization_identity(
+        params, autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters))
 
 
-def _load_player_artifact(function, params, artifact_key: str) -> CompilerArtifact:
+def _load_player_artifact(identity: str, params, artifact_key: str, *, autodiff_mode="none", gradient_parameters=()) -> CompilerArtifact:
     root = _cache_root()
     manifest_path = root / "AotManifest.json"
     try:
@@ -697,8 +410,7 @@ def _load_player_artifact(function, params, artifact_key: str) -> CompilerArtifa
         records = document["artifacts"]
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise RuntimeError(f"Player GPU AOT artifact is missing: {manifest_path}") from exc
-    identity = f"{function.__module__}.{function.__qualname__}"
-    specialization = _specialization_identity(params)
+    specialization = _specialization_identity(params, autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters)
     matches = [
         record for record in records
         if isinstance(record, dict)
@@ -723,16 +435,8 @@ def _store_artifact(key: str, artifact: CompilerArtifact, params) -> None:
     root = _cache_root()
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{key}.inxgpu"
-    header = json.dumps({
-        "task_sizes": [len(task) for task in artifact.spirv_tasks],
-        "task_metadata": artifact.task_metadata,
-        "domain_parameter": artifact.domain_parameter,
-        "argument_layout": artifact.argument_layout,
-        "required_capabilities": artifact.required_capabilities,
-        "diagnostic_locations": artifact.diagnostic_locations,
-        "specialization": _specialization_identity(params),
-    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    payload = _CACHE_MAGIC + struct.pack("<I", len(header)) + header + b"".join(artifact.spirv_tasks)
+    payload = _encode_artifact(artifact, _specialization_identity(
+        params, autodiff_mode=artifact.autodiff_mode, gradient_parameters=artifact.gradient_parameters))
     temporary = path.with_suffix(".tmp")
     temporary.write_bytes(payload)
     os.replace(temporary, path)
@@ -747,134 +451,117 @@ class KernelCompilationPlan:
     helpers: list[ast.FunctionDef]
     globals_map: dict
     domain_parameter: int
+    autodiff_mode: str
+    gradient_parameters: tuple[int, ...]
+    work_item: WorkItem
+    continuation: RangeContract
+    fast_math: bool
 
 
-def prepare_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None) -> KernelCompilationPlan:
-    """Prepare the same exact source identity for Editor, build and Player.
+def _work_item_proof(work_item, params):
+    from infernux.compute import Buffer
+    from infernux.jit_hir import TypeRef, ValueType
 
-    This phase requires neither a compiler installation nor a GPU. It runs
-    once when a specialization is prepared, not on each dispatch.
-    """
+    names = tuple(argument.arg for argument in (*work_item.definition.args.posonlyargs, *work_item.definition.args.args))
+    types = {name: TypeRef(ValueType.ARRAY if isinstance(value, Buffer) else
+                           ValueType.FLOAT if isinstance(value, (float, np.floating)) else ValueType.INT)
+             for name, value in zip(names, params)}
+    return work_item.analyze(argument_types=types).continuation_plan
+
+
+def _continuation_contract(work_item, params, *, autodiff_mode, gradient_parameters, proof=None):
+    from infernux.compute import Buffer
+    from infernux._compiler.kernel_contract import ARRAY_KINDS
+
+    names = tuple(argument.arg for argument in (*work_item.definition.args.posonlyargs, *work_item.definition.args.args))
+    proof = _work_item_proof(work_item, params) if proof is None else proof
+    diagnostics = [item.format() for item in proof.diagnostics]
+    if autodiff_mode != "none" or gradient_parameters:
+        diagnostics.append("local VJP parameters do not have a proven range ABI")
+    inner = proof.inner_range
+    if inner is not None:
+        inner.validate(params[inner.begin_parameter], params[inner.end_parameter])
+    if any((len(value.shape) != 1 or str(value._dtype.scalar) not in ARRAY_KINDS or value._dtype.lanes != 1)
+           if isinstance(value, Buffer) else not isinstance(value, (float, np.floating, int, np.integer))
+           for value in params):
+        diagnostics.append("continuation requires typed POD buffers and float32/int32 scalars")
+    count = len(params)
+    return RangeContract(count if not diagnostics else None, count + 1 if not diagnostics else None,
+        tuple(sorted(names.index(name) for name in proof.inputs if name in names)),
+        tuple(sorted(names.index(name) for name in proof.outputs if name in names)),
+        proof.operation_cost, tuple(diagnostics),
+        tuple(sorted(names.index(name) for name in proof.fully_written_outputs)) if not diagnostics else (),
+        resource_extents=proof.resource_extents if not diagnostics else (),
+        gathered=proof.gathered if not diagnostics else False,
+        inner_range=inner if not diagnostics else None)
+
+
+def _lower_continuation(work_item, definition):
+    hidden = ("_infernux_range_begin", "_infernux_range_end", "_infernux_range_relative")
+    used = {node.id if isinstance(node, ast.Name) else node.arg for node in ast.walk(definition)
+            if isinstance(node, (ast.Name, ast.arg))} | set(work_item.globals_map)
+    if any(name in used for name in hidden):
+        raise TypeError("work item source uses a reserved _infernux_range_ name")
+    definition.args.args = [*definition.args.posonlyargs, *definition.args.args, *(ast.arg(arg=name) for name in hidden[:2])]
+    definition.args.posonlyargs = []
+    assign_index = ast.Assign(targets=[ast.Name(id=work_item.index_name, ctx=ast.Store())],
+        value=ast.BinOp(left=ast.Name(id=hidden[0], ctx=ast.Load()), op=ast.Add(),
+                        right=ast.Name(id=hidden[2], ctx=ast.Load())))
+    definition.body = [ast.For(target=ast.Name(id=hidden[2], ctx=ast.Store()),
+        iter=ast.Call(func=ast.Name(id="range", ctx=ast.Load()), args=[ast.BinOp(
+            left=ast.Name(id=hidden[1], ctx=ast.Load()), op=ast.Sub(), right=ast.Name(id=hidden[0], ctx=ast.Load()))], keywords=[]),
+        body=[assign_index, *definition.body], orelse=[])]
+    return ast.fix_missing_locations(definition)
+
+
+def prepare_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None,
+                   autodiff_mode="none", gradient_parameters=(), _lowered=None) -> KernelCompilationPlan:
+    """Use the shared author body before GPU-specific storage/lowering checks."""
     from infernux.compute import Buffer
 
-    signature = inspect.signature(function)
-    if any(parameter.kind not in {parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD}
-           or parameter.default is not parameter.empty for parameter in signature.parameters.values()):
-        raise TypeError("GPU kernels currently require positional parameters without defaults")
-    bound_receiver = receiver_fields is not None
-    bound_fields = tuple(receiver_fields or ())
-    field_names = tuple(name for name, _ in bound_fields)
-    positional = (*signature.parameters.values(),)
-    receiver_name = (
-        positional[0].name
-        if positional and positional[0].name in {"self", "cls"}
-        else None
-    )
-    expected_parameters = len(signature.parameters) - (
-        1 if receiver_name and bound_receiver else 0
-    ) + len(field_names)
-    if len(params) != expected_parameters:
-        raise TypeError(f"GPU kernel requires {expected_parameters} parameters, got {len(params)}")
-
-    if function.__closure__:
-        captured = ", ".join(str(name) for name in getattr(function.__code__, "co_freevars", ()))
-        raise TypeError(_kernel_diagnostic(
-            function,
-            f"arbitrary Python closure capture is not part of the GPU ABI ({captured or 'unknown value'})",
-            "pass buffers or numeric scalars as explicit parameters; do not close over Python locals",
-        ))
-    source = _function_source(function)
-    tree = ast.parse(source)
-    definition = next((node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
-    if not isinstance(definition, ast.FunctionDef):
-        raise TypeError("GPU kernel must be a synchronous Python function")
-    _validate_kernel_method(
-        function,
-        definition,
-        target=_kernel_target(),
-        receiver_fields=field_names if bound_receiver else None,
-    )
-    if receiver_name and bound_receiver:
-        declared_fields = receiver_field_names(definition)
-        if declared_fields != field_names:
-            raise TypeError(_kernel_diagnostic(
-                function,
-                "receiver field binding does not match the source receiver fields "
-                f"({', '.join(declared_fields) or 'none'})",
-                "bind every self/cls field explicitly or remove the receiver access",
-                target=_kernel_target(),
-                line=definition.lineno,
-                column=definition.col_offset + 1,
-            ))
-        if definition.args.posonlyargs and definition.args.posonlyargs[0].arg == receiver_name:
-            definition.args.posonlyargs = definition.args.posonlyargs[1:]
-        elif definition.args.args and definition.args.args[0].arg == receiver_name:
-            definition.args.args = definition.args.args[1:]
-        remaining = [*definition.args.posonlyargs, *definition.args.args]
-        reserved = {item.id for item in ast.walk(definition) if isinstance(item, ast.Name)}
-        if any(f"_infernux_receiver_{name}" in reserved for name in field_names):
-            raise TypeError("GPU kernel source uses a reserved _infernux_receiver_ name")
-        synthetic = [ast.arg(
-            arg=f"_infernux_receiver_{name}",
-            annotation=None,
-        ) for name in field_names]
-        definition.args.posonlyargs = []
-        definition.args.args = [*synthetic, *remaining]
-        definition = _ReceiverLowering(receiver_name, field_names).visit(definition)
-        ast.fix_missing_locations(definition)
-    definition.decorator_list = []
-    if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-           and node.func.id == function.__name__ for node in ast.walk(definition)):
-        raise TypeError(f"GPU kernel recursion is not supported: {function.__name__}")
-    if any(isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom, ast.Await)) for node in ast.walk(definition)):
-        raise TypeError("GPU kernels write inx.buffer values in place and cannot return or yield")
-
-    declaration_position, index_name, domain_name, domain_parameter = execution_domain(definition)
-    domain = params[domain_parameter]
+    gradient_parameters = _compilation_request(params, autodiff_mode, gradient_parameters)
+    if _lowered is not None and (autodiff_mode != "none" or gradient_parameters or receiver_fields is not None):
+        raise TypeError("lowered work items use their frozen receiver and forward arithmetic roles")
+    work_item = normalize_work_item(function, len(params), receiver_fields=receiver_fields) if _lowered is None else _lowered.item
+    domain = params[work_item.domain_parameter]
     if not isinstance(domain, Buffer) or domain.device != "gpu" or len(domain.shape) != 1:
         raise TypeError("inx.compute.index currently requires a one-dimensional GPU inx.buffer")
     for value in params:
         if isinstance(value, Buffer) and value.device != "gpu":
             raise TypeError("GPU kernels require GPU inx.buffer parameters")
-
-    body = list(definition.body)
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-            and isinstance(body[0].value.value, str):
-        body.pop(0)
-        declaration_position -= 1
-    body.pop(declaration_position)
-    definition.body = body
-    globals_map = dict(function.__globals__)
-    helpers = _helper_definitions(definition, globals_map)
-    compile_values = snapshot_compilation_values([*helpers, definition], globals_map)
+    definition = copy.deepcopy(work_item.definition)
+    helpers = copy.deepcopy(work_item.helpers)
+    continuation = _continuation_contract(work_item, params, autodiff_mode=autodiff_mode,
+                                         gradient_parameters=gradient_parameters,
+                                         proof=None if _lowered is None else _lowered.continuation)
     _lower_serial_loops(definition)
     for helper in helpers:
         _lower_serial_loops(helper)
-    body = list(definition.body)
-    definition.body = [ast.For(
-        target=ast.Name(id=index_name, ctx=ast.Store()),
-        iter=ast.Call(
-            func=ast.Name(id="range", ctx=ast.Load()),
-            args=[ast.Subscript(
-                value=ast.Attribute(value=ast.Name(id=domain_name, ctx=ast.Load()), attr="shape", ctx=ast.Load()),
-                slice=ast.Constant(value=0), ctx=ast.Load())],
-            keywords=[]),
-        body=body,
-        orelse=[],
-    )]
-    artifact_key = _artifact_key(function, definition, helpers, params, compile_values)
-    return KernelCompilationPlan(artifact_key, definition, helpers, globals_map, domain_parameter)
+    definition = _lower_continuation(work_item, definition) if continuation.eligible else work_item.loop_definition(definition)
+    artifact_key = _artifact_key(function, definition, helpers, params, work_item.compile_values,
+                                 autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters,
+                                 ordered_body=None if continuation.inner_range is None else
+                                 _lowered.continuation.ordered_reduction.body_identity)
+    return KernelCompilationPlan(artifact_key, definition, helpers, dict(work_item.globals_map),
+                                 work_item.domain_parameter, autodiff_mode, gradient_parameters, work_item, continuation,
+                                 WORK_ITEM_FAST_MATH)
 
 
-def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None) -> CompilerArtifact:
+def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None,
+                   autodiff_mode="none", gradient_parameters=(), _lowered=None) -> CompilerArtifact:
     """Lower one Infernux kernel specialization without creating a GPU."""
     from infernux.compute import Buffer
 
-    plan = prepare_kernel(function, params, receiver_fields=receiver_fields)
+    plan = prepare_kernel(function, params, receiver_fields=receiver_fields,
+                          autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters, _lowered=_lowered)
+    request = {"autodiff_mode": plan.autodiff_mode, "gradient_parameters": plan.gradient_parameters}
     artifact_key = plan.artifact_key
+    identity = f"{function.__module__}.{function.__qualname__}"
+    if plan.continuation.inner_range is not None:
+        identity += "#" + plan.continuation.inner_range.kind
     if (_cache_root() / "AotOnly").is_file():
-        return _load_player_artifact(function, params, artifact_key)
-    cached = _load_artifact(artifact_key, params)
+        return _load_player_artifact(identity, params, artifact_key, **request)
+    cached = _load_artifact(artifact_key, params, **request)
     if cached is not None:
         return cached
 
@@ -888,6 +575,10 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
         runtime = ti.lang.impl.get_runtime()
         if runtime.prog is None:
             runtime.create_program()
+        program = runtime.prog
+        config = program.config()
+        # Set the actual Program configuration before ensure_compiled creates IR.
+        config.fast_math = plan.fast_math
         runtime.short_circuit_operators = True
         runtime.print_full_traceback = False
         runtime.unrolling_limit = 32
@@ -895,10 +586,11 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
         globals_map["_infernux_gpu_function"] = importlib.import_module(
             _VENDOR_NAME + ".lang.kernel_impl"
         ).func
-        for index, (argument, value) in enumerate(zip(definition.args.args, params)):
+        internal_params = (*params, 0, 0) if plan.continuation.eligible else params
+        for index, (argument, value) in enumerate(zip(definition.args.args, internal_params)):
             annotation_name = f"_infernux_parameter_{index}"
             if isinstance(value, Buffer):
-                annotation = _buffer_annotation(ti, value)
+                annotation = _buffer_annotation(ti, value, needs_grad=index in plan.gradient_parameters)
                 globals_map[annotation_name] = annotation
                 signature.append(annotation)
             elif isinstance(value, (bool, int, np.integer)):
@@ -918,11 +610,12 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
         namespace = globals_map
         try:
             exec(compile(generated_source, filename, "exec", dont_inherit=True), namespace)
-            compiler = ti.kernel(namespace[generated_name])
+            compiler = ti.kernel(namespace[generated_name], autodiff_mode=plan.autodiff_mode)
             key = compiler.ensure_compiled(*signature)
             kernel = compiler.compiled_kernels[key]
-            program = runtime.prog
-            compiled = program.compile_kernel(program.config(), program.get_device_caps(), kernel)
+            target_caps = program.make_target_caps(any(isinstance(value, Buffer) and value._dtype.scalar == np.dtype(np.int64)
+                                                       for value in params))
+            compiled = program.compile_kernel(config, target_caps, kernel)
             artifact = CompilerArtifact(
                 spirv_tasks=tuple(compiled._infernux_spirv_tasks),
                 task_metadata=tuple(dict(item) for item in compiled._infernux_task_metadata),
@@ -934,8 +627,11 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
                     "path": str(function.__code__.co_filename),
                     "line": int(function.__code__.co_firstlineno),
                     "column": 0,
-                    "function": f"{function.__module__}.{function.__qualname__}",
+                    "function": identity,
                 } for item in compiled._infernux_task_metadata),
+                continuation=plan.continuation,
+                fast_math=config.fast_math,
+                **request,
             )
         finally:
             # exec-created functions refer back to this request-local globals

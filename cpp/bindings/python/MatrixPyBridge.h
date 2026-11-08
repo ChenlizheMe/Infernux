@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <pybind11/numpy.h>
 #include <string>
+#include <vector>
 
 namespace infernux::binding
 {
@@ -22,6 +23,18 @@ inline glm::mat4 Matrix4FromPython(pybind11::handle value, const char *label)
     } else {
         throw pybind11::value_error(std::string(label) + " must have shape (4, 4)");
     }
+    return result;
+}
+
+inline pybind11::array_t<float> Matrix4ArrayToPython(const std::vector<glm::mat4> &matrices)
+{
+    pybind11::array_t<float> result(
+        {static_cast<pybind11::ssize_t>(matrices.size()), pybind11::ssize_t(4), pybind11::ssize_t(4)});
+    auto values = result.mutable_unchecked<3>();
+    for (size_t index = 0; index < matrices.size(); ++index)
+        for (int row = 0; row < 4; ++row)
+            for (int column = 0; column < 4; ++column)
+                values(index, row, column) = matrices[index][column][row];
     return result;
 }
 

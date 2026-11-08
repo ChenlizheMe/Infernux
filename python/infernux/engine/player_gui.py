@@ -142,7 +142,6 @@ class PlayerGUI(InxGUIRenderable):
         self._activate_play = activate_play
         self._play_started = False
         self._play_start_failed = False
-        self._initial_image_pending = True
         self._profile_frames = os.environ.get(
             "_INFERNUX_PLAYER_PROFILE_FRAMES", ""
         ).strip() == "1"
@@ -316,10 +315,9 @@ class PlayerGUI(InxGUIRenderable):
             ctx.label("Waiting for camera...")
             return
 
-        if self._initial_image_pending:
-            if not self._engine.get_native_engine().game_presentation_ready:
-                return
-            self._initial_image_pending = False
+        if not self._engine.get_native_engine().game_presentation_ready:
+            ctx.label("Preparing game view...")
+            return
 
         ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + pad_x)
         ctx.set_cursor_pos_y(ctx.get_cursor_pos_y() + pad_y)

@@ -26,6 +26,7 @@ class SceneDocumentTransactionState(Enum):
     CREATED = "created"
     READING = "reading"
     DOCUMENT_READY = "document_ready"
+    MESH_PREFLIGHTING = "mesh_preflighting"
     RESOURCE_PREFLIGHTING = "resource_preflighting"
     RESOURCES_READY = "resources_ready"
     PREFLIGHTING = "preflighting"
@@ -101,6 +102,9 @@ class SceneDocumentTransaction:
         self._linked_shader_ticket: Any = None
         self._linked_shader_preload_started = False
         self._resource_dependencies: tuple[tuple[str, str], ...] = ()
+        self._document_dependencies: tuple[tuple[str, str], ...] = ()
+        self._model_source_document: dict[str, Any] | None = None
+        self._model_meshes: list[tuple[str, int, Any]] = []
         self._resource_preflight_started: Optional[float] = None
         self._prepared_graph = None
         self._commit_token = None
@@ -181,6 +185,7 @@ class SceneDocumentTransaction:
             self._prepared_graph.discard()
         self._prepared_graph = None
         self._state = SceneDocumentTransactionState.FAILED
+        self._release_preloads()
 
     def _rebuild_python_registries(self) -> None:
         if not self._clear_registries:
@@ -189,7 +194,7 @@ class SceneDocumentTransaction:
         from infernux.components.builtin_component import BuiltinComponent
 
         InxComponent._clear_all_instances()
-        BuiltinComponent._clear_cache()
+        BuiltinComponent._retire_stale_wrappers()
         for scene in self._resident_scenes():
             for game_object in scene.get_all_objects():
                 for component in game_object.get_py_components() or []:
@@ -237,7 +242,7 @@ class SceneDocumentTransaction:
                     component._set_game_object(game_object)
                     component._refresh_native_handle()
 
-    def _start_asset_preloads(self) -> None:
+    def _start_asset_preloads(self, *, prefer_published: bool = False) -> None:
         from infernux.lib import AssetRegistry
 
         registry = AssetRegistry.instance()
@@ -254,30 +259,105 @@ class SceneDocumentTransaction:
         for guid, resource_type in self._resource_dependencies:
             schedule = begin_load.get(resource_type)
             if schedule is not None and asset_database.get_path_from_guid(guid):
-                tickets.append(schedule(guid))
+                if prefer_published and resource_type == "Mesh":
+                    tickets.append(schedule(guid, prefer_published=True))
+                else:
+                    tickets.append(schedule(guid))
         self._asset_load_tickets = tickets
 
-    def _poll_asset_preloads(self) -> bool:
+    def _release_preloads(self) -> None:
+        self._asset_load_tickets.clear()
+        self._model_meshes.clear()
+        self._model_source_document = None
+        self._reset_linked_shader_preload()
+
+    def _reset_linked_shader_preload(self) -> None:
+        ticket = self._linked_shader_ticket
+        if ticket is not None:
+            cancel = getattr(ticket, "cancel", None)
+            if callable(cancel):
+                cancel()
+        self._linked_shader_ticket = None
+        self._linked_shader_preload_started = False
+
+    def _start_model_preflight(self, *, admit: bool) -> None:
+        self._state = SceneDocumentTransactionState.MESH_PREFLIGHTING
+        self._resource_dependencies = tuple(
+            dependency for dependency in self._document_dependencies if dependency[1] == "Mesh"
+        )
+        self._start_asset_preloads(prefer_published=admit)
+        self._model_meshes.clear()
+        self._reset_linked_shader_preload()
+
+    def _prepare_model_document(self) -> None:
+        from infernux.engine.model_instance_sync import (
+            reconcile_scene_document_model_instances,
+            reconcile_scene_document_model_source_graphs,
+        )
+        from infernux.lib import AssetRegistry
+
+        registry = AssetRegistry.instance()
+        self._model_meshes = [
+            (guid, registry.get_asset_version(guid), mesh)
+            for guid, _ in self._resource_dependencies
+            if (mesh := registry.get_mesh(guid)) is not None
+        ]
+        # Keep the original input for a new plan if a later import publishes
+        # before the scene commits. The pins keep the selected data resident.
+        self._document = copy.deepcopy(self._model_source_document)
+        self._document_reconciliation_count = (
+            reconcile_scene_document_model_instances(self._document, self._asset_database)
+            + reconcile_scene_document_model_source_graphs(self._document, self._asset_database)
+        )
+
+    def _start_resource_preflight(self, *, admit: bool) -> None:
+        self._state = SceneDocumentTransactionState.RESOURCE_PREFLIGHTING
+        self._start_asset_preloads(prefer_published=admit)
+        if not self._asset_load_tickets:
+            self._finish_resource_preflight()
+
+    def _finish_resource_preflight(self) -> None:
+        self._phase_timings_ms["resources"] = (
+            time.perf_counter() - self._resource_preflight_started
+        ) * 1000.0
+        self._resource_preflight_started = None
+        self._state = SceneDocumentTransactionState.RESOURCES_READY
+
+    def _poll_asset_preloads(self, *, admit: bool = False) -> bool:
         """Publish completed worker payloads; return true once all are resident."""
         if self._asset_load_tickets:
-            from infernux.lib import AssetRegistry
+            from infernux.lib import AssetLoadSuperseded, AssetRegistry
 
             registry = AssetRegistry.instance()
+            if admit:
+                try:
+                    for ticket in self._asset_load_tickets:
+                        registry.try_submit_asset_load(ticket)
+                except AssetLoadSuperseded:
+                    self._start_asset_preloads(prefer_published=admit)
+                    return False
             if any(not ticket.complete for ticket in self._asset_load_tickets):
                 return False
             for ticket in self._asset_load_tickets:
                 if ticket.committed:
+                    if not registry.is_loaded(ticket.guid):
+                        self._start_asset_preloads(prefer_published=admit)
+                        return False
                     continue
                 try:
                     if not registry.try_commit_asset_load(ticket):
                         return False
+                except AssetLoadSuperseded:
+                    self._start_asset_preloads(prefer_published=admit)
+                    return False
                 except Exception as exc:
                     raise RuntimeError(
                         "asset preload commit failed for "
                         f"{ticket.resource_type}:{ticket.guid}: {exc}"
                     ) from exc
-            self._asset_load_tickets.clear()
+        return True
 
+    def _poll_linked_shader_preload(self) -> bool:
         if not self._linked_shader_preload_started:
             self._linked_shader_preload_started = True
             begin = getattr(
@@ -304,8 +384,7 @@ class SceneDocumentTransaction:
                         # A source/import/reference changed during preparation.
                         # Discard that immutable result and prepare the current
                         # revision on the next poll, through the same main path.
-                        self._linked_shader_ticket = None
-                        self._linked_shader_preload_started = False
+                        self._reset_linked_shader_preload()
                     return False
             self._linked_shader_ticket = None
         return True
@@ -345,7 +424,7 @@ class SceneDocumentTransaction:
             self._state = SceneDocumentTransactionState.READING
         return self
 
-    def poll(self) -> bool:
+    def poll(self, *, admit_assets: bool = False) -> bool:
         """Advance at most one transaction phase; return whether it is terminal."""
         self._require_owner_thread()
         if self._state is SceneDocumentTransactionState.CREATED:
@@ -354,6 +433,22 @@ class SceneDocumentTransaction:
             return True
 
         try:
+            if self._model_meshes:
+                from infernux.lib import AssetRegistry
+
+                registry = AssetRegistry.instance()
+                if any(
+                    registry.get_asset_version(guid) != version or not registry.is_loaded(guid)
+                    for guid, version, _ in self._model_meshes
+                ):
+                    if self._prepared_graph is not None:
+                        self._prepared_graph.discard()
+                        self._prepared_graph = None
+                    self._document = self._model_source_document
+                    self._resource_preflight_started = time.perf_counter()
+                    self._start_model_preflight(admit=admit_assets)
+                    return False
+
             if self._state is SceneDocumentTransactionState.READING:
                 assert self._ticket is not None
                 if not self._ticket.is_complete:
@@ -383,65 +478,48 @@ class SceneDocumentTransaction:
 
             if self._state is SceneDocumentTransactionState.DOCUMENT_READY:
                 assert self._document is not None
-                if isinstance(self._document, dict):
-                    from infernux.engine.model_instance_sync import (
-                        reconcile_scene_document_model_instances,
-                    )
-
-                    self._document_reconciliation_count = (
-                        reconcile_scene_document_model_instances(
-                            self._document, self._asset_database
-                        )
-                    )
-                self._state = SceneDocumentTransactionState.RESOURCE_PREFLIGHTING
                 self._resource_preflight_started = time.perf_counter()
-                native_preflight = getattr(self._document, "_preflight_resource_dependencies", None)
                 native_dependencies = getattr(self._document, "_resource_dependencies", None)
-                if callable(native_dependencies):
-                    self._resource_dependencies = tuple(
-                        (str(guid), str(resource_type))
-                        for guid, resource_type in native_dependencies()
-                    )
+                dependencies = native_dependencies() if callable(native_dependencies) else (
+                    _collect_scene_resource_dependencies(self._document)
+                )
+                self._document_dependencies = tuple(
+                    (str(guid), str(resource_type)) for guid, resource_type in dependencies
+                )
+                if isinstance(self._document, dict) and any(
+                    kind == "Mesh" for _, kind in self._document_dependencies
+                ):
+                    self._model_source_document = self._document
+                    self._start_model_preflight(admit=admit_assets)
                 else:
-                    self._resource_dependencies = tuple(
-                        (str(guid), str(resource_type))
-                        for guid, resource_type in _collect_scene_resource_dependencies(self._document)
-                    )
-                self._start_asset_preloads()
-                if not self._asset_load_tickets:
-                    self._phase_timings_ms["resources"] = (
-                        time.perf_counter() - self._resource_preflight_started
-                    ) * 1000.0
-                    self._resource_preflight_started = None
-                    self._state = SceneDocumentTransactionState.RESOURCES_READY
+                    self._resource_dependencies = self._document_dependencies
+                    self._start_resource_preflight(admit=admit_assets)
+                return False
+
+            if self._state is SceneDocumentTransactionState.MESH_PREFLIGHTING:
+                if not self._poll_asset_preloads(admit=admit_assets):
+                    return False
+                self._prepare_model_document()
+                dependencies = (
+                    _collect_scene_resource_dependencies(self._document)
+                    if self._document_reconciliation_count else self._document_dependencies
+                )
+                self._resource_dependencies = tuple(
+                    (str(guid), str(kind)) for guid, kind in dependencies if str(kind) != "Mesh"
+                )
+                self._start_resource_preflight(admit=admit_assets)
                 return False
 
             if self._state is SceneDocumentTransactionState.RESOURCE_PREFLIGHTING:
-                if not self._poll_asset_preloads():
+                if not self._poll_asset_preloads(admit=admit_assets) or not self._poll_linked_shader_preload():
                     return False
-                phase_started = self._resource_preflight_started or time.perf_counter()
-                self._phase_timings_ms["resources"] = (time.perf_counter() - phase_started) * 1000.0
-                self._resource_preflight_started = None
-                self._state = SceneDocumentTransactionState.RESOURCES_READY
+                self._finish_resource_preflight()
                 return False
 
             if self._state is SceneDocumentTransactionState.RESOURCES_READY:
                 from infernux.engine.component_restore import preflight_scene_python_components
-                from infernux.engine.model_instance_sync import (
-                    reconcile_scene_document_model_source_graphs,
-                )
 
                 assert self._document is not None
-                try:
-                    self._document_reconciliation_count += (
-                        reconcile_scene_document_model_source_graphs(
-                            self._document, self._asset_database
-                        )
-                    )
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"model source graph reconciliation failed: {exc}"
-                    ) from exc
                 self._state = SceneDocumentTransactionState.PREFLIGHTING
                 phase_started = time.perf_counter()
                 self._prepared_graph = preflight_scene_python_components(
@@ -525,6 +603,7 @@ class SceneDocumentTransaction:
                 ) * 1000.0
                 self._commit_token = None
                 self._native_committed = False
+                self._release_preloads()
                 self._state = SceneDocumentTransactionState.COMPLETED
                 return True
 
@@ -545,14 +624,11 @@ class SceneDocumentTransaction:
             return False
         if self._ticket is not None:
             self._ticket.cancel()
-        if self._linked_shader_ticket is not None:
-            cancel = getattr(self._linked_shader_ticket, "cancel", None)
-            if callable(cancel):
-                cancel()
         if self._prepared_graph is not None:
             self._prepared_graph.discard()
         self._prepared_graph = None
         self._state = SceneDocumentTransactionState.CANCELLED
+        self._release_preloads()
         return True
 
     def run_to_completion(
@@ -562,11 +638,19 @@ class SceneDocumentTransaction:
         self._require_owner_thread()
         if self._state is SceneDocumentTransactionState.CREATED:
             self.start()
-        while not self.poll():
+        elif self._state in (SceneDocumentTransactionState.MESH_PREFLIGHTING,
+                             SceneDocumentTransactionState.RESOURCE_PREFLIGHTING):
+            try:
+                self._start_asset_preloads(prefer_published=True)
+            except Exception as exc:
+                self._fail(exc)
+        while not self.poll(admit_assets=True):
             inline_jobs = _pump_inline_jobs(64)
             if on_tick is not None:
                 on_tick()
-            if self._state is SceneDocumentTransactionState.READING and inline_jobs == 0:
+            if self._state in (SceneDocumentTransactionState.READING,
+                               SceneDocumentTransactionState.MESH_PREFLIGHTING,
+                               SceneDocumentTransactionState.RESOURCE_PREFLIGHTING) and inline_jobs == 0:
                 time.sleep(0.001)
         if raise_on_failure and self._state is SceneDocumentTransactionState.FAILED:
             if self._failure_exception is not None:

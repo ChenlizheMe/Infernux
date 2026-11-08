@@ -1,11 +1,11 @@
 #include "MaterialPreviewRenderer.h"
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
-#include <mutex>
 #include <optional>
 #include <regex>
 
@@ -236,42 +236,23 @@ ShaderPreviewMapping ParseShaderPreviewMapping(const std::string &shaderSource)
     return mapping;
 }
 
-// Cache: shader ID → parsed mapping
-static std::mutex s_mappingCacheMutex;
-static std::unordered_map<std::string, ShaderPreviewMapping> s_mappingCache;
-
-ShaderPreviewMapping GetShaderPreviewMapping(const std::string &fragShaderId, AssetDatabase *adb)
+ShaderPreviewMapping GetShaderPreviewMapping(const ShaderAssetReference &fragment, const AssetDatabase *adb)
 {
-    if (!adb || fragShaderId.empty())
+    if (!adb)
         return {};
 
-    {
-        std::lock_guard lock(s_mappingCacheMutex);
-        auto it = s_mappingCache.find(fragShaderId);
-        if (it != s_mappingCache.end())
-            return it->second;
-    }
-
-    // Resolve shader ID → file path
-    std::string shaderPath = adb->FindShaderPathById(fragShaderId, "fragment");
+    const auto shaderPath = fragment.guid.empty() ? adb->FindShaderPathById(fragment.shaderId, "fragment")
+                                                  : adb->GetPathFromGuid(fragment.guid);
     if (shaderPath.empty())
         return {};
 
-    // Read shader source
-    std::ifstream file(shaderPath);
+    std::ifstream file(ToFsPath(shaderPath));
     if (!file.is_open())
         return {};
     std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     file.close();
 
-    ShaderPreviewMapping mapping = ParseShaderPreviewMapping(source);
-
-    {
-        std::lock_guard lock(s_mappingCacheMutex);
-        s_mappingCache[fragShaderId] = mapping;
-    }
-
-    return mapping;
+    return ParseShaderPreviewMapping(source);
 }
 
 // ============================================================================

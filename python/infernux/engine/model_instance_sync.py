@@ -24,17 +24,18 @@ _MODEL_GEOMETRY_TYPE_IDS = _MODEL_RENDERER_TYPE_IDS | frozenset(
 )
 
 
-def _model_mesh_identity_map(asset_database: Any, guid: str) -> dict[str, tuple[str, ...]] | None:
-    """Read the current imported mesh identity map for one model asset.
+def _model_metadata(asset_database: Any, guid: str) -> Any:
+    from infernux.lib import AssetRegistry
 
-    ``None`` means the asset has no model mesh manifest and must be left to
-    normal native validation.  Duplicate stable identities are an importer
-    contract violation and deliberately fail instead of falling back to a
-    display path.
-    """
-    if asset_database is None:
-        return None
-    meta = asset_database.get_meta_by_guid(str(guid or ""))
+    registry = AssetRegistry.instance()
+    mesh = registry.get_mesh(guid)
+    if mesh is not None:
+        return mesh.import_metadata
+    return asset_database.get_meta_by_guid(guid)
+
+
+def _model_mesh_identity_map(meta: Any, guid: str) -> dict[str, tuple[str, ...]] | None:
+    """Read the stable node identities for one model revision."""
     if meta is None or not meta.has_key("model_meshes"):
         return None
     manifest = json.loads(meta.get_string("model_meshes"))
@@ -66,7 +67,7 @@ def _model_mesh_identity_map(asset_database: Any, guid: str) -> dict[str, tuple[
 
 
 def _model_generates_colliders(asset_database: Any, guid: str) -> bool:
-    meta = asset_database.get_meta_by_guid(str(guid or ""))
+    meta = _model_metadata(asset_database, guid)
     if meta is None:
         raise ValueError(f"model source metadata is missing: {guid}")
     return bool(meta.get_bool("generate_colliders"))
@@ -88,10 +89,8 @@ def _document_has_authored_content(node: dict[str, Any], source_guid: str) -> bo
     return False
 
 
-def reconcile_scene_document_model_instances(
-    document: Any, asset_database: Any
-) -> int:
-    """Reconcile imported model identities before native Scene commit.
+def reconcile_scene_document_model_instances(document: Any, asset_database: Any) -> int:
+    """Reconcile imported model identities after resource preflight.
 
     The native component loader remains strict: a stable identity that no
     longer exists is still invalid.  This document-wide step can, however,
@@ -113,7 +112,7 @@ def reconcile_scene_document_model_instances(
 
     def manifest_for(guid: str) -> dict[str, tuple[str, ...]] | None:
         if guid not in manifests:
-            manifests[guid] = _model_mesh_identity_map(asset_database, guid)
+            manifests[guid] = _model_mesh_identity_map(_model_metadata(asset_database, guid), guid)
         return manifests[guid]
 
     def visit(nodes: list[Any]) -> None:
@@ -641,7 +640,7 @@ def reconcile_scene_document_model_source_graphs(document: Any, asset_database: 
     for root, guid in instances:
         if guid not in cached:
             try:
-                identity_map = _model_mesh_identity_map(asset_database, guid)
+                identity_map = _model_mesh_identity_map(_model_metadata(asset_database, guid), guid)
             except Exception as exc:
                 raise RuntimeError(
                     f"model identity metadata failed for {guid}: {exc}"
@@ -767,48 +766,6 @@ def _source_paths(mesh: Any) -> dict[tuple[str, ...], dict]:
         computed.append(path)
         result[path] = node
     return result
-
-
-def _source_subresource_ids(guid: str) -> dict[tuple[str, ...], str]:
-    """Return unique imported mesh identities for the current model source.
-
-    The importer owns this manifest. Missing or duplicate identities are
-    rejected rather than guessed from mutable scene paths.
-    """
-    from infernux.core.assets import AssetManager
-
-    database = AssetManager.require_asset_database()
-    meta = database.get_meta_by_guid(guid)
-    if meta is None or not meta.has_key("model_meshes"):
-        return {}
-    manifest = json.loads(meta.get_string("model_meshes"))
-    if not isinstance(manifest, list):
-        raise ValueError("model_meshes metadata must be a list")
-    entries: list[tuple[tuple[str, ...], str]] = []
-    seen: set[str] = set()
-    seen_paths: set[tuple[str, ...]] = set()
-    for entry in manifest:
-        if not isinstance(entry, dict):
-            raise ValueError("model_meshes metadata entries must be objects")
-        path = entry.get("path")
-        identifier = str(entry.get("subresource_id") or "")
-        if not isinstance(path, list) or not path or not identifier:
-            raise ValueError("model_meshes metadata entries require identity and path")
-        key = tuple(str(part) for part in path)
-        if any(not part for part in key):
-            raise ValueError("model_meshes metadata paths cannot contain empty names")
-        if identifier in seen:
-            raise ValueError(
-                f"model mesh stable identity is duplicated: {identifier} (guid={guid})"
-            )
-        if key in seen_paths:
-            raise ValueError(
-                f"model mesh source path is duplicated: {'/'.join(key)} (guid={guid})"
-            )
-        seen.add(identifier)
-        seen_paths.add(key)
-        entries.append((key, identifier))
-    return dict(entries)
 
 
 def _migrate_source_paths_by_identity(scene: Any, root: Any, guid: str, source_ids: dict[tuple[str, ...], str]) -> bool:
@@ -990,7 +947,8 @@ def _destroy_stale_geometry(
 
 def _sync_instance(scene: Any, root: Any, guid: str, mesh: Any, scale_ratio: float = 1.0) -> bool:
     source = _source_paths(mesh)
-    source_ids = _source_subresource_ids(guid)
+    identities = _model_mesh_identity_map(mesh.native.import_metadata, guid) or {}
+    source_ids = {path: identity for identity, path in identities.items()}
     changed = _migrate_source_paths_by_identity(scene, root, guid, source_ids)
     changed = _destroy_stale_geometry(scene, root, guid, source, source_ids) or changed
     source_bound = {
@@ -1057,13 +1015,16 @@ def synchronize_model_instances(scene: Any, guid: str, *, scale_ratio: float = 1
     guid = str(guid or "")
     if not guid or scene is None:
         return 0
+    roots = _model_instance_roots(scene, guid)
+    if not roots:
+        return 0
     from infernux.core.mesh import Mesh
 
     mesh = Mesh.load_guid(guid)
     if mesh is None or not mesh.model_nodes:
         return 0
     changed = 0
-    for root in _model_instance_roots(scene, guid):
+    for root in roots:
         if _sync_instance(scene, root, guid, mesh, scale_ratio):
             changed += 1
     return changed

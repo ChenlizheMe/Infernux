@@ -710,19 +710,8 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
         if (!IsOutlinedObject(dc.objectId))
             continue;
 
-        // Get per-object buffer via core accessor
-        VkBuffer vertBuf = m_core->GetObjectVertexBuffer(dc.objectId);
-        VkBuffer idxBuf = m_core->GetObjectIndexBuffer(dc.objectId);
-
-        if (vertBuf == VK_NULL_HANDLE || idxBuf == VK_NULL_HANDLE)
+        if (!m_core->BindObjectGeometry(cmdBuf, dc.objectId))
             continue;
-
-        VkBuffer vertBuffers[] = {vertBuf};
-        VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(cmdBuf, 0, 1, vertBuffers, offsets);
-        const MeshIndexFormat indexFormat = m_core->GetObjectIndexFormat(dc.objectId);
-        vkCmdBindIndexBuffer(cmdBuf, idxBuf, 0,
-                             indexFormat == MeshIndexFormat::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 
         // Push per-object model matrix + normal matrix
         struct PushConstants
@@ -740,11 +729,10 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
         // may use time, textures or constants without a vertex material UBO.
         bool usePerMaterialPipeline = false;
         if (dc.material) {
+            MaterialRenderData *renderData = m_core->ResolveMeshMaterial(dc.material);
             const ShaderProgram *fwdProgram = dc.material->GetPassShaderProgram(ShaderCompileTarget::Forward);
             if (fwdProgram) {
                 VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material.get());
-                MaterialRenderData *renderData =
-                    m_core->GetMaterialPipelineManager().GetRenderData(dc.material->GetMaterialKey());
                 VkDescriptorSet mtlDescSet =
                     renderData && renderData->isValid ? renderData->descriptorSet : VK_NULL_HANDLE;
                 if (dc.parameterBlock) {

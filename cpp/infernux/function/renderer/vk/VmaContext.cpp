@@ -6,7 +6,10 @@
  * All other files include <vk_mem_alloc.h> for declarations only.
  */
 
-// VMA_IMPLEMENTATION must be defined in exactly one .cpp file
+#include "VulkanBackendApi.h"
+
+// Keep the VMA C ABI in the same library that owns the allocator.
+#define VMA_CALL_PRE INFERNUX_VULKAN_BACKEND_API
 #define VMA_IMPLEMENTATION
 
 // Volk-backed targets resolve commands dynamically; native desktop builds use

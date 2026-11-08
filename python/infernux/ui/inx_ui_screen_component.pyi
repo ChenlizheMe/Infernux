@@ -8,6 +8,8 @@ from infernux.ui.inx_ui_component import InxUIComponent
 from infernux.ui.enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
 from infernux.ui.ui_event_data import PointerEventData
 from infernux.core.material import Material
+from infernux.lib import Vector2, Vector3
+from infernux.lib._Infernux import _RectTransformLayout
 from infernux.components import DrivenTransformProperties, GameObjectRef
 
 
@@ -45,6 +47,16 @@ class InxUIScreenComponent(InxUIComponent):
     mirror_y: bool
     width: float
     height: float
+    pivot: Vector2
+    anchor_min: Vector2
+    anchor_max: Vector2
+    size_delta: Vector2
+    anchored_position: Vector2
+    anchored_position3d: Vector3
+    offset_min: Vector2
+    offset_max: Vector2
+    @property
+    def rect_transform(self) -> _RectTransformLayout: ...
     lock_aspect_ratio: bool
     layout_position: UILayoutPosition
     width_sizing: UILayoutSizing

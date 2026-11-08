@@ -1,6 +1,9 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include "AtomicFile.h"
+#include "PathWriteScope.h"
 
 #include <cstdint>
 #include <string>
@@ -28,8 +31,9 @@ struct DocumentTransactionFileState
 struct DocumentTransactionStats
 {
     uint64_t entryCount = 0;
-    uint64_t uncompressedBytes = 0;
+    uint64_t preparedBytes = 0;
     uint64_t journalBytes = 0;
+    double prepareMilliseconds = 0.0;
     double serializeMilliseconds = 0.0;
     double journalWriteMilliseconds = 0.0;
     double applyMilliseconds = 0.0;
@@ -38,19 +42,23 @@ struct DocumentTransactionStats
 
 /// Durable write-ahead transaction for a set of authoritative documents.
 /// Target paths and invalidations must remain inside projectRoot. The journal
-/// stores project-relative paths so recovery remains valid after moving a project.
+/// refers to flushed sibling files using project-relative paths. Recovery
+/// publishes remaining siblings or verifies outputs that already moved.
 class DocumentTransaction final
 {
   public:
-    static DocumentTransactionStats Commit(const std::string &projectRoot, const std::string &journalPath,
-                                           std::vector<DocumentTransactionEntry> entries,
-                                           std::vector<std::string> invalidatedPaths);
+    INFERNUX_FOUNDATION_API static DocumentTransactionStats Commit(const std::string &projectRoot,
+                                                                   const std::string &journalPath,
+                                                                   std::vector<DocumentTransactionEntry> entries,
+                                                                   std::vector<std::string> invalidatedPaths,
+                                                                   const PathWriteScope &writeScope = {});
 
     /// Replay and remove an existing journal. Returns false when no journal exists.
     /// Guarded targets must still match their input or this transaction's exact
     /// completed payload. A later author edit rejects recovery and retains the
     /// journal; resolving that edit belongs to the user's authoring/VCS workflow.
-    static bool Recover(const std::string &projectRoot, const std::string &journalPath);
+    INFERNUX_FOUNDATION_API static bool Recover(const std::string &projectRoot, const std::string &journalPath,
+                                                const PathWriteScope &writeScope = {});
 };
 
 } // namespace infernux

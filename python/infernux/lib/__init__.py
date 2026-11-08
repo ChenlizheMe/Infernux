@@ -395,9 +395,9 @@ def _native_game_object_instantiate(
     instantiate_in_world_space=False,
     configure_created=None,
 ):
-    scene = original.scene
+    scene = parent.scene if parent is not None else original.scene
     if scene is None:
-        raise RuntimeError("instantiate(): source GameObject is detached from a Scene")
+        raise RuntimeError("instantiate(): destination GameObject is detached from a Scene")
     from infernux.engine.component_restore import clone_game_object_transactionally
 
     return clone_game_object_transactionally(
@@ -603,7 +603,8 @@ def _game_object_instantiate(original, *args, **kwargs):
         # reservation and renderer publication are coalesced, while every
         # returned item remains a normal independent GameObject.
         if source_kind == "game_object" and not _contains_python_components(source):
-            result = source.scene._clone_game_objects(
+            destination = parent.scene if parent is not None else source.scene
+            result = destination._clone_game_objects(
                 source,
                 positions,
                 rotations,
@@ -766,6 +767,22 @@ def _raycast_collider(self):
 
 CollisionInfo.collider = property(_collision_collider, doc="The public Collider involved in this contact")
 RaycastHit.collider = property(_raycast_collider, doc="The public Collider hit by this query")
+
+_native_collision_rigidbody = CollisionInfo.rigidbody
+_native_raycast_rigidbody = RaycastHit.rigidbody
+
+
+def _collision_rigidbody(self):
+    return _wrap_native_builtin_component(_native_collision_rigidbody.__get__(self))
+
+
+def _raycast_rigidbody(self):
+    return _wrap_native_builtin_component(_native_raycast_rigidbody.__get__(self))
+
+
+CollisionInfo.rigidbody = property(_collision_rigidbody)
+RaycastHit.rigidbody = property(_raycast_rigidbody)
+
 
 
 _native_scene_main_camera = Scene.main_camera

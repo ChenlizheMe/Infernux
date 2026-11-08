@@ -73,6 +73,13 @@ enum class MaterialPropertyType
     Float4Array
 };
 
+inline bool MaterialPropertyTypesCompatible(MaterialPropertyType declared, MaterialPropertyType supplied)
+{
+    return declared == supplied ||
+           ((declared == MaterialPropertyType::Color || declared == MaterialPropertyType::Float4) &&
+            (supplied == MaterialPropertyType::Color || supplied == MaterialPropertyType::Float4));
+}
+
 using MaterialPropertyValue = std::variant<float, glm::vec2, glm::vec3, glm::vec4, int, glm::mat4, std::string,
                                            std::vector<float>, std::vector<glm::vec4>>;
 
@@ -85,6 +92,20 @@ struct MaterialProperty
     std::optional<std::array<double, 2>> range;
     // Derived ShaderInfo metadata; not an authored texture asset reference.
     std::string textureDefault;
+    bool inheritsShaderDefault = false;
 };
+
+inline bool MaterialPropertyOverrideCompatible(const MaterialProperty &declared, const MaterialProperty &supplied)
+{
+    if (!MaterialPropertyTypesCompatible(declared.type, supplied.type))
+        return false;
+    if (declared.type == MaterialPropertyType::FloatArray)
+        return std::get<std::vector<float>>(declared.value).size() ==
+               std::get<std::vector<float>>(supplied.value).size();
+    if (declared.type == MaterialPropertyType::Float4Array)
+        return std::get<std::vector<glm::vec4>>(declared.value).size() ==
+               std::get<std::vector<glm::vec4>>(supplied.value).size();
+    return true;
+}
 
 } // namespace infernux

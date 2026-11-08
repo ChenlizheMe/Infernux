@@ -5,20 +5,11 @@ from __future__ import annotations
 import ast
 import textwrap
 
+from .kernel_contract import attribute_name as _attribute_name
+
 
 _MARKER = "# <infernux-compute-source-metadata>"
 _GLOBAL_NAME = "__infernux_compute_sources__"
-
-
-def _attribute_name(node: ast.expr) -> str:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        return ".".join(reversed(parts))
-    return ""
 
 
 def compute_decorator_names(

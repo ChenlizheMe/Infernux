@@ -20,11 +20,14 @@ def run_headless(
     fixed_delta: float = 1.0 / 60.0,
     max_frames: int | None = None,
     engine_log_level=LogLevel.Info,
+    gpu: bool = False,
 ) -> int:
     """Run a deterministic no-window loop and return the number of frames stepped.
 
     ``update`` runs before each native tick. Returning ``False`` or calling
     ``engine.request_exit()`` stops the loop without stepping another frame.
+    ``gpu=True`` prepares the engine's Vulkan compute services before the loop;
+    the default CPU path does not create a GPU device.
     """
     if not callable(update):
         raise TypeError("update must be callable")
@@ -52,7 +55,7 @@ def run_headless(
         sync_resources(project)
         engine_resources.activate_library(project)
         engine = Engine(engine_log_level, RuntimeMode.Headless)
-        engine.init_headless(project)
+        engine.init_headless(project, gpu=gpu)
         from infernux.plugins import PluginManager
 
         plugin_manager = PluginManager.startup(project, engine=engine, runtime=False)

@@ -1,0 +1,328 @@
+# All native payloads use this engine commit and its pinned plugin submodules.
+name: Build Engine Versioned Platform Plugins
+'on':
+  workflow_call: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+        working-directory: engine
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: recursive
+        path: engine
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: infernux
+        python-version: '3.13'
+        auto-activate-base: false
+    - name: Install Vulkan SDK
+      shell: pwsh
+      run: |
+        conda activate infernux
+        $version = '1.3.296.0'
+        $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
+        Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe" -OutFile $installer
+        Start-Process -Wait -WindowStyle Hidden -FilePath $installer -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install'
+        "VULKAN_SDK=C:\VulkanSDK\$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    - name: Install Vulkan Runtime
+      timeout-minutes: 5
+      shell: pwsh
+      run: |
+        conda activate infernux
+        $version = '1.3.296.0'
+        $runtimeInstaller = Join-Path $env:RUNNER_TEMP 'vulkan-runtime.exe'
+        Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanRT-$version-Installer.exe" -OutFile $runtimeInstaller
+        $runtimeProcess = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $runtimeInstaller -ArgumentList '/auto'
+        if ($runtimeProcess.ExitCode -ne 0) { throw "Vulkan Runtime installation failed: $($runtimeProcess.ExitCode)" }
+    - name: Install release-engineering Python dependencies
+      run: |
+        conda activate infernux
+        python -m pip install --disable-pip-version-check -r requirements.txt
+    - name: Build the complete plugin directly with CMake
+      run: |
+        conda activate infernux
+        cmake --preset windows-msvc-release -DINFERNUX_PLAYER_PACKAGE_PLUGIN=OFF
+        cmake --build --preset windows-msvc-player
+    - name: Package the exact engine release plugin
+      run: |
+        conda activate infernux
+        python scripts/release/build_platform_plugins.py package --targets windows --payload external/plugins/infernux_windows/package/editor/infernux_windows/player
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-platform-windows-${{ github.run_id }}-${{ github.run_attempt }}
+        path: engine/dist/platform-plugins/*/*
+        if-no-files-found: error
+        compression-level: 0
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+        working-directory: engine
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: recursive
+        path: engine
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: infernux
+        python-version: '3.13'
+        auto-activate-base: false
+    - name: Install build dependencies
+      run: scripts/setup/install_linux_dependencies.sh
+    - name: Install release-engineering Python dependencies
+      run: |
+        conda activate infernux
+        python -m pip install --disable-pip-version-check -r requirements.txt
+    - name: Build the complete plugin directly with CMake
+      run: |
+        conda activate infernux
+        cmake --preset linux-clang-release -DINFERNUX_PLAYER_PACKAGE_PLUGIN=OFF
+        cmake --build --preset linux-clang-player
+    - name: Package the exact engine release plugin
+      run: |
+        conda activate infernux
+        python scripts/release/build_platform_plugins.py package --targets linux --payload external/plugins/infernux_linux/package/editor/infernux_linux/player
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-platform-linux-${{ github.run_id }}-${{ github.run_attempt }}
+        path: engine/dist/platform-plugins/*/*
+        if-no-files-found: error
+        compression-level: 0
+  android:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash -el {0}
+        working-directory: engine
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: recursive
+        path: engine
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: infernux
+        python-version: '3.13'
+        auto-activate-base: false
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
+    - name: Install release-engineering dependencies
+      run: |
+        conda activate infernux
+        scripts/setup/install_linux_dependencies.sh
+        python -m pip install --disable-pip-version-check -r requirements.txt
+        sdkmanager "cmake;3.30.5" "ndk;27.3.13750724" "ndk;29.0.14206865"
+    - uses: actions/cache@v4
+      with:
+        path: |
+          engine/out/android-python
+          engine/out/android-python-work
+          engine/out/android-native
+        key: android-plugin-${{ runner.os }}-${{ hashFiles('engine/cmake/**', 'engine/cpp/**', 'engine/CMakeLists.txt', 'engine/scripts/setup/*android*',
+          'engine/external/plugins/infernux_android/native/**') }}
+        restore-keys: |
+          android-plugin-${{ runner.os }}-
+    - name: Publish both native ABIs directly into the plugin
+      run: |
+        conda activate infernux
+        for abi in arm64-v8a x86_64; do
+          prefix="$PWD/out/android-python/$abi"
+          if [[ ! -d "$prefix" ]]; then
+            scripts/setup/build_android_python_runtime.sh "$abi" "$prefix" "$PWD/out/android-python-work"
+          fi
+          python external/plugins/infernux_android/native/build.py \
+            --sdk "$ANDROID_SDK_ROOT" --python-prefix "$prefix" \
+            --abi "$abi" --build-root "$PWD/out/android-native/$abi"
+        done
+    - name: Package the exact engine release plugin
+      run: |
+        conda activate infernux
+        python scripts/release/build_platform_plugins.py package --targets android --payload external/plugins/infernux_android/package/editor/infernux_android/player
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-platform-android-${{ github.run_id }}-${{ github.run_attempt }}
+        path: engine/dist/platform-plugins/*/*
+        if-no-files-found: error
+        compression-level: 0
+  web-runtime:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR: ${{ github.workspace }}/engine/out/toolchains/web-official-snapshots
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: recursive
+        path: engine
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: infernux
+        python-version: '3.13'
+        auto-activate-base: false
+    - uses: actions/cache@v4
+      with:
+        path: |
+          engine/out/toolchains/web
+          engine/out/toolchains/web-official-snapshots
+          engine/out/build/web-precompiled-player
+        key: web-runtime-${{ runner.os }}-${{ hashFiles('engine/scripts/setup/build_web_toolchain.sh', 'engine/external/plugins/infernux_web/native/**')
+          }}
+        restore-keys: web-runtime-${{ runner.os }}-
+    - name: Prepare release-engineering tools
+      run: |
+        conda activate infernux
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends ninja-build pkg-config libssl-dev libffi-dev zlib1g-dev libbz2-dev libsqlite3-dev liblzma-dev glslang-tools
+        python -m pip install cmake pybind11
+        python engine/scripts/setup/prepare_dawn_official_snapshots.py \
+          --lock engine/scripts/setup/dawn_dependencies.lock.json \
+          --output "$INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR"
+        engine/scripts/setup/build_web_toolchain.sh "$PWD/engine/out/toolchains/web"
+        mkdir -p engine/out/build
+        bash engine/external/plugins/infernux_web/native/python_runtime/build_numpy_static_runtime.sh \
+          --root "$PWD/engine/out/build/web-numpy-static-runtime" \
+          --host-python "$CONDA_PREFIX/bin/python"
+    - name: Publish precompiled browser runtime into the build tree
+      run: |
+        conda activate infernux
+        source engine/out/toolchains/web/emsdk/emsdk_env.sh
+        python engine/external/plugins/infernux_web/native/build.py \
+          --emsdk engine/out/toolchains/web/emsdk \
+          --cpython-source engine/out/toolchains/web/src/Python-3.13.15 \
+          --python-runtime-manifest engine/out/build/web-numpy-static-runtime/runtime/runtime-manifest.json \
+          --numpy-payload-root engine/out/build/web-numpy-static-runtime/runtime/payload \
+          --host-python "$CONDA_PREFIX/bin/python" \
+          --player-output engine/out/build/web-precompiled-player/publish/player \
+          --build-root engine/out/build/web-precompiled-player
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-release-web-player-${{ github.run_id }}-${{ github.run_attempt }}
+        path: engine/out/build/web-precompiled-player/publish/player/
+        if-no-files-found: error
+  web-shader-tools:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - windows-2022
+        - ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: recursive
+        path: engine
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: infernux
+        python-version: '3.13'
+        auto-activate-base: false
+    - uses: ilammy/msvc-dev-cmd@v1
+      if: runner.os == 'Windows'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          engine/out/toolchains/dawn
+          engine/out/build/web-shader-tools
+        key: web-tools-${{ runner.os }}-${{ hashFiles('engine/external/plugins/infernux_web/native/tools/**', 'engine/external/plugins/infernux_web/native/prepare_dawn.py')
+          }}
+        restore-keys: web-tools-${{ runner.os }}-
+    - name: Build and publish native shader tools
+      run: |
+        conda activate infernux
+        python -m pip install cmake ninja
+        python engine/external/plugins/infernux_web/native/prepare_dawn.py engine/out/toolchains/dawn
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $toolsOutput = "$PWD/engine/out/build/web-shader-tools/publish/tools"
+        cmake -S engine/external/plugins/infernux_web/native/tools -B engine/out/build/web-shader-tools -G Ninja "-DINFERNUX_DAWN_SOURCE=$PWD/engine/out/toolchains/dawn" "-DINFERNUX_WEB_TOOLS_OUTPUT_DIR=$toolsOutput"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cmake --build engine/out/build/web-shader-tools --target prebuild_web_tools --parallel 2
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-release-web-tools-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: engine/out/build/web-shader-tools/publish/tools/
+        if-no-files-found: error
+  web-package:
+    needs:
+    - web-runtime
+    - web-shader-tools
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - uses: actions/download-artifact@v4
+      with:
+        name: engine-release-web-player-${{ github.run_id }}-${{ github.run_attempt }}
+        path: out/platform-web/player
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: engine-release-web-tools-*-${{ github.run_id }}-${{ github.run_attempt }}
+        merge-multiple: true
+        path: out/platform-web/tools
+    - name: Package the exact engine release plugin
+      run: python scripts/release/build_platform_plugins.py package --targets web --payload out/platform-web/player --tools out/platform-web/tools
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-platform-web-${{ github.run_id }}-${{ github.run_attempt }}
+        path: dist/platform-plugins/*/*
+        if-no-files-found: error
+        compression-level: 0
+  collect:
+    needs:
+    - windows
+    - linux
+    - android
+    - web-package
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: engine-platform-*-${{ github.run_id }}-${{ github.run_attempt }}
+        merge-multiple: true
+        path: out/platform-plugins
+    - name: Verify all four plugins before publishing the catalog
+      run: python scripts/release/build_platform_plugins.py assemble --output out/platform-plugins --source-revision ${{ github.sha }}
+    - uses: actions/upload-artifact@v4
+      with:
+        name: engine-platform-plugins-${{ github.run_id }}-${{ github.run_attempt }}
+        path: out/platform-plugins/*
+        if-no-files-found: error
+        compression-level: 0

@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include "VkTypes.h"
 #include "VulkanFeatureState.h"
 #include <array>
@@ -51,15 +53,15 @@ class VkDeviceContext
 {
   public:
     /// @brief Default constructor - creates uninitialized context
-    VkDeviceContext();
+    INFERNUX_VULKAN_BACKEND_API VkDeviceContext();
 
     /// @brief Destructor - automatically cleans up all Vulkan objects
-    ~VkDeviceContext();
+    INFERNUX_VULKAN_BACKEND_API ~VkDeviceContext();
 
     // Non-copyable, movable
     VkDeviceContext(const VkDeviceContext &) = delete;
     VkDeviceContext &operator=(const VkDeviceContext &) = delete;
-    VkDeviceContext(VkDeviceContext &&other) noexcept;
+    INFERNUX_VULKAN_BACKEND_API VkDeviceContext(VkDeviceContext &&other) noexcept;
     VkDeviceContext &operator=(VkDeviceContext &&other) noexcept;
 
     // ========================================================================
@@ -76,7 +78,7 @@ class VkDeviceContext
      * @param config Device configuration options
      * @return true if initialization succeeded
      */
-    bool Initialize(SDL_Window *window, const DeviceConfig &config = DeviceConfig{});
+    INFERNUX_VULKAN_BACKEND_API bool Initialize(SDL_Window *window, const DeviceConfig &config = DeviceConfig{});
 
     /**
      * @brief Initialize only the Vulkan instance (split initialization - step 1)
@@ -94,11 +96,12 @@ class VkDeviceContext
      *
      * Call this after InitializeInstance() and external surface creation.
      *
-     * @param surface Vulkan surface handle (created externally)
+     * @param surface Transferred window surface, or null for compute-only startup
      * @param config Device configuration options (should match InitializeInstance)
      * @return true if device creation succeeded
      */
-    bool InitializeDevice(VkSurfaceKHR surface, const DeviceConfig &config = DeviceConfig{});
+    INFERNUX_VULKAN_BACKEND_API bool InitializeDevice(VkSurfaceKHR surface,
+                                                      const DeviceConfig &config = DeviceConfig{});
 
     /**
      * @brief Wait for device to become idle
@@ -106,9 +109,9 @@ class VkDeviceContext
      * Call this before cleanup or when synchronization is needed.
      * Skipped when shutting down (caller already drained the GPU).
      */
-    void WaitIdle() const;
+    INFERNUX_VULKAN_BACKEND_API void WaitIdle() const;
     /// Shutdown may destroy a lost device, but cannot free work after any other failed idle wait.
-    void WaitIdleForShutdown() const noexcept;
+    INFERNUX_VULKAN_BACKEND_API void WaitIdleForShutdown() const noexcept;
     [[nodiscard]] uint64_t GetWaitIdleCount() const noexcept
     {
         return m_waitIdleCount;
@@ -130,7 +133,9 @@ class VkDeviceContext
      * Called automatically by destructor, but can be called manually
      * for explicit cleanup control.
      */
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
+    /// Release the adopted surface after swapchain retirement, before SDL closes.
+    void DestroySurface() noexcept;
 
     // ========================================================================
     // Accessors
@@ -225,7 +230,7 @@ class VkDeviceContext
         return m_deviceProperties;
     }
 
-    /// @brief Get physical device features
+    /// @brief Get core features actually enabled on the logical device
     [[nodiscard]] const VkPhysicalDeviceFeatures &GetDeviceFeatures() const
     {
         return m_deviceFeatures;
@@ -235,6 +240,14 @@ class VkDeviceContext
     {
         return m_capabilities;
     }
+
+    struct QueueTimestampSupport
+    {
+        uint32_t validBits = 0;
+        bool resetOnHost = false;
+    };
+
+    [[nodiscard]] QueueTimestampSupport QueryTimestampSupport(uint32_t queueFamily) const;
 
     [[nodiscard]] VkQueue GetComputeQueue() const
     {
@@ -246,12 +259,13 @@ class VkDeviceContext
         return m_hasIndependentComputeQueue;
     }
 
-    [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::DeviceId GetDeviceId() const noexcept;
 
     /// Query sample support for one concrete image descriptor usage. Format
     /// capabilities expose the generic attachment baseline; render targets
     /// with transfer/resolve usage must validate the exact usage combination.
-    [[nodiscard]] rhi::SampleCountMask GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SampleCountMask
+    GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept;
 
     [[nodiscard]] bool HasRhiDevice() const noexcept
     {
@@ -298,7 +312,7 @@ class VkDeviceContext
      * @brief Query swapchain support details for the physical device
      * @return Swapchain capabilities, formats, and present modes
      */
-    [[nodiscard]] SwapchainSupportDetails QuerySwapchainSupport() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API SwapchainSupportDetails QuerySwapchainSupport() const;
 
     /**
      * @brief Find a supported format from a list of candidates
@@ -315,7 +329,7 @@ class VkDeviceContext
      * @brief Find a suitable depth format
      * @return Best available depth format, or VK_FORMAT_UNDEFINED
      */
-    [[nodiscard]] VkFormat FindDepthFormat() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkFormat FindDepthFormat() const;
 
     /**
      * @brief Find a depth format suitable for a render target that is also sampled.
@@ -323,7 +337,7 @@ class VkDeviceContext
      * available depth format with attachment and sampled-image support,
      *         or VK_FORMAT_UNDEFINED
      */
-    [[nodiscard]] VkFormat FindSampledDepthFormat() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkFormat FindSampledDepthFormat() const;
 
     /**
      * @brief Find a depth format suitable for shadow maps (must support both attachment and sampling).

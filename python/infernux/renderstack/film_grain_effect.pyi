@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import IntEnum
 from typing import ClassVar, List, TYPE_CHECKING
 
 from infernux.renderstack.fullscreen_effect import FullScreenEffect
@@ -9,6 +10,13 @@ from infernux.renderstack.fullscreen_effect import FullScreenEffect
 if TYPE_CHECKING:
     from infernux.rendergraph.graph import RenderGraph
     from infernux.renderstack.resource_bus import ResourceBus
+
+
+class FilmGrainSize(IntEnum):
+    Small = 0
+    Medium = 1
+    Large = 2
+    Custom = 3
 
 
 class FilmGrainEffect(FullScreenEffect):
@@ -28,6 +36,9 @@ class FilmGrainEffect(FullScreenEffect):
 
     intensity: float
     response: float
+    preset: FilmGrainSize
+    size: float
+    colored: bool
 
     def get_shader_list(self) -> List[str]: ...
     def setup_passes(self, graph: RenderGraph, bus: ResourceBus) -> None: ...

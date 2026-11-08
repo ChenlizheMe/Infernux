@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+import tempfile
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
+from infernux.application import ContentPublication
 from infernux.debug import Debug
 from infernux.engine.player_scene import PlayerSceneService
 from infernux.timing import Time
@@ -44,6 +47,9 @@ class PlayerRuntimeSession:
         self._scene_service_installed = False
         self._runtime_manifest: Optional[RuntimeProductManifest] = None
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
+        self._content_workspace: Optional[tempfile.TemporaryDirectory] = None
+        self._pending_content: Optional[tuple[ContentPublication, str]] = None
+        self._content_roots: tuple[str, ...] = ()
         self._state = "stopped"
         self._last_frame_time = time.perf_counter()
         self._membership_warmup_frames = 0
@@ -159,6 +165,11 @@ class PlayerRuntimeSession:
         if not callable(bind_catalog):
             raise RuntimeError("Player scene service cannot bind RuntimeAssetCatalog")
         bind_catalog(runtime_catalog)
+        self._set_runtime_catalog(runtime_catalog)
+        self._runtime_manifest = runtime_manifest
+        self._validate_player_boundary()
+
+    def _set_runtime_catalog(self, runtime_catalog: PlayerRuntimeAssetCatalog) -> None:
         from infernux.engine.project_context import (
             set_runtime_asset_extension_resolver,
             set_runtime_asset_query,
@@ -170,9 +181,94 @@ class PlayerRuntimeSession:
         set_runtime_asset_extension_resolver(runtime_catalog.source_extension_for_guid)
         set_runtime_package_resolver(runtime_catalog.resolve_package)
         set_runtime_asset_query(runtime_catalog.query_asset_guids)
-        self._runtime_manifest = runtime_manifest
         self._runtime_catalog = runtime_catalog
-        self._validate_player_boundary()
+
+    def publish_content(self, data_directory: str) -> ContentPublication:
+        from infernux.engine.path_utils import resolved_path
+        from infernux.engine.platform_player_bootstrap import _CONTENT_ROOTS
+        from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
+
+        assert_runtime_owner_thread()
+        if sys.platform in {"android", "emscripten"} or not self._scene_service_installed or self._state == "stopping":
+            raise RuntimeError("Content publication requires a running desktop Player")
+        if self._pending_content is not None:
+            raise RuntimeError("A Player content publication is already preparing")
+        if self._content_workspace is None:
+            self._content_workspace = tempfile.TemporaryDirectory(prefix="infernux-player-content-")
+        destination = tempfile.mkdtemp(dir=self._content_workspace.name)
+        database = self.get_asset_database()
+        database._begin_runtime_asset_catalog(
+            resolved_path(data_directory), resolved_path(destination), sorted(_CONTENT_ROOTS)
+        )
+        publication = ContentPublication()
+        self._pending_content = publication, destination
+        return publication
+
+    def _publish_ready_content(self) -> None:
+        if self._pending_content is None:
+            return
+        from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+        from infernux.engine.platform_player_bootstrap import _parse_package_index
+        from infernux.engine.project_context import (
+            get_script_module_name,
+            set_runtime_content_roots,
+        )
+        from infernux.engine.runtime_artifact_catalog import CATALOG_SCHEMA
+        from infernux.engine.runtime_type_registry import _prepare_runtime_type_registry
+
+        publication, destination = self._pending_content
+        database = self.get_asset_database()
+        try:
+            documents = database._prepared_runtime_catalog_documents()
+            if documents is None:
+                return
+            index = _parse_package_index(documents["package_index"])
+            for kind in ("content", "catalog"):
+                if index.get(kind) != tuple(documents[f"{kind}_identity"]):
+                    raise RuntimeError(f"Player {kind} archive disagrees with its package index")
+            catalog = documents["catalog"]
+            if catalog.get("$schema") != CATALOG_SCHEMA:
+                raise RuntimeError("Unsupported runtime asset catalog schema")
+            incoming = PlayerRuntimeAssetCatalog.from_documents(
+                destination, catalog, documents["records"], content_files=documents["content_files"]
+            )
+            guids = set(documents["asset_guids"])
+            merged = self._runtime_catalog.with_additional_content(incoming, guids)
+            occupied_modules = set(sys.modules) | set(sys.builtin_module_names)
+            occupied_modules.update(get_script_module_name(path) for path in self._runtime_catalog.script_payloads())
+            scripts = {}
+            modules = {}
+            for guid in guids:
+                if incoming.source_extension_for_guid(guid) != ".pyc":
+                    continue
+                path = incoming.resolve_guid(guid)
+                module = get_script_module_name(path, incoming.project_root)
+                if module is None or module in occupied_modules:
+                    raise RuntimeError(f"Cooked content uses an unavailable Python module identity: {module}")
+                scripts[guid] = module
+                modules[module] = path
+                occupied_modules.add(module)
+            types = _prepare_runtime_type_registry(documents["types"], new_scripts=scripts)
+            asset_guids = tuple(sorted(guids))
+            scene_guids = tuple(guid for guid in asset_guids if incoming.resolve_scene(guid) is not None)
+            roots = (*self._content_roots, incoming.project_root)
+
+            # Both candidates have been validated. Commit the catalogs on the
+            # same owner boundary before dispatching any scene or script work.
+            types.publish()
+            database._publish_runtime_asset_catalog()
+            self._scene_service.bind_runtime_catalog(merged)
+            self._set_runtime_catalog(merged)
+            set_runtime_content_roots(roots, modules)
+            self._content_roots = roots
+            publication.asset_guids = asset_guids
+            publication.scene_guids = scene_guids
+            publication.status = "published"
+        except Exception as exc:
+            database._discard_runtime_asset_catalog()
+            publication.error = str(exc) or type(exc).__name__
+            publication.status = "failed"
+        self._pending_content = None
 
     def _validate_player_boundary(self) -> None:
         forbidden = (
@@ -281,6 +377,7 @@ class PlayerRuntimeSession:
         if not self.is_playing:
             return 0.0
         self.pump_startup_warmup()
+        self._publish_ready_content()
         if self._membership_warmup_frames > 0:
             self._refresh_execution_membership()
             self._membership_warmup_frames -= 1
@@ -312,6 +409,12 @@ class PlayerRuntimeSession:
         """Retire Player scenes while their resource catalog is still bound."""
         from infernux.lib import SceneManager
 
+        self._state = "stopping"
+        if self._pending_content is not None:
+            publication, _ = self._pending_content
+            self.get_asset_database()._discard_runtime_asset_catalog()
+            publication.status = "cancelled"
+            self._pending_content = None
         self._scene_service.cancel_pending_load()
         native = SceneManager.instance()
         native.stop()
@@ -332,6 +435,7 @@ class PlayerRuntimeSession:
             set_runtime_asset_extension_resolver,
             set_runtime_asset_query,
             set_runtime_asset_resolver,
+            set_runtime_content_roots,
             set_runtime_package_resolver,
         )
 
@@ -339,7 +443,15 @@ class PlayerRuntimeSession:
         set_runtime_asset_extension_resolver(None)
         set_runtime_package_resolver(None)
         set_runtime_asset_query(None)
+        set_runtime_content_roots(())
+        self._content_roots = ()
         self._state = "stopped"
+
+    def release_content(self) -> None:
+        """Release the extraction tree after the native asset worker drains."""
+        if self._content_workspace is not None:
+            self._content_workspace.cleanup()
+            self._content_workspace = None
 
     @staticmethod
     def _refresh_loaded_scene(scene: Any) -> None:

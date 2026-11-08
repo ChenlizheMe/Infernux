@@ -330,10 +330,10 @@ class SpriteRenderer(BuiltinComponent):
 
     @property
     def material(self) -> Optional[Material]:
-        """The material on slot 0."""
+        """Return the stable renderer-local instance for slot zero."""
         cpp = self._cpp_component
         if cpp is not None:
-            native = cpp.get_material(0)
+            native = cpp.get_instanced_material(0)
         else:
             native = self._sprite_material
         return Material.from_native(native) if native is not None else None
@@ -347,7 +347,10 @@ class SpriteRenderer(BuiltinComponent):
 
     @property
     def shared_material(self):
-        return self.material
+        """Read the current binding without creating a material instance."""
+        cpp = self._cpp_component
+        native = cpp.get_material(0) if cpp is not None else self._sprite_material
+        return Material.from_native(native) if native is not None else None
 
     @shared_material.setter
     def shared_material(self, value):

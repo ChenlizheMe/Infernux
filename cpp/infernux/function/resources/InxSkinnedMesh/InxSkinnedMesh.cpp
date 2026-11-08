@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <stdexcept>
 
 namespace infernux
@@ -323,6 +324,20 @@ bool Skeleton::IsValid() const noexcept
     return true;
 }
 
+std::vector<std::vector<std::string>> Skeleton::GetNodePaths() const
+{
+    std::vector<std::vector<std::string>> paths;
+    std::set<std::vector<std::string>> unique;
+    for (const auto &node : nodes) {
+        auto path = node.parent < 0 ? std::vector<std::string>{} : paths.at(node.parent);
+        path.push_back(node.name);
+        if (!unique.insert(path).second)
+            throw std::invalid_argument("Skeleton node path is ambiguous: " + node.name);
+        paths.push_back(std::move(path));
+    }
+    return paths;
+}
+
 SkeletonRetargetMap Skeleton::BuildRetargetMap(const Skeleton &source, const SkinnedRuntimeAnimation &animation) const
 {
     SkeletonRetargetMap mapping;
@@ -482,7 +497,15 @@ size_t InxSkinnedMesh::GetRuntimeMemoryBytes() const noexcept
         bytes += target.name.capacity() + target.positionDeltas.capacity() * sizeof(glm::vec3) +
                  target.normalDeltas.capacity() * sizeof(glm::vec3) +
                  target.tangentDeltas.capacity() * sizeof(glm::vec3);
-    bytes += skeleton.GetRuntimeMemoryBytes();
+    bytes += skeleton.GetRuntimeMemoryBytes() - sizeof(Skeleton);
+    bytes += skeletonDefinitionGuid.capacity() + skeletonDefinitionId.capacity();
+    bytes += exposedSkeletonNodeIndices.capacity() * sizeof(int);
+    bytes += humanoid.bones.capacity() * sizeof(decltype(humanoid.bones)::value_type);
+    for (const auto &bone : humanoid.bones)
+        bytes += bone.first.capacity();
+    bytes += humanoid.issues.capacity() * sizeof(HumanoidValidationIssue);
+    for (const auto &issue : humanoid.issues)
+        bytes += issue.code.capacity() + issue.bone.capacity() + issue.detail.capacity();
     bytes += animations.capacity() * sizeof(SkinnedRuntimeAnimation);
     for (const auto &animation : animations) {
         bytes += animation.name.capacity() + animation.id.capacity();
@@ -493,6 +516,18 @@ size_t InxSkinnedMesh::GetRuntimeMemoryBytes() const noexcept
             bytes += track.scales.capacity() * sizeof(decltype(track.scales)::value_type);
         }
         bytes += animation.trackByNodeIndex.capacity() * sizeof(int);
+        bytes += animation.rootMotionReferencePose.capacity();
+        bytes += animation.rootMotionPositions.capacity() * sizeof(decltype(animation.rootMotionPositions)::value_type);
+        bytes += animation.rootMotionRotations.capacity() * sizeof(decltype(animation.rootMotionRotations)::value_type);
+        bytes += animation.curves.capacity() * sizeof(SkinnedRuntimeFloatCurve);
+        for (const auto &curve : animation.curves)
+            bytes += curve.name.capacity() + curve.keys.capacity() * sizeof(decltype(curve.keys)::value_type);
+        bytes += animation.events.capacity() * sizeof(SkinnedRuntimeEvent);
+        for (const auto &event : animation.events)
+            bytes += event.function.capacity() + event.stringArgument.capacity();
+        bytes += animation.boneMask.capacity() * sizeof(std::string);
+        for (const auto &name : animation.boneMask)
+            bytes += name.capacity();
     }
     bytes += m_gpuPaletteCache.bucket_count() * sizeof(void *);
     for (const auto &[key, pose] : m_gpuPaletteCache) {
@@ -500,7 +535,8 @@ size_t InxSkinnedMesh::GetRuntimeMemoryBytes() const noexcept
                  key.blendTakeName.capacity() + key.animationSourceKey.capacity() +
                  key.blendAnimationSourceKey.capacity();
         if (pose)
-            bytes += sizeof(*pose) + (pose->palette.capacity() + pose->nodeGlobals.capacity()) * sizeof(glm::mat4);
+            bytes += sizeof(*pose) + (pose->palette.capacity() + pose->nodeGlobals.capacity()) * sizeof(glm::mat4) +
+                     pose->localPoses.capacity() * sizeof(SkinnedNodePose);
     }
     bytes += m_gpuPaletteCacheOrder.capacity() * sizeof(PaletteCacheKey);
     for (const auto &key : m_gpuPaletteCacheOrder)
@@ -875,7 +911,8 @@ std::vector<SkinnedNodePose> InxSkinnedMesh::BuildRetargetedLocalPoses(const Ske
 
 std::vector<glm::mat4> InxSkinnedMesh::EvaluateNodeGlobals(const SkinnedSampleRequest &request,
                                                            const InxSkinnedMesh *animationSource,
-                                                           const InxSkinnedMesh *blendAnimationSource) const
+                                                           const InxSkinnedMesh *blendAnimationSource,
+                                                           std::vector<SkinnedNodePose> *localPoses) const
 {
     const InxSkinnedMesh *activeSource = animationSource ? animationSource : this;
     const InxSkinnedMesh *blendSource = blendAnimationSource ? blendAnimationSource : activeSource;
@@ -906,12 +943,18 @@ std::vector<glm::mat4> InxSkinnedMesh::EvaluateNodeGlobals(const SkinnedSampleRe
         BuildRetargetedLocalPoses(blendSource->skeleton, blendAnim, blendMapping, blendTicks);
 
     std::vector<glm::mat4> globals(skeleton.nodes.size(), glm::mat4(1.0f));
+    if (localPoses) {
+        localPoses->clear();
+        localPoses->reserve(skeleton.nodes.size());
+    }
     for (size_t ni = 0; ni < skeleton.nodes.size(); ++ni) {
         const SkinnedRuntimeNode &node = skeleton.nodes[ni];
         SkinnedNodePose pose = activePoses[ni];
         if (w > 0.0f)
             pose = BlendNodePose(pose, blendPoses[ni], w);
 
+        if (localPoses)
+            localPoses->push_back(pose);
         glm::mat4 local = MakeTRS(pose.translation, pose.rotation, pose.scale);
         globals[ni] = (node.parent >= 0) ? globals[static_cast<size_t>(node.parent)] * local : local;
     }
@@ -919,11 +962,16 @@ std::vector<glm::mat4> InxSkinnedMesh::EvaluateNodeGlobals(const SkinnedSampleRe
     return globals;
 }
 
-std::vector<glm::mat4> InxSkinnedMesh::EvaluatePoseStackGlobals(
-    const std::vector<PoseStackLayer> &layers,
-    const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources) const
+std::vector<glm::mat4>
+InxSkinnedMesh::EvaluatePoseStackGlobals(const std::vector<PoseStackLayer> &layers,
+                                         const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources,
+                                         std::vector<SkinnedNodePose> *localPoses) const
 {
     const size_t N = skeleton.nodes.size();
+    if (localPoses) {
+        localPoses->clear();
+        localPoses->reserve(N);
+    }
 
     // Bind pose per node (the base / fallback for uncovered nodes).
     std::vector<SkinnedNodePose> bind(N);
@@ -1043,6 +1091,8 @@ std::vector<glm::mat4> InxSkinnedMesh::EvaluatePoseStackGlobals(
             finalPose.rotation = glm::normalize(addRot[ni] * finalPose.rotation);
         }
 
+        if (localPoses)
+            localPoses->push_back(finalPose);
         glm::mat4 local = MakeTRS(finalPose.translation, finalPose.rotation, finalPose.scale);
         globals[ni] =
             (skeleton.nodes[ni].parent >= 0) ? globals[static_cast<size_t>(skeleton.nodes[ni].parent)] * local : local;
@@ -1063,10 +1113,11 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildPalette(const std::vector<glm::mat4>
     return boneMatrices;
 }
 
-EvaluatedSkinPose InxSkinnedMesh::MakeEvaluatedPose(std::vector<glm::mat4> globals) const
+EvaluatedSkinPose InxSkinnedMesh::MakeEvaluatedPose(std::vector<glm::mat4> globals,
+                                                    std::vector<SkinnedNodePose> localPoses) const
 {
     auto palette = BuildPalette(globals, scaleFactor);
-    return {std::move(palette), std::move(globals)};
+    return {std::move(palette), std::move(globals), std::move(localPoses)};
 }
 
 std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatrices(const SkinnedSampleRequest &request,
@@ -1101,7 +1152,15 @@ EvaluatedSkinPose
 InxSkinnedMesh::EvaluatePoseStack(const std::vector<PoseStackLayer> &layers,
                                   const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources) const
 {
-    return MakeEvaluatedPose(EvaluatePoseStackGlobals(layers, animationSources));
+    std::vector<SkinnedNodePose> locals;
+    auto globals = EvaluatePoseStackGlobals(layers, animationSources, &locals);
+    return MakeEvaluatedPose(std::move(globals), std::move(locals));
+}
+
+void InxSkinnedMesh::InvalidatePoseCache() const
+{
+    m_gpuPaletteCache.clear();
+    m_gpuPaletteCacheOrder.clear();
 }
 
 std::shared_ptr<const EvaluatedSkinPose>
@@ -1113,8 +1172,9 @@ InxSkinnedMesh::GetOrBuildEvaluatedPose(const SkinnedSampleRequest &request, con
     if (it != m_gpuPaletteCache.end())
         return it->second;
 
-    auto pose = std::make_shared<const EvaluatedSkinPose>(
-        MakeEvaluatedPose(EvaluateNodeGlobals(request, animationSource, blendAnimationSource)));
+    std::vector<SkinnedNodePose> locals;
+    auto globals = EvaluateNodeGlobals(request, animationSource, blendAnimationSource, &locals);
+    auto pose = std::make_shared<const EvaluatedSkinPose>(MakeEvaluatedPose(std::move(globals), std::move(locals)));
     m_gpuPaletteCache.emplace(key, pose);
     m_gpuPaletteCacheOrder.push_back(key);
 

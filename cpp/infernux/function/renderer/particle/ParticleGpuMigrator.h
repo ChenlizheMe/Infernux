@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuRuntime.h"
 
 #include <cstdint>
@@ -14,7 +16,7 @@ struct GpuParticleMigrationProgram
     ShaderBytecode reset;
     ShaderBytecode migrate;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleMigrationProgramStorage
@@ -22,15 +24,15 @@ struct GpuParticleMigrationProgramStorage
     std::vector<uint32_t> reset;
     std::vector<uint32_t> migrate;
 
-    [[nodiscard]] bool Assign(const GpuParticleMigrationProgram &program);
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] GpuParticleMigrationProgram View() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleMigrationProgram &program);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleMigrationProgram View() const noexcept;
 };
 
 struct GpuParticleMigrationShaderSources
 {
-    [[nodiscard]] static std::string_view Reset() noexcept;
-    [[nodiscard]] static std::string_view Migrate() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Reset() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Migrate() noexcept;
 };
 
 struct alignas(16) GpuParticleMigrationRange
@@ -53,6 +55,8 @@ struct GpuParticleMigrationDesc
     rhi::BufferHandle destinationStates;
     rhi::BufferHandle destinationFreeList;
     rhi::BufferHandle destinationCounters;
+    rhi::BufferHandle destinationAliveIndices;
+    rhi::BufferHandle destinationAliveControl;
     std::vector<GpuParticleMigrationRange> copyRanges;
     std::vector<uint32_t> defaultStateWords;
     GpuParticleMigrationProgram program;
@@ -78,24 +82,24 @@ class ParticleGpuMigrator
     static constexpr uint32_t WorkgroupSize = 256;
 
     ParticleGpuMigrator() = default;
-    ~ParticleGpuMigrator();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuMigrator();
 
     ParticleGpuMigrator(const ParticleGpuMigrator &) = delete;
     ParticleGpuMigrator &operator=(const ParticleGpuMigrator &) = delete;
     ParticleGpuMigrator(ParticleGpuMigrator &&) = delete;
     ParticleGpuMigrator &operator=(ParticleGpuMigrator &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleMigrationDesc &desc);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, const GpuParticleMigrationDesc &desc);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] bool WasRecorded() const noexcept
     {
         return m_recorded;
     }
 
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder);
-    void RecordMigrate(const rhi::ComputeCommandEncoder &encoder);
+    INFERNUX_PARTICLE_RUNTIME_API void RecordReset(const rhi::ComputeCommandEncoder &encoder);
+    INFERNUX_PARTICLE_RUNTIME_API void RecordMigrate(const rhi::ComputeCommandEncoder &encoder);
 
     [[nodiscard]] rhi::BufferHandle SourceStateBuffer() const noexcept
     {
@@ -142,6 +146,8 @@ class ParticleGpuMigrator
     rhi::BufferHandle m_destinationStates;
     rhi::BufferHandle m_destinationFreeList;
     rhi::BufferHandle m_destinationCounters;
+    rhi::BufferHandle m_destinationAliveIndices;
+    rhi::BufferHandle m_destinationAliveControl;
     rhi::BufferHandle m_copyRanges;
     rhi::BufferHandle m_defaultState;
     rhi::BindingLayoutHandle m_layout;

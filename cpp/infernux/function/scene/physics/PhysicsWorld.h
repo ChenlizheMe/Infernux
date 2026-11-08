@@ -40,14 +40,22 @@ class Body;
 class BodyID;
 class Shape;
 class Constraint;
+class TwoBodyConstraintSettings;
 } // namespace JPH
 
 namespace infernux
 {
 
 class GameObject;
+class Component;
 class Collider;
+class BoxCollider;
 class Rigidbody;
+class Joint;
+struct RigidbodyMassProperties;
+struct SwingTwistJointSettings;
+struct SixDOFJointSettings;
+enum class JointSwingType;
 class InfernuxJoltJobSystemAdapter;
 
 struct PhysicsBodyPoseUpdate
@@ -57,9 +65,33 @@ struct PhysicsBodyPoseUpdate
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
+/// Requested solver fields. Body identity is read under the same Jolt lock;
+/// shape revision is actor metadata supplied by the owner-thread Rigidbody.
+enum class PhysicsStateFields : uint32_t
+{
+    None = 0,
+    Position = 1u << 0,
+    CenterOfMass = 1u << 1,
+    LinearVelocity = 1u << 2,
+    AngularVelocity = 1u << 3,
+    InverseMass = 1u << 4,
+    Rotation = 1u << 5,
+    InverseInertia = 1u << 6,
+    BodyId = 1u << 7,
+    ShapeRevision = 1u << 8,
+    All = (1u << 7) - 1,
+};
+
+constexpr bool HasPhysicsStateField(PhysicsStateFields fields, PhysicsStateFields field)
+{
+    return (static_cast<uint32_t>(fields) & static_cast<uint32_t>(field)) != 0;
+}
+
 /// Solver state read under one body lock. Translation locks are world-axis masks.
 struct PhysicsBodyMotionState
 {
+    uint32_t bodyId = 0xFFFFFFFF;
+    uint64_t shapeRevision = 0;
     glm::vec3 position{0.0f};
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 centerOfMass{0.0f};
@@ -77,8 +109,62 @@ struct PhysicsPenetrationResult
     glm::vec3 pointB{0.0f};
 };
 
+/// One Box leaf from the currently installed Jolt body shape, in solver space.
+struct PhysicsBoxShapeState
+{
+    uint32_t memberIndex = 0;
+    glm::vec3 center{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 halfExtents{0.0f};
+    float friction = 0.0f;
+    float bounciness = 0.0f;
+};
+
+enum class PhysicsShapeType : uint32_t
+{
+    Box,
+    Sphere,
+    Capsule,
+    Mesh
+};
+
+/// Immutable geometry from an installed Jolt leaf. Dimensions and triangles
+/// already contain leaf scale; poses below are rigid transforms about its COM.
+struct PhysicsShapeGeometry
+{
+    uint64_t identity = 0;
+    PhysicsShapeType type = PhysicsShapeType::Mesh;
+    glm::vec4 dimensions{0.0f};
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+    bool convex = false;
+    [[nodiscard]] std::vector<glm::vec3> GetTriangles() const;
+
+  private:
+    friend class PhysicsWorld;
+    std::shared_ptr<const JPH::Shape> shape;
+    glm::vec3 scale{1.0f};
+};
+
+struct PhysicsShapeState
+{
+    Collider *collider = nullptr;
+    uint32_t memberIndex = 0;
+    uint32_t layerBit = 0;
+    bool trigger = false;
+    bool moving = false;
+    std::shared_ptr<const PhysicsShapeGeometry> geometry;
+    glm::vec3 center{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 bodyCenterOfMass{0.0f};
+    glm::vec3 linearVelocity{0.0f};
+    glm::vec3 angularVelocity{0.0f};
+};
+
 /// Actual velocity-solver impulse from the most recent fixed step. The
-/// impulse points from body A toward body B and is opt-in.
+/// impulse is applied to body B (its negative to A). Each solver midpoint
+/// retains its normal impulse and an equal share of manifold tangent friction.
+/// Independent torsional-friction angular impulses are not included. Opt-in.
 struct ContactImpulse
 {
     uint32_t bodyIdA = 0xFFFFFFFF;
@@ -143,7 +229,7 @@ class PhysicsWorld
     ///
     /// Tear-down order is fixed:
     ///   1. ContactListener::ClearAll() — drop pair tracking before bodies die.
-    ///   2. m_bodyToCollider cleared — no caller may resolve a Collider* now.
+    ///   2. Body ownership and query publications are cleared.
     ///   3. ContactListener / PhysicsSystem / JobSystem / TempAllocator / Layers
     ///      destroyed in dependency order.
     ///   4. Jolt globals (Factory, registered types) torn down.
@@ -152,7 +238,7 @@ class PhysicsWorld
     [[nodiscard]] size_t GetBodyCount() const
     {
         std::shared_lock lock(m_querySnapshotMutex);
-        return m_bodyToCollider.size();
+        return m_bodies.size();
     }
 
     /// @return true if initialised
@@ -203,32 +289,37 @@ class PhysicsWorld
     }
 
     // ========================================================================
-    // Body management (called by Collider components)
+    // Body management (published by PhysicsECSStore actors)
     // ========================================================================
 
-    /// Register a collider's Jolt body. Returns Jolt body ID as uint32.
-    uint32_t CreateBody(Collider *collider, bool isStatic, bool isTrigger);
+    /// Create one actor body from its currently enabled collision shapes.
+    uint32_t CreateBody(struct PhysicsActorData &actor);
 
-    /// Remove a body by collider pointer.
-    ///
-    /// Caller MUST first call RemoveBodyFromBroadphase(bodyId) — DestroyBody
-    /// only releases the body slot and drops the body→collider mapping.
-    /// Calling this on a body that is still in the broadphase will leave a
-    /// stale handle dangling inside Jolt. Collider::UnregisterBody is the
-    /// canonical caller and already enforces this ordering.
-    void DestroyBody(Collider *collider);
+    /// Retire an actor after its queued residency commands have been canceled
+    /// and its resident body removed from Jolt's broadphase.
+    void DestroyBody(uint32_t bodyId);
+    /// Retire joint endpoints when their Rigidbody stops participating, even
+    /// when its Collider keeps the same Jolt body as a static actor.
+    void DestroyConstraintsForBody(uint32_t bodyId);
 
     /// Inform the physics world that a body has moved (kinematic / editor move).
-    void SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot);
+    void SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot, bool cancelKinematicMove = false);
 
     /// Update many static body poses with one broadphase notification.
     void SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate> &updates);
 
+    /// Episode reset is legal only on the owner between complete fixed steps,
+    /// outside contact dispatch. Does not advance the world's clocks/epoch.
+    void RequireResetPhase() const;
+    /// Internal Rigidbody batch boundary; poses/velocities are prevalidated.
+    void ResetBodyMotionStates(const std::vector<PhysicsBodyMotionState> &states);
+
     /// Notify that a body's shape or properties changed.
     void UpdateBodyShape(Collider *collider, const Collider *exclude = nullptr);
+    void UpdateBodyShape(struct PhysicsActorData &actor, const Collider *exclude = nullptr);
 
     /// Update a body's sensor (trigger) flag at runtime without recreating the body.
-    void SetBodyIsSensor(uint32_t bodyId, bool isSensor);
+    void RefreshBodyTriggerState(uint32_t bodyId);
 
     /// Clear cached contact-pair tracking for a body so the next physics step
     /// produces fresh Enter events.  Call after changing sensor flag at runtime.
@@ -242,7 +333,7 @@ class PhysicsWorld
     [[nodiscard]] bool IsBodyInBroadphase(uint32_t bodyId) const;
 
     /// Remove a body from the broadphase (body stays alive for re-adding later).
-    void RemoveBodyFromBroadphase(uint32_t bodyId);
+    void RemoveBodyFromBroadphase(uint32_t bodyId, bool preserveVelocity = false);
 
     // ========================================================================
     // Body dynamics — used by Rigidbody component
@@ -253,7 +344,7 @@ class PhysicsWorld
     void SetBodyMotionType(uint32_t bodyId, int motionType);
 
     /// Update a body's user layer while preserving whether it is moving/static.
-    void SetBodyGameLayer(uint32_t bodyId, int gameLayer);
+    void RefreshBodyLayers(uint32_t bodyId);
 
     /// Set linear / angular damping (drag).
     void SetBodyDamping(uint32_t bodyId, float linearDamping, float angularDamping);
@@ -291,6 +382,8 @@ class PhysicsWorld
 
     /// Set allowed degrees-of-freedom (Jolt EAllowedDOFs bitmask). Recalculates mass for the new DOFs.
     void SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float mass);
+    /// Pure candidate validation before a component publishes mass properties.
+    void ValidateBodyMassProperties(const Rigidbody &body, float mass, const RigidbodyMassProperties *properties) const;
 
     /// Set collision mode: 0 = Discrete, 1 = Continuous static sweep,
     /// 2 = ContinuousDynamic with dynamic-pair TOI subdivision.
@@ -315,11 +408,41 @@ class PhysicsWorld
                                     const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
                                     float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
+    uint64_t CreateFixedConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                   const glm::vec3 &worldAnchor, const glm::vec3 &localAnchor, bool enableCollision);
+    void SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled);
+    uint64_t CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                      const glm::vec3 &localAnchor, const glm::vec3 &connectedLocalAnchor,
+                                      bool autoDistance, float minimum, float maximum, float stiffness, float damping,
+                                      bool enableCollision);
+    void UpdateDistanceConstraintSettings(uint64_t constraintId, bool updateLimits, float minimum, float maximum,
+                                          float stiffness, float damping, bool enableCollision);
+    float GetDistanceConstraintLength(uint64_t constraintId) const;
+    uint64_t CreateSwingTwistConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                        const glm::vec3 &localAnchor, const SwingTwistJointSettings &settings,
+                                        bool enableCollision);
+    void UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
+                                    bool enableCollision);
+    void SetSwingTwistConstraintType(uint64_t constraintId, JointSwingType type);
+    glm::quat GetAngularConstraintOrientation(uint64_t constraintId) const;
+    uint64_t CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                    const glm::vec3 &localAnchor, const SixDOFJointSettings &settings,
+                                    bool enableCollision);
+    void UpdateSixDOFConstraint(uint64_t constraintId, const SixDOFJointSettings &settings, bool enableCollision);
+    glm::vec3 GetSixDOFConstraintPosition(uint64_t constraintId) const;
     void UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
                                        bool enableCollision);
+    /// Position motor: radians, stiffness N m/rad, damping N m s/rad, torque N m.
+    void UpdateHingeConstraintMotor(uint64_t constraintId, bool enabled, float targetAngle, float stiffness,
+                                    float damping, float maxTorque, float jointDamping, float frictionTorque,
+                                    float armature);
     void UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
                                         bool enableCollision);
     [[nodiscard]] float GetHingeConstraintAngle(uint64_t constraintId) const;
+    [[nodiscard]] float GetHingeConstraintAngularVelocity(uint64_t constraintId) const;
+    [[nodiscard]] glm::vec2 GetHingeConstraintMotionState(uint64_t constraintId) const;
+    /// Scene/constraint identities may only be traversed on the physics owner.
+    void RequireOwnerThread() const;
     [[nodiscard]] float GetSliderConstraintPosition(uint64_t constraintId) const;
 
     // ---- Kinematic move ----
@@ -380,7 +503,8 @@ class PhysicsWorld
     [[nodiscard]] glm::vec3 GetBodyPosition(uint32_t bodyId) const;
     [[nodiscard]] glm::quat GetBodyRotation(uint32_t bodyId) const;
     [[nodiscard]] glm::vec3 GetBodyCenterOfMassPosition(uint32_t bodyId) const;
-    [[nodiscard]] PhysicsBodyMotionState GetBodyMotionState(uint32_t bodyId) const;
+    [[nodiscard]] PhysicsBodyMotionState GetBodyMotionState(uint32_t bodyId,
+                                                            PhysicsStateFields fields = PhysicsStateFields::All) const;
     [[nodiscard]] std::optional<PhysicsPenetrationResult>
     ComputePenetration(const Collider &a, const glm::vec3 &positionA, const glm::quat &rotationA, const Collider &b,
                        const glm::vec3 &positionB, const glm::quat &rotationB) const;
@@ -491,6 +615,10 @@ class PhysicsWorld
                  const glm::quat &orientation, float maxDistance, RaycastHit &outHit,
                  uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
+    /// Sweep a BoxCollider at a proposed world pose, reporting the first blocking contact.
+    bool SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
+                  const glm::vec3 &displacement, RaycastHit &outHit) const;
+
     /// Cast a capsule defined by world-space segment endpoints.
     bool CapsuleCast(const glm::vec3 &point0, const glm::vec3 &point1, float radius, const glm::vec3 &direction,
                      float maxDistance, RaycastHit &outHit, uint32_t layerMask = GetDefaultQueryLayerMask(),
@@ -500,15 +628,35 @@ class PhysicsWorld
     // Lookup
     // ========================================================================
 
-    /// Find the Collider* that owns a given body ID.
+    /// Find the first published Collider member, or nullptr for an empty body.
     Collider *FindColliderByBodyId(uint32_t bodyId) const;
+    Rigidbody *FindRigidbodyByBodyId(uint32_t bodyId) const;
+
+    /// A Jolt Ragdoll view over the existing component-owned bodies and joints.
+    /// Returns zero while cooking/body/constraint publication is incomplete.
+    uint64_t CreateRagdollAssembly(const std::vector<Rigidbody *> &bodies, const std::vector<Joint *> &parentJoints,
+                                   const std::vector<int> &parents);
+    void DestroyRagdollAssembly(uint64_t id);
+    [[nodiscard]] bool HasRagdollAssembly(uint64_t id) const
+    {
+        return m_ragdolls.count(id) != 0;
+    }
+    void DriveRagdollPose(uint64_t id, const std::vector<glm::quat> &worldRotations, bool enableMotors = true);
+    [[nodiscard]] std::vector<PhysicsBoxShapeState> GetBodyBoxShapeStates(uint32_t bodyId, bool queryTriggers) const;
+    [[nodiscard]] std::vector<PhysicsShapeState> GetBodyShapeStates(uint32_t bodyId, bool queryTriggers = true) const;
+    [[nodiscard]] bool HasRetiredShapeMembers() const
+    {
+        return m_retiredShapeBodyCount != 0;
+    }
+    [[nodiscard]] bool AcceptsSubShapeQuery(const JPH::Body &body, uint32_t subShapeId, uint32_t layerMask) const;
+    [[nodiscard]] bool AcceptsCCDCandidate(const JPH::Body &source, const JPH::Body &target, uint32_t sourceSubShape,
+                                           uint32_t targetSubShape) const;
 
     /// Resolve a specific subshape hit/contact back to the owning Collider.
     Collider *ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const;
     Collider *ResolveColliderForSubShape(const JPH::Body &body, uint32_t bodyId, uint32_t subShapeIdValue) const;
 
     /// Rebind a body lookup entry to another collider on the same body.
-    void RebindBodyCollider(uint32_t bodyId, Collider *collider);
 
     /// Runtime-only collision policy for one exact Collider pair. This is
     /// separate from joint-owned whole-body suppression.
@@ -537,11 +685,12 @@ class PhysicsWorld
     // Callers must hold m_querySnapshotMutex exclusively. Keeping the lock at
     // the public-operation boundary lets compound mutations publish as one
     // query epoch without recursively locking std::shared_mutex.
-    void SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot);
+    void SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot,
+                                 bool cancelKinematicMove = false);
     void MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
                                    float deltaTime, float maxSpeed);
 
-    struct QueryColliderIdentity
+    struct QueryTargetIdentity
     {
         Collider *collider = nullptr;
         GameObject *gameObject = nullptr;
@@ -550,14 +699,15 @@ class PhysicsWorld
         uint32_t memberIndex = UINT32_MAX;
         PhysicsTargetReference target;
         bool isTrigger = false;
+        uint32_t layerBit = 0;
     };
 
     /// Rebuild immutable application identity/trigger data while holding the
     /// query epoch write lock. Query workers never dereference mutable
     /// Collider or GameObject state.
     void PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId);
-    [[nodiscard]] const QueryColliderIdentity *ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId,
-                                                                             uint32_t subShapeIdValue) const;
+    [[nodiscard]] const QueryTargetIdentity *ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId,
+                                                                           uint32_t subShapeIdValue) const;
 
     bool RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
                         uint32_t layerMask, bool queryTriggers, bool queryEpochHeld = false,
@@ -577,7 +727,7 @@ class PhysicsWorld
     /// @brief Shared shape cast implementation for SphereCast/BoxCast.
     bool ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origin, const glm::quat &orientation,
                        const glm::vec3 &direction, float maxDistance, RaycastHit &outHit, uint32_t layerMask,
-                       bool queryTriggers) const;
+                       bool queryTriggers, const Collider *movingCollider = nullptr) const;
 
     [[nodiscard]] float FindEarliestDynamicCCDFraction(float deltaTime) const;
     [[nodiscard]] float FindEarliestStaticCCDFraction(float deltaTime) const;
@@ -598,13 +748,35 @@ class PhysicsWorld
     struct LayerInterfaces;
     std::unique_ptr<LayerInterfaces> m_layers;
 
-    // Mapping: Jolt body index → Collider*
-    std::unordered_map<uint32_t, Collider *> m_bodyToCollider;
-    // Compound bodies publish their Collider set with the Jolt shape. Raycast
-    // hit publication can resolve sub-shapes without allocating a fresh
-    // GameObject component list for every ray.
-    std::unordered_map<uint32_t, std::vector<Collider *>> m_bodyColliders;
-    std::unordered_map<uint32_t, std::vector<QueryColliderIdentity>> m_bodyQueryIdentities;
+    // One owner and immutable shape-identity publication per native body.
+    // All Collider members share the Rigidbody actor and its query record.
+    struct BodyRecord
+    {
+        GameObject *gameObject = nullptr;
+        Rigidbody *rigidbody = nullptr;
+        bool hasRetiredShapeMembers = false;
+        std::vector<Collider *> members;
+        std::vector<QueryTargetIdentity> targets;
+        struct ShapeLeaf
+        {
+            uint32_t subShapeId = 0;
+            glm::vec3 center{0.0f};
+            glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+            std::shared_ptr<const PhysicsShapeGeometry> geometry;
+        };
+        std::vector<ShapeLeaf> shapeLeaves;
+    };
+    void PublishBodyShapeGeometryUnlocked(uint32_t bodyId);
+    uint64_t m_nextShapeGeometryIdentity = 0;
+    void SetBodyActorOwner(uint32_t bodyId, const PhysicsActorData &actor);
+    std::unordered_map<uint32_t, BodyRecord> m_bodies;
+    struct RagdollAssembly;
+    std::unordered_map<uint64_t, std::shared_ptr<RagdollAssembly>> m_ragdolls;
+    uint64_t m_nextRagdollId = 1;
+    void InvalidateRagdollsForBody(uint32_t bodyId);
+    void InvalidateRagdollsForConstraint(const JPH::Constraint *constraint);
+    void UpdateRagdollCollision(const JPH::Constraint *constraint, bool enabled);
+    size_t m_retiredShapeBodyCount = 0;
     // Queries acquire the read side after SceneManager has published pending
     // transforms.  Fixed steps and every operation that changes query-visible
     // body membership, pose, layer, sensor or shape acquire the write side.
@@ -614,11 +786,6 @@ class PhysicsWorld
     std::atomic<uint64_t> m_queryGeneration{1};
     std::thread::id m_ownerThreadId{};
 
-    enum class ConstraintKind : uint8_t
-    {
-        Hinge,
-        Slider,
-    };
     struct ConstraintRecord
     {
         PhysicsConstraintOwner &owner;
@@ -626,7 +793,6 @@ class PhysicsWorld
         uint32_t bodyIdA = 0xFFFFFFFF;
         uint32_t bodyIdB = 0xFFFFFFFF;
         bool ignoresCollision = false;
-        ConstraintKind kind = ConstraintKind::Hinge;
         glm::vec3 anchorA{0.0f};
         glm::vec3 anchorB{0.0f};
         glm::vec3 collapsedOffsetA{0.0f};
@@ -634,9 +800,14 @@ class PhysicsWorld
         glm::vec3 scaleA{1.0f};
         glm::vec3 scaleB{1.0f};
     };
-    void CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor);
+    void CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor,
+                                  const glm::vec3 &connectedLocalAnchor);
+    uint64_t CreateTwoBodyConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                     const JPH::TwoBodyConstraintSettings &settings, const glm::vec3 &localAnchor,
+                                     bool enableCollision, const glm::vec3 &connectedLocalAnchor = glm::vec3(0.0f));
     void UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale);
     void ActivateConstraintBodies(const ConstraintRecord &record);
+    void ReplaceConstraint(ConstraintRecord &record, JPH::Constraint *replacement);
     void UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision);
     std::unordered_map<uint64_t, ConstraintRecord> m_constraints;
     uint64_t m_nextConstraintId = 1;
@@ -650,6 +821,7 @@ class PhysicsWorld
     std::unordered_set<uint32_t> m_staticContinuousBodyIds;
     std::unordered_set<uint32_t> m_continuousBodyIds;
     size_t m_lastDynamicCCDSplitCount = 0;
+    float m_previousSolverStepDuration = 0.0f;
 
     /// Bodies whose velocity was authored by a MoveKinematic-style target
     /// move. See MoveBodyKinematic / MoveStaticBodyWithVelocity.
@@ -666,6 +838,7 @@ class PhysicsWorld
     // Contact listener for collision/trigger callbacks
     std::unique_ptr<InxContactListener> m_contactListener;
     bool m_contactEventStreamEnabled = false;
+    bool m_dispatchingContacts = false;
     bool m_contactEventStreamIncludeTriggers = false;
     bool m_contactImpulseStreamEnabled = false;
     std::vector<ContactImpulse> m_contactImpulses;

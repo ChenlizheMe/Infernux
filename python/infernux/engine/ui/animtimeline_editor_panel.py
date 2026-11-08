@@ -224,7 +224,8 @@ class AnimTimelineEditorPanel(EditorPanel):
             "timeline",
             owner_id=self._window_id,
         )
-        self._pending_save_ticket_id: str = ""
+        # Save-as ticket state lives in _authoring_document_controller; this
+        # panel has no local ticket field or projection.
         # An untouched window owns a clean blank baseline. User-authored New
         # timelines continue to be unsaved drafts.
         self._replace_timeline_document(resource_path="", dirty=False)
@@ -690,36 +691,15 @@ class AnimTimelineEditorPanel(EditorPanel):
         ).accepted
 
     def request_authoring_save_as(self, ticket):
-        from infernux.engine.interaction import (
-            DocumentActionResult,
-            DocumentActionStatus,
-        )
-
-        self._pending_save_ticket_id = ticket.ticket_id
-        if self._show_save_as_dialog():
-            return DocumentActionResult(DocumentActionStatus.PENDING)
-        self._pending_save_ticket_id = ""
-        return DocumentActionResult(
-            DocumentActionStatus.REJECTED,
-            "no project root is available",
-        )
+        return self._authoring_document_controller.begin_save_as(ticket, self._show_save_as_dialog)
 
     def discard(self, *, document_id: str) -> bool:
         if document_id != self.document_id:
             return False
         return self._discard_unsaved_changes()
 
-    def _save_to(self, path: str, *, ticket_id: str = "") -> bool:
-        active_ticket_id = ticket_id or self._pending_save_ticket_id
-        if not active_ticket_id:
-            raise RuntimeError("Timeline saves require a DocumentRegistry SaveTicket")
-        result = self._authoring_document_controller.continue_save_to_resource(
-            active_ticket_id,
-            path,
-        )
-        if result.accepted:
-            self._pending_save_ticket_id = ""
-        return result.accepted
+    def _save_to(self, path: str) -> bool:
+        return self._authoring_document_controller.confirm_save_as(path).accepted
 
     def capture_authoring_save_snapshot(self, path: str):
         from infernux.engine.interaction import (
@@ -782,18 +762,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         return True
 
     def _cancel_pending_save(self) -> None:
-        ticket_id = self._pending_save_ticket_id
-        self._pending_save_ticket_id = ""
-        if not ticket_id:
-            return
-        from infernux.engine.interaction import DocumentRegistry
-
-        DocumentRegistry.instance().complete_save(
-            ticket_id,
-            success=False,
-            cancelled=True,
-            message="save was cancelled",
-        )
+        self._authoring_document_controller.cancel_pending_save()
 
     def _discard_unsaved_changes(self) -> bool:
         from infernux.engine.interaction import ContinuousEditService

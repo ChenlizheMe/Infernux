@@ -153,6 +153,7 @@ struct DeviceLimits
     uint32_t maxBindingLayouts = 0;
     uint32_t maxSampledTexturesPerStage = 0;
     uint32_t maxStorageBuffersPerStage = 0;
+    uint64_t minStorageBufferOffsetAlignment = 0;
     float maxSamplerAnisotropy = 1.0f;
     uint32_t maxComputeWorkgroupCount[3] = {};
     uint32_t maxComputeWorkgroupSize[3] = {};
@@ -166,6 +167,7 @@ struct DeviceFeatures
     bool wideLines = false;
     bool independentComputeQueue = false;
     bool dedicatedTransferQueue = false;
+    bool multisampleTextureCopies = false;
 };
 
 /// Backend-neutral limits and feature declarations. Shared compute, particle,
@@ -240,6 +242,13 @@ struct DeviceCaps
         }
         const size_t index = static_cast<size_t>(format);
         return index < formats.size() ? &formats[index] : nullptr;
+    }
+
+    [[nodiscard]] bool IsStorageBufferRangeValid(uint64_t offset, uint64_t byteSize) const noexcept
+    {
+        const auto alignment = limits.minStorageBufferOffsetAlignment;
+        return alignment != 0 && offset % alignment == 0 && byteSize != 0 &&
+               byteSize <= portable.maxStorageBufferBinding;
     }
 
     [[nodiscard]] CapabilityCheck CheckFormat(PixelFormat format, FormatFeature required) const noexcept

@@ -17,9 +17,13 @@ file(GLOB_RECURSE INFERNUX_FOUNDATION_SOURCES CONFIGURE_DEPENDS
     cpp/infernux/platform/filesystem/*.cpp
     cpp/infernux/platform/filesystem/*.h
 )
-list(APPEND INFERNUX_FOUNDATION_SOURCES
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxTexture/StbImage.cpp"
-)
+if(NOT WIN32)
+    # Keep image decoder entry points private even in the shared Runtime build.
+    set_source_files_properties(
+        cpp/infernux/function/resources/InxTexture/StbImage.cpp
+        PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-fvisibility=hidden>"
+    )
+endif()
 
 # Decode and stream audio without pulling scene/component ownership into a DLL.
 set(INFERNUX_AUDIO_RUNTIME_SOURCES
@@ -36,6 +40,8 @@ set(INFERNUX_ASSET_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDependencyGraph.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDependencyGraph.h"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetRuntimeApi.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetRegistry/AssetSource.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetRegistry/AssetSource.h"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDatabase/AssetIndex.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDatabase/AssetIndex.h"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.cpp"
@@ -56,8 +62,8 @@ set(INFERNUX_PARTICLE_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuSorter.cpp"
 )
 
+# Device-bound shader programs are compiled into the Runtime source set.
 set(INFERNUX_SHADER_COMPILER_SOURCES
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderProgram.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderReflection.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/GlslStageInterfaceEmitter.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderInfoSchema.cpp"
@@ -65,15 +71,15 @@ set(INFERNUX_SHADER_COMPILER_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderStageLinker.cpp"
 )
 
-file(GLOB_RECURSE INFERNUX_RENDER_CORE_SOURCES CONFIGURE_DEPENDS
-    cpp/infernux/function/renderer/rhi/*.cpp
-    cpp/infernux/function/renderer/rhi/*.h
-)
-list(APPEND INFERNUX_RENDER_CORE_SOURCES
+# Shared device and submission contracts. View policy belongs to the runtime.
+set(INFERNUX_RENDER_CORE_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RenderSubmissionPlan.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiComputeBuffer.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiComputeKernel.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiRenderTexture.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.h"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.h"
 )
 
 set(INFERNUX_RENDERER_RUNTIME_SOURCES
@@ -86,10 +92,6 @@ set(INFERNUX_RENDERER_RUNTIME_SOURCES
 file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
     cpp/infernux/function/renderer/vk/*.cpp
     cpp/infernux/function/renderer/vk/*.h
-)
-list(APPEND INFERNUX_VULKAN_BACKEND_SOURCES
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.h"
 )
 
 list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES

@@ -1,6 +1,10 @@
 // Python bindings for native four-component vectors and quaternions.
 
 #include "BindingRegistration.h"
+#include "PythonEase.h"
+#include "infernux/core/math/QuaternionEuler.h"
+#include "infernux/core/math/QuaternionInterpolation.h"
+#include "infernux/core/math/QuaternionLookRotation.h"
 #include <cmath>
 #include <functional>
 #include <glm/glm.hpp>
@@ -383,7 +387,18 @@ void RegisterVec4fBindings(py::module_ &m)
                  })
             .def("__eq__", [](const Quat &a, const Quat &b) { return a == b; })
             .def("__ne__", [](const Quat &a, const Quat &b) { return a != b; })
-            .def("__mul__", [](const Quat &a, const Quat &b) { return a * b; })
+            .def("__mul__",
+                 [](const Quat &a, const Quat &b) {
+                     const auto value = rotation::MultiplyPublic({a.x, a.y, a.z, a.w}, {b.x, b.y, b.z, b.w});
+                     return Quat(value[3], value[0], value[1], value[2]);
+                 })
+            .def(
+                "__mul__",
+                [](const Quat &q, const glm::vec3 &point) {
+                    const auto value = rotation::RotatePublic({q.x, q.y, q.z, q.w}, {point.x, point.y, point.z});
+                    return glm::vec3(value[0], value[1], value[2]);
+                },
+                py::is_operator())
             .def("__getitem__",
                  [](const Quat &q, int i) -> float {
                      switch (i) {
@@ -411,55 +426,24 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_property_readonly(
                 "euler_angles",
                 [](const Quat &q) {
-                    auto toPublicAngleDegrees = [](float angle) {
-                        float positive = std::fmod(angle, 360.0f);
-                        if (positive < 0.0f) {
-                            positive += 360.0f;
-                        }
-
-                        constexpr float kUnityEulerSnapEpsilon = 0.005729578f;
-                        if (positive < kUnityEulerSnapEpsilon || positive > 360.0f - kUnityEulerSnapEpsilon) {
-                            return 0.0f;
-                        }
-
-                        return positive;
-                    };
-
-                    // YXZ intrinsic extraction (Unity convention)
-                    float sinX = 2.0f * (q.w * q.x - q.y * q.z);
-                    float x, y, z;
-                    if (std::abs(sinX) < 0.9999f) {
-                        x = std::asin(sinX);
-                        y = std::atan2(2.0f * (q.x * q.z + q.w * q.y), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
-                        z = std::atan2(2.0f * (q.x * q.y + q.w * q.z), 1.0f - 2.0f * (q.x * q.x + q.z * q.z));
-                    } else {
-                        x = std::copysign(glm::half_pi<float>(), sinX);
-                        y = std::atan2(-(2.0f * (q.x * q.z - q.w * q.y)), 1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-                        z = 0.0f;
-                    }
-                    glm::vec3 euler = glm::degrees(glm::vec3(x, y, z));
-                    return glm::vec3(toPublicAngleDegrees(euler.x), toPublicAngleDegrees(euler.y),
-                                     toPublicAngleDegrees(euler.z));
+                    const auto euler = rotation::ToPublicEulerYXZ(q.x, q.y, q.z, q.w);
+                    return glm::vec3(euler[0], euler[1], euler[2]);
                 },
                 "Convert to Euler angles (degrees, YXZ convention)")
             .def_property_readonly(
-                "normalized", [](const Quat &q) { return glm::normalize(q); }, "Normalized copy of this quaternion")
+                "normalized",
+                [](const Quat &q) {
+                    const auto value = rotation::NormalizePublic(q.x, q.y, q.z, q.w);
+                    return Quat(value[3], value[0], value[1], value[2]);
+                },
+                "Normalized copy of this quaternion")
             // ---- Static constructors ----
             .def_static("identity", []() { return Quat(1.f, 0.f, 0.f, 0.f); })
             .def_static(
                 "euler",
                 [](float x, float y, float z) {
-                    // YXZ intrinsic: q = qY * qX * qZ (Unity convention)
-                    glm::vec3 r = glm::radians(glm::vec3(x, y, z));
-                    float cx = std::cos(r.x * 0.5f), sx = std::sin(r.x * 0.5f);
-                    float cy = std::cos(r.y * 0.5f), sy = std::sin(r.y * 0.5f);
-                    float cz = std::cos(r.z * 0.5f), sz = std::sin(r.z * 0.5f);
-                    glm::quat q;
-                    q.w = cy * cx * cz + sy * sx * sz;
-                    q.x = cy * sx * cz + sy * cx * sz;
-                    q.y = sy * cx * cz - cy * sx * sz;
-                    q.z = cy * cx * sz - sy * sx * cz;
-                    return q;
+                    const auto value = rotation::FromEulerYXZ(x, y, z);
+                    return Quat(value[3], value[0], value[1], value[2]);
                 },
                 py::arg("x"), py::arg("y"), py::arg("z"),
                 "Create quaternion from Euler angles (degrees, YXZ convention)")
@@ -472,27 +456,15 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_static(
                 "look_rotation",
                 [](const glm::vec3 &forward, const glm::vec3 &up) {
-                    const float forwardLength = glm::length(forward);
-                    if (forwardLength == 0.0f)
-                        return Quat(1.f, 0.f, 0.f, 0.f);
-                    const glm::vec3 direction = forward / forwardLength;
-                    const glm::vec3 right = glm::cross(up, direction);
-                    if (glm::dot(right, right) < 1e-12f) {
-                        if (direction.z == -1.0f)
-                            return Quat(0.f, 0.f, 1.f, 0.f);
-                        return glm::normalize(Quat(1.0f + direction.z, -direction.y, direction.x, 0.0f));
-                    }
-                    const glm::vec3 normalizedRight = glm::normalize(right);
-                    return glm::quat_cast(
-                        glm::mat3(normalizedRight, glm::cross(direction, normalizedRight), direction));
+                    const auto q = rotation::LookRotation({forward.x, forward.y, forward.z}, {up.x, up.y, up.z});
+                    return Quat(q[3], q[0], q[1], q[2]);
                 },
                 py::arg("forward"), py::arg("up") = glm::vec3(0.f, 1.f, 0.f),
                 "Create rotation looking in forward direction")
             // ---- Static math ----
             .def_static("dot", [](const Quat &a, const Quat &b) { return glm::dot(a, b); })
             .def_static("angle", &QuaternionAngleDegrees)
-            .def_static("slerp",
-                        [](const Quat &a, const Quat &b, float t) { return glm::slerp(a, b, std::clamp(t, 0.f, 1.f)); })
+            .def_static("slerp", [](const Quat &a, const Quat &b, float t) { return rotation::Slerp(a, b, t); })
             .def_static("lerp", [](const Quat &a, const Quat &b,
                                    float t) { return glm::normalize(glm::lerp(a, b, std::clamp(t, 0.f, 1.f))); })
             .def_static("inverse", [](const Quat &q) { return glm::inverse(q); })
@@ -506,6 +478,16 @@ void RegisterVec4fBindings(py::module_ &m)
                     return glm::slerp(from, to, t);
                 },
                 py::arg("from"), py::arg("to"), py::arg("max_degrees_delta"));
+        m.def("_sample_quaternion_ease",
+              [](Quat start, Quat end, const py::function &ease, const py::object &progress) {
+                  const float factor = static_cast<float>(bindings::SamplePythonEase(ease, progress));
+                  return rotation::Slerp(start, end, factor);
+              });
+        m.def("_sample_quaternion_ease",
+              [](Quat start, Quat end, const py::function &ease, double elapsed, double duration) {
+                  const float factor = static_cast<float>(bindings::SamplePythonEase(ease, elapsed, duration));
+                  return rotation::Slerp(start, end, factor);
+              });
     }
 }
 

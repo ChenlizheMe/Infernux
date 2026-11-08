@@ -1,6 +1,7 @@
 #include "InxGUIContext.h"
 #include "EditorMenuItem.h"
 #include "EditorWindowBounds.h"
+#include "ImageFillDraw.h"
 #include "InxGUISemantics.h"
 #include "InxTextGeometry.h"
 #include "InxTextLayout.h"
@@ -295,7 +296,8 @@ bool InxGUIContext::Checkbox(const std::string &label, bool *value)
 namespace
 {
 
-bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible, float dpi)
+bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible, float dpi,
+                                 bool framedRow = false)
 {
     // Split "Visible##id" so only the square is drawn — label text stays at
     // the ambient font size.
@@ -320,7 +322,7 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
     // submitted as one item so ImGui advances the row exactly once.
     const float boxSize = EditorTheme::INSPECTOR_CHECKBOX_BOX_PX * dpi;
     const float textHeight = ImGui::GetTextLineHeight();
-    const float rowHeight = (std::max)(boxSize, textHeight);
+    const float rowHeight = (std::max)(boxSize, framedRow ? ImGui::GetFrameHeight() : textHeight);
     const float labelWidth = visible.empty() ? 0.0f : ImGui::CalcTextSize(visible.c_str()).x;
     const float labelSpacing = visible.empty() ? 0.0f : ImGui::GetStyle().ItemInnerSpacing.x;
     const float itemWidth = boxSize + labelSpacing + labelWidth;
@@ -369,6 +371,16 @@ bool InxGUIContext::CheckboxInspector(const std::string &label, bool *value)
 {
     // Semantics are recorded by callers (they own the semantic id).
     return DrawInspectorCheckboxSquare(label, value, nullptr, GetDpiScale());
+}
+
+bool InxGUIContext::CheckboxField(const std::string &label, bool *value)
+{
+    // Inspector values share the input frame's height. Menus and component
+    // header overlays keep their compact checkbox footprint.
+    const bool changed = DrawInspectorCheckboxSquare(label, value, nullptr, GetDpiScale(), true);
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("checkbox", label, true, "", *value);
+    return changed;
 }
 
 void InxGUIContext::IntSlider(const std::string &label, int *value, int min, int max)
@@ -608,6 +620,8 @@ bool InxGUIContext::Combo(const std::string &label, int *currentItem, const std:
 {
     if (currentItem == nullptr)
         return false;
+    if (ImGui::GetCurrentWindow()->SkipItems)
+        return false;
 
     ImGuiContext &context = *ImGui::GetCurrentContext();
     if (popupMaxHeightInItems >= 0 &&
@@ -621,17 +635,17 @@ bool InxGUIContext::Combo(const std::string &label, int *currentItem, const std:
     const bool hasSelection = *currentItem >= 0 && *currentItem < static_cast<int>(items.size());
     const std::string preview = hasSelection ? items[*currentItem] : std::string{};
     const bool open = ImGui::BeginCombo(label.c_str(), preview.c_str());
-    const ImGuiLastItemData triggerItem = context.LastItemData;
 
     const size_t hiddenMarker = label.find("##");
     const std::string semanticBase =
         hiddenMarker != std::string::npos && hiddenMarker + 2 < label.size() ? label.substr(hiddenMarker + 2) : label;
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
-    if (captureSemantics)
-        RecordSemanticItem("combo", preview.empty() ? label : preview, true, semanticBase, std::nullopt, std::nullopt,
-                           preview);
-    if (!open)
+    if (!open) {
+        if (captureSemantics)
+            RecordSemanticItem("combo", preview.empty() ? label : preview, true, semanticBase, std::nullopt,
+                               std::nullopt, preview);
         return false;
+    }
 
     if (captureSemantics)
         RecordSemanticWindow("combo_popup", preview.empty() ? label : preview, semanticBase);
@@ -651,11 +665,53 @@ bool InxGUIContext::Combo(const std::string &label, int *currentItem, const std:
     }
     ImGui::EndCombo();
 
-    // Python panels commonly add a domain-specific semantic alias immediately
-    // after combo() returns. Keep that alias attached to the trigger, rather
-    // than to the final selectable rendered inside the popup.
-    context.LastItemData = triggerItem;
+    // EndCombo restores its parent's LastItemData. Capturing it after
+    // BeginCombo would capture the popup window header when the menu is open.
+    if (changed)
+        ImGui::MarkItemEdited(context.LastItemData.ID);
+    if (captureSemantics)
+        RecordSemanticItem("combo", preview.empty() ? label : preview, true, semanticBase, std::nullopt, std::nullopt,
+                           preview);
     return changed;
+}
+
+uint64_t InxGUIContext::FlagsCombo(const std::string &label, uint64_t value, const std::vector<std::string> &items,
+                                   const std::vector<uint64_t> &masks, const std::string &preview)
+{
+    if (items.size() != masks.size())
+        throw std::invalid_argument("FlagsCombo requires one mask for each label");
+    if (ImGui::GetCurrentWindow()->SkipItems)
+        return value;
+    auto &context = *ImGui::GetCurrentContext();
+    const uint64_t previous = value;
+    const bool open = ImGui::BeginCombo(label.c_str(), preview.c_str());
+    const auto marker = label.find("##");
+    const std::string semanticBase = marker == std::string::npos ? label : label.substr(marker + 2);
+    const bool capture = InxGUISemantics::IsCaptureEnabled();
+    if (!open) {
+        if (capture)
+            RecordSemanticItem("combo", preview, true, semanticBase, std::nullopt, std::nullopt, std::to_string(value));
+        return value;
+    }
+    if (capture)
+        RecordSemanticWindow("combo_popup", preview, semanticBase);
+    for (size_t index = 0; index < items.size(); ++index) {
+        ImGui::PushID(static_cast<int>(index));
+        const uint64_t mask = masks[index];
+        const bool selected = mask == 0 ? value == 0 : (value & mask) == mask;
+        if (ImGui::Selectable(items[index].c_str(), selected, ImGuiSelectableFlags_NoAutoClosePopups))
+            value = mask == 0 ? 0 : selected ? value & ~mask : value | mask;
+        if (capture)
+            RecordSemanticItem("combo_option", items[index], true, semanticBase + ":option:" + std::to_string(index),
+                               mask == 0 ? value == 0 : (value & mask) == mask);
+        ImGui::PopID();
+    }
+    ImGui::EndCombo();
+    if (value != previous)
+        ImGui::MarkItemEdited(context.LastItemData.ID);
+    if (capture)
+        RecordSemanticItem("combo", preview, true, semanticBase, std::nullopt, std::nullopt, std::to_string(value));
+    return value;
 }
 
 bool InxGUIContext::ListBox(const std::string &label, int *currentItem, const std::vector<std::string> &items,
@@ -2205,6 +2261,16 @@ void InxGUIContext::DrawImageRect(uint64_t textureId, float minX, float minY, fl
     }
 }
 
+void InxGUIContext::DrawFilledImage(uint64_t textureId, float minX, float minY, float maxX, float maxY, float u0,
+                                    float v0, float u1, float v1, float r, float g, float b, float a, float amount,
+                                    int method, int origin, bool clockwise, float rotation, bool mirrorH, bool mirrorV)
+{
+    if (auto *draw = ImGui::GetWindowDrawList())
+        AppendFilledImage(*draw, ToImTextureID(textureId), minX, minY, maxX, maxY, u0, v0, u1, v1,
+                          ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)), amount, method, origin, clockwise,
+                          rotation, mirrorH, mirrorV);
+}
+
 void InxGUIContext::DrawText(float x, float y, const std::string &text, float r, float g, float b, float a,
                              float fontSize)
 {
@@ -2215,7 +2281,7 @@ void InxGUIContext::DrawText(float x, float y, const std::string &text, float r,
     const textlayout::TextLayoutResult layout = textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
     if (!layout.lines.empty()) {
         drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
-        textlayout::RenderLine(drawList, layout, layout.lines.front(), x, y, col, 0.0f);
+        textlayout::RenderLine(drawList, layout, layout.lines.front(), x, y, col);
         drawList->PopTextureID();
     }
 }
@@ -2238,7 +2304,7 @@ void InxGUIContext::DrawTextAligned(float minX, float minY, float maxX, float ma
         drawList->PushClipRect(ImVec2(minX, minY), ImVec2(maxX, maxY), true);
 
     drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
-    textlayout::RenderTextBox(drawList, minX, minY, maxX, maxY, layout, col, alignX, alignY, 0.0f);
+    textlayout::RenderTextBox(drawList, minX, minY, maxX, maxY, layout, col, alignX, alignY);
     drawList->PopTextureID();
 
     if (clip)
@@ -2269,7 +2335,7 @@ void InxGUIContext::DrawTextRotated90Aligned(float minX, float minY, float maxX,
 
     drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
     textlayout::RenderTextBox(drawList, minX, minY, minX + layout.totalWidth, minY + layout.totalHeight, layout, col,
-                              0.0f, 0.0f, 0.0f);
+                              0.0f, 0.0f);
     drawList->PopTextureID();
 
     if (clip)
@@ -2334,7 +2400,7 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
             drawList->PushClipRect(ImVec2(minX, minY), ImVec2(maxX, maxY), true);
         const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
         drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
-        textlayout::RenderTextBox(drawList, minX, minY, maxX, maxY, layout, col, alignX, alignY, letterSpacing);
+        textlayout::RenderTextBox(drawList, minX, minY, maxX, maxY, layout, col, alignX, alignY);
         drawList->PopTextureID();
         if (clip)
             drawList->PopClipRect();
@@ -2351,7 +2417,7 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
     const int vtxStart = drawList->VtxBuffer.Size;
     ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
     drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
-    textlayout::RenderTextBox(drawList, minX, minY, maxX, maxY, layout, col, alignX, alignY, letterSpacing);
+    textlayout::RenderTextBox(drawList, minX, minY, maxX, maxY, layout, col, alignX, alignY);
     drawList->PopTextureID();
 
     if (clip)
@@ -2565,7 +2631,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             }
             if (d.mixed)
                 ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
-            CheckboxInspector(cbLabel, &val);
+            DrawInspectorCheckboxSquare(cbLabel, &val, nullptr, GetDpiScale(), d.fieldLabel);
             if (captureSemantics)
                 RecordSemanticItem("checkbox", d.label.empty() ? cbLabel : d.label, true, semanticId, val);
             if (d.mixed)

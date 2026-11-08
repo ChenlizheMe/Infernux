@@ -2,6 +2,7 @@
 
 #include "RhiDevice.h"
 #include "RhiResourceIndex.h"
+#include "RhiSubmission.h"
 
 #include <atomic>
 #include <cstdint>
@@ -65,6 +66,15 @@ class TextureResource final
     {
         return m_residentBytes;
     }
+    /// Set by the uploader before the image allocation is published.
+    void SetUploadSubmission(SubmissionTicket submission) noexcept
+    {
+        m_uploadSubmission = submission;
+    }
+    [[nodiscard]] SubmissionTicket GetUploadSubmission() const noexcept
+    {
+        return m_uploadSubmission;
+    }
 
   private:
     void Reset() noexcept
@@ -101,6 +111,7 @@ class TextureResource final
     PixelFormat m_format = PixelFormat::Undefined;
     TextureViewDesc m_viewDesc{};
     uint64_t m_residentBytes = 0;
+    SubmissionTicket m_uploadSubmission;
 };
 
 /// Immutable revisioned publication of one resident GPU texture. Consumers
@@ -118,15 +129,19 @@ class TextureGpuView final
           m_sampler(resource ? resource->GetSampler() : SamplerHandle{}),
           m_format(resource ? resource->GetFormat() : PixelFormat::Undefined),
           m_viewDesc(resource ? resource->GetViewDesc() : TextureViewDesc{}),
-          m_residentBytes(resource ? resource->GetResidentBytes() : 0), m_owner(std::move(resource))
+          m_residentBytes(resource ? resource->GetResidentBytes() : 0),
+          m_uploadSubmission(resource ? resource->GetUploadSubmission() : SubmissionTicket{}),
+          m_owner(std::move(resource))
     {
     }
 
     TextureGpuView(std::string sourceId, uint64_t revision, TextureHandle texture, TextureViewHandle view,
                    SamplerHandle sampler, uint64_t residentBytes, std::shared_ptr<const void> owner,
-                   PixelFormat format = PixelFormat::Undefined, TextureViewDesc viewDesc = {})
+                   PixelFormat format = PixelFormat::Undefined, TextureViewDesc viewDesc = {},
+                   SubmissionTicket upload = {})
         : m_sourceId(std::move(sourceId)), m_revision(revision), m_texture(texture), m_view(view), m_sampler(sampler),
-          m_format(format), m_viewDesc(viewDesc), m_residentBytes(residentBytes), m_owner(std::move(owner))
+          m_format(format), m_viewDesc(viewDesc), m_residentBytes(residentBytes), m_uploadSubmission(upload),
+          m_owner(std::move(owner))
     {
         m_viewDesc.texture = texture;
     }
@@ -171,6 +186,10 @@ class TextureGpuView final
     {
         return m_owner;
     }
+    [[nodiscard]] SubmissionTicket GetUploadSubmission() const noexcept
+    {
+        return m_uploadSubmission;
+    }
 
     /// Auxiliary device-global residency metadata for this immutable GPU
     /// publication. The texture handles and revision remain immutable; the
@@ -206,6 +225,7 @@ class TextureGpuView final
     PixelFormat m_format = PixelFormat::Undefined;
     TextureViewDesc m_viewDesc{};
     uint64_t m_residentBytes = 0;
+    SubmissionTicket m_uploadSubmission;
     std::shared_ptr<const void> m_owner;
     mutable std::mutex m_bindlessMutex;
     mutable uint64_t m_bindlessTableEpoch = 0;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 
@@ -19,6 +20,12 @@ void RequireEdge(const std::string &userGuid, const std::string &dependencyGuid)
     if (userGuid == dependencyGuid)
         throw std::invalid_argument("An object cannot depend on itself");
 }
+
+std::shared_ptr<AssetDependencyGraph> &CurrentGraph()
+{
+    static auto graph = std::make_shared<AssetDependencyGraph>();
+    return graph;
+}
 } // namespace
 
 AssetDependencyGraph::AssetDependencyGraph() : m_assetSnapshot(std::make_shared<const AssetDependencySnapshot>())
@@ -27,9 +34,19 @@ AssetDependencyGraph::AssetDependencyGraph() : m_assetSnapshot(std::make_shared<
 
 AssetDependencyGraph &AssetDependencyGraph::Instance()
 {
-    // Explicit engine cleanup owns lifetime state; avoid static teardown order.
-    static AssetDependencyGraph *instance = new AssetDependencyGraph();
-    return *instance;
+    return *Current();
+}
+
+std::shared_ptr<AssetDependencyGraph> AssetDependencyGraph::Current()
+{
+    return std::atomic_load_explicit(&CurrentGraph(), std::memory_order_acquire);
+}
+
+void AssetDependencyGraph::SetCurrent(std::shared_ptr<AssetDependencyGraph> graph)
+{
+    if (!graph)
+        graph = std::make_shared<AssetDependencyGraph>();
+    std::atomic_store_explicit(&CurrentGraph(), std::move(graph), std::memory_order_release);
 }
 
 std::shared_ptr<const AssetDependencySnapshot> AssetDependencyGraph::GetAssetSnapshot() const
@@ -303,6 +320,13 @@ std::unordered_set<std::string> AssetDependencyGraph::GetDependents(const std::s
     return result;
 }
 
+bool AssetDependencyGraph::HasRuntimeDependents(const std::string &guid) const
+{
+    std::lock_guard<std::mutex> lock(m_runtimeMutex);
+    const auto dependents = m_runtimeDependents.find(guid);
+    return dependents != m_runtimeDependents.end() && !dependents->second.empty();
+}
+
 bool AssetDependencyGraph::HasDependency(const std::string &userGuid, const std::string &dependencyGuid) const
 {
     const auto snapshot = GetAssetSnapshot();
@@ -344,9 +368,20 @@ void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType typ
 
     if (dependents.empty() || callbacks.empty())
         return;
+    // Every consumer observes a published asset, even if one instance cannot
+    // accept it. Report the failure after broadcasting; never hide it.
+    std::exception_ptr failure;
     for (const auto &dependentGuid : dependents)
-        for (const auto &callback : callbacks)
-            callback(dependentGuid, guid, event);
+        for (const auto &callback : callbacks) {
+            try {
+                callback(dependentGuid, guid, event);
+            } catch (...) {
+                if (!failure)
+                    failure = std::current_exception();
+            }
+        }
+    if (failure)
+        std::rethrow_exception(failure);
 }
 
 void AssetDependencyGraph::PublishContentChange(const std::string &guid)

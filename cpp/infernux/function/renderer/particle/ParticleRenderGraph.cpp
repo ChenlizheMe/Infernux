@@ -867,6 +867,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                 return vk::PassExecuteCallback{};
             builder.ReadStorageBuffer(migrationSourceCounters);
             counters = builder.WriteStorageBuffer(counters);
+            aliveControl = builder.WriteStorageBuffer(aliveControl);
             return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
                 if (m_framePending && m_migrationPending && m_migrator)
                     m_migrator->RecordReset(context.GetComputeCommandEncoder());
@@ -888,6 +889,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             states = builder.WriteStorageBuffer(states);
             freeList = builder.WriteStorageBuffer(freeList);
             counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            aliveIndices[0] = builder.WriteStorageBuffer(aliveIndices[0]);
+            aliveControl = builder.ReadWrite(aliveControl, rhi::PipelineStage::ComputeShader);
             return [this](vk::RenderContext &context) {
                 if (!m_framePending || !m_migrationPending || !m_migrator || !m_runtime)
                     return;

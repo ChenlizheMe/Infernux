@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <glm/gtc/matrix_transform.hpp>
 
 namespace infernux
 {
@@ -66,37 +65,6 @@ void SceneRenderer::RebuildCoarseCullGroups(const RenderWorldFrame &world)
     m_coarseCullWorldId = world.WorldId();
     m_coarseCullStructuralRevision = world.StructuralRevision();
     m_coarseCullTransformRevision = world.TransformRevision();
-}
-
-glm::mat4 SceneRenderer::GetViewMatrix() const
-{
-    const auto frame = m_renderWorld.Acquire();
-    return frame && frame->PrimaryView().valid ? frame->PrimaryView().view : glm::mat4{1.0f};
-}
-
-glm::mat4 SceneRenderer::GetProjectionMatrix() const
-{
-    const auto frame = m_renderWorld.Acquire();
-    return frame && frame->PrimaryView().valid ? frame->PrimaryView().projection
-                                               : glm::perspective(glm::radians(60.0f), 16.0f / 9.0f, 1000.0f, 0.1f);
-}
-
-glm::vec3 SceneRenderer::GetCameraPosition() const
-{
-    const auto frame = m_renderWorld.Acquire();
-    return frame ? frame->PrimaryView().position : glm::vec3{0.0f, 0.0f, 5.0f};
-}
-
-glm::vec3 SceneRenderer::GetCameraForward() const
-{
-    const auto frame = m_renderWorld.Acquire();
-    return frame ? frame->PrimaryView().forward : glm::vec3{0.0f, 0.0f, 1.0f};
-}
-
-glm::vec3 SceneRenderer::GetCameraUp() const
-{
-    const auto frame = m_renderWorld.Acquire();
-    return frame ? frame->PrimaryView().up : glm::vec3{0.0f, 1.0f, 0.0f};
 }
 
 const DrawCallResult &SceneRenderer::BuildDrawCalls()
@@ -187,10 +155,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
                         continue;
                     DrawCall &destination = cameraCache.visibleDrawCalls[index];
                     const DrawCall &source = cachedResult.drawCalls[sourceIndex];
-                    destination.skinBoneMatricesOwner = source.skinBoneMatricesOwner;
                     destination.skinBoneMatrices = source.skinBoneMatrices;
-                    destination.previousSkinBoneMatricesOwner = source.previousSkinBoneMatricesOwner;
-                    destination.previousSkinBoneMatrices = source.previousSkinBoneMatrices;
+                    destination.skinContinuity = source.skinContinuity;
                     destination.parameterBlock = source.parameterBlock;
                     destination.castsShadows = source.castsShadows;
                     destination.receivesShadows = source.receivesShadows;
@@ -250,11 +216,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.conservativeFullListUses += 1.0;
 #endif
-        const bool sameWorldList = cameraCache.usesWorldDrawCalls &&
-                                   cameraCache.worldId == result.worldOwner->WorldId() &&
-                                   cameraCache.structuralRevision == result.worldOwner->StructuralRevision() &&
-                                   cameraCache.transformRevision == result.worldOwner->TransformRevision() &&
-                                   cameraCache.cullingMask == camera.cullingMask;
+        const bool sameWorldList = cameraCache.usesWorldDrawCalls && worldMatches && structuralMatches &&
+                                   transformMatches && contentMatches && maskMatches;
         cameraCache.usesWorldDrawCalls = true;
         cameraCache.worldId = result.worldOwner->WorldId();
         cameraCache.structuralRevision = result.worldOwner->StructuralRevision();

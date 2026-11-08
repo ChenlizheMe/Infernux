@@ -13,6 +13,8 @@ from infernux.components.fields import FieldType
 from .inx_ui_component import InxUIComponent
 from .enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
 from .ui_render_revision import is_unchanged_ui_value, mark_runtime_ui_dirty
+from infernux.lib import Vector2
+from ._rect_transform import RectProperty, bind_rect, rect_field
 
 # Rect cache — avoids repeated hierarchy walks and serialized-field reads.
 # Runtime callers retain it until hierarchy or geometry changes; editor tools
@@ -65,17 +67,37 @@ class InxUIScreenComponent(InxUIComponent):
     """2D screen-space UI element with a canvas-pixel rectangle.
 
     Position and rotation are owned exclusively by the GameObject Transform.
-    This component owns only the element's logical width and height.
+    Logical size and pivot declarations bind to the shared native rectangle
+    when anchored layout is used.
     """
+
+    def _prepare_native_rect_layout(self):
+        """Materialize a parent frame when an existing UI branch is reparented."""
+        return bind_rect(self)
 
     _hide_transform_: bool = False
     _driven_transform_properties_ = DrivenTransformProperties.SCALE
     _GEOMETRY_FIELDS = frozenset({
-        "align_h", "align_v", "width", "height",
+        "align_h", "align_v", "width", "height", "pivot",
         "layout_position", "width_sizing", "height_sizing", "min_width",
         "min_height", "max_width", "max_height", "layout_weight",
+        "anchor_min", "anchor_max", "size_delta", "anchored_position", "anchored_position3d", "offset_min", "offset_max",
     })
     _HIT_POLICY_FIELDS = frozenset({"raycast_target", "clip_content"})
+
+    def __init_subclass__(cls, **kwargs):
+        # Changing a widget's authored defaults must retain rectangle ownership.
+        from ._rect_transform import RectField
+        from infernux.components.fields import SerializedFieldDescriptor
+        for name in ('width', 'height', 'pivot'):
+            declaration = cls.__dict__.get(name)
+            if type(declaration) in (int, float) or isinstance(declaration, Vector2):
+                declaration = serialized_field(default=declaration)
+            if isinstance(declaration, SerializedFieldDescriptor) and not isinstance(declaration, RectField):
+                descriptor = rect_field(declaration)
+                descriptor.__set_name__(cls, name)
+                setattr(cls, name, descriptor)
+        super().__init_subclass__(**kwargs)
 
     def __setattr__(self, name, value):
         if name in {"x", "y", "rotation"}:
@@ -88,12 +110,27 @@ class InxUIScreenComponent(InxUIComponent):
         if is_unchanged_ui_value(self, name, value):
             return
         super().__setattr__(name, value)
+        if name in ('align_h', 'align_v') and '_native_rect_layout' in self.__dict__:
+            layout = self.__dict__['_native_rect_layout']
+            position = self.transform.local_position
+            minimum, maximum = layout.anchor_min, layout.anchor_max
+            if name == 'align_h':
+                minimum.x = maximum.x = {ScreenAlignH.Left: 0., ScreenAlignH.Center: .5, ScreenAlignH.Right: 1.}[value]
+            else:
+                minimum.y = maximum.y = {ScreenAlignV.Top: 1., ScreenAlignV.Center: .5, ScreenAlignV.Bottom: 0.}[value]
+            layout.anchor_min, layout.anchor_max = minimum, maximum
+            self.transform.local_position = position
         mark_runtime_ui_dirty(
             self,
             binding=name in ("material", "text_material", "texture", "background_texture"),
         )
         if name in self._GEOMETRY_FIELDS:
-            _invalidate_rect_cache()
+            isolated_size = name in ("width", "height") and self._is_independent_screen_leaf()
+            _invalidate_rect_cache(layout=not isolated_size)
+            if isolated_size and self.raycast_target:
+                from .ui_render_revision import _mark_hit_policy_dirty
+
+                _mark_hit_policy_dirty()
         if name in self._HIT_POLICY_FIELDS:
             from .ui_render_revision import _mark_hit_policy_dirty
 
@@ -104,8 +141,27 @@ class InxUIScreenComponent(InxUIComponent):
     mirror_x: bool = serialized_field(default=False, tooltip="Mirror horizontally", group="Position")
     mirror_y: bool = serialized_field(default=False, tooltip="Mirror vertically", group="Position")
 
-    width: float = serialized_field(default=160.0, tooltip="Width in canvas pixels", group="Layout")
-    height: float = serialized_field(default=40.0, tooltip="Height in canvas pixels", group="Layout")
+    width: float = rect_field(serialized_field(default=160.0, tooltip="Width in canvas pixels", group="Layout"))
+    height: float = rect_field(serialized_field(default=40.0, tooltip="Height in canvas pixels", group="Layout"))
+    pivot: Vector2 = rect_field(serialized_field(default=Vector2(.5, .5), display_name_key="ui_comp.pivot", group="Layout"))
+    anchor_min = RectProperty()
+    anchor_max = RectProperty()
+    size_delta = RectProperty()
+    anchored_position = RectProperty()
+    anchored_position3d = RectProperty()
+    offset_min = RectProperty()
+    offset_max = RectProperty()
+
+    @property
+    def rect_transform(self):
+        """The native rectangle shared by every visual on this GameObject."""
+        return bind_rect(self)
+
+    def _set_game_object(self, game_object):
+        self.__dict__.pop('_native_rect_layout', None)
+        super()._set_game_object(game_object)
+        if game_object is not None and game_object.transform._has_rect_layout:
+            self.__dict__['_native_rect_layout'] = game_object.transform._rect_layout
     lock_aspect_ratio: bool = serialized_field(default=False, tooltip="Preserve width/height ratio while resizing", group="Layout")
     layout_position: UILayoutPosition = serialized_field(
         default=UILayoutPosition.Flow, tooltip="Participate in parent auto layout or use x/y", group="Layout"
@@ -183,9 +239,12 @@ class InxUIScreenComponent(InxUIComponent):
         ref_width = float(reference_width if reference_width is not None else self.width)
         ref_height = float(reference_height if reference_height is not None else self.height)
         anchor_x, anchor_y = self._anchor_origin(ref_width, ref_height)
+        pivot = self.pivot
+        parent = self._get_parent_ui_component()
+        parent_pivot_x, parent_pivot_y = (tuple(parent.pivot) if parent is not None else (.5, .5))
         return (
-            ref_width * 0.5 + float(position.x) * units - float(self.width) * 0.5 - anchor_x,
-            ref_height * 0.5 - float(position.y) * units - float(self.height) * 0.5 - anchor_y,
+            ref_width * parent_pivot_x + float(position.x) * units - float(self.width) * pivot.x - anchor_x,
+            ref_height * (1 - parent_pivot_y) - float(position.y) * units - float(self.height) * (1 - pivot.y) - anchor_y,
         )
 
     def _set_layout_rect_origin(self, rect_x: float, rect_y: float,
@@ -216,29 +275,38 @@ class InxUIScreenComponent(InxUIComponent):
             return None
         from infernux.lib import Vector3
 
+        if '_native_rect_layout' in self.__dict__:
+            from ._rect_transform import screen_rect
+            current = screen_rect(self, canvas_width, canvas_height)
+            position = game_object.transform.local_position
+            scale = self.__dict__['_native_rect_layout']._position_scale
+            return Vector3(position.x + (rect_x - current[0]) * scale,
+                           position.y - (rect_y - current[1]) * scale, position.z)
         ref_width, ref_height, reference, units = self._layout_reference()
         px, py, pw, ph = (
             reference if canvas_width == ref_width and canvas_height == ref_height
             else self._get_parent_world_rect(canvas_width, canvas_height)
         )
-        center_x = float(rect_x) + float(self.width) * 0.5
-        center_y = float(rect_y) + float(self.height) * 0.5
+        pivot = self.pivot
+        center_x = float(rect_x) + float(self.width) * pivot.x
+        center_y = float(rect_y) + float(self.height) * (1 - pivot.y)
+        parent = self._get_parent_ui_component()
+        parent_pivot_x, parent_pivot_y = (tuple(parent.pivot) if parent is not None else (.5, .5))
         anchor_x, anchor_y = self._anchor_origin(pw, ph)
         reference_x, reference_y = self._anchor_origin(reference[2], reference[3])
         position = game_object.transform.local_position
         return Vector3(
-            (center_x - px - anchor_x + reference_x - reference[2] * 0.5) / units,
-            -(center_y - py - anchor_y + reference_y - reference[3] * 0.5) / units,
+            (center_x - px - anchor_x + reference_x - reference[2] * parent_pivot_x) / units,
+            -(center_y - py - anchor_y + reference_y - reference[3] * (1 - parent_pivot_y)) / units,
             float(position.z),
         )
 
     def _local_position_for_visual_origin(self, visual_x: float, visual_y: float,
                                           canvas_width: float, canvas_height: float):
         """Resolve a rotated visual origin into the native Transform position."""
-        width, height = float(self.width), float(self.height)
-        visual_width, visual_height = self.calc_visual_size(width, height)
-        rect_x = float(visual_x) + (visual_width - width) * 0.5
-        rect_y = float(visual_y) + (visual_height - height) * 0.5
+        geometry = self._rect_geometry_for_size(self.width, self.height)
+        offset_x, offset_y = geometry.visual_rect[:2]
+        rect_x, rect_y = float(visual_x) - offset_x, float(visual_y) - offset_y
         return self._local_position_for_rect_origin(
             rect_x, rect_y, canvas_width, canvas_height
         )
@@ -263,6 +331,9 @@ class InxUIScreenComponent(InxUIComponent):
         mark_runtime_ui_dirty(self, subtree=True)
 
     def _deserialize_fields_document(self, data, **kwargs):
+        owner = self._try_get_game_object()
+        if owner is not None and not owner.transform._has_rect_layout:
+            self.__dict__.pop('_native_rect_layout', None)
         if isinstance(data, dict):
             data = dict(data)
             data.pop("x", None)
@@ -300,6 +371,14 @@ class InxUIScreenComponent(InxUIComponent):
     def is_world_space(self) -> bool:
         """World UI is inferred from hierarchy; no special Canvas is required."""
         return self.get_canvas() is None
+
+    def _is_independent_screen_leaf(self):
+        # A fixed-size leaf outside flow affects only its own draw packet.
+        owner = self._try_get_game_object()
+        if owner is None or owner.get_children() or self._canvas_for_owner(owner) is None:
+            return False
+        parent = self._get_parent_ui_component()
+        return not callable(getattr(parent, "_layout_rect_for_child", None))
 
     def _layout_ancestors(self):
         """Walk UI layout parents, stopping before the screen Canvas owner.
@@ -462,8 +541,8 @@ class InxUIScreenComponent(InxUIComponent):
             if position is None:
                 return (0.0, 0.0, self.width, self.height)
             return (
-                float(position.x) - float(self.width) * 0.5,
-                -float(position.y) - float(self.height) * 0.5,
+                float(position.x) - float(self.width) * self.pivot.x,
+                -float(position.y) - float(self.height) * (1 - self.pivot.y),
                 self.width,
                 self.height,
             )
@@ -474,9 +553,11 @@ class InxUIScreenComponent(InxUIComponent):
             if transform is not None else None
         )
         cache_key = (
-            id(self), canvas_width, canvas_height, signature
+            id(self), canvas_width, canvas_height, signature,
+            self.__dict__['_native_rect_layout'].revision if '_native_rect_layout' in self.__dict__ else None,
         )
-        cached = _rect_cache.get(cache_key)
+        native_layout = '_native_rect_layout' in self.__dict__
+        cached = None if native_layout else _rect_cache.get(cache_key)
         if cached is not None:
             return cached
         cw = float(canvas_width)
@@ -504,13 +585,17 @@ class InxUIScreenComponent(InxUIComponent):
         return value
 
     def _layout_desired_size(self) -> tuple[float, float]:
+        from infernux.components.fields import get_raw_field_value
         return (
-            self._clamp_layout_extent(self.width, self.min_width, self.max_width),
-            self._clamp_layout_extent(self.height, self.min_height, self.max_height),
+            self._clamp_layout_extent(get_raw_field_value(self, 'width'), self.min_width, self.max_width),
+            self._clamp_layout_extent(get_raw_field_value(self, 'height'), self.min_height, self.max_height),
         )
 
     def _absolute_rect(self, canvas_width: float, canvas_height: float,
                        reference_rect=None, size=None):
+        if '_native_rect_layout' in self.__dict__:
+            from ._rect_transform import screen_rect
+            return screen_rect(self, canvas_width, canvas_height, reference_rect, size)
         cw = float(canvas_width)
         ch = float(canvas_height)
         ref_width, ref_height, reference, _ = self._layout_reference()
@@ -535,19 +620,28 @@ class InxUIScreenComponent(InxUIComponent):
     def get_visual_rect(self, canvas_width=None, canvas_height=None):
         """Return the axis-aligned bounding box of the rotated content rect.
 
-        Rotation is applied around the center of the unrotated rect.
+        Rotation is applied around the element's normalized pivot.
         Returns (vx, vy, vw, vh) in canvas-space.
         """
-        rx, ry, rw, rh = self.get_rect(canvas_width, canvas_height)
-        rot = self.get_layout_rotation() % 360.0
-        if abs(rot) < 0.001:
-            return (rx, ry, rw, rh)
-        sin_a, cos_a = self._rot_sincos()
-        acos = abs(cos_a)
-        asin = abs(sin_a)
-        vw = rw * acos + rh * asin
-        vh = rw * asin + rh * acos
-        return (rx + rw * 0.5 - vw * 0.5, ry + rh * 0.5 - vh * 0.5, vw, vh)
+        return tuple(self._resolved_rect_geometry(canvas_width, canvas_height).visual_rect)
+
+    def _resolved_rect_geometry(self, canvas_width=None, canvas_height=None):
+        """One immutable view of the current layout, shared by its consumers."""
+        from infernux.lib._Infernux import _ScreenRectGeometry
+
+        rect = tuple(self.get_rect(canvas_width, canvas_height))
+        pivot = self.pivot
+        key = rect, self.get_layout_rotation(), (float(pivot.x), 1 - float(pivot.y))
+        if self.__dict__.get('_screen_rect_geometry_key') != key:
+            self.__dict__['_screen_rect_geometry'] = _ScreenRectGeometry(*key)
+            self.__dict__['_screen_rect_geometry_key'] = key
+        return self.__dict__['_screen_rect_geometry']
+
+    def _rect_geometry_for_size(self, width, height):
+        from infernux.lib._Infernux import _ScreenRectGeometry
+        pivot = self.pivot
+        return _ScreenRectGeometry((0, 0, float(width), float(height)), self.get_layout_rotation(),
+                                   (float(pivot.x), 1 - float(pivot.y)))
 
     def calc_visual_size(self, width: float, height: float):
         """Return rotated AABB size for the given unrotated width/height."""
@@ -567,37 +661,11 @@ class InxUIScreenComponent(InxUIComponent):
     def _rotated_corner_offset(self, width: float, height: float, corner_index: int,
                                 _sincos=None):
         """Return offset from rect origin to the specified rotated corner."""
-        width = float(width)
-        height = float(height)
-        hw, hh = width * 0.5, height * 0.5
-        # Local corner offsets: TL, TR, BR, BL
-        if corner_index == 0:
-            lx, ly = -hw, -hh
-        elif corner_index == 1:
-            lx, ly = hw, -hh
-        elif corner_index == 2:
-            lx, ly = hw, hh
-        else:
-            lx, ly = -hw, hh
-        if _sincos is not None:
-            sin_a, cos_a = _sincos
-        else:
-            sin_a, cos_a = self._rot_sincos()
-        rx = lx * cos_a - ly * sin_a
-        ry = lx * sin_a + ly * cos_a
-        return (hw + rx, hh + ry)
+        return tuple(self._rect_geometry_for_size(width, height).corners[corner_index])
 
     def get_rotated_corners(self, canvas_width=None, canvas_height=None):
         """Return rotated rect corners in TL, TR, BR, BL order."""
-        rect_x, rect_y, rect_w, rect_h = self.get_rect(canvas_width, canvas_height)
-        hw, hh = rect_w * 0.5, rect_h * 0.5
-        sin_a, cos_a = self._rot_sincos()
-        # Inline all 4 corners with shared sin/cos
-        corners = []
-        for lx, ly in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
-            corners.append((rect_x + hw + lx * cos_a - ly * sin_a,
-                            rect_y + hh + lx * sin_a + ly * cos_a))
-        return corners
+        return [tuple(point) for point in self._resolved_rect_geometry(canvas_width, canvas_height).corners]
 
     def set_rect(self, rect_x: float, rect_y: float, rect_w: float, rect_h: float,
                  canvas_width: float, canvas_height: float):
@@ -629,11 +697,8 @@ class InxUIScreenComponent(InxUIComponent):
         vis_x, vis_y, _, _ = self.get_visual_rect(canvas_width, canvas_height)
         new_width = float(width)
         new_height = float(height)
-        new_vis_w, new_vis_h = self.calc_visual_size(new_width, new_height)
-        vis_cx = vis_x + new_vis_w * 0.5
-        vis_cy = vis_y + new_vis_h * 0.5
-        new_rx = vis_cx - new_width * 0.5
-        new_ry = vis_cy - new_height * 0.5
+        offset_x, offset_y = self._rect_geometry_for_size(new_width, new_height).visual_rect[:2]
+        new_rx, new_ry = vis_x - offset_x, vis_y - offset_y
         cw, ch = float(canvas_width), float(canvas_height)
         self.width = new_width
         self.height = new_height
@@ -642,13 +707,11 @@ class InxUIScreenComponent(InxUIComponent):
     def set_size_preserve_center(self, width: float, height: float,
                                  canvas_width: float, canvas_height: float):
         """Set width/height while keeping the element's visual center fixed."""
-        rect_x, rect_y, rect_w, rect_h = self.get_rect(canvas_width, canvas_height)
-        center_x = rect_x + rect_w * 0.5
-        center_y = rect_y + rect_h * 0.5
+        center_x, center_y = self._resolved_rect_geometry(canvas_width, canvas_height).center
         new_width = float(width)
         new_height = float(height)
-        new_rect_x = center_x - new_width * 0.5
-        new_rect_y = center_y - new_height * 0.5
+        offset_x, offset_y = self._rect_geometry_for_size(new_width, new_height).center
+        new_rect_x, new_rect_y = center_x - offset_x, center_y - offset_y
         cw, ch = float(canvas_width), float(canvas_height)
         self.width = new_width
         self.height = new_height
@@ -788,25 +851,7 @@ class InxUIScreenComponent(InxUIComponent):
         if not self.raycast_target:
             return False
 
-        rx, ry, rw, rh = self.get_rect(canvas_width, canvas_height)
-        if tolerance > 0.0:
-            rx -= tolerance
-            ry -= tolerance
-            rw += tolerance * 2.0
-            rh += tolerance * 2.0
-        rot = self.get_layout_rotation() % 360.0
-
-        if abs(rot) < 0.001:
-            # Fast axis-aligned path
-            return (rx <= px <= rx + rw) and (ry <= py <= ry + rh)
-
-        # Rotate point into element's local frame (negate angle)
-        sin_a, cos_a = self._rot_sincos()
-        dx = px - (rx + rw * 0.5)
-        dy = py - (ry + rh * 0.5)
-        lx = dx * cos_a + dy * sin_a + rw * 0.5
-        ly = -dx * sin_a + dy * cos_a + rh * 0.5
-        return (0.0 <= lx <= rw) and (0.0 <= ly <= rh)
+        return self._resolved_rect_geometry(canvas_width, canvas_height).contains((px, py), tolerance)
 
 
 def is_ui_screen_component(component) -> bool:

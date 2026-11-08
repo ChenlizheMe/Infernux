@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, List, NotRequired, Optional, Tuple, TypedDict, Union
+from typing import Any, List, NotRequired, Optional, Sequence, Tuple, TypedDict, Union
 import numpy as np
 import numpy.typing as npt
 from infernux.lib import PenetrationResult, RaycastHit
 from infernux.components.builtin.collider import Collider
+from .joint_batch import HingeJointBatch as HingeJointBatch
 
 
 class RaycastBatchProfile(TypedDict):
@@ -41,11 +42,20 @@ class Physics:
     """Global physics system for raycasting and spatial queries."""
 
     @staticmethod
+    def apply_result(request: Any, targets: Sequence[Any], apply: Any, *, required: bool = False) -> Any: ...
+
+    @staticmethod
+    def sync_transforms() -> None: ...
+
+    @staticmethod
     def compute_penetration(collider_a: Any, position_a: Any, rotation_a: Any,
                             collider_b: Any, position_b: Any, rotation_b: Any) -> Optional[PenetrationResult]: ...
 
     @staticmethod
-    def get_rigidbody_states(rigidbodies: List[Any], out: Optional[dict[str, Any]] = ...) -> dict[str, Any]: ...
+    def get_rigidbody_states(rigidbodies: List[Any], out: Optional[dict[str, Any]] = ...,
+                             *, fields: Optional[Sequence[str]] = ...) -> dict[str, Any]: ...
+    @staticmethod
+    def reset_rigidbodies(rigidbodies: Sequence[Any], state: dict[str, Any]) -> None: ...
     @staticmethod
     def get_rigidbody_states_and_box_states(
         rigidbodies: List[Any], state_out: dict[str, Any], box_out: dict[str, Any],
@@ -67,7 +77,9 @@ class Physics:
 
     @staticmethod
     def apply_rigidbody_impulses(rigidbodies: List[Any], linear_impulses: Any,
-                                  angular_impulses: Any) -> None: ...
+                                  angular_impulses: Any, *,
+                                  expected_body_ids: Optional[npt.NDArray[np.uint32]] = ...,
+                                  expected_shape_revisions: Optional[npt.NDArray[np.uint64]] = ...) -> None: ...
     @staticmethod
     def set_contact_event_stream_enabled(enabled: bool = ..., *, include_triggers: bool = ...) -> None: ...
     @staticmethod
@@ -205,6 +217,9 @@ class Physics:
     ) -> Optional[RaycastHit]:
         """Cast a box along a direction and return the first hit, or None."""
         ...
+
+    @staticmethod
+    def sweep_box(collider: Any, position: Any, rotation: Any, displacement: Any) -> Optional[RaycastHit]: ...
 
     @staticmethod
     def capsule_cast(point0: Any, point1: Any, radius: float, direction: Any, max_distance: float = ..., layer_mask: Optional[int] = ..., query_triggers: bool = ...) -> Optional[RaycastHit]: ...

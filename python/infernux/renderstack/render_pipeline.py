@@ -85,7 +85,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
 
             def define_topology(self, graph):
                 graph.create_texture("color", camera_target=True)
-                graph.create_texture("depth", format=Format.D32_SFLOAT)
+                graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
                 with graph.add_pass("OpaquePass") as p:
                     p.write_color("color")
                     p.write_depth("depth")
@@ -132,6 +132,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         super().__init__()
         self._render_stack = None
         self._standalone_graphs = {}
+        self._standalone_rejected_textures = {}
         self._standalone_desc = None
         # Initialize serialized fields with defaults
         from infernux.components.fields import copy_serialized_field_default, get_serialized_fields
@@ -317,20 +318,34 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         cameras inside one context. For camera filtering, override
         ``should_render_camera()``.
         """
-        from infernux.rendergraph.graph import RenderGraph
+        from infernux.rendergraph.graph import RenderGraph, _rejected_render_texture_inputs
 
         if not self.should_render_camera(camera):
             return
         samples = context.output_samples
+        rejected = self._standalone_rejected_textures.get(samples)
+        if rejected:
+            if all(texture.revision == revision for texture, revision in rejected):
+                return
+            del self._standalone_rejected_textures[samples]
         self._standalone_desc = self._standalone_graphs.get(samples)
-        if self._standalone_desc is None:
+        if self._standalone_desc is None or not self._standalone_desc._render_texture_layouts_current():
             g = RenderGraph(self.name, output_samples=samples)
             self._defining_graph = g
             try:
                 self.define_topology(g)
+                self._standalone_desc = self._standalone_graphs[samples] = g.build()
+            except Exception as error:
+                rejected = _rejected_render_texture_inputs(error, self._standalone_desc)
+                if not rejected:
+                    raise
+                from infernux.debug import Debug
+
+                self._standalone_rejected_textures[samples] = rejected
+                Debug.log_error(f"Pipeline '{self.name}' could not import its RenderTexture attachments. {error}")
+                return
             finally:
                 self._defining_graph = None
-            self._standalone_desc = self._standalone_graphs[samples] = g.build()
         context.setup_camera_properties(camera)
         culling = context.cull(camera)
         self.render_camera(context, camera, culling)
@@ -338,11 +353,10 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     def should_render_camera(self, camera) -> bool:
         """Decide whether *camera* should be rendered this frame.
 
-        Override to filter out specific cameras, e.g. skip editor cameras
-        or only render cameras on a certain layer::
+        Override to filter project cameras by their GameObject names::
 
             def should_render_camera(self, camera):
-                return not camera.is_editor_camera
+                return camera.game_object.name != "Preview Camera"
 
         Returns ``True`` by default.
         """
@@ -361,13 +375,15 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             culling: Culling results from ``context.cull(camera)``.
         """
         if not context.is_graph_revision_current(self._standalone_desc.source_revision):
-            context.apply_graph(self._standalone_desc)
+            if not context.apply_graph(self._standalone_desc):
+                return
         context.submit_culling(culling)
 
     def dispose(self):
         """Override to release resources when the pipeline is replaced."""
         self._standalone_desc = None
         self._standalone_graphs.clear()
+        self._standalone_rejected_textures.clear()
 
     # ==================================================================
     # RenderStack integration

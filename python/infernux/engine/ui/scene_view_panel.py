@@ -440,6 +440,8 @@ class SceneViewPanel(
 
             vp = capture_viewport_info(ctx)
             is_scene_hovered = vp.is_hovered
+            from infernux.engine.interaction.handles import EditorHandleRegistry
+            EditorHandleRegistry.instance().draw_labels(ctx, self._engine, vp)
             overlay_hovered = self._render_overlays_and_shortcuts(
                 ctx,
                 vp,

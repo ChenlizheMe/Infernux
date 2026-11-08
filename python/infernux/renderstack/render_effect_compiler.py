@@ -536,6 +536,8 @@ class RenderEffectFeature:
         return instance
 
     def topology_signature(self, source: RenderEffect) -> tuple:
+        if not self.topology_parameters:
+            return ()
         parameters = source.to_asset().parameters
         return tuple(
             (name, json.dumps(parameters.get(name), sort_keys=True, allow_nan=False))
@@ -872,7 +874,14 @@ def resolve_enabled_effect_requirements(slots) -> frozenset[str]:
 class _ParameterBlockSpec:
     block_id: str
     pass_index: int
-    names: tuple[str, ...]
+
+
+def _pass_parameter_values(mappings):
+    return tuple(tuple((name, float(value)) for name, value in params.items()) for params in mappings)
+
+
+def _pass_parameter_layout(pass_values):
+    return tuple(tuple(name for name, _ in values) for values in pass_values)
 
 
 @dataclass
@@ -884,8 +893,9 @@ class CompiledEffectBinding:
     feature: RenderEffectFeature
     blocks: tuple[_ParameterBlockSpec, ...]
     topology_signature: tuple
-    parameter_context: EffectParameterContext
+    parameter_context: EffectParameterContext | None
     graph_structure: tuple
+    parameter_layout: tuple[tuple[str, ...], ...]
 
     def collect_updates(self):
         """Return ``(requires_rebuild, native_updates)`` for current values."""
@@ -893,22 +903,26 @@ class CompiledEffectBinding:
             return True, []
         if self.feature.topology_signature(self.source) != self.topology_signature:
             return True, []
-        passes, structure = self.parameter_context.record(self.source, self.feature, self.binding_id)
-        if structure != self.graph_structure:
+        if self.parameter_context is None:
+            mappings = self.feature.instantiate(self.source).get_pass_parameters()
+            if mappings is None:
+                return True, []
+            pass_values = _pass_parameter_values(mappings)
+        else:
+            passes, structure = self.parameter_context.record(self.source, self.feature, self.binding_id)
+            if structure != self.graph_structure:
+                return True, []
+            pass_values = tuple(tuple(render_pass._push_constants.items()) for render_pass in passes)
+        if _pass_parameter_layout(pass_values) != self.parameter_layout:
             return True, []
         updates = []
         from infernux.lib import GraphParameterBlockUpdate
 
         for spec in self.blocks:
-            if spec.pass_index >= len(passes):
-                return True, []
-            values = tuple(passes[spec.pass_index]._push_constants.items())
-            if tuple(name for name, _ in values) != spec.names:
-                return True, []
             update = GraphParameterBlockUpdate()
             update.id = spec.block_id
             update.revision = self.source.revision + 1
-            update.values = values
+            update.values = pass_values[spec.pass_index]
             updates.append(update)
         return False, updates
 
@@ -947,41 +961,38 @@ def _compile_effect(
     feature = get_render_effect_feature(source.feature_type)
     instance = feature.instantiate(source)
     first_pass = len(graph._passes)
-    first_texture = len(graph._textures)
-    first_buffer = len(graph._buffers)
-    first_topology = len(graph._topology)
+    graph_lengths = tuple((items, len(items)) for items in (
+        graph._passes, graph._textures, graph._buffers,
+        graph._topology, graph._work_bindings,
+    ))
     previous_temporal_jitter = graph._temporal_jitter
     bus_snapshot = bus.snapshot()
     from infernux.renderstack._effect_parameter_context import EffectParameterContext, graph_structure
 
-    parameter_context = EffectParameterContext(graph, bus)
+    get_parameters = getattr(instance, "get_pass_parameters", None)
+    mappings = get_parameters() if get_parameters is not None else None
+    parameter_context = EffectParameterContext(graph, bus) if mappings is None else None
     try:
         with graph.name_scope(f"effects/{binding_id}"):
             instance.setup_passes(graph, bus)
+        generated = graph._passes[first_pass:]
+        pass_values = tuple(tuple(render_pass._push_constants.items()) for render_pass in generated)
+        if mappings is not None and _pass_parameter_values(mappings) != pass_values:
+            raise RenderEffectCompileError(f"{feature.type_id!r} pass parameters do not match setup_passes")
     except Exception:
-        del graph._passes[first_pass:]
-        del graph._textures[first_texture:]
-        del graph._buffers[first_buffer:]
-        del graph._topology[first_topology:]
+        for items, length in graph_lengths:
+            del items[length:]
         graph.set_temporal_jitter(previous_temporal_jitter)
         bus._resources = bus_snapshot
         raise
-    generated = graph._passes[first_pass:]
-    structure = graph_structure(graph)
+    structure = graph_structure(graph) if parameter_context is not None else ()
     blocks = []
-    for pass_index, render_pass in enumerate(generated):
-        if not render_pass._push_constants:
+    for pass_index, values in enumerate(pass_values):
+        if not values:
             continue
         block_id = f"effect/{binding_id}/{pass_index}"
-        values = tuple(render_pass._push_constants.items())
-        render_pass.bind_parameter_block(block_id, dict(values))
-        blocks.append(
-            _ParameterBlockSpec(
-                block_id=block_id,
-                pass_index=pass_index,
-                names=tuple(name for name, _ in values),
-            )
-        )
+        generated[pass_index].bind_parameter_block(block_id, dict(values))
+        blocks.append(_ParameterBlockSpec(block_id, pass_index))
     return CompiledEffectBinding(
         binding_id=binding_id,
         source=source,
@@ -990,6 +1001,7 @@ def _compile_effect(
         topology_signature=feature.topology_signature(source),
         parameter_context=parameter_context,
         graph_structure=structure,
+        parameter_layout=_pass_parameter_layout(pass_values),
     )
 
 

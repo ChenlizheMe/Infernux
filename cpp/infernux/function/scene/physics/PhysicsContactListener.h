@@ -51,12 +51,13 @@ class GameObject;
  */
 struct CollisionInfo
 {
-    Collider *collider = nullptr;     ///< The other collider involved
-    GameObject *gameObject = nullptr; ///< The other GameObject
-    PhysicsTargetReference target;    ///< Safe identity when a script retains this value
-    glm::vec3 contactPoint{0.0f};     ///< World-space contact point (first contact)
-    glm::vec3 contactNormal{0.0f};    ///< Contact normal (points from other → this)
-    glm::vec3 relativeVelocity{0.0f}; ///< Relative velocity between the bodies
+    Collider *collider = nullptr;      ///< The other collider involved
+    GameObject *gameObject = nullptr;  ///< The other GameObject
+    PhysicsTargetReference target;     ///< Safe identity when a script retains this value
+    PhysicsTargetReference bodyTarget; ///< Body that participated in this event, independent of later reparenting
+    glm::vec3 contactPoint{0.0f};      ///< World-space contact point (first contact)
+    glm::vec3 contactNormal{0.0f};     ///< Contact normal (points from other → this)
+    glm::vec3 relativeVelocity{0.0f};  ///< Relative velocity between the bodies
 };
 
 // ============================================================================
@@ -142,9 +143,14 @@ class InxContactListener : public JPH::ContactListener
     /// wake-from-sleep duplicates.
     void InvalidatePairsForBody(uint32_t bodyId);
 
+    /// Drop episode contact history without changing collision policy.
+    /// Called on the owner outside Step/dispatch, after Jolt cache invalidation.
+    void ResetBodies(const std::unordered_set<uint32_t> &bodyIds);
+
     /// Reference-count a body pair that must not produce contacts. Multiple
     /// joints may independently own the same pair.
     void SetBodyPairIgnored(uint32_t bodyIdA, uint32_t bodyIdB, bool ignored);
+    [[nodiscard]] bool GetBodyPairIgnored(uint32_t bodyIdA, uint32_t bodyIdB) const;
     void RemoveIgnoredPairsForBody(uint32_t bodyId);
 
     /// Set the idempotent game-level policy for one exact Collider pair.

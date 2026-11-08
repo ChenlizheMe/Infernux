@@ -43,6 +43,7 @@ class Engine():
             else "editor"
         )
         self._engine = Infernux(_safe_path(lib_dir), self._mode)
+        self._frame_work = self._engine.frame_work
         if not _PLAYER_MODE:
             from infernux.engine.model_import.toolchain import configure_database
             configure_database(self._engine.get_asset_database())
@@ -63,7 +64,12 @@ class Engine():
         self._last_native_transform_serial = None
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
         self._last_frame_time = time.time()
-        self._render_submission_frame = 0
+        # CPU range ownership is lazy: no compiler/GPU host is loaded at idle.
+        self._cpu_range_tasks = set()
+        self._cpu_range_accepting = False
+        self._cpu_work_owner = None
+        self._result_consumers = []
+        self._graph_event_signals = None
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
         # Authoritative Scene View Gizmos switch. Keep this Python-side so it
@@ -94,13 +100,13 @@ class Engine():
         # operating system is about to reclaim. Editor/headless callers keep
         # the normal unload contract because their Python process survives.
         self._process_owned_exit = False
-        from infernux.application import Application
-        Application._bind_engine(self, self._application_role)
 
     def _set_application_role(self, runtime_kind: str):
         self._application_role = str(runtime_kind).strip().lower()
         from infernux.application import Application
-        Application._bind_engine(self, self._application_role)
+
+        if Application._current_engine() is self:
+            Application._bind_engine(self, self._application_role)
 
     @staticmethod
     def _parse_present_mode(value) -> int | None:
@@ -153,89 +159,154 @@ class Engine():
     def init_renderer(self, width, height, project_path):
         if self._mode != RuntimeMode.Graphical:
             raise RuntimeError("init_renderer is unavailable in headless mode")
-        self._apply_project_settings(project_path)
-        from infernux.resources import resources_path
-        self._engine.init_renderer(
-            width, height,
-            _safe_path(project_path),
-            _safe_path(resources_path),
-        )
-        if _PLAYER_MODE:
-            self.pump_events()
-        self._apply_startup_present_mode()
-        self._apply_startup_play_fps_cap()
-        set_project_root(project_path)
+        self._initialize(project_path, width, height)
 
-        from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
-        self._screen_ui_submission = RuntimeScreenUISubmission(self)
-
-        # Synchronize C++ scene-view flag with Python's initial state.
-        # C++ defaults to false; editor sets True, player keeps False.
-        self._engine.set_scene_view_visible(bool(self._scene_view_visible))
-
-        if not _PLAYER_MODE:
-            from infernux.engine.resources_manager import ResourcesManager
-            self._resources_manager = ResourcesManager(
-                project_path=project_path, engine=self._engine
-            )
-        
-        if _PLAYER_MODE:
-            self.pump_events()
-        
-        # Initialize AssetManager singleton (GUID ↔ path resolution for refs)
-        from infernux.core.assets import AssetManager
-        AssetManager.initialize(self)
-
-        if _PLAYER_MODE:
-            from infernux.engine.player_runtime import PlayerRuntimeSession
-
-            self._player_runtime = PlayerRuntimeSession(
-                asset_database=self.get_asset_database(),
-                native_engine=self._engine,
-                scheduler=self._runtime_scheduler,
-            )
-        else:
-            from infernux.engine.play_mode import PlayModeManager
-            from infernux.host import MainThreadCommandQueue
-
-            self._play_mode_manager = PlayModeManager()
-            self._play_mode_manager.set_asset_database(self.get_asset_database())
-            self._play_mode_manager._native_engine = self._engine
-            MainThreadCommandQueue.instance().set_wake_callback(
-                self._engine.request_editor_wake
-            )
-        self._install_pre_scene_time_callback()
-
-        # Auto-activate Python SRP rendering path
-        # All rendering passes (opaque, skybox, transparent) are driven by Python
-        from infernux.renderstack import RenderStackPipeline
-        self.set_render_pipeline(RenderStackPipeline())
-
-    def init_headless(self, project_path):
+    def init_headless(self, project_path, *, gpu=False):
+        """Start without a window; gpu=True prepares the shared Vulkan services now."""
         if self._mode != RuntimeMode.Headless:
             raise RuntimeError("init_headless requires RuntimeMode.Headless")
+        self._initialize(project_path, gpu=gpu)
 
-        self._apply_project_settings(project_path)
-        from infernux.resources import resources_path
-        self._engine.init_headless(
-            _safe_path(project_path),
-            _safe_path(resources_path),
-        )
-        set_project_root(project_path)
-
+    def _initialize(self, project_path, width=None, height=None, *, gpu=False):
+        """Join the native service owner before applying process-wide settings."""
+        from infernux.application import Application
         from infernux.core.assets import AssetManager
-        AssetManager.initialize(self)
+        from infernux.resources import resources_path
 
-        from infernux.engine.play_mode import PlayModeManager
+        if Application._current_engine() is self:
+            raise RuntimeError("Engine is already initialized")
+        graphical = self._mode == RuntimeMode.Graphical
+        player = graphical and bool(_PLAYER_MODE)
+        try:
+            arguments = (_safe_path(project_path), _safe_path(resources_path),
+                         lambda: self._apply_project_settings(project_path))
+            if graphical:
+                self._engine.init_renderer(width, height, *arguments)
+            else:
+                self._engine.init_headless(*arguments, gpu=gpu)
+            Application._bind_engine(self, self._application_role)
+            set_project_root(project_path)
 
-        self._play_mode_manager = PlayModeManager()
-        self._play_mode_manager.set_asset_database(self.get_asset_database())
-        self._play_mode_manager._native_engine = self._engine
-        from infernux.host import MainThreadCommandQueue
+            if graphical:
+                if player:
+                    self.pump_events()
+                self._apply_startup_present_mode()
+                self._apply_startup_play_fps_cap()
+                from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
 
-        MainThreadCommandQueue.instance().set_wake_callback(None)
-        self._initialize_headless_authoring(project_path)
-        self._install_pre_scene_time_callback()
+                self._screen_ui_submission = RuntimeScreenUISubmission(self)
+                self._engine.set_scene_view_visible(bool(self._scene_view_visible))
+                if player:
+                    self.pump_events()
+                else:
+                    from infernux.engine.resources_manager import ResourcesManager
+
+                    self._resources_manager = ResourcesManager(
+                        project_path=project_path, engine=self._engine)
+
+            AssetManager.initialize(self)
+            if player:
+                from infernux.engine.player_runtime import PlayerRuntimeSession
+
+                self._player_runtime = PlayerRuntimeSession(
+                    asset_database=self.get_asset_database(),
+                    native_engine=self._engine,
+                    scheduler=self._runtime_scheduler,
+                )
+            else:
+                from infernux.engine.play_mode import PlayModeManager
+                from infernux.host import MainThreadCommandQueue
+
+                self._play_mode_manager = PlayModeManager()
+                self._play_mode_manager.set_asset_database(self.get_asset_database())
+                self._play_mode_manager._native_engine = self._engine
+                MainThreadCommandQueue.instance().set_wake_callback(
+                    self._engine.request_editor_wake if graphical else None)
+                if not graphical:
+                    self._initialize_headless_authoring(project_path)
+            self._install_pre_scene_time_callback()
+            if graphical:
+                from infernux.renderstack import RenderStackPipeline
+
+                self.set_render_pipeline(RenderStackPipeline())
+            self._cpu_range_accepting = True
+        except BaseException:
+            self.exit()
+            raise
+
+    def _cpu_work(self, budget=None):
+        from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
+        assert_runtime_owner_thread()
+        from infernux.engine.cpu_continuation import CpuWorkOwner
+        owner = self._cpu_work_owner
+        if owner is None:
+            owner = CpuWorkOwner(self, budget)
+            self._cpu_work_owner = owner
+        elif budget is not None:
+            owner.configure_budget(budget)
+        owner.wake()
+        return owner
+
+    @property
+    def _service_opportunity(self):
+        return self._frame_work.opportunity
+
+    def _wake_cpu_request(self, owner, request):
+        try:
+            if self._mode != RuntimeMode.Headless:
+                self._engine.request_full_speed_frame()
+        except BaseException:
+            owner._cancel(request, "failed", "initial owner wake failed")
+            owner._retire(request)
+            raise
+        return request
+
+    def _request_nn_inference(self, model, x, *, window_opportunities, budget=None, result_device=None):
+        """Continue a cold-prepared CPU or GPU forward on the shared owner."""
+        owner = self._cpu_work(budget)
+        request = owner.release_nn(model, x, window_opportunities=window_opportunities, result_device=result_device)
+        return self._wake_cpu_request(owner, request)
+
+    def _request_nn_training(self, model, x, target, optimizer, *, window_opportunities, record_loss=False, budget=None,
+                             result_device=None, objective="mse", clear_grad=False):
+        """Continue one prepared MLP step; GPU local VJP remains a whole operation."""
+        owner = self._cpu_work(budget)
+        request = owner.release_training(model, x, target, optimizer,
+            window_opportunities=window_opportunities, record_loss=record_loss, result_device=result_device,
+            objective=objective, clear_grad=clear_grad)
+        return self._wake_cpu_request(owner, request)
+
+    def _apply_result(self, request, targets, apply, *, boundary, required):
+        from infernux.engine.cpu_continuation import CpuRequest
+        from infernux.execution import ResultConsumer, _active_result_boundary, capture_execution_scope
+        from infernux.lib import SceneManager
+        if not isinstance(request, CpuRequest) or request._owner() is not self._cpu_work_owner:
+            raise TypeError('a result consumer requires a request from this Engine')
+        if not callable(apply):
+            raise TypeError('a result consumer requires an application callback')
+        targets = tuple(targets)
+        if not targets:
+            raise ValueError('a result consumer requires its target components')
+        manager = SceneManager.instance()
+        if boundary == 'physics' and not manager.is_playing():
+            raise RuntimeError('physics result application requires a Play world')
+        scope = capture_execution_scope()
+        if (required and boundary == 'render' and (scope is None or scope.state != 'paused')
+                and _active_result_boundary.get() == boundary and
+                self._cpu_work_owner._waits_for_render_input(request)):
+            raise ValueError('result dependency cycle: the active boundary prevents its input render submission')
+        consumer = ResultConsumer(request, targets, apply, manager, boundary=boundary, required=required)
+        self._result_consumers.append(consumer)
+        manager._set_result_consumers_present(True)
+        if boundary != 'physics' and (required or request.done):
+            manager._retain_step_frame()
+        return consumer
+
+    def _retire_result_consumers(self):
+        from infernux.lib import SceneManager
+        manager = SceneManager.instance()
+        self._result_consumers[:] = [consumer for consumer in self._result_consumers if consumer._current(manager)]
+        manager._set_result_consumers_present(bool(self._result_consumers))
 
     def _initialize_headless_authoring(self, project_path) -> None:
         """Create the non-visual editor services required for authoring.
@@ -296,14 +367,19 @@ class Engine():
         def _pre_scene_tick(delta_time):
             engine = engine_ref()
             if engine is not None:
-                engine._render_submission_frame += 1
+                engine._retire_result_consumers()
                 # Reload, queued scene work, and deserialization share the
                 # owner-thread safe point. Typed changes merge here and become
                 # visible when SceneManager begins the runtime frame.
                 with engine._runtime_scheduler.change_journal.transaction():
                     if not _PLAYER_MODE:
+                        from infernux.core.assets import AssetManager
                         from infernux.host import MainThreadCommandQueue
 
+                        # Edit may have resumed after the last frame's model
+                        # publication. Apply it before queued authoring can
+                        # instantiate another root from that same revision.
+                        AssetManager.flush_model_instance_sync()
                         # MCP authoring can retire script dispatch entries.
                         # Drain before begin_native_frame, never from pre-GUI
                         # while that frame still owns the old dispatch epoch.
@@ -319,10 +395,30 @@ class Engine():
                     if engine._mode == RuntimeMode.Headless:
                         engine._tick_headless_maintenance()
                     engine.tick_play_mode(float(delta_time))
-                # Publish the immutable phase plan before SceneManager enters
-                # its native frame. Scene loads may register components from
-                # this callback; preparing here keeps the native work gate and
-                # fixed/update counts coherent for the first simulation step.
+                # The native frame owner drives registered sources after this
+                # authoring point, before runtime phase preparation below.
+                host = getattr(engine, "_infernux_compute_host", None)
+                if engine._cpu_range_tasks or host is not None:
+                    engine._frame_work.begin_scope()
+                    try:
+                        engine._cpu_work()
+                    finally:
+                        engine._frame_work.end_scope()
+                from infernux.runtime_services import _update_snapshot, _dispatch_updates
+                engine._clock_callbacks = _update_snapshot()
+                engine._clock_delta = float(delta_time)
+                if engine._clock_callbacks['service_update']:
+                    _dispatch_updates(engine._clock_callbacks['service_update'], delta_time, delta_time,
+                                      gameplay_phase=False)
+
+        def _prepare_runtime_frame():
+            engine = engine_ref()
+            if engine is None:
+                return
+            if not _PLAYER_MODE:
+                from infernux.core.assets import AssetManager
+
+                AssetManager.flush_model_instance_sync()
             scheduler = getattr(engine, "_runtime_scheduler", None)
             prepare_frame = getattr(scheduler, "prepare_frame", None)
             if callable(prepare_frame):
@@ -334,9 +430,9 @@ class Engine():
                 if not _PLAYER_MODE and play_mode_manager is not None:
                     play_mode_manager.process_pending_step()
 
-        self._engine.set_pre_scene_update_callback(_pre_scene_tick)
+        self._engine._set_runtime_frame_callbacks(_pre_scene_tick, _prepare_runtime_frame)
 
-        from infernux.lib import NativeRuntimeFrameBarrier, SceneManager
+        from infernux.lib import SceneManager
         from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
         scene_manager = SceneManager.instance()
@@ -345,49 +441,103 @@ class Engine():
             scene_manager.get_global_transform_serial()
         )
         scheduler = self._runtime_scheduler
+        def _begin_native_frame():
+            scheduler.begin_native_frame()
+            engine = engine_ref()
+            if engine is None or not scene_manager._is_executing_step():
+                return
+            from infernux.execution import step_execution, capture_step_permission
+            with step_execution():
+                for consumer in tuple(engine._result_consumers):
+                    if (consumer.boundary != 'physics' and (consumer.required or consumer.request.done)
+                            and consumer._current(scene_manager)
+                            and consumer._scope is not None and consumer._scope.state == 'stepping'):
+                        consumer.request._owner()._permit_step(consumer.request, capture_step_permission())
+                        scene_manager._retain_step_frame()
+
         scene_manager.set_runtime_lifecycle_callbacks(
-            scheduler.begin_native_frame,
+            _begin_native_frame,
             lambda delta: scheduler.execute_native_phase("fixed_update", delta),
             lambda delta: scheduler.execute_native_phase("update", delta),
             lambda delta: scheduler.execute_native_phase("late_update", delta),
             scheduler.execute_native_editor_update,
             scheduler.end_native_frame,
         )
-        barrier_map = {
-            NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
-                RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
-            NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
-                RuntimeFrameBarrier.PHYSICS_SIMULATION,
-            NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
-                RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
-            NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
-                RuntimeFrameBarrier.TRANSFORM_RESOLVE,
-            NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
-                RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
-            NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
-                RuntimeFrameBarrier.ANIMATION_TIMELINE,
-            NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
-                RuntimeFrameBarrier.RENDER_EXTRACTION,
-            NativeRuntimeFrameBarrier.RENDER_GRAPH:
-                RuntimeFrameBarrier.RENDER_GRAPH,
-            NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
-                RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
-            NativeRuntimeFrameBarrier.PENDING_DESTROY:
-                RuntimeFrameBarrier.PENDING_DESTROY,
-        }
-
-        def _consume_native_barrier(barrier, _map=barrier_map):
+        def _consume_native_barrier(barrier):
             engine = engine_ref()
             if engine is None:
                 return None
-            return engine._consume_runtime_frame_barrier(_map[barrier])
+            return engine._consume_runtime_frame_barrier(RuntimeFrameBarrier.from_native(barrier))
 
         scene_manager.set_runtime_frame_barrier_callback(_consume_native_barrier)
+        def _consume_results(barrier):
+            engine = engine_ref()
+            if engine is None:
+                return True
+            if not engine._runtime_scheduler.resume_native_result_boundary(barrier):
+                return False
+            boundary = {'PHYSICS_SIMULATION': 'physics', 'RENDER_EXTRACTION': 'render'}.get(barrier.name)
+            if boundary is None:
+                return True
+            state = scene_manager.simulation_epoch, scene_manager.is_playing(), scene_manager.is_paused()
+            ready = True
+            blocked = set()
+            waiting = set()
+            suspended = set()
+            index = 0
+            while index < len(engine._result_consumers):
+                consumer = engine._result_consumers[index]
+                index += 1
+                if consumer.boundary == 'render_input' and boundary == 'render':
+                    targets = consumer._resolve(scene_manager)
+                    if targets is not None:
+                        consumer._consume(scene_manager, targets)
+                    continue
+                if consumer.boundary != boundary:
+                    continue
+                targets = consumer._resolve(scene_manager)
+                if targets is None:
+                    continue
+                if not consumer.required and not consumer.request.done:
+                    waiting.update(consumer._target_keys)
+                    continue
+                if boundary == 'physics' and consumer._step > scene_manager.fixed_step_index:
+                    continue
+                # The control phase publishes newly created bodies after this
+                # gate. Preserve target order without waiting on that phase.
+                if consumer._suspended() or (boundary == 'physics' and
+                        any(not getattr(target, '_result_target_ready', True) for target in targets)):
+                    (suspended if consumer.required else waiting).update(consumer._target_keys)
+                    continue
+                if suspended.intersection(consumer._target_keys):
+                    suspended.update(consumer._target_keys)
+                    continue
+                if not consumer.required and waiting.intersection(consumer._target_keys):
+                    waiting.update(consumer._target_keys)
+                    continue
+                if blocked.intersection(consumer._target_keys) or not consumer._consume(scene_manager, targets):
+                    blocked.update(consumer._target_keys)
+                    ready = False
+                if state != (scene_manager.simulation_epoch, scene_manager.is_playing(), scene_manager.is_paused()):
+                    return False
+            return ready
+        scene_manager.set_runtime_result_consumer_callback(_consume_results)
+        scene_manager._set_result_consumers_present(bool(self._result_consumers))
         scheduler.bind_native_bridge(scene_manager)
 
     def _consume_runtime_frame_barrier(self, barrier):
         if not isinstance(barrier, RuntimeFrameBarrier):
             barrier = RuntimeFrameBarrier(barrier)
+        if barrier == RuntimeFrameBarrier.RENDER_SUBMITTED:
+            from infernux.runtime_services import _dispatch_updates
+            changes = self._runtime_scheduler.consume_runtime_changes(barrier)
+            if self._graph_event_signals is not None:
+                from infernux.rendergraph.events import _dispatch_graph_events
+                _dispatch_graph_events(self)
+            if self._clock_callbacks['render_submitted']:
+                _dispatch_updates(self._clock_callbacks['render_submitted'], self._clock_delta, self._clock_delta,
+                                  gameplay_phase=False)
+            return changes
         if barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
             scene_manager = getattr(self, "_runtime_scene_manager", None)
             getter = getattr(scene_manager, "get_global_transform_serial", None)
@@ -409,6 +559,11 @@ class Engine():
                 self._runtime_scheduler.execute_native_phase(
                     "physics_pre_step",
                     float(self._runtime_scene_manager.get_fixed_time_step()),
+                )
+        elif barrier == RuntimeFrameBarrier.ANIMATION_EVALUATION:
+            if changes is not None:
+                self._runtime_scheduler.execute_native_phase(
+                    "animation_update", self._runtime_scene_manager.get_frame_delta_time(),
                 )
         elif barrier == RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
             if changes is not None:
@@ -673,6 +828,10 @@ class Engine():
         rm = self._resources_manager
         if rm and current_time >= self._next_reload_poll_time and not (pmm and pmm.is_restoring):
             rm.process_pending_reloads()
+            if pmm is not None and (pmm.is_paused or pmm.is_edit_mode):
+                from infernux.components.particle_system import ParticleSystem
+
+                ParticleSystem._refresh_idle_gpu_publications()
             self._next_reload_poll_time = current_time + self._reload_poll_interval
         
         player_runtime = self._player_runtime
@@ -754,14 +913,16 @@ class Engine():
             self._gizmos_collector.collect_and_upload(self)
         self._gizmos_uploaded = True
 
-    @staticmethod
-    def _flush_pending_material_saves():
+    def _flush_pending_material_saves(self):
         """Flush throttled mutable rendering-asset saves."""
         from infernux.core.material import Material
-        from infernux.renderstack.render_effect import RenderEffect
 
         Material.flush_all_pending()
-        RenderEffect.flush_all_pending()
+        # Headless maintenance already flushes the scheduled effect writes.
+        if self._mode == RuntimeMode.Graphical:
+            from infernux.renderstack.render_effect import RenderEffect
+
+            RenderEffect.flush_all_pending()
 
     def _clear_uploaded_gizmos(self):
         """Clear uploaded gizmo buffers once when Scene View is hidden."""
@@ -783,10 +944,10 @@ class Engine():
         visible = bool(visible)
         if self._scene_view_visible == visible:
             return
-        self._scene_view_visible = visible
         # Gate C++ scene graph execution
         if self._engine is not None:
             self._engine.set_scene_view_visible(visible)
+        self._scene_view_visible = visible
         if visible:
             self._next_gizmo_collect_time = 0.0
         else:
@@ -882,6 +1043,18 @@ class Engine():
         if self._engine is None:
             return
 
+        from infernux.application import Application
+
+        if Application._current_engine() is not self:
+            # Construction or a rejected native claim never acquired Python
+            # services. Do not close another host's plugins, queue or assets.
+            self._runtime_scheduler.clear()
+            self._engine.cleanup()
+            self._engine = None
+            return
+
+        self._engine._require_cleanup_boundary()
+
         # Dirty-panel decisions are completed by SceneFileManager's non-blocking
         # Editor modal before native close is confirmed. This call is now only a
         # teardown audit and must never open a platform dialog.
@@ -904,6 +1077,23 @@ class Engine():
                 self._before_exit_callback()
             except Exception as exc:
                 Debug.log_suppressed("Engine.exit.before_exit_callback", exc)
+
+        cpu_owner = self._cpu_work_owner
+        for consumer in self._result_consumers:
+            consumer.cancel()
+        self._result_consumers.clear()
+        if cpu_owner is not None:
+            cpu_owner.shutdown_begin()
+        self._cpu_range_accepting = False
+        if self._cpu_range_tasks:
+            from infernux.cpu_execution import _shutdown_cpu_ranges
+
+            _shutdown_cpu_ranges(self)
+        if cpu_owner is not None:
+            # The common owner waits only for its already accepted GPU tickets
+            # here, while the host is live; normal frame retirement never waits.
+            cpu_owner.shutdown_finish()
+            self._cpu_work_owner = None
 
         # 0. If still in play mode, tear down Python components before C++
         #    objects are destroyed.  Without this, the C++ renderer
@@ -936,6 +1126,7 @@ class Engine():
             self._runtime_scheduler.unbind_native_bridge()
             self._runtime_scene_manager = None
         self._runtime_scheduler.clear()
+        self._graph_event_signals = None
 
         if not _PLAYER_MODE:
             try:
@@ -1002,6 +1193,8 @@ class Engine():
 
             _release_engine_resources()
             self._engine.cleanup()
+            if self._player_runtime is not None:
+                self._player_runtime.release_content()
         
         # Clear all references
         self._gui_objects.clear()
@@ -1302,7 +1495,7 @@ class Engine():
             self._engine.resize_game_render_target(width, height, point_filter)
 
     def request_render_target_readback(self, game_view: bool = True):
-        """Return a non-blocking ticket for the latest submitted render target."""
+        """Return a readback ticket. Host opportunities materialize its CPU result after GPU completion."""
         return self._engine.request_render_target_readback(game_view)
 
     def request_capture(self, source: str, output_path: str, camera_component_id: int = 0) -> int:
@@ -1446,8 +1639,8 @@ class Engine():
             return
 
         if asset_or_pipeline is None:
-            self._render_pipeline = None
             self._engine.set_render_pipeline(None)
+            self._render_pipeline = None
             return
 
         # If it's an asset, create the pipeline from it
@@ -1468,5 +1661,5 @@ class Engine():
             self._screen_ui_submission,
             pipeline,
         )
-        self._render_pipeline = wrapped_pipeline
         self._engine.set_render_pipeline(wrapped_pipeline)
+        self._render_pipeline = wrapped_pipeline

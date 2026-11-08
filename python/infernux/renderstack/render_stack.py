@@ -63,6 +63,7 @@ class _ViewGraphState:
     artifact_generation: int = 0
     attempted_artifact_generation: int = 0
     pipeline_error: str = ""
+    rejected_texture_inputs: tuple = ()
 
 
 @disallow_multiple
@@ -741,6 +742,22 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 context=self,
             ))
 
+    def _reject_graph_publication(self, description) -> None:
+        """Latch a native refusal without reapplying a historical graph."""
+        from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
+
+        state = self._graph_state
+        state.build_failed = True
+        state.attempted_artifact_generation = RenderEffectArtifactRegistry.topology_generation()
+        state.pipeline_error = (
+            f"Pipeline graph publication rejected: native graph rejected '{description.name}' "
+            f"(source_revision={description.source_revision}). This view was not submitted."
+        )
+        # Description/bindings are shared by views with the same sample count;
+        # a refusal in this view cannot discard another view's valid candidate.
+        # Nor did it re-record parameter blocks or invalidate their upload facts.
+        self._publish_pipeline_diagnostic()
+
     def invalidate_graph(self) -> None:
         """Mark the graph as needing a rebuild.
 
@@ -749,6 +766,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         for state in (self._graph_states or {}).values():
             state.description = None
             state.build_failed = False
+            state.rejected_texture_inputs = ()
         # A new declaration/parameter edit may reproduce the same error after
         # script publication has retired the preceding source diagnostics.
         self._pipeline_console_message = ""
@@ -949,77 +967,69 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 self.invalidate_graph()
 
         if state.description is not None:
-            requires_rebuild, updates = self._collect_effect_parameter_updates(context)
-            if requires_rebuild:
+            if not state.description._render_texture_layouts_current():
                 self.invalidate_graph()
-            elif updates:
-                context.update_parameter_blocks(updates)
+            else:
+                requires_rebuild, updates = self._collect_effect_parameter_updates(context)
+                if requires_rebuild:
+                    self.invalidate_graph()
+                elif updates:
+                    context.update_parameter_blocks(updates)
+        elif any(texture.revision != revision for texture, revision in state.rejected_texture_inputs):
+            self.invalidate_graph()
 
         # Lazy build graph topology (skip if last build failed)
         if state.description is None and not state.build_failed:
-            context.setup_camera_properties(camera)
-            culling = context.cull(camera)
-
-            # Initial project refresh publishes its catalog in an atomic
-            # owner-thread commit. Pipeline construction may load materials or
-            # compile effect products, and those paths are allowed to reimport
-            # assets. Defer the first graph until that mutation boundary is
-            # available instead of treating startup readiness as a broken
-            # pipeline and permanently selecting the fallback graph.
+            # Graph construction can import materials or build effects. While
+            # the catalog is publishing, retain the last image without issuing
+            # a new view submission with the invalidated graph.
             from infernux.core.assets import AssetManager
 
             if AssetManager.refresh_pending():
-                context.submit_culling(culling)
                 return
 
+            context.setup_camera_properties(camera)
+            culling = context.cull(camera)
             previous_graph = state.last_valid_description
-            previous_bindings = (
-                state.bindings, state.upload_revisions,
-                state.errors, state.artifact_generation,
-            )
             try:
                 state.description = self.build_graph(output_samples=self._output_samples)
             except Exception as exc:
                 state.attempted_artifact_generation = RenderEffectArtifactRegistry.topology_generation()
                 state.pipeline_error = f"Pipeline graph build rejected: {type(exc).__name__}: {exc}."
+                from infernux.rendergraph.graph import _rejected_render_texture_inputs
+
+                state.rejected_texture_inputs = _rejected_render_texture_inputs(exc, previous_graph)
+                if state.rejected_texture_inputs:
+                    state.build_failed = True
+                    self._publish_pipeline_diagnostic()
+                    return
                 if previous_graph is not None:
+                    state.build_failed = True
                     self._publish_pipeline_diagnostic()
                     state.description = previous_graph
-                    state.build_failed = True
                 else:
                     state.build_failed = True
                     raise RuntimeError(
                         "RenderStack could not build its selected pipeline graph"
                     ) from exc
 
-            try:
-                context.apply_graph(state.description)
-                state.last_valid_description = state.description
-                if not state.build_failed:
-                    state.pipeline_error = ""
-                    self._publish_pipeline_diagnostic()
-            except Exception as exc:
-                state.build_failed = True
-                state.attempted_artifact_generation = RenderEffectArtifactRegistry.topology_generation()
-                state.pipeline_error = f"Pipeline graph publication rejected: {type(exc).__name__}: {exc}."
-                (state.bindings, state.upload_revisions,
-                 state.errors, state.artifact_generation) = previous_bindings
-                if previous_graph is None or previous_graph is state.description:
-                    state.description = None
-                    raise RuntimeError(
-                        "RenderStack could not apply its selected pipeline graph"
-                    ) from exc
-
+            if not context.apply_graph(state.description):
+                self._reject_graph_publication(state.description)
+                return
+            state.last_valid_description = state.description
+            if not state.build_failed:
+                state.pipeline_error = ""
                 self._publish_pipeline_diagnostic()
-                state.description = previous_graph
-                context.apply_graph(previous_graph)
 
             context.submit_culling(culling)
         elif state.description is not None:
             # Steady state sends only a revision integer. A second camera or a
             # rebuilt native graph falls back to the full description once.
             if not context.render_compiled(camera, state.description.source_revision):
-                context.render_with_graph(camera, state.description)
+                if not context.render_with_graph(camera, state.description):
+                    self._reject_graph_publication(state.description)
+                    return
+                state.last_valid_description = state.description
                 # The native graph may have re-recorded its passes from the
                 # description, whose push constants were baked at build time.
                 # Drop this graph's upload cache so any live effect edits made

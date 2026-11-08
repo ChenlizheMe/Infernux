@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
@@ -200,44 +202,48 @@ class ParticleGpuContinuationRuntime
     static constexpr uint32_t MaximumJoinCount = 1024;
     static constexpr uint64_t IndirectBufferBytes = sizeof(GpuParticleContinuationDispatchArguments);
 
-    ParticleGpuContinuationRuntime();
-    ~ParticleGpuContinuationRuntime();
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuContinuationRuntime();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuContinuationRuntime();
 
     ParticleGpuContinuationRuntime(const ParticleGpuContinuationRuntime &) = delete;
     ParticleGpuContinuationRuntime &operator=(const ParticleGpuContinuationRuntime &) = delete;
     ParticleGpuContinuationRuntime(ParticleGpuContinuationRuntime &&) = delete;
     ParticleGpuContinuationRuntime &operator=(ParticleGpuContinuationRuntime &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleContinuationDesc &desc);
-    [[nodiscard]] bool CreateCompatible(rhi::Device &device, const GpuParticleContinuationDesc &desc,
-                                        const ParticleGpuContinuationRuntime &previous);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device,
+                                                            const GpuParticleContinuationDesc &desc);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool CreateCompatible(rhi::Device &device,
+                                                                      const GpuParticleContinuationDesc &desc,
+                                                                      const ParticleGpuContinuationRuntime &previous);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] bool SharesStorageWith(const ParticleGpuContinuationRuntime &other) const noexcept;
-    [[nodiscard]] uint32_t Capacity() const noexcept;
-    [[nodiscard]] uint32_t ParticleCapacity() const noexcept;
-    [[nodiscard]] uint32_t RecordStride() const noexcept;
-    [[nodiscard]] uint32_t LaneCount() const noexcept;
-    [[nodiscard]] uint32_t JoinCount() const noexcept;
-    [[nodiscard]] uint32_t ProgramGeneration() const noexcept;
-    [[nodiscard]] uint32_t ResetSerial() const noexcept;
-    [[nodiscard]] const GpuParticleContinuationResources &Resources() const noexcept;
-    [[nodiscard]] GpuParticleContinuationTelemetry Telemetry() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    SharesStorageWith(const ParticleGpuContinuationRuntime &other) const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t Capacity() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t ParticleCapacity() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t RecordStride() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t LaneCount() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t JoinCount() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t ProgramGeneration() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t ResetSerial() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API const GpuParticleContinuationResources &Resources() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleContinuationTelemetry Telemetry() const noexcept;
     [[nodiscard]] rhi::BindingLayoutHandle Layout() const noexcept;
     [[nodiscard]] rhi::BindGroupHandle Group() const noexcept;
 
     /// Invalidates every outstanding continuation without a CPU scan. The next
     /// Prepare pass publishes the new generation/reset serial to the GPU.
-    void RequestReset() noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void RequestReset() noexcept;
 
-    [[nodiscard]] bool RecordPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                     uint64_t elapsedTimeTicks);
-    [[nodiscard]] bool RecordClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                      uint64_t elapsedTimeTicks) const;
-    [[nodiscard]] bool RecordDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                      uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
-                                      rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordPrepare(const rhi::ComputeCommandEncoder &encoder,
+                                                                   uint32_t simulationStep, uint64_t elapsedTimeTicks);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    RecordClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep, uint64_t elapsedTimeTicks) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordDispatch(const rhi::ComputeCommandEncoder &encoder,
+                                                                    uint32_t simulationStep, uint64_t elapsedTimeTicks,
+                                                                    uint32_t systemSeed, float deltaTime,
+                                                                    rhi::BindGroupHandle graphSpawnGroup) const;
 
   private:
     struct ResidentStorage;

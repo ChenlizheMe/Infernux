@@ -280,18 +280,28 @@ def _capture_prefab_parent_links(roots):
             result[node["id"]] = (
                 node.get("prefab_guid", ""), node.get("prefab_root", False),
                 node.get("prefab_source_id", 0), node.get("prefab_source"),
-                {item["component_id"]: item.get("prefab_source_id", 0) for item in node["components"]},
+                {item["component_id"]: (item.get("prefab_source_id", 0), item.get("prefab_source_guid", ""))
+                 for item in node["components"]},
             )
             pending.extend(node["children"])
     return result
 
 
 def _restore_prefab_parent_links(scene, links):
-    from infernux.engine.prefab_manager import _link_prefab_components
+    from infernux.engine.prefab_manager import _PREFAB_OCCURRENCE_FIELDS, _link_prefab_components
     for identity, (guid, root, source_id, baseline, components) in links.items():
         obj = scene.find_by_id(identity)
         if obj is None:
-            raise RuntimeError(f"Moved Prefab object is unavailable: {identity}")
+            continue  # A later asset publication may have retired this node.
+        current = obj._prefab_source_document
+        if baseline and current and obj.prefab_guid == guid:
+            # Restore the instance's placement while retaining accepted source edits.
+            for key in _PREFAB_OCCURRENCE_FIELDS:
+                if key in baseline:
+                    current[key] = baseline[key]
+                else:
+                    current.pop(key, None)
+            baseline = current
         obj.prefab_guid = guid
         obj.prefab_root = root
         obj.prefab_source_id = source_id
@@ -845,58 +855,44 @@ class PrefabUnpackCommand(UndoCommand):
     def __init__(self, object_id: int, description: str = "Unpack Prefab"):
         super().__init__(description)
         self._object_id = int(object_id)
-        self._linkage: list[tuple[int, str, bool, int, dict | None, dict]] = []
-        self._nested_roots: set[int] = set()
-        scene = _get_active_scene()
-        root = scene.find_by_id(self._object_id) if scene else None
-        if root is not None:
-            pending = [root]
-            while pending:
-                obj = pending.pop()
-                self._linkage.append((
-                    int(obj.id),
-                    getattr(obj, "prefab_guid", "") or "",
-                    bool(getattr(obj, "prefab_root", False)),
-                    int(getattr(obj, "prefab_source_id", 0)),
-                    obj._prefab_source_document,
-                    {record["component_id"]: record.get("prefab_source_id", 0)
-                     for record in obj.serialize_document()["components"]},
-                ))
-                if obj.id != self._object_id and obj.prefab_root:
-                    self._nested_roots.add(int(obj.id))
-                else:
-                    pending.extend(obj.get_children())
+        self._linkage = {}
 
     def execute(self) -> None:
-        self._apply(restored=False)
+        scene = _get_active_scene()
+        root = scene.find_by_id(self._object_id) if scene else None
+        if root is None:
+            return
+        before = _capture_prefab_parent_links([root])
+        root._retire_external_prefab_links(False)
+        after = _capture_prefab_parent_links([root])
+        self._linkage = {
+            identity: (*links[:4], {
+                key: link for key, link in links[4].items() if after[identity][4][key] != link
+            })
+            for identity, links in before.items()
+            if links != after[identity]
+        }
+        _bump_inspector_structure()
 
     def undo(self) -> None:
-        self._apply(restored=True)
+        from infernux.engine.scene_manager import SceneFileManager
+
+        scene = _get_active_scene()
+        root = scene.find_by_id(self._object_id) if scene else None
+        if root is None:
+            return
+        files = SceneFileManager.instance()
+        try:
+            _restore_prefab_parent_links(scene, self._linkage)
+            if files is not None:
+                files.sync_restored_prefab_instance(root)
+        except Exception:
+            root._retire_external_prefab_links(False)
+            raise
+        _bump_inspector_structure()
 
     def redo(self) -> None:
-        self._apply(restored=False)
-
-    def _apply(self, *, restored: bool) -> None:
-        scene = _get_active_scene()
-        if scene is None:
-            return
-        from infernux.engine.prefab_manager import _link_prefab_components
-        for object_id, prefab_guid, prefab_root, source_id, source_document, component_ids in self._linkage:
-            obj = scene.find_by_id(object_id)
-            if obj is None:
-                continue
-            if object_id in self._nested_roots and not restored:
-                baseline = dict(source_document) if source_document else None
-                if baseline:
-                    baseline.pop("outer_source_id", None)
-                obj._prefab_source_document = baseline
-                continue
-            obj.prefab_guid = prefab_guid if restored else ""
-            obj.prefab_root = prefab_root if restored else False
-            obj.prefab_source_id = source_id if restored else 0
-            obj._prefab_source_document = source_document if restored else None
-            _link_prefab_components(obj, component_ids if restored else dict.fromkeys(component_ids, 0))
-        _bump_inspector_structure()
+        self.execute()
 
 
 class PrefabRevertCommand(UndoCommand):

@@ -1,3 +1,4 @@
+#include "DisplayText.h"
 #include "Infernux.h"
 
 #ifdef DrawText
@@ -467,6 +468,12 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("label"), py::arg("value"),
             "Inspector checkbox: square scaled to 75%, label at ambient font size")
+        .def("checkbox_field",
+             [](InxGUIContext &ctx, const std::string &label, bool value) {
+                 ctx.CheckboxField(label, &value);
+                 return value;
+             }, py::arg("label"), py::arg("value"),
+             "Inspector value checkbox centered in a full-height input row")
         .def("int_slider",
              [](InxGUIContext &ctx, const std::string &label, int value, int min, int max) {
                  ctx.IntSlider(label, &value, min, max);
@@ -627,6 +634,8 @@ void RegisterGUIBindings(py::module_ &m)
                 return currentItem;
             },
             py::arg("label"), py::arg("current_item"), py::arg("items"), py::arg("popup_max_height_in_items") = -1)
+        .def("flags_combo", &InxGUIContext::FlagsCombo, py::arg("label"), py::arg("value"), py::arg("items"),
+             py::arg("masks"), py::arg("preview"))
         .def("searchable_combo", &InxGUIContext::SearchableCombo, py::arg("id"), py::arg("current_item"),
              py::arg("items"), py::arg("width") = 0.0f, py::arg("max_visible_items") = 8,
              py::arg("search_hint") = "Filter...", py::arg("empty_text") = "No results",
@@ -961,11 +970,20 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("tint_b") = 1.0f, py::arg("tint_a") = 1.0f, py::arg("rotation") = 0.0f,
              py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("rounding") = 0.0f,
              "Draw an image quad in absolute screen coordinates with optional rotation, mirroring and rounding")
+        .def("draw_filled_image", &InxGUIContext::DrawFilledImage, py::arg("texture_id"),
+             py::arg("min_x"),py::arg("min_y"),py::arg("max_x"),py::arg("max_y"),
+             py::arg("u0")=0,py::arg("v0")=0,py::arg("u1")=1,py::arg("v1")=1,
+             py::arg("r")=1,py::arg("g")=1,py::arg("b")=1,py::arg("a")=1,
+             py::arg("amount")=1,py::arg("method")=4,py::arg("origin")=0,py::arg("clockwise")=true,
+             py::arg("rotation")=0,py::arg("mirror_h")=false,py::arg("mirror_v")=false)
         .def("set_window_font_scale", &InxGUIContext::SetWindowFontScale, py::arg("scale"),
              "Set font scale for the current window (1.0 = default)")
         .def("get_dpi_scale", &InxGUIContext::GetDpiScale,
              "Get authored UI units to SDL window units (display scale / pixel density)")
-        .def("draw_text", &InxGUIContext::DrawText, py::arg("x"), py::arg("y"), py::arg("text"), py::arg("r"),
+        .def("draw_text", [](InxGUIContext &self, float x, float y, const py::str &text, float r, float g,
+                            float b, float a, float fontSize) {
+                 self.DrawText(x, y, bindings::TextForDisplay(text), r, g, b, a, fontSize);
+             }, py::arg("x"), py::arg("y"), py::arg("text"), py::arg("r"),
              py::arg("g"), py::arg("b"), py::arg("a"), py::arg("font_size") = 0.0f,
              "Draw text at absolute screen coordinates with colour and optional font size")
         .def("draw_text_geometry", &InxGUIContext::DrawTextGeometry, py::arg("min_x"), py::arg("min_y"),
@@ -974,16 +992,36 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("align_x") = 0.0f, py::arg("align_y") = 0.0f, py::arg("scale") = 1.0f,
              py::arg("rotation") = 0.0f, py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("clip") = false,
              py::arg("opacity") = 1.0f, py::arg("material_color") = std::array<float, 4>{1.f, 1.f, 1.f, 1.f})
-        .def("draw_text_aligned", &InxGUIContext::DrawTextAligned, py::arg("min_x"), py::arg("min_y"), py::arg("max_x"),
+        .def("draw_text_aligned", [](InxGUIContext &self, float minX, float minY, float maxX, float maxY,
+                                    const py::str &text, float r, float g, float b, float a, float alignX,
+                                    float alignY, float fontSize, bool clip) {
+                 self.DrawTextAligned(minX, minY, maxX, maxY, bindings::TextForDisplay(text), r, g, b, a,
+                                      alignX, alignY, fontSize, clip);
+             }, py::arg("min_x"), py::arg("min_y"), py::arg("max_x"),
              py::arg("max_y"), py::arg("text"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"),
              py::arg("align_x") = 0.0f, py::arg("align_y") = 0.0f, py::arg("font_size") = 0.0f, py::arg("clip") = false,
              "Draw aligned text within a bounding box (align 0=left/top, 0.5=center, 1=right/bottom)")
-        .def("draw_text_rotated_90_aligned", &InxGUIContext::DrawTextRotated90Aligned, py::arg("min_x"),
+        .def("draw_text_rotated_90_aligned", [](InxGUIContext &self, float minX, float minY, float maxX,
+                                              float maxY, const py::str &text, float r, float g, float b,
+                                              float a, float alignX, float alignY, float fontSize,
+                                              bool clockwise, bool clip) {
+                 self.DrawTextRotated90Aligned(minX, minY, maxX, maxY, bindings::TextForDisplay(text),
+                                               r, g, b, a, alignX, alignY, fontSize, clockwise, clip);
+             }, py::arg("min_x"),
              py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("text"), py::arg("r"), py::arg("g"),
              py::arg("b"), py::arg("a"), py::arg("align_x") = 0.0f, py::arg("align_y") = 0.0f,
              py::arg("font_size") = 0.0f, py::arg("clockwise") = false, py::arg("clip") = false,
              "Draw text rotated by 90 degrees inside a bounding box")
-        .def("draw_text_ex_aligned", &InxGUIContext::DrawTextExAligned, py::arg("min_x"), py::arg("min_y"),
+        .def("draw_text_ex_aligned", [](InxGUIContext &self, float minX, float minY, float maxX, float maxY,
+                                       const py::str &text, float r, float g, float b, float a, float alignX,
+                                       float alignY, float fontSize, float wrapWidth, float rotation,
+                                       bool mirrorH, bool mirrorV, bool clip, const std::string &fontPath,
+                                       float lineHeight, float letterSpacing,
+                                       const std::vector<std::string> &fallbackFonts) {
+                 self.DrawTextExAligned(minX, minY, maxX, maxY, bindings::TextForDisplay(text), r, g, b, a,
+                                        alignX, alignY, fontSize, wrapWidth, rotation, mirrorH, mirrorV,
+                                        clip, fontPath, lineHeight, letterSpacing, fallbackFonts);
+             }, py::arg("min_x"), py::arg("min_y"),
              py::arg("max_x"), py::arg("max_y"), py::arg("text"), py::arg("r"), py::arg("g"), py::arg("b"),
              py::arg("a"), py::arg("align_x") = 0.0f, py::arg("align_y") = 0.0f, py::arg("font_size") = 0.0f,
              py::arg("wrap_width") = 0.0f, py::arg("rotation") = 0.0f, py::arg("mirror_h") = false,
@@ -993,11 +1031,11 @@ void RegisterGUIBindings(py::module_ &m)
              "Draw aligned text with arbitrary rotation (degrees) and optional horizontal/vertical mirror")
         .def(
             "calc_text_size",
-            [](InxGUIContext &ctx, const std::string &text, float fontSize, const std::string &fontPath,
+            [](InxGUIContext &ctx, const py::str &text, float fontSize, const std::string &fontPath,
                float lineHeight, float letterSpacing,
                const std::vector<std::string> &fallbackFontPaths) -> py::tuple {
                 auto [w, h] = ctx.CalcTextSizeA(
-                    text, fontSize, fontPath, lineHeight, letterSpacing, fallbackFontPaths);
+                    bindings::TextForDisplay(text), fontSize, fontPath, lineHeight, letterSpacing, fallbackFontPaths);
                 return py::make_tuple(py::float_(w), py::float_(h));
             },
             py::arg("text"), py::arg("font_size") = 0.0f, py::arg("font_path") = std::string(),
@@ -1006,11 +1044,11 @@ void RegisterGUIBindings(py::module_ &m)
             "Calculate pixel size of text at given font size. Returns (width, height).")
         .def(
             "calc_text_size_wrapped",
-            [](InxGUIContext &ctx, const std::string &text, float fontSize, float wrapWidth,
+            [](InxGUIContext &ctx, const py::str &text, float fontSize, float wrapWidth,
                const std::string &fontPath, float lineHeight, float letterSpacing,
                const std::vector<std::string> &fallbackFontPaths) -> py::tuple {
                 auto [w, h] = ctx.CalcTextSizeWrappedA(
-                    text, fontSize, wrapWidth, fontPath, lineHeight, letterSpacing, fallbackFontPaths);
+                    bindings::TextForDisplay(text), fontSize, wrapWidth, fontPath, lineHeight, letterSpacing, fallbackFontPaths);
                 return py::make_tuple(py::float_(w), py::float_(h));
             },
             py::arg("text"), py::arg("font_size") = 0.0f, py::arg("wrap_width") = 0.0f,

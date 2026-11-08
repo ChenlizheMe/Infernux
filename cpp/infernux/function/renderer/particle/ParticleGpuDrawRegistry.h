@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuCuller.h"
 #include "ParticleGpuOutputRenderer.h"
 #include "ParticleOutputSemantics.h"
@@ -43,21 +45,21 @@ struct GpuParticleDrawEntry
 class ParticleGpuDrawRegistry
 {
   public:
-    ParticleGpuDrawRegistry();
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuDrawRegistry();
 
-    [[nodiscard]] bool Set(GpuParticleDrawEntry entry);
-    [[nodiscard]] bool Replace(std::vector<GpuParticleDrawEntry> entries);
-    [[nodiscard]] bool Remove(uint64_t id);
-    void Clear();
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Set(GpuParticleDrawEntry entry);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Replace(std::vector<GpuParticleDrawEntry> entries);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Remove(uint64_t id);
+    INFERNUX_PARTICLE_RUNTIME_API void Clear();
 
     // The shared handle keeps the immutable result alive without copying the
     // entry array.
     using SnapshotEntries = std::vector<GpuParticleDrawEntry>;
     using SnapshotHandle = std::shared_ptr<const SnapshotEntries>;
 
-    [[nodiscard]] SnapshotHandle SnapshotShared(int32_t queueMin, int32_t queueMax) const;
-    [[nodiscard]] uint64_t Revision() const;
-    [[nodiscard]] size_t Size() const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API SnapshotHandle SnapshotShared(int32_t queueMin, int32_t queueMax) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint64_t Revision() const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API size_t Size() const;
 
   private:
     struct RegistryState

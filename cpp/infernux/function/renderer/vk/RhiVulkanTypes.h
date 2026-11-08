@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../rhi/RhiDescriptors.h"
-#include "../rhi/RhiUpload.h"
 
 #include <utility>
 #include <vulkan/vulkan.h>
@@ -346,17 +345,63 @@ BuildVkPipelineRenderingInfo(const GraphicsRenderingSignature &signature,
     return true;
 }
 
-[[nodiscard]] constexpr VkBufferUsageFlags ToVkBufferUsage(BufferUsage usage) noexcept
+inline constexpr std::pair<BufferUsageFlags, VkBufferUsageFlagBits> BufferUsageBits[] = {
+    {BufferUsageFlags::Storage, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT},
+    {BufferUsageFlags::Indirect, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT},
+    {BufferUsageFlags::TransferSource, VK_BUFFER_USAGE_TRANSFER_SRC_BIT},
+    {BufferUsageFlags::TransferDestination, VK_BUFFER_USAGE_TRANSFER_DST_BIT},
+    {BufferUsageFlags::Uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT},
+    {BufferUsageFlags::Vertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT},
+    {BufferUsageFlags::Index, VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
+};
+
+[[nodiscard]] constexpr VkBufferUsageFlags ToVkBufferUsage(BufferUsageFlags usage) noexcept
 {
-    switch (usage) {
-    case BufferUsage::Vertex:
-        return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    case BufferUsage::Index:
-        return VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    case BufferUsage::Storage:
-        return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    VkBufferUsageFlags result = 0;
+    for (const auto &[flag, vkFlag] : BufferUsageBits) {
+        if (HasBufferUsage(usage, flag))
+            result |= vkFlag;
     }
-    return 0;
+    return result;
+}
+
+[[nodiscard]] constexpr BufferUsageFlags FromVkBufferUsage(VkBufferUsageFlags usage) noexcept
+{
+    BufferUsageFlags result = BufferUsageFlags::None;
+    for (const auto &[flag, vkFlag] : BufferUsageBits) {
+        if (usage & vkFlag)
+            result = result | flag;
+    }
+    return result;
+}
+
+inline constexpr std::pair<TextureUsageFlags, VkImageUsageFlagBits> TextureUsageBits[] = {
+    {TextureUsageFlags::Sampled, VK_IMAGE_USAGE_SAMPLED_BIT},
+    {TextureUsageFlags::Storage, VK_IMAGE_USAGE_STORAGE_BIT},
+    {TextureUsageFlags::ColorAttachment, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT},
+    {TextureUsageFlags::DepthStencilAttachment, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT},
+    {TextureUsageFlags::TransferSource, VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+    {TextureUsageFlags::TransferDestination, VK_IMAGE_USAGE_TRANSFER_DST_BIT},
+};
+
+[[nodiscard]] constexpr VkImageUsageFlags ToVkTextureUsage(TextureUsageFlags usage) noexcept
+{
+    VkImageUsageFlags result = 0;
+    for (const auto &[flag, vkFlag] : TextureUsageBits) {
+        if (HasTextureUsage(usage, flag))
+            result |= vkFlag;
+    }
+    return result;
+}
+
+[[nodiscard]] constexpr TextureUsageFlags FromVkTextureUsage(VkImageUsageFlags usage) noexcept
+{
+    TextureUsageFlags result = TextureUsageFlags::None;
+    for (const auto &[flag, vkFlag] : TextureUsageBits) {
+        if (usage & vkFlag)
+            result = result | flag;
+    }
+    return result;
 }
 
 } // namespace infernux::rhi

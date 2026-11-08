@@ -30,7 +30,7 @@ class UIButton(UISelectable):
         text_align_h: Horizontal text alignment.
         text_align_v: Vertical text alignment.
         line_height: Line height multiplier.
-        letter_spacing: Extra letter spacing in pixels.
+        letter_spacing: Extra spacing per character in pixels. Keep 0 for the font's natural CJK/Latin cell alignment.
         background_texture: Imported Texture/RenderTexture, or a live RenderTexture override.
         background_color: Background fill colour as ``[R, G, B, A]``.
         on_click_entries: Persistent click handlers (serialized).

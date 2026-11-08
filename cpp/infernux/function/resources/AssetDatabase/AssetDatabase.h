@@ -10,11 +10,13 @@
 #include <function/scene/NativeLifetime.h>
 #include <platform/filesystem/DocumentTransaction.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -29,6 +31,10 @@ namespace infernux
 {
 
 class InxRenderer;
+class AssetRegistry;
+class AssetLoadTicket;
+class FrameWorkOwner;
+struct FrameWorkSource;
 
 enum class AssetMutationErrorCode : uint8_t
 {
@@ -120,6 +126,11 @@ class AssetDatabase : public NativeLifetimeOwner
     AssetDatabase();
     ~AssetDatabase();
 
+    [[nodiscard]] const std::shared_ptr<AssetDependencyGraph> &GetDependencyGraph() const noexcept
+    {
+        return m_dependencyGraph;
+    }
+
     /// @brief Initialize database with project root path.
     /// Also creates and registers all built-in importers.
     void Initialize(const std::string &projectRoot);
@@ -148,6 +159,7 @@ class AssetDatabase : public NativeLifetimeOwner
     /// @brief Schedule filesystem enumeration and fingerprint collection.
     /// The worker never mutates AssetDatabase, metadata, or dependency state.
     void BeginRefresh();
+    [[nodiscard]] FrameWorkSource GetCatalogWorkSource(FrameWorkOwner &owner);
 
     /// @brief Advance scan, worker import, and owner commit without blocking.
     /// @return false while either worker phase is incomplete.
@@ -180,32 +192,53 @@ class AssetDatabase : public NativeLifetimeOwner
     /// sidecars inside Player builds and is never persisted back to disk.
     void InstallRuntimeAssetCatalog(const std::string &catalogPath, bool trustedPackage = false);
 
+    /// Prepare new cooked identities on the asset worker. The Player publishes
+    /// the prepared index at the same boundary as its component and scene data.
+    void BeginRuntimeAssetCatalog(const std::string &packageRoot, const std::string &contentRoot,
+                                  const std::vector<std::string> &allowedRoots);
+    [[nodiscard]] bool IsRuntimeAssetCatalogReady();
+    [[nodiscard]] const nlohmann::json *GetPreparedRuntimeCatalogDocuments();
+    void PublishRuntimeAssetCatalog();
+    void DiscardRuntimeAssetCatalog();
+
     /// @brief Import an asset and create/update its meta.
     /// Runs the appropriate AssetImporter to scan dependencies.
-    [[nodiscard]] AssetMutationResult ImportAsset(const std::string &path);
+    [[nodiscard]] AssetMutationResult ImportAsset(const std::string &path, const PathWriteScope &writeScope = {});
 
     /// @brief Re-run metadata/dependency import for an already registered asset.
     /// Preserves the existing GUID and returns false for missing or unregistered paths.
-    [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path, const nlohmann::json &settings = nullptr);
-    /// Explicit model Apply: immutable worker input, then owner-thread publication.
-    void BeginModelReimport(const std::string &path, const nlohmann::json &settings);
+    [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path, const nlohmann::json &settings = nullptr,
+                                                    const PathWriteScope &writeScope = {});
+    using ModelReimportPublished = std::function<void(const AssetMutationResult &, uint64_t, std::optional<float>)>;
+    /// Explicit model Apply: cook, persist, then publish from the owner thread.
+    void BeginModelReimport(const std::string &path, const nlohmann::json &settings,
+                            ModelReimportPublished onPublished = {});
     [[nodiscard]] std::optional<AssetMutationResult> TryCommitModelReimport();
-    void DiscardModelReimport();
+    std::optional<AssetMutationResult> CompletePendingModelReimport();
+    bool DiscardModelReimport();
+    [[nodiscard]] bool IsModelReimportPending() const noexcept;
+    [[nodiscard]] bool IsModelReimportPublishing() const noexcept;
+    [[nodiscard]] bool IsDeliveringModelReimport() const noexcept;
 
     /// @brief Delete asset and meta.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Deleted).
-    [[nodiscard]] AssetMutationResult DeleteAsset(const std::string &path);
+    [[nodiscard]] AssetMutationResult DeleteAsset(const std::string &path, const PathWriteScope &writeScope = {});
+    /// Exact source/sidecar/derived paths covered by a delete, including model
+    /// subassets. Directory traversal uses the published catalog, not disk IO.
+    [[nodiscard]] std::vector<std::string> GetDeletionWritePaths(const std::vector<std::string> &roots) const;
 
     /// @brief Publish an already completed filesystem relocation, preserving GUID.
     /// The caller moves the asset first; a missing destination is rejected
     /// before metadata or directory mappings change.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Moved).
-    [[nodiscard]] AssetMutationResult MoveAsset(const std::string &oldPath, const std::string &newPath);
+    [[nodiscard]] AssetMutationResult MoveAsset(const std::string &oldPath, const std::string &newPath,
+                                                const PathWriteScope &writeScope = {});
 
     /// Commit completed filesystem relocations with one catalog publication.
     /// All destinations must exist before any metadata is changed.
     [[nodiscard]] std::vector<AssetMutationResult>
-    MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves);
+    MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves,
+                    const PathWriteScope &writeScope = {});
 
     /// @brief Check if a GUID exists
     [[nodiscard]] bool ContainsGuid(const std::string &guid) const;
@@ -329,9 +362,13 @@ class AssetDatabase : public NativeLifetimeOwner
     {
         return m_lastRefreshMetadataWriteMilliseconds;
     }
-    [[nodiscard]] uint64_t GetLastRefreshJournalUncompressedBytes() const noexcept
+    [[nodiscard]] uint64_t GetLastRefreshStagedBytes() const noexcept
     {
-        return m_lastRefreshJournalUncompressedBytes;
+        return m_lastRefreshStagedBytes;
+    }
+    [[nodiscard]] double GetLastRefreshStagingMilliseconds() const noexcept
+    {
+        return m_lastRefreshStagingMilliseconds;
     }
     [[nodiscard]] uint64_t GetLastRefreshJournalBytes() const noexcept
     {
@@ -418,16 +455,8 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::string GetRuntimeArtifactPath(const std::string &guid, ResourceType type) const;
     [[nodiscard]] std::string GetSkinnedMeshArtifactPath(const std::string &guid) const;
 
-    /// Ensure a GUID's imported CPU artifact is reusable before a worker load.
-    /// Corrupt or obsolete authoring artifacts are rebuilt on the owner thread;
-    /// immutable Player catalogs fail instead of attempting source import.
-    [[nodiscard]] bool EnsureRuntimeArtifactCurrent(const std::string &guid, ResourceType type);
-
-    /// @brief Access the dependency graph (singleton shorthand)
-    [[nodiscard]] static AssetDependencyGraph &GetDependencyGraph()
-    {
-        return AssetDependencyGraph::Instance();
-    }
+    [[nodiscard]] bool IsStagingRuntimeArtifact(const std::string &guid, ResourceType type) const noexcept;
+    void CompleteRuntimeArtifactPublication();
 
     /// @brief Access the importer registry
     [[nodiscard]] ImporterRegistry &GetImporterRegistry()
@@ -452,6 +481,8 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] ResourceType GetResourceTypeForPath(const std::string &filePath) const;
 
   private:
+    friend class AssetRegistry;
+
     struct AssetScanRoot
     {
         std::string path;
@@ -492,11 +523,9 @@ class AssetDatabase : public NativeLifetimeOwner
         {
         }
 
-        std::mutex mutex;
         std::optional<AssetScanArtifact> artifact;
         std::exception_ptr failure;
         uint64_t expectedQueryGeneration = 0;
-        bool complete = false;
     };
 
     struct CachedFileState
@@ -546,48 +575,123 @@ class AssetDatabase : public NativeLifetimeOwner
         std::string error;
         std::thread::id producerThread;
         std::optional<size_t> skeletonDependency;
-        std::function<std::shared_ptr<const SkeletonDefinitionSnapshot>()> captureSkeletonDefinition;
-        std::shared_ptr<const SkeletonDefinitionSnapshot> producedSkeletonDefinition;
-        bool providesSkeletonDefinition = false;
         bool scheduled = false;
         bool complete = false;
     };
 
     struct WorkerMetadataPrepare
     {
-        enum class Mode : uint8_t
-        {
-            LoadExisting,
-            Rebuild,
-            CreateOrLoad,
-        };
-
+        PathWriteScope writeScope;
         AssetScanFile file;
         ResourceType resourceType = ResourceType::DefaultText;
         const IAssetLoader *loader = nullptr;
         std::string fallbackGuid;
         std::string createdGuid;
         bool inheritedGuid = false;
-        std::optional<InxResourceMeta> metadata;
+        std::shared_ptr<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
         std::string metadataSource;
         std::string error;
         std::thread::id producerThread;
-        Mode mode = Mode::CreateOrLoad;
     };
 
     struct PendingModelReimport
     {
+        enum class Phase
+        {
+            Cook,
+            Write,
+            Publish,
+            Complete
+        };
+
+        PathWriteScope writeScope;
         WorkerImport worker;
         WorkerMetadataPrepare metadata;
         nlohmann::json settings;
         AssetMutationResult result;
+        ModelReimportPublished onPublished;
+        std::shared_ptr<AssetLoadTicket> repairTicket;
+        std::unordered_set<std::string> artifactGuids;
+        CachedFileState committedFiles;
         AssetFileFingerprint metadataFingerprint;
+        Phase phase = Phase::Cook;
         bool metadataExists = false;
-        bool discarded = false;
+        bool abandoned = false;
+        enum : uint8_t
+        {
+            WorkerFinished = 1,
+            Discarded = 2
+        };
+        std::atomic<uint8_t> lifecycle{0};
+        bool IsDiscarded() const
+        {
+            return (lifecycle.load(std::memory_order_acquire) & Discarded) != 0;
+        }
+        void Discard()
+        {
+            const auto previous = lifecycle.fetch_or(Discarded, std::memory_order_acq_rel);
+            if ((previous & WorkerFinished) && !(previous & Discarded))
+                writeScope.Close();
+        }
+        void FinishWorker()
+        {
+            if (lifecycle.fetch_or(WorkerFinished, std::memory_order_acq_rel) & Discarded)
+                writeScope.Close();
+        }
         double workerMilliseconds = 0.0;
-        JobHandle job;
+        double prepareMilliseconds = 0.0;
+        double persistenceMilliseconds = 0.0;
     };
+
+    struct FinishedModelApply
+    {
+        AssetMutationResult result;
+        bool discarded = false;
+        bool abandoned = false;
+    };
+
+    enum class CatalogIoStage : uint8_t
+    {
+        Scan,
+        Metadata,
+        Sidecar,
+        Cook,
+        Persist,
+        Index,
+        Apply,
+        RuntimeCatalog,
+        Count
+    };
+
+    struct CatalogWork
+    {
+        using Factory = std::function<JobSystem::JobFn(uint32_t)>;
+        struct Receipt
+        {
+            JobHandle job;
+            std::shared_ptr<uint64_t> elapsed;
+            uint64_t frame = 0;
+            uint64_t grant = 0;
+        };
+        [[nodiscard]] bool Complete() const noexcept
+        {
+            return submitted == count && active.empty();
+        }
+        void DropUnsubmitted() noexcept
+        {
+            submitted = count;
+            make = {};
+        }
+
+        CatalogIoStage stage = CatalogIoStage::Scan;
+        uint32_t count = 0;
+        uint32_t submitted = 0;
+        Factory make;
+        std::vector<Receipt> active;
+    };
+
+    using RuntimeArtifactRoots = std::unordered_map<std::string, std::string>;
 
     struct QuerySnapshot
     {
@@ -597,15 +701,29 @@ class AssetDatabase : public NativeLifetimeOwner
         std::unordered_map<std::string, std::shared_ptr<const InxResourceMeta>> metas;
         std::unordered_map<std::string, std::string> shaderPaths;
         std::unordered_map<std::string, std::string> importErrors;
+        std::shared_ptr<const RuntimeArtifactRoots> runtimeArtifactRoots;
         std::shared_ptr<const AssetCatalogSnapshot> catalog;
+    };
+
+    struct RuntimeCatalogPreparation
+    {
+        WorkingSet workingSet;
+        std::shared_ptr<QuerySnapshot> query;
+        uint64_t baseGeneration = 0;
+        std::exception_ptr failure;
+        nlohmann::json documents;
     };
 
     struct PendingRefreshCommit
     {
+        PathWriteScope writeScope;
+        std::vector<PathWriteScope> artifactWriteScopes;
         enum class Phase : uint8_t
         {
             MetadataPrepare,
             MetadataMerge,
+            MetadataPublish,
+            ImportPrepare,
             Import,
             ImportMerge,
             MetadataWrite,
@@ -618,23 +736,21 @@ class AssetDatabase : public NativeLifetimeOwner
         AssetScanArtifact scanArtifact;
         std::vector<WorkerMetadataPrepare> workerMetadata;
         std::vector<PendingAsset> pendingImports;
+        std::vector<size_t> metadataPublications;
         std::vector<WorkerImport> workerImports;
         std::unordered_map<std::string, std::vector<std::string>> restoredDependencies;
         WorkingSet stagedWorkingSet;
         std::unordered_map<std::string, std::vector<std::string>> committedDependencies;
         std::vector<DocumentTransactionEntry> metadataWrites;
-        JobHandle metadataJobs;
-        JobHandle importJobs;
         std::vector<size_t> importWave;
-        JobHandle metadataWriteJob;
-        JobHandle indexBuildJob;
         std::exception_ptr metadataWriteFailure;
         std::exception_ptr indexBuildFailure;
         std::optional<AssetIndex> builtAssetIndex;
         std::shared_ptr<QuerySnapshot> builtQuerySnapshot;
         std::shared_ptr<const AssetDependencySnapshot> builtDependencySnapshot;
         bool indexRebuildRequired = false;
-        uint64_t journalUncompressedBytes = 0;
+        uint64_t stagedBytes = 0;
+        double stagingMilliseconds = 0.0;
         uint64_t journalBytes = 0;
         double journalSerializeMilliseconds = 0.0;
         double journalWriteMilliseconds = 0.0;
@@ -654,6 +770,8 @@ class AssetDatabase : public NativeLifetimeOwner
         size_t metadataIdentityCursor = 0;
         std::unordered_map<std::string, std::string> authoredGuidPaths;
         size_t metadataMergeCursor = 0;
+        size_t metadataPublicationEraseCursor = 0;
+        size_t metadataPublicationMergeCursor = 0;
         size_t importRequestCursor = 0;
         size_t importResultMergeCursor = 0;
         size_t metadataWritePrepareCursor = 0;
@@ -671,19 +789,28 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] bool CanReadWorkingSet() const;
     [[nodiscard]] WorkingSet TakeWorkingSet();
     void InstallWorkingSet(WorkingSet workingSet);
+    [[nodiscard]] WorkingSet CaptureRuntimeWorkingSet() const;
+    static size_t PrepareRuntimeCatalog(RuntimeCatalogPreparation &preparation, const nlohmann::json &document,
+                                        const std::string &contentRoot,
+                                        const std::unordered_set<std::string> &builtinRoots, bool trustedPackage,
+                                        const std::unordered_set<std::string> *newGuids,
+                                        const std::function<void(const char *)> &reportPhase = {});
+    void InstallPreparedRuntimeCatalog(RuntimeCatalogPreparation &preparation) noexcept;
+    [[nodiscard]] std::string RuntimeArtifactRoot(const std::string &guid) const;
     void PublishQuerySnapshot(bool includeCatalog = true);
     void PublishModelSubAssetEvents(const std::shared_ptr<const QuerySnapshot> &previous,
                                     const std::unordered_set<std::string> *changedGuids = nullptr);
     void UpdateModelSubAssets(const std::string &owner, const QuerySnapshot &previous, QuerySnapshot &snapshot,
                               std::unordered_set<std::string> &changedGuids);
     void PublishRefreshAssetEvents(const WorkingSet &previous);
-    void PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
+    [[nodiscard]] std::unordered_set<std::string> PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     static void BuildShaderPathIndex(QuerySnapshot &snapshot);
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
     static void PrepareMetadata(WorkerMetadataPrepare &item);
+    static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot);
     [[nodiscard]] static AssetIndex
     BuildDerivedIndexArtifact(const WorkingSet &workingSet,
                               const std::unordered_map<std::string, std::vector<std::string>> &dependenciesByGuid,
@@ -697,12 +824,27 @@ class AssetDatabase : public NativeLifetimeOwner
                                uint64_t generation, bool includeCatalog = true);
     [[nodiscard]] bool CommitScanArtifact(AssetScanArtifact artifact, uint64_t expectedQueryGeneration);
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
+    [[nodiscard]] bool ContinuePendingMetadataPublish(const std::shared_ptr<PendingRefreshCommit> &state);
+    [[nodiscard]] bool ContinuePendingImportPrepare(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
     void FinalizePendingRefreshCommit(const std::shared_ptr<PendingRefreshCommit> &state);
-    void WaitForPendingWork() const noexcept;
+    void QueueCatalogWork(CatalogWork &work, CatalogIoStage stage, uint32_t count, CatalogWork::Factory make);
+    void QueueCatalogJob(CatalogWork &work, CatalogIoStage stage, JobSystem::JobFn job);
+    [[nodiscard]] bool CanSubmitCatalogStage(CatalogIoStage stage) const;
+    [[nodiscard]] bool CanSubmitCatalogWork(const CatalogWork &work) const;
+    bool SubmitCatalogWork(CatalogWork &work, bool managed);
+    void ObserveCatalogWork(CatalogWork &work) noexcept;
+    void WaitForCatalogWork(CatalogWork &work) noexcept;
+    bool AdvanceRefresh(bool managed);
+    [[nodiscard]] bool CanAdvanceModelReimport() const;
+    bool AdvanceModelReimport(bool managed);
+    void WriteModelReimport(PendingModelReimport &pending);
+    void PublishModelReimport(PendingModelReimport &pending);
+    bool CommitReadyRefresh();
+    void RethrowRefreshFailure();
     [[nodiscard]] static bool IsIgnoredImportPath(const std::filesystem::path &path);
     [[nodiscard]] bool IsMetaFile(const std::filesystem::path &path) const;
     void UpdateMapping(const std::string &guid, const std::string &path);
@@ -714,7 +856,7 @@ class AssetDatabase : public NativeLifetimeOwner
     bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
                      const InxResourceMeta *candidateMetadata = nullptr,
                      const AssetFileFingerprint *expectedSource = nullptr,
-                     const AtomicFileState *expectedMetadata = nullptr);
+                     const AtomicFileState *expectedMetadata = nullptr, const PathWriteScope &writeScope = {});
     bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
     static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
                                         AssetMutationResult &result);
@@ -722,17 +864,30 @@ class AssetDatabase : public NativeLifetimeOwner
                                     const InxResourceMeta &metadata) const;
     ImportRequest MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
                                         const InxResourceMeta &metadata) const;
-    void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
-                               const AtomicFileState *expectedMetadata, double *prepareMilliseconds = nullptr,
-                               double *persistenceMilliseconds = nullptr,
-                               double *livePublicationMilliseconds = nullptr);
-    void FinishReimport(AssetMutationResult &result);
+    void ValidateImportPublication(const ImportRequest &request, ImportArtifact &artifact) const;
+    static std::vector<DocumentTransactionEntry>
+    BuildImportWrites(const ImportRequest &request, ImportArtifact &artifact, const AtomicFileState *expectedMetadata);
+    std::vector<DocumentTransactionFileState> PersistImportWrites(const ImportRequest &request,
+                                                                  std::vector<DocumentTransactionEntry> writes,
+                                                                  const PathWriteScope &writeScope) const;
+    void InstallImportArtifact(const std::string &guid, ImportArtifact artifact);
+    void FinishReimport(AssetMutationResult &result, const CachedFileState *committedFiles = nullptr,
+                        const std::shared_ptr<AssetLoadTicket> &repairTicket = {});
+    void StartModelReimport(const std::string &sourcePath, const std::string &textureGuid,
+                            const nlohmann::json &settings, ModelReimportPublished onPublished,
+                            std::shared_ptr<AssetLoadTicket> repairTicket = {});
+    [[nodiscard]] bool HasCurrentMeshArtifacts(const std::string &guid) const;
+    [[nodiscard]] bool CanBeginMeshArtifactRepair() const;
+    void BeginMeshArtifactRepair(const std::shared_ptr<AssetLoadTicket> &ticket);
+    AssetRegistry *BoundRegistry() const;
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                      bool persistMetadata, const std::string &identityKey,
-                                     std::optional<AtomicFileState> *expectedMetadata = nullptr);
+                                     std::optional<AtomicFileState> *expectedMetadata = nullptr,
+                                     const PathWriteScope &writeScope = {});
     void DeleteMetadata(const std::string &filePath);
-    void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath);
+    void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath, const PathWriteScope &writeScope,
+                      const InxResourceMeta *replacement = nullptr);
     void RebuildDerivedIndex();
     [[nodiscard]] bool IsReadOnlyPath(const std::string &normalizedPath) const;
 
@@ -740,6 +895,7 @@ class AssetDatabase : public NativeLifetimeOwner
     std::string m_blenderExecutable;
     std::string m_blenderExportScript;
     std::shared_ptr<PendingModelReimport> m_pendingModelReimport;
+    std::optional<FinishedModelApply> m_finishedModelApply;
     std::string m_assetsRoot;
     std::vector<std::string> m_extraScanRoots;
     std::unordered_set<std::string> m_readOnlyScanRoots;
@@ -747,6 +903,7 @@ class AssetDatabase : public NativeLifetimeOwner
     bool m_initialized = false;
 
     // GUID -> path
+    std::shared_ptr<AssetDependencyGraph> m_dependencyGraph = std::make_shared<AssetDependencyGraph>();
     std::unordered_map<std::string, std::string> m_guidToPath;
     // normalized path -> GUID
     std::unordered_map<std::string, std::string> m_pathToGuid;
@@ -795,7 +952,8 @@ class AssetDatabase : public NativeLifetimeOwner
     double m_lastRefreshOwnerMergeMaxSliceMilliseconds = 0.0;
     size_t m_lastRefreshOwnerMergeSliceCount = 0;
     double m_lastRefreshMetadataWriteMilliseconds = 0.0;
-    uint64_t m_lastRefreshJournalUncompressedBytes = 0;
+    uint64_t m_lastRefreshStagedBytes = 0;
+    double m_lastRefreshStagingMilliseconds = 0.0;
     uint64_t m_lastRefreshJournalBytes = 0;
     double m_lastRefreshJournalSerializeMilliseconds = 0.0;
     double m_lastRefreshJournalWriteMilliseconds = 0.0;
@@ -813,8 +971,16 @@ class AssetDatabase : public NativeLifetimeOwner
     bool m_lastRefreshScanOnWorker = false;
     bool m_assetIndexDirty = false;
     std::shared_ptr<PendingAssetScan> m_pendingAssetScan;
-    JobHandle m_pendingAssetScanJob;
     std::shared_ptr<PendingRefreshCommit> m_pendingRefreshCommit;
+    FrameWorkOwner *m_frameWork = nullptr;
+    CatalogWork m_refreshWork;
+    CatalogWork m_applyWork;
+    CatalogWork m_runtimeCatalogWork;
+    std::shared_ptr<RuntimeCatalogPreparation> m_runtimeCatalog;
+    bool m_cookedRuntimeCatalogInstalled = false;
+    std::array<uint64_t, static_cast<size_t>(CatalogIoStage::Count)> m_catalogIoCosts{};
+    std::exception_ptr m_refreshFailure;
+    bool m_preferApply = false;
 
   public:
     /// @brief Set a meta-creation loader for a resource type.

@@ -13,7 +13,7 @@ from collections import deque
 from typing import Dict, Optional
 
 from infernux.components.component import InxComponent, per_instance
-from infernux.components.fields import serialized_field
+from infernux.components.fields import get_raw_field_value, serialized_field
 from infernux.components.decorators import disallow_multiple, add_component_menu
 from infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
 from infernux.core.anim_state_machine import (
@@ -32,17 +32,12 @@ def _animation_source_guid(clip: Optional[AnimationClip3D]) -> str:
     return str(clip.source_model_guid or "").strip()
 
 
-def _get_asset_database():
-    from infernux.core.assets import AssetManager
-
-    return AssetManager.require_asset_database()
-
-
-def _resolve_timeline_path(state: AnimState) -> Optional[str]:
-    """Resolve a timeline state's ``.animtimeline`` asset to a disk path."""
-    if not state.timeline_guid:
-        return None
-    return _get_asset_database().get_path_from_guid(state.timeline_guid) or None
+def _state_asset_guids(state: AnimState) -> tuple[str, ...]:
+    if state.kind == "timeline":
+        return (state.timeline_guid,)
+    if state.kind == "group":
+        return tuple(entry.clip_guid for entry in state.clips)
+    return (state.clip_guid,)
 
 
 def _clip_duration_hint(clip: Optional[AnimationClip3D]) -> float:
@@ -101,6 +96,8 @@ class SkeletalAnimator(InxComponent):
     _fsm: Optional[AnimStateMachine] = None
     _skinned_renderers: list[SkinnedMeshRenderer] = per_instance(list)
     _native_renderers: list = per_instance(list)
+    _renderer_hierarchy_key = None
+    _pose_target_ids: tuple = ()
     native_pose_submission: bool = True
     # Optional fixed animation update interval in seconds. Zero keeps the
     # historical per-frame update; a positive value advances in accumulated
@@ -131,6 +128,10 @@ class SkeletalAnimator(InxComponent):
     _timeline_cache: Dict[str, object] = per_instance(dict)
     _timeline_base = None
 
+    _asset_mutation_service = None
+    _asset_mutation_listener = None
+    _pending_fsm: Optional[AnimStateMachine] = None
+
     def awake(self):
         self._parameters = {}
         self._pending_triggers = frozenset()
@@ -144,6 +145,7 @@ class SkeletalAnimator(InxComponent):
         self._last_native_pose_key = None
         self._current_state = None
         self._current_clip = None
+        self._pending_fsm = None
         self._group_clips = []
         self._group_weights = []
         self._elapsed = 0.0
@@ -152,26 +154,34 @@ class SkeletalAnimator(InxComponent):
         self._update_accum = 0.0
         self._skinned_renderers = []
         self._native_renderers = []
+        self._renderer_hierarchy_key = None
+        self._pose_target_ids = ()
         self._clear_blend_state()
 
-    def start(self):
-        # Play-mode scene replacement can invalidate an edit-scene wrapper after
-        # the Python component has already been restored.  Resolve through the
-        # live GameObject instead of trusting a serialized/cached wrapper.
-        self._skinned_renderers = []
-        renderers = self._resolve_native_renderers(force=True)
-        if not renderers:
-            Debug.log_warning(
-                "[SkeletalAnimator] No SkinnedMeshRenderer found on this GameObject or its descendants."
-            )
-            return
+        from infernux.application import Application
+        from infernux.engine.interaction import AssetMutationService
 
+        if not Application.is_player():
+            self._asset_mutation_service = AssetMutationService.instance()
+            if self._asset_mutation_service is not None:
+                self._asset_mutation_listener = self._asset_mutation_service.add_component_listener(
+                    self._on_animation_assets_changed
+                )
+
+    def on_destroy(self):
+        if self._asset_mutation_listener is not None:
+            self._asset_mutation_service.remove_component_listener(self._asset_mutation_listener)
+            self._asset_mutation_listener = None
+            self._asset_mutation_service = None
+
+    def start(self):
+        # Timeline states animate the owner even before a skin has a skeleton.
         self._load_controller()
 
         if self.auto_play and self._fsm and self._fsm.default_state:
             self.play(self._fsm.default_state)
 
-    def update(self, delta_time: float):
+    def animation_update(self, delta_time: float):
         interval = float(self.update_interval)
         if interval > 0.0:
             self._update_accum += delta_time
@@ -182,6 +192,9 @@ class SkeletalAnimator(InxComponent):
         if not self._playing:
             if self._state_completed:
                 self._try_auto_transition()
+                if (self._state_completed and self._current_clip is not None
+                        and self._last_native_pose_key is None):
+                    self._sync_native_runtime_playback()
             return
         if self._current_timeline is not None:
             self._update_timeline(delta_time)
@@ -259,6 +272,9 @@ class SkeletalAnimator(InxComponent):
 
         renderers = self._resolve_native_renderers()
         if not renderers:
+            return
+        if any(renderer.skeleton is not None and renderer.skeleton.physics_controls_pose
+               for renderer in renderers):
             return
         cpp = renderers[0]
         translation, rotation_sum, total, reference = Vector3(), [0.0] * 4, 0.0, None
@@ -459,6 +475,99 @@ class SkeletalAnimator(InxComponent):
         if self._fsm and self._fsm.default_state:
             self.play(self._fsm.default_state)
 
+    def _on_animation_assets_changed(self, change) -> None:
+        from infernux.engine.interaction import iter_asset_mutations
+
+        changed = {mutation.guid for mutation in iter_asset_mutations(change) if mutation.guid}
+        reference = get_raw_field_value(self, "controller")
+        controller_changed = reference and reference.guid in changed
+        fsm = self._fsm
+        if controller_changed:
+            replacement = self.controller
+            if replacement is None or replacement.mode != "3d":
+                self._pending_fsm = None
+                return
+            self._pending_fsm = replacement
+        else:
+            replacement = self._pending_fsm or fsm
+            if replacement is None:
+                return
+            clip_model_changed = any(_animation_source_guid(clip) in changed for clip in self._clip_cache.values())
+            if not clip_model_changed and all(changed.isdisjoint(_state_asset_guids(state)) for state in replacement.states):
+                return
+
+        previous = self._current_state
+        state = replacement.get_state_by_id(previous.stable_id) if previous is not None else None
+        same_state = state is not None
+        play_on_restore = fsm is None and self.auto_play
+        if state is None and (previous is not None or play_on_restore):
+            state = replacement.get_state(replacement.default_state)
+        phase = self.normalized_time if same_state else 0.0
+        old_elapsed = self._elapsed
+        old_duration = self._animation_state_duration()
+        had_timeline = self._current_timeline is not None
+
+        self._clip_cache.clear()
+        self._timeline_cache.clear()
+        self._duration_cache.clear()
+        group = []
+        clip = timeline = None
+        if state is not None:
+            if state.kind == "timeline":
+                timeline = self._resolve_timeline(state)
+            elif state.kind == "group":
+                group = self._resolve_group_clips(state)
+                clip = group[0] if group else None
+            else:
+                clip = self._resolve_clip(state)
+            if clip is None and timeline is None:
+                # A missing or invalid dependency can be corrected by the
+                # next save. Keep the published playback and event cursor.
+                return
+
+        if replacement is not fsm:
+            parameters, triggers = self._parameters, self._pending_triggers
+            previous_parameters = {} if fsm is None else {p.stable_id: p for p in fsm.parameters}
+            self._seed_parameters_from_fsm(replacement)
+            for parameter in replacement.parameters:
+                old = previous_parameters.get(parameter.stable_id)
+                if old is not None and old.value_type == parameter.value_type and old.name in parameters:
+                    self._parameters[parameter.name] = parameters[old.name]
+                    if old.name in triggers:
+                        self._pending_triggers |= {parameter.name}
+
+        weights = [entry.weight for entry in state.clips] if group else []
+        if (group and same_state and previous.kind == "group"
+                and _state_asset_guids(state) == _state_asset_guids(previous)):
+            weights = [live if live != entry.weight else authored
+                       for entry, live, authored in zip(previous.clips, self._group_weights, weights)]
+        self._fsm = replacement
+        self._pending_fsm = None
+        self._current_state, self._current_clip, self._current_timeline = state, clip, timeline
+        self._group_clips, self._group_weights = group, weights
+        new_duration = self._animation_state_duration()
+        same_duration = old_duration == new_duration or new_duration <= 0.0
+        self._elapsed = old_elapsed if same_state and same_duration else phase * new_duration
+        self._prev_event_norm = self.normalized_time
+        self._playing = state is not None and (self._playing or play_on_restore)
+        self._state_completed = same_state and self._state_completed
+        self._playback_revision += 1
+        self._last_native_pose_key = None
+        if not same_state or timeline is not None:
+            self._clear_blend_state()
+        if timeline is not None:
+            if not same_state or not had_timeline:
+                self._capture_timeline_base()
+            self._last_timeline_pose = None
+            self._apply_timeline(timeline, self._elapsed)
+        if not group:
+            self._sample_imported_curves(clip, self.normalized_time)
+        self._sync_native_runtime_playback()
+
+    def _animation_state_duration(self) -> float:
+        timeline = self._current_timeline
+        return float(timeline.duration) if timeline is not None else self._state_duration()
+
     def on_after_deserialize(self):
         self._clip_cache = {}
         self._duration_cache = {}
@@ -474,6 +583,7 @@ class SkeletalAnimator(InxComponent):
 
     def _load_controller(self):
         self.stop()
+        self._pending_fsm = None
         self._current_state = None
         self._current_clip = None
         self._current_timeline = None
@@ -543,17 +653,12 @@ class SkeletalAnimator(InxComponent):
         key = state.name
         if key in self._timeline_cache:
             return self._timeline_cache[key]
-        tl = None
-        path = _resolve_timeline_path(state)
-        if path:
-            from infernux.core.animation_timeline import AnimationTimeline
-            tl = AnimationTimeline.load(path)
-            if tl is None:
-                raise RuntimeError(
-                    f"SkeletalAnimator could not load timeline for state {state.name!r}: {path}"
-                )
-        self._timeline_cache[key] = tl
-        return tl
+        from infernux.core.animation_timeline import AnimationTimeline
+        from infernux.core.assets import AssetManager
+
+        timeline = AssetManager.load_by_guid(state.timeline_guid, AnimationTimeline) if state.timeline_guid else None
+        self._timeline_cache[key] = timeline
+        return timeline
 
     def _update_timeline(self, delta_time: float):
         """Advance + apply a timeline state, driving the owner GameObject transform."""
@@ -820,32 +925,42 @@ class SkeletalAnimator(InxComponent):
         if self._blend_elapsed >= self._blend_duration:
             self._clear_blend_state()
 
-    def _resolve_native_renderers(self, *, force: bool = False):
-        if not force and self._native_renderers:
-            return self._native_renderers
-
-        self._skinned_renderers = []
-        self._native_renderers = []
+    def _resolve_native_renderers(self):
         try:
             owner = self.game_object
         except (ReferenceError, RuntimeError):
             return []
         if owner is None:
             return []
-
-        native = []
-        pending = deque([owner])
-        while pending:
-            owner = pending.popleft()
-            renderer = owner.get_component(SkinnedMeshRenderer)
-            if renderer is not None:
-                cpp = renderer._get_bound_native_component()
-                if cpp is not None:
+        scene = owner.scene
+        hierarchy_key = (scene.world_id, scene.structure_version)
+        if hierarchy_key != self._renderer_hierarchy_key:
+            self._skinned_renderers = []
+            self._native_renderers = []
+            pending = deque([owner])
+            while pending:
+                node = pending.popleft()
+                if node.id != owner.id and node.get_component(SkeletalAnimator) is not None:
+                    continue
+                renderer = node.get_component(SkinnedMeshRenderer)
+                if renderer is not None:
                     self._skinned_renderers.append(renderer)
-                    native.append(cpp)
-            pending.extend(owner.get_children())
-        self._native_renderers = native
-        return native
+                    self._native_renderers.append(renderer._require_cpp_component())
+                pending.extend(node.get_children())
+            self._renderer_hierarchy_key = (scene.world_id, scene.structure_version)
+
+        # One sampled pose belongs to a skeleton, irrespective of mesh count.
+        # Resolve bindings each call: changing a skin's skeleton is not topology.
+        targets = {}
+        for renderer in self._native_renderers:
+            skeleton = renderer.skeleton
+            if skeleton is not None:
+                targets.setdefault(skeleton.component_id, renderer)
+        target_ids = tuple(targets)
+        if target_ids != self._pose_target_ids:
+            self._last_native_pose_key = None
+            self._pose_target_ids = target_ids
+        return list(targets.values())
 
     def _sync_native_runtime_playback(self) -> None:
         if not self.native_pose_submission:

@@ -94,3 +94,10 @@ ShadingContext InitShadingContext() {
     ctx.frontFacing = true;
     return ctx;
 }
+
+
+// Material texture transforms use the conventional (tiling.xy, offset.zw)
+// companion uniform. Custom shaders opt in by using the same helper.
+vec2 transformTextureUV(vec2 uv, vec4 scaleOffset) {
+    return uv * scaleOffset.xy + scaleOffset.zw;
+}

@@ -13,12 +13,14 @@
 #include <stb_image_resize2.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -146,22 +148,77 @@ uint64_t LevelByteSize(uint32_t width, uint32_t height, TextureFormat format)
     return pixels * bytesPerPixel;
 }
 
-void AppendLevel(TextureCpuData &texture, uint32_t width, uint32_t height, const void *pixels, uint64_t byteSize)
+const std::array<float, 65536> &Srgb16ToLinear()
 {
-    if (!pixels || byteSize != LevelByteSize(width, height, texture.format) ||
-        byteSize > MaximumDecodedBytes - texture.bytes.size())
-        throw std::invalid_argument("decoded texture level has an invalid payload");
-    TextureMipLevel level;
-    level.width = width;
-    level.height = height;
-    level.depth = 1;
-    level.byteOffset = texture.bytes.size();
-    level.byteSize = byteSize;
-    level.rowPitch = static_cast<uint64_t>(width) * TextureFormatBytesPerTexel(texture.format);
-    level.slicePitch = level.rowPitch * height;
+    static const auto values = [] {
+        std::array<float, 65536> table;
+        for (size_t index = 0; index < table.size(); ++index) {
+            const float value = static_cast<float>(index) / 65535.0f;
+            table[index] = value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+        }
+        return table;
+    }();
+    return values;
+}
+
+TextureMipLevel DescribeBaseLevel(uint32_t width, uint32_t height, TextureFormat format)
+{
+    const auto size = LevelByteSize(width, height, format);
+    const auto rowPitch = static_cast<uint64_t>(width) * TextureFormatBytesPerTexel(format);
+    return {width, height, 1, 0, size, rowPitch, size};
+}
+
+void CopyBaseLevel(TextureCpuData &texture, const TextureMipLevel &level, const void *pixels)
+{
     const auto *begin = static_cast<const uint8_t *>(pixels);
-    texture.bytes.insert(texture.bytes.end(), begin, begin + static_cast<size_t>(byteSize));
+    texture.bytes.assign(begin, begin + static_cast<size_t>(level.byteSize));
     texture.mipLevels.push_back(level);
+}
+
+std::pair<uint32_t, uint32_t> FitDimensions(uint32_t width, uint32_t height, uint32_t maxSize)
+{
+    const float scale = static_cast<float>(maxSize) / static_cast<float>((std::max)(width, height));
+    if (scale >= 1.0f)
+        return {width, height};
+    return {(std::max)(1U, static_cast<uint32_t>(width * scale)),
+            (std::max)(1U, static_cast<uint32_t>(height * scale))};
+}
+
+void SetRgba8BaseLevel(TextureCpuData &texture, const uint8_t *pixels, uint32_t width, uint32_t height,
+                       uint32_t maxSize)
+{
+    const auto [targetWidth, targetHeight] = FitDimensions(width, height, maxSize);
+    const auto level = DescribeBaseLevel(targetWidth, targetHeight, texture.format);
+    if (targetWidth == width && targetHeight == height) {
+        CopyBaseLevel(texture, level, pixels);
+        return;
+    }
+    texture.bytes.resize(static_cast<size_t>(level.byteSize));
+    const bool colorSrgb = TextureFormatIsSrgb(texture.format) && (texture.semantic == TextureSemantic::Color ||
+                                                                   texture.semantic == TextureSemantic::UserInterface ||
+                                                                   texture.semantic == TextureSemantic::Sprite);
+    const auto resize = colorSrgb ? stbir_resize_uint8_srgb : stbir_resize_uint8_linear;
+    if (!resize(pixels, width, height, 0, texture.bytes.data(), targetWidth, targetHeight, 0, STBIR_RGBA))
+        throw std::runtime_error("failed to resize RGBA texture");
+    texture.mipLevels.push_back(level);
+}
+
+void ExpandRgba16(const stbi_us *pixels, size_t byteCount, bool srgb, void *destination)
+{
+    // The working RGBA32F layout stores linear RGB and a linear alpha channel.
+    // Write through bytes so the same conversion can fill either the final
+    // payload or the typed scratch input required by the float resizer.
+    const auto *linear = srgb ? Srgb16ToLinear().data() : nullptr;
+    auto *output = static_cast<uint8_t *>(destination);
+    using Pixel = std::array<float, 4>;
+    constexpr size_t pixelBytes = 4 * sizeof(float);
+    for (size_t offset = 0; offset < byteCount; offset += pixelBytes, pixels += 4) {
+        const Pixel value{linear ? linear[pixels[0]] : static_cast<float>(pixels[0]) / 65535.0f,
+                          linear ? linear[pixels[1]] : static_cast<float>(pixels[1]) / 65535.0f,
+                          linear ? linear[pixels[2]] : static_cast<float>(pixels[2]) / 65535.0f,
+                          static_cast<float>(pixels[3]) / 65535.0f};
+        std::memcpy(output + offset, value.data(), pixelBytes);
+    }
 }
 
 } // namespace
@@ -209,12 +266,11 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
     int sourceHeight = 0;
     int sourceChannels = 0;
 
-    auto texture = std::make_shared<TextureCpuData>();
-    texture->dimension = TextureDimension::Texture2D;
-    texture->semantic = ReadSemantic(metadata);
-    if (texture->semantic == TextureSemantic::VectorField)
+    TextureCpuData texture;
+    texture.semantic = ReadSemantic(metadata);
+    if (texture.semantic == TextureSemantic::VectorField)
         throw std::invalid_argument("VectorField textures must use the .inxvfield source format");
-    if (texture->semantic == TextureSemantic::SignedDistanceField)
+    if (texture.semantic == TextureSemantic::SignedDistanceField)
         throw std::invalid_argument("SignedDistanceField textures must use the .inxsdf source format");
     if (extension == ".svg" || IsSvgSource(source.data(), source.size())) {
         if (SvgUsesFilters(source.data(), source.size()))
@@ -223,59 +279,55 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
         auto svg = RasterizeSvg(source.data(), source.size(), static_cast<int>(maxSize), preserveSvgViewport);
         return DecodeRgba8(svg.pixels, svg.width, svg.height, metadata);
     }
-    const bool preserve16BitUi = texture->semantic == TextureSemantic::UserInterface &&
-                                 ReadCompression(metadata) == TextureCompression::None &&
-                                 ReadTargetFormat(metadata) == TextureTargetFormat::Automatic &&
-                                 stbi_is_16_bit_from_memory(source.data(), static_cast<int>(source.size())) != 0;
-    if (preserve16BitUi || stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
-        texture->format = TextureFormat::Rgba32Float;
-        std::vector<float> precisePixels;
+    // PNM has an authoritative decoder for its sample maximum and byte order.
+    const bool pnmSource = InxTextureLoader::IsPnmSource(source.data(), source.size());
+    const bool source16Bit =
+        !pnmSource && stbi_is_16_bit_from_memory(source.data(), static_cast<int>(source.size())) != 0;
+    if (source16Bit || stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
+        texture.format = TextureFormat::Rgba32Float;
+        std::unique_ptr<stbi_us, decltype(&stbi_image_free)> pixels16(nullptr, &stbi_image_free);
         std::unique_ptr<float, decltype(&stbi_image_free)> decodedHdr(nullptr, &stbi_image_free);
-        if (preserve16BitUi) {
-            std::unique_ptr<stbi_us, decltype(&stbi_image_free)> pixels(
-                stbi_load_16_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
-                                         &sourceChannels, STBI_rgb_alpha),
-                &stbi_image_free);
-            if (!pixels)
-                throw std::runtime_error("failed to decode 16-bit UI texture: " + sourcePath);
-            precisePixels.resize(
-                static_cast<size_t>(LevelByteSize(sourceWidth, sourceHeight, texture->format) / sizeof(float)));
-            // Vulkan has no RGBA16 sRGB format. Preserve all source precision
-            // in linear floats instead of truncating to 8-bit or treating sRGB
-            // values as linear (which would brighten documentation images).
-            const bool srgb = ReadSrgb(metadata);
-            for (size_t index = 0; index < precisePixels.size(); ++index) {
-                float value = static_cast<float>(pixels.get()[index]) / 65535.0f;
-                if (srgb && index % 4 != 3)
-                    value = value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
-                precisePixels[index] = value;
-            }
+        if (source16Bit) {
+            pixels16.reset(stbi_load_16_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
+                                                    &sourceHeight, &sourceChannels, STBI_rgb_alpha));
+            if (!pixels16)
+                throw std::runtime_error("failed to decode 16-bit texture: " + sourcePath);
         } else {
             decodedHdr.reset(stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
                                                     &sourceHeight, &sourceChannels, STBI_rgb_alpha));
+            if (!decodedHdr)
+                throw std::runtime_error("failed to decode HDR texture: " + sourcePath);
         }
-        const float *decoded = preserve16BitUi ? precisePixels.data() : decodedHdr.get();
-        if (!decoded)
-            throw std::runtime_error("failed to decode HDR texture: " + sourcePath);
-        const float scale = static_cast<float>(maxSize) / static_cast<float>((std::max)(sourceWidth, sourceHeight));
-        const uint32_t width = scale < 1.0f ? (std::max)(1U, static_cast<uint32_t>(sourceWidth * scale))
-                                            : static_cast<uint32_t>(sourceWidth);
-        const uint32_t height = scale < 1.0f ? (std::max)(1U, static_cast<uint32_t>(sourceHeight * scale))
-                                             : static_cast<uint32_t>(sourceHeight);
+        const auto [width, height] = FitDimensions(sourceWidth, sourceHeight, maxSize);
+        const auto level = DescribeBaseLevel(width, height, texture.format);
+        const bool srgb = source16Bit && ReadSrgb(metadata);
         if (width != static_cast<uint32_t>(sourceWidth) || height != static_cast<uint32_t>(sourceHeight)) {
-            std::vector<float> resized(static_cast<size_t>(width) * height * 4);
+            std::vector<float> precisePixels;
+            const float *decoded = decodedHdr.get();
+            if (pixels16) {
+                const auto sourceSize = static_cast<size_t>(LevelByteSize(sourceWidth, sourceHeight, texture.format));
+                precisePixels.resize(sourceSize / sizeof(float));
+                ExpandRgba16(pixels16.get(), sourceSize, srgb, precisePixels.data());
+                pixels16.reset();
+                decoded = precisePixels.data();
+            }
+            std::vector<float> resized(static_cast<size_t>(level.byteSize / sizeof(float)));
             if (!stbir_resize_float_linear(decoded, sourceWidth, sourceHeight, 0, resized.data(),
                                            static_cast<int>(width), static_cast<int>(height), 0, STBIR_RGBA))
                 throw std::runtime_error("failed to resize HDR texture: " + sourcePath);
-            AppendLevel(*texture, width, height, resized.data(), resized.size() * sizeof(float));
+            CopyBaseLevel(texture, level, resized.data());
+        } else if (pixels16) {
+            texture.bytes.resize(static_cast<size_t>(level.byteSize));
+            ExpandRgba16(pixels16.get(), texture.bytes.size(), srgb, texture.bytes.data());
+            texture.mipLevels.push_back(level);
         } else {
-            AppendLevel(*texture, width, height, decoded, static_cast<uint64_t>(width) * height * 4 * sizeof(float));
+            CopyBaseLevel(texture, level, decodedHdr.get());
         }
     } else {
-        texture->format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+        texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
         stbi_uc *decoded = nullptr;
         std::vector<unsigned char> pnmPixels;
-        if (InxTextureLoader::IsPnmSource(source.data(), source.size())) {
+        if (pnmSource) {
             InxTextureData pnm = InxTextureLoader::LoadFromMemory(source.data(), source.size(), sourcePath);
             if (!pnm.IsValid())
                 throw std::runtime_error("failed to decode texture: " + sourcePath);
@@ -289,36 +341,12 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
                 throw std::runtime_error("failed to decode texture: " + sourcePath);
         }
         auto release = std::unique_ptr<stbi_uc, decltype(&stbi_image_free)>(decoded, &stbi_image_free);
-        const unsigned char *base = decoded ? decoded : pnmPixels.data();
-        const float scale = static_cast<float>(maxSize) / static_cast<float>((std::max)(sourceWidth, sourceHeight));
-        const uint32_t width = scale < 1.0f ? (std::max)(1U, static_cast<uint32_t>(sourceWidth * scale))
-                                            : static_cast<uint32_t>(sourceWidth);
-        const uint32_t height = scale < 1.0f ? (std::max)(1U, static_cast<uint32_t>(sourceHeight * scale))
-                                             : static_cast<uint32_t>(sourceHeight);
-        if (width != static_cast<uint32_t>(sourceWidth) || height != static_cast<uint32_t>(sourceHeight)) {
-            std::vector<uint8_t> resized(static_cast<size_t>(width) * height * 4);
-            const bool colorSrgb =
-                TextureFormatIsSrgb(texture->format) &&
-                (texture->semantic == TextureSemantic::Color || texture->semantic == TextureSemantic::UserInterface ||
-                 texture->semantic == TextureSemantic::Sprite);
-            const bool resizedOk = colorSrgb
-                                       ? stbir_resize_uint8_srgb(base, sourceWidth, sourceHeight, 0, resized.data(),
-                                                                 static_cast<int>(width), static_cast<int>(height), 0,
-                                                                 STBIR_RGBA) != nullptr
-                                       : stbir_resize_uint8_linear(base, sourceWidth, sourceHeight, 0, resized.data(),
-                                                                   static_cast<int>(width), static_cast<int>(height), 0,
-                                                                   STBIR_RGBA) != nullptr;
-            if (!resizedOk)
-                throw std::runtime_error("failed to resize texture: " + sourcePath);
-            AppendLevel(*texture, width, height, resized.data(), resized.size());
-        } else {
-            AppendLevel(*texture, width, height, base, static_cast<uint64_t>(width) * height * 4);
-        }
+        SetRgba8BaseLevel(texture, decoded ? decoded : pnmPixels.data(), sourceWidth, sourceHeight, maxSize);
     }
 
     return TextureProcessor::Process(
-        std::move(*texture), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
-                                                   ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
+        std::move(texture), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
+                                                  ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeRgba8(const std::vector<unsigned char> &pixels,
@@ -331,25 +359,7 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeRgba8(const std::vec
     texture.dimension = TextureDimension::Texture2D;
     texture.semantic = ReadSemantic(metadata);
     texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
-    const float scale = static_cast<float>(ReadMaxSize(metadata)) / static_cast<float>((std::max)(width, height));
-    if (scale < 1.0f) {
-        const auto targetWidth = (std::max)(1U, static_cast<uint32_t>(width * scale));
-        const auto targetHeight = (std::max)(1U, static_cast<uint32_t>(height * scale));
-        std::vector<unsigned char> resized(static_cast<size_t>(targetWidth) * targetHeight * 4);
-        const bool colorSrgb =
-            TextureFormatIsSrgb(texture.format) &&
-            (texture.semantic == TextureSemantic::Color || texture.semantic == TextureSemantic::UserInterface ||
-             texture.semantic == TextureSemantic::Sprite);
-        const auto result = colorSrgb ? stbir_resize_uint8_srgb(pixels.data(), width, height, 0, resized.data(),
-                                                                targetWidth, targetHeight, 0, STBIR_RGBA)
-                                      : stbir_resize_uint8_linear(pixels.data(), width, height, 0, resized.data(),
-                                                                  targetWidth, targetHeight, 0, STBIR_RGBA);
-        if (!result)
-            throw std::runtime_error("failed to resize embedded RGBA texture");
-        AppendLevel(texture, targetWidth, targetHeight, resized.data(), resized.size());
-    } else {
-        AppendLevel(texture, width, height, pixels.data(), pixels.size());
-    }
+    SetRgba8BaseLevel(texture, pixels.data(), width, height, ReadMaxSize(metadata));
     return TextureProcessor::Process(
         std::move(texture), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
                                                   ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
@@ -364,13 +374,12 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::CreateRgba8(const uint8_t 
     if (expectedSize != byteCount)
         throw std::invalid_argument("RGBA8 texture payload byte count does not match its dimensions");
 
-    auto texture = std::make_shared<TextureCpuData>();
-    texture->dimension = TextureDimension::Texture2D;
-    texture->semantic = TextureSemantic::Data;
-    texture->format = TextureFormat::Rgba8UNorm;
-    AppendLevel(*texture, width, height, pixels, expectedSize);
+    TextureCpuData texture;
+    texture.semantic = TextureSemantic::Data;
+    texture.format = TextureFormat::Rgba8UNorm;
+    CopyBaseLevel(texture, DescribeBaseLevel(width, height, texture.format), pixels);
     return TextureProcessor::Process(
-        std::move(*texture),
+        std::move(texture),
         TextureProcessOptions{generateMipmaps, TextureCompression::None, TextureCompressionQuality::Normal});
 }
 

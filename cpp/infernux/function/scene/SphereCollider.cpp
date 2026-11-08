@@ -65,20 +65,13 @@ void SphereCollider::AutoFitToMesh()
     m_radius = std::max(m_radius, 0.001f);
 }
 
-void *SphereCollider::CreateJoltShapeRaw() const
+JPH::RefConst<JPH::Shape> SphereCollider::CreateJoltShape() const
 {
-    glm::vec3 signedScale(1.0f);
-    if (auto *go = GetGameObject()) {
-        if (auto *tf = go->GetTransform()) {
-            signedScale = tf->GetWorldScale();
-        }
-    }
-
-    glm::vec3 s = glm::abs(signedScale);
+    glm::vec3 s = GetWorldScale();
     float r = m_radius * std::max({s.x, s.y, s.z});
-    JPH::Shape *shape = new JPH::SphereShape(r);
+    JPH::RefConst<JPH::Shape> shape = new JPH::SphereShape(r);
 
-    glm::vec3 center = GetCenter() * signedScale;
+    glm::vec3 center = GetCenterInRigidSpace();
     if (center != glm::vec3(0.0f)) {
         shape = new JPH::RotatedTranslatedShape(JPH::Vec3(center.x, center.y, center.z), JPH::Quat::sIdentity(), shape);
     }

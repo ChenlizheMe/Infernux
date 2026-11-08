@@ -146,7 +146,7 @@ class PreparedPythonComponent:
     component_id: Optional[int]
     fields_document: dict
     instance: Any
-    prefab_source_id: int = 0
+    prefab_source: tuple[int, str] = (0, "")
 
     @property
     def component_index(self) -> int:
@@ -167,10 +167,15 @@ _PYTHON_TYPE_PREFIX = "python:"
 
 
 def _decode_python_component_record(record: dict, path: str) -> tuple[str, str, str, str, str]:
-    if not isinstance(record, dict) or set(record) - {"prefab_source_id"} != _COMPONENT_RECORD_FIELDS:
+    if not isinstance(record, dict) or set(record) - {"prefab_source_id", "prefab_source_guid"} != _COMPONENT_RECORD_FIELDS:
         raise PythonComponentRestoreError(f"{path} must be an exact ComponentRecord")
     if "prefab_source_id" in record and (type(record["prefab_source_id"]) is not int or record["prefab_source_id"] <= 0):
         raise PythonComponentRestoreError(f"{path}.prefab_source_id must be a positive integer")
+    if "prefab_source_guid" in record and (
+        not isinstance(record["prefab_source_guid"], str) or not record["prefab_source_guid"]
+        or "prefab_source_id" not in record
+    ):
+        raise PythonComponentRestoreError(f"{path}.prefab_source_guid requires a source ID and a non-empty GUID")
     type_id = record.get("type_id")
     if not isinstance(type_id, str) or not type_id.startswith(_PYTHON_TYPE_PREFIX):
         raise PythonComponentRestoreError(f"{path}.type_id is not a Python component identity")
@@ -213,7 +218,7 @@ class PreparedPythonComponentGraph:
         self._closed = True
 
 
-def _collect_scene_document_python_descriptors(document: dict):
+def _collect_scene_document_python_descriptors(document: dict, *, object_id_field="id"):
     if not isinstance(document, dict) or not isinstance(document.get("objects"), list):
         raise PythonComponentRestoreError("Scene document requires an objects array")
 
@@ -224,9 +229,9 @@ def _collect_scene_document_python_descriptors(document: dict):
     def visit(obj, path: str):
         if not isinstance(obj, dict):
             raise PythonComponentRestoreError(f"{path} must be an object")
-        object_id = obj.get("id")
+        object_id = obj.get(object_id_field)
         if type(object_id) is not int or object_id <= 0 or object_id in object_ids:
-            raise PythonComponentRestoreError(f"{path}.id must be a unique positive integer")
+            raise PythonComponentRestoreError(f"{path}.{object_id_field} must be a unique positive integer")
         object_ids.add(object_id)
 
         transform = obj.get("transform")
@@ -270,6 +275,8 @@ def _prepare_python_component_records(
     prefer_loaded_types: bool = False,
     reference_scene=None,
     allow_missing_scripts: bool = True,
+    only_component_ids: set[int] | None = None,
+    validate_only: bool = False,
 ) -> PreparedPythonComponentGraph:
     pending_types: set[tuple[int, str]] = set()
     available_constraint_types: set[tuple[int, str]] = {
@@ -318,16 +325,39 @@ def _prepare_python_component_records(
         parsed.append(
             (
                 object_id, document_path, type_name, script_guid, type_guid,
-                module_name, qualified_name, enabled, execution_order, component_id, fields, descriptor.get("prefab_source_id", 0),
+                module_name, qualified_name, enabled, execution_order, component_id, fields,
+                (descriptor.get("prefab_source_id", 0), descriptor.get("prefab_source_guid", "")),
             )
         )
+
+    from infernux.components.registry import component_constraint_type_id, get_component_constraints
+
+    def validate_constraints(component_type, object_id, type_guid, type_name):
+        registration = get_component_constraints(component_type)
+        if (object_id is not None and not registration.allow_multiple
+                and component_type_counts[(object_id, type_guid)] != 1):
+            raise PythonComponentRestoreError(
+                f"Python component '{type_name}' disallows multiple instances on one GameObject"
+            )
+        for required_type in registration.required_types:
+            required_token = component_constraint_type_id(required_type)
+            if not required_token:
+                raise PythonComponentRestoreError(
+                    f"Python component '{type_name}' has an invalid required component declaration"
+                )
+            if object_id is None or (object_id, required_token) not in available_constraint_types:
+                raise PythonComponentRestoreError(
+                    f"Python component '{type_name}' requires missing component '{required_token}'"
+                )
 
     graph = PreparedPythonComponentGraph([])
     try:
         for (
             object_id, document_path, type_name, script_guid, type_guid,
-            module_name, qualified_name, enabled, execution_order, component_id, fields, prefab_source_id,
+            module_name, qualified_name, enabled, execution_order, component_id, fields, prefab_source,
         ) in parsed:
+            if only_component_ids is not None and component_id not in only_component_ids:
+                continue
             _validate_reference_documents(
                 fields,
                 f"{document_path}.py_fields",
@@ -336,6 +366,18 @@ def _prepare_python_component_records(
                 document_object_ids=object_ids,
                 document_native_types=native_types,
             )
+            if validate_only:
+                from infernux.components.fields import get_serialized_fields
+                from infernux.components.registry import get_type_by_identity
+                from infernux.components.value_codec import VALUE_CODECS
+
+                component_type = get_type_by_identity(type_name, script_guid, type_guid)
+                if component_type is not None:
+                    validate_constraints(component_type, object_id, type_guid, type_name)
+                    for name, meta in get_serialized_fields(component_type).items():
+                        if name in fields:
+                            VALUE_CODECS.validate(fields[name], meta, f"{document_path}.data.{name}")
+                continue
             instance = None
             script_path = None
             construct_error = ""
@@ -403,35 +445,12 @@ def _prepare_python_component_records(
                 live_fields["__type_name__"] = instance_type.__name__
             else:
                 live_fields = fields
-            component_type = type(instance)
-            from infernux.components.registry import (
-                component_constraint_type_id,
-                get_component_constraints,
-            )
-            registration = None if is_broken else get_component_constraints(component_type)
-            if (
-                not is_broken
-                and object_id is not None
-                and not registration.allow_multiple
-                and component_type_counts[(object_id, type_guid)] != 1
-            ):
-                instance._call_on_destroy()
-                raise PythonComponentRestoreError(
-                    f"Python component '{type_name}' disallows multiple instances on one GameObject"
-                )
             if not is_broken:
-                for required_type in registration.required_types:
-                    required_token = component_constraint_type_id(required_type)
-                    if not required_token:
-                        instance._call_on_destroy()
-                        raise PythonComponentRestoreError(
-                            f"Python component '{type_name}' has an invalid required component declaration"
-                        )
-                    if object_id is None or (object_id, required_token) not in available_constraint_types:
-                        instance._call_on_destroy()
-                        raise PythonComponentRestoreError(
-                            f"Python component '{type_name}' requires missing component '{required_token}'"
-                        )
+                try:
+                    validate_constraints(instance_type, object_id, type_guid, type_name)
+                except Exception:
+                    instance._call_on_destroy()
+                    raise
             try:
                 instance._deserialize_fields_document(
                     live_fields,
@@ -460,13 +479,24 @@ def _prepare_python_component_records(
                     component_id,
                     fields,
                     instance,
-                    prefab_source_id,
+                    prefab_source,
                 )
             )
         return graph
     except Exception:
         graph.discard()
         raise
+
+
+def validate_prefab_source_components(root: dict) -> None:
+    """Validate the authored records without constructing components or loading scripts."""
+    from infernux.lib import _Infernux
+
+    _Infernux._validate_prefab_native_records(root)
+    object_ids, native_types, descriptors = _collect_scene_document_python_descriptors(
+        {"objects": [root]}, object_id_field="local_id",
+    )
+    _prepare_python_component_records(object_ids, native_types, descriptors, validate_only=True)
 
 
 def preflight_scene_python_components(
@@ -501,8 +531,9 @@ def preflight_game_object_python_components(
     preserve_document_ids: bool,
     prefer_loaded_types: bool = False,
     reference_scene=None,
+    only_component_ids: set[int] | None = None,
 ) -> PreparedPythonComponentGraph:
-    """Preflight one ObjectGraph before deserialize, instantiate, or clone."""
+    """Preflight an ObjectGraph, optionally preparing instances only for new IDs."""
     object_ids: set[int] = set()
     native_types: set[tuple[int, str]] = set()
     descriptors: list[tuple[Optional[int], str, dict]] = []
@@ -559,6 +590,7 @@ def preflight_game_object_python_components(
         asset_database,
         prefer_loaded_types=prefer_loaded_types,
         reference_scene=reference_scene,
+        only_component_ids=only_component_ids,
     )
     if not preserve_document_ids:
         for component in prepared.components:
@@ -573,7 +605,7 @@ def _native_object_graph_document(document: dict) -> dict:
     native_document = copy.deepcopy(document)
 
     def visit(obj: dict) -> None:
-        obj.pop("local_id", None)
+        obj["id"] = obj.pop("local_id", obj.get("id"))
         for child in obj["children"]:
             visit(child)
 
@@ -581,39 +613,31 @@ def _native_object_graph_document(document: dict) -> dict:
     return native_document
 
 
-def _build_instantiated_object_id_map(source_document: dict, created) -> dict[int | tuple[int, int], int]:
-    created_document = created.serialize_document()
+def _build_instantiated_object_id_map(source_document: dict, native_ids: dict) -> dict[int | tuple[int, int], int]:
+    """Use identities captured before native publication changes the hierarchy."""
     mapping: dict[int | tuple[int, int], int] = {}
-    pending_ids = {(item.game_object_id, item.component_index): item.fields_document["__component_id__"]
-                   for item in created.scene.get_pending_py_components()}
 
-    def visit(source: dict, target: dict, path: str) -> None:
+    def visit(source: dict) -> None:
         source_id = source.get("local_id", source.get("id"))
-        target_id = target.get("id")
-        if type(source_id) is not int or source_id <= 0 or type(target_id) is not int or target_id <= 0:
-            raise PythonComponentRestoreError(f"{path}: cannot build ObjectGraph ID mapping")
-        if source_id in mapping:
-            raise PythonComponentRestoreError(f"{path}: duplicate ObjectGraph source ID {source_id}")
-        mapping[source_id] = target_id
-        mapping[(source_id, source["transform"].get("component_id", 0))] = target["transform"]["component_id"]
-        native_records = iter(target["components"])
+        object_id, transform_id, component_ids = native_ids[source_id]
+        mapping[source_id] = object_id
+        mapping[(source_id, source["transform"].get("component_id", 0))] = transform_id
         for index, component in enumerate(source["components"]):
-            if component["type_id"].startswith(_PYTHON_TYPE_PREFIX):
-                runtime_id = pending_ids[(target_id, index)]
-            else:
-                runtime_id = next(native_records)["component_id"]
-            mapping[(source_id, component["component_id"])] = runtime_id
-        source_children = source.get("children")
-        target_children = target.get("children")
-        if not isinstance(source_children, list) or not isinstance(target_children, list):
-            raise PythonComponentRestoreError(f"{path}: ObjectGraph children must be arrays")
-        if len(source_children) != len(target_children):
-            raise PythonComponentRestoreError(f"{path}: native ObjectGraph shape changed during instantiate")
-        for index, (source_child, target_child) in enumerate(zip(source_children, target_children)):
-            visit(source_child, target_child, f"{path}.children[{index}]")
+            mapping[(source_id, component["component_id"])] = component_ids[index]
+        for child in source["children"]:
+            visit(child)
 
-    visit(source_document, created_document, "root_object")
+    visit(source_document)
     return mapping
+
+
+def rewrite_native_component_references(type_id, document, rewrite):
+    """Visit explicitly declared native references without guessing integer names."""
+    prefix = "native:infernux."
+    if not type_id.startswith(prefix):
+        return document
+    from infernux.lib import _Infernux
+    return _Infernux._rewrite_native_component_references(type_id[len(prefix):], document, rewrite)
 
 
 def _remap_local_reference_document(value, object_id_map: dict[int | tuple[int, int], int], path: str,
@@ -650,6 +674,20 @@ def _remap_local_reference_document(value, object_id_map: dict[int | tuple[int, 
         key: _remap_local_reference_document(item, object_id_map, f"{path}.{key}", component_id_map)
         for key, item in value.items()
     }
+
+
+def attach_prepared_python_component(target, item, component_index, attached):
+    """Attach a decoded proxy without running its deserialization or Awake hooks."""
+    instance = item.instance
+    instance._enabled = item.enabled
+    published = target._attach_prepared_py_component(instance, component_index, item.component_id)
+    if published is not instance:
+        raise PythonComponentRestoreError(f"Python component '{item.type_name}' was rejected by its target GameObject")
+    native = instance._cpp_component
+    attached.append((target, instance, native))
+    native._prefab_source = item.prefab_source
+    native.enabled = instance._enabled = item.enabled
+    native.execution_order = item.execution_order
 
 
 def _publish_prepared_scene_python_components(
@@ -750,37 +788,13 @@ def _publish_prepared_scene_python_components(
         from infernux.components.component import InxComponent
         InxComponent._clear_all_instances()
         from infernux.components.builtin_component import BuiltinComponent
-        BuiltinComponent._clear_cache()
+        BuiltinComponent._retire_stale_wrappers()
         _notify_editor_scene_changed()
 
     attached = []
     try:
-        for prepared_index, ((target, instance), item) in enumerate(zip(targets, prepared)):
-            # Seed the mirror before native proxy construction; the proxy
-            # constructor reads the Python flag while binding.
-            instance._enabled = item.enabled
-            published_instance = target._attach_prepared_py_component(
-                instance,
-                pending[prepared_index].component_index,
-                item.component_id,
-            )
-            if published_instance is not instance:
-                raise PythonComponentRestoreError(
-                    f"Python component '{item.type_name}' was rejected by its target GameObject"
-                )
-            native_component = getattr(instance, "_cpp_component", None)
-            if native_component is None:
-                raise PythonComponentRestoreError(
-                    f"Python component '{item.type_name}' was not bound to a native proxy"
-                )
-            attached.append((target, instance, native_component))
-            native_component._prefab_source_id = item.prefab_source_id
-            # The native attach hook mirrors its default state into Python.
-            # Restore the descriptor's authored enabled bit after binding and
-            # before lifecycle activation, so first Player Start is eligible.
-            native_component.enabled = item.enabled
-            instance._enabled = item.enabled
-            native_component.execution_order = item.execution_order
+        for (target, _instance), item, native_descriptor in zip(targets, prepared, pending):
+            attach_prepared_python_component(target, item, native_descriptor.component_index, attached)
         if not defer_lifecycle:
             for _target, instance, _native_component in attached:
                 instance._call_on_after_deserialize()
@@ -1019,6 +1033,7 @@ def serialize_game_object_document_authoritatively(game_object) -> dict:
         "type",
         "component_id",
         "prefab_source_id",
+        "prefab_source_guid",
         "enabled",
         "execution_order",
     }
@@ -1062,14 +1077,12 @@ def serialize_game_object_document_authoritatively(game_object) -> dict:
                     exc,
                 )
 
-        children = obj.get_children()
-        child_documents = node.get("children", [])
-        if len(children) != len(child_documents):
-            raise PythonComponentRestoreError(
-                "ObjectGraph shape changed during authoritative snapshot"
-            )
-        for child, child_document in zip(children, child_documents):
-            visit(child, child_document)
+        # Native documents omit retired children that await end-of-frame
+        # destruction. Identity, rather than the live sibling count, binds
+        # each serialized child to its Python component facade.
+        children = {int(child.id): child for child in obj.get_children()}
+        for child_document in node.get("children", []):
+            visit(children[int(child_document["id"])], child_document)
 
     visit(game_object, document)
     return document
@@ -1101,17 +1114,18 @@ def commit_prepared_game_object_document(
                 collect_native_component_ids(child)
 
     collect_native_component_ids(game_object.serialize_document())
-    if not game_object._commit_document(
+    committed, native_ids = game_object._commit_document(
         _native_object_graph_document(document),
         preserve_document_ids,
-    ):
+    )
+    if not committed:
         prepared.discard()
         return False
     from infernux.components.builtin_component import BuiltinComponent
     BuiltinComponent._invalidate_component_ids(replaced_native_component_ids)
     object_id_map = None
     if any(item.game_object_id is None for item in prepared.components):
-        object_id_map = _build_instantiated_object_id_map(document, game_object)
+        object_id_map = _build_instantiated_object_id_map(document, native_ids)
     publish_prepared_scene_python_components(
         scene,
         prepared,
@@ -1152,14 +1166,15 @@ def instantiate_prepared_game_object_document(
 ):
     """Instantiate one already preflighted ID-less ObjectGraph."""
     _require_clean_pending_queue(scene)
-    created = scene._instantiate_document(_native_object_graph_document(document), parent)
-    if created is None:
-        prepared.discard()
-        return None
+    created = None
     try:
+        created, native_ids = scene._instantiate_document(_native_object_graph_document(document), parent)
+        if created is None:
+            prepared.discard()
+            return None
         if configure_created is not None:
             configure_created(created)
-        object_id_map = _build_instantiated_object_id_map(document, created)
+        object_id_map = _build_instantiated_object_id_map(document, native_ids)
         publish_prepared_scene_python_components(
             scene,
             prepared,
@@ -1169,8 +1184,8 @@ def instantiate_prepared_game_object_document(
     except Exception:
         prepared.discard()
         scene.take_pending_py_components()
-        scene.destroy_game_object(created)
-        scene.process_pending_destroys()
+        if created is not None:
+            scene._remove_game_object_immediately(created)
         raise
     return created
 
@@ -1189,7 +1204,7 @@ def instantiate_prepared_game_object_documents(
     object_id_map: dict[int | tuple[int, int], int] = {}
     try:
         for document, _prepared, parent in entries:
-            instance = scene._instantiate_document(
+            instance, native_ids = scene._instantiate_document(
                 _native_object_graph_document(document), parent
             )
             if instance is None:
@@ -1197,7 +1212,7 @@ def instantiate_prepared_game_object_documents(
                     "native ObjectGraph batch instantiate failed"
                 )
             created.append(instance)
-            entry_map = _build_instantiated_object_id_map(document, instance)
+            entry_map = _build_instantiated_object_id_map(document, native_ids)
             overlap = set(object_id_map).intersection(entry_map)
             if overlap:
                 raise PythonComponentRestoreError(
@@ -1229,33 +1244,39 @@ def instantiate_prepared_game_object_documents(
             from infernux.debug import Debug
             Debug.log_suppressed("component_restore.clear_pending", exc)
         for instance in reversed(created):
-            scene.destroy_game_object(instance)
-        if created:
-            scene.process_pending_destroys()
+            scene._remove_game_object_immediately(instance)
         raise
 
 
-def _retire_copied_prefab_links(document: dict, *, linked_subtree: bool = False) -> None:
-    """Make a copied subtree a new occurrence in its enclosing Prefab.
+def _retire_copied_prefab_links(document: dict) -> None:
+    """Project clipboard/clone records onto the source scopes in the subtree."""
+    def visit(node, scopes):
+        guid = node.get("prefab_guid", "")
+        baseline = node.get("prefab_source")
+        is_scope = bool(node.get("prefab_root") or baseline)
+        unscoped = not is_scope and not guid and not node.get("prefab_source_id")
+        keeps_implicit_source = unscoped or is_scope or guid in scopes
+        if is_scope:
+            if baseline and "outer_source_id" in baseline:
+                owner = baseline.get("outer_source_guid")
+                keeps_placement = owner in scopes if owner else bool(scopes)
+                if not keeps_placement:
+                    baseline.pop("outer_source_id")
+                    baseline.pop("outer_source_guid", None)
+            scopes = (*scopes, guid)
+        elif not keeps_implicit_source:
+            node.pop("prefab_guid", None)
+            node.pop("prefab_source_id", None)
+        for component in node["components"]:
+            owner = component.get("prefab_source_guid")
+            keeps_source = owner in scopes if owner else keeps_implicit_source
+            if not keeps_source:
+                component.pop("prefab_source_id", None)
+                component.pop("prefab_source_guid", None)
+        for child in node["children"]:
+            visit(child, scopes)
 
-    This operates on an owned snapshot, never the source instance. Nested
-    roots retain their complete inner namespace; only their outer occurrence
-    retires. Runtime object/component IDs stay in place until batch remapping.
-    """
-    if document.get("prefab_root"):
-        baseline = document.get("prefab_source")
-        if baseline is not None:
-            baseline.pop("outer_source_id", None)
-        return
-    linked_subtree = linked_subtree or bool(document.get("prefab_guid") or document.get("prefab_source_id"))
-    if linked_subtree:
-        document.pop("prefab_guid", None)
-        document.pop("prefab_source_id", None)
-        document.pop("prefab_source", None)
-        for component in document["components"]:
-            component.pop("prefab_source_id", None)
-    for child in document["children"]:
-        _retire_copied_prefab_links(child, linked_subtree=linked_subtree)
+    visit(document, ())
 
 
 def clone_game_object_transactionally(
@@ -1278,30 +1299,19 @@ def clone_game_object_transactionally(
         prefer_loaded_types=True,
         reference_scene=scene,
     )
-    created = scene._clone_game_object(
-        source,
-        parent,
-        bool(instantiate_in_world_space),
-    )
-    if created is None:
-        prepared.discard()
-        return None
+    created = None
     try:
-        # A copied nested root is a new occurrence in its enclosing asset. Its
-        # inner source identity stays intact; only the enclosing anchor retires.
-        pending = [created]
-        while pending:
-            obj = pending.pop()
-            if obj.prefab_root:
-                baseline = obj._prefab_source_document
-                if baseline and "outer_source_id" in baseline:
-                    baseline.pop("outer_source_id")
-                    obj._prefab_source_document = baseline
-            else:
-                pending.extend(obj.get_children())
+        created, native_ids = scene._clone_game_object(
+            source,
+            parent,
+            bool(instantiate_in_world_space),
+        )
+        if created is None:
+            prepared.discard()
+            return None
         if configure_created is not None:
             configure_created(created)
-        object_id_map = _build_instantiated_object_id_map(source_document, created)
+        object_id_map = _build_instantiated_object_id_map(source_document, native_ids)
         publish_prepared_scene_python_components(
             scene,
             prepared,
@@ -1311,8 +1321,8 @@ def clone_game_object_transactionally(
     except Exception:
         prepared.discard()
         scene.take_pending_py_components()
-        scene.destroy_game_object(created)
-        scene.process_pending_destroys()
+        if created is not None:
+            scene._remove_game_object_immediately(created)
         raise
     return created
 

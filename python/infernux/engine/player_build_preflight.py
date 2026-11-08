@@ -27,7 +27,9 @@ def publish_player_asset_catalog(project_root: str, asset_database: Any) -> dict
     from infernux.core.assets import AssetManager
     from infernux.renderstack.discovery import discover_effect_features
 
-    AssetManager.flush_all_asset_writes()
+    applied = AssetManager.flush_all_asset_writes(database=asset_database)
+    if applied is not None and not applied:
+        raise RuntimeError(f"Model Apply failed before export for {applied.path!r}: {applied.error}")
     discover_effect_features()
     # A headless/editor worker can arrive here while the initial scan is still
     # pending. Commit that owner-side scan before requesting the build refresh;
@@ -54,7 +56,59 @@ def publish_player_asset_catalog(project_root: str, asset_database: Any) -> dict
 
     from infernux.engine.runtime_artifact_catalog import load_asset_index
 
-    return {"path": index_path, "entries": load_asset_index(root)}
+    return capture_player_build_inputs(root, load_asset_index(root), path=index_path)
+
+
+def capture_player_build_inputs(project_root, entries, *, path="") -> dict[str, Any]:
+    """Freeze asset revisions and their owner-published type semantics together."""
+    from infernux.application import Application
+    from infernux.engine.path_utils import relative_path, resolve_project_path
+    from infernux.engine.project_context import (
+        is_editor_asset_path, is_project_script, is_preload_python_library,
+    )
+    from infernux.engine.resources_manager import ResourceChangeHandler, ResourcesManager
+    from infernux.engine.runtime_artifact_catalog import source_fingerprint, source_path_for_entry
+    from infernux.engine.player_script_catalog import capture_runtime_type_records
+    from infernux.engine.script_source import validate_loaded_preload_sources
+
+    root = resolved_path(project_root)
+    scripts = []
+    for entry in entries:
+        raw = str(entry.get("normalized_path", ""))
+        if not raw.endswith(".py") or raw.endswith(".particle.py"):
+            continue
+        candidate = resolve_project_path(raw, root)
+        if (is_project_script(candidate, root)
+                and not is_editor_asset_path(relative_path(candidate, root))):
+            source = source_path_for_entry(root, entry)
+            source_fingerprint(root, entry)
+            scripts.append((source, entry))
+    validate_loaded_preload_sources(source for source, _ in scripts)
+    sources = {}
+    reload_paths = [source for source, _ in scripts if not is_preload_python_library(source)]
+    if reload_paths:
+        manager = ResourcesManager.instance()
+        local = manager is None
+        if local:
+            engine = Application._current_engine()
+            handler = ResourceChangeHandler(engine._engine, project_path=root)
+        else:
+            manager._wait_for_startup_idle()
+            handler = manager._ensure_event_handler()
+        try:
+            sources = handler.publish_script_sources(reload_paths)
+            types = capture_runtime_type_records(root, [entry for _, entry in scripts], sources)
+            for _, entry in scripts:
+                source_fingerprint(root, entry)
+        finally:
+            if local:
+                handler.cleanup()
+    else:
+        types = capture_runtime_type_records(root, [entry for _, entry in scripts], sources)
+        for _, entry in scripts:
+            source_fingerprint(root, entry)
+    validate_loaded_preload_sources(source for source, _ in scripts)
+    return {"path": str(path), "entries": entries, "runtime_type_records": types}
 
 
 def publish_player_asset_catalog_for_host(project_root: str) -> dict[str, Any]:
@@ -104,4 +158,5 @@ def publish_player_asset_catalog_for_host(project_root: str) -> dict[str, Any]:
 __all__ = [
     "publish_player_asset_catalog",
     "publish_player_asset_catalog_for_host",
+    "capture_player_build_inputs",
 ]

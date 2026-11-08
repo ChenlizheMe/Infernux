@@ -22,11 +22,10 @@ namespace infernux
 class InxPythonScriptLoader : public IAssetLoader
 {
   public:
-    InxPythonScriptLoader();
+    InxPythonScriptLoader() = default;
 
     // -- IAssetLoader meta interface --
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InxResourceMeta &metaData) const override;
+    void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const override;
 
     // -- IAssetLoader runtime interface (no-op for scripts) --
     RuntimeAssetPayload Load(const std::string & /*filePath*/, const std::string & /*guid*/,

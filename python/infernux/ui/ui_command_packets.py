@@ -18,6 +18,8 @@ class _CommandGroup:
         self.custom = {index for index, element in enumerate(self.elements)
                        if not _can_retain_runtime_commands(element)}
         self.dirty = set(range(len(self.elements)))
+        self.opacities = [1.0] * len(self.elements)
+        self.opacity_dirty = self.dirty - self.custom
         self.layout_revision = None
         self.texture_cache = texture_cache
         self.textures = {}
@@ -28,7 +30,22 @@ class _CommandGroup:
             state['_ui_command_groups'].add(self)
 
     def invalidate(self, element):
-        self.dirty.add(self.indices[element])
+        index = self.indices[element]
+        self.dirty.add(index)
+        if index not in self.custom:
+            self.opacity_dirty.add(index)
+
+    def invalidate_alpha(self, element):
+        index = self.indices[element]
+        if index in self.custom:
+            self.dirty.add(index)
+        else:
+            self.opacity_dirty.add(index)
+
+    def update_opacities(self):
+        for index in self.opacity_dirty:
+            self.opacities[index] = self.elements[index].get_effective_group_state()[0]
+        self.opacity_dirty.clear()
 
     def capture(self, index, renderer, draw, args):
         # Consume this edit before drawing: edits made by the draw itself must
@@ -37,7 +54,10 @@ class _CommandGroup:
         renderer.begin_command_packet()
         self.texture_cache.begin_command_packet()
         try:
-            draw(self.elements[index], renderer, *args)
+            if index in self.custom:
+                draw(self.elements[index], renderer, *args)
+            else:
+                draw(self.elements[index], renderer, *args, defer_group_alpha=True)
             self.geometry[index] = renderer.end_command_packet()
         except BaseException:
             renderer.abort_command_packet()
@@ -55,6 +75,7 @@ class UICommandPackets:
         self.epoch = None
         self.groups = {}
         self.pending = []
+        self.pending_opacities = []
         self.font_epoch = None
         self.texture_cache = texture_cache
         self.texture_generation = None
@@ -62,6 +83,7 @@ class UICommandPackets:
 
     def prepare(self, epoch, *, font_epoch=None):
         self.pending.clear()
+        self.pending_opacities.clear()
         if font_epoch is not None:
             self.font_epoch = font_epoch
         if epoch != self.epoch:
@@ -102,7 +124,9 @@ class UICommandPackets:
             if not group.custom:
                 for index in sorted(group.dirty):
                     group.capture(index, renderer, draw, args)
+                group.update_opacities()
                 self.pending.extend(group.geometry)
+                self.pending_opacities.extend(group.opacities)
                 return
 
             # Custom draws keep their authored position and real renderer.
@@ -116,6 +140,7 @@ class UICommandPackets:
                     # here every submission; do not retain it as a clean draw.
                     group.capture(index, renderer, draw, args)
                     self.pending.append(group.geometry[index])
+                    self.pending_opacities.append(1.0)
                     # A custom draw may change any text's intrinsic size.
                     # Publish those sizes before the next sibling consumes
                     # layout, including text already drawn earlier this frame.
@@ -130,15 +155,19 @@ class UICommandPackets:
                 else:
                     if index in group.dirty:
                         group.capture(index, renderer, draw, args)
+                    group.update_opacities()
                     self.pending.append(group.geometry[index])
+                    self.pending_opacities.append(group.opacities[index])
         except BaseException:
             # Discard an incomplete publication; do not keep stale packets as
             # a fallback or retry the failed draw here.
             self.groups.clear()
             self.pending.clear()
+            self.pending_opacities.clear()
             raise
 
     def flush(self, renderer):
         if self.pending:
-            renderer.append_command_packets(self.pending)
+            renderer.append_command_packets(self.pending, self.pending_opacities)
             self.pending.clear()
+            self.pending_opacities.clear()

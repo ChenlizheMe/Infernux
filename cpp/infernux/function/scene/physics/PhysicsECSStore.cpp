@@ -9,11 +9,6 @@
  *   * Release*() always nulls the owner pointer first, then frees the slot;
  *     callers may safely observe a half-released entry (owner == nullptr,
  *     IsAlive == false).
- *   * Releasing a Rigidbody invalidates every PhysicsActorData::rigidbody
- *     pointer that references it.
- * Rigidbody::OnDisable() is the primary cleaner;
- *     ScrubCachedRigidbody() is the safety net for paths that bypass
- * it (editor undo/redo on inactive objects, scene rebuild order anomalies).
  *   * Deferred collider/actor handles include their pool generation; retiring
  *     one World must not discard another World's pending physics work.
  *     Body destruction cancels its own queued broadphase commands.
@@ -22,9 +17,15 @@
 
 #include "PhysicsECSStore.h"
 #include "../Collider.h"
+#include "../GameObject.h"
+#include "../Rigidbody.h"
+#include "../SceneManager.h"
+#include "../Transform.h"
+#include "PhysicsWorld.h"
 #include <core/config/EngineConfig.h>
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 namespace infernux
@@ -32,44 +33,11 @@ namespace infernux
 
 namespace
 {
-uint64_t ColliderHandleKey(PhysicsECSStore::ColliderHandle handle)
-{
-    return (static_cast<uint64_t>(handle.generation) << 32U) | handle.index;
-}
-
 uint64_t ActorHandleKey(PhysicsECSStore::ActorHandle handle)
 {
     return (static_cast<uint64_t>(handle.generation) << 32U) | handle.index;
 }
 
-template <typename HandleList>
-std::vector<PhysicsECSStore::ColliderHandle> CollapseToActorPrimary(HandleList &handles, const PhysicsECSStore &store)
-{
-    std::vector<PhysicsECSStore::ColliderHandle> result;
-    result.reserve(handles.size());
-    std::unordered_set<uint64_t> seenActors;
-    for (const auto handle : handles) {
-        if (!store.IsValid(handle))
-            continue;
-        const auto &colliderData = store.GetCollider(handle);
-        const auto actorHandle = colliderData.actorHandle;
-        if (!store.IsValid(actorHandle)) {
-            result.push_back(handle);
-            continue;
-        }
-        const auto &actor = store.GetActor(actorHandle);
-        Collider *primary = actor.primaryCollider;
-        if (!primary || !primary->IsEnabled())
-            primary = colliderData.owner;
-        if (!primary || !primary->IsEnabled())
-            continue;
-        if (!seenActors.insert(ActorHandleKey(actorHandle)).second)
-            continue;
-        if (primary && store.IsValid(primary->GetECSHandle()))
-            result.push_back(primary->GetECSHandle());
-    }
-    return result;
-}
 } // namespace
 
 PhysicsECSStore &PhysicsECSStore::Instance()
@@ -80,18 +48,14 @@ PhysicsECSStore &PhysicsECSStore::Instance()
     return *instance;
 }
 
-PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner, Collider *collider)
+PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner)
 {
-    if (!owner || !collider)
-        throw std::invalid_argument("Physics actor requires an owner and collider");
+    if (!owner)
+        throw std::invalid_argument("Physics actor requires an owner");
     auto existing = m_actorByOwner.find(owner);
     if (existing != m_actorByOwner.end()) {
         if (!m_actorPool.IsAlive(existing->second))
             throw std::logic_error("Physics actor owner map contains a stale handle");
-        auto &actor = m_actorPool.Get(existing->second);
-        ++actor.colliderCount;
-        if (!actor.primaryCollider || (!actor.primaryCollider->IsEnabled() && collider->IsEnabled()))
-            actor.primaryCollider = collider;
         return existing->second;
     }
 
@@ -99,8 +63,6 @@ PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner, Co
     auto &actor = m_actorPool.Get(handle);
     actor = PhysicsActorData{};
     actor.owner = owner;
-    actor.primaryCollider = collider->IsEnabled() ? collider : nullptr;
-    actor.colliderCount = 1;
     m_actorByOwner.emplace(owner, handle);
     return handle;
 }
@@ -110,18 +72,289 @@ void PhysicsECSStore::ReleaseActor(ActorHandle handle, Collider *collider)
     if (!m_actorPool.IsAlive(handle))
         return;
     auto &actor = m_actorPool.Get(handle);
-    if (actor.colliderCount == 0)
-        throw std::logic_error("Physics actor collider reference count underflow");
-    if (actor.primaryCollider == collider)
-        actor.primaryCollider = nullptr;
-    --actor.colliderCount;
-    if (actor.colliderCount != 0)
+    actor.colliders.erase(std::remove(actor.colliders.begin(), actor.colliders.end(), collider), actor.colliders.end());
+    if (actor.rigidbody || !actor.colliders.empty()) {
+        if (!actor.owner->IsDestroying())
+            RefreshActor(handle);
         return;
-    if (actor.bodyId != 0xFFFFFFFF)
-        throw std::logic_error("Physics actor released while its Jolt body is still alive");
+    }
+    RetireActor(handle);
+}
+
+void PhysicsECSStore::RetireActor(ActorHandle handle)
+{
+    auto &actor = m_actorPool.Get(handle);
+    if (actor.bodyId != 0xFFFFFFFF) {
+        const bool pendingAdd = CancelBroadphaseAdd(actor.bodyId);
+        const bool pendingRemove = CancelBroadphaseRemove(actor.bodyId);
+        auto &world = PhysicsWorld::Instance();
+        if (!pendingAdd && (actor.bodyInBroadphase || pendingRemove))
+            world.RemoveBodyFromBroadphase(actor.bodyId);
+        world.DestroyBody(actor.bodyId);
+    }
     m_actorByOwner.erase(actor.owner);
     actor = PhysicsActorData{};
     m_actorPool.Free(handle);
+}
+
+PhysicsECSStore::ActorHandle PhysicsECSStore::FindActor(const GameObject *owner) const
+{
+    const auto found = m_actorByOwner.find(const_cast<GameObject *>(owner));
+    return found == m_actorByOwner.end() ? ActorHandle{} : found->second;
+}
+
+void PhysicsECSStore::AttachRigidbody(Rigidbody *body)
+{
+    BindRigidbodyActor(body);
+    RefreshHierarchy(body->GetGameObject());
+}
+
+PhysicsECSStore::ActorHandle PhysicsECSStore::BindRigidbodyActor(Rigidbody *body)
+{
+    auto &data = GetRigidbody(body->GetECSHandle());
+    if (!IsValid(data.actorHandle))
+        data.actorHandle = AcquireActor(body->GetGameObject());
+    auto &actor = GetActor(data.actorHandle);
+    actor.rigidbody = body;
+    QueueBodyCreation(data.actorHandle);
+    MarkActorDirty(data.actorHandle);
+    return data.actorHandle;
+}
+
+Rigidbody *PhysicsECSStore::FindAttachedRigidbody(GameObject *object, const Rigidbody *excludedBody)
+{
+    for (auto *ancestor = object; ancestor; ancestor = ancestor->GetParent()) {
+        auto *body = ancestor->GetComponent<Rigidbody>();
+        if (body && body != excludedBody && !body->IsBeingDestroyed() && !body->IsDestroyed())
+            return body;
+    }
+    return nullptr;
+}
+
+void PhysicsECSStore::MigrateCollider(Collider *collider, const Rigidbody *excludedBody,
+                                      std::vector<ActorHandle> &changed)
+{
+    const auto colliderHandle = collider->GetECSHandle();
+    const auto previous = GetCollider(colliderHandle).actorHandle;
+    auto *body = FindAttachedRigidbody(collider->GetGameObject(), excludedBody);
+    const auto target = body ? BindRigidbodyActor(body) : AcquireActor(collider->GetGameObject());
+    if (target == previous)
+        return;
+    // Acquiring the target can grow the actor pool: re-read by handle below.
+    GetCollider(colliderHandle).actorHandle = target;
+    GetActor(target).colliders.push_back(collider);
+    changed.push_back(target);
+    if (IsValid(previous)) {
+        auto &old = GetActor(previous);
+        old.colliders.erase(std::remove(old.colliders.begin(), old.colliders.end(), collider), old.colliders.end());
+        if (!old.rigidbody && old.colliders.empty())
+            RetireActor(previous);
+        else
+            changed.push_back(previous);
+    }
+}
+
+void PhysicsECSStore::PublishChangedActors(std::vector<ActorHandle> &changed)
+{
+    std::unordered_set<uint64_t> published;
+    for (const auto handle : changed)
+        if (published.insert(ActorHandleKey(handle)).second)
+            RefreshActor(handle);
+}
+
+void PhysicsECSStore::AttachCollider(Collider *collider)
+{
+    std::vector<ActorHandle> changed;
+    MigrateCollider(collider, nullptr, changed);
+    PublishChangedActors(changed);
+}
+
+void PhysicsECSStore::RefreshHierarchy(GameObject *root, const Rigidbody *excludedBody)
+{
+    std::vector<ActorHandle> changed;
+    const auto visit = [&](auto &&self, GameObject *object) -> void {
+        if (object->IsDestroying())
+            return;
+        if (object != root) {
+            auto *body = object->GetComponent<Rigidbody>();
+            if (body && body != excludedBody && !body->IsBeingDestroyed())
+                return; // A nested Rigidbody owns its own subtree.
+        }
+        for (const auto &component : object->GetAllComponents()) {
+            auto *collider = dynamic_cast<Collider *>(component.get());
+            if (collider && !collider->IsBeingDestroyed())
+                MigrateCollider(collider, excludedBody, changed);
+        }
+        for (size_t index = 0; index < object->GetChildCount(); ++index)
+            self(self, object->GetChild(index));
+    };
+    visit(visit, root);
+    PublishChangedActors(changed);
+}
+
+void PhysicsECSStore::DetachRigidbody(Rigidbody *body)
+{
+    auto &data = GetRigidbody(body->GetECSHandle());
+    const auto handle = data.actorHandle;
+    data.actorHandle = {};
+    if (!IsValid(handle))
+        return;
+    auto &actor = GetActor(handle);
+    actor.rigidbody = nullptr;
+    if (actor.bodyId != 0xFFFFFFFF)
+        PhysicsWorld::Instance().DestroyConstraintsForBody(actor.bodyId);
+    if (actor.owner->IsDestroying()) {
+        for (auto *collider : actor.colliders)
+            GetCollider(collider->GetECSHandle()).actorHandle = {};
+        RetireActor(handle);
+    } else {
+        RefreshHierarchy(body->GetGameObject(), body);
+        if (IsValid(handle)) {
+            if (GetActor(handle).colliders.empty())
+                RetireActor(handle);
+            else
+                RefreshActor(handle);
+        }
+    }
+}
+
+void PhysicsECSStore::RegisterActor(ActorHandle handle)
+{
+    if (!IsValid(handle))
+        return;
+    auto &actor = GetActor(handle);
+    auto &world = PhysicsWorld::Instance();
+    if (!world.IsInitialized() || actor.sceneSuspended ||
+        !SceneManager::Instance().IsRuntimeScene(actor.owner->GetScene()))
+        return;
+    actor.primaryCollider = nullptr;
+    for (auto *collider : actor.colliders) {
+        if (collider->IsEnabled() && !collider->IsBeingDestroyed() &&
+            collider->GetGameObject()->IsActiveInHierarchy()) {
+            actor.primaryCollider = collider;
+            break;
+        }
+    }
+    const bool dynamicOwner = actor.rigidbody && actor.rigidbody->IsEnabled();
+    const bool active = actor.owner->IsActiveInHierarchy() && (dynamicOwner || actor.primaryCollider);
+    if (actor.bodyId == 0xFFFFFFFF) {
+        if (!active)
+            return;
+        actor.bodyId = world.CreateBody(actor);
+        if (actor.bodyId == 0xFFFFFFFF)
+            return; // A mesh member is still being cooked.
+        auto *transform = actor.owner->GetTransform();
+        actor.lastSyncedPos = transform->GetPosition();
+        actor.lastSyncedRot = transform->GetWorldRotation();
+        actor.lastScale = transform->GetWorldScale();
+    } else {
+        world.UpdateBodyShape(actor);
+    }
+    world.SetBodyMotionType(actor.bodyId, dynamicOwner ? (actor.rigidbody->IsKinematic() ? 1 : 2) : 0);
+    if (dynamicOwner)
+        actor.rigidbody->ApplyConfigurationToBody(actor.bodyId);
+    if (active) {
+        if (CancelBroadphaseRemove(actor.bodyId))
+            actor.bodyInBroadphase = true;
+        if (!actor.bodyInBroadphase) {
+            QueueBroadphaseAdd(actor.bodyId);
+            actor.bodyInBroadphase = true;
+        }
+    } else if (actor.bodyInBroadphase) {
+        world.DestroyConstraintsForBody(actor.bodyId);
+        if (!CancelBroadphaseAdd(actor.bodyId))
+            QueueBroadphaseRemove(actor.bodyId);
+        actor.bodyInBroadphase = false;
+    }
+    NotifyCollisionSceneChanged();
+}
+
+void PhysicsECSStore::RefreshActor(ActorHandle handle)
+{
+    if (!IsValid(handle))
+        return;
+    if (GetActor(handle).bodyId == 0xFFFFFFFF)
+        QueueBodyCreation(handle);
+    else
+        RegisterActor(handle);
+}
+
+void PhysicsECSStore::SuspendActor(ActorHandle handle)
+{
+    auto &actor = GetActor(handle);
+    actor.sceneSuspended = true;
+    if (actor.bodyInBroadphase) {
+        PhysicsWorld::Instance().RemoveBodyFromBroadphase(actor.bodyId, true);
+        actor.bodyInBroadphase = false;
+    }
+}
+
+void PhysicsECSStore::RestoreActor(ActorHandle handle)
+{
+    auto &actor = GetActor(handle);
+    actor.sceneSuspended = false;
+    if (actor.bodyId != 0xFFFFFFFF && actor.owner->IsActiveInHierarchy() &&
+        ((actor.rigidbody && actor.rigidbody->IsEnabled()) || actor.primaryCollider)) {
+        QueueBroadphaseAdd(actor.bodyId);
+        actor.bodyInBroadphase = true;
+    }
+}
+
+void PhysicsECSStore::SyncActorTransform(ActorHandle handle, float fixedDeltaTime,
+                                         std::vector<PhysicsBodyPoseUpdate> *staticPoseBatch)
+{
+    auto &actor = GetActor(handle);
+    if (actor.bodyId == 0xFFFFFFFF || actor.sceneSuspended)
+        return;
+    auto *transform = actor.owner->GetTransform();
+    const auto scale = transform->GetWorldScale();
+    bool centerChanged = false;
+    if (actor.centerTransformDirty) {
+        actor.centerTransformDirty = false;
+        for (auto *collider : actor.colliders) {
+            if (collider->GetGameObject() != actor.owner || !collider->IsEnabled() ||
+                collider->GetCenter() == glm::vec3(0.0f))
+                continue;
+            const auto center = collider->GetCenterInRigidSpace();
+            const auto published = GetCollider(collider->GetECSHandle()).publishedRigidCenter;
+            // Only suppress roundoff from the world-matrix/quaternion conversion;
+            // this scales with the offset rather than imposing a physical distance.
+            const float tolerance =
+                32 * std::numeric_limits<float>::epsilon() * std::max(glm::length(center), glm::length(published));
+            if (glm::length(center - published) > tolerance) {
+                centerChanged = true;
+                break;
+            }
+        }
+    }
+    if (actor.shapeTransformDirty || scale != actor.lastScale || centerChanged) {
+        actor.shapeTransformDirty = false;
+        actor.lastScale = scale;
+        PhysicsWorld::Instance().UpdateBodyShape(actor);
+    }
+    if (actor.rigidbody && actor.rigidbody->IsEnabled()) {
+        actor.rigidbody->SyncExternalMovesToPhysics(fixedDeltaTime);
+        return;
+    }
+    const auto position = transform->GetPosition();
+    const auto rotation = transform->GetWorldRotation();
+    if (position == actor.lastSyncedPos && rotation == actor.lastSyncedRot)
+        return;
+    actor.lastSyncedPos = position;
+    actor.lastSyncedRot = rotation;
+    ++actor.transformRevision;
+    auto &world = PhysicsWorld::Instance();
+    const bool hasRigidbodies = GetAliveRigidbodyCount() > 0;
+    if (fixedDeltaTime > 0.0f && hasRigidbodies) {
+        world.MoveStaticBodyWithVelocity(actor.bodyId, position, rotation, fixedDeltaTime);
+    } else {
+        if (staticPoseBatch)
+            staticPoseBatch->push_back({actor.bodyId, position, rotation});
+        else
+            world.SetBodyPosition(actor.bodyId, position, rotation);
+        if (hasRigidbodies)
+            world.WakeBodiesTouchingStatic(actor.bodyId);
+    }
 }
 
 bool PhysicsECSStore::IsValid(ActorHandle handle) const
@@ -196,26 +429,12 @@ PhysicsECSStore::RigidbodyHandle PhysicsECSStore::AllocateRigidbody(Rigidbody *o
     return handle;
 }
 
-void PhysicsECSStore::ScrubCachedRigidbody(Rigidbody *dying)
-{
-    if (!dying)
-        return;
-    m_actorPool.ForEachAlive([dying](PhysicsActorData &actor) {
-        if (actor.rigidbody == dying)
-            actor.rigidbody = nullptr;
-    });
-}
-
 void PhysicsECSStore::ReleaseRigidbody(RigidbodyHandle handle)
 {
     if (!m_rigidbodyPool.IsAlive(handle))
         return;
 
-    // Safety net: see ScrubCachedRigidbody. Rigidbody::OnDisable() is the
-    // primary cleaner, but editor undo/redo on inactive components and other
-    // bypass paths reach Release without going through OnDisable; without this
-    // scrub, sibling colliders would dereference a freed Rigidbody.
-    ScrubCachedRigidbody(m_rigidbodyPool.Get(handle).owner);
+    DetachRigidbody(m_rigidbodyPool.Get(handle).owner);
 
     m_rigidbodyPool.Get(handle).owner = nullptr;
     m_rigidbodyPool.Free(handle);
@@ -245,8 +464,12 @@ void PhysicsECSStore::MarkColliderDirty(ColliderHandle handle)
     if (!m_colliderPool.IsAlive(handle))
         return;
     NotifyCollisionSceneChanged();
-    const ActorHandle actorHandle = m_colliderPool.Get(handle).actorHandle;
-    if (!m_actorPool.IsAlive(actorHandle))
+    MarkActorDirty(m_colliderPool.Get(handle).actorHandle);
+}
+
+void PhysicsECSStore::MarkActorDirty(ActorHandle actorHandle)
+{
+    if (!IsValid(actorHandle))
         return;
     auto &actor = m_actorPool.Get(actorHandle);
     if (actor.transformDirtyQueued)
@@ -255,36 +478,56 @@ void PhysicsECSStore::MarkColliderDirty(ColliderHandle handle)
     m_dirtyActorList.push_back(actorHandle);
 }
 
-void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner)
+void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource)
 {
     if (!owner)
         return;
     const auto found = m_actorByOwner.find(owner);
-    if (found == m_actorByOwner.end() || !m_actorPool.IsAlive(found->second))
+    if (found != m_actorByOwner.end()) {
+        if (!physicsSource || physicsSource->GetGameObject() != owner) {
+            if (!physicsSource)
+                GetActor(found->second).centerTransformDirty = true;
+            NotifyCollisionSceneChanged();
+            MarkActorDirty(found->second);
+        }
         return;
-    NotifyCollisionSceneChanged();
-    auto &actor = m_actorPool.Get(found->second);
-    if (actor.transformDirtyQueued)
-        return;
-    actor.transformDirtyQueued = true;
-    m_dirtyActorList.push_back(found->second);
+    }
+    // All colliders on this object have the same actor. Walk the existing
+    // component storage once; never allocate a child search in a frame loop.
+    for (const auto &component : owner->GetAllComponents()) {
+        auto *collider = dynamic_cast<Collider *>(component.get());
+        if (!collider)
+            continue;
+        const auto handle = GetCollider(collider->GetECSHandle()).actorHandle;
+        if (IsValid(handle) && !physicsSource) {
+            GetActor(handle).shapeTransformDirty = true;
+            NotifyCollisionSceneChanged();
+            MarkActorDirty(handle);
+        }
+        break;
+    }
 }
 
-const std::vector<PhysicsECSStore::ColliderHandle> &PhysicsECSStore::ConsumeDirtyColliders()
+void PhysicsECSStore::MarkAuthoredHierarchyDirty(GameObject *root)
 {
-    m_dirtyColliderScratch.clear();
-    m_dirtyColliderScratch.reserve(m_dirtyActorList.size());
+    MarkGameObjectDirty(root);
+    for (size_t index = 0; index < root->GetChildCount(); ++index)
+        MarkAuthoredHierarchyDirty(root->GetChild(index));
+}
+
+const std::vector<PhysicsECSStore::ActorHandle> &PhysicsECSStore::ConsumeDirtyActors()
+{
+    m_dirtyActorScratch.clear();
+    m_dirtyActorScratch.reserve(m_dirtyActorList.size());
     for (const ActorHandle actorHandle : m_dirtyActorList) {
         if (!m_actorPool.IsAlive(actorHandle))
             continue;
         auto &actor = m_actorPool.Get(actorHandle);
         actor.transformDirtyQueued = false;
-        Collider *primary = actor.primaryCollider;
-        if (primary && primary->IsEnabled() && m_colliderPool.IsAlive(primary->GetECSHandle()))
-            m_dirtyColliderScratch.push_back(primary->GetECSHandle());
+        m_dirtyActorScratch.push_back(actorHandle);
     }
     m_dirtyActorList.clear();
-    return m_dirtyColliderScratch;
+    return m_dirtyActorScratch;
 }
 
 void PhysicsECSStore::NotifyCollisionSceneChanged() noexcept
@@ -292,6 +535,11 @@ void PhysicsECSStore::NotifyCollisionSceneChanged() noexcept
     ++m_collisionSceneRevision;
     if (m_collisionSceneRevision == 0)
         ++m_collisionSceneRevision;
+}
+
+uint64_t PhysicsECSStore::GetCollisionSceneRevision() const noexcept
+{
+    return m_collisionSceneRevision + PhysicMaterial::GetSurfaceRevision();
 }
 
 void PhysicsECSStore::MarkAllCollidersDirty()
@@ -307,8 +555,6 @@ void PhysicsECSStore::MarkAllCollidersDirty()
     m_dirtyActorList.reserve(actors.size());
     for (const ActorHandle actorHandle : actors) {
         auto &actor = m_actorPool.Get(actorHandle);
-        if (!actor.primaryCollider || !actor.primaryCollider->IsEnabled())
-            continue;
         actor.transformDirtyQueued = true;
         m_dirtyActorList.push_back(actorHandle);
     }
@@ -318,20 +564,23 @@ void PhysicsECSStore::MarkAllCollidersDirty()
 // Pending body creation queue
 // ============================================================================
 
-void PhysicsECSStore::QueueBodyCreation(ColliderHandle handle)
+void PhysicsECSStore::QueueBodyCreation(ActorHandle handle)
 {
-    if (m_colliderPool.IsAlive(handle)) {
-        if (m_pendingBodyCreationSet.insert(ColliderHandleKey(handle)).second)
+    if (IsValid(handle)) {
+        if (m_pendingBodyCreationSet.insert(ActorHandleKey(handle)).second)
             m_pendingBodyCreationList.push_back(handle);
     }
 }
 
-std::vector<PhysicsECSStore::ColliderHandle> PhysicsECSStore::ConsumePendingBodyCreations()
+std::vector<PhysicsECSStore::ActorHandle> PhysicsECSStore::ConsumePendingBodyCreations()
 {
-    std::vector<ColliderHandle> pending;
+    std::vector<ActorHandle> pending;
     pending.swap(m_pendingBodyCreationList);
     m_pendingBodyCreationSet.clear();
-    return CollapseToActorPrimary(pending, *this);
+    pending.erase(
+        std::remove_if(pending.begin(), pending.end(), [this](ActorHandle handle) { return !IsValid(handle); }),
+        pending.end());
+    return pending;
 }
 
 // ============================================================================

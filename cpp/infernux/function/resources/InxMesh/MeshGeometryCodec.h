@@ -1,15 +1,14 @@
 #pragma once
 
+#include <core/serialization/BinaryCodec.h>
 #include <function/resources/InxMesh/InxMesh.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace infernux
@@ -39,40 +38,7 @@ inline Precision GetPrecision(MeshCompression compression)
     }
 }
 
-inline void AppendU32(std::string &out, uint32_t value)
-{
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        out.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
-
-inline uint32_t ReadU32(std::string_view bytes, size_t &cursor)
-{
-    if (cursor > bytes.size() || sizeof(uint32_t) > bytes.size() - cursor)
-        throw std::invalid_argument("compressed mesh vertex stream is truncated");
-    uint32_t value = 0;
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        value |= static_cast<uint32_t>(static_cast<unsigned char>(bytes[cursor++])) << shift;
-    return value;
-}
-
-inline void AppendFloat(std::string &out, float value)
-{
-    if (!std::isfinite(value))
-        throw std::invalid_argument("mesh compression requires finite vertex data");
-    uint32_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    AppendU32(out, bits);
-}
-
-inline float ReadFloat(std::string_view bytes, size_t &cursor)
-{
-    const uint32_t bits = ReadU32(bytes, cursor);
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    if (!std::isfinite(value))
-        throw std::invalid_argument("compressed mesh vertex stream contains a non-finite range");
-    return value;
-}
+using binary_codec::AppendFloat;
 
 class BitWriter final
 {
@@ -99,29 +65,32 @@ class BitWriter final
     uint32_t m_bit = 0;
 };
 
-class BitReader final
+template <typename Reader> class BitReader final
 {
   public:
-    explicit BitReader(std::string_view bytes) : m_bytes(bytes)
+    BitReader(Reader &input, size_t end) : m_input(input), m_end(end)
     {
     }
+
     uint32_t Read(uint32_t bits)
     {
-        if (bits == 0 || bits > 32 || m_cursor > m_bytes.size() * 8ULL || bits > m_bytes.size() * 8ULL - m_cursor)
-            throw std::invalid_argument("compressed mesh vertex bitstream is truncated");
-        uint32_t value = 0;
-        for (uint32_t bit = 0; bit < bits; ++bit, ++m_cursor)
-            value |= ((static_cast<unsigned char>(m_bytes[m_cursor / 8U]) >> (m_cursor & 7U)) & 1U) << bit;
+        while (m_bits < bits) {
+            if (m_input.Cursor() == m_end)
+                throw std::invalid_argument("compressed mesh vertex bitstream is truncated");
+            m_pending |= static_cast<uint64_t>(m_input.template ReadUnsigned<uint8_t>()) << m_bits;
+            m_bits += 8;
+        }
+        const auto value = static_cast<uint32_t>(m_pending & ((uint64_t{1} << bits) - 1));
+        m_pending >>= bits;
+        m_bits -= bits;
         return value;
-    }
-    [[nodiscard]] size_t ConsumedBytes() const noexcept
-    {
-        return (m_cursor + 7U) / 8U;
     }
 
   private:
-    std::string_view m_bytes;
-    size_t m_cursor = 0;
+    Reader &m_input;
+    size_t m_end;
+    uint64_t m_pending = 0;
+    uint32_t m_bits = 0;
 };
 
 inline uint32_t Quantize(float value, float minimum, float maximum, uint32_t bits)
@@ -202,7 +171,7 @@ struct Ranges
     glm::vec2 uv1Max{std::numeric_limits<float>::lowest()};
 };
 
-inline std::string Encode(const std::vector<Vertex> &vertices, MeshCompression compression, bool secondaryUv = false)
+inline std::string Encode(const std::vector<Vertex> &vertices, MeshCompression compression)
 {
     if (compression == MeshCompression::Off)
         throw std::invalid_argument("uncompressed vertices do not use the quantized codec");
@@ -253,11 +222,10 @@ inline std::string Encode(const std::vector<Vertex> &vertices, MeshCompression c
         AppendFloat(output, ranges.uvMin[i]);
         AppendFloat(output, ranges.uvMax[i]);
     }
-    if (secondaryUv)
-        for (glm::length_t i = 0; i < 2; ++i) {
-            AppendFloat(output, ranges.uv1Min[i]);
-            AppendFloat(output, ranges.uv1Max[i]);
-        }
+    for (glm::length_t i = 0; i < 2; ++i) {
+        AppendFloat(output, ranges.uv1Min[i]);
+        AppendFloat(output, ranges.uv1Max[i]);
+    }
     BitWriter writer;
     for (const auto &vertex : vertices) {
         for (glm::length_t i = 0; i < 3; ++i)
@@ -281,10 +249,8 @@ inline std::string Encode(const std::vector<Vertex> &vertices, MeshCompression c
                          precision.color);
         for (glm::length_t i = 0; i < 2; ++i)
             writer.Write(Quantize(vertex.texCoord[i], ranges.uvMin[i], ranges.uvMax[i], precision.uv), precision.uv);
-        if (secondaryUv)
-            for (glm::length_t i = 0; i < 2; ++i)
-                writer.Write(Quantize(vertex.texCoord1[i], ranges.uv1Min[i], ranges.uv1Max[i], precision.uv),
-                             precision.uv);
+        for (glm::length_t i = 0; i < 2; ++i)
+            writer.Write(Quantize(vertex.texCoord1[i], ranges.uv1Min[i], ranges.uv1Max[i], precision.uv), precision.uv);
         for (glm::length_t i = 0; i < 4; ++i)
             writer.Write(vertex.boneIndices[i], 32);
         for (glm::length_t i = 0; i < 4; ++i)
@@ -294,31 +260,31 @@ inline std::string Encode(const std::vector<Vertex> &vertices, MeshCompression c
     return output;
 }
 
-inline std::vector<Vertex> Decode(std::string_view bytes, size_t vertexCount, MeshCompression compression,
-                                  bool secondaryUv = false)
+template <typename Reader>
+std::vector<Vertex> Decode(Reader &input, size_t bytes, size_t vertexCount, MeshCompression compression)
 {
-    if (compression == MeshCompression::Off)
-        throw std::invalid_argument("uncompressed vertices do not use the quantized codec");
     const Precision precision = GetPrecision(compression);
-    size_t cursor = 0;
+    input.Require(bytes);
+    const size_t end = input.Cursor() + bytes;
+    if (bytes < 20 * sizeof(float))
+        throw std::invalid_argument("compressed mesh vertex ranges are truncated");
     Ranges ranges;
     for (glm::length_t i = 0; i < 3; ++i) {
-        ranges.positionMin[i] = ReadFloat(bytes, cursor);
-        ranges.positionMax[i] = ReadFloat(bytes, cursor);
+        ranges.positionMin[i] = input.ReadFloat();
+        ranges.positionMax[i] = input.ReadFloat();
     }
     for (glm::length_t i = 0; i < 3; ++i) {
-        ranges.colorMin[i] = ReadFloat(bytes, cursor);
-        ranges.colorMax[i] = ReadFloat(bytes, cursor);
+        ranges.colorMin[i] = input.ReadFloat();
+        ranges.colorMax[i] = input.ReadFloat();
     }
     for (glm::length_t i = 0; i < 2; ++i) {
-        ranges.uvMin[i] = ReadFloat(bytes, cursor);
-        ranges.uvMax[i] = ReadFloat(bytes, cursor);
+        ranges.uvMin[i] = input.ReadFloat();
+        ranges.uvMax[i] = input.ReadFloat();
     }
-    if (secondaryUv)
-        for (glm::length_t i = 0; i < 2; ++i) {
-            ranges.uv1Min[i] = ReadFloat(bytes, cursor);
-            ranges.uv1Max[i] = ReadFloat(bytes, cursor);
-        }
+    for (glm::length_t i = 0; i < 2; ++i) {
+        ranges.uv1Min[i] = input.ReadFloat();
+        ranges.uv1Max[i] = input.ReadFloat();
+    }
     for (glm::length_t i = 0; i < 3; ++i) {
         if (ranges.positionMax[i] < ranges.positionMin[i] || ranges.colorMax[i] < ranges.colorMin[i])
             throw std::invalid_argument("compressed mesh vertex stream contains a reversed channel range");
@@ -326,15 +292,15 @@ inline std::vector<Vertex> Decode(std::string_view bytes, size_t vertexCount, Me
     for (glm::length_t i = 0; i < 2; ++i) {
         if (ranges.uvMax[i] < ranges.uvMin[i])
             throw std::invalid_argument("compressed mesh vertex stream contains a reversed channel range");
-        if (secondaryUv && ranges.uv1Max[i] < ranges.uv1Min[i])
+        if (ranges.uv1Max[i] < ranges.uv1Min[i])
             throw std::invalid_argument("compressed mesh vertex stream contains a reversed secondary UV range");
     }
-    const size_t minimumVertexBits = 3 * precision.position + 2 + 3 * precision.color +
-                                     (secondaryUv ? 4 : 2) * precision.uv + 4 * 32 + 4 * precision.weight;
-    const uint64_t availableBits = static_cast<uint64_t>(bytes.size() - cursor) * 8;
+    const size_t minimumVertexBits =
+        3 * precision.position + 2 + 3 * precision.color + 4 * precision.uv + 4 * 32 + 4 * precision.weight;
+    const uint64_t availableBits = static_cast<uint64_t>(end - input.Cursor()) * 8;
     if (vertexCount > availableBits / minimumVertexBits)
         throw std::invalid_argument("compressed mesh vertex count exceeds the encoded stream");
-    BitReader reader(bytes.substr(cursor));
+    BitReader reader(input, end);
     std::vector<Vertex> vertices(vertexCount);
     for (auto &vertex : vertices) {
         for (glm::length_t i = 0; i < 3; ++i)
@@ -363,10 +329,9 @@ inline std::vector<Vertex> Decode(std::string_view bytes, size_t vertexCount, Me
                 Dequantize(reader.Read(precision.color), ranges.colorMin[i], ranges.colorMax[i], precision.color);
         for (glm::length_t i = 0; i < 2; ++i)
             vertex.texCoord[i] = Dequantize(reader.Read(precision.uv), ranges.uvMin[i], ranges.uvMax[i], precision.uv);
-        if (secondaryUv)
-            for (glm::length_t i = 0; i < 2; ++i)
-                vertex.texCoord1[i] =
-                    Dequantize(reader.Read(precision.uv), ranges.uv1Min[i], ranges.uv1Max[i], precision.uv);
+        for (glm::length_t i = 0; i < 2; ++i)
+            vertex.texCoord1[i] =
+                Dequantize(reader.Read(precision.uv), ranges.uv1Min[i], ranges.uv1Max[i], precision.uv);
         for (glm::length_t i = 0; i < 4; ++i)
             vertex.boneIndices[i] = reader.Read(32);
         for (glm::length_t i = 0; i < 4; ++i)
@@ -375,8 +340,32 @@ inline std::vector<Vertex> Decode(std::string_view bytes, size_t vertexCount, Me
             !IsFinite(vertex.texCoord1) || !IsFinite(vertex.boneWeights))
             throw std::invalid_argument("compressed mesh vertex stream decoded non-finite vertex data");
     }
-    if (cursor + reader.ConsumedBytes() != bytes.size())
+    if (input.Cursor() != end)
         throw std::invalid_argument("compressed mesh vertex stream contains trailing data");
+    return vertices;
+}
+
+template <typename Reader>
+std::vector<Vertex> ReadVertices(Reader &input, uint32_t count, MeshCompression compression, uint32_t maximumEncoded)
+{
+    if (compression != MeshCompression::Off) {
+        const auto encoded = input.ReadCount(maximumEncoded);
+        return Decode(input, encoded, count, compression);
+    }
+
+    input.Require(static_cast<size_t>(count) * 100u);
+    std::vector<Vertex> vertices(count);
+    for (Vertex &vertex : vertices) {
+        vertex.pos = {input.ReadFloat(), input.ReadFloat(), input.ReadFloat()};
+        vertex.normal = {input.ReadFloat(), input.ReadFloat(), input.ReadFloat()};
+        vertex.tangent = {input.ReadFloat(), input.ReadFloat(), input.ReadFloat(), input.ReadFloat()};
+        vertex.color = {input.ReadFloat(), input.ReadFloat(), input.ReadFloat()};
+        vertex.texCoord = {input.ReadFloat(), input.ReadFloat()};
+        vertex.texCoord1 = {input.ReadFloat(), input.ReadFloat()};
+        for (glm::length_t component = 0; component < vertex.boneIndices.length(); ++component)
+            vertex.boneIndices[component] = input.ReadU32();
+        vertex.boneWeights = {input.ReadFloat(), input.ReadFloat(), input.ReadFloat(), input.ReadFloat()};
+    }
     return vertices;
 }
 } // namespace mesh_geometry_codec

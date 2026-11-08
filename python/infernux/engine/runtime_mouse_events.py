@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from weakref import ref
+
 from infernux.physics import Physics
 from infernux.input import Input
 from infernux.engine.runtime_dispatch import current_runtime_epoch
 
 
 _UNSET_HIT = object()
+_MOUSE_CALLBACKS = (
+    "on_mouse_enter", "on_mouse_over", "on_mouse_exit", "on_mouse_down",
+    "on_mouse_drag", "on_mouse_up", "on_mouse_up_as_button",
+)
 
 
 class MouseEventDispatcher:
@@ -17,6 +23,21 @@ class MouseEventDispatcher:
         self._hover_object = None
         self._pressed_object = None
         self._reset_revision = 0
+        self._receiver_epoch = None
+        self._has_receivers = False
+
+    def needs_scene_hit(self) -> bool:
+        """Skip the physics pick when the published scripts have no mouse hooks."""
+        epoch = current_runtime_epoch()
+        if self._receiver_epoch is None or self._receiver_epoch() is not epoch:
+            self._receiver_epoch = ref(epoch)
+            self._has_receivers = any(
+                (method := descriptor.methods.get(name)) is not None
+                and not getattr(method.raw, "__infernux_default_lifecycle__", False)
+                for descriptor in epoch.descriptors.values()
+                for name in _MOUSE_CALLBACKS
+            )
+        return self._has_receivers
 
     @staticmethod
     def _same_object(a, b) -> bool:

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
+#include <glm/glm.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -19,14 +19,14 @@ class SkinPoseHistory
 
     struct Snapshot
     {
-        std::shared_ptr<const EvaluatedSkinPose> evaluated;
         PalettePtr current;
         PalettePtr previous;
         uint64_t revision = 0;
+        uint64_t continuity = 0;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return evaluated && current && previous && !current->empty() && current->size() == previous->size();
+            return current && previous && !current->empty() && current->size() == previous->size();
         }
     };
 
@@ -36,22 +36,21 @@ class SkinPoseHistory
     {
     }
 
-    void Publish(std::shared_ptr<const EvaluatedSkinPose> pose, bool resetHistory)
+    void Publish(PalettePtr pose, bool resetHistory)
     {
-        if (!pose || pose->palette.empty()) {
+        if (!pose || pose->empty()) {
             Reset();
             return;
         }
 
         const SnapshotPtr published = Acquire();
         auto next = std::make_shared<Snapshot>();
-        next->current = PalettePtr(pose, &pose->palette);
-        next->evaluated = std::move(pose);
-        next->previous =
-            resetHistory || !published || !published->current || published->current->size() != next->current->size()
-                ? next->current
-                : published->previous;
+        next->current = std::move(pose);
         next->revision = m_nextRevision.fetch_add(1, std::memory_order_relaxed);
+        const bool continuous =
+            !resetHistory && published->IsValid() && published->current->size() == next->current->size();
+        next->previous = continuous ? published->previous : next->current;
+        next->continuity = continuous ? published->continuity : next->revision;
         std::atomic_store_explicit(&m_snapshot, std::const_pointer_cast<const Snapshot>(next),
                                    std::memory_order_release);
     }
@@ -64,10 +63,10 @@ class SkinPoseHistory
         if (!published || !published->IsValid() || published->previous == published->current)
             return false;
         auto next = std::make_shared<Snapshot>();
-        next->evaluated = published->evaluated;
         next->current = published->current;
         next->previous = published->current;
         next->revision = m_nextRevision.fetch_add(1, std::memory_order_relaxed);
+        next->continuity = published->continuity;
         std::atomic_store_explicit(&m_snapshot, std::const_pointer_cast<const Snapshot>(next),
                                    std::memory_order_release);
         return true;

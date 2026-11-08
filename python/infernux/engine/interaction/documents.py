@@ -1274,6 +1274,16 @@ class DocumentRegistry:
                         "DocumentRegistry.unregister.capture_restore_state",
                         exc,
                     )
+        ticket_id = self._active_save_by_document.pop(document.document_id, None)
+        if ticket_id:
+            ticket = self._save_tickets.get(ticket_id)
+            if ticket is not None and ticket.is_pending:
+                ticket.status = SaveTicketStatus.CANCELLED
+                ticket.message = "document was closed"
+        for view_id in tuple(document.view_ids):
+            self._view_documents.pop(view_id, None)
+        document.view_ids.clear()
+        document.state = DocumentState.CLOSED
         self._documents.pop(identifier)
         self._deferred_save_requests.pop(document.document_id, None)
         self._pending_external_reloads.discard(document.document_id)
@@ -1308,16 +1318,6 @@ class DocumentRegistry:
         self._dormant_documents_by_stable_id[document.stable_id] = (
             _DormantDocumentRecord(document, restore_state)
         )
-        ticket_id = self._active_save_by_document.pop(document.document_id, None)
-        if ticket_id:
-            ticket = self._save_tickets.get(ticket_id)
-            if ticket is not None and ticket.is_pending:
-                ticket.status = SaveTicketStatus.CANCELLED
-                ticket.message = "document was closed"
-        for view_id in tuple(document.view_ids):
-            self._view_documents.pop(view_id, None)
-        document.view_ids.clear()
-        document.state = DocumentState.CLOSED
         self._touch()
         return True
 

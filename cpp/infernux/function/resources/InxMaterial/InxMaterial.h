@@ -28,6 +28,7 @@ namespace infernux
 
 // Forward declarations
 class MeshRenderer;
+class AssetDependencyGraph;
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 class ShaderProgram;
 struct MaterialUBOLayout;
@@ -301,6 +302,9 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_filePath = path;
     }
 
+    /// Bind at runtime publication, never while preparing a private candidate.
+    void BindDependencyGraph(std::shared_ptr<AssetDependencyGraph> graph);
+
     // ========================================================================
     // Deleted flag — set when the backing .mat file is removed from disk.
     // A deleted material should not be rendered or saved.
@@ -358,6 +362,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
+        PublishDependencies();
     }
 
     /// @brief Set vertex shader name independently.
@@ -373,6 +378,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
+        PublishDependencies();
     }
 
     /// @brief Set fragment shader name independently.
@@ -388,6 +394,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
+        PublishDependencies();
     }
 
     void SetVertShaderReference(ShaderAssetReference reference)
@@ -402,6 +409,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
+        PublishDependencies();
     }
 
     void SetFragShaderReference(ShaderAssetReference reference)
@@ -416,6 +424,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
+        PublishDependencies();
     }
 
     /// @brief Get the fragment shader name (primary identity for render meta).
@@ -810,6 +819,9 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     /// GPU-transient state (pipelines, UBO) is NOT copied — lazily recreated.
     /// The clone has no GUID and no file path (runtime-only instance).
     [[nodiscard]] std::shared_ptr<InxMaterial> Clone() const;
+    /// Renderer-owned copies keep inheriting asset publications for fields
+    /// the instance has not authored locally.
+    [[nodiscard]] std::shared_ptr<InxMaterial> CloneRendererInstance() const;
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
 
     void SetGuid(const std::string &guid)
@@ -820,8 +832,10 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
   private:
     static uint64_t AllocateRuntimeId() noexcept;
     void TrackRuntimeShaderReferences();
+    void PublishDependencies();
     bool ApplyDocument(const nlohmann::json &document);
-    void PublishDocument(InxMaterial &&staged);
+    void PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers = false);
+    void RebaseRendererInstance(const InxMaterial &previous, const InxMaterial &next);
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;
@@ -831,6 +845,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     const std::string m_runtimeKey = "runtime-material:" + std::to_string(m_runtimeId);
     std::string m_guid;
     std::string m_filePath; // File path for saving
+    std::shared_ptr<AssetDependencyGraph> m_dependencyGraph;
     bool m_builtin = false; // Built-in materials cannot have shader changed
 
     // Shader identity — separate vert/frag names allow different combinations.
@@ -850,6 +865,16 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     // Material properties
     std::unordered_map<std::string, MaterialProperty> m_properties;
     std::unordered_map<std::string, MaterialTextureSampler> m_textureSamplers;
+    struct RendererMaterialOverrides
+    {
+        // An instance remains a user of the source asset after the renderer
+        // has replaced its direct asset slot with the local material.
+        std::shared_ptr<const InxMaterial> source;
+        std::unordered_set<std::string> properties;
+        std::unordered_set<std::string> samplers;
+    };
+    std::unique_ptr<RendererMaterialOverrides> m_rendererMaterialOverrides;
+    mutable std::vector<std::weak_ptr<InxMaterial>> m_rendererMaterialInstances;
     std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> m_renderTextures;
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
     std::unordered_set<std::string> m_runtimeTextureOverrides;

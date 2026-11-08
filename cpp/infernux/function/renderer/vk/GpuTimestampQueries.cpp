@@ -1,8 +1,10 @@
 #include "GpuTimestampQueries.h"
 
 #include "VkDeviceContext.h"
+#include "VkHandle.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 
 namespace infernux::vk
@@ -37,13 +39,11 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
 
     auto capabilities = context.GetCapabilities().timestampQueries;
     if (queueFamily != VK_QUEUE_FAMILY_IGNORED) {
-        uint32_t count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(context.GetPhysicalDevice(), &count, nullptr);
-        std::vector<VkQueueFamilyProperties> families(count);
-        vkGetPhysicalDeviceQueueFamilyProperties(context.GetPhysicalDevice(), &count, families.data());
-        capabilities.validBits = queueFamily < count ? families[queueFamily].timestampValidBits : 0;
-        capabilities.supported = capabilities.validBits > 0;
+        const auto support = context.QueryTimestampSupport(queueFamily);
+        capabilities.validBits = support.validBits;
+        capabilities.supported = support.validBits > 0;
         capabilities.nanosecondsPerTick = context.GetDeviceProperties().limits.timestampPeriod;
+        m_resetOnHost = support.resetOnHost;
     }
     if (!capabilities.supported) {
         m_device = VK_NULL_HANDLE;
@@ -53,7 +53,8 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
     const uint32_t regionCapacity = std::clamp(maxRegionsPerFrame, 1u, rhi::kGpuTimestampMaxRegions);
     m_maxQueriesPerFrame = regionCapacity * 2;
     m_frames.resize(framesInFlight);
-    m_queryScratch.resize(m_maxQueriesPerFrame);
+    if (m_resetOnHost)
+        m_queryScratch.resize(m_maxQueriesPerFrame);
 
     VkQueryPoolCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -65,6 +66,19 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
         if (vkCreateQueryPool(m_device, &createInfo, nullptr, &frame.pool) != VK_SUCCESS) {
             Destroy();
             return false;
+        }
+        // The same queue capability permits query reset and result copy.
+        // Copy to mapped memory on the queue so completion collection never
+        // needs a graphics/compute driver to read an active query pool.
+        if (!m_resetOnHost) {
+            frame.readback = std::make_shared<VkBufferHandle>();
+            if (!frame.readback->Create(context.GetVmaAllocator(), m_device, sizeof(QueryValue) * m_maxQueriesPerFrame,
+                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+                !frame.readback->Map()) {
+                Destroy();
+                return false;
+            }
         }
     }
 
@@ -93,13 +107,16 @@ void GpuTimestampQueries::Destroy() noexcept
     m_latestFrame.Reset();
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
     m_maxQueriesPerFrame = 0;
+    m_resetOnHost = false;
     m_device = VK_NULL_HANDLE;
 }
 
-void GpuTimestampQueries::BeginFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex)
+void GpuTimestampQueries::BeginFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex,
+                                     [[maybe_unused]] bool publishRecording)
 {
 #if INFERNUX_FRAME_PROFILE
-    s_recordingQueries = nullptr;
+    if (publishRecording)
+        s_recordingQueries = nullptr;
 #endif
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
     if (!m_capabilities.supported || commandBuffer == VK_NULL_HANDLE || frameIndex >= m_frames.size()) {
@@ -111,10 +128,16 @@ void GpuTimestampQueries::BeginFrame(VkCommandBuffer commandBuffer, uint32_t fra
     frame.regionCount = 0;
     frame.serial = m_nextSerial++;
     frame.recorded = false;
-    vkCmdResetQueryPool(commandBuffer, frame.pool, 0, m_maxQueriesPerFrame);
+    frame.pending = false;
+    // Managed upload pools are recycled only after the submission fence.
+    if (m_resetOnHost)
+        vkResetQueryPool(m_device, frame.pool, 0, m_maxQueriesPerFrame);
+    else
+        vkCmdResetQueryPool(commandBuffer, frame.pool, 0, m_maxQueriesPerFrame);
     m_recordingFrame = frameIndex;
 #if INFERNUX_FRAME_PROFILE
-    s_recordingQueries = this;
+    if (publishRecording)
+        s_recordingQueries = this;
 #endif
 }
 
@@ -157,10 +180,26 @@ void GpuTimestampQueries::EndRegion(VkCommandBuffer commandBuffer, rhi::Timestam
     vkCmdWriteTimestamp(commandBuffer, stage, frame->pool, region.endQuery);
 }
 
-void GpuTimestampQueries::FinishFrame(uint32_t frameIndex) noexcept
+void GpuTimestampQueries::FinishFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex) noexcept
 {
     if (frameIndex < m_frames.size() && m_recordingFrame == frameIndex) {
-        m_frames[frameIndex].recorded = m_frames[frameIndex].queryCount > 0;
+        auto &frame = m_frames[frameIndex];
+        frame.recorded = frame.queryCount > 0;
+        if (frame.recorded && frame.readback) {
+            const auto buffer = frame.readback->GetBuffer();
+            vkCmdCopyQueryPoolResults(commandBuffer, frame.pool, 0, frame.queryCount, buffer, 0, sizeof(QueryValue),
+                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT |
+                                          VK_QUERY_RESULT_WAIT_BIT);
+            VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            hostRead.buffer = buffer;
+            hostRead.size = sizeof(QueryValue) * frame.queryCount;
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
+                                 nullptr, 1, &hostRead, 0, nullptr);
+        }
     }
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
 #if INFERNUX_FRAME_PROFILE
@@ -176,47 +215,57 @@ void GpuTimestampQueries::MarkSubmitted(uint32_t frameIndex) noexcept
     }
 }
 
-bool GpuTimestampQueries::CollectCompletedFrame(uint32_t frameIndex)
+std::optional<rhi::GpuTimestampFrame> GpuTimestampQueries::CollectCompletedFrame(uint32_t frameIndex)
 {
     if (!m_capabilities.supported || frameIndex >= m_frames.size()) {
-        return false;
+        return std::nullopt;
     }
 
     auto &frame = m_frames[frameIndex];
     if (!frame.pending || frame.queryCount == 0) {
-        return false;
+        return std::nullopt;
     }
 
-    std::fill_n(m_queryScratch.begin(), frame.queryCount, QueryValue{});
-    const VkResult result = vkGetQueryPoolResults(
-        m_device, frame.pool, 0, frame.queryCount, sizeof(QueryValue) * frame.queryCount, m_queryScratch.data(),
-        sizeof(QueryValue), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    const char *values;
+    if (frame.readback) {
+        values = static_cast<const char *>(frame.readback->GetMappedPtr());
+    } else {
+        // Transfer-only command pools cannot record vkCmdCopyQueryPoolResults.
+        std::fill_n(m_queryScratch.begin(), frame.queryCount, QueryValue{});
+        const VkResult result = vkGetQueryPoolResults(
+            m_device, frame.pool, 0, frame.queryCount, sizeof(QueryValue) * frame.queryCount, m_queryScratch.data(),
+            sizeof(QueryValue), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if (result != VK_SUCCESS)
+            return std::nullopt;
+        values = reinterpret_cast<const char *>(m_queryScratch.data());
+    }
     frame.pending = false;
-    if (result != VK_SUCCESS || frame.serial < m_latestFrame.serial) {
-        return false;
-    }
 
-    m_latestFrame.Reset(frame.serial);
+    rhi::GpuTimestampFrame completed;
+    completed.Reset(frame.serial);
     const uint32_t regionCount = std::min(frame.regionCount, static_cast<uint32_t>(frame.regions.size()));
-    for (uint32_t i = 0; i < regionCount && m_latestFrame.sampleCount < m_latestFrame.samples.size(); ++i) {
+    for (uint32_t i = 0; i < regionCount && completed.sampleCount < completed.samples.size(); ++i) {
         const auto &region = frame.regions[i];
         if (!region.ended || region.beginQuery >= frame.queryCount || region.endQuery >= frame.queryCount) {
             continue;
         }
-        const auto &begin = m_queryScratch[region.beginQuery];
-        const auto &end = m_queryScratch[region.endQuery];
+        QueryValue begin, end;
+        std::memcpy(&begin, values + region.beginQuery * sizeof(QueryValue), sizeof(QueryValue));
+        std::memcpy(&end, values + region.endQuery * sizeof(QueryValue), sizeof(QueryValue));
         if (begin.available == 0 || end.available == 0) {
             continue;
         }
 
-        auto &sample = m_latestFrame.samples[m_latestFrame.sampleCount++];
+        auto &sample = completed.samples[completed.sampleCount++];
         sample.name = region.name;
         sample.milliseconds =
             static_cast<double>(rhi::TimestampTickDelta(begin.value, end.value, m_capabilities.validBits)) *
             m_capabilities.nanosecondsPerTick / 1.0e6;
     }
-    m_latestFrame.available = m_latestFrame.sampleCount > 0;
-    return m_latestFrame.available;
+    completed.available = completed.sampleCount > 0;
+    if (completed.serial >= m_latestFrame.serial)
+        m_latestFrame = completed;
+    return completed;
 }
 
 GpuTimestampQueries::FrameState *GpuTimestampQueries::CurrentRecordingFrame() noexcept

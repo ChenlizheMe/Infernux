@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -33,12 +34,19 @@ namespace infernux
 {
 
 class GpuRetirementQueue;
+class FrameWorkOwner;
 class InxSkinnedMesh;
+namespace rhi
+{
+class ComputeBuffer;
+class ComputeHost;
+} // namespace rhi
 namespace vk
 {
 class VkDeviceContext;
 class VkPipelineManager;
 class VkResourceManager;
+class VulkanFrameSubmission;
 } // namespace vk
 
 namespace particle
@@ -307,6 +315,57 @@ struct GpuParticleDiagnosticSnapshot
     std::string error;
 };
 
+enum class GpuParticlePublicationStatus
+{
+    Published,
+    Pending,
+    Failed,
+};
+
+[[nodiscard]] std::string_view GpuParticleStateGatherShaderSource() noexcept;
+
+struct GpuParticleStateField
+{
+    uint32_t wordOffset;
+    uint32_t wordCount;
+    rhi::ComputeScalarType scalarType;
+};
+
+struct GpuParticleStatePort;
+
+struct GpuParticleStateCapture
+{
+    uint64_t graphInstanceId = 0;
+    uint64_t emitterId = 0;
+    uint64_t artifactRevision = 0;
+    uint64_t requestId = 0;
+    uint64_t sourceFrame = 0;
+    uint32_t sourceSubstep = 0;
+    rhi::SubmissionTicket submission;
+    std::string error;
+    std::vector<std::weak_ptr<GpuParticleStatePort>> ports;
+
+    [[nodiscard]] bool Ready() const noexcept
+    {
+        return submission.IsValid();
+    }
+    [[nodiscard]] bool Done() const noexcept
+    {
+        return Ready() || !error.empty();
+    }
+    void Cancel(const char *reason)
+    {
+        if (!Done())
+            error = reason;
+    }
+};
+
+struct GpuParticleStatePort
+{
+    std::shared_ptr<GpuParticleStateCapture> capture;
+    std::shared_ptr<rhi::ComputeBuffer> buffer;
+};
+
 /// Owns all GPU particle emitters and their once-per-engine-frame simulation
 /// graph. Camera graphs consume only the exported instance/indirect buffers.
 class ParticleGpuSystemManager
@@ -330,17 +389,20 @@ class ParticleGpuSystemManager
                const GpuParticleMigrationProgram &migrationProgram = {},
                const GpuParticleSpawnProgram &spawnProgram = {},
                const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
+               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, ShaderBytecode stateGatherShader = {});
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph
     /// remains untouched when any runtime, renderer, or RenderGraph
-    /// compilation step fails.
-    [[nodiscard]] bool ApplyGraph(const GpuParticleGraphProgram &program, std::string *error = nullptr);
+    /// compilation step fails or an original resource upload is still pending.
+    [[nodiscard]] GpuParticlePublicationStatus ApplyGraph(const GpuParticleGraphProgram &program,
+                                                          std::string *error = nullptr);
     /// Compile and publish several independent graph instances as one
     /// transaction. Scene activation uses this path so N ParticleSystem
     /// components do not rebuild the shared GPU graph N times.
-    [[nodiscard]] bool ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error = nullptr);
+    [[nodiscard]] GpuParticlePublicationStatus ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs,
+                                                           std::string *error = nullptr);
+    void RegisterMeshUploadWork(FrameWorkOwner &owner);
     /// Update graph-instance parameters in place. No shader, pipeline, or
     /// particle-state resource is rebuilt.
     [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId,
@@ -417,6 +479,10 @@ class ParticleGpuSystemManager
     [[nodiscard]] uint64_t RequestDiagnostics(uint64_t graphInstanceId, uint32_t sampleFrames = 60,
                                               uint32_t stateSampleCount = 0);
     [[nodiscard]] GpuParticleDiagnosticSnapshot QueryDiagnostics(uint64_t requestId) const;
+    [[nodiscard]] std::vector<std::shared_ptr<GpuParticleStatePort>>
+    CaptureState(uint64_t graphInstanceId, uint64_t emitterId, uint64_t artifactRevision, uint32_t firstRow,
+                 uint32_t rowCount, std::vector<GpuParticleStateField> fields);
+    void PrepareStateCaptures(vk::VulkanFrameSubmission &frame, rhi::ComputeHost &host, FrameWorkOwner &owner);
 
   private:
     struct Impl;

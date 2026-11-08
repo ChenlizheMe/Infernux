@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from array import array
 import base64
 import hashlib
+import math
+from pathlib import Path
 import re
 import struct
 from typing import Any, Mapping
@@ -19,6 +22,7 @@ from infernux.graph.ramp import (
     AnimationCurve,
     Gradient,
 )
+from infernux.resources import get_package_resources_path
 
 from .data_interface import MeshResourceBinding, SdfVolume, VectorField
 from .hir import ParticleStage
@@ -40,12 +44,17 @@ class GpuParticleCompileError(ValueError):
 
 
 _SPIRV_DESCRIPTOR_CACHE: dict[str, dict[str, Any]] = {}
+_CURVE_MIN_SPAN = array("f", (.0001,))[0]
 
 
 def _update_render_fusion_capability(
     emitter: ParticleEmitterKernelIR,
 ) -> dict[str, Any]:
     return emitter.update_render_fusion_capability()
+
+_BILLBOARD_GEOMETRY_GLSL = (
+    Path(get_package_resources_path()) / "shaders" / "_templates" / "particle_billboard_geometry.glsl"
+).read_text(encoding="utf-8")
 
 _BILLBOARD_VERTEX_GLSL = """#version 450
 
@@ -107,55 +116,21 @@ const vec2 uvs[6] = vec2[](
     vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0)
 );
 
-vec3 inx_safe_billboard_axis(vec3 value, vec3 fallback_value) {
-    float length_squared = dot(value, value);
-    return length_squared > 1.0e-10 ? value * inversesqrt(length_squared) : fallback_value;
-}
-
-void inx_billboard_basis(ParticleInstance instance, out vec3 right_axis, out vec3 up_axis) {
-    vec3 camera_right = inx_safe_billboard_axis(view.camera_right.xyz, vec3(1.0, 0.0, 0.0));
-    vec3 camera_up = inx_safe_billboard_axis(view.camera_up.xyz, vec3(0.0, 1.0, 0.0));
-    vec3 camera_normal = inx_safe_billboard_axis(cross(camera_right, camera_up), vec3(0.0, 0.0, 1.0));
-    int alignment = int(round(view.alignment_reference.w));
-    if (alignment == 0) {
-        right_axis = camera_right;
-        up_axis = camera_up;
-        return;
-    }
-    if (alignment == 1) {
-        vec3 to_camera = inx_safe_billboard_axis(
-            view.alignment_reference.xyz - instance.position_size.xyz,
-            camera_normal);
-        right_axis = inx_safe_billboard_axis(cross(camera_up, to_camera), camera_right);
-        up_axis = inx_safe_billboard_axis(cross(to_camera, right_axis), camera_up);
-        return;
-    }
-    vec3 requested_up = alignment == 2 ? view.alignment_reference.xyz : instance.custom_data.yzw;
-    up_axis = inx_safe_billboard_axis(requested_up, camera_up);
-    vec3 projected_right = cross(up_axis, camera_normal);
-    if (dot(projected_right, projected_right) <= 1.0e-10)
-        projected_right = camera_right - up_axis * dot(camera_right, up_axis);
-    right_axis = inx_safe_billboard_axis(projected_right, camera_right);
-    up_axis = inx_safe_billboard_axis(cross(camera_normal, right_axis), up_axis);
-}
+${BILLBOARD_GEOMETRY}
 
 void main() {
     uint particle_index = render_indices[gl_InstanceIndex];
     ParticleInstance instance = instances[particle_index];
     vec2 corner = corners[gl_VertexIndex % 6];
-    float cosine = cos(instance.rotation_custom.x);
-    float sine = sin(instance.rotation_custom.x);
-    corner = mat2(cosine, -sine, sine, cosine) * corner;
-    vec3 billboard_right;
-    vec3 billboard_up;
-    inx_billboard_basis(instance, billboard_right, billboard_up);
-    vec3 world_position = instance.position_size.xyz +
-        (billboard_right * corner.x * instance.scale_custom.x +
-         billboard_up * corner.y * instance.scale_custom.y) * instance.position_size.w;
+    vec3 world_position, world_normal;
+    vec4 world_tangent;
+    inxParticleBillboardVertex(corner, instance.position_size, instance.rotation_custom.x, instance.scale_custom.xy,
+                              instance.custom_data.yzw, view.camera_right.xyz, view.camera_up.xyz,
+                              view.alignment_reference, world_position, world_normal, world_tangent);
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_world_position = world_position;
-    out_world_normal = normalize(cross(billboard_right, billboard_up));
-    out_tangent = vec4(normalize(billboard_right), 1.0);
+    out_world_normal = world_normal;
+    out_tangent = world_tangent;
     out_color = instance.color.rgb;
     vec2 flipbook_grid = max(view.rendering_control.zw, vec2(1.0));
     float flipbook_count = flipbook_grid.x * flipbook_grid.y;
@@ -185,7 +160,7 @@ void main() {
     out_layer_mask = floatBitsToUint(view.lighting_control.w);
 #endif
 }
-"""
+""".replace("${BILLBOARD_GEOMETRY}", _BILLBOARD_GEOMETRY_GLSL)
 
 
 def _motion_vertex_source(source: str) -> str:
@@ -818,9 +793,13 @@ def _particle_graphics_abi_hash() -> str:
         ("mesh.picking_fragment", _MESH_PICKING_FRAGMENT_GLSL),
         ("mesh.motion_vertex", _motion_vertex_source(_MESH_VERTEX_GLSL)),
         ("mesh.motion_fragment", _MESH_MOTION_FRAGMENT_GLSL),
+        ("curve.interpolation", _curve_interpolation_glsl()),
+        ("curve.parameters", _ramp_parameter_glsl({"curve": (0, TypeRef(ValueType.CURVE))})),
     )
     digest = hashlib.sha256()
     digest.update(b"infernux.particle.graphics-abi\0vulkan1.2-spirv1.5\0")
+    # Curve layout and helper code both participate in saved AOT compatibility.
+    digest.update(b"curve-parameter-abi:3;stride:2;prepared-inverse-span\0")
     for name, source in sources:
         digest.update(name.encode("utf-8"))
         digest.update(b"\0")
@@ -2377,7 +2356,7 @@ class _StageCompiler:
 def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
     span = last - first
     offset = f"({value} - {_float_literal(first)})"
-    if mode == "repeat":
+    if mode in ("repeat", "default"):
         return f"({_float_literal(first)} + mod({offset}, {_float_literal(span)}))"
     return (
         f"({_float_literal(first)} + {_float_literal(span)} - "
@@ -2386,46 +2365,63 @@ def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
 
 
 def _glsl_wrapped_curve_time(source: str, curve: AnimationCurve) -> str:
+    if not curve.keys:
+        return "0.0"
     first = curve.keys[0].time
     last = curve.keys[-1].time
     if first == last:
-        return _float_literal(first)
+        return source
     before_source = f"({source} < {_float_literal(first)})"
-    after_source = f"({source} > {_float_literal(last)})"
+    after_source = f"({source} >= {_float_literal(last)})"
     before = (
-        _float_literal(first)
-        if curve.pre_wrap == "clamp"
+        source
+        if curve.pre_wrap in ("clamp", "once")
         else _glsl_curve_wrap(source, first, last, curve.pre_wrap)
     )
     after = (
-        _float_literal(last)
-        if curve.post_wrap == "clamp"
+        source
+        if curve.post_wrap in ("clamp", "once")
         else _glsl_curve_wrap(source, first, last, curve.post_wrap)
     )
     return f"({before_source} ? {before} : ({after_source} ? {after} : {source}))"
 
 
 def _glsl_curve_segment(sample_time: str, left, right) -> str:
-    duration = right.time - left.time
-    u = f"(({sample_time} - {_float_literal(left.time)}) / {_float_literal(duration)})"
-    u2 = f"({u} * {u})"
-    u3 = f"({u2} * {u})"
-    return (
-        f"((2.0 * {u3} - 3.0 * {u2} + 1.0) * {_float_literal(left.value)} + "
-        f"({u3} - 2.0 * {u2} + {u}) * {_float_literal(left.out_tangent * duration)} + "
-        f"(-2.0 * {u3} + 3.0 * {u2}) * {_float_literal(right.value)} + "
-        f"({u3} - {u2}) * {_float_literal(right.in_tangent * duration)})"
-    )
+    import math
+    if math.isinf(left.out_tangent) or math.isinf(right.in_tangent):
+        value = left.value if left.out_tangent == math.inf or right.in_tangent == math.inf else right.value
+        return _float_literal(value)
+    def key(k):
+        # The other two slopes are unused by this segment and may be steps.
+        return _vector_literal((k.time, k.value,
+                                k.in_tangent if k is right else 0.0,
+                                k.out_tangent if k is left else 0.0), 4)
+    def weights(k):
+        return _vector_literal((k.in_weight, k.out_weight, float(int(k.weighted_mode) & 3)), 3)
+    inverse = _float_literal(_curve_inverse_span(left, right))
+    return f"inx_curve_segment({sample_time}, {key(left)}, {key(right)}, {weights(left)}, {weights(right)}, {inverse})"
+
+
+def _curve_inverse_span(left, right) -> float:
+    if int(left.weighted_mode) & 2 or int(right.weighted_mode) & 1:
+        return 0.0
+    # Authoring/upload work only. Array conversion preserves native float32
+    # rounding and overflow without a platform-specific numerical dependency.
+    duration = array("f", (right.time-left.time,))[0]
+    return array("f", (1.0/max(duration, _CURVE_MIN_SPAN),))[0]
 
 
 def _glsl_curve_sample(sample_time: str, curve: AnimationCurve) -> str:
+    if not curve.keys:
+        return "0.0"
     if len(curve.keys) == 1:
         return _float_literal(curve.keys[0].value)
     expression = _float_literal(curve.keys[-1].value)
     for left, right in reversed(tuple(zip(curve.keys, curve.keys[1:]))):
         segment = _glsl_curve_segment(sample_time, left, right)
         expression = f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
-    return expression
+    comparison = "<=" if curve.keys[1].time == curve.keys[0].time and curve.keys[-1].time != curve.keys[0].time else "<"
+    return f"({sample_time} {comparison} {_float_literal(curve.keys[0].time)} ? {_float_literal(curve.keys[0].value)} : {expression})"
 
 
 def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
@@ -5104,7 +5100,7 @@ def _shader_prelude(
         if parameter_slots
         else ""
     )
-    perceptual_gradient_glsl = _perceptual_gradient_glsl()
+    perceptual_gradient_glsl = _curve_interpolation_glsl() + _perceptual_gradient_glsl()
     ramp_parameter_glsl = _ramp_parameter_glsl(parameter_slots)
     contact_glsl = _contact_bindings_glsl(7) if contact_enabled else ""
     contact_store_call = (
@@ -5252,6 +5248,8 @@ struct InxParticleCollider {{
     vec4 shape;
     uvec4 geometry;
     vec4 linear_velocity;
+    vec4 angular_velocity;
+    vec4 center_of_mass;
     vec4 material;
     vec4 world_aabb_min;
     vec4 world_aabb_max;
@@ -5875,6 +5873,37 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
     vec3 local_previous =
         inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
     float local_radius = inx_collision_local_radius(collider.world_to_collider, world_radius);
+    // A cooked convex hull is a solid, while a triangle mesh is a surface.
+    // Its COM is inside every outward face; find the nearest separating plane
+    // for particles starting inside, including points far from the surface BVH.
+    if ((collider.metadata.z & 4u) != 0u) {{
+        InxParticleCollisionBvhNode root = particle_collision_mesh_bvh[collider.geometry.z];
+        if (all(greaterThanEqual(local_previous, root.bounds_min.xyz)) &&
+            all(lessThanEqual(local_previous, root.bounds_max.xyz))) {{
+            bool start_inside = true;
+            bool end_inside = true;
+            float nearest_plane = -3.402823e38;
+            vec3 outward = vec3(0.0);
+            for (uint triangle = 0u; triangle < collider.geometry.w; ++triangle) {{
+                uint first = collider.geometry.y + triangle * 3u;
+                vec3 a = particle_collision_mesh_vertices[particle_collision_mesh_indices[first]].xyz;
+                vec3 b = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 1u]].xyz;
+                vec3 c = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 2u]].xyz;
+                vec3 normal = inx_safe_normalize(cross(b - a, c - a));
+                float distance = dot(local_position - a, normal);
+                if (dot(local_previous - a, normal) > 0.0) {{ start_inside = false; break; }}
+                end_inside = end_inside && distance <= 0.0;
+                if (distance > nearest_plane) {{ nearest_plane = distance; outward = normal; }}
+            }}
+            if (start_inside) {{
+                if (!end_inside) return false;
+                local_position += outward * (local_radius - nearest_plane);
+                corrected_world_position = inx_particle_affine_point(collider.collider_to_world, local_position);
+                world_normal = inx_collision_world_normal(collider, outward);
+                return true;
+            }}
+        }}
+    }}
     uint stack[64];
     uint stack_size = 1u;
     stack[0] = collider.geometry.z;
@@ -6183,7 +6212,10 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
             else
                 atomicAdd(counters.collision_response_count, 1u);
         }}
-        vec3 relative_velocity = world_velocity - collider.linear_velocity.xyz;
+        vec3 surface_point = corrected_world_position - world_normal * world_radius;
+        vec3 surface_velocity = collider.linear_velocity.xyz +
+            cross(collider.angular_velocity.xyz, surface_point - collider.center_of_mass.xyz);
+        vec3 relative_velocity = world_velocity - surface_velocity;
         float penetration = length(corrected_world_position - world_position);
         uvec2 collider_id = collider.identity.xy;
         bool lower_identity = collider_id.y < primary_collider_id.y ||
@@ -6210,7 +6242,7 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
             float restitution = clamp(collider.material.y * max(restitution_scale, 0.0), 0.0, 1.0);
             relative_velocity = tangent_velocity * (1.0 - friction)
                               - world_normal * normal_speed * restitution;
-            world_velocity = relative_velocity + collider.linear_velocity.xyz;
+            world_velocity = relative_velocity + surface_velocity;
             if ((pc.diagnostic_flags & 1u) != 0u) {{
                 float outward_speed = max(dot(relative_velocity, world_normal), 0.0);
                 vec3 response_tangent =
@@ -7068,7 +7100,7 @@ def _parameter_store_glsl(slot: int, value_type: TypeRef, expression: str) -> st
 def _parameter_slot_width(value_type: TypeRef) -> int:
     kind = value_type.value_type
     if kind is ValueType.CURVE:
-        return 1 + MAX_RAMP_KEYS
+        return 1 + MAX_RAMP_KEYS * 2
     if kind is ValueType.GRADIENT:
         return 1 + MAX_RAMP_KEYS * 2
     return 1
@@ -7095,36 +7127,36 @@ def _ramp_parameter_glsl(
             f"""
 float inx_wrap_curve_parameter_time(float value, float first, float last, uint mode) {{
     float span = last - first;
-    if (span <= 0.0000001 || mode == 0u) return clamp(value, first, last);
+    if (span <= 0.0 || mode == 0u || mode == 4u) return value;
     float offset = value - first;
-    if (mode == 1u) return first + mod(offset, span);
+    if (mode == 1u || mode == 3u) return first + mod(offset, span);
     return first + span - abs(mod(offset, span * 2.0) - span);
 }}
 
 float inx_sample_curve_parameter(uint base_slot, float sample_time) {{
     uvec4 header = parameter_words[base_slot];
-    uint count = clamp(header.x, 1u, {MAX_RAMP_KEYS}u);
+    uint count = min(header.x, {MAX_RAMP_KEYS}u);
+    if (count == 0u) return 0.0;
     vec4 first_key = uintBitsToFloat(parameter_words[base_slot + 1u]);
-    vec4 last_key = uintBitsToFloat(parameter_words[base_slot + count]);
+    vec4 last_key = uintBitsToFloat(parameter_words[base_slot + 1u + (count - 1u) * 2u]);
     float time = sample_time;
     if (time < first_key.x)
         time = inx_wrap_curve_parameter_time(time, first_key.x, last_key.x, header.y);
-    else if (time > last_key.x)
+    else if (time >= last_key.x)
         time = inx_wrap_curve_parameter_time(time, first_key.x, last_key.x, header.z);
-    if (count == 1u) return first_key.y;
+    if (count == 1u || time < first_key.x) return first_key.y;
+    if (time >= last_key.x) return last_key.y;
+    if (time == first_key.x && uintBitsToFloat(parameter_words[base_slot+3u].x) == first_key.x)
+        return first_key.y;
     vec4 left = first_key;
     for (uint index = 1u; index < {MAX_RAMP_KEYS}u; ++index) {{
         if (index >= count) break;
-        vec4 right = uintBitsToFloat(parameter_words[base_slot + 1u + index]);
+        vec4 right = uintBitsToFloat(parameter_words[base_slot + 1u + index * 2u]);
         if (time < right.x) {{
-            float duration = max(right.x - left.x, 0.0000001);
-            float u = clamp((time - left.x) / duration, 0.0, 1.0);
-            float u2 = u * u;
-            float u3 = u2 * u;
-            return (2.0 * u3 - 3.0 * u2 + 1.0) * left.y
-                + (u3 - 2.0 * u2 + u) * left.w * duration
-                + (-2.0 * u3 + 3.0 * u2) * right.y
-                + (u3 - u2) * right.z * duration;
+            vec3 left_weights = uintBitsToFloat(parameter_words[base_slot + 2u + (index-1u)*2u]).xyz;
+            vec3 right_weights = uintBitsToFloat(parameter_words[base_slot + 2u + index*2u]).xyz;
+            float inverse_span = uintBitsToFloat(parameter_words[base_slot + 2u + (index-1u)*2u].w);
+            return inx_curve_segment(time, left, right, left_weights, right_weights, inverse_span);
         }}
         left = right;
     }}
@@ -7179,6 +7211,113 @@ vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
 """
         )
     return "\n".join(parts)
+
+
+def _curve_interpolation_glsl() -> str:
+    return r"""
+float inx_curve_cube_root(float value) {
+    if (value == 0.0) return 0.0;
+    precise float logarithm = log(abs(value));
+    precise float third = logarithm/3.0;
+    precise float residual = fma(-third, 3.0, logarithm)/3.0;
+    precise float magnitude = exp(third);
+    magnitude = fma(magnitude, residual, magnitude);
+    return value < 0.0 ? -magnitude : magnitude;
+}
+bool inx_curve_parameter_inside(float value) {
+    return value >= 0.0 && value <= 1.0;
+}
+float inx_curve_time_parameter(float time, float first, float second) {
+    precise float linear = first*3.0;
+    precise float scaled_second = second*3.0;
+    precise float cubic = (linear-scaled_second)+1.0;
+    precise float quadratic = scaled_second-first*6.0;
+    float parameter;
+    if (abs(cubic) > 0.001) {
+        precise float denominator = cubic*3.0;
+        precise float shift = -quadratic/denominator;
+        precise float shift2 = shift*shift;
+        precise float q = linear/denominator-shift2;
+        precise float numerator = linear*quadratic-denominator*(-time);
+        precise float r = numerator/((cubic*6.0)*cubic)+shift2*shift;
+        precise float q3 = (q*q)*q;
+        precise float r2 = r*r;
+        precise float discriminant = q3+r2;
+        if (discriminant < 0.0) {
+            precise float radius = inx_curve_cube_root(sqrt(r2-discriminant))*2.0;
+            precise float angle = atan(sqrt(-discriminant), r)/3.0;
+            parameter = radius*cos(angle)+shift;
+            if (inx_curve_parameter_inside(parameter)) return parameter;
+            parameter = radius*cos(angle+2.094395160675048828125)+shift;
+            if (inx_curve_parameter_inside(parameter)) return parameter;
+            parameter = radius*cos(angle-2.094395160675048828125)+shift;
+        } else {
+            precise float radical = sqrt(discriminant);
+            precise float first_root = inx_curve_cube_root(radical+r);
+            precise float second_root = inx_curve_cube_root(r-radical);
+            parameter = (second_root+first_root)+shift;
+        }
+    } else if (abs(quadratic) > 0.001) {
+        precise float radical = sqrt(linear*linear-(quadratic*4.0)*(-time));
+        precise float denominator = quadratic+quadratic;
+        parameter = (-linear-radical)/denominator;
+        if (inx_curve_parameter_inside(parameter)) return parameter;
+        parameter = (radical-linear)/denominator;
+    } else if (abs(linear) > 0.001) {
+        return time/linear;
+    } else {
+        return 0.0;
+    }
+    return inx_curve_parameter_inside(parameter) ? parameter : (time < 0.5 ? 0.0 : 1.0);
+}
+float inx_curve_segment(float time, vec4 left, vec4 right, vec3 lw, vec3 rw, float inverse_span) {
+    float duration = right.x-left.x;
+    if (duration <= 0.0) return right.y;
+    if (time >= right.x) return right.y;
+    if (isinf(left.w) || isinf(right.z)) {
+        float infinity = uintBitsToFloat(0x7f800000u);
+        return left.w == infinity || right.z == infinity ? left.y : right.y;
+    }
+    bool wo = (uint(lw.z) & 2u) != 0u;
+    bool wi = (uint(rw.z) & 1u) != 0u;
+    if (!wo && !wi) {
+        precise float span = max(duration, 0.0001);
+        precise float difference = right.y-left.y;
+        precise float inverse = inverse_span;
+        precise float inverse2 = inverse*inverse;
+        precise float first = left.w*span;
+        precise float second = right.z*span;
+        precise float cubic = (((first+second)-difference)-difference)*inverse2*inverse;
+        precise float quadratic = ((((difference+difference)+difference)-first)-first-second)*inverse2;
+        precise float offset = max(time-left.x, 0.0);
+        precise float first_product = cubic*offset;
+        precise float second_product = (first_product+quadratic)*offset;
+        precise float third_product = (second_product+left.w)*offset;
+        precise float result = third_product+left.y;
+        return result;
+    }
+    precise float t = (time-left.x)/duration;
+    float w0 = wo ? lw.y : 1.0/3.0;
+    float w1 = wi ? rw.x : 1.0/3.0;
+    if (isinf(w0) || isnan(w0) || isinf(w1) || isnan(w1)) return uintBitsToFloat(0x7fc00000u);
+    precise float u = inx_curve_time_parameter(t,w0,1.0-w1);
+    precise float v = 1.0-u;
+    precise float u2 = u*u;
+    precise float v2 = v*v;
+    precise float first_basis = (u*3.0)*v2;
+    precise float last_basis = (u2*3.0)*v;
+    precise float first_slope = duration*left.w;
+    precise float last_slope = duration*right.z;
+    precise float first_control = first_slope*w0+left.y;
+    precise float last_control = right.y-last_slope*w1;
+    precise float first_term = first_control*first_basis;
+    precise float start_term = (v2*v)*left.y;
+    precise float last_term = last_control*last_basis;
+    precise float end_term = (u2*u)*right.y;
+    precise float result = ((first_term+start_term)+last_term)+end_term;
+    return result;
+}
+"""
 
 
 def _perceptual_gradient_glsl() -> str:
@@ -7246,13 +7385,19 @@ def pack_gpu_particle_parameters(
                 raise GpuParticleCompileError(
                     f"particle parameter {parameter.name!r} requires a Curve"
                 ) from exc
+            if curve.length > MAX_RAMP_KEYS:
+                raise GpuParticleCompileError(
+                    f"particle curve parameter {parameter.name!r} exceeds the {MAX_RAMP_KEYS}-key GPU parameter capacity; "
+                    "use a literal curve or explicitly bake a reduced parameter curve"
+                )
             encoded = [
                 len(curve.keys),
                 CURVE_WRAP_MODES.index(curve.pre_wrap),
                 CURVE_WRAP_MODES.index(curve.post_wrap),
                 0,
             ]
-            for key in curve.keys:
+            keys = curve.keys
+            for index, key in enumerate(keys):
                 encoded.extend(
                     struct.unpack(
                         "<4I",
@@ -7265,6 +7410,9 @@ def pack_gpu_particle_parameters(
                         ),
                     )
                 )
+                inverse = _curve_inverse_span(key, keys[index+1]) if index+1 < len(keys) else 0.0
+                encoded.extend(struct.unpack("<4I", struct.pack(
+                    "<4f", key.in_weight, key.out_weight, float(int(key.weighted_mode) & 3), inverse)))
         elif kind is ValueType.GRADIENT:
             try:
                 gradient = Gradient.from_dict(value)
@@ -7447,7 +7595,11 @@ def _glsl_literal(value: Any, value_type: TypeRef | None) -> str:
 
 
 def _float_literal(value: Any) -> str:
-    result = format(float(value), ".9g")
+    value = float(value)
+    if not math.isfinite(value):
+        bits = struct.unpack("<I", struct.pack("<f", value))[0]
+        return f"uintBitsToFloat(0x{bits:08x}u)"
+    result = format(value, ".9g")
     if "." not in result and "e" not in result.lower():
         result += ".0"
     return result

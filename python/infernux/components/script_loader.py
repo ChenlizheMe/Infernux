@@ -15,6 +15,7 @@ import importlib.util
 import inspect
 import tokenize
 import types
+from weakref import WeakKeyDictionary
 from dataclasses import dataclass, fields as dataclass_fields
 from typing import TYPE_CHECKING, Iterable, Type, List, Optional
 
@@ -49,7 +50,66 @@ class ScriptReloadRejected(ScriptLoadError):
     """Raised when a saved script is not a body-only compatible reload."""
 
 
+class ScriptHelperLayoutChanged(ScriptReloadRejected):
+    """A valid helper revision must wait for a fresh Play scripting domain."""
+
+
 _MODULE_ABSENT = object()
+_CLASS_LITERAL_TYPES = (type(None), bool, int, float, complex, str, bytes)
+_class_literal_defaults = WeakKeyDictionary()
+_module_literal_defaults = WeakKeyDictionary()
+_NOT_LITERAL = object()
+
+
+def _module_literal(value, visiting):
+    kind = type(value)
+    if kind in _CLASS_LITERAL_TYPES:
+        return kind, value
+    if kind not in (list, tuple, dict, set, frozenset) or id(value) in visiting:
+        return _NOT_LITERAL
+    visiting.add(id(value))
+    try:
+        items = tuple(_module_literal(item, visiting) for item in (value.items() if kind is dict else value))
+    finally:
+        visiting.remove(id(value))
+    if _NOT_LITERAL in items:
+        return _NOT_LITERAL
+    return kind, frozenset(items) if kind in (set, frozenset) else items
+
+
+def _remember_module_literals(module):
+    _module_literal_defaults[module] = {
+        name: default for name, value in vars(module).items()
+        if not name.startswith("__") and (default := _module_literal(value, set())) is not _NOT_LITERAL
+    }
+
+
+def _carry_module_literal_state(previous, candidate):
+    before = _module_literal_defaults.get(previous, {})
+    live = vars(previous)
+    published = vars(candidate)
+    for name, default in _module_literal_defaults.get(candidate, {}).items():
+        if before.get(name, _NOT_LITERAL) == default and name in live:
+            published[name] = live[name]
+
+
+def _declared_class_literals(modules, replacements=None):
+    """Record authored scalar defaults before instances can change them."""
+    stable_types = {} if replacements is None else replacements
+    return {
+        stable_types.get(cls, cls): {
+            name: value for name, value in vars(cls).items()
+            if not name.startswith("__") and type(value) in _CLASS_LITERAL_TYPES
+        }
+        for module in modules
+        for cls in vars(module).values()
+        if type(cls) is type and cls.__module__ == module.__name__
+    }
+
+
+def _preserve_live_class_literal(target, name, value):
+    defaults = _class_literal_defaults.get(target, {})
+    return name in defaults and type(defaults[name]) is type(value) and defaults[name] == value
 
 
 def _new_candidate_import_transaction():
@@ -116,6 +176,8 @@ class ComponentBodyReloadTransaction:
         schema_migrations: tuple[ClassSchemaMigration, ...] = (),
         cds_publish_types: tuple[type, ...] = (),
         registration_publish_types: tuple[type, ...] = (),
+        class_literal_defaults: dict[type, dict[str, object]] | None = None,
+        instance_defaults: tuple = (),
     ) -> None:
         self.requests = requests
         self.plans = plans
@@ -134,6 +196,9 @@ class ComponentBodyReloadTransaction:
             dict.fromkeys(registration_publish_types or self.cds_publish_types)
         )
         self._candidate_import = candidate_import or _new_candidate_import_transaction()
+        self._class_literal_defaults = class_literal_defaults or {}
+        self._instance_defaults = instance_defaults
+        self._inserted_instance_defaults = []
         self._class_snapshots = tuple(
             (
                 target_type,
@@ -188,6 +253,10 @@ class ComponentBodyReloadTransaction:
             with self._candidate_import.serializable_type_scope():
                 _prepare_transaction_schema_state(self)
             self._result = _apply_component_body_patch_plans(self.plans)
+            for fields, name, default in self._instance_defaults:
+                if name not in fields:
+                    fields[name] = copy.deepcopy(default)
+                    self._inserted_instance_defaults.append((fields, name))
             _refresh_transaction_component_metadata(self)
             if self._cds_publication is not None:
                 self._cds_publication.commit()
@@ -209,7 +278,8 @@ class ComponentBodyReloadTransaction:
             # The immutable epoch is published only after registry and every
             # body operation in this transaction has succeeded.
             dispatch_types = tuple(dict.fromkeys(
-                [target_type for target_type, _operations in self.plans]
+                [target_type for target_type, _operations in self.plans
+                 if issubclass(target_type, InxComponent)]
                 + [
                     component_type
                     for _path, component_types in self.registry_entries
@@ -225,6 +295,7 @@ class ComponentBodyReloadTransaction:
             # Module publication is the final durable side effect of the
             # transaction. Candidate execution itself never touched sys.modules.
             self._candidate_import.commit()
+            self._candidate_import.forward_replaced_methods(self._class_snapshots)
             from ._component_registration import mark_component_registration_published
 
             for component_type in self.registration_publish_types:
@@ -253,6 +324,9 @@ class ComponentBodyReloadTransaction:
         # until that durable edge has finalized the native schema.
         _retire_transaction_old_slots(self)
         self._candidate_import.finalize()
+        _class_literal_defaults.update(self._class_literal_defaults)
+        self._instance_defaults = ()
+        self._inserted_instance_defaults.clear()
         self._finalized = True
 
     def rollback(self) -> None:
@@ -274,6 +348,10 @@ class ComponentBodyReloadTransaction:
 
         try:
             self._candidate_import.rollback()
+            for fields, name in reversed(self._inserted_instance_defaults):
+                fields.pop(name, None)
+            self._inserted_instance_defaults.clear()
+            self._instance_defaults = ()
             for target_type, snapshot in self._class_snapshots:
                 _restore_object_attributes(target_type, snapshot)
             _refresh_transaction_component_metadata(self)
@@ -362,6 +440,8 @@ _BODY_PATCH_NATIVE_METADATA_KEYS = frozenset({
 
 def _refresh_transaction_component_metadata(transaction: ComponentBodyReloadTransaction) -> None:
     for target_type, operations in transaction.plans:
+        if not issubclass(target_type, InxComponent):
+            continue
         if not any(name in _BODY_PATCH_NATIVE_METADATA_KEYS for name, _, _ in operations):
             continue
         _refresh_component_metadata(target_type, _transaction_instances(transaction, target_type))
@@ -859,8 +939,51 @@ def _rebind_candidate_type_references(
                 setattr(candidate_type, name, rebound)
 
 
+def _stage_live_helper_bodies(module_name, candidate_module):
+    """Keep the identity of ordinary project classes across source revisions."""
+    from .serializable_object import SerializableObject
+    from infernux.renderstack.fullscreen_effect import FullScreenEffect
+
+    published = sys.modules.get(module_name)
+    if published is None:
+        return ()
+    pairs = []
+    managed_types = (InxComponent, SerializableObject, FullScreenEffect)
+    for name, previous in vars(published).items():
+        if (type(previous) is not type or previous.__module__ != module_name
+                or previous.__qualname__ != name or issubclass(previous, managed_types)):
+            continue
+        candidate = vars(candidate_module).get(name)
+        if (candidate is previous or type(candidate) is not type
+                or candidate.__module__ != module_name or candidate.__qualname__ != name
+                or issubclass(candidate, managed_types)):
+            continue
+        pairs.append((previous, candidate))
+    return tuple(pairs)
+
+
+def _plan_live_helper_body_patch(target, candidate):
+    before, after = vars(target), vars(candidate)
+    return tuple(
+        (name, name in after, after.get(name))
+        for name in sorted(set(before) | set(after))
+        if name not in _BODY_PATCH_TYPE_STRUCTURE_KEYS
+        and name not in _BODY_PATCH_TYPE_METADATA_KEYS
+        and not isinstance(after.get(name, before.get(name)), types.MemberDescriptorType)
+        and not (name in before and name in after and _preserve_live_class_literal(target, name, after[name]))
+        and before.get(name, _MISSING_HELPER_ATTRIBUTE) is not after.get(name, _MISSING_HELPER_ATTRIBUTE)
+    )
+
+
+_MISSING_HELPER_ATTRIBUTE = object()
+
+
 def stage_component_body_reload_batch(
     requests: Iterable[ComponentBodyReloadRequest],
+    *,
+    replacing_scene=None,
+    preserve_live_helpers: bool = True,
+    rebuild_helpers: bool = False,
 ) -> ComponentBodyReloadTransaction:
     """Stage all script candidates before touching any live class body."""
     incoming_requests = tuple(requests)
@@ -882,6 +1005,10 @@ def stage_component_body_reload_batch(
                 f"script module appears more than once in reload batch: {module_name}"
             )
         seen_module_names.add(module_name)
+        source = request.source
+        if source is None and request.code is None and file_path.endswith(".py"):
+            with open(file_path, "rb") as stream:
+                source = stream.read()
         normalized_requests.append(
             ComponentBodyReloadRequest(
                 file_path=file_path,
@@ -891,7 +1018,7 @@ def stage_component_body_reload_batch(
                     for target_type, values in (request.instances_by_type or {}).items()
                 },
                 script_guid=request.script_guid,
-                source=request.source,
+                source=source,
                 code=request.code,
                 retire_script_paths=tuple(request.retire_script_paths),
             )
@@ -933,6 +1060,7 @@ def stage_component_body_reload_batch(
     module_snapshot: dict[str, object] = {}
     plans: list[tuple[type, tuple[tuple[str, bool, object], ...]]] = []
     matched_types: list[tuple[type, type]] = []
+    matched_helpers: list[tuple[type, type]] = []
     schema_migrations: list[ClassSchemaMigration] = []
     cds_publish_types: list[type] = []
     registration_publish_types: list[type] = []
@@ -1025,6 +1153,8 @@ def stage_component_body_reload_batch(
                 raise ScriptLoadError(
                     f"component candidate import failed; keeping last-known-good: {diagnostic}"
                 )
+            if preserve_live_helpers:
+                matched_helpers.extend(_stage_live_helper_bodies(module_name, candidate_module))
             if not candidates:
                 if not targets:
                     # A helper or other dependency has no component registry
@@ -1169,16 +1299,50 @@ def stage_component_body_reload_batch(
 
         replacements = {
             candidate_type: target_type
-            for target_type, candidate_type in matched_types
+            for target_type, candidate_type in (*matched_types, *matched_helpers)
         }
+        source_paths = {name: request.file_path for name, request in zip(request_modules, normalized_requests)}
+        # Resolve bases first. A fresh helper base also requires a fresh
+        # subclass even if the subclass's own slots have not changed.
+        for target, candidate in sorted(matched_helpers, key=lambda pair: len(pair[1].__mro__)):
+            bases = tuple(replacements.get(base, base) for base in candidate.__bases__)
+            if target.__bases__ == bases and target.__dict__.get("__slots__") == candidate.__dict__.get("__slots__"):
+                continue
+            if not rebuild_helpers:
+                raise ScriptHelperLayoutChanged(
+                    f"hot-reload helper '{target.__qualname__}' changed layout; "
+                    "the next Play session will rebuild it",
+                    source_file=source_paths[candidate.__module__],
+                )
+            del replacements[candidate]
+        retained_helpers = [(target, candidate) for target, candidate in matched_helpers if candidate in replacements]
+        class_literal_defaults = _declared_class_literals(candidate_import.publishable_modules, replacements)
+        from ._script_instance_defaults import plan_instance_defaults
+
+        instance_defaults = plan_instance_defaults(
+            (*matched_types, *retained_helpers),
+            {name: request.source for name, request in zip(request_modules, normalized_requests)},
+            InxComponent,
+        )
         _rebind_candidate_type_references(
             candidate_import.publishable_modules,
             replacements,
         )
-        schema_migrations.extend(
-            build_class_schema_migration(target_type, candidate_type)
-            for target_type, candidate_type in matched_types
-        )
+        for target_type, candidate_type in matched_types:
+            replace_authored_values = False
+            if replacing_scene is not None:
+                instances = (*collect_live_instances(target_type), *(
+                    instance for request in normalized_requests
+                    for instance in (request.instances_by_type or {}).get(target_type, ())
+                ))
+                replace_authored_values = all(
+                    instance.game_object is not None and instance.game_object.scene == replacing_scene
+                    for instance in instances
+                )
+            schema_migrations.append(build_class_schema_migration(
+                target_type, candidate_type,
+                replace_authored_values=replace_authored_values,
+            ))
         plans.extend(
             (
                 target_type,
@@ -1189,11 +1353,15 @@ def stage_component_body_reload_batch(
             )
             for target_type, candidate_type in matched_types
         )
+        plans.extend(
+            (target, _plan_live_helper_body_patch(target, candidate))
+            for target, candidate in retained_helpers
+        )
         # Newly published or unmounted subclasses must inherit the same live
         # bases as the patched classes. Apply this only at commit, after schema
         # preparation has read the complete candidate declarations. The normal
         # class snapshots cover __bases__ for rollback as well.
-        for candidate_type in registration_publish_types:
+        for candidate_type in (*registration_publish_types, *(candidate for _, candidate in matched_helpers)):
             if candidate_type in replacements:
                 continue
             bases = tuple(replacements.get(base, base) for base in candidate_type.__bases__)
@@ -1212,6 +1380,8 @@ def stage_component_body_reload_batch(
             schema_migrations=tuple(schema_migrations),
             cds_publish_types=tuple(cds_publish_types),
             registration_publish_types=tuple(registration_publish_types),
+            class_literal_defaults=class_literal_defaults,
+            instance_defaults=instance_defaults,
         )
         return transaction
     except Exception:
@@ -1404,6 +1574,8 @@ def _plan_component_class_body_patch(
         candidate_has = name in candidate_body
         if candidate_has:
             value = candidate_body[name]
+            if target_has and _preserve_live_class_literal(target_type, name, value):
+                continue
             if not target_has or target_body[name] is not value:
                 operations.append((name, True, value))
         elif target_has:
@@ -1698,6 +1870,9 @@ def _load_script_module(
                         source = source_file.read()
                 code = compile(source, file_path, "exec", dont_inherit=True)
                 exec(code, module.__dict__)
+            elif type(spec.loader) is importlib.machinery.SourceFileLoader:
+                code = spec.loader.get_code(module_name)
+                exec(code, module.__dict__)
             else:
                 spec.loader.exec_module(module)
             # First loads and reload candidates share the same data identity
@@ -1721,6 +1896,12 @@ def _load_script_module(
         if sys.modules.get(module_name) is module:
             sys.modules.pop(module_name, None)
         raise
+    _class_literal_defaults.update(_declared_class_literals((module,)))
+    _remember_module_literals(module)
+    if code is not None:
+        from infernux.engine.script_closure_reload import remember_closure_code
+
+        remember_closure_code(module, code)
     return module
 
 

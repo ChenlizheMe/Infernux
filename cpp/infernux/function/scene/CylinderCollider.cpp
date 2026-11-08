@@ -96,7 +96,7 @@ void CylinderCollider::AutoFitToMesh()
     }
 }
 
-void *CylinderCollider::CreateJoltShapeRaw() const
+JPH::RefConst<JPH::Shape> CylinderCollider::CreateJoltShape() const
 {
     float radius = m_radius;
     float height = m_height;
@@ -120,7 +120,7 @@ void *CylinderCollider::CreateJoltShapeRaw() const
 
     const float halfHeight = std::max(height * 0.5f, 0.0005f);
     const float convexRadius = std::min({JPH::cDefaultConvexRadius, halfHeight * 0.25f, radius * 0.1f});
-    JPH::Shape *shape = new JPH::CylinderShape(halfHeight, radius, convexRadius);
+    JPH::RefConst<JPH::Shape> shape = new JPH::CylinderShape(halfHeight, radius, convexRadius);
     JPH::Quat rotation = JPH::Quat::sIdentity();
     if (m_direction == 0)
         rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), JPH::JPH_PI * 0.5f);

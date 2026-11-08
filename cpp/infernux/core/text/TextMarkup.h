@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include <array>
 #include <string>
 #include <string_view>
@@ -28,5 +30,5 @@ struct MarkupText
 
 // Color (#RRGGBB[AA]), size (pixels or percent), br and noparse literal regions.
 // Unsupported tags remain literal; source ranges address the original UTF-8 string.
-MarkupText ParseTextMarkup(std::string_view source, float fontSize);
+INFERNUX_FOUNDATION_API MarkupText ParseTextMarkup(std::string_view source, float fontSize);
 } // namespace infernux::text

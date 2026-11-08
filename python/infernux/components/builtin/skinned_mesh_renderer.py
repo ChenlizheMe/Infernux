@@ -18,10 +18,31 @@ from infernux.components.builtin_component import CppProperty
 from infernux.components.fields import FieldType
 
 
+def _from_native_skeleton(value):
+    if value is None:
+        return None
+    from .skeleton_instance import SkeletonInstance
+    return SkeletonInstance._get_or_create_wrapper(value, value.game_object)
+
+
+def _to_native_skeleton(value):
+    if value is None:
+        return None
+    return value._require_cpp_component() if hasattr(value, "_require_cpp_component") else value
+
+
 class SkinnedMeshRenderer(MeshRenderer):
     """Python facade for the native animated-model renderer component."""
 
     _cpp_type_name = "SkinnedMeshRenderer"
+    skeleton = CppProperty.from_native("SkinnedMeshRenderer", "skeleton",
+        get_converter=_from_native_skeleton, set_converter=_to_native_skeleton)
+    skeleton.metadata.component_type = "SkeletonInstance"
+
+    @property
+    def bones(self):
+        """Bone transforms in this mesh's skin palette order."""
+        return self._require_cpp_component().bones
     _component_category_ = "Rendering"
 
     source_model_guid = CppProperty(
@@ -58,14 +79,17 @@ class SkinnedMeshRenderer(MeshRenderer):
         return self._require_cpp_component().get_skeleton_node_names()
 
     def get_skeleton_node_world_matrices(self, node_names: Sequence[str]) -> NDArray[np.float32]:
-        """Read the latest submitted pose as ``float32[N, 4, 4]`` matrices.
+        """Read current editable bone transforms as ``float32[N, 4, 4]`` matrices.
 
         Matrices use ``[node, row, column]`` and transform bone-local points in
-        engine units into rendered world space, including import scale, the
-        owner's Transform and a selected submesh's pivot. Read after animation
-        updates to consume this frame's pose. Missing node names raise ValueError.
+        engine units into world space, including import scale and the skeleton
+        owner's Transform. LateUpdate edits are included. Missing names raise ValueError.
         """
         return self._require_cpp_component().get_skeleton_node_world_matrices(node_names)
+
+    def get_skin_matrices(self, previous: bool = False) -> NDArray[np.float32]:
+        """Copy the CPU-resident final skin palette; this does not read back the GPU."""
+        return self._require_cpp_component().get_skin_matrices(previous)
 
     def submit_pose_stack(self, layers: Sequence[dict]) -> None:
         """Sample and combine weighted animation layers with exact bone masks.

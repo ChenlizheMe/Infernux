@@ -3,6 +3,7 @@
 #include <core/types/InxFwdType.h>
 #include <function/resources/AssetRuntimeApi.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
+#include <platform/filesystem/PathWriteScope.h>
 
 #include <cstdint>
 #include <nlohmann/json.hpp>
@@ -50,7 +51,7 @@ class AssetIndex final
     INFERNUX_ASSET_RUNTIME_API void Reset(std::string normalizedProjectRoot);
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API bool Load(const std::string &path,
                                                        const std::string &normalizedProjectRoot);
-    INFERNUX_ASSET_RUNTIME_API void Save(const std::string &path) const;
+    INFERNUX_ASSET_RUNTIME_API void Save(const std::string &path, const PathWriteScope &writeScope = {}) const;
 
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API const AssetIndexEntry *Find(const std::string &normalizedPath) const;
     [[nodiscard]] const std::unordered_map<std::string, AssetIndexEntry> &Entries() const noexcept

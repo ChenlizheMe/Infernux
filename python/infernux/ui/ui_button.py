@@ -87,7 +87,7 @@ class UIButton(UISelectable):
         group="Content", range=(0.5, 5.0), drag_speed=0.01,
     )
     letter_spacing: float = serialized_field(
-        default=0.0, tooltip="Extra letter spacing in pixels",
+        default=0.0, tooltip="Extra spacing per character in px. Use 0 to preserve the font's CJK/Latin cell alignment.",
         group="Content", range=(-20.0, 100.0), drag_speed=0.1,
     )
 

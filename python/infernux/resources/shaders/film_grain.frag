@@ -3,7 +3,6 @@
 ShaderInfo {
     Name "Film Grain"
     Hidden On
-    Imports ["Lib Utils"]
     Capabilities [Fullscreen, EngineGlobals]
     Resources {
         Texture2D _SourceTex
@@ -22,81 +21,54 @@ ShaderInfo {
     }
 }
 
-// Film Grain post-process — physically-inspired photographic grain.
-//
-// Real film grain differs from white noise in three ways, all modeled here:
-//   1. Grains have a physical size: value noise sampled at a controllable
-//      grain scale produces soft clumps instead of per-pixel static.
-//   2. Grain is multiplicative: silver halide density modulates the exposed
-//      image, so pure black stays clean and midtones carry the most grain
-//      (URP uses the same input + input * grain formulation).
-//   3. Grain advances in discrete film frames (24 fps steps), not every
-//      rendered frame.
-//
-// Push constants:
-//   [0] intensity — grain strength (0 = off, 1 = heavy)
-//   [1] response  — luminance response (0 = uniform, 1 = shadows/mids only)
-//   [2] size      — grain size in pixels (1 = fine, larger = coarser stock)
-//   [3] colored   — 1.0 = per-channel (color negative), 0.0 = monochrome
-//
-// Time comes from the engine globals UBO (set 2), which the fullscreen
-// pipeline always binds — push constants are only refreshed on parameter
-// edits, so a push-constant clock would freeze the grain between rebuilds.
-
-// Bilinearly-interpolated value noise: soft grain clumps with a physical
-// size, unlike per-pixel hash which reads as digital static.
-float inxFilmValueNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + vec2(1.0, 0.0));
-    float c = hash21(i + vec2(0.0, 1.0));
-    float d = hash21(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+// A neutral procedural grain plate, refreshed at film cadence. The plate
+// never supplies coordinates for the scene color.
+uint grainBits(uvec3 cell) {
+    uint bits = cell.x * 1973u ^ cell.y * 9277u ^ cell.z * 26699u;
+    bits ^= bits >> 16u;
+    bits *= 0x7feb352du;
+    bits ^= bits >> 15u;
+    bits *= 0x846ca68bu;
+    return bits ^ (bits >> 16u);
 }
 
-// Two octaves approximate the density distribution of developed grain:
-// large soft clumps modulated by finer structure. Output is roughly
-// symmetric around 0 in [-1, 1].
-float filmGrain(vec2 p, vec2 seed) {
-    float coarse = inxFilmValueNoise(p + seed);
-    float fine = inxFilmValueNoise(p * 2.7 + seed * 1.13 + vec2(41.7, 289.3));
-    return (coarse * 0.65 + fine * 0.35) * 2.0 - 1.0;
+float grainSample(uvec2 cell, uint seed) {
+    uint bits = grainBits(uvec3(cell, seed));
+    // Two independent halves give a centered, triangular density.
+    return (float(bits & 65535u) + float(bits >> 16u)) / 65535.0 - 1.0;
+}
+
+float softGrain(vec2 p, uint seed) {
+    uvec2 cell = uvec2(ivec2(floor(p)));
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float bottom = mix(grainSample(cell, seed), grainSample(cell + uvec2(1, 0), seed), f.x);
+    float top = mix(grainSample(cell + uvec2(0, 1), seed), grainSample(cell + uvec2(1, 1), seed), f.x);
+    return mix(bottom, top, f.y);
 }
 
 void main() {
-    vec4 color = texture(_SourceTex, inUV);
-
-    vec2 texSize = vec2(textureSize(_SourceTex, 0));
-    float grainSize = max(pc.size, 0.5);
-    vec2 grainCoord = inUV * texSize / grainSize;
-
-    // Advance the grain plate in discrete film frames (24 fps).
-    float frame = floor(_Globals._Time.x * 24.0);
-    vec2 seed = vec2(fract(frame * 0.1031) * 719.7, fract(frame * 0.11369) * 913.1);
-
-    vec3 grain;
-    if (pc.colored > 0.5) {
-        // Independent grain per channel, like the three emulsion layers of
-        // color negative stock.
-        grain = vec3(
-            filmGrain(grainCoord, seed),
-            filmGrain(grainCoord + vec2(157.31, 63.09), seed),
-            filmGrain(grainCoord + vec2(311.77, 201.53), seed));
-    } else {
-        grain = vec3(filmGrain(grainCoord, seed));
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    vec4 source = texelFetch(_SourceTex, pixel, 0);
+    if (pc.intensity <= 0.0) {
+        outColor = source;
+        return;
     }
 
-    // Luminance response: film grain is most visible in the midtones and
-    // fades in bright highlights (dense negative = grainy shadows on print,
-    // but on positive display the perceptual result is mids/shadows).
-    float luma = luminance(color.rgb);
-    float response = mix(1.0, 1.0 - sqrt(clamp(luma, 0.0, 1.0)), pc.response);
+    vec2 plate = (vec2(pixel) + 0.5) / max(pc.size, 0.5);
+    uint frame = uint(mod(floor(_Globals._Time.x * 24.0), 65536.0));
+    uint seed = frame * 5u;
+    const mat2 rotate = mat2(.8, .6, -.6, .8);
+    float density = .74 * softGrain(rotate * plate, seed)
+                  + .26 * softGrain(plate * 1.8 + vec2(71.0, 13.0), seed + 1u);
+    vec3 grain = vec3(density);
+    if (pc.colored > 0.5) {
+        grain = mix(grain, vec3(softGrain(plate, seed + 2u),
+                                softGrain(plate, seed + 3u),
+                                softGrain(plate, seed + 4u)), 0.30);
+    }
 
-    // Multiplicative application: black stays clean, exposure carries grain.
-    color.rgb += color.rgb * grain * pc.intensity * response;
-    color.rgb = max(color.rgb, vec3(0.0));
-
-    outColor = color;
+    float luma = clamp(dot(source.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    float amplitude = pc.intensity * mix(1.0, 1.0 - sqrt(luma), pc.response);
+    outColor = vec4(max(source.rgb * (1.0 + grain * amplitude), vec3(0.0)), source.a);
 }

@@ -267,7 +267,7 @@ inline void CollectRetiredFonts()
 }
 
 // The editor/player GUI installs one authoritative engine font at startup.
-// UIText without an authored Font asset must use that same PingFang face,
+// UIText without an authored Font asset must use that same bundled face,
 // rather than inheriting whatever ambient ImGui font happens to be active.
 // The pointer is valid only while the current ImGui atlas is alive; the GUI
 // reload path clears it before rebuilding the atlas.
@@ -440,35 +440,6 @@ inline bool EraseFirstUtf8Codepoint(std::string &text)
     return true;
 }
 
-inline float MeasureSegmentWidth(ImFont *font, float fontSize, const char *start, const char *end, float letterSpacing)
-{
-    if (font == nullptr || start == nullptr || end == nullptr || start >= end)
-        return 0.0f;
-
-    float width = 0.0f;
-    int glyphCount = 0;
-    const char *cursor = start;
-    while (cursor < end) {
-        const char *charStart = cursor;
-        unsigned int codepoint = 0;
-        int consumed = ImTextCharFromUtf8(&codepoint, cursor, end);
-        if (consumed <= 0)
-            break;
-        cursor += consumed;
-
-        if (codepoint == '\r' || codepoint == '\n')
-            continue;
-
-        const float glyphWidth = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, charStart, cursor).x;
-        if (glyphCount > 0)
-            width += letterSpacing;
-        width += glyphWidth;
-        ++glyphCount;
-    }
-
-    return width;
-}
-
 inline size_t GlyphIndexAt(const TextLayoutResult &layout, size_t offset)
 {
     return static_cast<size_t>(
@@ -477,8 +448,10 @@ inline size_t GlyphIndexAt(const TextLayoutResult &layout, size_t offset)
         layout.glyphs.begin());
 }
 
-inline void PushLine(TextLayoutResult &result, const char *textBegin, const char *start, const char *end, float width)
+inline void PushLine(TextLayoutResult &result, const char *textBegin, const char *start, const char *end,
+                     double measuredWidth)
 {
+    const float width = static_cast<float>(measuredWidth);
     const size_t first = static_cast<size_t>(start - textBegin);
     const size_t last = static_cast<size_t>(end - textBegin);
     result.lines.push_back({first, last, width, GlyphIndexAt(result, first), GlyphIndexAt(result, last)});
@@ -489,9 +462,9 @@ TextLayoutResult LayoutText(const TextLayoutParams &params);
 std::shared_ptr<TextLayoutResult> CreateTextLayout(const TextLayoutParams &params);
 
 void RenderLine(ImDrawList *drawList, const TextLayoutResult &layout, const TextLine &line, float x, float y,
-                ImU32 color, float letterSpacing, const ImVec4 *clipRect = nullptr);
+                ImU32 color, const ImVec4 *clipRect = nullptr);
 
 void RenderTextBox(ImDrawList *drawList, float minX, float minY, float maxX, float maxY, const TextLayoutResult &layout,
-                   ImU32 color, float alignX, float alignY, float letterSpacing, const ImVec4 *clipRect = nullptr);
+                   ImU32 color, float alignX, float alignY, const ImVec4 *clipRect = nullptr);
 
 } // namespace infernux::textlayout

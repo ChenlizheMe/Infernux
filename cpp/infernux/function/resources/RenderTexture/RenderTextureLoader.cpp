@@ -33,9 +33,8 @@ size_t RenderTextureLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payl
     return sizeof(rhi::RenderTextureDesc);
 }
 
-void RenderTextureLoader::CreateMeta(const char *content, size_t size, const std::string &path,
-                                     InxResourceMeta &meta) const
+void RenderTextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &meta) const
 {
-    meta.Init(content, size, path, ResourceType::RenderTexture);
+    meta.InitFromSource(source, ResourceType::RenderTexture);
 }
 } // namespace infernux

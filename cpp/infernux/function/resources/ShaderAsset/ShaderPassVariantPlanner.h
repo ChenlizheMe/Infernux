@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ShaderCompilerApi.h"
 #include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
@@ -31,15 +32,16 @@ struct ShaderPassVariantPlan
         return stages.IsValid() && diagnostics.empty();
     }
 
-    [[nodiscard]] const ShaderPassVariantRequirement *Find(ShaderCompileTarget target) const noexcept;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API const ShaderPassVariantRequirement *
+    Find(ShaderCompileTarget target) const noexcept;
 };
 
 class ShaderPassVariantPlanner final
 {
   public:
-    [[nodiscard]] static ShaderPassVariantPlan Plan(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment,
-                                                    const ShaderProgramInterfaceArtifact &interfaceArtifact,
-                                                    bool shadingModelSupportsDeferred = true);
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API static ShaderPassVariantPlan
+    Plan(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment,
+         const ShaderProgramInterfaceArtifact &interfaceArtifact, bool shadingModelSupportsDeferred = true);
 };
 
 } // namespace infernux

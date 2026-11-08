@@ -9,7 +9,7 @@ Design:
     - BuiltinComponent inherits from InxComponent (unified type system)
     - No PyComponentProxy is created (C++ component is already in m_components)
     - Properties delegate to the C++ component via CppProperty descriptors
-    - Wrappers are cached per component_id for identity stability
+    - Wrappers are indexed by component_id and checked against the full native handle
 
 Usage (from within an InxComponent script)::
 
@@ -64,6 +64,8 @@ class CppProperty:
         header: Group header shown above this field in the Inspector.
         range: ``(min, max)`` tuple for numeric slider widgets.
         enum_type: Enum class for ENUM fields.
+        related_components: Editor-only callback returning (component, property names)
+            changed by this setter, so the normal transaction can restore them.
 
     Example::
 
@@ -98,6 +100,7 @@ class CppProperty:
         hdr: bool = False,
         curve_non_negative: bool = False,
         slider: bool = False,
+        related_components=None,
     ):
         self.cpp_attr = cpp_attr
         self.schema = None
@@ -105,6 +108,7 @@ class CppProperty:
         self.set_converter = set_converter
         self.native_getter = native_getter
         self.native_setter = native_setter
+        self.related_components = related_components
         self.metadata = FieldMetadata(
             name="",  # filled by __set_name__ / __init_subclass__
             field_type=field_type,
@@ -128,7 +132,7 @@ class CppProperty:
     @classmethod
     def from_native(cls, type_name: str, field_id: str, *, visible_when=None,
                     get_converter=None, set_converter=None,
-                    native_getter=None, native_setter=None) -> CppProperty:
+                    native_getter=None, native_setter=None, related_components=None) -> CppProperty:
         """Project a native declaration into the existing Inspector descriptor."""
         if os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform in {"emscripten", "android"}:
             # Web and Android Players have no Inspector. Their Python wrappers only need the
@@ -142,6 +146,7 @@ class CppProperty:
                 set_converter=set_converter,
                 native_getter=native_getter,
                 native_setter=native_setter,
+                related_components=related_components,
             )
         from infernux.field_schema import get_native_field_schema
         from infernux.lib import _Infernux
@@ -166,6 +171,7 @@ class CppProperty:
             asset_type=attributes.get("asset_type"),
             visible_when=visible_when, get_converter=get_converter, set_converter=set_converter,
             native_getter=native_getter, native_setter=native_setter,
+            related_components=related_components,
             slider=bool(attributes.get("slider", False)),
         )
         result.metadata.hidden = bool(attributes.get("hidden", False))
@@ -179,6 +185,14 @@ class CppProperty:
         from .fields import normalize_runtime_field_value
         from .value_codec import VALUE_CODECS
 
+        if self.metadata.field_type is FieldType.ASSET:
+            from infernux.core.asset_ref import AssetRefBase, get_asset_type_for_ref
+            if (isinstance(candidate, AssetRefBase) and not candidate.guid and candidate._cached is not None
+                    and get_asset_type_for_ref(candidate) == self.metadata.asset_type):
+                # Runtime assets have no GUID document representation. Keep
+                # their binding identity for the native setter and Undo.
+                import copy
+                return copy.copy(normalize_runtime_field_value(candidate, self.metadata))
         if self.metadata.field_type is FieldType.COMPONENT:
             if candidate is None:
                 return None
@@ -358,30 +372,20 @@ class BuiltinComponent(InxComponent):
     ) -> "BuiltinComponent":
         """Return an existing wrapper or create a new one.
 
-        The cache is keyed by the C++ component's stable ``component_id``
-        so the same Python object is returned on repeated lookups.
-
-        Play Mode rebuilds preserve those IDs while allocating new native
-        instances.  A still-valid cache entry must therefore rebind when the
-        incoming C++ object is a replacement, not merely a new pybind view
-        of the same handle.
+        The numeric ID indexes the cache; the full native handle identifies
+        the instance. New generations get new wrappers. Explicit Scene
+        transfers rebind through ``_rebind_moved_components`` instead.
         """
         comp_id = cpp_component.component_id
         existing = BuiltinComponent._wrapper_cache.get(comp_id)
         if existing is not None:
-            destroyed = bool(getattr(existing, "_is_destroyed", False))
-            if destroyed and getattr(existing, "_cpp_component", None) is None:
-                BuiltinComponent._wrapper_cache.pop(comp_id, None)
-            else:
-                # Scripts cache this wrapper (SmokeRangeDirector._body).  A
-                # Play rebuild or inspector refresh must rebind the same
-                # object so gameplay still writes to a live native body.
-                if (
-                    existing._is_native_binding_stale()
-                    or not cls._is_same_native_instance(existing, cpp_component)
-                ):
-                    existing._bind_cpp(cpp_component, game_object)
+            if (
+                cls._is_same_native_instance(existing, cpp_component)
+                and existing._get_bound_native_component() is not None
+            ):
                 return existing
+            BuiltinComponent._wrapper_cache.pop(comp_id, None)
+            existing._invalidate_native_binding()
 
         wrapper = cls()
         wrapper._bind_cpp(cpp_component, game_object)
@@ -389,9 +393,6 @@ class BuiltinComponent(InxComponent):
 
     @staticmethod
     def _is_same_native_instance(existing, cpp_component) -> bool:
-        bound = getattr(existing, "_cpp_component", None)
-        if bound is cpp_component:
-            return True
         existing_handle = getattr(existing, "_native_handle", None)
         incoming_handle = getattr(cpp_component, "handle", None)
         return (
@@ -418,29 +419,14 @@ class BuiltinComponent(InxComponent):
                 wrapper._bind_cpp(native, native.game_object)
 
     @classmethod
-    def _clear_cache(cls) -> None:
-        """Clear the wrapper cache (call on scene change / play-mode stop)."""
-        for wrapper in list(BuiltinComponent._wrapper_cache.values()):
-            try:
-                wrapper._invalidate_native_binding()
-            except Exception as exc:
-                from infernux.debug import Debug
-                Debug.log_warning(f"[BuiltinComponent] cache clear failed: {exc}")
-        BuiltinComponent._wrapper_cache.clear()
-        # Inspector state is an editor-only cache. Importing it from Player
-        # scene publication pulls the complete Inspector/serialization UI
-        # graph into the startup path even though no editor panel exists.
-        from infernux.application import Application
-
-        if Application.is_editor():
-            try:
-                from infernux.engine.ui.inspector_components import (
-                    clear_component_value_cache,
-                )
-
-                clear_component_value_cache()
-            except ImportError:
-                pass
+    def _retire_stale_wrappers(cls) -> None:
+        """Retire dead strict handles after publication, preserving live worlds."""
+        for component_id, wrapper in list(BuiltinComponent._wrapper_cache.items()):
+            if (
+                wrapper._is_native_binding_stale()
+                and wrapper._get_bound_native_component() is None
+            ):
+                BuiltinComponent._wrapper_cache.pop(component_id, None)
 
     @classmethod
     def _invalidate_component_ids(cls, component_ids) -> None:
@@ -575,6 +561,13 @@ class BuiltinComponent(InxComponent):
         if cpp is None:
             raise RuntimeError(f"{self._cpp_type_name} is not bound to a native component")
         return bool(cpp.deserialize_document(document))
+
+    def apply_authoring_document(self, document: dict) -> bool:
+        """Apply editable values while keeping this instance's internal references."""
+        return bool(self._require_cpp_component().apply_authoring_document(document))
+
+    def prepare_authoring_document(self, document: dict) -> dict:
+        return self._require_cpp_component().prepare_authoring_document(document)
 
     def _deserialize_fields(self, json_str: str) -> None:
         """Alias kept for InxComponent compatibility."""

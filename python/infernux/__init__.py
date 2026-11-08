@@ -14,7 +14,7 @@ __version__ = ENGINE_VERSION
 # ── Runtime API (used by game scripts) ─────────────────────────────
 from infernux.engine import release_engine, run_headless, Engine, LogLevel
 from infernux.application import Application
-from infernux.screen import Insets, Rect, Screen
+from infernux.screen import Insets, Rect, RectOffset, Screen
 from infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest, RuntimeAcceptanceTest
 from infernux.math import Vector2, Vector3, vec4f, quatf, vector2, vector3, vector4, quaternion
 from infernux import components as _components_module
@@ -22,6 +22,10 @@ from infernux.components import serialized_field
 from infernux.components import *
 from infernux import core
 from infernux.core import *
+# Texture addressing and animation wrapping are different Unity concepts.
+# Keep the animation enum public under WrapMode, without a star-import clash.
+from infernux.core import WrapMode as TextureWrapMode
+from infernux.graph.ramp import WrapMode, WeightedMode
 from infernux.lib import (
     AudioEngine,
     Component,
@@ -33,6 +37,8 @@ from infernux.lib import (
     LineTextureMode,
     LineWidthKey,
     PrimitiveType,
+    Random,
+    RandomState,
     Space,
     Transform,
 )
@@ -42,7 +48,7 @@ from infernux.scene import GameObjectQuery, LayerMask, SceneManager
 from infernux.timing import Time
 from infernux.mathf import Mathf
 from infernux.ui import (
-    UICanvas, UIFrame, UIGroup, UIProgressBar, UISlider, UIText, UIImage,
+    UICanvas, UIFrame, UILayoutElement, UIGroup, UIProgressBar, UISlider, UIText, UIImage,
     UIRawImage, UIButton, UIEvent, UIEvent1,
 )
 from infernux.coroutine import (
@@ -120,6 +126,7 @@ __all__ = [
     "Application",
     "Screen",
     "Rect",
+    "RectOffset",
     "Insets",
     "RuntimeAcceptance",
     "RuntimeAcceptanceManifest",
@@ -142,6 +149,8 @@ __all__ = [
     "Component",
     "Space",
     "PrimitiveType",
+    "Random",
+    "RandomState",
     "LineAlignment",
     "LineColorKey",
     "LineCurveWrapMode",
@@ -161,6 +170,9 @@ __all__ = [
     "Color",
     "AnimationCurve",
     "Keyframe",
+    "WrapMode",
+    "TextureWrapMode",
+    "WeightedMode",
     "Gradient",
     "GradientKey",
     "GameObjectRef",
@@ -173,7 +185,9 @@ __all__ = [
     "Light",
     "MeshRenderer",
     "LineRenderer",
+    "TrailRenderer",
     "SkinnedMeshRenderer",
+    "SkeletonInstance",
     "Camera",
     "Collider",
     "BoxCollider",
@@ -186,6 +200,14 @@ __all__ = [
     "CollisionDetectionMode",
     "RigidbodyInterpolation",
     "HingeJoint",
+    "SixDOFJoint",
+    "JointMotion",
+    "SwingTwistJoint",
+    "JointMotorMode",
+    "JointSwingType",
+    "FixedJoint",
+    "Ragdoll",
+    "DistanceJoint",
     "SliderJoint",
     "AudioSource",
     "AudioListener",
@@ -197,6 +219,7 @@ __all__ = [
     # UI components
     "UICanvas",
     "UIFrame",
+    "UILayoutElement",
     "UIGroup",
     "UIProgressBar",
     "UISlider",

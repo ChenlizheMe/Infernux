@@ -84,21 +84,16 @@ RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std:
         return nullptr;
     }
 
-    InxMaterial staged;
-    if (!PrepareDocument(staged, filePath, adb))
-        return nullptr;
     auto material = std::make_shared<InxMaterial>();
     // Disk identity is known before publication, including on a worker. It must
     // never be enrolled in the owner-thread-only runtime material registry.
     material->SetGuid(guid);
-    material->PublishDocument(std::move(staged));
+    if (!PrepareDocument(*material, filePath, adb))
+        return nullptr;
 
     // Identity — authoritative source is .meta / AssetDatabase, NOT JSON
     material->SetFilePath(filePath);
     material->SetName(FromFsPath(ToFsPath(filePath).stem()));
-
-    // Dependency graph edges (textures, shaders)
-    RegisterDependencies(guid, *material, adb);
 
     // INXLOG_INFO("MaterialLoader: loaded '", material->GetName(), "' (GUID: ", guid, ")");
     return material;
@@ -122,9 +117,6 @@ bool MaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::stri
         return false;
     staged.m_name = mat->GetName();
     mat->PublishDocument(std::move(staged));
-
-    // Re-wire dependency graph (texture/shader deps may have changed)
-    RegisterDependencies(mat->GetGuid(), *mat, adb);
 
     return true;
 }
@@ -173,55 +165,36 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
 }
 
 // =============================================================================
-// RegisterDependencies — wire up AssetDependencyGraph edges
+// Owner publication — wire up AssetDependencyGraph edges
 // =============================================================================
 // CreateMeta — material-specific .meta creation
 // =============================================================================
 
-void MaterialLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                                InxResourceMeta &metaData) const
+void MaterialLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
-    if (!content) {
-        INXLOG_ERROR("Invalid material content for metadata creation");
-        return;
-    }
-
-    metaData.Init(content, contentSize, filePath, ResourceType::Material);
+    metaData.InitFromSource(source, ResourceType::Material);
 
     // Use filename stem as material name — authoritative name is set by
     // MaterialLoader::Load() at runtime, so parsing JSON here is unnecessary.
-    std::filesystem::path path = ToFsPath(filePath);
+    std::filesystem::path path = ToFsPath(source.Path());
     metaData.AddMetadata("material_name", FromFsPath(path.stem()));
 }
 
 // =============================================================================
 
-void MaterialLoader::RegisterDependencies(const std::string &materialGuid, const InxMaterial &mat, AssetDatabase *adb)
+void MaterialLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
 {
-    if (materialGuid.empty())
-        return;
+    const auto material = payload.Get<InxMaterial>();
+    material->SetFilePath(filePath);
+    material->SetName(FromFsPath(ToFsPath(filePath).stem()));
+}
 
-    std::unordered_set<std::string> dependencies;
-
-    // Texture property GUIDs
-    for (const auto &[propName, prop] : mat.GetAllProperties()) {
-        if (prop.type != MaterialPropertyType::Texture2D)
-            continue;
-        const auto *val = std::get_if<std::string>(&prop.value);
-        if (val && !val->empty() && !IsBuiltinTextureToken(*val))
-            dependencies.insert(*val);
-    }
-
-    // Shader asset edges are GUID-only. Do not infer them from path_hint or
-    // shader_id; symbolic built-in programs are not AssetDatabase assets.
-    (void)adb;
-    const auto addShaderDep = [&](const ShaderAssetReference &reference) {
-        if (!reference.guid.empty())
-            dependencies.insert(reference.guid);
-    };
-    addShaderDep(mat.GetVertShaderReference());
-    addShaderDep(mat.GetFragShaderReference());
-    AssetDependencyGraph::Instance().SetAssetDependencies(materialGuid, dependencies);
+void MaterialLoader::OnPublished(const RuntimeAssetPayload &payload, const std::string &, AssetDatabase *adb)
+{
+    const auto mat = payload.Get<InxMaterial>();
+    mat->BindDependencyGraph(adb->GetDependencyGraph());
+    mat->PublishDependencies();
+    mat->NotifyRoutingChanged();
 }
 
 } // namespace infernux

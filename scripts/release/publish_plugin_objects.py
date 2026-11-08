@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 
 from publish_hub_objects import Publisher
+from build_platform_plugins import PLATFORM_REFERENCES, RELEASE, catalog
+from plugin_catalog_history import merge_history, published_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "python/infernux/resources/official_packages/official-registry.json"
@@ -21,6 +23,15 @@ def release_identity(package: dict) -> tuple[str, str, str]:
     repository = urllib.parse.urlparse(package["repository"])
     source = urllib.parse.urlparse(package["source"]["location"])
     name = package["artifact"]
+    if package["reference"] in PLATFORM_REFERENCES:
+        key = f"platform-plugins/{RELEASE}/{name}"
+        if (package.get("engine_release") != RELEASE
+                or source.geturl() != "https://downloads.infernux-engine.com/" + key):
+            raise ValueError("Platform plugin source must identify this exact engine release")
+        repositories = json.loads((ROOT / "packaging/official_plugin_repositories.json").read_text(encoding="utf-8"))
+        if repositories[package['reference']] != package['repository']:
+            raise ValueError('Platform plugin source repository disagrees with its registry identity')
+        return repository.path.strip('/'), 'v' + package['version'], key
     expected = f"plugins/{package['reference'].replace('/', '.')}/{package['version']}/{name}"
     if repository.scheme != "https" or repository.netloc != "github.com":
         raise ValueError("Official plugin releases must come from GitHub")
@@ -62,10 +73,10 @@ def stage(package: dict, destination: Path) -> tuple[Path, str]:
 
 def verify_player_releases(registry: dict) -> None:
     """Require the advertised desktop Players to carry this exact SDK release."""
-    references = {"infernux/platform-windows", "infernux/platform-linux"}
+    references = PLATFORM_REFERENCES
     packages = [item for item in registry["packages"] if item["reference"] in references]
     if {item["reference"] for item in packages} != references:
-        raise ValueError("The official registry must include both desktop Player packages")
+        raise ValueError("The official registry must include all four matching Player packages")
     engine_release = runpy.run_path(str(ROOT / "python/infernux/version.py"))["ENGINE_RELEASE"]
     for package in packages:
         repository, tag, _ = release_identity(package)
@@ -91,11 +102,16 @@ def main() -> None:
     args = parser.parse_args()
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     if args.check_player_releases:
-        verify_player_releases(registry)
+        verify_player_releases(catalog())
         return
-    packages = [item for item in registry["packages"] if not args.reference or item["reference"] == args.reference]
+    platform_references = PLATFORM_REFERENCES
+    if args.reference in platform_references:
+        raise ValueError("Publish platform plugins through the engine's engine-platform-plugins workflow")
+    packages = [item for item in registry["packages"] if item["reference"] not in platform_references
+                and (not args.reference or item["reference"] == args.reference)]
     if not packages:
         raise ValueError(f"No matching official package: {args.reference}")
+    registry = merge_history(published_catalog(), {'$schema': registry['$schema'], 'packages': packages})
     publisher = Publisher(os.environ["R2_UPLOAD_TOKEN"])
     staged = [stage(item, ROOT / "out/plugin-publication" / item["reference"] / item["version"]) for item in packages]
     for path, key in staged:
@@ -109,7 +125,10 @@ def main() -> None:
         with urllib.request.urlopen(request, timeout=60) as response:
             if int(response.headers["Content-Length"]) <= 0:
                 raise ValueError(f"Empty public plugin: {item['reference']}")
-    publisher.upload(REGISTRY, "plugins/official-registry.json")
+    generated = ROOT / "out/plugin-publication/official-registry.json"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    publisher.upload(generated, "plugins/official-registry.json")
 
 
 if __name__ == "__main__":

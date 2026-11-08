@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from infernux.lib import EngineConfig
-    from infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph, RenderPassBuilder
 
 
 COLOR_TEXTURE = "color"
@@ -45,8 +45,6 @@ GBUFFER_RESOURCES = {
 FORWARD_CLEAR_COLOR = (0.1, 0.1, 0.1, 1.0)
 DEFERRED_GBUFFER_CLEAR_COLOR = (0.0, 0.0, 0.0, 0.0)
 DEFERRED_LIGHTING_CLEAR_COLOR = (0.0, 0.0, 0.0, 1.0)
-
-DEFERRED_LIGHTING_SHADER = "Deferred Lighting"
 
 
 def _config() -> EngineConfig:
@@ -96,7 +94,7 @@ def create_main_scene_targets(
         )
 
     graph.create_texture(COLOR_TEXTURE, camera_target=True)
-    graph.create_texture(DEPTH_TEXTURE, format=Format.D32_SFLOAT)
+    graph.create_texture(DEPTH_TEXTURE, format=Format.D32_SFLOAT, camera_target=True)
     graph.create_texture(
         SHADOW_MAP_TEXTURE,
         format=Format.D32_SFLOAT,
@@ -113,6 +111,20 @@ def create_deferred_gbuffer(graph: "RenderGraph") -> None:
     graph.create_texture(GBUFFER_MATERIAL_TEXTURE, format=Format.RGBA16_SFLOAT)
     graph.create_texture(GBUFFER_EMISSION_TEXTURE, format=Format.RGBA16_SFLOAT)
     graph.create_texture(GBUFFER_OBJECT_TEXTURE, format=Format.RGBA32_UINT)
+
+
+def draw_deferred_lighting(
+    render_pass: RenderPassBuilder, *, albedo, normal, material, emission, object_data, depth,
+) -> None:
+    render_pass.set_textures({
+        "_GAlbedo": albedo,
+        "_GNormal": normal,
+        "_GMaterial": material,
+        "_GEmission": emission,
+        "_GObject": object_data,
+        "_SceneDepth": depth,
+    })
+    render_pass.fullscreen_quad("Deferred Lighting")
 
 
 def add_shadow_caster_pass(

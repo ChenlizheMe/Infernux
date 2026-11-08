@@ -11,6 +11,12 @@
 #include <filesystem>
 namespace infernux
 {
+void ShaderLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
+{
+    const auto shader = payload.Get<ShaderAsset>();
+    shader->filePath = filePath;
+    shader->descriptor.filePath = filePath;
+}
 
 // =============================================================================
 // Internal helper — compile a shader file into a ShaderAsset
@@ -201,11 +207,10 @@ std::set<std::string> ShaderLoader::ScanDependencies(const std::string & /*fileP
 // CreateMeta — delegate to InxShaderLoader (the shader compiler)
 // =============================================================================
 
-void ShaderLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                              InxResourceMeta &metaData) const
+void ShaderLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
     InxShaderLoader compiler(true, false, false, false, false, false, false, false, false, false);
-    compiler.CreateMeta(content, contentSize, filePath, metaData);
+    compiler.CreateMeta(source, metaData);
 }
 
 } // namespace infernux

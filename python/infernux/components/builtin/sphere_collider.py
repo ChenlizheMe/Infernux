@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from infernux.components.builtin_component import CppProperty
 from infernux.components.builtin.collider import Collider, _native_collider_properties
-from infernux.math.coerce import quat_rotate
 
 
 class SphereCollider(Collider):
@@ -40,8 +39,6 @@ class SphereCollider(Collider):
         if transform is None:
             return
 
-        pos = transform.position
-        rot = transform.rotation  # world rotation quaternion
         scale = transform.lossy_scale
 
         cpp = self._get_bound_native_component()
@@ -50,12 +47,7 @@ class SphereCollider(Collider):
 
         r = cpp.radius
 
-        c = cpp.center
-        local_center = (c.x * scale.x, c.y * scale.y, c.z * scale.z)
-
-        # Match the native shape's signed world scale before world rotation.
-        cx, cy, cz = quat_rotate(rot, local_center)
-        world_center = (pos.x + cx, pos.y + cy, pos.z + cz)
+        world_center = tuple(transform.transform_point(cpp.center))
 
         # Sphere uses max scale axis for uniform radius (matches C++ physics shape)
         max_scale = max(abs(scale.x), abs(scale.y), abs(scale.z))

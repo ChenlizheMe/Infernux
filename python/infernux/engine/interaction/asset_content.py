@@ -59,7 +59,7 @@ class AssetRenameContentRegistry:
         transform = self._adapters.get(os.path.splitext(source)[1].lower())
         if transform is None:
             return None
-        with open(source, "r", encoding="utf-8") as stream:
+        with open(source, "r", encoding="utf-8", newline="") as stream:
             original = stream.read()
         updated = transform(original, source, destination)
         if not isinstance(updated, str):

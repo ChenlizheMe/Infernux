@@ -8,7 +8,7 @@ Design: builder pattern with a fluent API for straightforward authoring.
 
     graph = RenderGraph("ForwardPipeline")
     graph.create_texture("color", camera_target=True)
-    graph.create_texture("depth", format=Format.D32_SFLOAT)
+    graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
 
     with graph.add_pass("Opaque") as p:
         p.write_color("color")
@@ -22,8 +22,9 @@ Design: builder pattern with a fluent API for straightforward authoring.
 
 from __future__ import annotations
 
-import warnings
+import json
 from contextlib import contextmanager
+from functools import partial
 from itertools import count
 from operator import index
 from typing import Mapping, Optional, Tuple, List, Dict
@@ -38,15 +39,18 @@ from infernux.lib import (
     GraphMaterialFilter,
     GraphPassType,
     GraphBufferDesc,
+    GraphWorkBindingDesc,
     GraphBufferUsage,
     GraphBufferAccessDesc,
     GraphBufferAccessType,
+    GraphEventDesc,
     GraphTextureDesc,
     GraphTextureRole,
     GraphTextureAttachment,
     MaterialPassType,
     PixelFormat,
     DepthCompare,
+    _Infernux,
 )
 _SOURCE_REVISION_COUNTER = count(1)
 
@@ -58,11 +62,24 @@ _SOURCE_REVISION_COUNTER = count(1)
 Format = PixelFormat
 
 
+class _RenderTextureImportError(ValueError):
+    def __init__(self, message, textures):
+        super().__init__(message)
+        self.textures = textures
+
+
+def _rejected_render_texture_inputs(error, previous):
+    owners = list(error.textures) if isinstance(error, _RenderTextureImportError) else []
+    if previous is not None and not previous._render_texture_layouts_current():
+        owners.extend(texture.render_texture for texture in previous.textures if texture.render_texture is not None)
+    return tuple((owner, owner.revision) for owner in owners)
+
+
 # ============================================================================
 # TextureHandle — lightweight handle to a graph texture resource
 # ============================================================================
 
-class TextureHandle:
+class TextureHandle(GraphTextureDesc):
     """Opaque handle to a texture resource in the RenderGraph.
 
     Not meant to be constructed directly — use ``RenderGraph.create_texture()``.
@@ -74,23 +91,33 @@ class TextureHandle:
                  samples: int = 1,
                  temporal_role=GraphTextureRole.TRANSIENT,
                  temporal_key: str = ""):
+        super().__init__()
         self.name = name
         self.format = format
-        self.is_camera_target = is_camera_target
-        self.size = size  # (width, height) or None for scene target size
-        self.size_divisor = size_divisor  # >1: scene_size / divisor
-        self.samples = samples  # 0 inherits the graph's frame MSAA setting
-        self.temporal_role = temporal_role
+        self.size = size
+        self.size_divisor = size_divisor
+        self.samples = samples
+        self.role = GraphTextureRole.CAMERA if is_camera_target else temporal_role
         self.temporal_key = temporal_key
-        self.render_texture = None
-        self.attachment = GraphTextureAttachment.COLOR
-        self.asset_guid = ""
-        self.depth = 1
-        self.is_volume = False
+        self._render_texture = None
 
     @property
-    def is_depth(self) -> bool:
-        return self.format.is_depth
+    def temporal_role(self):
+        return self.role
+
+    @property
+    def render_texture(self):
+        return self._render_texture
+
+    @property
+    def size(self):
+        if self._render_texture is not None:
+            return self._render_texture.width, self._render_texture.height
+        return (self.width, self.height) if self.width else None
+
+    @size.setter
+    def size(self, value):
+        self.width, self.height = value if value is not None else (0, 0)
 
     def __repr__(self) -> str:
         tag = " [camera_target]" if self.is_camera_target else ""
@@ -105,15 +132,124 @@ class TextureHandle:
         return hash(self.name)
 
 
+def _describe_imported_buffer(buffer):
+    description = getattr(buffer, "description", None)
+    if (getattr(buffer, "device", None) != "gpu"
+            or description is None
+            or description.scalar_dtype not in {"float32", "uint32"}
+            or description.lanes != 1
+            or getattr(buffer, "closed", True)
+            or getattr(buffer, "_native", None) is None):
+        raise ValueError("import_buffer requires an open scalar float32 or uint32 GPU compute.Buffer")
+    return description
+
+
+class BufferInput:
+    """A read-only RenderGraph input whose accepted GPU value can be replaced.
+
+    Import this slot once. Publish a new value on the owner thread, for example
+    in apply_result. Each view captures the slot during frame preparation.
+    The graph retains the captured value through actual GPU use.
+    """
+
+    __slots__ = ("_layout", "_native", "_requirement")
+
+    def __init__(self, initial):
+        self._layout = self._describe_value(initial)
+        self._native = _Infernux._GraphBufferInput(initial._native, self._layout.byte_offset, self._layout.byte_length)
+        self._requirement = None
+
+    def publish(self, value) -> None:
+        """Publish an accepted value with the same logical layout, without a copy."""
+        if self._has_requirement():
+            raise RuntimeError("Cancel the current render input requirement before publishing a different value")
+        self._publish(value)
+
+    def require(self, request, *, output=None):
+        """Publish a managed GPU result before a view using this input submits.
+
+        Select a zero-based output for a request returning a tuple. The
+        selected GPU Tensor or Buffer must match this slot's layout. A view
+        waits while a live pass reads the required input.
+        Cancel the returned edge to remove an outstanding or failed dependency.
+        """
+        from infernux.application import Application
+
+        if self._has_requirement():
+            raise RuntimeError("This render input already has a result requirement")
+        if output is not None and (type(output) is not int or output < 0):
+            raise ValueError("render input output must be a nonnegative result index")
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError("render input requirements need an active Engine")
+        publish = partial(self._publish_result, output=output)
+        return engine._apply_result(request, (self,), publish, boundary="render_input", required=True)
+
+    def _has_requirement(self):
+        if self._requirement is None:
+            return False
+        from infernux.lib import SceneManager
+
+        return self._requirement._current(SceneManager.instance())
+
+    @staticmethod
+    def _publish_result(targets, result, *, output=None):
+        from infernux.nn import Tensor
+
+        if isinstance(result, tuple):
+            if output is None or output >= len(result):
+                raise ValueError("select a result index from the model output tuple")
+            result = result[output]
+        elif output is not None:
+            raise ValueError("an output index requires a tuple result")
+        slot, = targets
+        if isinstance(result, Tensor):
+            with result.as_buffer() as buffer:
+                slot._publish(buffer)
+        else:
+            slot._publish(result)
+
+    def _publish(self, value):
+        layout = self._describe_value(value)
+        if (layout.shape, layout.byte_offset) != (self._layout.shape, self._layout.byte_offset):
+            raise ValueError("Render buffer input publication must preserve its shape and byte offset")
+        self._native.publish(value._native)
+
+    @staticmethod
+    def _describe_value(value):
+        from infernux.compute import _accepted_buffer_version
+
+        layout = _describe_imported_buffer(value)
+        value._require_open()
+        _accepted_buffer_version(value)
+        return layout
+
+
 class BufferHandle:
     """Opaque handle to a graph buffer."""
 
     def __init__(self, name: str, byte_size: int, usage: int, *, view_light_list: bool = False):
         self.name = name
         self.byte_size = byte_size
+        self.byte_offset = 0
         self.usage = usage
         self._imported_buffer = None
         self.view_light_list = bool(view_light_list)
+        self._work_binding = None
+        self._work_slot = 0
+        self._export_layout = None
+        self._export_shape = ()
+
+    @property
+    def _read_only(self) -> bool:
+        if self._imported_buffer is not None or self.view_light_list:
+            return True
+        binding = self._work_binding
+        if binding is None:
+            return False
+        source = binding._input_sources.get(self._work_slot)
+        return (source._read_only if source is not None
+                else binding._native.slots[self._work_slot][3] is not None)
 
     @property
     def compute_buffer(self):
@@ -123,6 +259,8 @@ class BufferHandle:
         owner = self._imported_buffer
         if owner is None:
             return None
+        if isinstance(owner, BufferInput):
+            return owner._native.value
         if owner.closed or owner._native is None:
             raise ValueError(f"Imported buffer '{self.name}' is closed")
         return owner._native
@@ -142,6 +280,55 @@ class BufferHandle:
 # ============================================================================
 # RenderPassBuilder — configures a single pass in the graph
 # ============================================================================
+
+def _validate_texture_buffer_copy(texture, buffer, to_buffer, size, buffer_offset):
+    texel_bytes = texture.format.buffer_copy_texel_bytes
+    if (not texel_bytes or texture.is_volume or texture.samples not in (0, 1)
+            or (texture.is_camera_target and not texture.is_depth)
+            or texture.temporal_role == GraphTextureRole.ASSET):
+        raise ValueError("texture-buffer copy requires a single-sample 2D texture with a packed color or depth layout")
+    if to_buffer and buffer._read_only:
+        raise ValueError(f"Buffer '{buffer.name}' is read-only")
+    extent = texture.size
+    if texture.render_texture is not None:
+        extent = texture.render_texture.width, texture.render_texture.height
+    if not to_buffer and extent is None:
+        raise ValueError("buffer-to-texture copy requires an explicit texture size")
+    if to_buffer and extent is not None and (size[0] > extent[0] or size[1] > extent[1]):
+        raise ValueError("texture-to-buffer copy exceeds the source rectangle")
+    region = size if to_buffer else extent
+    alignment = max(4, texel_bytes)
+    if (buffer_offset < 0 or (buffer.byte_offset + buffer_offset) % alignment or buffer_offset >= buffer.byte_size
+            or region[0] * region[1] * texel_bytes > buffer.byte_size - buffer_offset):
+        raise ValueError(f"texture-buffer copy requires a {alignment}-byte-aligned, sufficiently large buffer")
+
+
+class WorkBinding:
+    """Graph-local resource ports of one common prepared work recipe.
+
+    Ports are buffer ranges, not completed results or ordinary compute Buffers.
+    Private resources are instantiated independently for each rendering view.
+    """
+
+    def __init__(self, name, graph, native, input_bindings):
+        self.name, self._graph, self._native = name, graph, native
+        self._input_bindings = dict(input_bindings)
+        self._input_sources = {}
+        self._slots = []
+        self._ports = {}
+
+    def input(self, name: str) -> BufferHandle:
+        return self._port(name, True)
+
+    def output(self, name: str) -> BufferHandle:
+        return self._port(name, False)
+
+    def _port(self, name, is_input):
+        try:
+            return self._ports[(str(name), is_input)]
+        except KeyError:
+            raise ValueError(f"Work '{self.name}' has no {'input' if is_input else 'output'} port '{name}'") from None
+
 
 class RenderPassBuilder:
     """Builder for configuring a single render pass.
@@ -192,7 +379,11 @@ class RenderPassBuilder:
         self._source_resource = ""
         self._destination_resource = ""
         self._copy_bytes = 0
+        self._copy_width = self._copy_height = 0
+        self._copy_buffer_offset = 0
+        self._work_binding = ""
         self._side_effect = False
+        self._events: list[GraphEventDesc] = []
 
     @property
     def name(self) -> str:
@@ -283,10 +474,11 @@ class RenderPassBuilder:
         return self
 
     def read_buffer(self, buffer, usage: str = "storage") -> "RenderPassBuilder":
-        """Declare a storage, indirect, or transfer buffer read."""
+        """Declare a storage, uniform, indirect, or transfer buffer read."""
         handle = self._resolve_buffer(buffer)
         access = {
             "storage": "storage_read",
+            "uniform": "uniform_read",
             "indirect": "indirect_read",
             "transfer": "transfer_read",
         }.get(str(usage).strip().lower())
@@ -298,7 +490,7 @@ class RenderPassBuilder:
     def write_buffer(self, buffer, usage: str = "storage") -> "RenderPassBuilder":
         """Declare a storage or transfer buffer write."""
         handle = self._resolve_buffer(buffer)
-        if handle.compute_buffer is not None:
+        if handle._read_only:
             raise ValueError(f"Imported buffer '{handle.name}' is read-only in the render graph")
         access = {
             "storage": "storage_write",
@@ -312,6 +504,39 @@ class RenderPassBuilder:
     def set_side_effect(self, enabled: bool = True) -> "RenderPassBuilder":
         """Retain this pass for externally observable work."""
         self._side_effect = bool(enabled)
+        return self
+
+    def emit_event(self, label: str, *, buffers=None, buffer=None, metadata=None) -> "RenderPassBuilder":
+        """Declare an event for each accepted execution of this pass.
+
+        Optional metadata uses JSON values. Map input names to exported buffers
+        to retain their final values from this execution in one event.
+        The single-buffer shorthand names its source "value".
+        Use a distinct export for an intermediate value that will be overwritten.
+        Use set_side_effect() to retain an otherwise unused pass deliberately.
+        """
+        if not isinstance(label, str) or not label:
+            raise ValueError("a render graph event needs a nonempty string label")
+        if buffer is not None:
+            if buffers is not None:
+                raise TypeError("choose buffers or the single-buffer shorthand")
+            buffers = {"value": buffer}
+        exports = {}
+        if buffers is not None:
+            if not isinstance(buffers, Mapping):
+                raise TypeError("render graph event buffers must map source names to exports")
+            for name, resource in buffers.items():
+                if not isinstance(name, str) or not name:
+                    raise ValueError("a render graph event source needs a nonempty string name")
+                handle = self._resolve_buffer(resource)
+                if handle._export_layout is None:
+                    raise ValueError("render graph event buffers must be exported")
+                exports[name] = handle.name
+        event = GraphEventDesc()
+        event.label = label
+        event.metadata = json.dumps(metadata, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        event.buffers = exports
+        self._events.append(event)
         return self
 
     def set_texture(
@@ -358,7 +583,7 @@ class RenderPassBuilder:
         return self
 
     def set_buffer(self, resource_name: str, buffer) -> "RenderPassBuilder":
-        """Bind a read-only graph buffer to a fullscreen shader ``BufferUInt`` resource.
+        """Bind a read-only graph buffer to a fullscreen ``BufferFloat`` or ``BufferUInt`` resource.
 
         Shader Resources and the pass's input calls use the same binding order.
         """
@@ -628,7 +853,7 @@ class RenderPassBuilder:
             raise ValueError("byte_count must be >= 0")
         source_handle = self._resolve_buffer(source)
         destination_handle = self._resolve_buffer(destination)
-        if destination_handle.compute_buffer is not None:
+        if destination_handle._read_only:
             raise ValueError(f"Imported buffer '{destination_handle.name}' cannot be a copy destination")
         source_handle.usage |= int(GraphBufferUsage.TRANSFER_SOURCE)
         destination_handle.usage |= int(GraphBufferUsage.TRANSFER_DESTINATION)
@@ -636,6 +861,53 @@ class RenderPassBuilder:
         self._source_resource = source_handle.name
         self._destination_resource = destination_handle.name
         self._copy_bytes = int(byte_count)
+        return self
+
+    def copy_texture_to_buffer(self, source, destination, *, size: Tuple[int, int],
+                               buffer_offset: int = 0) -> "RenderPassBuilder":
+        """Copy the packed native texels of a base-level, single-sample 2D rectangle.
+
+        Color and depth retain their bytes. This is an explicit GPU transfer.
+        ``buffer_offset`` is a byte offset within the logical destination.
+        An inherited sample count is checked against the actual native view.
+        """
+        width, height = (index(value) for value in size)
+        if width <= 0 or height <= 0:
+            raise ValueError("copy size must contain two positive dimensions")
+        return self._copy_texture_buffer(source, destination, to_buffer=True, size=(width, height),
+                                         buffer_offset=buffer_offset)
+
+    def copy_buffer_to_texture(self, source, destination, *, buffer_offset: int = 0) -> "RenderPassBuilder":
+        """Fill a single-sample 2D texture from packed native texels.
+
+        The destination's extent and ``buffer_offset`` determine the logical
+        source range. An earlier graph writer or accepted import must cover it.
+        """
+        return self._copy_texture_buffer(destination, source, to_buffer=False, buffer_offset=buffer_offset)
+
+    def _copy_texture_buffer(self, texture, buffer, *, to_buffer: bool, buffer_offset, size=None) -> "RenderPassBuilder":
+        action = "copy_texture_to_buffer" if to_buffer else "copy_buffer_to_texture"
+        if self._pass_type != "copy":
+            raise ValueError(f"{action}() requires graph.add_copy_pass()")
+        texture, buffer = self._resolve(texture), self._resolve_buffer(buffer)
+        offset = index(buffer_offset)
+        _validate_texture_buffer_copy(texture, buffer, to_buffer, size, offset)
+        buffer.usage |= int(GraphBufferUsage.TRANSFER_DESTINATION if to_buffer else GraphBufferUsage.TRANSFER_SOURCE)
+        self._action = action
+        self._source_resource, self._destination_resource = (
+            (texture.name, buffer.name) if to_buffer else (buffer.name, texture.name)
+        )
+        self._copy_width, self._copy_height = size if to_buffer else (0, 0)
+        self._copy_buffer_offset = offset
+        return self
+
+    def compute_work(self, binding: WorkBinding) -> "RenderPassBuilder":
+        """Record the common prepared work in this frame's graphics submission."""
+        if self._pass_type != "compute":
+            raise ValueError("compute_work() requires graph.add_compute_pass()")
+        if not isinstance(binding, WorkBinding) or binding._graph is not self._graph:
+            raise ValueError("WorkBinding does not belong to this RenderGraph")
+        self._action, self._work_binding = "compute_work", binding.name
         return self
 
     def present(self, source) -> "RenderPassBuilder":
@@ -677,7 +949,7 @@ class RenderGraph:
         graph = RenderGraph("ForwardPipeline")
 
         graph.create_texture("color", camera_target=True)
-        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
 
         with graph.add_pass("OpaquePass") as p:
             p.write_color("color")
@@ -698,6 +970,7 @@ class RenderGraph:
         self._name = name
         self._textures: List[TextureHandle] = []
         self._buffers: List[BufferHandle] = []
+        self._work_bindings: List[WorkBinding] = []
         self._passes: List[RenderPassBuilder] = []
         self._output: Optional[str] = None
         self._linear_output: Optional[str] = None
@@ -1008,15 +1281,15 @@ class RenderGraph:
         Unified method — use keyword args for special textures::
 
             graph.create_texture("color", camera_target=True)
-            graph.create_texture("depth", format=Format.D32_SFLOAT)
+            graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
             graph.create_texture("shadow_map", format=Format.D32_SFLOAT, size=(4096, 4096))
             graph.create_texture("bloom_half", size_divisor=2)  # half-res
 
         Args:
             name: Unique string alias (e.g. ``"color"``, ``"depth"``).
             format: Texture format.
-            camera_target: If ``True``, this is the camera's main color
-                output. Resolution and format are determined by the engine.
+            camera_target: Bind the camera's color or depth attachment. A depth
+                format selects depth. The camera provides the actual layout.
             size: (width, height) custom resolution. ``None`` uses the
                 scene render target size. Useful for shadow maps.
             size_divisor: Divide scene resolution by this value (>1).
@@ -1042,10 +1315,8 @@ class RenderGraph:
             raise ValueError(
                 f"Texture '{name}' size_divisor must be >= 0"
             )
-        if camera_target and format.is_depth:
-            raise ValueError(
-                f"Texture '{name}' cannot be a camera_target depth texture"
-            )
+        if camera_target and (size is not None or size_divisor):
+            raise ValueError(f"Camera attachment '{name}' uses the view dimensions")
         if samples is None:
             samples = (
                 0
@@ -1057,7 +1328,7 @@ class RenderGraph:
             raise ValueError(
                 f"Texture '{name}' samples must be 0, 1, 2, 4, or 8"
             )
-        if camera_target and samples not in (0,):
+        if camera_target and samples != 0:
             raise ValueError(
                 f"Texture '{name}' is a camera target and must inherit frame MSAA"
             )
@@ -1068,13 +1339,16 @@ class RenderGraph:
             raise ValueError(
                 f"Resource '{resource_name}' already exists in graph '{self._name}'"
             )
+        if camera_target and any(t.is_camera_target and t.is_depth == format.is_depth for t in self._textures):
+            raise ValueError(f"Camera attachment '{name}' already has a graph name")
 
         handle = TextureHandle(resource_name, format, is_camera_target=camera_target,
                                size=size, size_divisor=size_divisor, samples=samples)
         self._textures.append(handle)
         return handle
 
-    def import_texture(self, name: str, texture, *, attachment: str = "color") -> TextureHandle:
+    def import_texture(self, name: str, texture, *, attachment: str = "color",
+                       require_current_write: bool | None = None) -> TextureHandle:
         """Import a persistent RenderTexture attachment or a sampled Texture asset.
 
         A Texture asset is imported by GUID and is sample-only. Its sampler and
@@ -1085,11 +1359,11 @@ class RenderGraph:
         ``resolve`` using ``write_resolve`` and sample the resolve handle.
         ``depth`` uses the target's depth format and raster sample count.
         At one sample, color and resolve are the same graph identity.
-        The first producer must initialize the attachment each execution.
-        Input-only imports depend on this frame's active Camera/graph producer;
-        the renderer orders views by resource dependencies, not old pixels.
-        Missing producers and feedback cycles are rejected. Historical reads
-        remain a separate, explicitly declared temporal-resource contract.
+        Input-only color sampling reads the resident image by default.
+        Depth and multisample raster imports default to requiring an active
+        producer. Set ``require_current_write=True`` to make that requirement
+        explicit for any attachment. A missing producer defers the dependent
+        view. Use a temporal resource for separate history storage.
         Resize is observed without re-authoring the pipeline.
         """
         from infernux.core.render_texture import RenderTexture
@@ -1097,6 +1371,8 @@ class RenderGraph:
 
         resource_name = self._scoped_name(name)
         if isinstance(texture, InxTexture):
+            if require_current_write:
+                raise ValueError("Only a RenderTexture can require a current write")
             if attachment != "color":
                 raise ValueError("Texture assets are sample-only and do not expose attachments")
             guid = str(texture.guid).strip()
@@ -1130,30 +1406,25 @@ class RenderGraph:
 
         if not isinstance(texture, RenderTexture):
             raise TypeError("import_texture requires an Infernux RenderTexture or Texture asset")
-        if not texture.is_valid:
-            raise ValueError("Cannot import a RenderTexture whose device has been destroyed")
         attachments = {"color": GraphTextureAttachment.COLOR, "depth": GraphTextureAttachment.DEPTH,
                        "resolve": GraphTextureAttachment.RESOLVE}
         if attachment not in attachments:
             raise ValueError("RenderTexture attachment must be 'color', 'depth', or 'resolve'")
-        if attachment == "depth" and texture.depth_format == PixelFormat.UNDEFINED:
-            raise ValueError("RenderTexture has no depth attachment")
-        if attachment == "resolve" and texture.samples == 1:
-            attachment = "color"
-        selected = attachments[attachment]
+        handle = TextureHandle(resource_name, Format.UNDEFINED)
+        try:
+            handle._bind_render_texture(texture._native, attachments[attachment], require_current_write)
+        except ValueError as error:
+            owners = [item.render_texture for item in self._textures if item.render_texture is not None]
+            raise _RenderTextureImportError(str(error), (*owners, texture)) from error
+        handle._render_texture = texture
         occupied = self._find_texture_exact(resource_name) or self._find_buffer_exact(resource_name)
         if occupied is not None and (getattr(occupied, "render_texture", None) is not texture or
-                                     occupied.attachment != selected):
+                                     occupied.attachment != handle.attachment):
             raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
         for existing in self._textures:
-            if existing.render_texture is texture and existing.attachment == selected:
+            if existing.render_texture is texture and existing.attachment == handle.attachment:
+                existing.require_current_write |= handle.require_current_write
                 return existing
-        format = texture.depth_format if attachment == "depth" else texture.format
-        samples = 1 if attachment == "resolve" else texture.samples
-        handle = TextureHandle(resource_name, format, size=(texture.width, texture.height), samples=samples,
-                               temporal_role=GraphTextureRole.PERSISTENT)
-        handle.render_texture = texture
-        handle.attachment = selected
         self._textures.append(handle)
         return handle
 
@@ -1188,8 +1459,8 @@ class RenderGraph:
                                    size_divisor=size_divisor, samples=1)
         write = self.create_texture(f"{local_name}/write", format=format, size=size,
                                     size_divisor=size_divisor, samples=1)
-        read.temporal_role = GraphTextureRole.TEMPORAL_READ
-        write.temporal_role = GraphTextureRole.TEMPORAL_WRITE
+        read.role = GraphTextureRole.TEMPORAL_READ
+        write.role = GraphTextureRole.TEMPORAL_WRITE
         read.temporal_key = write.temporal_key = base
         return read, write
 
@@ -1250,24 +1521,121 @@ class RenderGraph:
         self._buffers.append(handle)
         return handle
 
-    def import_buffer(self, name: str, buffer) -> BufferHandle:
-        """Import an engine-owned uint32 GPU buffer into this view graph.
+    def export_buffer(self, buffer, *, shape=None, dtype=None) -> BufferHandle:
+        """Publish the final value of an owned buffer after real submission.
 
-        The caller retains the ``inx.buffer`` object. The graph retains its
-        native allocation until its last submitted frame has retired.
+        A capture is requested from a concrete view with capture_buffer().
+        No transfer or per-frame snapshot occurs without a capture. Intermediate
+        pass values require an explicit copy into a separate exported buffer.
+        """
+        import math
+        import numpy as np
+        from infernux.lib import ComputeBufferDesc, ComputeScalarType
+
+        handle = self.get_buffer(buffer.name if isinstance(buffer, BufferHandle) else str(buffer))
+        if handle is None or isinstance(buffer, BufferHandle) and handle is not buffer or handle.view_light_list:
+            raise ValueError("export_buffer requires this graph's owned/imported numerical buffer")
+        native = handle.compute_buffer
+        if native is not None:
+            count, scalar, lanes = native.element_count, native.scalar_type, native.lanes
+        elif handle._work_binding is not None:
+            count, scalar, lanes, _ = handle._work_binding._native.slots[handle._work_slot]
+        else:
+            scalar = "float32" if dtype is None else np.dtype(dtype).name
+            lanes = 1
+            count = handle.byte_size // np.dtype(scalar).itemsize
+        scalar = np.dtype(scalar)
+        if scalar.name not in {"float32", "int32", "uint32", "int64"} or (dtype is not None and np.dtype(dtype) != scalar):
+            raise TypeError("buffer export dtype must match its supported numerical storage")
+        shape = (handle.byte_size // scalar.itemsize,) if shape is None else tuple(index(value) for value in shape)
+        if (not shape or any(value <= 0 for value in shape) or handle.byte_size % scalar.itemsize
+                or math.prod(shape) * scalar.itemsize != handle.byte_size):
+            raise ValueError("buffer export shape must cover its complete logical byte range")
+        layout = ComputeBufferDesc()
+        layout.element_count, layout.scalar_type, layout.lanes = count, getattr(ComputeScalarType, scalar.name.upper()), lanes
+        handle._export_layout, handle._export_shape = layout, shape
+        return handle
+
+    def bind_work(self, name: str, work, *, inputs: Optional[Mapping[str, BufferHandle]] = None) -> WorkBinding:
+        """Bind a common GPU work recipe; no work executes during this call.
+
+        Input overrides reuse an earlier graph work's true allocation or an
+        imported read-only owner. Other graph buffers need an explicit copy.
+        The current graph must completely write private inputs before use.
+        """
+        from infernux.compute import Work
+        import numpy as np
+
+        if not isinstance(work, Work):
+            raise TypeError("bind_work requires compute.Work")
+        native = work._require_open()
+        binding_name = self._scoped_name(str(name).strip())
+        if not str(name).strip() or any(binding.name == binding_name for binding in self._work_bindings):
+            raise ValueError("work binding name must be nonempty and unique")
+        overrides = dict(inputs or {})
+        ports = tuple(native.ports)
+        valid_inputs = {port[0] for port in ports if port[4]}
+        if overrides.keys() - valid_inputs:
+            raise ValueError("work input bindings contain an unknown input port")
+        for source in overrides.values():
+            if not isinstance(source, BufferHandle) or not self._owns_buffer(source):
+                raise ValueError("work inputs must be buffer handles from this graph")
+            if source._work_binding is None and source._imported_buffer is None and source._export_layout is None:
+                raise ValueError("work input overrides require a real compute allocation; copy transient buffers explicitly")
+        binding = WorkBinding(binding_name, self, native, overrides)
+        usage = int(GraphBufferUsage.STORAGE) | int(GraphBufferUsage.UNIFORM)
+        usage |= int(GraphBufferUsage.TRANSFER_SOURCE) | int(GraphBufferUsage.TRANSFER_DESTINATION)
+        resources = []
+        for slot, (count, _scalar, lanes, _external) in enumerate(native.slots):
+            handle = BufferHandle(f"{binding_name}/__slot{slot}", count * lanes * np.dtype(_scalar).itemsize, usage)
+            handle._work_binding, handle._work_slot = binding, slot
+            binding._slots.append(handle)
+            resources.append(handle)
+        for port_name, slot, offset, length, is_input in ports:
+            handle = BufferHandle(f"{binding_name}/{'input' if is_input else 'output'}/{port_name}", length, usage)
+            handle.byte_offset = offset
+            handle._work_binding, handle._work_slot = binding, slot
+            binding._ports[(port_name, is_input)] = handle
+            resources.append(handle)
+            if is_input and port_name in overrides:
+                source = overrides[port_name]
+                if source.byte_offset != offset or source.byte_size != length:
+                    raise ValueError("work input override must match the prepared port's byte range")
+                previous = binding._input_sources.get(slot)
+                if previous is None:
+                    binding._input_sources[slot] = source
+        for handle in resources:
+            if self._find_texture_exact(handle.name) is not None or self._find_buffer_exact(handle.name) is not None:
+                raise ValueError(f"Resource '{handle.name}' already exists")
+        self._buffers.extend(resources)
+        self._work_bindings.append(binding)
+        return binding
+
+    def import_buffer(self, name: str, buffer) -> BufferHandle:
+        """Import a scalar f32/u32 GPU Buffer, view or BufferInput.
+
+        The entire logical range must have accepted initialization. This does not flush pending
+        compute work or wait for GPU completion. Descriptor offsets must meet
+        the actual device's storage-buffer alignment; no hidden copy is made.
+        Ordinary buffers share live storage. BufferInput captures a published
+        immutable value for each execution.
         """
         resource_name = self._scoped_name(name)
         if (self._find_texture_exact(resource_name) is not None
                 or self._find_buffer_exact(resource_name) is not None):
             raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
-        if (getattr(buffer, "device", None) != "gpu"
-                or getattr(buffer, "dtype", None) != "uint32"
-                or getattr(buffer, "closed", True)
-                or getattr(buffer, "_native", None) is None):
-            raise ValueError("import_buffer requires an open uint32 GPU inx.buffer")
-        if buffer._byte_offset != 0 or buffer.nbytes != buffer._native.byte_size:
-            raise ValueError("import_buffer requires the complete GPU allocation, not a buffer view")
-        handle = BufferHandle(resource_name, buffer.nbytes, int(GraphBufferUsage.STORAGE))
+        if isinstance(buffer, BufferInput):
+            description = buffer._layout
+            byte_size = description.byte_length
+        else:
+            description = _describe_imported_buffer(buffer)
+            byte_size = buffer.nbytes
+            if int(buffer._native.last_write_serial) == 0:
+                raise ValueError("import_buffer requires an accepted producer; pending compute work is not ready")
+            if not buffer._native.has_initialized_range(description.byte_offset, byte_size):
+                raise ValueError("import_buffer requires a fully initialized logical range")
+        handle = BufferHandle(resource_name, byte_size, int(GraphBufferUsage.STORAGE))
+        handle.byte_offset = description.byte_offset
         handle._imported_buffer = buffer
         self._buffers.append(handle)
         return handle
@@ -1382,9 +1750,12 @@ class RenderGraph:
         """Draw Camera UI and expose the composite immediately afterwards."""
         res = resources or {"color"}
         if not self.has_pass("_WorldUI"):
+            depth = next((tex for tex in self._textures if tex.is_camera_target and tex.is_depth), None)
+            if depth is None:
+                raise ValueError("Camera UI requires a declared camera depth attachment")
             with self.add_pass("_WorldUI") as p:
                 p.write_color("color")
-                p.write_depth("depth")
+                p.write_depth(depth)
                 p.draw_world_ui(layer_mask=world_ui_layer_mask)
         if not self.has_pass("_ScreenUI_Camera"):
             with self.add_pass("_ScreenUI_Camera") as p:
@@ -1533,6 +1904,10 @@ class RenderGraph:
         """Add a transfer-domain texture or buffer copy pass."""
         return self._add_typed_pass(name, "copy")
 
+    def add_compute_pass(self, name: str) -> RenderPassBuilder:
+        """Add common GPU work to the current graphics graph."""
+        return self._add_typed_pass(name, "compute")
+
     def add_present_pass(self, name: str) -> RenderPassBuilder:
         """Add the final graph export pass."""
         return self._add_typed_pass(name, "present")
@@ -1606,18 +1981,6 @@ class RenderGraph:
         buffer_map = {buffer.name: buffer for buffer in self._buffers}
         pass_names = set()
 
-        # Warn if multiple textures claim camera_target — they alias to the
-        # same physical swapchain image, which is almost never intended.
-        camera_targets = [t.name for t in self._textures if t.is_camera_target]
-        if len(camera_targets) > 1:
-            warnings.warn(
-                f"[RenderGraph '{self._name}'] Multiple camera_target textures "
-                f"({', '.join(camera_targets)}). All camera_target textures "
-                f"alias to the same swapchain image — only one should be "
-                f"camera_target=True.",
-                stacklevel=3,
-            )
-
         for tex in self._textures:
             if tex.size is not None and tex.size_divisor > 0:
                 raise ValueError(
@@ -1650,7 +2013,7 @@ class RenderGraph:
                 produced.add(p._write_depth)
             if p._resolve_color is not None:
                 produced.add(p._resolve_color)
-            if p._action == "copy_texture":
+            if p._action in ("copy_texture", "copy_buffer_to_texture"):
                 produced.add(p._destination_resource)
 
         if self._output is not None and self._output not in texture_map:
@@ -1672,7 +2035,8 @@ class RenderGraph:
         }
         allowed_actions = {
             "raster": raster_actions,
-            "copy": {"copy_texture", "copy_buffer"},
+            "copy": {"copy_texture", "copy_buffer", "copy_texture_to_buffer", "copy_buffer_to_texture"},
+            "compute": {"compute_work"},
             "present": {"present"},
         }
         if p._pass_type not in allowed_actions or p._action not in allowed_actions[p._pass_type]:
@@ -1729,30 +2093,18 @@ class RenderGraph:
                     raise ValueError(
                         f"Picking pass '{p._name}' requires RG32_UINT color[0] and a depth output"
                     )
-            elif p._material_pass == "motion":
-                colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
+            elif p._material_pass in ("motion", "normal"):
+                expected = Format.RG16_SFLOAT if p._material_pass == "motion" else Format.RGBA16_SFLOAT
+                color = texture_map[p._write_colors[0]] if len(p._write_colors) == 1 else None
                 depth_reads = [texture_map[name] for name in p._reads if texture_map[name].is_depth]
                 if (
-                    len(colors) != 1
-                    or colors[0].format != Format.RG16_SFLOAT
+                    color is None or color.is_depth
+                    or (not color.is_camera_target and color.format != expected)
                     or len(depth_reads) != 1
                     or p._write_depth is not None
                 ):
                     raise ValueError(
-                        f"Motion pass '{p._name}' requires one RG16_SFLOAT color output, "
-                        "one readable depth texture, and no depth write"
-                    )
-            elif p._material_pass == "normal":
-                colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
-                depth_reads = [texture_map[name] for name in p._reads if texture_map[name].is_depth]
-                if (
-                    len(colors) != 1
-                    or colors[0].format != Format.RGBA16_SFLOAT
-                    or len(depth_reads) != 1
-                    or p._write_depth is not None
-                ):
-                    raise ValueError(
-                        f"Normal pass '{p._name}' requires one RGBA16_SFLOAT color output, "
+                        f"{p._material_pass.title()} pass '{p._name}' requires one {expected.name} color output, "
                         "one readable depth texture, and no depth write"
                     )
             elif not p._write_colors:
@@ -1768,6 +2120,7 @@ class RenderGraph:
                 )
             required_usage = {
                 "storage_read": int(GraphBufferUsage.STORAGE),
+                "uniform_read": int(GraphBufferUsage.UNIFORM),
                 "storage_write": int(GraphBufferUsage.STORAGE),
                 "indirect_read": int(GraphBufferUsage.INDIRECT),
                 "transfer_read": int(GraphBufferUsage.TRANSFER_SOURCE),
@@ -1789,13 +2142,18 @@ class RenderGraph:
             if (source.temporal_role == GraphTextureRole.ASSET
                     or destination.temporal_role == GraphTextureRole.ASSET):
                 raise ValueError(f"Copy pass '{p._name}' cannot use a sample-only Texture asset")
-            if source.is_camera_target or destination.is_camera_target:
+            if ((source.is_camera_target and not source.is_depth)
+                    or (destination.is_camera_target and not destination.is_depth)):
                 raise ValueError(
                     f"Copy pass '{p._name}' requires transient textures; use present() "
                     "or a fullscreen pass for a camera target"
                 )
-            if source.format != destination.format:
+            if (source.is_depth != destination.is_depth
+                    or (not (source.is_camera_target or destination.is_camera_target)
+                        and source.format != destination.format)):
                 raise ValueError(f"Copy pass '{p._name}' requires matching texture formats")
+            if source.samples and destination.samples and source.samples != destination.samples:
+                raise ValueError(f"Copy pass '{p._name}' requires matching sample counts; use an explicit resolve")
         elif p._action == "copy_buffer":
             if p._source_resource not in buffer_map or p._destination_resource not in buffer_map:
                 raise ValueError(f"Copy pass '{p._name}' references an unknown buffer")
@@ -1807,6 +2165,18 @@ class RenderGraph:
             )
             if p._copy_bytes > maximum:
                 raise ValueError(f"Copy pass '{p._name}' exceeds the smaller buffer")
+        elif p._action in ("copy_texture_to_buffer", "copy_buffer_to_texture"):
+            to_buffer = p._action == "copy_texture_to_buffer"
+            texture = texture_map.get(p._source_resource if to_buffer else p._destination_resource)
+            buffer = buffer_map.get(p._destination_resource if to_buffer else p._source_resource)
+            if texture is None or buffer is None:
+                raise ValueError(f"Copy pass '{p._name}' references an unknown resource")
+            _validate_texture_buffer_copy(texture, buffer, to_buffer,
+                                          (p._copy_width, p._copy_height) if to_buffer else None,
+                                          p._copy_buffer_offset)
+        elif p._action == "compute_work":
+            if not any(binding.name == p._work_binding for binding in self._work_bindings):
+                raise ValueError("compute_work references an unknown work binding")
         elif p._action == "present" and p._source_resource not in texture_map:
             raise ValueError(f"Present pass '{p._name}' references an unknown texture")
         elif p._action == "present" and texture_map[p._source_resource].is_depth:
@@ -1884,7 +2254,7 @@ class RenderGraph:
                 if source.samples == 0 and self._msaa_samples > 0
                 else source.samples
             )
-            if source_samples not in (2, 4, 8):
+            if source_samples not in (0, 2, 4, 8):
                 raise ValueError(
                     f"Pass '{p._name}' resolve source must be multisampled"
                 )
@@ -1892,14 +2262,11 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' resolve target must use samples=1"
                 )
-            if source.format != resolve.format:
-                raise ValueError(
-                    f"Pass '{p._name}' resolve source and target formats must match"
-                )
-            if source.size != resolve.size or source.size_divisor != resolve.size_divisor:
-                raise ValueError(
-                    f"Pass '{p._name}' resolve source and target extents must match"
-                )
+            if not source.is_camera_target:
+                if source.format != resolve.format:
+                    raise ValueError(f"Pass '{p._name}' resolve source and target formats must match")
+                if source.size != resolve.size or source.size_divisor != resolve.size_divisor:
+                    raise ValueError(f"Pass '{p._name}' resolve source and target extents must match")
 
         for sampler_name, tex_name in p._input_bindings.items():
             if tex_name not in texture_map and tex_name not in buffer_map:
@@ -1951,7 +2318,7 @@ class RenderGraph:
         if self._output is None:
             # Auto-set output to camera_target if exists
             for tex in self._textures:
-                if tex.is_camera_target:
+                if tex.is_camera_target and not tex.is_depth:
                     self._output = tex.name
                     break
 
@@ -1969,44 +2336,33 @@ class RenderGraph:
         desc.name = self._name
         desc.source_revision = next(_SOURCE_REVISION_COUNTER)
 
-        # Build texture list — construct full list then assign (pybind11
-        # vectors return copies, so append() on a property doesn't work).
-        tex_list = []
-        for tex in self._textures:
-            td = GraphTextureDesc()
-            td.name = tex.name
-            td.format = tex.format
-            td.is_backbuffer = tex.is_camera_target
-            td.is_depth = tex.is_depth
-            if tex.size is not None:
-                td.width = tex.size[0]
-                td.height = tex.size[1]
-            if tex.size_divisor > 0:
-                td.size_divisor = tex.size_divisor
-            td.samples = tex.samples
-            td.role = tex.temporal_role
-            td.temporal_key = tex.temporal_key
-            if tex.render_texture is not None:
-                td.render_texture = tex.render_texture._native
-                td.attachment = tex.attachment
-                td.width, td.height = tex.render_texture.width, tex.render_texture.height
-            if tex.asset_guid:
-                td.asset_guid = tex.asset_guid
-                td.depth = tex.depth
-                td.is_volume = tex.is_volume
-            tex_list.append(td)
-        desc.textures = tex_list
+        desc.textures = self._textures
 
         buffer_list = []
         for buffer in self._buffers:
             bd = GraphBufferDesc()
             bd.name = buffer.name
             bd.byte_size = buffer.byte_size
+            bd.byte_offset = buffer.byte_offset
             bd.usage = buffer.usage
-            bd.compute_buffer = buffer.compute_buffer
+            if isinstance(buffer._imported_buffer, BufferInput):
+                bd.input = buffer._imported_buffer._native
+            else:
+                bd.compute_buffer = buffer.compute_buffer
             bd.view_light_list = buffer.view_light_list
+            bd.export_layout, bd.export_shape = buffer._export_layout, list(buffer._export_shape)
+            if buffer._work_binding is not None:
+                bd.work_binding = buffer._work_binding.name
+                bd.work_slot = buffer._work_slot
             buffer_list.append(bd)
         desc.buffers = buffer_list
+        work_list = []
+        for binding in self._work_bindings:
+            item = GraphWorkBindingDesc()
+            item.name, item.recipe = binding.name, binding._native
+            item.input_bindings = [(port, source.name) for port, source in binding._input_bindings.items()]
+            work_list.append(item)
+        desc.work_bindings = work_list
 
         # Build pass list
         _command_map = {
@@ -2018,15 +2374,20 @@ class RenderGraph:
             "fullscreen_quad": GraphCommandType.FULLSCREEN_QUAD,
             "copy_texture": GraphCommandType.COPY_TEXTURE,
             "copy_buffer": GraphCommandType.COPY_BUFFER,
+            "copy_texture_to_buffer": GraphCommandType.COPY_TEXTURE_TO_BUFFER,
+            "copy_buffer_to_texture": GraphCommandType.COPY_BUFFER_TO_TEXTURE,
+            "compute_work": GraphCommandType.COMPUTE_WORK,
             "present": GraphCommandType.PRESENT,
         }
         _pass_type_map = {
             "raster": GraphPassType.RASTER,
+            "compute": GraphPassType.COMPUTE,
             "copy": GraphPassType.COPY,
             "present": GraphPassType.PRESENT,
         }
         _buffer_access_map = {
             "storage_read": GraphBufferAccessType.STORAGE_READ,
+            "uniform_read": GraphBufferAccessType.UNIFORM_READ,
             "storage_write": GraphBufferAccessType.STORAGE_WRITE,
             "indirect_read": GraphBufferAccessType.INDIRECT_READ,
             "transfer_read": GraphBufferAccessType.TRANSFER_READ,
@@ -2067,6 +2428,7 @@ class RenderGraph:
                 accesses.append(access)
             pd.buffer_accesses = accesses
             pd.side_effect = p._side_effect
+            pd.events = p._events
 
             if p._clear_color is not None:
                 pd.clear_color = True
@@ -2111,6 +2473,9 @@ class RenderGraph:
                 command.source_resource = p._source_resource
                 command.destination_resource = p._destination_resource
                 command.copy_bytes = p._copy_bytes
+                command.copy_width, command.copy_height = p._copy_width, p._copy_height
+                command.copy_buffer_offset = p._copy_buffer_offset
+                command.work_binding = p._work_binding
                 pd.commands = [command]
 
             pass_list.append(pd)

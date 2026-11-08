@@ -8,6 +8,12 @@
 
 namespace infernux
 {
+void PhysicMaterialLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
+{
+    const auto material = payload.Get<PhysicMaterial>();
+    material->SetFilePath(filePath);
+    material->SetName(FromFsPath(ToFsPath(filePath).stem()));
+}
 
 namespace
 {
@@ -67,13 +73,10 @@ std::set<std::string> PhysicMaterialLoader::ScanDependencies(const std::string &
     return {};
 }
 
-void PhysicMaterialLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                                      InxResourceMeta &metaData) const
+void PhysicMaterialLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
-    if (!content)
-        throw std::invalid_argument("PhysicMaterial metadata requires file content");
-    metaData.Init(content, contentSize, filePath, ResourceType::PhysicMaterial);
-    metaData.AddMetadata("physic_material_name", FromFsPath(ToFsPath(filePath).stem()));
+    metaData.InitFromSource(source, ResourceType::PhysicMaterial);
+    metaData.AddMetadata("physic_material_name", FromFsPath(ToFsPath(source.Path()).stem()));
 }
 
 } // namespace infernux

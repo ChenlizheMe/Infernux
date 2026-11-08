@@ -54,6 +54,12 @@ void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_v
             throw std::invalid_argument(FieldPath(expectedType, "prefab_source_id") +
                                         " must be a non-zero unsigned integer");
     }
+    if (const auto sourceGuid = document.find("prefab_source_guid"); sourceGuid != document.end()) {
+        if (!sourceGuid->is_string() || sourceGuid->get_ref<const std::string &>().empty() ||
+            !document.contains("prefab_source_id"))
+            throw std::invalid_argument(FieldPath(expectedType, "prefab_source_guid") +
+                                        " must be a non-empty string with a source ID");
+    }
 }
 
 } // namespace

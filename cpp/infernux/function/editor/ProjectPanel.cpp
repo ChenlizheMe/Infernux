@@ -1508,7 +1508,7 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath)
 
     // Project and Inspector read one native publication revision. Material
     // and texture edits invalidate both consumers even when geometry is fixed.
-    const auto revision = m_engine->GetMeshPreviewDependencyRevision(filePath);
+    const auto revision = m_engine->GetPreviewDependencyRevision(filePath);
     if (revision == 0)
         return 0;
 

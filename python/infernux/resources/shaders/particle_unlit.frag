@@ -10,6 +10,7 @@ ShaderInfo {
     Properties {
         Color baseColor = [1.0, 1.0, 1.0, 1.0]
         Texture2D texSampler = white
+        Float4 texSampler_ST = [1.0, 1.0, 0.0, 0.0]
         Float glow = 0.0 Range(0.0, 8.0)
         Float rainbow = 0.0 Range(0.0, 1.0)
     }
@@ -17,7 +18,7 @@ ShaderInfo {
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
-    vec4 texColor = sampleAlbedoAlpha(texSampler);
+    vec4 texColor = sampleAlbedoAlpha(texSampler, transformTextureUV(v_TexCoord, material.texSampler_ST));
     vec3 rgb = texColor.rgb * v_Color * material.baseColor.rgb;
     if (material.rainbow > 0.001) {
         vec3 k = abs(fract(vec3(v_TexCoord.x) + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);

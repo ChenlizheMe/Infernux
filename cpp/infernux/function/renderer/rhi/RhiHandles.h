@@ -1,5 +1,7 @@
 #pragma once
 
+#include "RenderCoreApi.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -16,7 +18,7 @@ inline constexpr DeviceId InvalidDeviceId = 0;
 /// Identities are not recycled during the process lifetime so stale handles
 /// cannot become valid when a backend device is destroyed and recreated.
 /// Throws std::overflow_error when the finite device namespace is exhausted.
-[[nodiscard]] DeviceId AllocateDeviceId();
+[[nodiscard]] INFERNUX_RENDER_CORE_API DeviceId AllocateDeviceId();
 
 /// Advance a released slot's version. Zero permanently retires an exhausted
 /// slot: it must never enter the free list again, including during Reset.

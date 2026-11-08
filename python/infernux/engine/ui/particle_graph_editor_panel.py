@@ -239,7 +239,7 @@ def _particle_asset_reference(asset_type: str, value) -> AssetReference:
 
 def _event_field_default(value_type: ValueType):
     if value_type is ValueType.CURVE:
-        return AnimationCurve().to_dict()
+        return AnimationCurve.ease_in_out(0.0, 0.0, 1.0, 1.0).to_dict()
     if value_type is ValueType.GRADIENT:
         return Gradient().to_dict()
     if value_type in {ValueType.TEXTURE2D, ValueType.MESH}:
@@ -351,7 +351,8 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         self._stage = "init"
         self._focus_detail_name = ""
         self._workspace_tab_index = 0
-        self._pending_save_ticket_id = ""
+        # Save-as ticket state lives in _authoring_document_controller; this
+        # panel has no local ticket field or projection.
         self._draft_compile_error = ""
         self._save_as_dialog = AssetSaveAsDialog(
             "particle_graph.save_as",
@@ -2191,18 +2192,9 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         self._file_path = resolved_path(destination_path)
         self._persist_panel_state()
 
-    def _save_to(self, file_path: str, *, ticket_id: str = "") -> bool:
-        active_ticket_id = ticket_id or self._pending_save_ticket_id
-        if not active_ticket_id:
-            raise RuntimeError(
-                "Particle Graph saves require a DocumentRegistry SaveTicket"
-            )
-        result = self._authoring_document_controller.continue_save_to_resource(
-            active_ticket_id,
-            file_path,
-        )
+    def _save_to(self, file_path: str) -> bool:
+        result = self._authoring_document_controller.confirm_save_as(file_path)
         if result.accepted:
-            self._pending_save_ticket_id = ""
             self._draft_compile_error = ""
         elif result.message:
             self._report_save_failure(result.message)
@@ -2242,19 +2234,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         return result.accepted
 
     def request_authoring_save_as(self, ticket):
-        from infernux.engine.interaction import (
-            DocumentActionResult,
-            DocumentActionStatus,
-        )
-
-        self._pending_save_ticket_id = ticket.ticket_id
-        if self._show_save_as_dialog():
-            return DocumentActionResult(DocumentActionStatus.PENDING)
-        self._pending_save_ticket_id = ""
-        return DocumentActionResult(
-            DocumentActionStatus.REJECTED,
-            "no project root is available",
-        )
+        return self._authoring_document_controller.begin_save_as(ticket, self._show_save_as_dialog)
 
     def capture_authoring_save_snapshot(self, target: str):
         from functools import partial
@@ -2336,18 +2316,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         return self._discard_unsaved_changes()
 
     def _cancel_pending_save(self) -> None:
-        ticket_id = self._pending_save_ticket_id
-        self._pending_save_ticket_id = ""
-        if not ticket_id:
-            return
-        from infernux.engine.interaction import DocumentRegistry
-
-        DocumentRegistry.instance().complete_save(
-            ticket_id,
-            success=False,
-            cancelled=True,
-            message="save was cancelled",
-        )
+        self._authoring_document_controller.cancel_pending_save()
 
     def _discard_unsaved_changes(self) -> bool:
         if self._file_path:

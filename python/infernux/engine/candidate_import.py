@@ -15,12 +15,15 @@ from __future__ import annotations
 import builtins
 import importlib
 import importlib.util
+import inspect
 import os
 import sys
 import tokenize
 import types
+import weakref
 from collections import ChainMap
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .path_utils import is_path_within, path_key, resolved_path
 from .module_classification import is_stdlib_module
@@ -44,6 +47,112 @@ class CandidateModuleSpec:
     namespace: bool = False
 
 
+def _module_source(module: types.ModuleType) -> str | None:
+    return types.ModuleType.__getattribute__(module, "__dict__").get("__file__")
+
+
+def _published_module(module: types.ModuleType) -> types.ModuleType:
+    name = types.ModuleType.__getattribute__(module, "__name__")
+    current = sys.modules.get(name)
+    if type(current) is types.ModuleType and _module_source(current) == _module_source(module):
+        return current
+    return module
+
+
+class _PublishedModuleAlias(types.ModuleType):
+    """An earlier module reference follows publication of the same script."""
+
+    __slots__ = ()
+
+    def __getattribute__(self, name):
+        return types.ModuleType.__getattribute__(_published_module(self), name)
+
+    def __setattr__(self, name, value):
+        types.ModuleType.__setattr__(_published_module(self), name, value)
+
+    def __delattr__(self, name):
+        types.ModuleType.__delattr__(_published_module(self), name)
+
+    def __dir__(self):
+        return types.ModuleType.__dir__(_published_module(self))
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedFunction:
+    module: str
+    source: str
+    name: str
+    original: types.FunctionType
+
+    @property
+    def __wrapped__(self):
+        module = sys.modules.get(self.module)
+        if type(module) is not types.ModuleType or _module_source(module) != self.source:
+            return self.original
+        function = vars(module).get(self.name)
+        if callable(function) and getattr(function, "__wrapped__", None) is not self:
+            return function
+        raise ReferenceError(f"Project function '{self.module}.{self.name}' is no longer published")
+
+
+def _method_function(descriptor):
+    return descriptor.__func__ if isinstance(descriptor, (staticmethod, classmethod)) else descriptor
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedMethod:
+    owner: type
+    name: str
+    descriptor_type: type
+
+    @property
+    def __wrapped__(self):
+        descriptor = vars(self.owner).get(self.name)
+        if type(descriptor) is self.descriptor_type:
+            function = _method_function(descriptor)
+            if getattr(function, "__wrapped__", None) is not self:
+                return function
+        raise ReferenceError(f"Project method '{self.owner.__qualname__}.{self.name}' is no longer published")
+
+
+__infernux_published_functions__: dict[str, _PublishedFunction | _PublishedMethod] = {}
+
+
+def _forward_published_function(*args, **kwargs):
+    return __infernux_published_functions__["<function>"].__wrapped__(*args, **kwargs)
+
+
+@lru_cache(maxsize=32)
+def _bridge_code(capture_count):
+    if not capture_count:
+        return _forward_published_function.__code__
+    # CPython requires the same number of closure cells when replacing a body.
+    # The bridge delegates to a new body that receives the original cells.
+    names = [f"cell_{index}" for index in range(capture_count)]
+    source = (
+        "def build():\n"
+        f"    {' = '.join(names)} = None\n"
+        "    def forward(*args, **kwargs):\n"
+        f"        if False: ({', '.join(names)},)\n"
+        '        return __infernux_published_functions__["<function>"].__wrapped__(*args, **kwargs)\n'
+        "    return forward.__code__\n"
+    )
+    scope = {}
+    exec(source, scope)
+    return scope["build"]()
+
+
+_NON_SYNCHRONOUS = inspect.CO_GENERATOR | inspect.CO_COROUTINE | inspect.CO_ASYNC_GENERATOR
+
+
+def _plain_project_function(function, namespace, name, *, method=False):
+    free_variables = ((), ("__class__",)) if method else ((),)
+    return (type(function) is types.FunctionType and function.__globals__ is namespace
+            and function.__qualname__ == name and function.__code__.co_freevars in free_variables
+            and not function.__code__.co_flags & _NON_SYNCHRONOUS
+            and "__wrapped__" not in function.__dict__)
+
+
 class CandidateImportTransaction:
     """Execute a candidate dependency closure without publishing modules.
 
@@ -65,6 +174,10 @@ class CandidateImportTransaction:
         self._parent_before: list[tuple[types.ModuleType, str, bool, object]] = []
         self._parent_before_keys: set[tuple[int, str]] = set()
         self._before: dict[str, object] = {}
+        self._published_aliases: list[types.ModuleType] = []
+        self._forwarded_functions: list[tuple[types.FunctionType, types.CodeType]] = []
+        self._forwarded_namespaces: dict[int, tuple[dict, object, dict]] = {}
+        self._closure_bodies = []
         self._serializable_types: dict[str, type] = {}
         self._serializable_before: dict[str, type | None] = {}
         self._effect_features = {}
@@ -447,6 +560,14 @@ class CandidateImportTransaction:
                 spec.file_path, self._effect_features, self._effect_module_sources,
             ):
                 exec(code, module.__dict__)
+            from infernux.components.script_loader import _remember_module_literals
+            from infernux.engine.script_closure_reload import remember_closure_code
+
+            _remember_module_literals(module)
+            remember_closure_code(module, code)
+            previous = sys.modules.get(spec.name)
+            if type(previous) is types.ModuleType and _module_source(previous) == spec.file_path:
+                remember_closure_code(previous)
         except Exception:
             self._modules.pop(spec.name, None)
             for identity, cls in tuple(self._serializable_types.items()):
@@ -571,9 +692,16 @@ class CandidateImportTransaction:
             self._serializable_before = _publish_serializable_types(
                 self._serializable_types, published_set,
             )
+            from infernux.components.script_loader import _carry_module_literal_state
+
             for name in published_names:
                 module = self._modules[name]
-                self._before.setdefault(name, sys.modules.get(name, _MODULE_ABSENT))
+                previous = sys.modules.get(name, _MODULE_ABSENT)
+                self._before.setdefault(name, previous)
+                source = _module_source(module)
+                if source is not None and type(previous) is types.ModuleType and _module_source(previous) == source:
+                    _carry_module_literal_state(previous, module)
+                    self._published_aliases.append(previous)
                 sys.modules[name] = module
             # A private overlay is never published as a replacement package.
             # Once every child module is visible, update its live parent as the
@@ -599,10 +727,80 @@ class CandidateImportTransaction:
 
             self._effect_before = _snapshot_effect_features(self._effect_features, self._effect_sources)
             _publish_effect_features(self._effect_features.values(), source_keys=self._effect_sources)
+            self._forward_closures()
+            for previous in self._published_aliases:
+                self._forward_module_functions(previous, self._modules[previous.__name__])
+                previous.__class__ = _PublishedModuleAlias
             self._committed = True
         except Exception:
             self.rollback()
             raise
+
+    def _forward_module_functions(self, previous: types.ModuleType, current: types.ModuleType) -> None:
+        from infernux.engine.runtime_dispatch import _copy_function_body
+
+        before, after = vars(previous), vars(current)
+        for name, original in tuple(before.items()):
+            replacement = after.get(name)
+            if not _plain_project_function(original, before, name):
+                continue
+            if callable(replacement) and not _plain_project_function(replacement, after, name):
+                continue
+            reference = _PublishedFunction(previous.__name__, previous.__file__, name, _copy_function_body(original))
+            self._forward_callable(original, reference)
+
+    def forward_replaced_methods(self, class_snapshots) -> None:
+        """Keep callbacks bound before the class body was replaced callable."""
+        for owner, attributes in class_snapshots:
+            for name, (present, old_descriptor) in attributes.items():
+                original = _method_function(old_descriptor)
+                if not present or type(original) is not types.FunctionType or original.__module__ != owner.__module__:
+                    continue
+                qualified = f"{owner.__qualname__}.{name}"
+                if not _plain_project_function(original, original.__globals__, qualified, method=True):
+                    continue
+                descriptor = vars(owner).get(name)
+                replacement = _method_function(descriptor)
+                if replacement is original or (callable(replacement) and type(descriptor) is not type(old_descriptor)):
+                    continue
+                self._forward_callable(original, _PublishedMethod(owner, name, type(old_descriptor)))
+
+    def _forward_closures(self) -> None:
+        from infernux.engine.runtime_dispatch import _copy_function_body
+        from infernux.engine.script_closure_reload import ClosureBody, closure_updates
+
+        pairs = ((previous, self._modules[previous.__name__]) for previous in self._published_aliases)
+        for retained, function, (code, namespace) in closure_updates(pairs):
+            body = _copy_function_body(function, code, namespace)
+            body.__infernux_closure_body__ = True
+            if type(retained) is ClosureBody:
+                self._closure_bodies.append((retained, function))
+                retained.function = body
+            else:
+                self._forward_callable(function, ClosureBody(body), str(id(function)))
+
+    def _forward_callable(self, original: types.FunctionType, reference, closure_key: str | None = None) -> None:
+        namespace = original.__globals__
+        identity = id(namespace)
+        key = "__infernux_published_functions__"
+        if identity not in self._forwarded_namespaces:
+            previous = namespace.get(key, _MODULE_ABSENT)
+            references = dict(previous) if type(previous) is dict else {}
+            self._forwarded_namespaces[identity] = namespace, previous, references
+            namespace[key] = references
+        references = self._forwarded_namespaces[identity][2]
+        name = closure_key if closure_key is not None else original.__qualname__
+        references[name] = weakref.proxy(reference) if closure_key is not None else reference
+        old_code = original.__code__
+        bridge = _bridge_code(len(old_code.co_freevars))
+        self._forwarded_functions.append((original, old_code))
+        original.__code__ = bridge.replace(
+            co_consts=tuple(name if value == "<function>" else value for value in bridge.co_consts),
+            co_freevars=old_code.co_freevars,
+            co_filename=old_code.co_filename,
+            co_name=old_code.co_name, co_qualname=old_code.co_qualname,
+        )
+        original.__wrapped__ = reference
 
     def rollback(self) -> None:
         if self._rolled_back:
@@ -613,6 +811,23 @@ class CandidateImportTransaction:
             from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
             assert_runtime_dispatch_safe_point()
+        for closure, previous in self._closure_bodies:
+            closure.function = previous
+        self._closure_bodies.clear()
+        for function, code in self._forwarded_functions:
+            function.__code__ = code
+            function.__dict__.pop("__wrapped__", None)
+        self._forwarded_functions.clear()
+        for namespace, previous, _ in self._forwarded_namespaces.values():
+            key = "__infernux_published_functions__"
+            if previous is _MODULE_ABSENT:
+                namespace.pop(key, None)
+            else:
+                namespace[key] = previous
+        self._forwarded_namespaces.clear()
+        for module in self._published_aliases:
+            types.ModuleType.__setattr__(module, "__class__", types.ModuleType)
+        self._published_aliases.clear()
         for parent, child_name, present, previous in reversed(self._parent_before):
             if present:
                 setattr(parent, child_name, previous)
@@ -664,6 +879,10 @@ class CandidateImportTransaction:
         self._published_names = frozenset((*self._modules, *self._reused_lkg))
         self._finalized = True
         self._before.clear()
+        self._published_aliases.clear()
+        self._forwarded_functions.clear()
+        self._forwarded_namespaces.clear()
+        self._closure_bodies.clear()
         self._parent_before.clear()
         self._parent_before_keys.clear()
         self._serializable_before.clear()

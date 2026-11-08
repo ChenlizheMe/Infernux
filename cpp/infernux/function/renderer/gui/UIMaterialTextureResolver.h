@@ -78,7 +78,8 @@ inline TextureResolveResult ResolveBuiltinUIMaterialTexture(const std::shared_pt
         const auto sampler = owner->sampler;
         publication = std::make_shared<const rhi::TextureGpuView>(
             source->GetSourceId(), source->GetRevision(), source->GetTexture(), source->GetView(), sampler,
-            source->GetResidentBytes(), std::move(owner), source->GetFormat(), source->GetViewDesc());
+            source->GetResidentBytes(), std::move(owner), source->GetFormat(), source->GetViewDesc(),
+            source->GetUploadSubmission());
     }
 
     return {TextureResolveStatus::Ready,

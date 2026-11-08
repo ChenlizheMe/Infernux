@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Component.h"
+#include "InstantiationIds.h"
 #include "ObjectHandle.h"
 #include "Transform.h"
 #include <memory>
@@ -16,6 +17,7 @@ namespace infernux
 
 // Forward declaration
 class Scene;
+class PrefabComponentEdit;
 
 /**
  * @brief Base entity in the scene hierarchy.
@@ -389,6 +391,8 @@ class GameObject : public NativeLifetimeOwner
 
     [[nodiscard]] std::vector<std::string> GetAddComponentBlockers(const std::string &typeName) const;
     [[nodiscard]] std::vector<std::string> GetComponentSetBlockers() const;
+    [[nodiscard]] std::shared_ptr<PrefabComponentEdit>
+    StagePrefabComponentEdit(const nlohmann::json &additions, const std::vector<uint64_t> &removedIds);
     [[nodiscard]] bool CanAddComponentByTypeName(const std::string &typeName) const
     {
         return GetAddComponentBlockers(typeName).empty();
@@ -441,6 +445,11 @@ class GameObject : public NativeLifetimeOwner
 
     /// @brief Set parent (nullptr for root). worldPositionStays preserves world transform.
     void SetParent(GameObject *parent, bool worldPositionStays = true);
+    /// Move an existing node using the source ownership supplied by a Prefab update.
+    void SetPrefabInstanceParent(GameObject *parent);
+
+    /// Retire links to Prefab instances outside this subtree. Unpack also retires this root.
+    void RetireExternalPrefabLinks(bool keepRoot = true);
 
     /// @brief Internal: Attach a child (takes ownership)
     void AttachChild(std::unique_ptr<GameObject> child);
@@ -486,14 +495,15 @@ class GameObject : public NativeLifetimeOwner
     [[nodiscard]] nlohmann::json SerializeDocument() const;
 
     /// @brief Commit an already parsed and cross-language-preflighted document.
-    bool DeserializeDocument(const nlohmann::json &document, bool preserveDocumentIds = true);
+    bool DeserializeDocument(const nlohmann::json &document, InstantiationIds &ids, bool preserveDocumentIds = true);
+    void ValidateHierarchy() const;
 
     /// @brief Deep clone this GameObject and all children (native, no JSON).
     /// Creates fresh IDs for all objects and components. Python components
     /// are pushed to the Scene's pending list for Python-side reconstruction.
     /// @param scene The scene to associate the clone with (for pending py components)
     /// @return A new detached GameObject hierarchy (caller must attach to parent/scene)
-    [[nodiscard]] std::unique_ptr<GameObject> Clone(Scene *scene) const;
+    [[nodiscard]] std::unique_ptr<GameObject> Clone(Scene *scene, InstantiationIds &ids) const;
 
     /// @brief Ensure ID generator is ahead of a given ID (for deserialization)
     static void EnsureNextID(uint64_t id);
@@ -502,12 +512,14 @@ class GameObject : public NativeLifetimeOwner
     friend class Scene;
     friend class SceneCommitToken;
     friend class SceneManager;
+    friend class PrefabComponentEdit;
     friend void InvalidateGameObjectLifecycleCaches(GameObject *gameObject);
 
     void SetScene(Scene *scene);
     void RequireWritableStructure() const;
+    void SetParentInternal(GameObject *parent, bool worldPositionStays, bool retirePrefabLinks);
 
-    [[nodiscard]] std::unique_ptr<GameObject> CloneGraph(Scene *scene,
+    [[nodiscard]] std::unique_ptr<GameObject> CloneGraph(Scene *scene, InstantiationIds &ids,
                                                          std::unordered_map<uint64_t, uint64_t> &componentIdRemap,
                                                          std::vector<Component *> &clonedComponents) const;
 
@@ -517,7 +529,7 @@ class GameObject : public NativeLifetimeOwner
                                                                  const ComponentTypeConstraints &constraints,
                                                                  const Component *replacing, bool enforceUserAddable,
                                                                  bool enforceRequirements) const;
-    void PostAddComponent(Component *component);
+    void PostAddComponent(Component *component, bool reset = true);
     void HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActiveInHierarchy);
     void InvalidateComponentExecutionCache();
     void RefreshLifecycleDispatchFlags();
@@ -526,6 +538,7 @@ class GameObject : public NativeLifetimeOwner
     void DispatchUpdates(float deltaTime, void (Component::*update)(float), bool editMode = false);
 
     void CollectAllDescendants(std::vector<GameObject *> &out) const;
+    void PrepareRectLayoutParent();
 
     static uint64_t GenerateID();
 
@@ -548,6 +561,9 @@ class GameObject : public NativeLifetimeOwner
     std::unordered_set<Component *> m_preparedPythonComponents;
     mutable std::vector<Component *> m_executionOrderCache;
     mutable std::shared_ptr<const std::vector<ObjectHandle>> m_componentDispatchSnapshot;
+    std::pair<uint64_t, uint64_t> m_fixedDispatchStep{};
+    std::shared_ptr<const std::vector<ObjectHandle>> m_fixedDispatchSnapshot;
+    size_t m_fixedDispatchCursor = 0;
     mutable bool m_executionOrderCacheDirty = true;
 
     GameObject *m_parent = nullptr;
@@ -561,6 +577,42 @@ class GameObject : public NativeLifetimeOwner
     std::shared_ptr<const nlohmann::json> m_prefabSourceDocument;
     std::string m_modelSourceGuid;
     std::vector<std::string> m_modelSourcePath;
+};
+
+/// Owner-thread transaction for replacing only the changed slots of a live Prefab instance.
+class PrefabComponentEdit
+{
+  public:
+    ~PrefabComponentEdit();
+    void Validate() const;
+    void Finish();
+    void Rollback();
+
+  private:
+    friend class GameObject;
+    struct OwnerLifetime final : NativeLifetimeObserver
+    {
+        GameObject *object = nullptr;
+        void RetireNativeObject() noexcept override
+        {
+            object = nullptr;
+        }
+    };
+
+    explicit PrefabComponentEdit(GameObject &owner);
+    void Close();
+
+    using RegistryEntry = std::unordered_map<uint64_t, Component *>::node_type;
+    struct Removed
+    {
+        std::unique_ptr<Component> component;
+        RegistryEntry registry;
+    };
+
+    std::shared_ptr<OwnerLifetime> m_owner;
+    std::vector<uint64_t> m_previousOrder;
+    std::vector<Removed> m_removed;
+    std::vector<uint64_t> m_added;
 };
 
 } // namespace infernux

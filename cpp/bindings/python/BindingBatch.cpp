@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <function/scene/ComponentDataStore.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Scene.h>
@@ -65,7 +66,6 @@ struct TransformBatchHandle
         resolved.reserve(transforms.size());
         resolvedIndices.reserve(transforms.size());
         validMask.resize(transforms.size());
-        valueScratch.reserve(transforms.size() * 4);
         for (const Transform *transform : transforms) {
             handles.push_back(transform->GetECSHandle());
             worldIds.push_back(transform->GetHandle().worldId);
@@ -116,141 +116,92 @@ struct TransformBatchHandle
 
 // ── Transform batch read/write ───────────────────────────────────────────
 
-using GatherVec3Fn = void (TransformECSStore::*)(Transform *const *, float *, size_t) const;
-using ScatterVec3Fn = void (TransformECSStore::*)(Transform *const *, const float *, size_t);
-using GatherQuatFn = void (TransformECSStore::*)(Transform *const *, float *, size_t) const;
-using ScatterQuatFn = void (TransformECSStore::*)(Transform *const *, const float *, size_t);
+using GatherTransformFn = void (TransformECSStore::*)(Transform *const *, float *, size_t) const;
+using ScatterTransformFn = void (TransformECSStore::*)(Transform *const *, const float *, size_t);
 
-/// batch_read for vec3 properties → numpy (N, 3) float32
-static py::array_t<float> BatchReadVec3(const py::list &targets, GatherVec3Fn gatherFn)
+struct TransformFieldOps
 {
-    auto transforms = ExtractTransforms(targets);
-    const size_t n = transforms.size();
-    auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(3)});
-    float *outPtr = result.mutable_data();
-    Transform *const *tPtr = transforms.data();
+    GatherTransformFn gather;
+    ScatterTransformFn scatter;
+    py::ssize_t width;
+};
+
+static const std::unordered_map<std::string, TransformFieldOps> kTransformFields = {
+    {"local_position", {&TransformECSStore::GatherLocalPositions, &TransformECSStore::ScatterLocalPositions, 3}},
+    {"local_scale", {&TransformECSStore::GatherLocalScales, &TransformECSStore::ScatterLocalScales, 3}},
+    {"local_euler_angles",
+     {&TransformECSStore::GatherLocalEulerAngles, &TransformECSStore::ScatterLocalEulerAngles, 3}},
+    {"position", {&TransformECSStore::GatherWorldPositions, &TransformECSStore::ScatterWorldPositions, 3}},
+    {"euler_angles", {&TransformECSStore::GatherWorldEulerAngles, &TransformECSStore::ScatterWorldEulerAngles, 3}},
+    {"local_rotation", {&TransformECSStore::GatherLocalRotations, &TransformECSStore::ScatterLocalRotations, 4}},
+    {"rotation", {&TransformECSStore::GatherWorldRotations, &TransformECSStore::ScatterWorldRotations, 4}},
+};
+
+static const TransformFieldOps &TransformField(const std::string &name)
+{
+    const auto it = kTransformFields.find(name);
+    if (it == kTransformFields.end())
+        throw py::value_error("Unknown Transform property: '" + name + "'");
+    return it->second;
+}
+
+static py::array_t<float> GatherTransformField(Transform *const *targets, size_t count, const TransformFieldOps &field)
+{
+    auto result = py::array_t<float>({static_cast<py::ssize_t>(count), field.width});
+    float *output = result.mutable_data();
     {
         py::gil_scoped_release release;
-        (TransformECSStore::Instance().*gatherFn)(tPtr, outPtr, n);
+        (TransformECSStore::Instance().*field.gather)(targets, output, count);
     }
     return result;
 }
 
-/// batch_write for vec3 properties from numpy (N, 3) float32
-static void BatchWriteVec3(const py::list &targets, py::array data, ScatterVec3Fn scatterFn)
+static void SnapshotTransformFields(const TransformBatchHandle &handle, py::iterable fields)
 {
-    // Accept any numeric dtype and convert to contiguous float32 on demand.
-    auto fdata = py::array_t<float, py::array::c_style>::ensure(data);
-    if (!fdata) {
-        throw py::type_error("data must be convertible to float32 array");
-    }
-    auto transforms = ExtractTransforms(targets);
-    const size_t n = transforms.size();
-    ValidateTransformDataShape(fdata, n, 3);
-    const float *inPtr = fdata.data();
-    Transform *const *tPtr = transforms.data();
+    if (handle.IsCompact())
+        throw py::value_error("Transform source snapshots require a strict batch");
+    struct Field
     {
-        py::gil_scoped_release release;
-        (TransformECSStore::Instance().*scatterFn)(tPtr, inPtr, n);
+        GatherTransformFn gather;
+        py::array output;
+    };
+    std::vector<Field> columns;
+    for (const auto &value : fields) {
+        const auto field = py::cast<py::tuple>(value);
+        const auto &ops = TransformField(field[1].cast<std::string>());
+        auto output = field[3].cast<py::array>();
+        if (!output.dtype().is(py::dtype::of<float>()) || !(output.flags() & py::array::c_style) ||
+            output.ndim() != 2 || output.shape(0) != static_cast<py::ssize_t>(handle.size()) ||
+            output.shape(1) != ops.width || !output.writeable())
+            throw py::value_error("transform snapshot destination must be a writable contiguous float32 field matrix");
+        columns.push_back({ops.gather, std::move(output)});
     }
+    Transform *const *targets = handle.Resolve();
+    // One owner-thread sample writes directly into the request's private inputs.
+    // Do not release the GIL between fields or allocate a second value batch.
+    auto &store = TransformECSStore::Instance();
+    for (auto &column : columns)
+        (store.*column.gather)(targets, static_cast<float *>(column.output.mutable_data()), handle.size());
 }
-
-/// batch_read for quaternion properties → numpy (N, 4) float32
-static py::array_t<float> BatchReadQuat(const py::list &targets, GatherQuatFn gatherFn)
-{
-    auto transforms = ExtractTransforms(targets);
-    const size_t n = transforms.size();
-    auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(4)});
-    float *outPtr = result.mutable_data();
-    Transform *const *tPtr = transforms.data();
-    {
-        py::gil_scoped_release release;
-        (TransformECSStore::Instance().*gatherFn)(tPtr, outPtr, n);
-    }
-    return result;
-}
-
-/// batch_write for quaternion properties from numpy (N, 4) float32
-static void BatchWriteQuat(const py::list &targets, py::array data, ScatterQuatFn scatterFn)
-{
-    auto fdata = py::array_t<float, py::array::c_style>::ensure(data);
-    if (!fdata) {
-        throw py::type_error("data must be convertible to float32 array");
-    }
-    auto transforms = ExtractTransforms(targets);
-    const size_t n = transforms.size();
-    ValidateTransformDataShape(fdata, n, 4);
-    const float *inPtr = fdata.data();
-    Transform *const *tPtr = transforms.data();
-    {
-        py::gil_scoped_release release;
-        (TransformECSStore::Instance().*scatterFn)(tPtr, inPtr, n);
-    }
-}
-
-// ── Dispatch table: property name → gather/scatter function ──────────────
-
-struct Vec3BatchOps
-{
-    GatherVec3Fn gather;
-    ScatterVec3Fn scatter;
-};
-
-struct QuatBatchOps
-{
-    GatherQuatFn gather;
-    ScatterQuatFn scatter;
-};
-
-static const std::unordered_map<std::string, Vec3BatchOps> kTransformVec3Ops = {
-    {"local_position", {&TransformECSStore::GatherLocalPositions, &TransformECSStore::ScatterLocalPositions}},
-    {"local_scale", {&TransformECSStore::GatherLocalScales, &TransformECSStore::ScatterLocalScales}},
-    {"local_euler_angles", {&TransformECSStore::GatherLocalEulerAngles, &TransformECSStore::ScatterLocalEulerAngles}},
-    {"position", {&TransformECSStore::GatherWorldPositions, &TransformECSStore::ScatterWorldPositions}},
-    {"euler_angles", {&TransformECSStore::GatherWorldEulerAngles, &TransformECSStore::ScatterWorldEulerAngles}},
-};
-
-static const std::unordered_map<std::string, QuatBatchOps> kTransformQuatOps = {
-    {"local_rotation", {&TransformECSStore::GatherLocalRotations, &TransformECSStore::ScatterLocalRotations}},
-    {"rotation", {&TransformECSStore::GatherWorldRotations, &TransformECSStore::ScatterWorldRotations}},
-};
-
-// ── Python-facing free functions ─────────────────────────────────────────
 
 static py::object TransformBatchRead(const py::list &targets, const std::string &prop)
 {
-    {
-        auto it = kTransformVec3Ops.find(prop);
-        if (it != kTransformVec3Ops.end()) {
-            return BatchReadVec3(targets, it->second.gather);
-        }
-    }
-    {
-        auto it = kTransformQuatOps.find(prop);
-        if (it != kTransformQuatOps.end()) {
-            return BatchReadQuat(targets, it->second.gather);
-        }
-    }
-    throw py::value_error("Unknown Transform property: '" + prop + "'");
+    const auto &field = TransformField(prop);
+    auto transforms = ExtractTransforms(targets);
+    return GatherTransformField(transforms.data(), transforms.size(), field);
 }
 
 static void TransformBatchWrite(const py::list &targets, py::array data, const std::string &prop)
 {
-    {
-        auto it = kTransformVec3Ops.find(prop);
-        if (it != kTransformVec3Ops.end()) {
-            BatchWriteVec3(targets, data, it->second.scatter);
-            return;
-        }
-    }
-    {
-        auto it = kTransformQuatOps.find(prop);
-        if (it != kTransformQuatOps.end()) {
-            BatchWriteQuat(targets, data, it->second.scatter);
-            return;
-        }
-    }
-    throw py::value_error("Unknown Transform property: '" + prop + "'");
+    const auto &field = TransformField(prop);
+    auto fdata = py::array_t<float, py::array::c_style>::ensure(data);
+    if (!fdata)
+        throw py::type_error("data must be convertible to float32 array");
+    auto transforms = ExtractTransforms(targets);
+    ValidateTransformDataShape(fdata, transforms.size(), field.width);
+    const float *input = fdata.data();
+    py::gil_scoped_release release;
+    (TransformECSStore::Instance().*field.scatter)(transforms.data(), input, transforms.size());
 }
 
 // ── Handle-based batch read/write (avoids repeated ExtractTransforms) ──
@@ -266,93 +217,38 @@ static py::array_t<bool> BuildBatchMask(const TransformBatchHandle &handle)
 
 static py::object HandleBatchRead(const TransformBatchHandle &handle, const std::string &prop)
 {
-    Transform *const *tPtr = handle.Resolve();
-    const size_t n = handle.resolved.size();
-    {
-        auto it = kTransformVec3Ops.find(prop);
-        if (it != kTransformVec3Ops.end()) {
-            auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(3)});
-            float *outPtr = result.mutable_data();
-            {
-                py::gil_scoped_release release;
-                (TransformECSStore::Instance().*(it->second.gather))(tPtr, outPtr, n);
-            }
-            if (handle.IsCompact())
-                return py::make_tuple(std::move(result), BuildBatchMask(handle));
-            return std::move(result);
-        }
-    }
-    {
-        auto it = kTransformQuatOps.find(prop);
-        if (it != kTransformQuatOps.end()) {
-            auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(4)});
-            float *outPtr = result.mutable_data();
-            {
-                py::gil_scoped_release release;
-                (TransformECSStore::Instance().*(it->second.gather))(tPtr, outPtr, n);
-            }
-            if (handle.IsCompact())
-                return py::make_tuple(std::move(result), BuildBatchMask(handle));
-            return std::move(result);
-        }
-    }
-    throw py::value_error("Unknown Transform property: '" + prop + "'");
+    const auto &field = TransformField(prop);
+    Transform *const *targets = handle.Resolve();
+    auto result = GatherTransformField(targets, handle.resolved.size(), field);
+    if (handle.IsCompact())
+        return py::make_tuple(std::move(result), BuildBatchMask(handle));
+    return std::move(result);
 }
 
 static py::object HandleBatchWrite(const TransformBatchHandle &handle, py::array data, const std::string &prop)
 {
+    const auto &field = TransformField(prop);
     auto fdata = py::array_t<float, py::array::c_style>::ensure(data);
-    if (!fdata) {
+    if (!fdata)
         throw py::type_error("data must be convertible to float32 array");
-    }
-    Transform *const *tPtr = handle.Resolve();
-    const size_t n = handle.resolved.size();
-    const size_t inputRows = handle.IsCompact() ? handle.size() : n;
-    {
-        auto it = kTransformVec3Ops.find(prop);
-        if (it != kTransformVec3Ops.end()) {
-            ValidateTransformDataShape(fdata, inputRows, 3);
-            const float *inPtr = fdata.data();
-            if (handle.IsCompact()) {
-                handle.valueScratch.resize(n * 3);
-                for (size_t i = 0; i < n; ++i) {
-                    const float *source = inPtr + handle.resolvedIndices[i] * 3;
-                    std::copy_n(source, 3, handle.valueScratch.data() + i * 3);
-                }
-                inPtr = handle.valueScratch.data();
-            }
-            {
-                py::gil_scoped_release release;
-                (TransformECSStore::Instance().*(it->second.scatter))(tPtr, inPtr, n);
-            }
-            if (handle.IsCompact())
-                return BuildBatchMask(handle);
-            return py::none();
-        }
+    Transform *const *targets = handle.Resolve();
+    const size_t count = handle.resolved.size();
+    ValidateTransformDataShape(fdata, handle.IsCompact() ? handle.size() : count, field.width);
+    const float *input = fdata.data();
+    if (handle.IsCompact()) {
+        handle.valueScratch.resize(count * field.width);
+        for (size_t i = 0; i < count; ++i)
+            std::copy_n(input + handle.resolvedIndices[i] * field.width, field.width,
+                        handle.valueScratch.data() + i * field.width);
+        input = handle.valueScratch.data();
     }
     {
-        auto it = kTransformQuatOps.find(prop);
-        if (it != kTransformQuatOps.end()) {
-            ValidateTransformDataShape(fdata, inputRows, 4);
-            const float *inPtr = fdata.data();
-            if (handle.IsCompact()) {
-                handle.valueScratch.resize(n * 4);
-                for (size_t i = 0; i < n; ++i) {
-                    const float *source = inPtr + handle.resolvedIndices[i] * 4;
-                    std::copy_n(source, 4, handle.valueScratch.data() + i * 4);
-                }
-                inPtr = handle.valueScratch.data();
-            }
-            {
-                py::gil_scoped_release release;
-                (TransformECSStore::Instance().*(it->second.scatter))(tPtr, inPtr, n);
-            }
-            if (handle.IsCompact())
-                return BuildBatchMask(handle);
-            return py::none();
-        }
+        py::gil_scoped_release release;
+        (TransformECSStore::Instance().*field.scatter)(targets, input, count);
     }
-    throw py::value_error("Unknown Transform property: '" + prop + "'");
+    if (handle.IsCompact())
+        return BuildBatchMask(handle);
+    return py::none();
 }
 
 // ── ComponentDataStore bindings ───────────────────────────────────────────
@@ -780,7 +676,10 @@ void RegisterBatchBindings(py::module_ &m)
         .def(py::init<const py::list &, TransformBatchHandle::Mode>(), py::arg("targets"),
              py::arg("mode") = TransformBatchHandle::Mode::Strict)
         .def("__len__", &TransformBatchHandle::size)
-        .def_property_readonly("is_compact", &TransformBatchHandle::IsCompact);
+        .def_property_readonly("is_compact", &TransformBatchHandle::IsCompact)
+        .def("validate", [](const TransformBatchHandle &handle) { handle.Resolve(); })
+        .def_static("_field_width", [](const std::string &name) { return TransformField(name).width; })
+        .def("_snapshot_fields", &SnapshotTransformFields, py::arg("fields"));
 
     m.def(
         "_create_scene_transform_batch_handle",

@@ -108,6 +108,11 @@ class OutlineRenderer
         return !m_outlineObjectIds.empty();
     }
 
+    [[nodiscard]] bool IsOutlinedObject(uint64_t objectId) const
+    {
+        return objectId != 0 && m_outlineObjectIdSet.count(objectId) != 0;
+    }
+
     /// @brief Set outline color (default bright orange).
     void SetOutlineColor(float r, float g, float b, float a)
     {
@@ -164,11 +169,6 @@ class OutlineRenderer
     // ========================================================================
     // Internal Rendering
     // ========================================================================
-
-    [[nodiscard]] bool IsOutlinedObject(uint64_t objectId) const
-    {
-        return objectId != 0 && m_outlineObjectIdSet.count(objectId) != 0;
-    }
 
     // ========================================================================
     // References (non-owning)

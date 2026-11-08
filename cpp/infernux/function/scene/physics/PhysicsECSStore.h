@@ -10,6 +10,7 @@
  */
 
 #include "core/types/InxContiguousPool.h"
+#include <array>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <unordered_map>
@@ -22,6 +23,7 @@ namespace infernux
 class Collider;
 class GameObject;
 class Rigidbody;
+class Transform;
 
 struct PhysicsActorData
 {
@@ -29,8 +31,11 @@ struct PhysicsActorData
     Collider *primaryCollider = nullptr;
     Rigidbody *rigidbody = nullptr;
     uint32_t bodyId = 0xFFFFFFFF;
-    uint32_t colliderCount = 0;
+    std::vector<Collider *> colliders;
     bool bodyInBroadphase = false;
+    bool sceneSuspended = false;
+    bool shapeTransformDirty = false;
+    bool centerTransformDirty = false;
     glm::vec3 lastSyncedPos{0.0f};
     glm::quat lastSyncedRot{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 lastScale{1.0f};
@@ -56,6 +61,7 @@ struct ColliderECSData
     // ---- Properties ----
     bool isTrigger = false;
     glm::vec3 center{0.0f};
+    glm::vec3 publishedRigidCenter{0.0f};
 
     // ---- Misc ----
     bool deserialized = false;
@@ -69,6 +75,7 @@ struct RigidbodyECSData
 {
     // ---- Identity ----
     Rigidbody *owner = nullptr;
+    PhysicsActorHandle actorHandle;
 
     // ---- Serialized properties ----
     float mass = 1.0f;
@@ -92,6 +99,7 @@ struct RigidbodyECSData
     glm::vec3 lastSyncedPosition{0.0f};
     glm::quat lastSyncedRotation{1.0f, 0.0f, 0.0f, 0.0f};
     bool hasSyncedOnce = false;
+    std::array<uint64_t, 2> lastAuthoredPoseRevision{0, 0};
 
     // ---- Physics interpolation cache ----
     glm::vec3 previousPhysicsPosition{0.0f};
@@ -115,15 +123,32 @@ class PhysicsECSStore
 
     static PhysicsECSStore &Instance();
 
-    // ---- Physics actor pool (one slot per GameObject with colliders) ----
-    ActorHandle AcquireActor(GameObject *owner, Collider *collider);
+    // A Rigidbody owns its actor even when it has no collision shapes.
+    // Collider-only objects own static actors.
+    ActorHandle AcquireActor(GameObject *owner);
     void ReleaseActor(ActorHandle handle, Collider *collider);
+    void AttachCollider(Collider *collider);
+    void RefreshHierarchy(GameObject *root, const Rigidbody *excludedBody = nullptr);
+    [[nodiscard]] static Rigidbody *FindAttachedRigidbody(GameObject *object, const Rigidbody *excludedBody = nullptr);
+    [[nodiscard]] ActorHandle FindActor(const GameObject *owner) const;
+    void AttachRigidbody(Rigidbody *body);
+    void DetachRigidbody(Rigidbody *body);
+    void RegisterActor(ActorHandle handle);
+    void RefreshActor(ActorHandle handle);
+    void SuspendActor(ActorHandle handle);
+    void RestoreActor(ActorHandle handle);
+    void SyncActorTransform(ActorHandle handle, float fixedDeltaTime,
+                            std::vector<struct PhysicsBodyPoseUpdate> *staticPoseBatch);
     [[nodiscard]] bool IsValid(ActorHandle handle) const;
     PhysicsActorData &GetActor(ActorHandle handle);
     const PhysicsActorData &GetActor(ActorHandle handle) const;
     [[nodiscard]] size_t GetAliveActorCount() const
     {
         return m_actorPool.AliveCount();
+    }
+    template <typename Func> void ForEachAliveActor(Func &&func)
+    {
+        m_actorPool.ForEachAlive(std::forward<Func>(func));
     }
 
     // ---- Collider pool ----
@@ -160,13 +185,12 @@ class PhysicsECSStore
 
     /// Mark the single shared physics actor owned by a GameObject dirty.
     /// Avoids allocating/scanning a temporary component list from Transform observers.
-    void MarkGameObjectDirty(GameObject *owner);
+    void MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource = nullptr);
+    void MarkAuthoredHierarchyDirty(GameObject *root);
 
-    /// Consume the dirty set.  Returns handles that were dirty (moved since last flush).
-    /// Clears the internal set atomically.
-    /// Consume dirty actor primaries into retained scratch storage.
+    /// Consume changed actors once, including actors without collision shapes.
     /// The returned reference remains valid until the next call.
-    const std::vector<ColliderHandle> &ConsumeDirtyColliders();
+    const std::vector<ActorHandle> &ConsumeDirtyActors();
 
     /// True if any collider has been marked dirty since last consume.
     [[nodiscard]] bool HasDirtyColliders() const
@@ -178,24 +202,18 @@ class PhysicsECSStore
     void MarkAllCollidersDirty();
 
     /// Monotonic source revision for renderer-owned collision mirrors. This is
-    /// independent of ConsumeDirtyColliders(), which remains owned by PhysX/Jolt
+    /// independent of ConsumeDirtyActors(), which remains owned by PhysX/Jolt
     /// synchronization and may only be consumed once.
     void NotifyCollisionSceneChanged() noexcept;
-    [[nodiscard]] uint64_t GetCollisionSceneRevision() const noexcept
-    {
-        return m_collisionSceneRevision;
-    }
+    [[nodiscard]] uint64_t GetCollisionSceneRevision() const noexcept;
 
     // ---- Pending body creation queue (deferred from Collider::Awake) ----
 
-    /// Queue a collider for deferred Jolt body creation at the next pre-physics flush.
-    /// This is the main batch-creation optimization: add_component("BoxCollider")
-    /// becomes near-zero cost during the Python loop; the actual Jolt body is
-    /// created in SceneManager::FlushPendingBroadphase().
-    void QueueBodyCreation(ColliderHandle handle);
+    /// Queue one actor for deferred Jolt body creation at the physics boundary.
+    void QueueBodyCreation(ActorHandle handle);
 
     /// Consume pending body creation queue.  Returns handles (dead entries filtered).
-    std::vector<ColliderHandle> ConsumePendingBodyCreations();
+    std::vector<ActorHandle> ConsumePendingBodyCreations();
 
     /// True if any colliders are waiting for body creation.
     [[nodiscard]] bool HasPendingBodyCreations() const
@@ -269,10 +287,6 @@ class PhysicsECSStore
         return m_rigidbodyPool.AliveCount();
     }
 
-    /// Null out the Rigidbody pointer on every actor that references *dying*.
-    /// Idempotent and safe when no actor references the component.
-    void ScrubCachedRigidbody(Rigidbody *dying);
-
     /// Zero-allocation iteration over all alive rigidbodies.
     template <typename Func> void ForEachAliveRigidbody(Func &&func)
     {
@@ -286,6 +300,11 @@ class PhysicsECSStore
 
   private:
     PhysicsECSStore() = default;
+    void RetireActor(ActorHandle handle);
+    void MarkActorDirty(ActorHandle handle);
+    ActorHandle BindRigidbodyActor(Rigidbody *body);
+    void MigrateCollider(Collider *collider, const Rigidbody *excludedBody, std::vector<ActorHandle> &changed);
+    void PublishChangedActors(std::vector<ActorHandle> &changed);
 
     InxContiguousPool<ColliderECSData> m_colliderPool;
     PhysicsActorPool m_actorPool;
@@ -294,11 +313,11 @@ class PhysicsECSStore
 
     // Dirty collider tracking — colliders whose Transform changed and need physics sync.
     std::vector<ActorHandle> m_dirtyActorList;
-    std::vector<ColliderHandle> m_dirtyColliderScratch;
+    std::vector<ActorHandle> m_dirtyActorScratch;
     uint64_t m_collisionSceneRevision = 1;
 
-    // Pending body creation queue — colliders that deferred RegisterBody.
-    std::vector<ColliderHandle> m_pendingBodyCreationList;
+    // Pending actor creation, deduplicated by generation-aware handle.
+    std::vector<ActorHandle> m_pendingBodyCreationList;
     std::unordered_set<uint64_t> m_pendingBodyCreationSet; // generation-aware handle dedup
 
     // Pending broadphase add queue — body IDs in authored request order.

@@ -31,11 +31,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from typing import Tuple, Union
 
 from infernux.lib import InputManager as _NativeInputManager
 from infernux.runtime_services import get_runtime_service
 from .ime import ImeInputState
+
+
+@lru_cache(maxsize=256)
+def _named_scancode(key: str) -> int:
+    return _NativeInputManager.name_to_scancode(key)
 
 
 class TouchPhase(str, Enum):
@@ -406,7 +412,7 @@ class Input(metaclass=_InputMeta):
         """
         if isinstance(key, int):
             return key
-        return _NativeInputManager.name_to_scancode(key)
+        return _named_scancode(key)
 
     # ------------------------------------------------------------------
     # Keyboard — Unity: Input.GetKey / GetKeyDown / GetKeyUp

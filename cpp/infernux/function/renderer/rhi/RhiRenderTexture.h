@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RenderCoreApi.h"
 #include "RhiTexture.h"
 #include <vector>
 
@@ -12,8 +13,10 @@ enum class RenderTextureSizeMode : uint8_t
     Relative,
 };
 
+inline constexpr PipelineStage RenderTextureSampleStages = PipelineStage::VertexShader | PipelineStage::FragmentShader;
+
 /// Persistent 2D target description. Relative dimensions round up to pixels.
-/// Contents start undefined; a producer must write/clear before any sampling.
+/// Sampled color is cleared to opaque black on its first use by rendering.
 /// One mip is provided here; mip generation is a render-graph operation, not
 /// an implicit side effect of allocation or publication.
 struct RenderTextureDesc
@@ -32,7 +35,7 @@ struct RenderTextureDesc
 };
 
 /// Device-independent authoring contract. Device capabilities are checked at allocation.
-void ValidateRenderTextureDescription(const RenderTextureDesc &description);
+INFERNUX_RENDER_CORE_API void ValidateRenderTextureDescription(const RenderTextureDesc &description);
 
 /// A complete immutable allocation generation. Hold this while recording or
 /// consuming a target; never cache individual handles across resize. Color is
@@ -73,26 +76,29 @@ struct RenderTextureGeneration final
 class RenderTexture final
 {
   public:
-    RenderTexture(Device &device, std::string sourceId, const RenderTextureDesc &description,
-                  uint32_t referenceWidth = 0, uint32_t referenceHeight = 0, std::string assetGuid = {});
+    INFERNUX_RENDER_CORE_API RenderTexture(Device &device, std::string sourceId, const RenderTextureDesc &description,
+                                           uint32_t referenceWidth = 0, uint32_t referenceHeight = 0,
+                                           std::string assetGuid = {});
     RenderTexture(const RenderTexture &) = delete;
     RenderTexture &operator=(const RenderTexture &) = delete;
 
     /// Returns false when the resolved allocation/description is unchanged.
     /// Failure reports an error and does not publish incomplete attachments.
-    bool Reconfigure(const RenderTextureDesc &description, uint32_t referenceWidth = 0, uint32_t referenceHeight = 0);
+    INFERNUX_RENDER_CORE_API bool Reconfigure(const RenderTextureDesc &description, uint32_t referenceWidth = 0,
+                                              uint32_t referenceHeight = 0);
     /// Prepare all relative allocations before publishing any. The caller owns
     /// this device-thread size transition; unchanged extents allocate nothing.
-    static void ReconfigureReferenceSize(const std::vector<std::shared_ptr<RenderTexture>> &targets,
-                                         uint32_t referenceWidth, uint32_t referenceHeight);
-    [[nodiscard]] std::shared_ptr<const RenderTextureGeneration> Acquire() const noexcept;
+    INFERNUX_RENDER_CORE_API static void
+    ReconfigureReferenceSize(const std::vector<std::shared_ptr<RenderTexture>> &targets, uint32_t referenceWidth,
+                             uint32_t referenceHeight);
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<const RenderTextureGeneration> Acquire() const noexcept;
     [[nodiscard]] const std::string &GetAssetGuid() const noexcept
     {
         return m_assetGuid;
     }
     /// Camera bindings retain this requirement even while disabled.
-    void RetainDepthAttachment();
-    void ReleaseDepthAttachment() noexcept;
+    INFERNUX_RENDER_CORE_API void RetainDepthAttachment();
+    INFERNUX_RENDER_CORE_API void ReleaseDepthAttachment() noexcept;
     /// Stable sampled-color publication shared by material/UI consumers.
     /// Consumers retain a view while recording; resize publishes its successor.
     [[nodiscard]] const std::shared_ptr<TextureGpuViewSlot> &GetSampledColorSlot() const noexcept

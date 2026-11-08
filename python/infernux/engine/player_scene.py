@@ -100,16 +100,16 @@ class PlayerSceneService:
         )
 
     def bind_runtime_catalog(self, runtime_catalog: PlayerRuntimeAssetCatalog) -> None:
-        """Bind the immutable catalog before any Player scene is loaded."""
+        """Install the catalog published by the Player session."""
         from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
         if not isinstance(runtime_catalog, PlayerRuntimeAssetCatalog):
             raise TypeError("PlayerSceneService requires a RuntimeAssetCatalog")
-        if self._runtime_catalog is not None and self._runtime_catalog is not runtime_catalog:
-            raise RuntimeError("PlayerSceneService runtime catalog is already bound")
-        if self.is_load_pending or self._scene_paths:
-            raise RuntimeError("PlayerSceneService catalog cannot change after scene loading")
         self._runtime_catalog = runtime_catalog
+
+    @property
+    def additional_scene_guids(self) -> tuple[str, ...]:
+        return self._runtime_catalog.additional_scene_guids if self._runtime_catalog is not None else ()
 
     @staticmethod
     def _normalize_mode(mode: Any) -> str:

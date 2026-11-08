@@ -1,6 +1,14 @@
 from os import PathLike
 from typing import Any
 
+class ContentPublication:
+    status: str
+    error: str
+    asset_guids: tuple[str, ...]
+    scene_guids: tuple[str, ...]
+    @property
+    def is_complete(self) -> bool: ...
+
 class Application:
     @staticmethod
     def is_editor() -> bool: ...
@@ -10,6 +18,8 @@ class Application:
     def data_path() -> str: ...
     @staticmethod
     def persistent_data_path() -> str: ...
+    @staticmethod
+    def publish_content(data_directory: str | PathLike[str]) -> ContentPublication: ...
     @staticmethod
     def asset_path(path: str) -> str: ...
     @staticmethod

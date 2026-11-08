@@ -193,12 +193,10 @@ void InputManager::BeginFrame()
     m_syntheticKeyDown.fill(0);
     m_keyDownConsumed.fill(0);
 
-    // Re-apply relative mouse mode for the current window/focus state without
-    // disturbing persistent capture flags. Editor capture is released on
-    // explicit end or focus loss, not once per frame.
-#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    // Android publishes the keyboard inset from the activity independently of
+    // SDL window events. Desktop metrics follow the window event stream.
+#if defined(__ANDROID__) && !defined(INFERNUX_INPUT_SEMANTIC_HOST)
     RefreshScreenState();
-    ApplyCursorState();
 #endif
 }
 
@@ -224,6 +222,7 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool game
 {
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return;
+    const bool wasHidden = IsCursorHidden();
     const size_t index = static_cast<size_t>(button);
     if (pressed) {
         if (m_mouseButtons[index] == 0) {
@@ -241,6 +240,8 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool game
             m_mouseButtonUp[index] = 1;
         m_mouseButtons[index] = 0;
     }
+    if (wasHidden != IsCursorHidden())
+        ApplyCursorState();
 }
 
 void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY)
@@ -464,8 +465,11 @@ void InputManager::ProcessScreenMetrics(int logicalWidth, int logicalHeight, int
         next.safeAreaX != m_screenState.safeAreaX || next.safeAreaY != m_screenState.safeAreaY ||
         next.safeAreaWidth != m_screenState.safeAreaWidth || next.safeAreaHeight != m_screenState.safeAreaHeight;
     m_screenState = next;
-    if (viewportChanged)
+    if (viewportChanged) {
         CancelActiveTouches("viewport_changed");
+        if (m_editorMouseCaptured || IsCursorLocked())
+            ApplyCursorState();
+    }
 }
 
 bool InputManager::StartTextInput()
@@ -638,8 +642,10 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
         break;
     case SDL_EVENT_WINDOW_RESIZED:
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
     case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
     case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED:
+    case SDL_EVENT_WINDOW_SHOWN:
         RefreshScreenState();
         break;
     case SDL_EVENT_WINDOW_OCCLUDED:
@@ -915,7 +921,7 @@ void InputManager::SetEditorGameViewport(const std::array<float, 4> &imageRect, 
     m_editorGameInputRect = inputRect;
     if (inputRect[2] <= 0 || inputRect[3] <= 0)
         SetEditorCursorCaptureAllowed(false);
-    else
+    else if (IsCursorLocked())
         ApplyCursorState();
 }
 
@@ -937,6 +943,7 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseF
 
 void InputManager::ResetAll()
 {
+    const bool wasHidden = IsCursorHidden();
     m_gameMouseButtonOwnership = 0;
     m_keys.fill(0);
     m_keyDown.fill(0);
@@ -964,6 +971,8 @@ void InputManager::ResetAll()
     m_accelerationEvents.clear();
     m_droppedFiles.clear();
     m_warpMotionPending = false;
+    if (wasHidden != IsCursorHidden())
+        ApplyCursorState();
 }
 
 void InputManager::ResetPhysicalInputForFocusLoss()
@@ -1247,25 +1256,32 @@ void InputManager::ApplyCursorState()
         return;
     }
 
+    const bool wasRelative = SDL_GetWindowRelativeMouseMode(m_window);
+    const SDL_Rect *currentRect = SDL_GetWindowMouseRect(m_window);
     if (relativeMouseEnabled) {
         const auto [x, y] = CursorLockPosition(IsCursorLocked());
         const SDL_Rect lockPoint{static_cast<int>(std::round(x)), static_cast<int>(std::round(y)), 1, 1};
-        SDL_SetWindowMouseRect(m_window, &lockPoint);
-        SDL_WarpMouseInWindow(m_window, x, y);
-        SDL_SetWindowRelativeMouseMode(m_window, true);
+        const bool moved = !currentRect || !SDL_RectsEqual(currentRect, &lockPoint);
+        if (moved)
+            SDL_SetWindowMouseRect(m_window, &lockPoint);
+        if (moved || !wasRelative)
+            SDL_WarpMouseInWindow(m_window, x, y);
+        if (!wasRelative)
+            SDL_SetWindowRelativeMouseMode(m_window, true);
     } else {
-        if (SDL_GetWindowRelativeMouseMode(m_window)) {
-            if (const SDL_Rect *lockPoint = SDL_GetWindowMouseRect(m_window)) {
-                m_mouseX = static_cast<float>(lockPoint->x);
-                m_mouseY = static_cast<float>(lockPoint->y);
+        if (wasRelative) {
+            if (currentRect) {
+                m_mouseX = static_cast<float>(currentRect->x);
+                m_mouseY = static_cast<float>(currentRect->y);
                 SDL_WarpMouseInWindow(m_window, m_mouseX, m_mouseY);
             }
+            SDL_SetWindowRelativeMouseMode(m_window, false);
         }
-        SDL_SetWindowRelativeMouseMode(m_window, false);
-        SDL_SetWindowMouseRect(m_window, nullptr);
+        if (currentRect)
+            SDL_SetWindowMouseRect(m_window, nullptr);
     }
     SDL_SetWindowMouseGrab(m_window, relativeMouseEnabled || (!editorReleased && m_cursorConfined));
-    if (relativeMouseEnabled || (!editorReleased && !m_cursorVisible))
+    if (IsCursorHidden())
         SDL_HideCursor();
     else
         SDL_ShowCursor();

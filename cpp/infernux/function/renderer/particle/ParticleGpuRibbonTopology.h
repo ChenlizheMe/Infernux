@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuRuntime.h"
 
 #include <array>
@@ -12,11 +14,11 @@ namespace infernux::particle
 
 struct GpuParticleRibbonShaderSources
 {
-    [[nodiscard]] static std::string_view Reset() noexcept;
-    [[nodiscard]] static std::string_view Initialize() noexcept;
-    [[nodiscard]] static std::string_view Histogram() noexcept;
-    [[nodiscard]] static std::string_view Scan() noexcept;
-    [[nodiscard]] static std::string_view Scatter() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Reset() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Initialize() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Histogram() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Scan() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Scatter() noexcept;
 };
 
 struct GpuParticleRibbonProgram
@@ -27,16 +29,16 @@ struct GpuParticleRibbonProgram
     ShaderBytecode scan;
     ShaderBytecode scatter;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleRibbonProgramStorage
 {
     std::array<std::vector<uint32_t>, 5> shaders;
 
-    [[nodiscard]] bool Assign(const GpuParticleRibbonProgram &program);
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] GpuParticleRibbonProgram View() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleRibbonProgram &program);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleRibbonProgram View() const noexcept;
 };
 
 struct GpuParticleRibbonDesc
@@ -70,15 +72,15 @@ class ParticleGpuRibbonTopology
     static constexpr uint32_t PassCount = PassesPerKey * KeyCount;
 
     ParticleGpuRibbonTopology() = default;
-    ~ParticleGpuRibbonTopology();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuRibbonTopology();
 
     ParticleGpuRibbonTopology(const ParticleGpuRibbonTopology &) = delete;
     ParticleGpuRibbonTopology &operator=(const ParticleGpuRibbonTopology &) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleRibbonDesc &desc);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, const GpuParticleRibbonDesc &desc);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
         return m_capacity;
@@ -132,11 +134,13 @@ class ParticleGpuRibbonTopology
         return m_globalOffsets;
     }
 
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder) const;
-    void RecordInitialize(const rhi::ComputeCommandEncoder &encoder) const;
-    void RecordHistogram(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
-    void RecordScan(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
-    void RecordScatter(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordReset(const rhi::ComputeCommandEncoder &encoder) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordInitialize(const rhi::ComputeCommandEncoder &encoder) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordHistogram(const rhi::ComputeCommandEncoder &encoder,
+                                                       uint32_t passIndex) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordScan(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordScatter(const rhi::ComputeCommandEncoder &encoder,
+                                                     uint32_t passIndex) const;
 
   private:
     [[nodiscard]] GpuParticleRibbonConstants Constants(uint32_t passIndex = 0) const noexcept;

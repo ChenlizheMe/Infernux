@@ -18,6 +18,35 @@ from .runtime_scene_transaction import (
 class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
     """Complete an editor scene transaction and refresh editor Gizmos."""
 
+    def poll(self, *, admit_assets: bool = False) -> bool:
+        if self._path is None or self.state is not SceneDocumentTransactionState.RESOURCES_READY:
+            return super().poll(admit_assets=admit_assets)
+
+        self._require_owner_thread()
+        from infernux.engine.resources_manager import ResourcesManager
+
+        resources = ResourcesManager.instance()
+        if resources is None:
+            return super().poll(admit_assets=admit_assets)
+        try:
+            scripts = resources.prepare_disk_scene_scripts(self._scene, self._document)
+        except Exception as exc:
+            self._fail(exc)
+            self._error = f"script preflight: {self._error}"
+            return True
+        if scripts is None:
+            return super().poll(admit_assets=admit_assets)
+
+        # Keep the temporarily published schema and the world swap in the
+        # same editor safe point. A failed scene restores the old script state.
+        try:
+            complete = super().poll(admit_assets=admit_assets)
+            if self.state is SceneDocumentTransactionState.READY_TO_COMMIT:
+                complete = super().poll(admit_assets=admit_assets)
+            return complete
+        finally:
+            resources.finish_disk_scene_scripts(scripts, published=self.succeeded)
+
     def _rebuild_python_registries(self) -> None:
         # Rollback restores the retained native world and its Python owners.
         super()._rebuild_python_registries()

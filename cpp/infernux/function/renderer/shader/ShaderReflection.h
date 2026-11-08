@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <function/resources/ShaderAsset/ShaderCompilerApi.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -86,6 +87,11 @@ struct StorageBufferInfo
     VkShaderStageFlags stageFlags = 0;
     bool readOnly = false;
     bool writeOnly = false;
+    /// A single scalar array member; undefined for structured/vector layouts.
+    VkFormat scalarArrayFormat = VK_FORMAT_UNDEFINED;
+    uint32_t arrayMemberOffset = 0;
+    uint32_t arrayStride = 0;
+    uint32_t arrayElementCount = 0; ///< Zero denotes a runtime-sized array when scalarArrayFormat is defined.
 };
 
 struct StorageImageInfo
@@ -142,12 +148,12 @@ class ShaderReflection
      * @param stage The shader stage (for stage flags)
      * @return true if reflection succeeded
      */
-    bool Reflect(const std::vector<uint32_t> &spirvCode, VkShaderStageFlagBits stage);
+    INFERNUX_SHADER_COMPILER_API bool Reflect(const std::vector<uint32_t> &spirvCode, VkShaderStageFlagBits stage);
 
     /**
      * @brief Reflect from a vector<char> (common format from file loading)
      */
-    bool Reflect(const std::vector<char> &spirvCode, VkShaderStageFlagBits stage);
+    INFERNUX_SHADER_COMPILER_API bool Reflect(const std::vector<char> &spirvCode, VkShaderStageFlagBits stage);
 
     // Getters for reflected data
     [[nodiscard]] const std::vector<UniformBufferInfo> &GetUniformBuffers() const
@@ -197,17 +203,18 @@ class ShaderReflection
      * @brief Get all descriptor set layout bindings
      * @param set The descriptor set index
      */
-    [[nodiscard]] std::vector<VkDescriptorSetLayoutBinding> GetDescriptorSetLayoutBindings(uint32_t set = 0) const;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API std::vector<VkDescriptorSetLayoutBinding>
+    GetDescriptorSetLayoutBindings(uint32_t set = 0) const;
 
     /**
      * @brief Get all unique descriptor sets used
      */
-    [[nodiscard]] std::vector<uint32_t> GetUsedDescriptorSets() const;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API std::vector<uint32_t> GetUsedDescriptorSets() const;
 
     /**
      * @brief Clear all reflected data
      */
-    void Clear();
+    INFERNUX_SHADER_COMPILER_API void Clear();
 
   private:
     bool m_sampleRateShading = false;

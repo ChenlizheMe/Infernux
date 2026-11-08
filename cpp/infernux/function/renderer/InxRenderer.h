@@ -5,6 +5,7 @@
 // Minimal includes required for public API value types and POD members
 #include "CaptureService.h"
 #include "GpuResidency.h"
+#include "GraphEvents.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
 #include "RenderViewSchedule.h"
@@ -27,6 +28,10 @@
 namespace infernux
 {
 struct TextureCpuData;
+class FrameWorkOwner;
+struct PreviewImage;
+struct PreviewGeometryUpload;
+struct RenderGraphDescription;
 enum class ShaderProgramDomain : uint8_t;
 // ============================================================================
 // Forward declarations for private subsystem types.
@@ -47,6 +52,10 @@ class InxGUIRenderable;
 class InxMaterial;
 class InxMesh;
 class InxVkCoreModular;
+namespace vk
+{
+class VulkanBackendContext;
+}
 namespace rhi
 {
 class ComputeHost;
@@ -151,7 +160,6 @@ struct RendererFrameTelemetrySnapshot
     std::string sceneRenderGraphDebug;
     std::string gameRenderGraphDebug;
     uint64_t submissionGeneration = 0;
-    bool submissionComposed = false;
     bool submissionComputeQueueIndependent = false;
     bool submissionTransferQueueIndependent = false;
     bool submissionAsyncComputeActive = false;
@@ -254,27 +262,31 @@ struct RendererFramePerformanceSnapshot
     std::vector<RendererFramePerformanceSample> slowestFrames;
 };
 
+/// A foreground fact for the Engine's shared execution owner, not a neural
+/// scheduling policy. Offscreen compute does not need a Renderer to advance.
+enum class RenderFrameResult
+{
+    Submitted,
+    NoPresentation,
+    Deferred,
+};
+
 class InxRenderer
 {
   public:
-    InxRenderer();
+    explicit InxRenderer(vk::VulkanBackendContext &backend);
     ~InxRenderer();
-    [[nodiscard]] std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> CreateRenderTexture(const rhi::RenderTextureDesc &description,
                                                                           const std::string &assetGuid = {});
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> LoadRenderTexture(const std::string &guid);
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> GetCameraOutputTexture(class Camera &camera);
+    void RequestCameraRender(Camera &camera);
     void ReconfigureImportedRenderTexture(const std::string &guid, const rhi::RenderTextureDesc &description);
     void PrepareMaterialTextureAssets(const std::shared_ptr<InxMaterial> &material);
     bool InvalidateMaterialTextureAssets(const std::string &owner, const std::string &guid, bool deleted);
     uint64_t GetRenderTextureUITextureId(const std::shared_ptr<rhi::RenderTexture> &texture);
-    [[nodiscard]] bool HasComputeHostLeases() const noexcept
-    {
-        return m_computeHostLeases != 0;
-    }
-    [[nodiscard]] size_t GetComputeHostLeaseCount() const noexcept
-    {
-        return m_computeHostLeases;
-    }
+    std::array<uint64_t, 3> GetImportedRenderTexturePreview(const std::string &guid);
+    std::array<uint64_t, 3> RequestSceneCameraPreview(uint64_t cameraId, const RenderGraphDescription *description);
 
     InxRenderer(const InxRenderer &) = delete;
     InxRenderer &operator=(const InxRenderer &) = delete;
@@ -297,7 +309,7 @@ class InxRenderer
 
     void Init(int width, int height, InxAppMetadata appMetaData);
     void PreparePipeline();
-    void DrawFrame();
+    RenderFrameResult DrawFrame(bool pace);
     [[nodiscard]] bool IsDrawingFrame() const noexcept
     {
         return m_drawingFrame;
@@ -348,6 +360,8 @@ class InxRenderer
     /// Non-blocking completion poll for headless/tool loops that are not
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
+    [[nodiscard]] uint64_t RegisterFrameWork(FrameWorkOwner &owner);
+    [[nodiscard]] bool HasPendingBackgroundGpuWork() const;
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
     [[nodiscard]] uint64_t BeginFramePerformanceWindow(size_t sampleCount = 240);
     [[nodiscard]] RendererFramePerformanceSnapshot GetFramePerformanceWindow() const;
@@ -423,13 +437,16 @@ class InxRenderer
 
     // ImGui texture management
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
-                                   int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false);
-    uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
-    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels);
+                                   int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false,
+                                   std::function<bool()> canPublish = {});
+    uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid, bool &progressed);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels,
+                                           std::function<bool()> canPublish);
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;
     uint64_t GetImGuiTextureId(const std::string &name) const;
+    [[nodiscard]] ImGuiTexturePublication GetImGuiTexturePublication(const std::string &name) const;
     uint64_t GetImGuiTextureVersion(const std::string &name) const;
     uint64_t GetFailedImGuiTextureVersion(const std::string &name) const;
     void SetImGuiTextureBudgetBytes(uint64_t bytes);
@@ -462,6 +479,7 @@ class InxRenderer
     uint64_t GetSceneTextureId() const;
     void ResizeSceneRenderTarget(uint32_t width, uint32_t height);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestRenderTargetReadback(bool gameView);
+    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestImGuiTextureReadback(const std::string &name);
     [[nodiscard]] uint64_t RequestCapture(CaptureSource source, const std::string &outputPath,
                                           uint64_t cameraComponentId = 0);
     [[nodiscard]] CaptureSnapshot QueryCapture(uint64_t captureId) const;
@@ -500,19 +518,21 @@ class InxRenderer
     // Material pipeline refresh - call this after modifying material shader paths
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
 
-    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending = nullptr);
-    bool TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
-                                       std::vector<unsigned char> &outPixels);
+    [[nodiscard]] std::shared_ptr<PreviewImage> BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material,
+                                                                        int size, bool &progressed,
+                                                                        bool *texturePending = nullptr);
 
-    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size);
-    bool TryCompleteMeshPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
-                                   std::vector<unsigned char> &outPixels);
+    bool PrepareMeshPreviewMaterials(const std::vector<std::shared_ptr<InxMaterial>> &sources,
+                                     std::vector<std::shared_ptr<InxMaterial>> &prepared, bool &progressed);
+    [[nodiscard]] std::shared_ptr<PreviewImage>
+    BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
+                        std::shared_ptr<PreviewGeometryUpload> &geometry, bool &progressed, bool &materialsChanged);
+    uint64_t PublishPreviewImageForImGui(const std::string &name, const std::shared_ptr<PreviewImage> &image);
 
     uint64_t RenderMeshPreviewGPUImGuiCamera(const InxMesh &mesh,
                                              const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
                                              const glm::mat4 &view, const glm::mat4 &proj, const glm::vec3 &cameraPos,
+                                             std::shared_ptr<PreviewGeometryUpload> &geometry, bool &progressed,
                                              bool cloneMaterials = false);
 
     /// Currently-published live mesh preview descriptor id (0 when absent).
@@ -539,6 +559,9 @@ class InxRenderer
     /// @brief Get the scene render graph for pass configuration and output access
     /// @return Pointer to SceneRenderGraph, or nullptr if not initialized
     SceneRenderGraph *GetSceneRenderGraph();
+    SceneRenderGraph *GetCameraRenderGraph(uint64_t cameraComponentId = 0);
+    std::shared_ptr<GraphEventInterest> WatchGraphEvents(const std::string &label);
+    GraphEventQueue TakeGraphEvents();
 
     /// @brief Set a custom render pipeline provided through ScriptableRenderContext.
     /// Pass nullptr to revert to the default C++ rendering path.
@@ -552,7 +575,7 @@ class InxRenderer
     uint64_t GetGameTextureId();
 
     /// Screen-camera graphs have executed and initial uploads have drained.
-    [[nodiscard]] bool IsGamePresentationReady();
+    [[nodiscard]] bool IsGamePresentationReady() const;
 
     /// @brief Monotonic generation of the native Game render target.
     ///
@@ -652,9 +675,9 @@ class InxRenderer
 
     /// @brief Set a callback invoked immediately before scene Update.
     /// Gameplay timing is advanced here so scripts observe the current frame.
-    void SetPreSceneUpdateCallback(std::function<void(float)> callback)
+    void SetFrameBeginCallback(std::function<void(float)> callback)
     {
-        m_preSceneUpdateCallback = std::move(callback);
+        m_frameBeginCallback = std::move(callback);
     }
 
     /// @brief Set a callback invoked each frame before GUI::BuildFrame().
@@ -749,7 +772,6 @@ class InxRenderer
     uint64_t m_frameCount = 0;
 
     std::unique_ptr<InxVkCoreModular> m_vkCore;
-    size_t m_computeHostLeases = 0;
     std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>
         m_shaderProgramArtifactResolver;
     std::function<std::optional<ShaderProgramDomain>(const std::shared_ptr<InxMaterial> &)>
@@ -761,20 +783,44 @@ class InxRenderer
     uint64_t m_lastSemanticSyntheticInputSequence = 0;
     std::unique_ptr<SceneRenderTarget> m_sceneRenderTarget;
     std::unique_ptr<SceneRenderGraph> m_sceneRenderGraph;
+    std::unique_ptr<SceneRenderGraph> m_sceneCameraPreviewGraph;
+    std::unique_ptr<RenderGraphDescription> m_sceneCameraPreviewDescription;
+    std::shared_ptr<rhi::RenderTexture> m_sceneCameraPreviewTarget;
+    uint64_t m_sceneCameraPreviewId = 0;
+    uint64_t m_sceneCameraPreviewRenderedId = 0;
+    std::chrono::steady_clock::time_point m_sceneCameraPreviewDue{};
+    void PrepareSceneCameraPreview();
+    std::array<uint64_t, 3> GetRenderTexturePreview(const std::shared_ptr<rhi::RenderTexture> &texture);
+    GraphEventInterests m_graphEventInterests;
+    GraphEventQueue m_graphEvents;
     uint64_t m_temporalHistoryWorldId = 0;
     uint64_t m_observedSceneTemporalDiscontinuityRevision = 0;
     uint64_t m_temporalHistoryInvalidationCount = 0;
     std::unique_ptr<CaptureService> m_captureService;
+    FrameWorkOwner *m_frameWorkOwner = nullptr;
     std::unique_ptr<ScenePickingService> m_scenePickingService;
+    struct GameImageGeneration
+    {
+        uint64_t target = 0;
+        uint64_t world = 0;
+        uint64_t simulationEpoch = 0;
+        uint64_t sceneRevision = 0;
+        bool operator==(const GameImageGeneration &other) const noexcept
+        {
+            return target == other.target && world == other.world && simulationEpoch == other.simulationEpoch &&
+                   sceneRevision == other.sceneRevision;
+        }
+    };
     struct PendingCapture
     {
         uint64_t id = 0;
         CaptureSource source = CaptureSource::Game;
         uint64_t sourceGeneration = 0;
         uint64_t cameraComponentId = 0;
+        GameImageGeneration gameImage{};
     };
-    [[nodiscard]] bool HasPendingCapture(CaptureSource source) const;
-    void SubmitPendingCaptureReadbacks();
+    [[nodiscard]] bool HasPendingCapture(CaptureSource source, uint64_t cameraId = 0) const;
+    void SubmitPendingCaptureReadbacks(bool frameSubmitted);
     std::vector<PendingCapture> m_pendingCaptures;
     uint64_t m_sceneRenderTargetGeneration = 0;
     uint64_t m_gameRenderTargetGeneration = 0;
@@ -787,11 +833,13 @@ class InxRenderer
     bool m_particleGpuSystemManagerInitializationAttempted = false;
     const Scene *m_particleCollisionSourceScene = nullptr;
     uint64_t m_particleCollisionSourceRevision = 0;
+    bool m_particleCollisionHistoryPending = false;
     uint64_t m_particleCollisionPublishedRevision = 1;
     uint64_t m_particleCollisionTopologyFingerprint = 0;
     uint64_t m_particleCollisionTopologyRevision = 1;
     struct ParticleCollisionPublishedState
     {
+        uint64_t geometryIdentity = 0;
         std::array<float, 12> worldToCollider{};
         std::array<float, 4> worldAabbMin{};
         std::array<float, 4> worldAabbMax{};
@@ -806,6 +854,13 @@ class InxRenderer
     // This keeps camera matrices, shadows, Forward+ lists, particles and
     // temporal history isolated while Camera.depth determines execution order.
     std::unique_ptr<SceneRenderTarget> m_gameRenderTarget;
+    const rhi::RenderViewId m_gameScreenViewId = rhi::AllocateRenderViewId();
+    [[nodiscard]] GameImageGeneration CurrentGameImageGeneration() const;
+    struct
+    {
+        GameImageGeneration generation;
+        rhi::SubmissionSerial completionEpoch = rhi::InvalidSubmissionSerial;
+    } m_acceptedGameImage;
     // Relative targets follow Game render pixels, never editor zoom/DPI or the
     // last Camera drawn. Registration must not extend the resource lifetime.
     std::vector<std::weak_ptr<rhi::RenderTexture>> m_relativeRenderTextures;
@@ -820,15 +875,22 @@ class InxRenderer
         uint64_t viewId;
         uint64_t accessRevision;
         bool scene;
+        bool admitted = true;
+        bool waitingForResult = false;
         bool operator==(const ScheduledView &other) const
         {
             return graph == other.graph && viewId == other.viewId && accessRevision == other.accessRevision &&
-                   scene == other.scene;
+                   scene == other.scene && admitted == other.admitted && waitingForResult == other.waitingForResult;
         }
     };
     std::vector<ScheduledView> m_scheduledViews, m_nextScheduledViews;
+    std::vector<std::pair<uint64_t, uint64_t>> m_objectBindingViews;
+    uint64_t m_sweptObjectBufferRevision = 0;
     RenderViewSchedule m_viewSchedule;
-    void UpdateViewSchedule(bool sceneActive, bool gameActive);
+    uint64_t m_viewRequestSerial = 0;
+    uint64_t m_cameraRequestSerial = 1;
+    void CollectRequestedViews(bool sceneActive, bool gameActive);
+    void UpdateViewSchedule();
     std::unique_ptr<InxScreenUIRenderer> m_screenUIRenderer;
     bool m_gameCameraEnabled = false;
     bool m_sceneViewVisible = false; ///< Default false; Python editor sets true via SetSceneViewVisible()
@@ -871,19 +933,7 @@ class InxRenderer
     uint64_t m_selectedObjectId = 0;
     std::vector<uint64_t> m_selectedOutlineObjectIds;
 
-    // Executor sub-timing (accumulated during the render-graph executor callback)
 #if INFERNUX_FRAME_PROFILE
-    struct ExecutorSubTiming
-    {
-        double sceneExecMs = 0;
-        double sceneMsaaMs = 0;
-        double gameSetupMs = 0;
-        double gameExecMs = 0;
-        double gameMsaaMs = 0;
-        double gameRestoreMs = 0;
-    };
-    ExecutorSubTiming m_executorTiming{};
-
     struct FrameDetailTiming
     {
         double frameCacheBeginMs = 0.0;
@@ -915,8 +965,8 @@ class InxRenderer
     /// @brief Per-frame camera stack and per-camera RenderGraph ownership.
     const std::vector<class Camera *> &FindGameCamerasCached();
     SceneRenderGraph *EnsureGameRenderGraph(class Camera *camera);
-    bool HasActiveGameViews();
-    bool ShouldRenderGameCamera(const class Camera *camera) const;
+    bool HasActiveGameViews(bool allowScreen = true);
+    bool ShouldRenderGameCamera(const class Camera *camera, bool allowScreen = true) const;
 
     /// Callback invoked once per frame BEFORE GUI::BuildFrame().
     /// Used by Python to tick DeferredTaskRunner so that scene-mutating
@@ -925,8 +975,12 @@ class InxRenderer
     std::function<void()> m_preGuiCallback;
 
     /// Callback invoked before SceneManager::Update with the raw frame delta.
-    std::function<void(float)> m_preSceneUpdateCallback;
+    std::function<void(float)> m_frameBeginCallback;
     bool m_drawingFrame = false;
+    // A render input can wait across host services without replaying gameplay.
+    bool m_waitingRenderResults = false;
+    uint64_t m_waitingRenderEpoch = 0;
+    uint64_t m_waitingRenderWorld = 0;
 
     /// Callback invoked once per frame AFTER VkCore::DrawFrame() + EndFrame().
     /// Used by Python to run heavy scene loads between frames, avoiding
@@ -937,7 +991,7 @@ class InxRenderer
 
     /// @brief Check scene & game render graph MSAA requests; apply if changed.
     /// @return true if MSAA change was triggered and DrawFrame should return early.
-    bool CheckAndApplyMsaaRequest(bool finalFrameCheck, bool sceneViewActive, bool gameViewActive);
+    bool CheckAndApplyMsaaRequest();
 
     [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
     [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);
@@ -956,5 +1010,8 @@ class InxRenderer
     /// @brief Collect and merge draw calls from all active render graphs,
     /// then pass them to VkCore for unused buffer cleanup.
     void CleanupDrawCallBuffers();
+
+    void RetireReplacedViewTargets();
+    std::vector<std::unique_ptr<SceneRenderTarget>> m_replacedViewTargets;
 };
 } // namespace infernux

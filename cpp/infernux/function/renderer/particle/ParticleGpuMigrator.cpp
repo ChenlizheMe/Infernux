@@ -47,6 +47,7 @@ layout(std430, set = 0, binding = 4) buffer DestinationCounters {
 };
 layout(std430, set = 0, binding = 5) readonly buffer CopyRanges { uvec4 copy_ranges[]; };
 layout(std430, set = 0, binding = 6) readonly buffer DefaultState { uint default_state[]; };
+layout(std430, set = 0, binding = 8) buffer DestinationAliveControl { uint destination_alive_counts[2]; };
 layout(push_constant) uniform MigrationConstants {
     uint source_capacity;
     uint destination_capacity;
@@ -59,6 +60,8 @@ layout(push_constant) uniform MigrationConstants {
 } pc;
 
 void main() {
+    destination_alive_counts[0] = 0u;
+    destination_alive_counts[1] = 0u;
     destination_free_count = 0u;
     destination_visible_count = 0u;
     destination_dropped_count = source_dropped_count;
@@ -113,6 +116,8 @@ layout(std430, set = 0, binding = 4) buffer DestinationCounters {
 };
 layout(std430, set = 0, binding = 5) readonly buffer CopyRanges { uvec4 copy_ranges[]; };
 layout(std430, set = 0, binding = 6) readonly buffer DefaultState { uint default_state[]; };
+layout(std430, set = 0, binding = 7) writeonly buffer DestinationAliveIndices { uint destination_alive_slots[]; };
+layout(std430, set = 0, binding = 8) buffer DestinationAliveControl { uint destination_alive_counts[2]; };
 layout(push_constant) uniform MigrationConstants {
     uint source_capacity;
     uint destination_capacity;
@@ -130,7 +135,7 @@ void main() {
 
     bool source_alive = false;
     uint source_base = index * pc.source_stride_words;
-    if (index < pc.source_capacity) source_alive = source_states[source_base] != 0u;
+    if (index < pc.source_capacity) source_alive = (source_states[source_base] & 1u) != 0u;
     if (index >= pc.destination_capacity) {
         if (source_alive) atomicAdd(destination_dropped_count, 1u);
         return;
@@ -141,10 +146,11 @@ void main() {
         destination_states[destination_base + word] = default_state[word];
 
     if (source_alive) {
-        // Migrated particles have already completed Init. The lifecycle flag is
-        // also valid when migrating from the pre-gate alive-word layout.
+        // Migrated particles have already completed Init.
         destination_states[destination_base] = source_states[source_base] | 2u;
         destination_states[destination_base + 1u] = source_states[source_base + 1u];
+        uint alive_index = atomicAdd(destination_alive_counts[0], 1u);
+        destination_alive_slots[alive_index] = index;
         for (uint range_index = 0u; range_index < pc.copy_range_count; ++range_index) {
             uvec4 range = copy_ranges[range_index];
             for (uint word = 0u; word < range.z; ++word)
@@ -217,9 +223,10 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
         desc.destinationStride % sizeof(uint32_t) != 0 ||
         desc.sourceCounterByteSize < ParticleGpuRuntime::BaseCounterWordCount * sizeof(uint32_t) ||
         !desc.sourceStates.IsValid() || !desc.sourceCounters.IsValid() || !desc.destinationStates.IsValid() ||
-        !desc.destinationFreeList.IsValid() || !desc.destinationCounters.IsValid() || desc.defaultStateWords.empty() ||
-        desc.defaultStateWords.size() != desc.destinationStride / sizeof(uint32_t) || !desc.program.IsValid() ||
-        desc.copyRanges.size() > std::numeric_limits<uint32_t>::max())
+        !desc.destinationFreeList.IsValid() || !desc.destinationCounters.IsValid() ||
+        !desc.destinationAliveIndices.IsValid() || !desc.destinationAliveControl.IsValid() ||
+        desc.defaultStateWords.empty() || desc.defaultStateWords.size() != desc.destinationStride / sizeof(uint32_t) ||
+        !desc.program.IsValid() || desc.copyRanges.size() > std::numeric_limits<uint32_t>::max())
         return false;
 
     const uint32_t sourceStrideWords = desc.sourceStride / sizeof(uint32_t);
@@ -239,6 +246,8 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
     m_destinationStates = desc.destinationStates;
     m_destinationFreeList = desc.destinationFreeList;
     m_destinationCounters = desc.destinationCounters;
+    m_destinationAliveIndices = desc.destinationAliveIndices;
+    m_destinationAliveControl = desc.destinationAliveControl;
     m_constants.sourceCapacity = desc.sourceCapacity;
     m_constants.destinationCapacity = desc.destinationCapacity;
     m_constants.sourceStrideWords = sourceStrideWords;
@@ -267,9 +276,9 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
     }
 
     rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 7; ++binding)
+    for (uint32_t binding = 0; binding < 9; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 7;
+    layoutDesc.entryCount = 9;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -278,9 +287,9 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 7> buffers = {
-        m_sourceStates,        m_sourceCounters, m_destinationStates, m_destinationFreeList,
-        m_destinationCounters, m_copyRanges,     m_defaultState,
+    const std::array<rhi::BufferHandle, 9> buffers = {
+        m_sourceStates, m_sourceCounters, m_destinationStates,       m_destinationFreeList,     m_destinationCounters,
+        m_copyRanges,   m_defaultState,   m_destinationAliveIndices, m_destinationAliveControl,
     };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding) {
         groupDesc.buffers[binding].binding = binding;
@@ -335,6 +344,8 @@ void ParticleGpuMigrator::Destroy() noexcept
     m_destinationStates = {};
     m_destinationFreeList = {};
     m_destinationCounters = {};
+    m_destinationAliveIndices = {};
+    m_destinationAliveControl = {};
     m_copyRanges = {};
     m_defaultState = {};
     m_layout = {};

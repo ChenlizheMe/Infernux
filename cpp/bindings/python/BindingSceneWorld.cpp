@@ -4,17 +4,61 @@
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/scene/Camera.h"
 #include "function/scene/ComponentFactory.h"
+#include "function/scene/ComponentRecord.h"
 #include "function/scene/GameObject.h"
 #include "function/scene/PyComponentProxy.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
 #include "function/scene/Transform.h"
+#include <algorithm>
 #include <pybind11/functional.h>
 
 namespace py = pybind11;
 
 namespace infernux::scene_binding
 {
+
+static void ValidatePrefabNativeRecords(const nlohmann::json &node)
+{
+    ComponentFactory::ValidateDocument("Transform", node.at("transform"));
+    std::vector<std::string> types{"Transform"};
+    for (const auto &component : node.at("components")) {
+        const auto record = DecodeComponentRecord(component);
+        if (record.kind != ComponentRecordKind::Native)
+            continue;
+        const auto &type = record.nativeTypeName;
+        ComponentFactory::ValidateDocument(type, BuildNativeComponentDocument(record));
+        const auto blockers = ComponentFactory::GetAttachmentBlockers(type, types);
+        if (!blockers.empty())
+            throw std::invalid_argument(type + ": " + blockers.front());
+        types.push_back(type);
+    }
+    for (size_t i = 1; i < types.size(); ++i) {
+        for (const auto &required : ComponentFactory::GetTypeConstraints(types[i]).requiredTypes) {
+            bool found = false;
+            for (size_t j = 0; j < types.size() && !found; ++j) {
+                if (j == i)
+                    continue;
+                const auto &type = types[j];
+                const auto &aliases = ComponentFactory::GetTypeConstraints(type).satisfiedTypes;
+                found = type == required || "native:infernux." + type == required ||
+                        std::find(aliases.begin(), aliases.end(), required) != aliases.end();
+            }
+            if (!found)
+                throw std::invalid_argument(types[i] + " requires missing component '" + required + "'");
+        }
+    }
+    for (const auto &child : node.at("children"))
+        ValidatePrefabNativeRecords(child);
+}
+
+py::dict ToPythonInstantiationIds(const InstantiationIds &ids)
+{
+    py::dict mapping;
+    for (const auto &[source, published] : ids)
+        mapping[py::int_(source)] = py::make_tuple(published.object, published.transform, published.components);
+    return mapping;
+}
 
 static void BindSceneEnvironment(NativeClass<Scene> &cls)
 {
@@ -168,6 +212,8 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
              py::arg("layer"), "Find all GameObjects in a given layer")
         .def("destroy_game_object", &Scene::DestroyGameObject, py::arg("game_object"),
              "Destroy a GameObject (will be removed at end of frame)")
+        .def("is_pending_destroy", &Scene::IsPendingDestroy, py::arg("game_object"),
+             "Check whether an object or one of its parents is queued for destruction or being destroyed")
         .def(
             "_remove_game_object_immediately",
             [](Scene &scene, GameObject *object) {
@@ -176,9 +222,16 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
                 scene.RemoveGameObject(object);
             },
             py::arg("game_object"), "Remove one transaction-owned object without draining the Scene destroy queue")
-        .def("_clone_game_object", &Scene::InstantiateGameObject, py::return_value_policy::reference, py::arg("source"),
-             py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
-             "Internal native subtree clone; Python callers must preflight first")
+        .def(
+            "_clone_game_object",
+            [](Scene &scene, GameObject *source, GameObject *parent, bool worldSpace) {
+                InstantiationIds ids;
+                auto *root = scene.InstantiateGameObject(source, ids, parent, worldSpace);
+                return py::make_tuple(py::cast(root, py::return_value_policy::reference),
+                                      ToPythonInstantiationIds(ids));
+            },
+            py::arg("source"), py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
+            "Internal native clone and source-to-published object/component identities")
         .def(
             "_clone_game_objects",
             [](Scene &scene, GameObject *source, const FloatArray &positions,
@@ -193,7 +246,10 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
         .def(
             "_instantiate_document",
             [](Scene &scene, const PythonDocument &document, GameObject *parent) {
-                return scene.InstantiateFromDocument(document.value, parent);
+                InstantiationIds ids;
+                auto *root = scene.InstantiateFromDocument(document.value, ids, parent);
+                return py::make_tuple(py::cast(root, py::return_value_policy::reference),
+                                      ToPythonInstantiationIds(ids));
             },
             py::return_value_policy::reference, py::arg("document"), py::arg("parent") = nullptr,
             "Internal native ObjectGraph instantiate; Python callers must preflight first")
@@ -235,15 +291,19 @@ void BindScene(py::module_ &m)
 void BindSceneManager(py::module_ &m)
 {
     py::enum_<SceneManager::RuntimeFrameBarrier>(m, "NativeRuntimeFrameBarrier")
+        .value("FIXED_SCRIPT", SceneManager::RuntimeFrameBarrier::FixedScript)
+        .value("PHYSICS_POST_SCRIPT", SceneManager::RuntimeFrameBarrier::PhysicsPostScript)
         .value("TRANSFORM_TO_PHYSICS", SceneManager::RuntimeFrameBarrier::TransformToPhysics)
         .value("PHYSICS_SIMULATION", SceneManager::RuntimeFrameBarrier::PhysicsSimulation)
         .value("PHYSICS_TO_TRANSFORM", SceneManager::RuntimeFrameBarrier::PhysicsToTransform)
         .value("TRANSFORM_RESOLVE", SceneManager::RuntimeFrameBarrier::TransformResolve)
         .value("FINAL_TRANSFORM_RESOLVE", SceneManager::RuntimeFrameBarrier::FinalTransformResolve)
+        .value("ANIMATION_EVALUATION", SceneManager::RuntimeFrameBarrier::AnimationEvaluation)
         .value("ANIMATION_TIMELINE", SceneManager::RuntimeFrameBarrier::AnimationTimeline)
         .value("RENDER_EXTRACTION", SceneManager::RuntimeFrameBarrier::RenderExtraction)
         .value("RENDER_GRAPH", SceneManager::RuntimeFrameBarrier::RenderGraph)
         .value("SNAPSHOT_PUBLICATION", SceneManager::RuntimeFrameBarrier::SnapshotPublication)
+        .value("RENDER_SUBMITTED", SceneManager::RuntimeFrameBarrier::RenderSubmitted)
         .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
 
     py::class_<SceneManager, std::unique_ptr<SceneManager, py::nodelete>>(m, "SceneManager")
@@ -301,8 +361,12 @@ void BindSceneManager(py::module_ &m)
              py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")
         .def("set_runtime_frame_barrier_callback", &SceneManager::SetRuntimeFrameBarrierCallback, py::arg("callback"),
              "Install the native runtime frame barrier bridge")
+        .def("set_runtime_result_consumer_callback", &SceneManager::SetRuntimeResultConsumerCallback,
+             py::arg("callback"))
+        .def("_set_result_consumers_present", &SceneManager::SetRuntimeResultConsumersPresent)
         .def("set_runtime_lifecycle_plan", &SceneManager::SetRuntimeLifecyclePlan, py::arg("revision"),
-             py::arg("fixed_update_count"), py::arg("update_count"), py::arg("late_update_count"),
+             py::arg("fixed_update_count"), py::arg("update_count"), py::arg("animation_update_count"),
+             py::arg("late_update_count"),
              "Publish the immutable Python lifecycle phase plan to the native frame driver")
         .def("set_runtime_lifecycle_work_available", &SceneManager::SetRuntimeLifecycleWorkAvailable,
              py::arg("available"), "Enable lifecycle bridge calls only while Python components exist")
@@ -316,11 +380,25 @@ void BindSceneManager(py::module_ &m)
         .def("stop", &SceneManager::Stop, "Stop play mode")
         .def("pause", &SceneManager::Pause, "Pause play mode")
         .def("is_paused", &SceneManager::IsPaused, "Check if paused")
+        .def("is_stepping", &SceneManager::IsStepping, "Check if an explicit paused simulation step is in progress")
+        .def("_is_executing_step", &SceneManager::IsExecutingStep,
+             "Internal lifecycle permission during native Step dispatch")
+        .def("_retain_step_frame", &SceneManager::RetainStepFrame)
+        .def_property_readonly("_step_permission_index", &SceneManager::GetStepPermissionIndex)
         .def_property_readonly("runtime_frame_count", &SceneManager::GetRuntimeFrameCount,
                                "Completed gameplay frames for the current active runtime scene")
+        .def_property_readonly("simulation_epoch", &SceneManager::GetSimulationEpoch,
+                               "Native simulation session identity; Fresh Play and Stop advance it")
+        .def_property_readonly("fixed_step_index", &SceneManager::GetFixedStepIndex,
+                               "Fixed bundles begun in this session, including empty-body and paused steps")
+        .def_property_readonly("completed_fixed_step_index", &SceneManager::GetCompletedFixedStepIndex,
+                               "Last completed physical integration in this Play session")
+        .def_property_readonly("published_fixed_step_index", &SceneManager::GetPublishedFixedStepIndex)
+        .def_property_readonly("fixed_step_pending", &SceneManager::HasPendingFixedStep)
         .def("get_fixed_time_step", &SceneManager::GetFixedTimeStep, "Get the fixed physics timestep in seconds")
         .def("set_fixed_time_step", &SceneManager::SetFixedTimeStep, py::arg("value"),
              "Set the fixed physics timestep in seconds")
+        .def("get_frame_delta_time", &SceneManager::GetFrameDeltaTime)
         .def("get_max_fixed_delta_time", &SceneManager::GetMaxFixedDeltaTime,
              "Get the max clamped frame delta used by the fixed-step accumulator")
         .def("set_max_fixed_delta_time", &SceneManager::SetMaxFixedDeltaTime, py::arg("value"),
@@ -364,14 +442,21 @@ void BindSceneManager(py::module_ &m)
             },
             "Return normalized timing and candidate counters for the most recent frame")
         .def("dont_destroy_on_load", &SceneManager::DontDestroyOnLoad, py::arg("game_object"),
-             "Mark a root GameObject so it survives scene switches. Unity: DontDestroyOnLoad()")
-        .def("mark_mesh_renderers_dirty", &SceneManager::MarkMeshRenderersDirtyForAsset, py::arg("mesh_guid"),
-             py::arg("mesh_path") = "",
-             "Mark all MeshRenderers referencing a mesh GUID as needing GPU buffer re-upload");
+             "Mark a root GameObject so it survives scene switches. Unity: DontDestroyOnLoad()");
 
     // ComponentFactory — query registered native component types
     m.def("get_registered_component_types", &ComponentFactory::GetUserAddableTypeNames,
           "Get user-addable registered native component type names");
+    m.def("_validate_prefab_native_records",
+          [](const PythonDocument &document) { ValidatePrefabNativeRecords(document.value); });
+    m.def("_rewrite_native_component_references", [](const std::string &typeName, const PythonDocument &document,
+                                                     const py::function &rewrite) {
+        auto candidate = document.value;
+        ComponentFactory::RewriteDocumentComponentReferences(typeName, candidate, [&](const nlohmann::json &value) {
+            return PythonToJson(rewrite(JsonToPython(value)));
+        });
+        return JsonToPython(candidate);
+    });
 }
 
 } // namespace infernux::scene_binding

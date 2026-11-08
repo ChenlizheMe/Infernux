@@ -35,16 +35,11 @@
 namespace infernux
 {
 
-namespace
-{
 struct CookedGeometry
 {
-    std::vector<glm::vec3> vertices;
-    std::vector<uint32_t> indices;
+    JPH::RefConst<JPH::Shape> shape;
     std::vector<glm::vec3> hullPositions;
     std::vector<uint32_t> hullEdges;
-    std::vector<glm::vec3> collisionPositions;
-    std::vector<uint32_t> collisionIndices;
 };
 
 struct CookingCacheKey
@@ -54,11 +49,12 @@ struct CookingCacheKey
     size_t vertexCount = 0;
     size_t indexCount = 0;
     bool convex = false;
+    glm::vec3 worldScale{1.0f};
 
     bool operator==(const CookingCacheKey &other) const
     {
         return hashA == other.hashA && hashB == other.hashB && vertexCount == other.vertexCount &&
-               indexCount == other.indexCount && convex == other.convex;
+               indexCount == other.indexCount && convex == other.convex && worldScale == other.worldScale;
     }
 };
 
@@ -71,6 +67,15 @@ struct CookingCacheKeyHash
     }
 };
 
+struct MeshCookingResult
+{
+    CookingCacheKey key;
+    std::shared_ptr<const CookedGeometry> geometry;
+    std::string error;
+};
+
+namespace
+{
 constexpr size_t kMaxCookingCacheEntries = 128;
 std::mutex g_cookingCacheMutex;
 std::unordered_map<CookingCacheKey, std::shared_ptr<const CookedGeometry>, CookingCacheKeyHash> g_cookingCache;
@@ -91,22 +96,16 @@ struct InflightCooking
     std::vector<CookingWaiter> waiters;
 };
 
-struct CookingCompletion
-{
-    CookingCacheKey key;
-    std::shared_ptr<const CookedGeometry> geometry;
-    std::string error;
-};
-
 // In-flight ownership is main-thread only. Workers publish immutable payloads
 // through the completion queue and never retain Collider/GameObject pointers.
 std::unordered_map<CookingCacheKey, InflightCooking, CookingCacheKeyHash> g_inflightCooking;
 std::mutex g_cookingCompletionMutex;
-std::deque<CookingCompletion> g_cookingCompletions;
+std::deque<std::shared_ptr<const MeshCookingResult>> g_cookingCompletions;
 
-CookingCacheKey HashGeometry(const std::vector<glm::vec3> &vertices, const std::vector<uint32_t> &indices, bool convex)
+CookingCacheKey HashGeometry(const std::vector<glm::vec3> &vertices, const std::vector<uint32_t> &indices, bool convex,
+                             const glm::vec3 &worldScale)
 {
-    CookingCacheKey key{14695981039346656037ULL, 1099511628211ULL, vertices.size(), indices.size(), convex};
+    CookingCacheKey key{14695981039346656037ULL, 1099511628211ULL, vertices.size(), indices.size(), convex, worldScale};
     const auto append = [&key](const void *data, size_t size) {
         const auto *bytes = static_cast<const unsigned char *>(data);
         for (size_t index = 0; index < size; ++index) {
@@ -117,6 +116,9 @@ CookingCacheKey HashGeometry(const std::vector<glm::vec3> &vertices, const std::
         }
     };
     append(&convex, sizeof(convex));
+    append(&worldScale.x, sizeof(float));
+    append(&worldScale.y, sizeof(float));
+    append(&worldScale.z, sizeof(float));
     for (const auto &vertex : vertices) {
         append(&vertex.x, sizeof(vertex.x));
         append(&vertex.y, sizeof(vertex.y));
@@ -150,43 +152,6 @@ void StoreCookedGeometry(const CookingCacheKey &key, std::shared_ptr<const Cooke
     g_cookingCacheOrder.push_back(key);
 }
 
-JPH::Shape *CreateShapeFromCookedGeometry(const CookedGeometry &geometry, bool convex, std::string &error)
-{
-    const auto finish = [&error, convex](const JPH::ShapeSettings::ShapeResult &result) -> JPH::Shape * {
-        if (result.HasError()) {
-            error =
-                std::string(convex ? "cached convex shape creation failed: " : "cached mesh shape creation failed: ") +
-                result.GetError().c_str();
-            return nullptr;
-        }
-        auto *shape = const_cast<JPH::Shape *>(result.Get().GetPtr());
-        shape->AddRef();
-        return shape;
-    };
-    if (convex) {
-        JPH::Array<JPH::Vec3> points;
-        points.reserve(static_cast<int>(geometry.vertices.size()));
-        for (const auto &vertex : geometry.vertices)
-            points.emplace_back(vertex.x, vertex.y, vertex.z);
-        JPH::ConvexHullShapeSettings settings(points);
-        const auto result = settings.Create();
-        return finish(result);
-    } else {
-        JPH::MeshShapeSettings settings;
-        settings.mTriangleVertices.reserve(static_cast<int>(geometry.vertices.size()));
-        for (const auto &vertex : geometry.vertices)
-            settings.mTriangleVertices.emplace_back(vertex.x, vertex.y, vertex.z);
-        settings.mIndexedTriangles.reserve(static_cast<int>(geometry.indices.size() / 3));
-        for (size_t index = 0; index + 2 < geometry.indices.size(); index += 3) {
-            settings.mIndexedTriangles.emplace_back(geometry.indices[index], geometry.indices[index + 1],
-                                                    geometry.indices[index + 2], 0, static_cast<uint32_t>(index / 3));
-        }
-        settings.mPerTriangleUserData = true;
-        settings.SetEmbedded();
-        const auto result = settings.Create();
-        return finish(result);
-    }
-}
 } // namespace
 
 void MeshCollider::ClearCookingCache()
@@ -349,6 +314,15 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
                                                           const glm::vec3 &worldScale, std::string &error)
 {
     auto cooked = std::make_shared<CookedGeometry>();
+    const auto finish = [&cooked, &error](const JPH::ShapeSettings::ShapeResult &result,
+                                          const char *description) -> std::shared_ptr<const CookedGeometry> {
+        if (result.HasError()) {
+            error = std::string(description) + ": " + result.GetError().c_str();
+            return nullptr;
+        }
+        cooked->shape = result.Get();
+        return cooked;
+    };
     if (convex) {
         constexpr int kMaxConvexVerts = 100;
         JPH::Array<JPH::Vec3> allPoints;
@@ -389,33 +363,22 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
             }
             for (const auto *face : builder.GetFaces()) {
                 const auto *edge = face->mFirstEdge;
-                std::vector<uint32_t> faceIndices;
                 do {
                     const uint32_t start = originalToCompact.at(edge->mStartIdx);
                     const uint32_t end = originalToCompact.at(edge->mNextEdge->mStartIdx);
                     cooked->hullEdges.push_back(start);
                     cooked->hullEdges.push_back(end);
-                    faceIndices.push_back(start);
                     edge = edge->mNextEdge;
                 } while (edge != face->mFirstEdge);
-                for (size_t index = 1; index + 1 < faceIndices.size(); ++index) {
-                    cooked->collisionIndices.push_back(faceIndices[0]);
-                    cooked->collisionIndices.push_back(faceIndices[index]);
-                    cooked->collisionIndices.push_back(faceIndices[index + 1]);
-                }
             }
-            cooked->collisionPositions = cooked->hullPositions;
         }
 
         if (hullPoints.empty())
             hullPoints = std::move(allPoints);
-        cooked->vertices.reserve(hullPoints.size());
-        for (const auto &point : hullPoints)
-            cooked->vertices.emplace_back(point.GetX(), point.GetY(), point.GetZ());
-        if (cooked->vertices.empty())
-            error = buildError ? std::string("convex mesh cooking failed: ") + buildError
-                               : "convex mesh cooking produced no vertices";
-        return error.empty() ? cooked : nullptr;
+        JPH::ConvexHullShapeSettings settings(hullPoints);
+        // Keep the rounded support and the actual hull within narrow-phase accuracy.
+        settings.mMaxErrorConvexRadius = JPH::cDefaultCollisionTolerance;
+        return finish(settings.Create(), "convex mesh cooking failed");
     }
 
     CookMeshGeometry(vertices, indices);
@@ -424,17 +387,18 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
         error = "mesh cooking removed every triangle";
         return nullptr;
     }
-    const glm::vec3 inverseScale(worldScale.x != 0.0f ? 1.0f / worldScale.x : 1.0f,
-                                 worldScale.y != 0.0f ? 1.0f / worldScale.y : 1.0f,
-                                 worldScale.z != 0.0f ? 1.0f / worldScale.z : 1.0f);
-    cooked->collisionPositions.reserve(vertices.size());
+    JPH::MeshShapeSettings settings;
+    settings.mTriangleVertices.reserve(static_cast<int>(vertices.size()));
     for (const auto &vertex : vertices)
-        cooked->collisionPositions.emplace_back(vertex.x * inverseScale.x, vertex.y * inverseScale.y,
-                                                vertex.z * inverseScale.z);
-    cooked->collisionIndices = indices;
-    cooked->vertices = std::move(vertices);
-    cooked->indices = std::move(indices);
-    return cooked;
+        settings.mTriangleVertices.emplace_back(vertex.x, vertex.y, vertex.z);
+    settings.mIndexedTriangles.reserve(static_cast<int>(indices.size() / 3));
+    for (size_t index = 0; index < indices.size(); index += 3) {
+        settings.mIndexedTriangles.emplace_back(indices[index], indices[index + 1], indices[index + 2], 0,
+                                                static_cast<uint32_t>(index / 3));
+    }
+    settings.mPerTriangleUserData = true;
+    settings.SetEmbedded();
+    return finish(settings.Create(), "mesh shape cooking failed");
 }
 
 namespace
@@ -477,20 +441,29 @@ void MeshCollider::SetConvex(bool convex)
     }
     m_convex = convex;
     InvalidatePendingCooking();
-    RebuildShape();
+    RequestShapeUpdate();
 }
 
 void MeshCollider::OnMeshGeometryChanged()
 {
     CaptureMeshGeometry();
     InvalidatePendingCooking();
-    RebuildShape();
+    RequestShapeUpdate();
+}
+
+void MeshCollider::RequestShapeUpdate()
+{
+    if (GetBodyId() == 0xFFFFFFFF)
+        PhysicsECSStore::Instance().QueueBodyCreation(Data().actorHandle);
+    else
+        RebuildShape();
 }
 
 void MeshCollider::InvalidatePendingCooking() const
 {
     ++m_cookingRevision;
     m_cookingPending = false;
+    m_cookingResult.reset();
 }
 
 void MeshCollider::AutoFitToMesh()
@@ -569,7 +542,7 @@ bool MeshCollider::CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std:
     return false;
 }
 
-void *MeshCollider::CreateJoltShapeRaw() const
+JPH::RefConst<JPH::Shape> MeshCollider::CreateJoltShape() const
 {
     m_shapeError.clear();
     if (!m_hasGeometrySnapshot)
@@ -609,19 +582,27 @@ void *MeshCollider::CreateJoltShapeRaw() const
     }
 
     const bool useConvex = m_convex;
-    if (auto *rb = GetCachedRigidbody(); rb && !rb->IsKinematic()) {
+    if (auto *rb = GetAttachedRigidbody(); rb && rb->IsEnabled() && !rb->IsKinematic()) {
         if (!m_convex) {
             InvalidatePendingCooking();
             m_shapeError = "dynamic Rigidbody requires MeshCollider.convex = true";
             return nullptr;
         }
     }
-    const CookingCacheKey cookingKey = HashGeometry(vertices, indices, useConvex);
-    auto cookedGeometry = FindCookedGeometry(cookingKey);
+    const CookingCacheKey cookingKey = HashGeometry(vertices, indices, useConvex, worldScale);
+    if (m_cookingResult && !(m_cookingResult->key == cookingKey))
+        InvalidatePendingCooking();
+    if (m_cookingResult && !m_cookingResult->error.empty()) {
+        m_shapeError = m_cookingResult->error;
+        return nullptr;
+    }
+    auto cookedGeometry = m_cookingResult ? m_cookingResult->geometry : FindCookedGeometry(cookingKey);
 
     if (!cookedGeometry && !JobSystem::IsAvailable()) {
         ++g_cookingCacheMisses;
         cookedGeometry = CookGeometry(std::move(vertices), std::move(indices), useConvex, worldScale, m_shapeError);
+        m_cookingResult =
+            std::make_shared<MeshCookingResult>(MeshCookingResult{cookingKey, cookedGeometry, m_shapeError});
         if (!cookedGeometry)
             return nullptr;
         StoreCookedGeometry(cookingKey, cookedGeometry);
@@ -650,15 +631,15 @@ void *MeshCollider::CreateJoltShapeRaw() const
                 request.job =
                     JobSystem::Get().Schedule([key = cookingKey, vertices = std::move(vertices),
                                                indices = std::move(indices), useConvex, worldScale]() mutable {
-                        CookingCompletion completion;
-                        completion.key = key;
+                        auto completion = std::make_shared<MeshCookingResult>();
+                        completion->key = key;
                         try {
-                            completion.geometry = CookGeometry(std::move(vertices), std::move(indices), useConvex,
-                                                               worldScale, completion.error);
+                            completion->geometry = CookGeometry(std::move(vertices), std::move(indices), useConvex,
+                                                                worldScale, completion->error);
                         } catch (const std::exception &exception) {
-                            completion.error = std::string("mesh cooking worker failed: ") + exception.what();
+                            completion->error = std::string("mesh cooking worker failed: ") + exception.what();
                         } catch (...) {
-                            completion.error = "mesh cooking worker failed with an unknown exception";
+                            completion->error = "mesh cooking worker failed with an unknown exception";
                         }
                         std::lock_guard<std::mutex> lock(g_cookingCompletionMutex);
                         g_cookingCompletions.push_back(std::move(completion));
@@ -671,54 +652,53 @@ void *MeshCollider::CreateJoltShapeRaw() const
 
     if (m_cookingPending)
         InvalidatePendingCooking();
-    JPH::Shape *shape = CreateShapeFromCookedGeometry(*cookedGeometry, useConvex, m_shapeError);
-    if (!shape)
-        return nullptr;
-    m_convexHullPositions = cookedGeometry->hullPositions;
-    m_convexHullEdges = cookedGeometry->hullEdges;
-    if (m_collisionPositions != cookedGeometry->collisionPositions ||
-        m_collisionIndices != cookedGeometry->collisionIndices) {
-        m_collisionPositions = cookedGeometry->collisionPositions;
-        m_collisionIndices = cookedGeometry->collisionIndices;
-        ++m_collisionGeometryRevision;
-        if (m_collisionGeometryRevision == 0)
-            ++m_collisionGeometryRevision;
-        PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
-    }
+    if (!m_cookingResult)
+        m_cookingResult = std::make_shared<MeshCookingResult>(MeshCookingResult{cookingKey, cookedGeometry, {}});
+    const auto &shape = cookedGeometry->shape;
 
-    glm::vec3 center = GetCenter();
-    if (auto *go = GetGameObject()) {
-        if (auto *tf = go->GetTransform()) {
-            center *= tf->GetWorldScale();
-        }
-    }
+    glm::vec3 center = GetCenterInRigidSpace();
     if (center != glm::vec3(0.0f)) {
-        shape = new JPH::RotatedTranslatedShape(JPH::Vec3(center.x, center.y, center.z), JPH::Quat::sIdentity(), shape);
+        return new JPH::RotatedTranslatedShape(JPH::Vec3(center.x, center.y, center.z), JPH::Quat::sIdentity(), shape);
     }
 
     return shape;
 }
 
-void MeshCollider::CompleteCooking(uint64_t hashA, uint64_t hashB, size_t vertexCount, size_t indexCount, bool convex,
-                                   uint64_t revision, const std::string &error)
+void MeshCollider::PublishCookedGeometry()
 {
-    if (!m_cookingPending || m_cookingRevision != revision || m_pendingHashA != hashA || m_pendingHashB != hashB ||
-        m_pendingVertexCount != vertexCount || m_pendingIndexCount != indexCount || m_pendingConvex != convex) {
+    const auto &geometry = m_cookingResult->geometry;
+    if (m_publishedGeometry == geometry)
         return;
-    }
+    m_publishedGeometry = geometry;
+    ++m_collisionGeometryRevision;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
+}
+
+const std::vector<glm::vec3> &MeshCollider::GetConvexHullPositions() const
+{
+    static const std::vector<glm::vec3> empty;
+    return m_publishedGeometry ? m_publishedGeometry->hullPositions : empty;
+}
+
+const std::vector<uint32_t> &MeshCollider::GetConvexHullEdges() const
+{
+    static const std::vector<uint32_t> empty;
+    return m_publishedGeometry ? m_publishedGeometry->hullEdges : empty;
+}
+
+void MeshCollider::CompleteCooking(std::shared_ptr<const MeshCookingResult> result, uint64_t revision)
+{
+    const auto &key = result->key;
+    if (!m_cookingPending || m_cookingRevision != revision || m_pendingHashA != key.hashA ||
+        m_pendingHashB != key.hashB || m_pendingVertexCount != key.vertexCount ||
+        m_pendingIndexCount != key.indexCount || m_pendingConvex != key.convex)
+        return;
 
     m_cookingPending = false;
-    if (!error.empty()) {
-        m_shapeError = error;
-        return;
-    }
-
-    m_shapeError.clear();
-    if (GetBodyId() == 0xFFFFFFFF) {
-        PhysicsECSStore::Instance().QueueBodyCreation(m_ecsHandle);
-    } else {
-        RebuildShape();
-    }
+    m_cookingResult = std::move(result);
+    m_shapeError = m_cookingResult->error;
+    if (m_shapeError.empty())
+        RequestShapeUpdate();
 }
 
 void MeshCollider::FlushCompletedCooking(bool waitForAll)
@@ -734,7 +714,7 @@ void MeshCollider::FlushCompletedCooking(bool waitForAll)
             JobSystem::Get().Wait(job);
     }
 
-    std::deque<CookingCompletion> completions;
+    std::deque<std::shared_ptr<const MeshCookingResult>> completions;
     {
         std::lock_guard<std::mutex> lock(g_cookingCompletionMutex);
         completions.swap(g_cookingCompletions);
@@ -742,13 +722,13 @@ void MeshCollider::FlushCompletedCooking(bool waitForAll)
 
     auto &store = PhysicsECSStore::Instance();
     for (auto &completion : completions) {
-        auto inflight = g_inflightCooking.find(completion.key);
+        auto inflight = g_inflightCooking.find(completion->key);
         if (inflight == g_inflightCooking.end())
             continue;
         auto waiters = std::move(inflight->second.waiters);
         g_inflightCooking.erase(inflight);
-        if (completion.geometry)
-            StoreCookedGeometry(completion.key, completion.geometry);
+        if (completion->geometry)
+            StoreCookedGeometry(completion->key, completion->geometry);
 
         for (const auto &waiter : waiters) {
             if (!store.IsValid(waiter.handle))
@@ -756,9 +736,7 @@ void MeshCollider::FlushCompletedCooking(bool waitForAll)
             auto *collider = dynamic_cast<MeshCollider *>(store.GetCollider(waiter.handle).owner);
             if (!collider)
                 continue;
-            collider->CompleteCooking(completion.key.hashA, completion.key.hashB, completion.key.vertexCount,
-                                      completion.key.indexCount, completion.key.convex, waiter.revision,
-                                      completion.error);
+            collider->CompleteCooking(completion, waiter.revision);
         }
     }
 }
@@ -787,8 +765,11 @@ bool MeshCollider::DeserializeDocument(const nlohmann::json &j)
         const bool stagedConvex = j["convex"].get<bool>();
         if (!Collider::DeserializeDocument(j))
             return false;
-        m_convex = stagedConvex;
-        RebuildShape();
+        if (m_convex != stagedConvex) {
+            m_convex = stagedConvex;
+            InvalidatePendingCooking();
+        }
+        RequestShapeUpdate();
         return true;
     } catch (const std::exception &e) {
         INXLOG_ERROR("MeshCollider::Deserialize failed: ", e.what());
@@ -804,9 +785,8 @@ std::unique_ptr<Component> MeshCollider::Clone() const
     clone->m_hasGeometrySnapshot = m_hasGeometrySnapshot;
     clone->m_sourceVertices = m_sourceVertices;
     clone->m_sourceIndices = m_sourceIndices;
-    clone->m_convexHullPositions = m_convexHullPositions;
-    clone->m_convexHullEdges = m_convexHullEdges;
     clone->m_shapeError = m_shapeError;
+    clone->m_cookingResult = m_cookingResult;
     return clone;
 }
 

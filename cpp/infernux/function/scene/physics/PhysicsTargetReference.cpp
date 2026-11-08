@@ -17,22 +17,28 @@ Component *ResolveLifetime(uint64_t id, uint64_t generation)
 }
 } // namespace
 
-PhysicsTargetReference::PhysicsTargetReference(const Collider *collider)
+PhysicsTargetReference::PhysicsTargetReference(const Component *component)
 {
-    if (!collider)
+    if (!component)
         return;
     m_resolve = &ResolveLifetime;
-    m_colliderId = collider->GetComponentID();
-    m_colliderGeneration = collider->GetLifetimeGeneration();
-    if (GameObject *owner = collider->GetGameObject()) {
-        m_ownerTransformId = owner->GetTransform()->GetComponentID();
-        m_ownerTransformGeneration = owner->GetTransform()->GetLifetimeGeneration();
+    m_componentId = component->GetComponentID();
+    m_componentGeneration = component->GetLifetimeGeneration();
+    auto *target = component->GetGameObject() ? component->GetGameObject()->GetTransform() : nullptr;
+    if (target) {
+        m_ownerTransformId = target->GetComponentID();
+        m_ownerTransformGeneration = target->GetLifetimeGeneration();
     }
+}
+
+Component *PhysicsTargetReference::GetComponent() const
+{
+    return m_resolve ? m_resolve(m_componentId, m_componentGeneration) : nullptr;
 }
 
 Collider *PhysicsTargetReference::GetCollider() const
 {
-    return m_resolve ? static_cast<Collider *>(m_resolve(m_colliderId, m_colliderGeneration)) : nullptr;
+    return dynamic_cast<Collider *>(GetComponent());
 }
 
 GameObject *PhysicsTargetReference::GetGameObject() const

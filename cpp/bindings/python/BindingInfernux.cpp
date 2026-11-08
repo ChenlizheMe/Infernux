@@ -1,9 +1,11 @@
 #include "BindingRegistration.h"
+#include "DisplayText.h"
 #include "Infernux.h"
 #include "MatrixPyBridge.h"
+#include "PythonCallback.h"
+#include "SpirvPyBridge.h"
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
-#include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/scene/PythonNativeLifetime.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
@@ -31,10 +33,13 @@
 #include <function/scene/SkinnedMeshRenderer.h>
 #include <glm/glm.hpp>
 #include <platform/window/NativeFileDialog.h>
+#include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <stdexcept>
+#include <string_view>
+#include <tuple>
 
 using namespace infernux;
 namespace py = pybind11;
@@ -42,22 +47,13 @@ namespace py = pybind11;
 namespace
 {
 
-struct PythonFrameCallback
+InxRenderer &RequireRenderer(Infernux &engine)
 {
-    py::function function;
-    explicit PythonFrameCallback(py::function value) : function(std::move(value))
-    {
-    }
-    ~PythonFrameCallback()
-    {
-        if (!Py_IsInitialized()) {
-            function.release();
-            return;
-        }
-        py::gil_scoped_acquire acquire;
-        function = py::function();
-    }
-};
+    auto *renderer = engine.GetRenderer();
+    if (!renderer)
+        throw std::logic_error("Renderer configuration requires an initialized graphical Engine");
+    return *renderer;
+}
 
 // A shared_ptr from pybind11 keeps the C++ trampoline alive, but not its
 // Python subclass or overrides. Attach that Python owner to the registration's
@@ -131,20 +127,6 @@ void LogPythonFrameCallbackError(const char *callbackName, const py::error_alrea
     // leaving PyErr set poisons every later callback while the native render
     // loop continues, stranding deferred tasks and MCP main-thread commands.
     INXLOG_ERROR("[PythonFrameCallback] {} failed: {}", callbackName, error.what());
-}
-
-std::vector<uint32_t> DecodeParticleSpirv(const py::handle &value, const std::string &label)
-{
-    if (!py::isinstance<py::bytes>(value))
-        throw std::invalid_argument(label + " must be SPIR-V bytes");
-    const std::string bytes = py::cast<py::bytes>(value);
-    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-        throw std::invalid_argument(label + " has an invalid SPIR-V byte size");
-    std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
-    std::memcpy(words.data(), bytes.data(), bytes.size());
-    if (words.front() != 0x07230203u)
-        throw std::invalid_argument(label + " has an invalid SPIR-V magic number");
-    return words;
 }
 
 particle::ParticleSortMode DecodeParticleSortMode(const std::string &value)
@@ -249,11 +231,11 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         program.continuationLaneCount = py::cast<uint32_t>(continuation["lane_count"]);
         program.continuationJoinCount = py::cast<uint32_t>(continuation["join_count"]);
         program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Prepare)] =
-            DecodeParticleSpirv(continuation["prepare"], "particle continuation prepare");
+            bindings::DecodeSpirvBytes(continuation["prepare"], "particle continuation prepare");
         program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Classify)] =
-            DecodeParticleSpirv(continuation["classify"], "particle continuation classify");
+            bindings::DecodeSpirvBytes(continuation["classify"], "particle continuation classify");
         program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Dispatch)] =
-            DecodeParticleSpirv(continuation["dispatch"], "particle continuation dispatch");
+            bindings::DecodeSpirvBytes(continuation["dispatch"], "particle continuation dispatch");
     }
     if (value.contains("preserve_state"))
         program.preserveState = py::cast<bool>(value["preserve_state"]);
@@ -478,34 +460,34 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             continue;
         if (!stages.contains(stage))
             throw std::invalid_argument(std::string("GPU particle program is missing stage ") + stage);
-        program.kernels[index] = DecodeParticleSpirv(stages[stage], std::string("particle stage ") + stage);
+        program.kernels[index] = bindings::DecodeSpirvBytes(stages[stage], std::string("particle stage ") + stage);
     }
     const py::dict billboard = py::cast<py::dict>(value["billboard"]);
     if (!billboard.contains("vertex") || !billboard.contains("picking_fragment") ||
         !billboard.contains("motion_vertex") || !billboard.contains("motion_fragment"))
         throw std::invalid_argument("GPU particle billboard shaders are incomplete");
-    program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
+    program.billboardVertexShader = bindings::DecodeSpirvBytes(billboard["vertex"], "particle billboard vertex shader");
     program.billboardPickingFragmentShader =
-        DecodeParticleSpirv(billboard["picking_fragment"], "particle billboard picking fragment shader");
+        bindings::DecodeSpirvBytes(billboard["picking_fragment"], "particle billboard picking fragment shader");
     program.billboardMotionVertexShader =
-        DecodeParticleSpirv(billboard["motion_vertex"], "particle billboard motion vertex shader");
+        bindings::DecodeSpirvBytes(billboard["motion_vertex"], "particle billboard motion vertex shader");
     program.billboardMotionFragmentShader =
-        DecodeParticleSpirv(billboard["motion_fragment"], "particle billboard motion fragment shader");
+        bindings::DecodeSpirvBytes(billboard["motion_fragment"], "particle billboard motion fragment shader");
 
     const py::dict meshShaders = py::cast<py::dict>(value["mesh_shaders"]);
     for (const char *field : {"vertex", "shadow_fragment", "picking_fragment", "motion_vertex", "motion_fragment"}) {
         if (!meshShaders.contains(field))
             throw std::invalid_argument(std::string("GPU particle mesh shaders are missing ") + field);
     }
-    program.meshVertexShader = DecodeParticleSpirv(meshShaders["vertex"], "particle mesh vertex shader");
+    program.meshVertexShader = bindings::DecodeSpirvBytes(meshShaders["vertex"], "particle mesh vertex shader");
     program.meshShadowFragmentShader =
-        DecodeParticleSpirv(meshShaders["shadow_fragment"], "particle mesh shadow fragment shader");
+        bindings::DecodeSpirvBytes(meshShaders["shadow_fragment"], "particle mesh shadow fragment shader");
     program.meshPickingFragmentShader =
-        DecodeParticleSpirv(meshShaders["picking_fragment"], "particle mesh picking fragment shader");
+        bindings::DecodeSpirvBytes(meshShaders["picking_fragment"], "particle mesh picking fragment shader");
     program.meshMotionVertexShader =
-        DecodeParticleSpirv(meshShaders["motion_vertex"], "particle mesh motion vertex shader");
+        bindings::DecodeSpirvBytes(meshShaders["motion_vertex"], "particle mesh motion vertex shader");
     program.meshMotionFragmentShader =
-        DecodeParticleSpirv(meshShaders["motion_fragment"], "particle mesh motion fragment shader");
+        bindings::DecodeSpirvBytes(meshShaders["motion_fragment"], "particle mesh motion fragment shader");
 
     const py::sequence outputs = py::cast<py::sequence>(value["outputs"]);
     program.outputs.reserve(outputs.size());
@@ -636,84 +618,35 @@ particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &va
     return transforms;
 }
 
-std::vector<rhi::ComputeDispatchDesc> DecodeComputeDispatches(py::iterable values)
-{
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    for (const auto value : values) {
-        if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
-            throw py::type_error("Compute dispatch must be a tuple or list");
-        const auto dispatch = py::reinterpret_borrow<py::sequence>(value);
-        if (dispatch.size() != 7)
-            throw py::value_error("Compute dispatch must contain kernel, buffers, access declarations, push constants, "
-                                  "and three group counts");
-        std::vector<rhi::ComputeBufferAccess> accesses;
-        for (const auto accessValue : py::cast<py::iterable>(dispatch[2])) {
-            const auto access = py::cast<std::string>(accessValue);
-            if (access == "read")
-                accesses.push_back(rhi::ComputeBufferAccess::Read);
-            else if (access == "write")
-                accesses.push_back(rhi::ComputeBufferAccess::Write);
-            else if (access == "read_write")
-                accesses.push_back(rhi::ComputeBufferAccess::ReadWrite);
-            else
-                throw py::value_error("Compute buffer access must be read, write, or read_write");
-        }
-        const auto constants = py::cast<py::bytes>(dispatch[3]).cast<std::string>();
-        dispatches.push_back({
-            py::cast<std::shared_ptr<rhi::ComputeKernel>>(dispatch[0]),
-            py::cast<std::vector<std::shared_ptr<rhi::ComputeBuffer>>>(dispatch[1]),
-            std::move(accesses),
-            std::vector<uint8_t>(constants.begin(), constants.end()),
-            py::cast<uint32_t>(dispatch[4]),
-            py::cast<uint32_t>(dispatch[5]),
-            py::cast<uint32_t>(dispatch[6]),
-        });
-    }
-    return dispatches;
-}
-
-std::vector<rhi::ComputeBufferUpdate> DecodeComputeUpdates(py::iterable values)
-{
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    for (const auto value : values) {
-        if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
-            throw py::type_error("Compute buffer update must be a tuple or list");
-        const auto update = py::reinterpret_borrow<py::sequence>(value);
-        if (update.size() != 3)
-            throw py::value_error("Compute buffer update must contain buffer, bytes, and byte offset");
-        const auto bytes = py::cast<py::bytes>(update[1]).cast<std::string>();
-        updates.push_back({
-            py::cast<std::shared_ptr<rhi::ComputeBuffer>>(update[0]),
-            py::cast<uint64_t>(update[2]),
-            std::vector<uint8_t>(bytes.begin(), bytes.end()),
-        });
-    }
-    return updates;
-}
-
-std::vector<rhi::ComputeBufferRead> DecodeComputeReads(py::iterable values)
-{
-    std::vector<rhi::ComputeBufferRead> reads;
-    for (const auto value : values) {
-        if (!py::isinstance<py::tuple>(value) && !py::isinstance<py::list>(value))
-            throw py::type_error("Compute buffer read must be a tuple or list");
-        const auto read = py::reinterpret_borrow<py::sequence>(value);
-        if (read.size() != 3)
-            throw py::value_error("Compute buffer read must contain buffer, byte offset, and byte size");
-        reads.push_back({
-            py::cast<std::shared_ptr<rhi::ComputeBuffer>>(read[0]),
-            py::cast<uint64_t>(read[1]),
-            py::cast<uint64_t>(read[2]),
-        });
-    }
-    return reads;
-}
-
 } // namespace
 
 void infernux::RegisterInfernuxBindings(py::module_ &m)
 {
     m.doc() = "Python bindings for Infernux";
+
+    py::enum_<particle::GpuParticlePublicationStatus>(m, "GpuParticlePublicationStatus")
+        .value("Published", particle::GpuParticlePublicationStatus::Published)
+        .value("Pending", particle::GpuParticlePublicationStatus::Pending)
+        .value("Failed", particle::GpuParticlePublicationStatus::Failed);
+
+    using ParticleStateCapture = particle::GpuParticleStateCapture;
+    py::class_<ParticleStateCapture, std::shared_ptr<ParticleStateCapture>>(m, "_GpuParticleStateCapture")
+        .def_property_readonly("ready", &ParticleStateCapture::Ready)
+        .def_property_readonly("done", &ParticleStateCapture::Done)
+        .def_readonly("error", &ParticleStateCapture::error)
+        .def_readonly("request_id", &ParticleStateCapture::requestId)
+        .def_property_readonly("identity",
+                               [](const ParticleStateCapture &capture) {
+                                   return py::make_tuple(
+                                       capture.graphInstanceId, capture.emitterId, capture.artifactRevision,
+                                       capture.requestId, capture.sourceFrame, capture.sourceSubstep,
+                                       static_cast<uint8_t>(capture.submission.queue), capture.submission.serial);
+                               })
+        .def("cancel", [](ParticleStateCapture &capture) { capture.Cancel("GPU particle capture was cancelled"); });
+    using ParticleStatePort = particle::GpuParticleStatePort;
+    py::class_<ParticleStatePort, std::shared_ptr<ParticleStatePort>>(m, "_GpuParticleStatePort")
+        .def_readonly("capture", &ParticleStatePort::capture)
+        .def_readonly("buffer", &ParticleStatePort::buffer);
 
     // ---- Editor gizmo handle IDs (exposed so Python can identify gizmo picks) ----
     m.attr("GIZMO_X_AXIS_ID") = EditorTools::X_AXIS_ID;
@@ -912,7 +845,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("begin_command_packet", &InxScreenUIRenderer::BeginCommandPacket)
         .def("end_command_packet", &InxScreenUIRenderer::EndCommandPacket)
         .def("abort_command_packet", &InxScreenUIRenderer::AbortCommandPacket)
-        .def("append_command_packets", &InxScreenUIRenderer::AppendCommandPackets)
+        .def("append_command_packets", &InxScreenUIRenderer::AppendCommandPackets, py::arg("packets"),
+             py::arg("opacities") = std::vector<float>{})
         .def("command_packet_epoch", &InxScreenUIRenderer::GetCommandPacketEpoch)
         .def("set_material_binding",
              static_cast<void (InxScreenUIRenderer::*)(ScreenUIList, const std::string &, uint64_t,
@@ -961,14 +895,30 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("rotation") = 0.0f, py::arg("mirror_h") = false,
              py::arg("mirror_v") = false, py::arg("rounding") = 0.0f,
              "Add a textured image quad to the specified draw list with optional rotation, mirroring and rounding")
-        .def("add_text", &InxScreenUIRenderer::AddText, py::arg("list"), py::arg("min_x"), py::arg("min_y"),
-             py::arg("max_x"), py::arg("max_y"), py::arg("text"), py::arg("r") = 1.0f, py::arg("g") = 1.0f,
-             py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("align_x") = 0.5f, py::arg("align_y") = 0.5f,
-             py::arg("font_size") = 0.0f, py::arg("wrap_width") = 0.0f, py::arg("rotation") = 0.0f,
-             py::arg("mirror_h") = false, py::arg("mirror_v") = false, py::arg("font_path") = std::string(),
-             py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f, py::arg("clip") = false,
-             py::arg("fallback_font_paths") = std::vector<std::string>(),
-             "Add text within a bounding box to the specified draw list with optional rotation and mirroring")
+        .def("add_filled_image", &InxScreenUIRenderer::AddFilledImage, py::arg("list"), py::arg("texture_id"),
+             py::arg("min_x"), py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("u0") = 0,
+             py::arg("v0") = 0, py::arg("u1") = 1, py::arg("v1") = 1, py::arg("r") = 1, py::arg("g") = 1,
+             py::arg("b") = 1, py::arg("a") = 1, py::arg("amount") = 1, py::arg("method") = 4, py::arg("origin") = 0,
+             py::arg("clockwise") = true, py::arg("rotation") = 0, py::arg("mirror_h") = false,
+             py::arg("mirror_v") = false)
+        .def(
+            "add_text",
+            [](InxScreenUIRenderer &self, ScreenUIList list, float minX, float minY, float maxX, float maxY,
+               const py::str &text, float r, float g, float b, float a, float alignX, float alignY, float fontSize,
+               float wrapWidth, float rotation, bool mirrorH, bool mirrorV, const std::string &fontPath,
+               float lineHeight, float letterSpacing, bool clip, const std::vector<std::string> &fallbackFonts) {
+                self.AddText(list, minX, minY, maxX, maxY, bindings::TextForDisplay(text), r, g, b, a, alignX, alignY,
+                             fontSize, wrapWidth, rotation, mirrorH, mirrorV, fontPath, lineHeight, letterSpacing, clip,
+                             fallbackFonts);
+            },
+            py::arg("list"), py::arg("min_x"), py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("text"),
+            py::arg("r") = 1.0f, py::arg("g") = 1.0f, py::arg("b") = 1.0f, py::arg("a") = 1.0f,
+            py::arg("align_x") = 0.5f, py::arg("align_y") = 0.5f, py::arg("font_size") = 0.0f,
+            py::arg("wrap_width") = 0.0f, py::arg("rotation") = 0.0f, py::arg("mirror_h") = false,
+            py::arg("mirror_v") = false, py::arg("font_path") = std::string(), py::arg("line_height") = 1.0f,
+            py::arg("letter_spacing") = 0.0f, py::arg("clip") = false,
+            py::arg("fallback_font_paths") = std::vector<std::string>(),
+            "Add text within a bounding box to the specified draw list with optional rotation and mirroring")
         .def("add_text_geometry", &InxScreenUIRenderer::AddTextGeometry, py::arg("list"), py::arg("min_x"),
              py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("geometry"), py::arg("r") = 1.0f,
              py::arg("g") = 1.0f, py::arg("b") = 1.0f, py::arg("a") = 1.0f, py::arg("align_x") = 0.0f,
@@ -977,11 +927,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("opacity") = 1.0f)
         .def(
             "measure_text",
-            [](const InxScreenUIRenderer &renderer, const std::string &text, float font_size, float wrap_width,
+            [](const InxScreenUIRenderer &renderer, const py::str &text, float font_size, float wrap_width,
                const std::string &font_path, float line_height, float letter_spacing,
                const std::vector<std::string> &fallback_font_paths) -> py::tuple {
-                auto [w, h] = renderer.MeasureText(text, font_size, wrap_width, font_path, line_height, letter_spacing,
-                                                   fallback_font_paths);
+                auto [w, h] = renderer.MeasureText(bindings::TextForDisplay(text), font_size, wrap_width, font_path,
+                                                   line_height, letter_spacing, fallback_font_paths);
                 return py::make_tuple(py::float_(w), py::float_(h));
             },
             py::arg("text"), py::arg("font_size") = 0.0f, py::arg("wrap_width") = 0.0f,
@@ -1049,261 +999,60 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
 
     // No Python constructor or raw pointer access. The returned lease retains
     // its engine wrapper; explicit Cleanup also checks outstanding leases.
-    py::class_<rhi::ComputeReadback, std::shared_ptr<rhi::ComputeReadback>>(m, "_ComputeReadback")
-        .def_property_readonly("done", &rhi::ComputeReadback::IsComplete)
-        .def_property_readonly("byte_size", &rhi::ComputeReadback::GetByteSize)
-        .def("get_bytes", [](rhi::ComputeReadback &readback) {
-            std::vector<uint8_t> bytes;
-            {
-                py::gil_scoped_release release;
-                bytes = readback.GetData();
-            }
-            return py::bytes(reinterpret_cast<const char *>(bytes.data()), static_cast<py::ssize_t>(bytes.size()));
-        });
+    RegisterComputeBindings(m);
 
-    py::class_<rhi::ComputeBuffer, std::shared_ptr<rhi::ComputeBuffer>>(m, "_ComputeBuffer")
-        .def_property_readonly("byte_size", &rhi::ComputeBuffer::GetByteSize)
-        .def_property_readonly("last_write_serial",
-                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetLastWriteSubmission().serial; })
-        .def_property_readonly("resource_index",
-                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetBuffer().index; })
-        .def_property_readonly("resource_generation",
-                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetBuffer().generation; })
-        .def_property_readonly("element_count",
-                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().elementCount; })
-        .def_property_readonly("element_stride",
-                               [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().GetElementStride(); })
-        .def_property_readonly("lanes", [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().lanes; })
-        .def_property_readonly("scalar_type",
-                               [](const rhi::ComputeBuffer &buffer) {
-                                   switch (buffer.GetDesc().scalarType) {
-                                   case rhi::ComputeScalarType::Float32:
-                                       return "float32";
-                                   case rhi::ComputeScalarType::Int32:
-                                       return "int32";
-                                   case rhi::ComputeScalarType::UInt32:
-                                       return "uint32";
-                                   }
-                                   throw std::runtime_error("Unknown compute buffer scalar type");
-                               })
-        .def(
-            "set_bytes",
-            [](rhi::ComputeBuffer &buffer, py::bytes value, uint64_t offset) {
-                buffer.GetHost().queue.RecordNativeBoundary();
-                std::string bytes = value;
-                buffer.SetData(offset, bytes.data(), static_cast<uint64_t>(bytes.size()));
-            },
-            py::arg("value"), py::arg("offset") = 0)
-        .def(
-            "get_bytes",
-            [](rhi::ComputeBuffer &buffer, uint64_t byteSize, uint64_t offset) {
-                buffer.GetHost().queue.RecordNativeBoundary();
-                auto bytes = buffer.GetData(offset, byteSize);
-                return py::bytes(reinterpret_cast<const char *>(bytes.data()), static_cast<py::ssize_t>(bytes.size()));
-            },
-            py::arg("byte_size"), py::arg("offset") = 0)
-        .def(
-            "get_bytes_async",
-            [](rhi::ComputeBuffer &buffer, uint64_t byteSize, uint64_t offset) {
-                buffer.GetHost().queue.RecordNativeBoundary();
-                return buffer.GetDataAsync(offset, byteSize);
-            },
-            py::arg("byte_size"), py::arg("offset") = 0);
-
-    py::class_<rhi::ComputeKernel, std::shared_ptr<rhi::ComputeKernel>>(m, "_ComputeKernel")
-        .def_property_readonly("buffer_binding_count", &rhi::ComputeKernel::GetBufferBindingCount)
-        .def_property_readonly("buffer_bindings", &rhi::ComputeKernel::GetBufferBindings)
-        .def_property_readonly("push_constant_bytes", &rhi::ComputeKernel::GetPushConstantBytes)
-        .def_property_readonly("pending_dispatch_count", &rhi::ComputeKernel::GetPendingDispatchCount)
-        .def_property_readonly("cached_binding_group_count", &rhi::ComputeKernel::GetCachedBindingGroupCount)
-        .def(
-            "dispatch",
-            [](rhi::ComputeKernel &kernel, std::vector<std::shared_ptr<rhi::ComputeBuffer>> buffers,
-               py::bytes pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
-                kernel.GetHost().queue.RecordNativeBoundary();
-                const std::string constants = pushConstants;
-                kernel.Dispatch(std::move(buffers), constants.empty() ? nullptr : constants.data(),
-                                static_cast<uint32_t>(constants.size()), groupCountX, groupCountY, groupCountZ);
-            },
-            py::arg("buffers"), py::arg("push_constants") = py::bytes(), py::arg("group_count_x") = 1,
-            py::arg("group_count_y") = 1, py::arg("group_count_z") = 1)
-        .def("collect", &rhi::ComputeKernel::Collect)
-        .def("wait", &rhi::ComputeKernel::Wait);
-
-    py::class_<rhi::ComputeHost>(m, "_ComputeHost")
-        .def("_release_lease", &rhi::ComputeHost::ReleaseLease,
-             "Release the engine teardown lease after all Python compute resources are closed")
-        .def_property_readonly("identity",
-                               [](rhi::ComputeHost &host) {
-                                   // Leases acquired from one renderer are distinct wrapper objects,
-                                   // but they borrow the same ordered compute lane.  That queue is
-                                   // the compatibility identity for buffers and kernels.
-                                   return reinterpret_cast<uintptr_t>(&host.queue);
-                               })
-        .def(
-            "create_buffer",
-            [](rhi::ComputeHost &host, uint64_t elementCount, const std::string &scalarType, uint8_t lanes) {
-                host.queue.RecordNativeBoundary();
-                rhi::ComputeScalarType scalar;
-                if (scalarType == "float32")
-                    scalar = rhi::ComputeScalarType::Float32;
-                else if (scalarType == "int32")
-                    scalar = rhi::ComputeScalarType::Int32;
-                else if (scalarType == "uint32")
-                    scalar = rhi::ComputeScalarType::UInt32;
-                else
-                    throw std::invalid_argument("Compute buffer scalar_type must be float32, int32, or uint32");
-                return std::make_shared<rhi::ComputeBuffer>(host, rhi::ComputeBufferDesc{elementCount, scalar, lanes});
-            },
-            py::arg("element_count"), py::arg("scalar_type"), py::arg("lanes") = 1, py::keep_alive<0, 1>())
-        .def(
-            "create_kernel",
-            [](rhi::ComputeHost &host, py::bytes spirv, uint32_t bufferBindingCount, uint32_t pushConstantBytes) {
-                host.queue.RecordNativeBoundary();
-                const auto words = DecodeParticleSpirv(spirv, "compute kernel");
-                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), bufferBindingCount,
-                                                            pushConstantBytes);
-            },
-            py::arg("spirv"), py::arg("buffer_binding_count"), py::arg("push_constant_bytes") = 0,
-            py::keep_alive<0, 1>())
-        .def(
-            "create_kernel_with_bindings",
-            [](rhi::ComputeHost &host, py::bytes spirv, std::vector<uint32_t> bufferBindings,
-               uint32_t pushConstantBytes) {
-                host.queue.RecordNativeBoundary();
-                const auto words = DecodeParticleSpirv(spirv, "compute kernel");
-                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), std::move(bufferBindings),
-                                                            pushConstantBytes);
-            },
-            py::arg("spirv"), py::arg("buffer_bindings"), py::arg("push_constant_bytes") = 0, py::keep_alive<0, 1>())
-        .def(
-            "_create_kernel_from_compiler",
-            [](rhi::ComputeHost &host, py::bytes spirv, const std::vector<std::pair<uint32_t, std::string>> &bindings,
-               uint32_t pushConstantBytes) {
-                host.queue.RecordNativeBoundary();
-                std::vector<rhi::ComputeBufferBinding> bufferBindings;
-                bufferBindings.reserve(bindings.size());
-                for (const auto &[slot, type] : bindings) {
-                    if (type == "uniform")
-                        bufferBindings.push_back({slot, rhi::BindingType::UniformBuffer});
-                    else if (type == "storage")
-                        bufferBindings.push_back({slot, rhi::BindingType::StorageBuffer});
-                    else
-                        throw py::value_error("Compiler buffer binding type must be uniform or storage");
-                }
-                const auto words = DecodeParticleSpirv(spirv, "compiled compute kernel");
-                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), std::move(bufferBindings),
-                                                            pushConstantBytes);
-            },
-            py::arg("spirv"), py::arg("bindings"), py::arg("push_constant_bytes") = 0, py::keep_alive<0, 1>())
-        .def(
-            "dispatch_batch",
-            [](rhi::ComputeHost &host, py::iterable values, py::iterable updateValues) {
-                host.queue.RecordNativeBoundary();
-                rhi::SubmitComputeBatch(host, DecodeComputeUpdates(updateValues), DecodeComputeDispatches(values));
-            },
-            py::arg("dispatches"), py::arg("updates") = py::tuple())
-        .def(
-            "dispatch_batch_and_read",
-            [](rhi::ComputeHost &host, py::iterable values, py::iterable updateValues, py::iterable readValues) {
-                host.queue.RecordNativeBoundary();
-                auto dispatches = DecodeComputeDispatches(values);
-                auto updates = DecodeComputeUpdates(updateValues);
-                auto reads = DecodeComputeReads(readValues);
-                std::vector<std::vector<uint8_t>> payloads;
-                {
-                    py::gil_scoped_release release;
-                    payloads = rhi::SubmitComputeBatchAndRead(host, std::move(updates), std::move(dispatches),
-                                                              std::move(reads));
-                }
-                py::list result;
-                for (const auto &payload : payloads)
-                    result.append(py::bytes(reinterpret_cast<const char *>(payload.data()), payload.size()));
-                return result;
-            },
-            py::arg("dispatches"), py::arg("updates"), py::arg("reads"))
-        .def(
-            "set_profiling_enabled",
-            [](rhi::ComputeHost &host, bool enabled) { return host.queue.SetProfilingEnabled(enabled); },
-            py::arg("enabled"))
-        .def("get_profile",
-             [](rhi::ComputeHost &host) {
-                 host.queue.Collect();
-                 const auto frame = host.queue.GetProfile();
-                 py::dict result;
-                 result["serial"] = frame.serial;
-                 result["available"] = frame.available;
-                 py::dict samples;
-                 for (uint32_t i = 0; i < frame.sampleCount; ++i)
-                     samples[py::str(frame.samples[i].Name())] = frame.samples[i].milliseconds;
-                 result["samples_ms"] = std::move(samples);
-                 return result;
-             })
-        .def("get_statistics",
-             [](rhi::ComputeHost &host) {
-                 host.queue.Collect();
-                 const auto statistics = host.queue.GetStatistics();
-                 const auto profile = host.queue.GetProfile();
-                 py::dict result;
-                 result["submission_count"] = statistics.submissionCount;
-                 result["dispatch_count"] = statistics.dispatchCount;
-                 result["upload_request_count"] = statistics.uploadRequestCount;
-                 result["upload_bytes"] = statistics.uploadBytes;
-                 result["readback_request_count"] = statistics.readbackRequestCount;
-                 result["readback_bytes"] = statistics.readbackBytes;
-                 result["staging_allocation_count"] = statistics.stagingAllocationCount;
-                 result["host_map_count"] = statistics.hostMapCount;
-                 result["native_boundary_count"] = statistics.nativeBoundaryCount;
-                 result["wait_count"] = statistics.waitCount;
-                 result["cpu_submit_ms"] = statistics.cpuSubmitMilliseconds;
-                 result["wait_ms"] = statistics.waitMilliseconds;
-                 result["pending_submission_count"] = host.queue.GetPendingSubmissionCount();
-                 result["gpu_profile_available"] = profile.available;
-                 result["gpu_profile_serial"] = profile.serial;
-                 double gpuMilliseconds = 0.0;
-                 for (uint32_t i = 0; i < profile.sampleCount; ++i)
-                     gpuMilliseconds += profile.samples[i].milliseconds;
-                 result["gpu_time_ms"] = profile.available ? py::cast(gpuMilliseconds) : py::none();
-                 return result;
-             })
-        .def("reset_statistics", [](rhi::ComputeHost &host) { host.queue.ResetStatistics(); });
     py::class_<Infernux>(m, "Infernux")
         .def(py::init<std::string, RuntimeMode>(), py::arg("dll_path"), py::arg("mode") = RuntimeMode::Graphical)
         .def("init_renderer", [](Infernux &engine, int width, int height, const std::string &projectPath,
-                                  const std::string &builtinResourcePath) {
+                                  const std::string &builtinResourcePath, std::function<void()> prepareSettings) {
             try {
-                engine.InitRenderer(width, height, projectPath, builtinResourcePath);
+                engine.InitRenderer(width, height, projectPath, builtinResourcePath, std::move(prepareSettings));
+            } catch (const py::error_already_set &) {
+                throw;
             } catch (const std::exception &error) {
                 const std::string message = ExceptionMessageUtf8(error.what());
                 PyErr_SetString(PyExc_RuntimeError, message.c_str());
                 throw py::error_already_set();
             }
         }, py::arg("width"), py::arg("height"), py::arg("project_path"),
-             py::arg("builtin_resource_path") = std::string())
+             py::arg("builtin_resource_path") = std::string(), py::arg("prepare_settings") = py::none())
         .def_property_readonly("startup_phase_timings_ms", &Infernux::GetStartupPhaseTimingsMs,
                                py::return_value_policy::reference_internal,
                                "Wall-clock timings for the most recent native graphical startup")
         .def("init_headless", &Infernux::InitHeadless, py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string(),
-             "Initialize scene, physics, assets, and workers without SDL/Vulkan/ImGui/audio")
+             py::arg("prepare_settings") = py::none(),
+             py::arg("gpu") = false,
+             "Initialize scene, physics, assets and workers without a window; explicitly enable GPU compute at startup")
         .def("tick", &Infernux::Tick, py::arg("delta_time"),
              "Advance one deterministic frame: simulation-only in headless mode, a fully simulated and "
              "rendered frame in graphical mode (unavailable while run() drives the loop)")
         .def_property_readonly("exit_requested", &Infernux::IsExitRequested, "Whether shutdown has been requested")
         .def_property_readonly("runtime_mode", &Infernux::GetRuntimeMode)
+        .def_property_readonly("has_gpu_compute", &Infernux::HasGpuCompute)
         .def("_acquire_compute_host", &Infernux::AcquireComputeHost, py::keep_alive<0, 1>())
         .def("_create_render_texture", &Infernux::CreateRenderTexture, py::arg("description"))
         .def("_load_render_texture", &Infernux::LoadRenderTexture, py::arg("guid"))
+        .def("_camera_output_texture", [](Infernux &engine, Camera &camera) {
+            return RequireRenderer(engine).GetCameraOutputTexture(camera);
+        }, py::arg("camera"))
+        .def("_request_camera_render", [](Infernux &engine, Camera &camera) {
+            RequireRenderer(engine).RequestCameraRender(camera);
+        }, py::arg("camera"))
         .def("_prepare_material_texture_assets", [](Infernux &engine, const std::shared_ptr<InxMaterial> &material) {
             engine.GetRenderer()->PrepareMaterialTextureAssets(material);
         }, py::arg("material"))
         .def("_get_render_texture_ui_texture_id", [](Infernux &engine, const std::shared_ptr<rhi::RenderTexture> &texture) {
             return engine.GetRenderer()->GetRenderTextureUITextureId(texture);
         }, py::arg("texture"))
+        .def("_get_render_texture_preview", [](Infernux &engine, const std::string &guid) {
+            return RequireRenderer(engine).GetImportedRenderTexturePreview(guid);
+        }, py::arg("guid"))
         .def("_get_imported_texture_ui_texture_id", [](Infernux &engine, const std::string &name,
                                                        const std::string &textureGuid) {
             auto *renderer = engine.GetRenderer();
-            return renderer ? renderer->QueryImportedTextureForImGui(name, textureGuid) : uint64_t{0};
+            bool progressed = false;
+            return renderer ? renderer->QueryImportedTextureForImGui(name, textureGuid, progressed) : uint64_t{0};
         }, py::arg("name"), py::arg("texture_guid"))
         .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
              py::arg("material_guids"),
@@ -1576,7 +1325,6 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                     result["upload_timeline_enabled"] = snapshot.uploadTimelineEnabled;
                                     result["timeline_upload_publication_count"] =
                                         snapshot.timelineUploadPublicationCount;
-                                    result["required_upload_timeline_value"] = snapshot.requiredUploadTimelineValue;
                                     result["device_wait_idle_count"] = snapshot.deviceWaitIdleCount;
                                     result["shader_hot_reload_retirement_count"] =
                                         snapshot.shaderHotReloadRetirementCount;
@@ -1622,6 +1370,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                    result["editor_texture_over_budget_bytes"] = snapshot.editorTextureOverBudgetBytes;
                                    return result;
                                })
+        .def_property_readonly("submitted_render_frames", &Infernux::GetSubmittedRenderFrameCount,
+                               "Successful foreground frame submissions; excludes attempts, Deferred and Headless ticks")
         .def_property_readonly("renderer_frame_snapshot",
                                [](Infernux &self) {
                                    auto *renderer = self.GetRenderer();
@@ -1739,7 +1489,6 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                    result["scene_render_graph_debug"] = snapshot.sceneRenderGraphDebug;
                                    result["game_render_graph_debug"] = snapshot.gameRenderGraphDebug;
                                    result["submission_generation"] = snapshot.submissionGeneration;
-                                   result["submission_composed"] = snapshot.submissionComposed;
                                    result["submission_compute_queue_independent"] =
                                        snapshot.submissionComputeQueueIndependent;
                                    result["submission_transfer_queue_independent"] =
@@ -1951,7 +1700,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 if (callback.is_none()) {
                     self.SetPreSceneUpdateCallback(nullptr);
                 } else {
-                    auto fn = std::make_shared<PythonFrameCallback>(py::cast<py::function>(callback));
+                    auto fn = std::make_shared<PythonCallback>(py::cast<py::function>(callback));
                     self.SetPreSceneUpdateCallback([fn](float deltaTime) {
                         py::gil_scoped_acquire acquire;
                         try {
@@ -1964,16 +1713,49 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             },
             py::arg("callback"),
             "Set a Python callback invoked before scene Update in graphical and headless modes.")
+        .def_property_readonly("frame_work", &Infernux::GetFrameWorkOwner, py::return_value_policy::reference_internal)
+        .def("_set_runtime_frame_callbacks", [](Infernux &self, py::object before, py::object after) {
+            std::function<void(float)> beforeWork;
+            std::function<void()> afterWork;
+            if (!before.is_none()) {
+                auto callback = std::make_shared<PythonCallback>(std::move(before));
+                beforeWork = [callback](float delta) {
+                    py::gil_scoped_acquire acquire;
+                    callback->function(delta);
+                };
+            }
+            if (!after.is_none()) {
+                auto callback = std::make_shared<PythonCallback>(std::move(after));
+                afterWork = [callback] {
+                    py::gil_scoped_acquire acquire;
+                    callback->function();
+                };
+            }
+            self.SetRuntimeFrameCallbacks(std::move(beforeWork), std::move(afterWork));
+        }, py::arg("before"), py::arg("after"))
+        .def(
+            "set_end_frame_callback",
+            [](Infernux &self, py::object callback) {
+                if (callback.is_none()) {
+                    self.SetEndFrameCallback(nullptr);
+                } else {
+                    auto fn = std::make_shared<PythonCallback>(py::cast<py::function>(callback));
+                    self.SetEndFrameCallback([fn](bool foregroundReady) {
+                        py::gil_scoped_acquire acquire;
+                        fn->function(foregroundReady);
+                    });
+                }
+            }, py::arg("callback"),
+            "Run at the Engine owner boundary after foreground completion in both runtime modes. "
+            "False means foreground work was deferred; no renderer is required.")
         .def(
             "set_pre_gui_callback",
             [](Infernux &self, py::object callback) {
-                auto *r = self.GetRenderer();
-                if (!r)
-                    return;
+                auto *r = &RequireRenderer(self);
                 if (callback.is_none()) {
                     r->SetPreGuiCallback(nullptr);
                 } else {
-                    auto fn = std::make_shared<PythonFrameCallback>(py::cast<py::function>(callback));
+                    auto fn = std::make_shared<PythonCallback>(py::cast<py::function>(callback));
                     r->SetPreGuiCallback([fn]() {
                         py::gil_scoped_acquire acquire;
                         try {
@@ -1990,13 +1772,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_post_draw_callback",
             [](Infernux &self, py::object callback) {
-                auto *r = self.GetRenderer();
-                if (!r)
-                    return;
+                auto *r = &RequireRenderer(self);
                 if (callback.is_none()) {
                     r->SetPostDrawCallback(nullptr);
                 } else {
-                    auto fn = std::make_shared<PythonFrameCallback>(py::cast<py::function>(callback));
+                    auto fn = std::make_shared<PythonCallback>(py::cast<py::function>(callback));
                     r->SetPostDrawCallback([fn]() {
                         py::gil_scoped_acquire acquire;
                         try {
@@ -2065,16 +1845,20 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("window_id"), py::arg("allow_during_modal") = false)
         .def("reset_imgui_layout", &Infernux::ResetImGuiLayout, "Clear ImGui docking layout and delete saved ini")
         .def("exit", &Infernux::Exit, "Exit the Infernux application")
+        .def("_require_cleanup_boundary", &Infernux::RequireCleanupBoundary)
         .def(
             "cleanup",
             [](Infernux &self) {
-                self.RequireFrameInactive();
+                self.RequireCleanupBoundary();
                 self.RequireComputeHostsReleased();
                 // Python frame callbacks must be released while this binding
                 // still owns the GIL. Native teardown may then release it while
                 // joining workers and waiting for the GPU without destroying a
                 // py::function from a GIL-free scope.
                 self.SetPreSceneUpdateCallback(nullptr);
+                  self.SetEndFrameCallback(nullptr);
+                self.SetRuntimeFrameCallbacks(nullptr, nullptr);
+                self.GetFrameWorkOwner().ClearSources();
                 if (auto *renderer = self.GetRenderer()) {
                     renderer->SetPreGuiCallback(nullptr);
                     renderer->SetPostDrawCallback(nullptr);
@@ -2423,6 +2207,16 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             py::arg("game_view") = true,
             "Asynchronously read the most recently submitted scene or game render target")
         .def(
+            "request_imgui_texture_readback",
+            [](Infernux &self, const std::string &name) {
+                auto *renderer = self.GetRenderer();
+                if (!renderer)
+                    throw std::logic_error("GUI texture readback requires graphical renderer initialization");
+                return renderer->RequestImGuiTextureReadback(name);
+            },
+            py::arg("name"),
+            "Explicitly read a resident GUI texture; ordinary preview display performs no CPU copy")
+        .def(
             "request_capture",
             [](Infernux &self, const std::string &source, const std::string &outputPath, uint64_t cameraComponentId) {
                 auto *renderer = self.GetRenderer();
@@ -2502,25 +2296,24 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_game_camera_enabled",
             [](Infernux &self, bool enabled) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetGameCameraEnabled(enabled);
+                RequireRenderer(self).SetGameCameraEnabled(enabled);
             },
             py::arg("enabled"), "Enable/disable game camera rendering")
         .def(
             "set_scene_view_visible",
             [](Infernux &self, bool visible) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetSceneViewVisible(visible);
+                RequireRenderer(self).SetSceneViewVisible(visible);
             },
             py::arg("visible"), "Enable/disable scene view rendering")
+        .def("_scene_camera_preview",
+             [](Infernux &self, uint64_t cameraId, const RenderGraphDescription *description) {
+                 return RequireRenderer(self).RequestSceneCameraPreview(cameraId, description);
+             },
+             py::arg("camera_id"), py::arg("description") = nullptr)
         .def(
             "set_gui_player_mode",
             [](Infernux &self, bool enabled) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetGUIPlayerMode(enabled);
+                RequireRenderer(self).SetGUIPlayerMode(enabled);
             },
             py::arg("enabled"), "Skip DockSpace/layout overhead in standalone player mode")
         .def(
@@ -2630,9 +2423,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_present_mode",
             [](Infernux &self, int mode) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetPresentMode(mode);
+                RequireRenderer(self).SetPresentMode(mode);
             },
             py::arg("mode"), "Set present mode: 0=IMMEDIATE, 1=MAILBOX, 2=FIFO, 3=FIFO_RELAXED")
         .def(
@@ -2648,9 +2439,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_editor_idle_enabled",
             [](Infernux &self, bool enabled) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetEditorIdleEnabled(enabled);
+                RequireRenderer(self).SetEditorIdleEnabled(enabled);
             },
             py::arg("enabled"), "Enable/disable editor idle mode (reduced FPS when no input)")
         .def(
@@ -2663,9 +2452,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_editor_idle_fps",
             [](Infernux &self, float fps) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetEditorIdleFps(fps);
+                RequireRenderer(self).SetEditorIdleFps(fps);
             },
             py::arg("fps"), "Set idle-mode target FPS (e.g. 10). 0 disables idling.")
         .def(
@@ -2701,9 +2488,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_editor_fps_cap",
             [](Infernux &self, float fps) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetEditorFpsCap(fps);
+                RequireRenderer(self).SetEditorFpsCap(fps);
             },
             py::arg("fps"), "Set editor-mode FPS cap (e.g. 60). 0 = uncapped. Only applies outside play mode.")
         .def(
@@ -2716,9 +2501,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_play_fps_cap",
             [](Infernux &self, float fps) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetPlayFpsCap(fps);
+                RequireRenderer(self).SetPlayFpsCap(fps);
             },
             py::arg("fps"), "Set play/player-mode FPS cap. 0 = uncapped.")
         .def(
@@ -2731,9 +2514,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_play_mode_rendering",
             [](Infernux &self, bool play) {
-                auto *r = self.GetRenderer();
-                if (r)
-                    r->SetPlayModeRendering(play);
+                // Shared play-mode lifecycle notifies Headless too; only
+                // graphical hosts have presentation pacing to configure.
+                if (self.GetRuntimeMode() == RuntimeMode::Graphical)
+                    RequireRenderer(self).SetPlayModeRendering(play);
             },
             py::arg("play"), "Enable/disable play-mode rendering (optional explicit FPS cap, no idle)")
         .def(
@@ -3066,11 +2850,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "_replace_gpu_particle_graph",
             [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedPrograms,
-               const std::vector<uint64_t> &removeIds) {
+               const std::vector<uint64_t> &removeIds) -> std::pair<particle::GpuParticlePublicationStatus, std::string> {
                 auto *renderer = self.GetRenderer();
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 if (!manager)
-                    return std::string("GPU particle runtime requires graphical renderer initialization");
+                    return {particle::GpuParticlePublicationStatus::Failed,
+                            "GPU particle runtime requires graphical renderer initialization"};
 
                 std::vector<particle::GpuParticleEmitterProgram> programs;
                 programs.reserve(encodedPrograms.size());
@@ -3081,26 +2866,27 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 }
                 if (const std::string resolveError = ResolveGpuParticleOutputPrograms(*renderer, programs);
                     !resolveError.empty())
-                    return resolveError;
+                    return {particle::GpuParticlePublicationStatus::Failed, resolveError};
                 std::string error;
                 particle::GpuParticleGraphProgram graphProgram;
                 graphProgram.graphInstanceId = graphInstanceId;
                 graphProgram.emitters = std::move(programs);
                 graphProgram.removeEmitterIds = removeIds;
-                if (!manager->ApplyGraph(graphProgram, &error))
-                    return error.empty() ? std::string("failed to publish GPU particle program batch") : error;
-                return std::string{};
+                const auto status = manager->ApplyGraph(graphProgram, &error);
+                return {status, std::move(error)};
             },
             py::arg("graph_instance_id"), py::arg("programs"),
             py::arg("remove_ids") = std::vector<uint64_t>{},
             "Internal control-plane publication for one saved ParticleGraph revision")
         .def(
             "_replace_gpu_particle_graphs",
-            [](Infernux &self, const py::sequence &encodedGraphs) {
+            [](Infernux &self, const py::sequence &encodedGraphs)
+                -> std::pair<particle::GpuParticlePublicationStatus, std::string> {
                 auto *renderer = self.GetRenderer();
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 if (!manager)
-                    return std::string("GPU particle runtime requires graphical renderer initialization");
+                    return {particle::GpuParticlePublicationStatus::Failed,
+                            "GPU particle runtime requires graphical renderer initialization"};
 
                 std::vector<particle::GpuParticleGraphProgram> graphPrograms;
                 graphPrograms.reserve(encodedGraphs.size());
@@ -3125,14 +2911,13 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     if (const std::string resolveError =
                             ResolveGpuParticleOutputPrograms(*renderer, graphProgram.emitters);
                         !resolveError.empty())
-                        return resolveError;
+                        return {particle::GpuParticlePublicationStatus::Failed, resolveError};
                     graphProgram.removeEmitterIds = py::cast<std::vector<uint64_t>>(graph["remove_ids"]);
                     graphPrograms.push_back(std::move(graphProgram));
                 }
                 std::string error;
-                if (!manager->ApplyGraphs(graphPrograms, &error))
-                    return error.empty() ? std::string("failed to publish GPU particle graph batch") : error;
-                return std::string{};
+                const auto status = manager->ApplyGraphs(graphPrograms, &error);
+                return {status, std::move(error)};
             },
             py::arg("graphs"),
             "Internal atomic publication for several saved ParticleGraph instances")
@@ -3277,6 +3062,23 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 return manager ? manager->ActiveOutputCount(emitterId) : size_t{0};
             },
             py::arg("emitter_id"), "Return the active GPU particle rendering output count")
+        .def(
+            "_capture_gpu_particle_state",
+            [](Infernux &self, uint64_t graphInstanceId, uint64_t emitterId, uint64_t artifactRevision, uint32_t firstRow,
+               uint32_t rowCount, const std::vector<std::tuple<uint32_t, uint32_t, rhi::ComputeScalarType>> &selection) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    throw std::runtime_error("GPU particle capture requires an initialized renderer");
+                std::vector<particle::GpuParticleStateField> fields;
+                fields.reserve(selection.size());
+                for (const auto &[offset, count, scalar] : selection)
+                    fields.push_back({offset, count, scalar});
+                return manager->CaptureState(graphInstanceId, emitterId, artifactRevision, firstRow, rowCount,
+                                             std::move(fields));
+            },
+            py::arg("graph_instance_id"), py::arg("emitter_id"), py::arg("artifact_revision"), py::arg("first_row"),
+            py::arg("row_count"), py::arg("fields"))
         .def(
             "_request_gpu_particle_diagnostics",
             [](Infernux &self, uint64_t graphInstanceId, uint32_t sampleFrames, uint32_t stateSampleCount) {
@@ -3507,9 +3309,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def(
             "set_render_pipeline",
             [](Infernux &self, py::object pipeline) {
-                auto *r = self.GetRenderer();
-                if (!r)
-                    return;
+                auto *r = &RequireRenderer(self);
                 if (pipeline.is_none()) {
                     r->SetRenderPipeline(nullptr);
                 } else {
@@ -3527,7 +3327,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 auto *r = self.GetRenderer();
                 return r ? r->GetSceneRenderGraph() : nullptr;
             },
-            py::return_value_policy::reference, "Get the scene render graph for pass configuration");
+            py::return_value_policy::reference, "Get the scene render graph for pass configuration")
+        .def("get_camera_render_graph", [](Infernux &self, uint64_t cameraComponentId) -> SceneRenderGraph * {
+            auto *renderer = self.GetRenderer();
+            return renderer ? renderer->GetCameraRenderGraph(cameraComponentId) : nullptr;
+        }, py::arg("camera_component_id") = 0, py::return_value_policy::reference);
 
     // ── Logging bridge: let Python write to the C++ InxLog (engine.log) ──
     m.def(

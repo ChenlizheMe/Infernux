@@ -2407,7 +2407,7 @@ class ParticleScriptCompiler:
             ),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
-            "Keyframe": ("time", "value", "in_tangent", "out_tangent"),
+            "Keyframe": ("time", "value", "in_tangent", "out_tangent", "in_weight", "out_weight", "weighted_mode"),
             "AnimationCurve": ("keys", "pre_wrap", "post_wrap"),
             "GradientKey": ("time", "color"),
             "Gradient": ("keys", "mode"),

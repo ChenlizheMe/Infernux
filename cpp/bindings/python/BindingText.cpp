@@ -1,4 +1,5 @@
 #include "BindingRegistration.h"
+#include "DisplayText.h"
 
 #include <core/text/TextSegments.h>
 #include <function/renderer/gui/InxTextGeometry.h>
@@ -73,11 +74,11 @@ void RegisterTextBindings(py::module_ &module)
     py::class_<TextLayoutResult, std::shared_ptr<TextLayoutResult>>(
         module, "TextLayout",
         "Immutable UI text layout. Source offsets are UTF-8 bytes; characters are extended graphemes.")
-        .def(py::init([](const std::string &text, float fontSize, float wrapWidth, const std::string &fontPath,
+        .def(py::init([](const py::str &text, float fontSize, float wrapWidth, const std::string &fontPath,
                          float lineHeight, float letterSpacing, const std::vector<std::string> &fallbackFonts,
                          bool richText) {
-                 return CreateTextLayout(
-                     {text, fontPath, fontSize, wrapWidth, lineHeight, letterSpacing, fallbackFonts, richText});
+                 return CreateTextLayout({bindings::TextForDisplay(text), fontPath, fontSize, wrapWidth, lineHeight,
+                                          letterSpacing, fallbackFonts, richText});
              }),
              py::arg("text"), py::arg("font_size") = 18.0f, py::arg("wrap_width") = 0.0f, py::arg("font_path") = "",
              py::arg("line_height") = 1.2f, py::arg("letter_spacing") = 0.0f,
@@ -147,22 +148,23 @@ void RegisterTextBindings(py::module_ &module)
             return CharacterView(buffer, 46, {});
         });
     py::class_<TextGeometry, std::shared_ptr<TextGeometry>>(module, "TextGeometry")
-        .def(py::init([](const std::string &text, float fontSize, float wrapWidth, const std::string &fontPath,
+        .def(py::init([](const py::str &text, float fontSize, float wrapWidth, const std::string &fontPath,
                          float lineHeight, float letterSpacing, const std::vector<std::string> &fallbackFonts,
                          bool richText) {
-                 return std::make_shared<TextGeometry>(TextLayoutParams{text, fontPath, fontSize, wrapWidth, lineHeight,
-                                                                        letterSpacing, fallbackFonts, richText});
+                 return std::make_shared<TextGeometry>(TextLayoutParams{bindings::TextForDisplay(text), fontPath,
+                                                                        fontSize, wrapWidth, lineHeight, letterSpacing,
+                                                                        fallbackFonts, richText});
              }),
              py::arg("text"), py::arg("font_size") = 18.0f, py::arg("wrap_width") = 0.0f, py::arg("font_path") = "",
              py::arg("line_height") = 1.2f, py::arg("letter_spacing") = 0.0f,
              py::arg("fallback_font_paths") = std::vector<std::string>(), py::arg("rich_text") = false)
         .def(
             "set_layout",
-            [](TextGeometry &geometry, const std::string &text, float fontSize, float wrapWidth,
+            [](TextGeometry &geometry, const py::str &text, float fontSize, float wrapWidth,
                const std::string &fontPath, float lineHeight, float letterSpacing,
                const std::vector<std::string> &fallbackFonts, bool richText) {
-                geometry.SetLayout(
-                    {text, fontPath, fontSize, wrapWidth, lineHeight, letterSpacing, fallbackFonts, richText});
+                geometry.SetLayout({bindings::TextForDisplay(text), fontPath, fontSize, wrapWidth, lineHeight,
+                                    letterSpacing, fallbackFonts, richText});
             },
             py::arg("text"), py::arg("font_size") = 18.0f, py::arg("wrap_width") = 0.0f, py::arg("font_path") = "",
             py::arg("line_height") = 1.2f, py::arg("letter_spacing") = 0.0f,

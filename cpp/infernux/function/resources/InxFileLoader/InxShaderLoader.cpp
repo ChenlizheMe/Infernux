@@ -239,7 +239,7 @@ ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtif
 std::vector<std::string> InxShaderLoader::s_additionalSearchPaths;
 std::vector<std::string> InxShaderLoader::s_projectSearchPaths;
 std::recursive_mutex InxShaderLoader::s_compilationMutex;
-std::unordered_map<std::string, std::string> InxShaderLoader::s_templateCache;
+std::unordered_map<std::string, InxShaderLoader::TemplateSource> InxShaderLoader::s_templateCache;
 std::unordered_map<std::string, ShaderDescriptor> InxShaderLoader::s_shadingModelCache;
 thread_local std::unordered_map<std::string, InxShaderLoader::CompiledVariantSet>
     InxShaderLoader::s_compiledVariantCache;
@@ -805,18 +805,15 @@ void InxShaderLoader::SetShaderCompilerOptions(const std::string &prop, bool val
     }
 }
 
-void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                                 InxResourceMeta &metaData) const
+void InxShaderLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
     const CompilationGuard guard;
-    if (!content) {
-        INXLOG_ERROR("Invalid shader content for metadata creation");
-        return;
-    }
-    metaData.Init(content, contentSize, filePath, ResourceType::Shader);
+    const auto content = source.Bytes();
+    const auto &filePath = source.Path();
+    metaData.InitFromSource(source, ResourceType::Shader);
 
     // Parse shader into structured descriptor (single pass)
-    auto desc = ParseShaderSource(std::string(content, contentSize), filePath);
+    auto desc = ParseShaderSource(std::string(content), filePath);
 
     // Determine shader type from file extension
     std::string type = "vertex";
@@ -1113,22 +1110,28 @@ std::string InxShaderLoader::StageQualifiedVirtualPath(const std::string &filePa
 // Template loading and placeholder replacement
 // ============================================================================
 
-std::string InxShaderLoader::LoadTemplate(const std::string &templateName)
+std::string InxShaderLoader::LoadTemplate(const std::string &templateName, const std::string &rootSource)
 {
     auto it = s_templateCache.find(templateName);
-    if (it != s_templateCache.end())
-        return it->second;
+    if (it != s_templateCache.end()) {
+        if (!rootSource.empty())
+            SourceDependencies(rootSource).paths.insert(ShaderDependencyPathKey(it->second.path));
+        return it->second.text;
+    }
 
     for (const auto &searchPath : s_additionalSearchPaths) {
         std::filesystem::path templatePath = ToFsPath(searchPath) / "_templates" / templateName;
+        if (!rootSource.empty())
+            SourceDependencies(rootSource).paths.insert(ShaderDependencyPathKey(FromFsPath(templatePath)));
         std::error_code ec;
         if (std::filesystem::exists(templatePath, ec)) {
             std::ifstream file(templatePath);
             if (file.is_open()) {
                 std::ostringstream content;
                 content << file.rdbuf();
-                s_templateCache[templateName] = content.str();
-                return s_templateCache[templateName];
+                auto &cached = s_templateCache[templateName];
+                cached = {content.str(), FromFsPath(templatePath)};
+                return cached.text;
             }
         }
     }
@@ -1502,6 +1505,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                        "uint _inx_ObjectLayerMask;");
                 }
                 result << vertexBuiltins << "\n";
+                if (particleSpriteDomain)
+                    result << LoadTemplate("particle_billboard_geometry.glsl", desc.filePath) << "\n";
                 if (linkedInterface && !desc.outputs.empty())
                     result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
                 if (target == ShaderCompileTarget::Picking)
@@ -1665,9 +1670,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             else if (resource.type == "Texture2DMSUInt")
                 result << "layout(set = 0, binding = " << binding << ") uniform usampler2DMS " << resource.name
                        << ";\n";
-            else if (resource.type == "BufferUInt")
+            else if (resource.type == "BufferUInt" || resource.type == "BufferFloat")
                 result << "layout(std430, set = 0, binding = " << binding << ") readonly buffer InxBuffer" << binding
-                       << " { uint data[]; } " << resource.name << ";\n";
+                       << " { " << (resource.type == "BufferFloat" ? "float" : "uint") << " data[]; } " << resource.name
+                       << ";\n";
         }
     }
 

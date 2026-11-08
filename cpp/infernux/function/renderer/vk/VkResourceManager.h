@@ -18,11 +18,14 @@
  *   VkResourceManager resources;
  *   resources.Initialize(deviceContext, &queueManager);
  *
- *   // Create a vertex buffer
- *   auto vertexBuffer = resources.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
+ *   auto upload = resources.BeginBufferUpload(
+ *       {vertices.data(), vertices.size() * sizeof(Vertex), rhi::BufferUsageFlags::Vertex});
  */
 
 #pragma once
+
+#include "VulkanBackendApi.h"
+#include "VulkanSubmissionWaits.h"
 
 #include <function/renderer/rhi/RhiSubmission.h>
 
@@ -30,19 +33,24 @@
 #include "../rhi/RhiTexture.h"
 #include "../rhi/RhiUpload.h"
 #include "AsyncTransferContext.h"
+#include "GpuTimestampQueries.h"
 #include "VkHandle.h"
 #include "VkTypes.h"
 #include <atomic>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
+class FrameCpuStorageClaim;
+class FrameWorkOwner;
 namespace vk
 {
 
@@ -53,6 +61,21 @@ class VkResourceManager;
 class GraphicsSubmissionTicket;
 class GraphicsImageReadbackRecorder;
 class VulkanRhiDevice;
+
+// Retained by the original submission until its fence completes. Shared by
+// uploads, image readbacks and offscreen graphics.
+struct GpuWorkReceipt
+{
+    std::unique_ptr<GpuTimestampQueries> timestamps;
+    rhi::TimestampRegionHandle region;
+    FrameWorkOwner *owner = nullptr;
+    uint64_t frame = 0, gpuGrant = 0, transferGrant = 0;
+    uint64_t executionNanoseconds = 0, lastExecutionNanoseconds = 0;
+    uint64_t predictedExecutionNanoseconds = 0;
+    VkDeviceSize transferBytes = 0;
+    bool hasExecutionTiming = false;
+    bool useTransfer = false;
+};
 
 class BufferUploadTicket final
 {
@@ -73,7 +96,35 @@ class BufferUploadTicket final
     {
         return m_size;
     }
-    [[nodiscard]] const std::shared_ptr<VkBufferHandle> &GetBuffer() const;
+    [[nodiscard]] VkDeviceSize GetSubmittedBytes() const noexcept
+    {
+        return m_submittedBytes;
+    }
+    [[nodiscard]] VkDeviceSize GetCompletedBytes() const noexcept
+    {
+        return m_completedBytes;
+    }
+    [[nodiscard]] VkDeviceSize GetDestinationBytes() const noexcept
+    {
+        return m_destination ? m_size : 0;
+    }
+    [[nodiscard]] uint64_t GetExecutionNanoseconds() const noexcept
+    {
+        return m_work.executionNanoseconds;
+    }
+    [[nodiscard]] bool HasExecutionTiming() const noexcept
+    {
+        return m_work.hasExecutionTiming;
+    }
+    [[nodiscard]] VkDeviceSize GetStagingBytes() const noexcept
+    {
+        return m_staging ? m_staging->GetSize() : 0;
+    }
+    [[nodiscard]] bool IsPending() const noexcept
+    {
+        return m_submittedBytes != m_completedBytes;
+    }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API const std::shared_ptr<VkBufferHandle> &GetBuffer() const;
     [[nodiscard]] std::shared_ptr<rhi::BufferResource> GetRhiBuffer() const;
 
   private:
@@ -85,16 +136,18 @@ class BufferUploadTicket final
     // resource. m_destination independently keeps the Vulkan allocation alive
     // until transfer completion.
     std::weak_ptr<rhi::BufferResource> m_rhiBuffer;
-    AsyncSubmissionHandle m_upload;
-    // Polling may retire m_upload before the consumer publishes this ticket.
-    // Keep the semaphore value until publication so the graphics queue still
-    // receives the transfer-to-consumer memory dependency.
-    uint64_t m_uploadTimelineValue = 0;
+    rhi::SubmissionTicket m_upload;
+    std::shared_ptr<GraphicsSubmissionTicket> m_graphicsSubmission;
     VkDeviceSize m_size = 0;
+    VkBufferUsageFlags m_destinationUsage = 0;
+    std::vector<uint32_t> m_queueFamilies;
+    VkDeviceSize m_submittedBytes = 0;
+    VkDeviceSize m_completedBytes = 0;
     bool m_complete = false;
     bool m_published = false;
     bool m_async = false;
     bool m_concurrentQueueSharing = false;
+    GpuWorkReceipt m_work;
 };
 
 class TextureUploadTicket final
@@ -116,19 +169,53 @@ class TextureUploadTicket final
     {
         return m_residentBytes;
     }
-    [[nodiscard]] const std::shared_ptr<rhi::TextureResource> &GetTexture() const;
+    [[nodiscard]] VkDeviceSize GetSubmittedBytes() const noexcept
+    {
+        return m_submittedBytes;
+    }
+    [[nodiscard]] VkDeviceSize GetCompletedBytes() const noexcept
+    {
+        return m_completedBytes;
+    }
+    [[nodiscard]] uint64_t GetExecutionNanoseconds() const noexcept
+    {
+        return m_work.executionNanoseconds;
+    }
+    [[nodiscard]] bool HasExecutionTiming() const noexcept
+    {
+        return m_work.hasExecutionTiming;
+    }
+    [[nodiscard]] VkDeviceSize GetStagingBytes() const noexcept
+    {
+        return m_staging ? m_staging->GetSize() : 0;
+    }
+    [[nodiscard]] bool IsPending() const noexcept
+    {
+        return m_submittedBytes != m_completedBytes;
+    }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API const std::shared_ptr<rhi::TextureResource> &GetTexture() const;
 
   private:
     friend class VkResourceManager;
     VkResourceManager *m_manager = nullptr;
     std::shared_ptr<VkBufferHandle> m_staging;
     std::shared_ptr<rhi::TextureResource> m_texture;
-    AsyncSubmissionHandle m_upload;
-    uint64_t m_uploadTimelineValue = 0;
+    rhi::SubmissionTicket m_upload;
+    std::shared_ptr<GraphicsSubmissionTicket> m_graphicsSubmission;
+    rhi::TextureDesc m_description;
+    rhi::TextureViewDesc m_view;
+    rhi::SamplerDesc m_sampler;
+    std::vector<rhi::TextureSubresourceUpload> m_layout;
     VkDeviceSize m_residentBytes = 0;
+    VkDeviceSize m_submittedBytes = 0;
+    VkDeviceSize m_completedBytes = 0;
+    VkDeviceSize m_profiledBytes = 0;
+    uint64_t m_profiledNanoseconds = 0;
     bool m_complete = false;
     bool m_published = false;
     bool m_async = false;
+    bool m_useTransfer = false;
+    GpuWorkReceipt m_work;
 };
 
 enum class ImageReadbackStatus : uint8_t
@@ -137,6 +224,12 @@ enum class ImageReadbackStatus : uint8_t
     Completed,
     Failed,
     Cancelled,
+};
+
+enum class ImageReadbackOutput : uint8_t
+{
+    Pixels,
+    Mapped
 };
 
 class ImageReadbackTicket final
@@ -174,27 +267,52 @@ class ImageReadbackTicket final
     {
         return m_byteSize;
     }
+    [[nodiscard]] bool IsGpuComplete() const noexcept
+    {
+        return m_gpuComplete;
+    }
+    [[nodiscard]] size_t GetCopiedBytes() const noexcept
+    {
+        return m_copiedBytes;
+    }
+    [[nodiscard]] size_t GetHostCapacityBytes() const noexcept
+    {
+        return m_data.capacity();
+    }
+    [[nodiscard]] VkDeviceSize GetStagingBytes() const noexcept
+    {
+        return m_staging ? m_staging->GetSize() : 0;
+    }
     [[nodiscard]] const std::string &GetError() const noexcept
     {
         return m_error;
     }
-    [[nodiscard]] const std::vector<uint8_t> &GetData() const;
-    void Cancel() noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API const std::vector<uint8_t> &GetData() const;
+    /// Mapped bytes stay valid while the capture retains this ticket.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::string_view GetMappedData() const;
+    INFERNUX_VULKAN_BACKEND_API void Cancel() noexcept;
 
   private:
     friend class VkResourceManager;
     friend class GraphicsImageReadbackRecorder;
     std::shared_ptr<VkBufferHandle> m_staging;
     std::shared_ptr<GraphicsSubmissionTicket> m_graphicsSubmission;
+    GpuWorkReceipt m_work;
+    std::shared_ptr<FrameCpuStorageClaim> m_hostStorage;
     rhi::SubmissionSerial m_frameCompletionEpoch = rhi::InvalidSubmissionSerial;
     std::atomic<ImageReadbackStatus> m_status{ImageReadbackStatus::Pending};
     std::vector<uint8_t> m_data;
+    const uint8_t *m_mappedData = nullptr;
+    ImageReadbackOutput m_output = ImageReadbackOutput::Pixels;
     std::string m_elementType;
     std::string m_error;
     uint32_t m_width = 0;
     uint32_t m_height = 0;
     uint32_t m_channelCount = 0;
     size_t m_byteSize = 0;
+    size_t m_copiedBytes = 0;
+    bool m_frameAccepted = false;
+    bool m_gpuComplete = false;
     bool m_bgra = false;
 };
 
@@ -205,6 +323,14 @@ class GraphicsSubmissionTicket final
     {
         return m_complete.load(std::memory_order_acquire);
     }
+    [[nodiscard]] uint64_t GetExecutionNanoseconds() const noexcept
+    {
+        return m_work.executionNanoseconds;
+    }
+    [[nodiscard]] bool HasExecutionTiming() const noexcept
+    {
+        return m_work.hasExecutionTiming;
+    }
 
   private:
     friend class VkResourceManager;
@@ -214,13 +340,14 @@ class GraphicsSubmissionTicket final
     rhi::SubmissionSerial m_completionEpoch = rhi::InvalidSubmissionSerial;
     std::function<void()> m_releaseResources;
     std::atomic<bool> m_complete{false};
+    GpuWorkReceipt m_work;
 };
 
 class GraphicsImageReadbackRecorder final
 {
   public:
     GraphicsImageReadbackRecorder() = default;
-    ~GraphicsImageReadbackRecorder();
+    INFERNUX_VULKAN_BACKEND_API ~GraphicsImageReadbackRecorder();
 
     GraphicsImageReadbackRecorder(const GraphicsImageReadbackRecorder &) = delete;
     GraphicsImageReadbackRecorder &operator=(const GraphicsImageReadbackRecorder &) = delete;
@@ -235,7 +362,8 @@ class GraphicsImageReadbackRecorder final
     {
         return m_ticket && m_ticket->m_staging ? m_ticket->m_staging->GetBuffer() : VK_NULL_HANDLE;
     }
-    [[nodiscard]] std::shared_ptr<ImageReadbackTicket> Submit(std::function<void()> releaseResources = {});
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<ImageReadbackTicket>
+    Submit(std::function<void()> releaseResources = {}, const std::vector<SubmissionWait> &dependencies = {});
 
   private:
     friend class VkResourceManager;
@@ -273,7 +401,7 @@ class VkResourceManager
 {
   public:
     VkResourceManager() = default;
-    ~VkResourceManager();
+    INFERNUX_VULKAN_BACKEND_API ~VkResourceManager();
 
     // Bound to one device/transfer context for its full lifetime.
     VkResourceManager(const VkResourceManager &) = delete;
@@ -291,12 +419,12 @@ class VkResourceManager
      * @param context Device context for Vulkan access
      * @return true if initialization succeeded
      */
-    bool Initialize(VkDeviceContext &context, VulkanQueueManager *queueManager = nullptr);
+    INFERNUX_VULKAN_BACKEND_API bool Initialize(VkDeviceContext &context, VulkanQueueManager *queueManager = nullptr);
 
     /**
      * @brief Cleanup all managed resources
      */
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
     /// @brief Check if initialized
     [[nodiscard]] bool IsValid() const
@@ -311,55 +439,79 @@ class VkResourceManager
     // Buffer Management
     // ========================================================================
 
-    /**
-     * @brief Create a vertex buffer with data
-     *
-     * @param data Pointer to vertex data
-     * @param size Size in bytes
-     * @return Unique pointer to buffer handle
-     */
-    [[nodiscard]] std::unique_ptr<VkBufferHandle> CreateVertexBuffer(const void *data, VkDeviceSize size);
-
-    /**
-     * @brief Create an index buffer with data
-     *
-     * @param data Pointer to index data
-     * @param size Size in bytes
-     * @return Unique pointer to buffer handle
-     */
-    [[nodiscard]] std::unique_ptr<VkBufferHandle> CreateIndexBuffer(const void *data, VkDeviceSize size);
-
-    [[nodiscard]] std::shared_ptr<BufferUploadTicket> BeginBufferUpload(const rhi::BufferUploadRequest &request);
-    [[nodiscard]] bool TryPublishBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket);
-    [[nodiscard]] std::shared_ptr<rhi::BufferResource>
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<BufferUploadTicket>
+    BeginBufferUpload(const rhi::BufferUploadRequest &request);
+    /// Allocate the private destination only. The caller retains immutable
+    /// source data between bounded appends; this method borrows no CPU pointer.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<BufferUploadTicket>
+    CreateBufferUpload(VkDeviceSize size, rhi::BufferUsageFlags usage,
+                       rhi::QueueAccessFlags queueAccess = rhi::QueueAccessFlags::Graphics);
+    /// Copy and submit a block without waiting. A managed caller can permit a
+    /// smaller prefix in whole splitUnit elements. The first block of a
+    /// bundle reserves all of its private destinations together.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    TryAppendBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket, const void *data, VkDeviceSize bytes,
+                          FrameWorkOwner *owner = nullptr, bool indivisible = false, VkDeviceSize splitUnit = 0,
+                          std::initializer_list<BufferUploadTicket *> pairedDestinations = {});
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    TryAppendIndex16Upload(const std::shared_ptr<BufferUploadTicket> &ticket, const uint32_t *indices,
+                           VkDeviceSize bytes, FrameWorkOwner *owner);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkDeviceSize PlanBufferUploadBlock(const BufferUploadTicket &ticket,
+                                                                                 const FrameWorkOwner &owner,
+                                                                                 VkDeviceSize unit) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API static VkDeviceSize GetUploadStagingBytes(VkDeviceSize bytes) noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    TryPublishBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<rhi::BufferResource>
     GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicket> &ticket);
-    void DrainBufferUploads() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void DrainBufferUploads() noexcept;
 
-    [[nodiscard]] std::shared_ptr<TextureUploadTicket> BeginTextureUpload(const rhi::TextureUploadRequest &request);
-    [[nodiscard]] bool TryPublishTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket);
-    void PollGpuUploads();
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<TextureUploadTicket>
+    BeginTextureUpload(const rhi::TextureUploadRequest &request);
+    /// Prepare the private image and layout without borrowing any CPU data.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<TextureUploadTicket>
+    CreateTextureUpload(const rhi::TextureUploadRequest &request);
+    /// Append a contiguous block in the declared subresource order. Managed
+    /// pressure may reduce the block. Read the ticket cursor for bytes consumed.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    TryAppendTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket, const void *data, VkDeviceSize bytes,
+                           FrameWorkOwner *owner = nullptr);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    CanAppendTextureUpload(const TextureUploadTicket &ticket, VkDeviceSize bytes, const FrameWorkOwner &owner) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    TryPublishTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket);
+    INFERNUX_VULKAN_BACKEND_API void PollGpuUploads();
 
-    [[nodiscard]] std::shared_ptr<ImageReadbackTicket>
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<ImageReadbackTicket>
     BeginImageReadback(VkImage image, VkImageLayout layout, VkImageAspectFlags aspect, VkPipelineStageFlags sourceStage,
-                       VkAccessFlags sourceAccess, uint32_t width, uint32_t height, VkFormat format);
+                       VkAccessFlags sourceAccess, uint32_t width, uint32_t height, VkFormat format,
+                       std::function<void()> releaseResources = {}, rhi::SubmissionTicket upload = {},
+                       ImageReadbackOutput output = ImageReadbackOutput::Pixels);
     /// Record a readback into an already-open frame command buffer. Completion
     /// follows the frame fence identified by completionEpoch; no second queue
     /// submission is created.
-    [[nodiscard]] std::shared_ptr<ImageReadbackTicket>
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<ImageReadbackTicket>
     RecordFrameImageReadback(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout layout,
                              VkImageAspectFlags aspect, VkPipelineStageFlags sourceStage, VkAccessFlags sourceAccess,
-                             uint32_t width, uint32_t height, VkFormat format, rhi::SubmissionSerial completionEpoch);
-    [[nodiscard]] GraphicsImageReadbackRecorder BeginGraphicsImageReadback(uint32_t width, uint32_t height,
-                                                                           VkFormat format);
-    void PollImageReadbacks();
+                             uint32_t width, uint32_t height, VkFormat format, rhi::SubmissionSerial completionEpoch,
+                             ImageReadbackOutput output = ImageReadbackOutput::Pixels);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API GraphicsImageReadbackRecorder BeginGraphicsImageReadback(
+        uint32_t width, uint32_t height, VkFormat format, ImageReadbackOutput output = ImageReadbackOutput::Pixels);
+    /// The host owns destination admission and copying. Polling only observes
+    /// receipts and retires staging for terminal requests.
+    INFERNUX_VULKAN_BACKEND_API void RegisterImageReadbackWork(FrameWorkOwner &owner);
+    INFERNUX_VULKAN_BACKEND_API void AcceptFrameImageReadback(ImageReadbackTicket &ticket,
+                                                              rhi::SubmissionSerial epoch) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void CancelFrameImageReadbacks(rhi::SubmissionSerial epoch) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void PollImageReadbacks();
     /// Frame command buffers must already be idle or discarded before draining.
     /// Standalone graphics readbacks are waited here; frame readbacks are cancelled.
-    void DrainImageReadbacks() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void DrainImageReadbacks() noexcept;
     [[nodiscard]] size_t GetPendingImageReadbackCount() const noexcept
     {
         return m_pendingImageReadbacks.size();
     }
-    [[nodiscard]] uint64_t GetPendingImageReadbackBytes() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetPendingImageReadbackBytes() const noexcept;
     [[nodiscard]] size_t GetPendingGpuTransferCount() const noexcept
     {
         return m_pendingBufferUploads.size() + m_pendingTextureUploads.size();
@@ -374,35 +526,17 @@ class VkResourceManager
     }
     [[nodiscard]] bool IsUploadTimelineEnabled() const noexcept
     {
-        return m_asyncTransfer && m_asyncTransfer->IsAsyncCapable() &&
-               m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE;
+        return m_asyncTransfer && m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE;
     }
-    [[nodiscard]] VkSemaphore GetUploadTimelineSemaphore() const noexcept;
-    [[nodiscard]] uint64_t GetRequiredUploadTimelineValue() const noexcept
-    {
-        return m_requiredUploadTimelineValue;
-    }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API SubmissionWait UploadReadDependency(rhi::SubmissionTicket upload,
+                                                                                  rhi::QueueRole consumer,
+                                                                                  VkPipelineStageFlags stages) const;
 
-    [[nodiscard]] VkDeviceSize GetStagingPoolBytes() const noexcept
-    {
-        return m_stagingPoolBytes;
-    }
-    [[nodiscard]] size_t GetStagingPoolBufferCount() const noexcept
-    {
-        return m_stagingPoolBufferCount;
-    }
-    [[nodiscard]] uint64_t GetStagingAllocationCount() const noexcept
-    {
-        return m_stagingAllocationCount;
-    }
-    [[nodiscard]] uint64_t GetStagingReuseCount() const noexcept
-    {
-        return m_stagingReuseCount;
-    }
-    [[nodiscard]] uint64_t GetStagingDiscardCount() const noexcept
-    {
-        return m_stagingDiscardCount;
-    }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkDeviceSize GetStagingPoolBytes() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API size_t GetStagingPoolBufferCount() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetStagingAllocationCount() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetStagingReuseCount() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetStagingDiscardCount() const noexcept;
 
     /**
      * @brief Create a uniform buffer
@@ -410,7 +544,7 @@ class VkResourceManager
      * @param size Size in bytes
      * @return Unique pointer to buffer handle (host-visible for frequent updates)
      */
-    [[nodiscard]] std::unique_ptr<VkBufferHandle> CreateUniformBuffer(VkDeviceSize size);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkBufferHandle> CreateUniformBuffer(VkDeviceSize size);
 
     /**
      * @brief Create a storage buffer
@@ -419,7 +553,8 @@ class VkResourceManager
      * @param deviceLocal If true, create device-local buffer
      * @return Unique pointer to buffer handle
      */
-    [[nodiscard]] std::unique_ptr<VkBufferHandle> CreateStorageBuffer(VkDeviceSize size, bool deviceLocal = true);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkBufferHandle>
+    CreateStorageBuffer(VkDeviceSize size, bool deviceLocal = true);
 
     /**
      * @brief Create a staging buffer for data uploads
@@ -427,16 +562,7 @@ class VkResourceManager
      * @param size Size in bytes
      * @return Unique pointer to buffer handle (host-visible)
      */
-    [[nodiscard]] std::unique_ptr<VkBufferHandle> CreateStagingBuffer(VkDeviceSize size);
-
-    /**
-     * @brief Copy buffer data using a one-shot command buffer
-     *
-     * @param srcBuffer Source buffer
-     * @param dstBuffer Destination buffer
-     * @param size Size to copy (0 = entire buffer)
-     */
-    void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkBufferHandle> CreateStagingBuffer(VkDeviceSize size);
 
     // ========================================================================
     // Image and Texture Management
@@ -452,7 +578,7 @@ class VkResourceManager
      * @param properties Memory properties
      * @return Unique pointer to image handle
      */
-    [[nodiscard]] std::unique_ptr<VkImageHandle>
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkImageHandle>
     CreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage,
                 VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
@@ -464,18 +590,8 @@ class VkResourceManager
      * @param format Depth format (VK_FORMAT_UNDEFINED = auto-select)
      * @return Unique pointer to image handle with view
      */
-    [[nodiscard]] std::unique_ptr<VkImageHandle> CreateDepthBuffer(uint32_t width, uint32_t height,
-                                                                   VkFormat format = VK_FORMAT_UNDEFINED);
-
-    /**
-     * @brief Copy buffer to image
-     *
-     * @param buffer Source buffer
-     * @param image Destination image
-     * @param width Image width
-     * @param height Image height
-     */
-    void CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkImageHandle>
+    CreateDepthBuffer(uint32_t width, uint32_t height, VkFormat format = VK_FORMAT_UNDEFINED);
 
     // ========================================================================
     // Command Buffer Management
@@ -485,7 +601,7 @@ class VkResourceManager
      * @brief Allocate a primary command buffer
      * @return Allocated command buffer
      */
-    [[nodiscard]] CommandBufferAllocation AllocatePrimaryCommandBuffer();
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API CommandBufferAllocation AllocatePrimaryCommandBuffer();
 
     /**
      * @brief Allocate a secondary command buffer
@@ -497,23 +613,30 @@ class VkResourceManager
      * @brief Free a command buffer
      * @param allocation Command buffer allocation to free
      */
-    void FreeCommandBuffer(const CommandBufferAllocation &allocation);
+    INFERNUX_VULKAN_BACKEND_API void FreeCommandBuffer(const CommandBufferAllocation &allocation);
 
     /**
      * @brief Begin a one-shot command buffer for immediate submission
      * @return Command buffer ready for recording
      */
-    [[nodiscard]] VkCommandBuffer BeginSingleTimeCommands();
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkCommandBuffer BeginSingleTimeCommands();
+    /// Return an unsubmitted recording and its completion epoch to this manager.
+    INFERNUX_VULKAN_BACKEND_API void DiscardSingleTimeCommands(VkCommandBuffer commandBuffer) noexcept;
 
     /**
      * @brief End and submit a one-shot command buffer
      * @param cmdBuffer Command buffer to submit
      */
-    void EndSingleTimeCommands(VkCommandBuffer cmdBuffer);
-    [[nodiscard]] std::shared_ptr<GraphicsSubmissionTicket>
-    EndSingleTimeCommandsAsync(VkCommandBuffer cmdBuffer, std::function<void()> releaseResources = {});
-    void PollAsyncGraphicsSubmissions();
-    void DrainAsyncGraphicsSubmissions() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void EndSingleTimeCommands(VkCommandBuffer cmdBuffer);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::shared_ptr<GraphicsSubmissionTicket>
+    EndSingleTimeCommandsAsync(VkCommandBuffer cmdBuffer, std::function<void()> releaseResources = {},
+                               GpuWorkReceipt work = {}, const std::vector<SubmissionWait> &dependencies = {});
+    /// Returns no commands when this host cannot admit the whole draw packet.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkCommandBuffer TryBeginManagedGraphics(GpuWorkReceipt &work,
+                                                                                      FrameWorkOwner &owner,
+                                                                                      VkDeviceSize transferBytes);
+    INFERNUX_VULKAN_BACKEND_API void PollAsyncGraphicsSubmissions();
+    INFERNUX_VULKAN_BACKEND_API void DrainAsyncGraphicsSubmissions() noexcept;
     [[nodiscard]] size_t GetPendingAsyncGraphicsSubmissionCount() const noexcept
     {
         return m_pendingAsyncGraphicsSubmissions.size();
@@ -562,6 +685,12 @@ class VkResourceManager
     }
 
   private:
+    struct TextureUploadBlock;
+    static TextureUploadBlock SelectTextureUploadBlock(const TextureUploadTicket &ticket, VkDeviceSize bytes,
+                                                       const FrameWorkOwner *owner);
+    bool AppendTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket, VkDeviceSize bytes,
+                             const std::function<const void *(uint32_t, VkDeviceSize, VkDeviceSize)> &source,
+                             FrameWorkOwner *owner = nullptr);
     friend class GraphicsImageReadbackRecorder;
     // ========================================================================
     // Internal Methods
@@ -571,14 +700,36 @@ class VkResourceManager
     std::unique_ptr<VkBufferHandle> CreateBufferInternal(VkDeviceSize size, VkBufferUsageFlags usage,
                                                          VkMemoryPropertyFlags properties,
                                                          const std::vector<uint32_t> &queueFamilies = {});
-    std::shared_ptr<VkBufferHandle> AcquireStagingBuffer(VkDeviceSize size);
-    void RecycleStagingBuffer(std::shared_ptr<VkBufferHandle> buffer) noexcept;
-    void ClearStagingPool() noexcept;
-    void FinalizeImageReadback(const std::shared_ptr<ImageReadbackTicket> &ticket) noexcept;
+    bool PrepareBufferUploadDestination(BufferUploadTicket &ticket, bool managed);
+    bool PrepareTextureUploadDestination(TextureUploadTicket &ticket, bool managed);
+    static VkDeviceSize SmallerStagingBlock(VkDeviceSize bytes, VkDeviceSize stagingBytes, VkDeviceSize unit);
+    std::shared_ptr<ImageReadbackTicket> CreateImageReadback(uint32_t width, uint32_t height, VkFormat format,
+                                                             ImageReadbackOutput output);
+    void ReserveReadbackSlot();
+    void QueueImageReadback(const std::shared_ptr<ImageReadbackTicket> &ticket);
+    bool CopyImageReadback(ImageReadbackTicket &ticket, size_t maxBytes, FrameWorkOwner *owner);
+    bool ObserveImageReadback(ImageReadbackTicket &ticket);
+    void RetireImageReadback(ImageReadbackTicket &ticket) noexcept;
     std::shared_ptr<ImageReadbackTicket> SubmitGraphicsImageReadback(GraphicsImageReadbackRecorder &recorder,
-                                                                     std::function<void()> releaseResources);
+                                                                     std::function<void()> releaseResources,
+                                                                     const std::vector<SubmissionWait> &dependencies);
     void AbandonGraphicsImageReadback(GraphicsImageReadbackRecorder &recorder) noexcept;
     void AssertReadbackThread() const;
+    bool AppendBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket, const void *data, VkDeviceSize bytes,
+                            FrameWorkOwner *owner, bool indivisible, VkDeviceSize splitUnit, bool packIndex16,
+                            std::initializer_list<BufferUploadTicket *> pairedDestinations);
+    bool PrepareBufferUploadDestinations(BufferUploadTicket &ticket,
+                                         std::initializer_list<BufferUploadTicket *> pairedDestinations, bool managed);
+    static bool CanPrepareGpuWork(const FrameWorkOwner *owner, uint64_t gpuNanoseconds, VkDeviceSize bytes,
+                                  bool indivisible);
+    void PrepareGpuWork(GpuWorkReceipt &work, FrameWorkOwner *owner, VkDeviceSize bytes, bool useTransfer,
+                        uint64_t gpuNanoseconds);
+    void BeginGpuWork(GpuWorkReceipt &work, VkCommandBuffer commands, const char *name);
+    void FinishGpuWork(GpuWorkReceipt &work, VkCommandBuffer commands);
+    void AdmitGpuWork(GpuWorkReceipt &work);
+    uint64_t RetireGpuWork(GpuWorkReceipt &work);
+    bool RecordUploadPublication(const GpuWorkReceipt &work, bool complete);
+    void RetireBufferUpload(BufferUploadTicket &ticket);
 
     /// @brief Get best depth format for the device
     VkFormat FindDepthFormat() const;
@@ -593,13 +744,11 @@ class VkResourceManager
     }
 
     /// Configure the transfer context used by explicit Buffer/TextureUploadTicket submissions.
-    void SetAsyncTransferContext(class AsyncTransferContext *transfer)
-    {
-        m_asyncTransfer = transfer;
-    }
+    INFERNUX_VULKAN_BACKEND_API void SetAsyncTransferContext(class AsyncTransferContext *transfer);
 
   private:
     bool m_skipWaitIdle = false;
+    VkDeviceContext *m_context = nullptr;
     VmaAllocator m_vmaAllocator = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
@@ -614,19 +763,19 @@ class VkResourceManager
     // (typically InxVkCoreModular::m_asyncTransferContext) — VkResourceManager
     // never destroys it. nullptr means "always use the synchronous path".
     class AsyncTransferContext *m_asyncTransfer = nullptr;
+    bool m_transferTimestampsSupported = false;
     uint32_t m_graphicsQueueFamily = 0;
     uint32_t m_computeQueueFamily = 0;
     uint32_t m_transferQueueFamily = 0;
     std::vector<std::shared_ptr<BufferUploadTicket>> m_pendingBufferUploads;
     std::vector<std::shared_ptr<TextureUploadTicket>> m_pendingTextureUploads;
+    std::vector<std::unique_ptr<GpuTimestampQueries>> m_graphicsWorkQueries, m_transferWorkQueries;
+    void RetireTextureUpload(TextureUploadTicket &ticket);
     std::vector<std::shared_ptr<ImageReadbackTicket>> m_pendingImageReadbacks;
-    std::unordered_map<VkDeviceSize, std::vector<std::shared_ptr<VkBufferHandle>>> m_stagingPool;
-    VkDeviceSize m_stagingPoolBytes = 0;
-    size_t m_stagingPoolBufferCount = 0;
-    uint64_t m_stagingAllocationCount = 0;
-    uint64_t m_stagingReuseCount = 0;
-    uint64_t m_stagingDiscardCount = 0;
-    uint64_t m_requiredUploadTimelineValue = 0;
+    FrameWorkOwner *m_readbackOwner = nullptr;
+    uint64_t m_readbackSource = 0;
+    size_t m_readbackTimingBytes = 0;
+    uint64_t m_readbackTimingNanoseconds = 0;
     uint64_t m_timelineUploadPublicationCount = 0;
     uint64_t m_bufferUploadSubmissionCount = 0;
 

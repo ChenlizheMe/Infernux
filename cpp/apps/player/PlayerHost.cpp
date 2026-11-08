@@ -1,4 +1,5 @@
 #include "PlayerHost.h"
+#include <platform/filesystem/NativeFilePath.h>
 
 #include <Python.h>
 
@@ -116,29 +117,12 @@ std::wstring WidePath(const std::filesystem::path &path)
 #endif
 }
 
-std::filesystem::path LoaderPath(const std::filesystem::path &path)
-{
-#ifdef _WIN32
-    // The DLL loader still applies MAX_PATH to ordinary paths, even when the
-    // executable opts into long paths. Keep this spelling at loader boundaries;
-    // the authored layout and game arguments retain their original paths.
-    const auto absolute = std::filesystem::absolute(path).lexically_normal().make_preferred().wstring();
-    if (absolute.rfind(L"\\\\?\\", 0) == 0)
-        return absolute;
-    if (absolute.rfind(L"\\\\", 0) == 0)
-        return L"\\\\?\\UNC\\" + absolute.substr(2);
-    return L"\\\\?\\" + absolute;
-#else
-    return path;
-#endif
-}
-
 #ifdef _WIN32
 void AddSearchDirectory(const std::filesystem::path &path)
 {
     if (!std::filesystem::is_directory(path))
         return;
-    ::AddDllDirectory(LoaderPath(path).c_str());
+    ::AddDllDirectory(NativeFilePath(path).c_str());
 }
 #endif
 
@@ -225,7 +209,7 @@ bool IsSupportedExecutableLocation(const std::filesystem::path &hostExecutable)
 #ifdef _WIN32
     // Some Windows graphics drivers fail inside their loader when the process
     // image reaches MAX_PATH, even with a long-path-aware application manifest.
-    // Bound the host location only; Runtime DLLs and game assets use LoaderPath.
+    // Bound the host location only; Runtime DLLs and game assets use NativeFilePath.
     return std::filesystem::absolute(hostExecutable).native().size() < MAX_PATH;
 #else
     return true;
@@ -281,14 +265,14 @@ bool PlayerHost::LoadPython(const Layout &layout)
     if (!SetEnvironmentPath("_INFERNUX_PLAYER_INSTALL_ROOT", layout.installRoot) ||
         !SetEnvironmentPath("_INFERNUX_PLAYER_DATA_ROOT", layout.dataRoot) ||
         !SetEnvironmentPath("_INFERNUX_PLAYER_RUNTIME_ROOT", layout.runtimeRoot) ||
-        !SetEnvironmentPath("INFERNUX_NATIVE_MODULE_DIR", LoaderPath(layout.runtimeRoot / "infernux" / "lib")))
+        !SetEnvironmentPath("INFERNUX_NATIVE_MODULE_DIR", NativeFilePath(layout.runtimeRoot / "infernux" / "lib")))
         return Fail(ErrorText(L"Unable to configure the Player runtime environment"));
     // The isolated PyConfig below owns all import paths. Remove inherited
     // Python environment variables before loading any extension module.
     ClearPythonEnvironment();
 
 #ifdef _WIN32
-    HMODULE python = ::LoadLibraryExW(LoaderPath(pythonLibrary).c_str(), nullptr,
+    HMODULE python = ::LoadLibraryExW(NativeFilePath(pythonLibrary).c_str(), nullptr,
                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (python == nullptr)
         return Fail(ErrorText(L"Unable to load the CPython shared library from the Player Runtime"));
@@ -370,7 +354,7 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::vector<std::wstri
         layout.runtimeRoot / "infernux" / "lib",
     };
     for (const auto &path : searchPaths) {
-        const std::wstring widePath = WidePath(LoaderPath(path));
+        const std::wstring widePath = WidePath(NativeFilePath(path));
         status = appendPath(&config.module_search_paths, widePath.c_str());
         if (statusException(status)) {
             failStatus(status, L"Unable to configure isolated Player module path");

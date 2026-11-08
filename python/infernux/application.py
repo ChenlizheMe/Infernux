@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import weakref
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -39,6 +40,20 @@ def _renderer_state_from_native(native) -> dict[str, Any]:
             )
         ),
     }
+
+
+@dataclass(slots=True)
+class ContentPublication:
+    """A cooked content package submitted to the running Player."""
+
+    status: str = "preparing"
+    error: str = ""
+    asset_guids: tuple[str, ...] = ()
+    scene_guids: tuple[str, ...] = ()
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status != "preparing"
 
 
 class Application:
@@ -82,6 +97,18 @@ class Application:
                 )
             return resolved_path(persistent_root)
         return Application.data_path()
+
+    @staticmethod
+    def publish_content(data_directory: str | os.PathLike[str]) -> ContentPublication:
+        """Prepare a cooked Player data directory and publish its new content.
+
+        After publication, assets resolve by their normal GUIDs and paths.
+        Load a published scene with ``SceneManager.load_scene``.
+        """
+        engine = Application._current_engine()
+        if engine is None or not Application.is_player():
+            raise RuntimeError("Content publication requires a running desktop Player")
+        return engine.get_player_runtime().publish_content(os.fspath(data_directory))
 
     @staticmethod
     def asset_path(path: str) -> str:

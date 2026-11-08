@@ -171,6 +171,12 @@ class SceneObjectCommandService:
     def can_copy(self, context: CommandContext) -> bool:
         return bool(self.has_selection(context) and self._selected_roots(context))
 
+    @staticmethod
+    def _enclosing_prefab_scope_id(parent) -> int:
+        while parent is not None and not parent.prefab_root:
+            parent = parent.get_parent()
+        return parent.id if parent is not None else 0
+
     def copy(self, context: CommandContext, *, cut: bool) -> bool:
         from infernux.engine.component_restore import (
             serialize_game_object_document_authoritatively,
@@ -194,6 +200,7 @@ class SceneObjectCommandService:
                 {
                     "document": serialize_game_object_document_authoritatively(obj),
                     "source_parent_id": parent.id if parent else None,
+                    "source_prefab_scope_id": self._enclosing_prefab_scope_id(parent) if cut else 0,
                     "source_sibling_index": (
                         transform.get_sibling_index() if transform else 0
                     ),
@@ -319,8 +326,12 @@ class SceneObjectCommandService:
         prepared_entries = []
         try:
             for entry in entries:
+                source_parent_id = entry["source_parent_id"]
+                source_parent = scene.find_by_id(source_parent_id) if source_parent_id is not None else None
+                parent = anchor_parent if anchor is not None else source_parent
                 document = copy.deepcopy(entry["document"])
-                if payload.operation is ClipboardOperation.COPY:
+                if (payload.operation is ClipboardOperation.COPY or
+                        self._enclosing_prefab_scope_id(parent) != entry["source_prefab_scope_id"]):
                     _retire_copied_prefab_links(document)
                 prepared = preflight_game_object_python_components(
                     document,
@@ -329,29 +340,20 @@ class SceneObjectCommandService:
                     prefer_loaded_types=True,
                     reference_scene=scene,
                 )
-                prepared_entries.append((entry, document, prepared))
+                prepared_entries.append((entry, document, prepared, parent))
         except (KeyError, RuntimeError) as exc:
-            for _entry, _document, prepared in prepared_entries:
+            for _entry, _document, prepared, _parent in prepared_entries:
                 prepared.discard()
             Debug.log_error(f"Paste preflight failed: {exc}")
             return False
 
         created = []
         try:
-            batch_entries = []
-            for entry, document, prepared in prepared_entries:
-                source_parent_id = entry.get("source_parent_id")
-                source_parent = (
-                    scene.find_by_id(source_parent_id)
-                    if source_parent_id is not None
-                    else None
-                )
-                parent = anchor_parent if anchor is not None else source_parent
-                batch_entries.append((document, prepared, parent))
+            batch_entries = [(document, prepared, parent) for _, document, prepared, parent in prepared_entries]
             created = instantiate_prepared_game_object_documents(scene, batch_entries)
 
             parent_offsets = {}
-            for (entry, _document, _prepared), new_obj in zip(
+            for (entry, _document, _prepared, _parent), new_obj in zip(
                 prepared_entries, created
             ):
                 transform = getattr(new_obj, "transform", None)
@@ -393,7 +395,7 @@ class SceneObjectCommandService:
             Debug.log_error(f"Paste commit failed: {exc}")
             return False
         finally:
-            for _entry, _document, prepared in prepared_entries:
+            for _entry, _document, prepared, _parent in prepared_entries:
                 prepared.discard()
 
         if not created:
@@ -592,6 +594,7 @@ class SceneObjectCommandService:
         selection_reason: str = "create_model",
     ):
         """Create an imported model and return the committed object."""
+        from infernux.core.assets import AssetManager
         from infernux.engine.undo import CreateGameObjectCommand, UndoManager
         from infernux.lib import AssetRegistry
 
@@ -613,6 +616,7 @@ class SceneObjectCommandService:
         if not guid:
             return None
 
+        AssetManager.flush_model_instance_sync()
         before_selection = self._selection.snapshot
         new_object = scene.create_from_model(make_model_mesh_reference(guid, node_path) if node_path else guid)
         if new_object is None:

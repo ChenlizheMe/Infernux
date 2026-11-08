@@ -4,8 +4,8 @@
 #include "MeshArtifact.h"
 #include "MeshImportSettings.h"
 
-#include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetRegistry/ArtifactFileReader.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
@@ -21,13 +21,22 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
+#include <limits>
+#include <optional>
 #include <set>
+#include <vector>
 
 namespace infernux
 {
+void MeshLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
+{
+    const auto mesh = payload.Get<InxMesh>();
+    mesh->SetFilePath(filePath);
+    mesh->SetName(FromFsPath(ToFsPath(filePath).stem()));
+}
+
 #if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
-void MeshLoader::CreateMeta(const char *, size_t, const std::string &, InxResourceMeta &) const
+void MeshLoader::CreateMeta(AssetSource &source, InxResourceMeta &metadata) const
 {
     throw std::logic_error("Mesh source import is unavailable in a minimal Player host");
 }
@@ -35,23 +44,98 @@ void MeshLoader::CreateMeta(const char *, size_t, const std::string &, InxResour
 
 namespace
 {
-std::string ReadArtifactBytes(const std::string &path, std::string_view label)
+struct MeshArtifactSource
 {
-    std::ifstream file(ToFsPath(path), std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw std::runtime_error("failed to open " + std::string(label));
-    const auto size = file.tellg();
-    if (size <= 0)
-        throw std::runtime_error(std::string(label) + " is empty");
-    std::string bytes(static_cast<size_t>(size), '\0');
-    file.seekg(0);
-    if (!file.read(bytes.data(), size))
-        throw std::runtime_error("failed to read " + std::string(label));
-    return bytes;
-}
-} // namespace
+    std::string primaryPath, skinnedPath, sourceHash, guid, filePath;
+    bool cpuReadable;
+    float importedScale;
+    std::shared_ptr<const InxResourceMeta> metadata;
+};
 
-RuntimeAssetPayload MeshLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
+struct ArtifactLayout
+{
+    uint64_t workspace;
+    uint64_t fileBytes;
+};
+
+template <typename Artifact> ArtifactLayout DescribeArtifactLayout(const std::string &path)
+{
+    FileInput file(ToFsPath(path));
+    return {Artifact::ReadWorkspace(file), file.Size()};
+}
+
+class MeshArtifactDecode
+{
+  public:
+    explicit MeshArtifactDecode(MeshArtifactSource source)
+        : m_source(std::move(source)), m_primaryLayout(DescribeArtifactLayout<MeshArtifact>(m_source.primaryPath)),
+          m_companionLayout(DescribeArtifactLayout<SkinnedMeshArtifact>(m_source.skinnedPath)),
+          m_blockBytes(static_cast<size_t>(
+              (std::min<uint64_t>)(ArtifactFileReader::BlockBytes,
+                                   (std::max)(m_primaryLayout.fileBytes, m_companionLayout.fileBytes))))
+    {
+        const auto primary = m_primaryLayout.workspace;
+        const auto companion = m_companionLayout.workspace;
+        const uint64_t overhead = sizeof(*this) + m_blockBytes + m_source.primaryPath.capacity() +
+                                  m_source.skinnedPath.capacity() + m_source.sourceHash.capacity() +
+                                  3 * (m_source.guid.size() + m_source.filePath.size() + 64);
+        const auto maximum = (std::numeric_limits<uint64_t>::max)();
+        if (companion > maximum - overhead || primary > maximum - overhead - companion)
+            throw std::length_error("model decode workspace exceeds the host byte range");
+        m_workspace = primary + companion + overhead;
+    }
+
+    [[nodiscard]] uint64_t Workspace() const noexcept
+    {
+        return m_workspace;
+    }
+
+    [[nodiscard]] WorkerAssetLoadPlan::Read NextRead() const noexcept
+    {
+        using Kind = WorkerAssetLoadPlan::ReadKind;
+        if (m_mesh)
+            return {m_companionLayout.fileBytes, Kind::SkeletonArtifact};
+        return {m_primaryLayout.fileBytes, Kind::GeometryArtifact};
+    }
+
+    RuntimeAssetPayload Advance()
+    {
+        if (!m_mesh) {
+            FileInput primary(ToFsPath(m_source.primaryPath));
+            m_companion.emplace(ToFsPath(m_source.skinnedPath));
+            m_block.resize(m_blockBytes);
+            m_mesh = MeshArtifact::Read(primary, m_source.sourceHash, m_block, m_primaryLayout.workspace);
+            return {};
+        }
+
+        auto skinned =
+            SkinnedMeshArtifact::Read(*m_companion, m_source.sourceHash, m_block, m_companionLayout.workspace);
+        m_companion.reset();
+        if (skinned) {
+            skinned->guid = m_source.guid;
+            skinned->sourcePath = m_source.filePath;
+        }
+        m_mesh->SetCpuReadable(m_source.cpuReadable);
+        m_mesh->SetImportedScale(m_source.importedScale);
+        m_mesh->SetImportMetadata(std::move(m_source.metadata));
+        m_mesh->SetSkinnedData(std::move(skinned));
+        m_mesh->SetGuid(m_source.guid);
+        m_mesh->SetFilePath(m_source.filePath);
+        return std::move(m_mesh);
+    }
+
+  private:
+    MeshArtifactSource m_source;
+    ArtifactLayout m_primaryLayout;
+    ArtifactLayout m_companionLayout;
+    std::optional<FileInput> m_companion;
+    size_t m_blockBytes;
+    uint64_t m_workspace;
+    std::vector<char> m_block;
+    std::shared_ptr<InxMesh> m_mesh;
+};
+
+MeshArtifactSource DescribeMeshLoad(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
     if (!adb)
         throw std::invalid_argument("MeshLoader requires an AssetDatabase");
@@ -61,42 +145,41 @@ RuntimeAssetPayload MeshLoader::Load(const std::string &filePath, const std::str
     if (!metadata->HasKey("content_hash"))
         throw std::invalid_argument("MeshLoader metadata has no source content hash");
 
-    const std::string sourceHash = metadata->GetDataAs<std::string>("content_hash");
-    const std::string artifactPath = adb->GetRuntimeArtifactPath(guid, ResourceType::Mesh);
-    const std::string skinnedArtifactPath = adb->GetSkinnedMeshArtifactPath(guid);
-    if (artifactPath.empty() || !std::filesystem::is_regular_file(ToFsPath(artifactPath)))
+    auto primary = adb->GetRuntimeArtifactPath(guid, ResourceType::Mesh);
+    if (primary.empty())
         throw std::runtime_error("MeshLoader requires a current imported .inxmesh artifact; reimport '" + filePath +
                                  "'");
+    return {std::move(primary),
+            adb->GetSkinnedMeshArtifactPath(guid),
+            metadata->GetDataAs<std::string>("content_hash"),
+            guid,
+            filePath,
+            MeshImportSettings::Read(*metadata).isReadable,
+            metadata->GetDataAs<float>("effective_scale"),
+            std::move(metadata)};
+}
+} // namespace
 
-    auto mesh = MeshArtifact::Deserialize(ReadArtifactBytes(artifactPath, "Mesh artifact"), sourceHash);
-    mesh->SetCpuReadable(MeshImportSettings::Read(*metadata).isReadable);
-    auto skinned = SkinnedMeshArtifact::Deserialize(
-        ReadArtifactBytes(skinnedArtifactPath, "skinned Mesh companion artifact"), sourceHash);
-    if (skinned) {
-        skinned->guid = guid;
-        skinned->sourcePath = filePath;
-    }
-    mesh->SetSkinnedData(std::move(skinned));
-    mesh->SetGuid(guid);
-    mesh->SetFilePath(filePath);
-    return mesh;
+RuntimeAssetPayload MeshLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
+{
+    MeshArtifactDecode decode(DescribeMeshLoad(filePath, guid, adb));
+    RuntimeAssetPayload payload;
+    while (!payload)
+        payload = decode.Advance();
+    return payload;
 }
 
-bool MeshLoader::Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
-                        AssetDatabase *adb)
+WorkerAssetLoadPlan MeshLoader::PlanWorkerLoad(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
-    INXLOG_INFO("MeshLoader::Reload: '", filePath, "'");
-    auto freshData = Load(filePath, guid, adb);
-    if (!freshData)
-        return false;
-    auto loaded = freshData.Get<InxMesh>();
-    auto target = existing.Get<InxMesh>();
-    if (!target)
-        return false;
-
-    target->ReplaceImportedContent(*loaded);
-    INXLOG_INFO("MeshLoader::Reload: updated '", target->GetName(), "' in-place");
-    return true;
+    auto decode = std::make_shared<MeshArtifactDecode>(DescribeMeshLoad(filePath, guid, adb));
+    return {decode->Workspace(),
+            [decode](uint64_t, WorkerAssetLoadPlan::Read &next) {
+                auto payload = decode->Advance();
+                if (!payload)
+                    next = decode->NextRead();
+                return payload;
+            },
+            decode->NextRead()};
 }
 
 size_t MeshLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const

@@ -1,46 +1,10 @@
 #pragma once
 
-#include <cstddef>
+#include <core/types/PixelFormat.h>
 #include <cstdint>
 
 namespace infernux::rhi
 {
-
-enum class PixelFormat : uint8_t
-{
-    Undefined = 0,
-    R8UNorm,
-    RG8UNorm,
-    RGBA8UNorm,
-    RGBA8Srgb,
-    BGRA8UNorm,
-    BGRA8Srgb,
-    R16SFloat,
-    RG16SFloat,
-    RGBA16SFloat,
-    RGBA16UNorm,
-    R32SFloat,
-    RG32UInt,
-    RGBA32SFloat,
-    RGB10A2UNorm,
-    RGBA4UNormPack16,
-    BC1RgbaUNorm,
-    BC1RgbaSrgb,
-    BC3UNorm,
-    BC3Srgb,
-    BC4UNorm,
-    BC5UNorm,
-    BC6HUFloat,
-    BC7UNorm,
-    BC7Srgb,
-    D32SFloat,
-    D24UNormS8UInt,
-    RGBA32UInt,
-    D32SFloatS8UInt,
-    Count,
-};
-
-constexpr size_t kPixelFormatCount = static_cast<size_t>(PixelFormat::Count);
 
 enum class SampleCount : uint8_t
 {
@@ -132,63 +96,6 @@ enum class TextureLayout : uint8_t
 [[nodiscard]] constexpr bool HasAny(Access value, Access flags) noexcept
 {
     return (value & flags) != Access::None;
-}
-
-[[nodiscard]] constexpr bool IsDepthFormat(PixelFormat format) noexcept
-{
-    return format == PixelFormat::D32SFloat || format == PixelFormat::D24UNormS8UInt ||
-           format == PixelFormat::D32SFloatS8UInt;
-}
-
-[[nodiscard]] constexpr bool IsStencilFormat(PixelFormat format) noexcept
-{
-    return format == PixelFormat::D24UNormS8UInt || format == PixelFormat::D32SFloatS8UInt;
-}
-
-[[nodiscard]] constexpr bool IsIntegerFormat(PixelFormat format) noexcept
-{
-    return format == PixelFormat::RG32UInt || format == PixelFormat::RGBA32UInt;
-}
-
-[[nodiscard]] constexpr bool IsValidPixelFormat(PixelFormat format) noexcept
-{
-    return format > PixelFormat::Undefined && format < PixelFormat::Count;
-}
-
-[[nodiscard]] constexpr bool IsSrgbFormat(PixelFormat format) noexcept
-{
-    return format == PixelFormat::RGBA8Srgb || format == PixelFormat::BGRA8Srgb || format == PixelFormat::BC1RgbaSrgb ||
-           format == PixelFormat::BC3Srgb || format == PixelFormat::BC7Srgb;
-}
-
-[[nodiscard]] constexpr bool IsBlockCompressedFormat(PixelFormat format) noexcept
-{
-    return format >= PixelFormat::BC1RgbaUNorm && format <= PixelFormat::BC7Srgb;
-}
-
-[[nodiscard]] constexpr PixelFormat LinearColorFormat(PixelFormat format) noexcept
-{
-    switch (format) {
-    case PixelFormat::RGBA8Srgb:
-        return PixelFormat::RGBA8UNorm;
-    case PixelFormat::BGRA8Srgb:
-        return PixelFormat::BGRA8UNorm;
-    case PixelFormat::BC1RgbaSrgb:
-        return PixelFormat::BC1RgbaUNorm;
-    case PixelFormat::BC3Srgb:
-        return PixelFormat::BC3UNorm;
-    case PixelFormat::BC7Srgb:
-        return PixelFormat::BC7UNorm;
-    default:
-        return format;
-    }
-}
-
-[[nodiscard]] constexpr bool AreColorSpaceViewFormatsCompatible(PixelFormat imageFormat,
-                                                                PixelFormat viewFormat) noexcept
-{
-    return imageFormat == viewFormat || (IsSrgbFormat(imageFormat) && LinearColorFormat(imageFormat) == viewFormat) ||
-           (IsSrgbFormat(viewFormat) && LinearColorFormat(viewFormat) == imageFormat);
 }
 
 } // namespace infernux::rhi

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ShaderCompilerApi.h"
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -127,7 +128,7 @@ struct ShaderInfoDocument
     ShaderSourceRange declaration;
     std::vector<ShaderInfoDiagnostic> diagnostics;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API bool IsValid() const noexcept;
 };
 
 struct ShaderEntryPointSet
@@ -139,19 +140,23 @@ struct ShaderEntryPointSet
 };
 
 /// Parse the first uncommented ShaderInfo or ShadingModelInfo declaration.
-[[nodiscard]] ShaderInfoDocument ParseShaderInfo(std::string_view source);
+[[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderInfoDocument ParseShaderInfo(std::string_view source);
 
 /// Replace a parsed declaration with whitespace while preserving line numbers.
-[[nodiscard]] std::string StripShaderInfoDeclaration(std::string_view source, const ShaderInfoDocument &document);
+[[nodiscard]] INFERNUX_SHADER_COMPILER_API std::string StripShaderInfoDeclaration(std::string_view source,
+                                                                                  const ShaderInfoDocument &document);
 
 /// Detect GLSL entry declarations without matching comments or string literals.
-[[nodiscard]] ShaderEntryPointSet DetectShaderEntryPoints(std::string_view source);
+[[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderEntryPointSet DetectShaderEntryPoints(std::string_view source);
 
 /// Rename the first matching GLSL function declaration while preserving all other source text.
-[[nodiscard]] std::string RewriteShaderEntryPoint(std::string_view source, std::string_view returnType,
-                                                  std::string_view entryPoint, std::string_view replacement);
+[[nodiscard]] INFERNUX_SHADER_COMPILER_API std::string RewriteShaderEntryPoint(std::string_view source,
+                                                                               std::string_view returnType,
+                                                                               std::string_view entryPoint,
+                                                                               std::string_view replacement);
 
 /// Find a user-authored layout(...) qualifier without matching comments or strings.
-[[nodiscard]] std::optional<ShaderSourceLocation> FindShaderLayoutDeclaration(std::string_view source);
+[[nodiscard]] INFERNUX_SHADER_COMPILER_API std::optional<ShaderSourceLocation>
+FindShaderLayoutDeclaration(std::string_view source);
 
 } // namespace infernux

@@ -155,7 +155,7 @@ State has a concrete priority. `Surface Transparent` is normalized first. The re
 
 `Stencil` currently has no Material Inspector control or per-material override bit. Its value comes from `ShaderInfo`, for example `Stencil "less_equal,1,replace,keep,keep"`; it applies the same compare/reference/operations to front and back faces with `0xFF` masks. Invalid or underspecified stencil strings are not backed by a dedicated authoring diagnostic, so keep this field in reviewed shader source and verify it in a pipeline with a stencil-capable depth target.
 
-`Stencil "equal,1,keep,keep,keep"` draws only where the stored stencil value is `1`; `not_equal` draws outside that mask. For a custom attachment, declare a distinct depth texture such as `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)` and bind it to the participating passes. The conventional root texture named `depth` uses the Camera attachment and its format; declaring a stencil format on that name does not add stencil to a Camera whose depth attachment has none.
+`Stencil "equal,1,keep,keep,keep"` draws only where the stored stencil value is `1`; `not_equal` draws outside that mask. For a custom attachment, declare a distinct depth texture such as `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)` and bind it to the participating passes. A depth format with `camera_target=True` binds the Camera depth attachment. The Camera target supplies its actual format and stencil support.
 
 ### Transparent sorting: a reproducible diagnosis
 
@@ -387,7 +387,7 @@ Alpha Clip 是更早执行的二值判断。`AlphaClip 0.5` 会把阈值写入�
 
 `Stencil` 目前没有 Material Inspector 控件，也没有逐 Material Override Bit。它来自 `ShaderInfo`，例如 `Stencil "less_equal,1,replace,keep,keep"`；正反面共用 Compare、Reference 和 Operation，Mask 固定为 `0xFF`。无效或字段不足的 Stencil 字符串缺少专用创作诊断，因此应把它留在经过审查的 Shader 源码中，并在使用 Stencil Depth Target 的管线里验收。
 
-`Stencil "equal,1,keep,keep,keep"` 只绘制 Stencil 存储值为 `1` 的区域；`not_equal` 则绘制遮罩外侧。自定义附件应使用独立的深度纹理名，例如 `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)`，并绑定到参与绘制的 Pass。约定的根纹理名 `depth` 使用 Camera 的附件及格式；仅在这个名字上声明 Stencil 格式，不会为本来不含 Stencil 的 Camera 深度附件添加 Stencil。
+`Stencil "equal,1,keep,keep,keep"` 只绘制 Stencil 存储值为 `1` 的区域；`not_equal` 则绘制遮罩外侧。自定义附件应使用独立的深度纹理名，例如 `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)`，并绑定到参与绘制的 Pass。深度格式配合 `camera_target=True` 会绑定 Camera 深度附件。实际格式及 Stencil 支持取自 Camera 的渲染目标。
 
 ### 透明排序：可复现排查
 

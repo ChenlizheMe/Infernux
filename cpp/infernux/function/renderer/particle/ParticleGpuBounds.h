@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuRuntime.h"
 
 #include <array>
@@ -16,23 +18,23 @@ struct GpuParticleBoundsProgram
     ShaderBytecode reset;
     ShaderBytecode reduce;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleBoundsProgramStorage
 {
     std::array<std::vector<uint32_t>, 3> shaders;
 
-    [[nodiscard]] bool Assign(const GpuParticleBoundsProgram &program);
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] GpuParticleBoundsProgram View() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleBoundsProgram &program);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleBoundsProgram View() const noexcept;
 };
 
 struct GpuParticleBoundsShaderSources
 {
-    [[nodiscard]] static std::string_view Prepare() noexcept;
-    [[nodiscard]] static std::string_view Reset() noexcept;
-    [[nodiscard]] static std::string_view Reduce() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Prepare() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Reset() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Reduce() noexcept;
 };
 
 struct GpuParticleBoundsDesc
@@ -71,17 +73,17 @@ class ParticleGpuBounds
     static constexpr uint32_t DispatchBufferBytes = 12;
 
     ParticleGpuBounds() = default;
-    ~ParticleGpuBounds();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuBounds();
 
     ParticleGpuBounds(const ParticleGpuBounds &) = delete;
     ParticleGpuBounds &operator=(const ParticleGpuBounds &) = delete;
     ParticleGpuBounds(ParticleGpuBounds &&) = delete;
     ParticleGpuBounds &operator=(ParticleGpuBounds &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleBoundsDesc &desc);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, const GpuParticleBoundsDesc &desc);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
         return m_capacity;
@@ -112,11 +114,12 @@ class ParticleGpuBounds
         return m_simulationControl;
     }
 
-    void RecordPrepare(const rhi::ComputeCommandEncoder &encoder, GpuParticleOffscreenPolicy policy,
-                       bool forceSimulation) const;
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder, GpuParticleBoundsMode mode,
-                     const std::array<float, 3> &manualLower, const std::array<float, 3> &manualUpper) const;
-    void RecordReduce(const rhi::ComputeCommandEncoder &encoder) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordPrepare(const rhi::ComputeCommandEncoder &encoder,
+                                                     GpuParticleOffscreenPolicy policy, bool forceSimulation) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordReset(const rhi::ComputeCommandEncoder &encoder,
+                                                   GpuParticleBoundsMode mode, const std::array<float, 3> &manualLower,
+                                                   const std::array<float, 3> &manualUpper) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordReduce(const rhi::ComputeCommandEncoder &encoder) const;
 
   private:
     void Bind(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,

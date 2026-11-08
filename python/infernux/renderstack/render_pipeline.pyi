@@ -50,7 +50,7 @@ class RenderPipeline:
 
             def define_topology(self, graph):
                 graph.create_texture("color", camera_target=True)
-                graph.create_texture("depth", format=Format.D32_SFLOAT)
+                graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
                 with graph.add_pass("OpaquePass") as p:
                     p.write_color("color")
                     p.write_depth("depth")

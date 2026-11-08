@@ -31,6 +31,7 @@ from __future__ import annotations
 import time as _time_mod
 import math as _math
 import sys as _sys
+from infernux.lib._Infernux import _FrameTimeSmoother
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,11 @@ class _TimeMeta(type):
     def delta_time(cls) -> float:
         """Scaled duration of the last frame (seconds)."""
         return cls._delta_time
+
+    @property
+    def smooth_delta_time(cls) -> float:
+        """Smoothed scaled game-frame duration, independent of render timings."""
+        return cls._smooth_delta_time
 
     # -- Unscaled timing ----------------------------------------------------
 
@@ -218,6 +224,7 @@ class Time(metaclass=_TimeMeta):
 
         Time.time                   # scaled elapsed play time
         Time.delta_time             # scaled frame duration
+        Time.smooth_delta_time      # smoothed scaled frame duration
         Time.unscaled_delta_time    # raw frame duration
         Time.fixed_delta_time       # physics step interval (default 0.02)
         Time.time_scale             # get / set  (0 = frozen, 1 = normal)
@@ -229,6 +236,8 @@ class Time(metaclass=_TimeMeta):
     # -- Internal state (written exclusively by the engine) -----------------
     _time: float = 0.0
     _delta_time: float = 0.0
+    _smooth_delta_time: float = 0.0
+    _frame_time_smoother = _FrameTimeSmoother()
     _unscaled_delta_time: float = 0.0
     _game_delta_time: float = 0.0          # game-only cost (seconds)
     _fixed_delta_time: float = 0.02        # 1/50 Hz — matches C++ default
@@ -248,6 +257,8 @@ class Time(metaclass=_TimeMeta):
         """Reset all timing counters.  Called when entering play mode."""
         cls._time = 0.0
         cls._delta_time = 0.0
+        cls._smooth_delta_time = 0.0
+        cls._frame_time_smoother.reset()
         cls._unscaled_delta_time = 0.0
         cls._game_delta_time = 0.0
         cls._time_scale = 1.0
@@ -270,6 +281,7 @@ class Time(metaclass=_TimeMeta):
             cls._reset_delta_on_next_tick = False
         cls._unscaled_delta_time = max(raw_delta_time, 0.0)
         cls._delta_time = min(cls._unscaled_delta_time * cls.time_scale, cls.maximum_delta_time)
+        cls._smooth_delta_time = cls._frame_time_smoother.advance(cls._delta_time)
         cls._time += cls._delta_time
         cls._unscaled_time += cls._unscaled_delta_time
         cls._frame_count += 1
@@ -278,6 +290,7 @@ class Time(metaclass=_TimeMeta):
     def _reset_frame_delta(cls) -> None:
         """Discard loading time before the first frame of a new scene."""
         cls._delta_time = 0.0
+        cls._smooth_delta_time = 0.0
         cls._unscaled_delta_time = 0.0
         cls._game_delta_time = 0.0
         cls._reset_delta_on_next_tick = True

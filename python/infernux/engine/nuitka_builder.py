@@ -3211,19 +3211,9 @@ print(json.dumps({{
         # The private GPU lowering vendor is staged by CMake, not part of the
         # checked-out Python package.  Include it in the source-less Player
         # runtime using the same bytecode policy as the engine modules.
-        try:
-            from infernux._compiler.taichi import _vendor_dir
+        from infernux._compiler.taichi import _vendor_dir
 
-            vendor_root = Path(_vendor_dir())
-        except (ImportError, OSError):
-            vendor_root = Path()
-        if not vendor_root.is_dir():
-            repository_root = Path(resolved_path(__file__)).parents[3]
-            staged = sorted(
-                repository_root.glob("out/build/*/gpu-jit-wheel/infernux/_compiler/taichi/_vendor/taichi")
-            )
-            if staged:
-                vendor_root = staged[-1]
+        vendor_root = _vendor_dir()
         if vendor_root.is_dir() and vendor_root != source_root:
             vendor_destination = destination_root / "_compiler" / "taichi" / "_vendor" / "taichi"
             for source_path in sorted(vendor_root.rglob("*")):

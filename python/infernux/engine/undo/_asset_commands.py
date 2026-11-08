@@ -519,16 +519,16 @@ class ProjectAssetDeleteCommand(UndoCommand):
         return tuple(roots)
 
     @staticmethod
-    def _delete_asset(path: str, asset_database: Any) -> bool:
+    def _delete_asset(path: str, asset_database: Any, *, write_scope=None) -> bool:
         from infernux.engine.ui import project_file_ops
 
-        return bool(project_file_ops.delete_item(path, asset_database))
+        return bool(project_file_ops.delete_item(path, asset_database, write_scope=write_scope))
 
     @staticmethod
-    def _import_asset(path: str, asset_database: Any) -> bool:
+    def _import_asset(path: str, asset_database: Any, *, write_scope=None) -> bool:
         from infernux.core.assets import AssetManager
 
-        return bool(AssetManager.import_asset(path, database=asset_database))
+        return bool(AssetManager.import_asset(path, database=asset_database, write_scope=write_scope))
 
     def _create_backup(self) -> None:
         if self._entries:
@@ -607,6 +607,7 @@ class ProjectAssetDeleteCommand(UndoCommand):
         entries: tuple[_AssetBackupEntry, ...] | list[_AssetBackupEntry],
         *,
         replace_existing: bool,
+        write_scope,
     ) -> None:
         if not replace_existing:
             occupied = [
@@ -642,7 +643,7 @@ class ProjectAssetDeleteCommand(UndoCommand):
 
             for entry in restored:
                 for asset_path in entry.import_paths:
-                    if not self._import_fn(asset_path, self._asset_database):
+                    if not self._import_fn(asset_path, self._asset_database, write_scope=write_scope):
                         raise RuntimeError(f"asset restore import failed: {asset_path}")
         except Exception:
             if not replace_existing:
@@ -651,7 +652,7 @@ class ProjectAssetDeleteCommand(UndoCommand):
                     self._remove_path(entry.original_meta_path)
             raise
 
-    def _delete_entries(self) -> None:
+    def _delete_entries(self, *, write_scope) -> None:
         for entry in self._entries:
             if not os.path.exists(entry.original_path):
                 raise RuntimeError(
@@ -662,7 +663,7 @@ class ProjectAssetDeleteCommand(UndoCommand):
         try:
             for entry in reversed(self._entries):
                 attempted.append(entry)
-                if not self._delete_fn(entry.original_path, self._asset_database):
+                if not self._delete_fn(entry.original_path, self._asset_database, write_scope=write_scope):
                     raise RuntimeError(f"asset delete failed: {entry.original_path}")
                 if os.path.exists(entry.original_path):
                     raise RuntimeError(
@@ -672,7 +673,7 @@ class ProjectAssetDeleteCommand(UndoCommand):
                     self._remove_path(entry.original_meta_path)
         except Exception as delete_error:
             try:
-                self._restore_entries(tuple(reversed(attempted)), replace_existing=True)
+                self._restore_entries(tuple(reversed(attempted)), replace_existing=True, write_scope=write_scope)
             except Exception as rollback_error:
                 raise RuntimeError(
                     f"asset delete failed and rollback also failed: {rollback_error}"
@@ -690,15 +691,23 @@ class ProjectAssetDeleteCommand(UndoCommand):
 
     def execute(self) -> None:
         self.preflight_execute()
-        self._create_backup()
-        self._delete_entries()
+        from infernux.engine.ui.project_file_ops import asset_mutation_scope
+
+        with asset_mutation_scope(self._paths, directories=self._paths,
+                                  asset_database=self._asset_database, delete=True) as write_scope:
+            self._create_backup()
+            self._delete_entries(write_scope=write_scope)
         if self._on_deleted is not None:
             self._on_deleted()
 
     def undo(self) -> None:
         if self._disposed or not self._entries:
             raise RuntimeError("asset delete backup is unavailable")
-        self._restore_entries(self._entries, replace_existing=False)
+        from infernux.engine.ui.project_file_ops import asset_mutation_scope
+
+        with asset_mutation_scope(self._paths, directories=self._paths,
+                                  asset_database=self._asset_database, delete=True) as write_scope:
+            self._restore_entries(self._entries, replace_existing=False, write_scope=write_scope)
         if self._on_restored is not None:
             self._on_restored()
 

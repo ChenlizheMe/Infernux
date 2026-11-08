@@ -109,8 +109,7 @@ bool AudioClip::LoadFromFile(const std::string &filePath, const InxResourceMeta 
         } else if (m_forceMono) {
             m_spec.channels = 1;
         }
-        m_filePath = filePath;
-        m_name = FromFsPath(ToFsPath(filePath).stem());
+        SetFilePath(filePath);
         m_loaded = true;
         return true;
     } catch (const std::exception &e) {
@@ -118,6 +117,12 @@ bool AudioClip::LoadFromFile(const std::string &filePath, const InxResourceMeta 
         Unload();
         return false;
     }
+}
+
+void AudioClip::SetFilePath(const std::string &filePath)
+{
+    m_filePath = filePath;
+    m_name = FromFsPath(ToFsPath(filePath).stem());
 }
 
 std::unique_ptr<AudioStreamBuffer> AudioClip::CreateStream(uint64_t firstFrame) const

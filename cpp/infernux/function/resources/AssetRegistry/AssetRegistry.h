@@ -1,15 +1,18 @@
 #pragma once
 
+#include <core/threading/FrameWorkOwner.h>
 #include <core/threading/JobSystem.h>
 #include <core/types/InxFwdType.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRef.h>
 #include <function/resources/AssetRegistry/IAssetLoader.h>
 
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <functional>
 #include <glm/vec3.hpp>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -27,7 +30,7 @@ class InxMaterial;
 class InxMesh;
 class InxTexture;
 class AssetRegistry;
-struct TextureCpuData;
+class TextureReadTask;
 struct ShaderAsset;
 enum class MeshGeometryView : uint8_t;
 
@@ -51,13 +54,17 @@ struct PublishedAssetVersion
     uint64_t runtimeVersion = 0;
 };
 
-class AssetLoadTicket final
+class AssetLoadSuperseded final : public std::logic_error
 {
   public:
-    void Wait() const
-    {
-        JobSystem::Get().WaitPassive(m_job);
-    }
+    using std::logic_error::logic_error;
+};
+
+class AssetLoadTicket final : public std::enable_shared_from_this<AssetLoadTicket>
+{
+  public:
+    /// Explicit cold/synchronous boundary; frame-driven clients only observe.
+    void Wait();
     [[nodiscard]] const std::string &GetGuid() const noexcept
     {
         return m_guid;
@@ -68,7 +75,7 @@ class AssetLoadTicket final
     }
     [[nodiscard]] bool IsComplete() const noexcept
     {
-        return !m_job.IsValid() || m_job.IsComplete();
+        return m_committed || m_rejected || (m_job.IsValid() && m_job.IsComplete() && (m_payload || m_failure));
     }
     [[nodiscard]] bool IsCommitted() const noexcept
     {
@@ -82,60 +89,27 @@ class AssetLoadTicket final
   private:
     friend class AssetRegistry;
     AssetRegistry *m_registry = nullptr;
+    std::weak_ptr<const AssetDependencyGraph> m_sourceGraph;
     std::string m_guid;
     std::string m_sourcePath;
     ResourceType m_resourceType = ResourceType::DefaultBinary;
     RuntimeAssetPayload m_payload;
+    IAssetLoader *m_loader = nullptr;
+    AssetDatabase *m_database = nullptr;
+    uint64_t m_token = 0;
+    bool m_repairNeeded = false;
+    bool m_repairPending = false;
+    std::shared_ptr<FrameCpuStorageClaim> m_storageClaim;
+    WorkerAssetLoadPlan m_workerPlan;
     JobHandle m_job;
     std::exception_ptr m_failure;
     std::thread::id m_ownerThread;
     std::thread::id m_producerThread;
+    uint64_t m_executionNanoseconds = 0;
     uint64_t m_expectedMutationGeneration = 0;
     uint64_t m_expectedContentGeneration = 0;
+    bool m_replaceMesh = false;
     bool m_committed = false;
-    bool m_rejected = false;
-};
-
-/// One-shot loader-to-RHI bridge for imported texture bytes. The payload is
-/// never published as an asset and is discarded as soon as the renderer has
-/// copied it into a native upload buffer.
-class TextureUploadStagingTicket final
-{
-  public:
-    void Wait() const
-    {
-        JobSystem::Get().WaitPassive(m_job);
-    }
-    [[nodiscard]] const std::string &GetGuid() const noexcept
-    {
-        return m_guid;
-    }
-    [[nodiscard]] uint64_t GetRuntimeVersion() const noexcept
-    {
-        return m_runtimeVersion;
-    }
-    [[nodiscard]] bool IsComplete() const noexcept
-    {
-        return !m_job.IsValid() || m_job.IsComplete();
-    }
-    [[nodiscard]] bool WasProducedOnWorker() const noexcept
-    {
-        return IsComplete() && m_producerThread != std::thread::id{} && m_producerThread != m_ownerThread;
-    }
-
-  private:
-    friend class AssetRegistry;
-    AssetRegistry *m_registry = nullptr;
-    std::string m_guid;
-    std::string m_sourcePath;
-    RuntimeAssetPayload m_stagingPayload;
-    JobHandle m_job;
-    std::exception_ptr m_failure;
-    std::thread::id m_ownerThread;
-    std::thread::id m_producerThread;
-    uint64_t m_expectedMutationGeneration = 0;
-    uint64_t m_runtimeVersion = 0;
-    bool m_consumed = false;
     bool m_rejected = false;
 };
 
@@ -212,8 +186,13 @@ class AssetRegistry
 
     // ── Hot-reload / invalidation ────────────────────────────────────────────
 
-    /// Reload an already-loaded asset in-place from disk.
+    /// Refresh an already-loaded asset. Imported meshes use the shared load source.
     bool ReloadAsset(const std::string &guid);
+    /// Durable import publication rejects pending old-source candidates and
+    /// evicts immutable source snapshots. True means mesh publication owns the notification.
+    bool NotifySourceImported(const std::string &guid, ResourceType type,
+                              const std::shared_ptr<AssetLoadTicket> &repairTicket = {});
+    [[nodiscard]] std::shared_ptr<AssetLoadTicket> GetPendingMeshReload(const std::string &guid) const;
 
     /// Publish an already compiled candidate without compiling it again.
     /// Keeps any resident ShaderAsset instance and advances its runtime version.
@@ -243,14 +222,34 @@ class AssetRegistry
     /// Fully remove the record (e.g. when the file is deleted).
     void RemoveAsset(const std::string &guid);
 
-    [[nodiscard]] std::shared_ptr<AssetLoadTicket> BeginLoadAsset(const std::string &guid, ResourceType type);
+    [[nodiscard]] std::shared_ptr<AssetLoadTicket> BeginLoadAsset(const std::string &guid, ResourceType type,
+                                                                  bool preferPublished = false);
+    /// The original frame owner admits prepared loader jobs on the original pool.
+    /// It must remain alive until DrainPendingLoads completes.
+    [[nodiscard]] FrameWorkSource GetAssetLoadWorkSource(FrameWorkOwner &owner);
+    /// Explicit cold admission for synchronous scene restoration. Normal frame
+    /// consumers enqueue with BeginLoadAsset and let the owner grant execution.
+    bool TrySubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket);
+    void WaitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket);
+    /// Pure owner-thread observation for private consumers that outlive initial
+    /// publication. Eviction/relocation alone preserves content; invalidation,
+    /// replacement and a different Registry world retire the captured inputs.
+    [[nodiscard]] bool IsAssetLoadContentCurrent(const std::shared_ptr<AssetLoadTicket> &ticket) const;
     /// Commit a completed worker load on the owner thread.  The optional
     /// stale-if-unloaded mode permits cache residency changes for previews,
     /// but never a content change, invalidation, deletion or relocation.
     bool TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded = false);
-    [[nodiscard]] std::shared_ptr<TextureUploadStagingTicket> BeginTextureUploadStaging(const std::string &guid);
-    [[nodiscard]] std::shared_ptr<const TextureCpuData>
-    TryConsumeTextureUploadStaging(const std::shared_ptr<TextureUploadStagingTicket> &ticket);
+    /// Capture an imported file request without starting IO. The frame source
+    /// admits its steps; the registry retains abandoned tasks until retirement.
+    [[nodiscard]] std::shared_ptr<TextureReadTask> BeginTextureRead(const std::string &guid);
+    void PollTextureReads();
+    [[nodiscard]] bool HasTextureReads() const noexcept
+    {
+        return !m_textureReads.empty();
+    }
+    [[nodiscard]] bool HasPendingTextureReads() const;
+    /// Live cursor storage plus allocations reserved by accepted IO steps.
+    [[nodiscard]] size_t GetTextureReadRetainedBytes() const;
     void DrainPendingLoads() noexcept;
 
     /// Update path-bearing payload state after a GUID-stable catalog move.
@@ -276,6 +275,8 @@ class AssetRegistry
     [[nodiscard]] bool IsLoaded(const std::string &guid) const;
     [[nodiscard]] ResourceType GetAssetType(const std::string &guid) const;
     [[nodiscard]] uint64_t GetAssetVersion(const std::string &guid) const;
+    /// Content invalidation is independent of CPU residency and publication.
+    [[nodiscard]] uint64_t GetAssetContentGeneration(const std::string &guid) const;
     /// Publish one immutable GPU geometry view for an exact asset generation.
     /// Hierarchical models require both merged and node-local views before CPU
     /// streams may be released.
@@ -291,10 +292,9 @@ class AssetRegistry
     [[nodiscard]] AssetResidencyRecord GetAssetResidency(const std::string &guid) const;
     [[nodiscard]] std::vector<AssetResidencyRecord> GetAllAssetResidency() const;
     [[nodiscard]] std::vector<PublishedAssetVersion> GetAllPublishedAssetVersions() const;
-    [[nodiscard]] size_t GetTotalCpuBytes() const noexcept
-    {
-        return m_totalCpuBytes;
-    }
+    /// Storage tracked by this registry, including private completed loads and
+    /// generations still held after their GUID leaves the cache.
+    [[nodiscard]] size_t GetTotalCpuBytes() const noexcept;
     [[nodiscard]] size_t GetCpuBudgetBytes() const noexcept
     {
         return m_cpuBudgetBytes;
@@ -320,11 +320,16 @@ class AssetRegistry
 
   private:
     AssetRegistry() = default;
+    friend class AssetDatabase;
     ~AssetRegistry() = default;
 
     /// Internal load helper — assumes GUID / path are valid.
     RuntimeAssetPayload LoadAssetInternal(const std::string &filePath, const std::string &guid, ResourceType type);
-    [[nodiscard]] size_t EstimatePayloadBytes(ResourceType type, const RuntimeAssetPayload &payload) const;
+    [[nodiscard]] size_t TrackPayloadStorage(ResourceType type, const RuntimeAssetPayload &payload);
+    [[nodiscard]] size_t TrackMeshStorage(std::weak_ptr<const void> owner, const InxMesh &mesh);
+    void TrackCpuStorage(std::weak_ptr<const void> owner, size_t bytes);
+    void CollectCpuStorage() const noexcept;
+    void MaybeCollectCpuStorage();
 
     struct AssetEntry
     {
@@ -336,7 +341,13 @@ class AssetRegistry
         uint32_t explicitPinCount = 0;
     };
     using AssetEntryMap = std::unordered_map<std::string, AssetEntry>;
+    [[nodiscard]] static std::array<std::weak_ptr<const void>, 4> CpuStorageOwners(const AssetEntry &entry);
+    [[nodiscard]] bool FitCpuStorage(uint64_t target, bool reclaim);
+    [[nodiscard]] size_t TrimCpuStorageTo(uint64_t target);
+    [[nodiscard]] static bool CanEvict(const AssetEntry &entry) noexcept;
+    void InsertEntry(const std::string &guid, RuntimeAssetPayload payload, ResourceType type);
     void RemoveEntry(AssetEntryMap::iterator entry);
+    void RefreshEntryBytes(AssetEntry &entry);
     [[nodiscard]] uint64_t NextRuntimeVersion(const std::string &guid);
 
     bool m_initialized = false;
@@ -354,12 +365,33 @@ class AssetRegistry
     std::unordered_map<std::string, MeshGpuViewResidency> m_meshGpuViewResidency;
     std::unordered_map<std::string, ResourceType> m_assetRuntimeTypes;
     std::vector<std::weak_ptr<AssetLoadTicket>> m_pendingLoads;
-    std::vector<std::weak_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
+    std::unordered_map<std::string, std::shared_ptr<AssetLoadTicket>> m_meshReloads;
+    // Keep accepted work alive through its receipt, even if every consumer drops
+    // the ticket. The worker never accesses the frame owner.
+    std::shared_ptr<AssetLoadTicket> m_activeLoad;
+    FrameWorkOwner *m_frameWork = nullptr;
+    std::shared_ptr<FrameCpuResidencySource> m_cpuResidency;
+    uint64_t m_loadFrame = 0, m_loadGrant = 0;
+    WorkerAssetLoadPlan::Read m_acceptedRead;
+    std::array<double, static_cast<size_t>(WorkerAssetLoadPlan::ReadKind::Count)> m_readRates{};
+    std::shared_ptr<AssetLoadTicket> BeginAssetLoad(const std::string &guid, ResourceType type, bool replaceMesh,
+                                                    bool preferPublished = false);
+    bool SubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool synchronous, bool &progressed);
+    bool AdvanceMeshArtifactRepair(const std::shared_ptr<AssetLoadTicket> &ticket, bool synchronous, bool &progressed);
+    void FinishMeshArtifactRepair(AssetLoadTicket &ticket, const AssetMutationResult &result);
+    bool CommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded,
+                         bool publishReplacement);
+    static void RejectSupersededLoad(AssetLoadTicket &ticket);
+    void ObserveAssetLoad();
+    uint64_t m_nextLoadToken = 1;
+    std::vector<std::shared_ptr<TextureReadTask>> m_textureReads;
     std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders;        // type → loader
     std::unordered_map<std::string, std::shared_ptr<InxMaterial>> m_builtinMaterials; // name → builtin mat
     mutable std::unordered_map<InxMaterial *, std::weak_ptr<InxMaterial>> m_runtimeMaterials;
     mutable uint64_t m_accessSerial = 0;
-    size_t m_totalCpuBytes = 0;
+    mutable std::map<std::weak_ptr<const void>, size_t, std::owner_less<>> m_cpuStorage;
+    mutable size_t m_cpuStorageBytes = 0;
+    mutable size_t m_cpuStorageChanges = 0;
     size_t m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     uint64_t m_cpuEvictionCount = 0;
     uint64_t m_runtimeMeshSerial = 0;
@@ -426,9 +458,14 @@ template <typename T> bool AssetRegistry::Resolve(AssetRef<T> &ref, ResourceType
 {
     if (!ref.HasGuid())
         return false;
+    const bool resident = IsLoaded(ref.GetGuid());
     const uint64_t loadedVersion = GetAssetVersion(ref.GetGuid());
-    if (ref.Get() && IsLoaded(ref.GetGuid()) && ref.GetCachedVersion() == loadedVersion)
+    if (ref.Get() && resident && ref.GetCachedVersion() == loadedVersion)
         return true;
+    if (!resident && type == ResourceType::Mesh && GetPendingMeshReload(ref.GetGuid())) {
+        ref.Invalidate();
+        return false;
+    }
     auto asset = LoadAsset<T>(ref.GetGuid(), type);
     if (asset) {
         ref.SetCached(std::move(asset), GetAssetVersion(ref.GetGuid()));

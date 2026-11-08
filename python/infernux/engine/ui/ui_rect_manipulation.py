@@ -237,9 +237,14 @@ def resolve_world_ui_frame(component):
     scale_v = max(math.sqrt(sum(float(world_v[i]) ** 2 for i in range(3))), 1.0e-6)
     axis_u = tuple(float(world_u[i]) / scale_u for i in range(3))
     axis_v = tuple(float(world_v[i]) / scale_v for i in range(3))
+    pivot = component.pivot
+    offset_u = (.5 - pivot.x) * width / pixels_per_unit
+    offset_v = (pivot.y - .5) * height / pixels_per_unit
+    center = tuple(float(center[i]) + float(world_u[i]) * offset_u + float(world_v[i]) * offset_v
+                   for i in range(3))
     return {
         "object_id": int(component.game_object.id),
-        "center": tuple(float(center[i]) for i in range(3)),
+        "center": center,
         "axis_u": axis_u,
         "axis_v": axis_v,
         "half_size": (

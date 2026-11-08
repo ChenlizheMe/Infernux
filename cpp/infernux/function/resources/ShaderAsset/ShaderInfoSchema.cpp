@@ -271,7 +271,7 @@ bool IsValueType(std::string_view value)
 bool IsResourceType(std::string_view value)
 {
     return value == "Texture2D" || value == "Texture3D" || value == "Texture2DUInt" || value == "Texture2DMS" ||
-           value == "Texture2DMSUInt" || value == "BufferUInt";
+           value == "Texture2DMSUInt" || value == "BufferUInt" || value == "BufferFloat";
 }
 
 bool IsInterpolation(std::string_view value)
@@ -460,8 +460,8 @@ class Parser final
             const Token begin = m_current;
             if (m_current.kind != TokenKind::Identifier || !IsResourceType(m_current.text)) {
                 Error(m_current,
-                      "Resources supports Texture2D, Texture3D, Texture2DUInt, Texture2DMS, Texture2DMSUInt and "
-                      "BufferUInt");
+                      "Resources supports Texture2D, Texture3D, Texture2DUInt, Texture2DMS, Texture2DMSUInt, "
+                      "BufferUInt and BufferFloat");
                 Advance();
                 SkipToDeclarationBoundary(IsResourceType);
                 continue;

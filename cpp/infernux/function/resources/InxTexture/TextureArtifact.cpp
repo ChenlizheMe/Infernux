@@ -1,27 +1,24 @@
 #include "TextureArtifact.h"
 
+#include <core/serialization/BinaryCodec.h>
+#include <platform/filesystem/FileFingerprint.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
 #include <cmath>
-#include <core/serialization/BinaryCodec.h>
-#include <cstring>
-#include <fstream>
-#include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace infernux
 {
 namespace
 {
-constexpr std::string_view Magic = "INXTEXTURE";
+constexpr std::string_view Magic = "INXTEXTUREX";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumDimension = 65'536;
 constexpr uint32_t MaximumMipLevels = 32;
 constexpr uint64_t MaximumPayloadBytes = 1ULL << 30;
 constexpr uint32_t MaximumHashBytes = 1024;
-
-using binary_codec::Fnv1a64;
 
 using binary_codec::AppendU32;
 
@@ -51,51 +48,7 @@ bool IsValidSemantic(TextureSemantic semantic)
 
 bool IsValidFormat(TextureFormat format)
 {
-    return format >= TextureFormat::Rgba8UNorm && format <= TextureFormat::Rgba16Float;
-}
-
-uint32_t ReadStreamU32(std::istream &stream)
-{
-    std::array<unsigned char, sizeof(uint32_t)> bytes{};
-    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!stream)
-        throw std::invalid_argument("texture artifact is truncated");
-    uint32_t value = 0;
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        value |= static_cast<uint32_t>(bytes[shift / 8]) << shift;
-    return value;
-}
-
-uint64_t ReadStreamU64(std::istream &stream)
-{
-    std::array<unsigned char, sizeof(uint64_t)> bytes{};
-    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!stream)
-        throw std::invalid_argument("texture artifact is truncated");
-    uint64_t value = 0;
-    for (unsigned shift = 0; shift < 64; shift += 8)
-        value |= static_cast<uint64_t>(bytes[shift / 8]) << shift;
-    return value;
-}
-
-float ReadStreamFloat(std::istream &stream)
-{
-    const uint32_t bits = ReadStreamU32(stream);
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
-std::string ReadStreamString(std::istream &stream)
-{
-    const uint32_t size = ReadStreamU32(stream);
-    if (size == 0 || size > MaximumHashBytes)
-        throw std::invalid_argument("texture artifact has an invalid source hash size");
-    std::string value(size, '\0');
-    stream.read(value.data(), static_cast<std::streamsize>(size));
-    if (!stream)
-        throw std::invalid_argument("texture artifact is truncated");
-    return value;
+    return GetTextureFormatInfo(format).pixelFormat != rhi::PixelFormat::Undefined;
 }
 
 struct MipLayout
@@ -107,19 +60,11 @@ struct MipLayout
 
 MipLayout ComputeMipLayout(uint32_t width, uint32_t height, uint32_t depth, TextureFormat format)
 {
-    const uint32_t bytesPerTexel = TextureFormatBytesPerTexel(format);
-    const uint32_t blockBytes = TextureFormatBlockBytes(format);
-    uint64_t rowPitch = 0;
-    uint64_t rows = 0;
-    if (bytesPerTexel != 0) {
-        rowPitch = static_cast<uint64_t>(width) * bytesPerTexel;
-        rows = height;
-    } else if (blockBytes != 0) {
-        rowPitch = static_cast<uint64_t>((std::max)(1U, (width + 3U) / 4U)) * blockBytes;
-        rows = (std::max)(1U, (height + 3U) / 4U);
-    } else {
+    const auto layout = GetTextureFormatLayout(format);
+    if (!layout.bytesPerBlock)
         throw std::invalid_argument("texture artifact has an unsupported concrete format");
-    }
+    const uint64_t rowPitch = layout.RowBytes(width);
+    const uint64_t rows = layout.RowCount(height);
     if (rows != 0 && rowPitch > MaximumPayloadBytes / rows)
         throw std::invalid_argument("texture artifact mip row layout exceeds the payload limit");
     const uint64_t slicePitch = rowPitch * rows;
@@ -172,54 +117,44 @@ void ValidateTexture(const TextureCpuData &texture)
     if (expectedOffset != texture.bytes.size())
         throw std::invalid_argument("texture artifact payload size does not match its mip chain");
 }
-} // namespace
+// A complete maximum-size header is small. Read it once, parse with the same
+// codec as memory artifacts, and retain the open FileInput for later blocks.
+constexpr size_t MaximumHeaderBytes = Magic.size() + 4 + 4 + MaximumHashBytes + 12 + 96 + 4 + MaximumMipLevels * 36 + 8;
 
-TextureArtifactDescription TextureArtifact::ReadDescription(const std::string &artifactPath,
-                                                            std::string_view expectedSourceContentHash)
+struct ArtifactLayout
 {
-    std::ifstream stream(ToFsPath(artifactPath), std::ios::binary | std::ios::ate);
-    if (!stream.is_open())
-        throw std::runtime_error("failed to open texture artifact");
-    const std::streamoff fileSize = stream.tellg();
-    if (fileSize <= 0)
-        throw std::invalid_argument("texture artifact is empty");
-    stream.seekg(0);
-
-    std::string magic(Magic.size(), '\0');
-    stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
-    if (!stream || magic != Magic)
-        throw std::invalid_argument("texture artifact has an invalid header");
-    if (ReadStreamU32(stream) != EndianMarker)
-        throw std::invalid_argument("texture artifact has an invalid endian marker");
-    if (ReadStreamString(stream) != expectedSourceContentHash)
-        throw std::invalid_argument("texture artifact does not match the imported source content");
-
     TextureArtifactDescription description;
-    description.dimension = static_cast<TextureDimension>(ReadStreamU32(stream));
-    description.semantic = static_cast<TextureSemantic>(ReadStreamU32(stream));
-    description.format = static_cast<TextureFormat>(ReadStreamU32(stream));
+    size_t payloadOffset;
+};
+
+ArtifactLayout ParseLayout(std::string_view prefix, uint64_t fileSize, std::string_view expectedSourceContentHash)
+{
+    Reader reader(prefix);
+    if (!reader.ReadPrefix(Magic))
+        throw std::invalid_argument("texture artifact has an invalid header");
+    if (reader.ReadU32() != EndianMarker)
+        throw std::invalid_argument("texture artifact has an invalid endian marker");
+    if (reader.ReadString() != expectedSourceContentHash)
+        throw std::invalid_argument("texture artifact does not match the imported source content");
+    TextureArtifactDescription description;
+    description.dimension = static_cast<TextureDimension>(reader.ReadU32());
+    description.semantic = static_cast<TextureSemantic>(reader.ReadU32());
+    description.format = static_cast<TextureFormat>(reader.ReadU32());
     if (!IsValidDimension(description.dimension) || !IsValidSemantic(description.semantic) ||
         !IsValidFormat(description.format))
         throw std::invalid_argument("texture artifact description has invalid type metadata");
     for (float &value : description.bakeBasis)
-        value = ReadStreamFloat(stream);
+        value = reader.ReadFloat();
     for (float &value : description.valueMin)
-        value = ReadStreamFloat(stream);
+        value = reader.ReadFloat();
     for (float &value : description.valueMax)
-        value = ReadStreamFloat(stream);
-    if (!std::all_of(description.bakeBasis.begin(), description.bakeBasis.end(),
-                     [](float value) { return std::isfinite(value); }) ||
-        !std::all_of(description.valueMin.begin(), description.valueMin.end(),
-                     [](float value) { return std::isfinite(value); }) ||
-        !std::all_of(description.valueMax.begin(), description.valueMax.end(),
-                     [](float value) { return std::isfinite(value); }))
-        throw std::invalid_argument("texture artifact metadata must contain finite values");
+        value = reader.ReadFloat();
     for (size_t channel = 0; channel < description.valueMin.size(); ++channel) {
         if (description.valueMin[channel] > description.valueMax[channel])
             throw std::invalid_argument("texture artifact value range is inverted");
     }
 
-    const uint32_t mipCount = ReadStreamU32(stream);
+    const uint32_t mipCount = reader.ReadU32();
     if (mipCount == 0 || mipCount > MaximumMipLevels)
         throw std::invalid_argument("texture artifact has an invalid mip count");
     description.mipLevels.reserve(mipCount);
@@ -229,13 +164,13 @@ TextureArtifactDescription TextureArtifact::ReadDescription(const std::string &a
     uint32_t previousDepth = 0;
     for (uint32_t index = 0; index < mipCount; ++index) {
         TextureMipLevel mip;
-        mip.width = ReadStreamU32(stream);
-        mip.height = ReadStreamU32(stream);
-        mip.depth = ReadStreamU32(stream);
+        mip.width = reader.ReadU32();
+        mip.height = reader.ReadU32();
+        mip.depth = reader.ReadU32();
         mip.byteOffset = offset;
-        mip.byteSize = ReadStreamU64(stream);
-        mip.rowPitch = ReadStreamU64(stream);
-        mip.slicePitch = ReadStreamU64(stream);
+        mip.byteSize = reader.ReadU64();
+        mip.rowPitch = reader.ReadU64();
+        mip.slicePitch = reader.ReadU64();
         if (mip.width == 0 || mip.height == 0 || mip.depth == 0 || mip.width > MaximumDimension ||
             mip.height > MaximumDimension || mip.depth > MaximumDimension ||
             (description.dimension == TextureDimension::Texture2D && mip.depth != 1))
@@ -255,14 +190,207 @@ TextureArtifactDescription TextureArtifact::ReadDescription(const std::string &a
         previousDepth = mip.depth;
         description.mipLevels.push_back(mip);
     }
-    description.payloadBytes = ReadStreamU64(stream);
+    description.payloadBytes = reader.ReadU64();
     if (description.payloadBytes != offset || description.payloadBytes > MaximumPayloadBytes)
         throw std::invalid_argument("texture artifact has an invalid payload size");
-    const std::streamoff payloadOffset = stream.tellg();
-    if (payloadOffset < 0 || static_cast<uint64_t>(payloadOffset) + description.payloadBytes + sizeof(uint64_t) !=
-                                 static_cast<uint64_t>(fileSize))
+    const size_t payloadOffset = reader.Cursor();
+    if (payloadOffset + description.payloadBytes + sizeof(uint64_t) != fileSize)
         throw std::invalid_argument("texture artifact file size does not match its description");
-    return description;
+    return {std::move(description), payloadOffset};
+}
+
+ArtifactLayout ReadLayout(FileInput &file, std::string_view sourceHash, detail::FileFingerprint *fingerprint = nullptr)
+{
+    const auto fileSize = file.Size();
+    std::string prefix(static_cast<size_t>((std::min)(fileSize, uint64_t(MaximumHeaderBytes))), '\0');
+    file.ReadAt(0, prefix.data(), prefix.size());
+    auto layout = ParseLayout(prefix, fileSize, sourceHash);
+    if (fingerprint)
+        fingerprint->Append(std::string_view(prefix).substr(0, layout.payloadOffset));
+    return layout;
+}
+
+void ReadPayload(FileInput &file, uint64_t offset, uint8_t *output, size_t bytes, detail::FileFingerprint &fingerprint)
+{
+    file.ReadAt(offset, output, bytes);
+    fingerprint.Append({reinterpret_cast<const char *>(output), bytes});
+}
+
+void VerifyFooter(std::string_view footer, uint64_t checksum)
+{
+    if (Reader(footer).ReadU64() != checksum)
+        throw std::invalid_argument("texture artifact checksum mismatch");
+}
+
+void VerifyFooter(FileInput &file, uint64_t offset, const detail::FileFingerprint &fingerprint)
+{
+    std::array<char, sizeof(uint64_t)> footer{};
+    file.ReadAt(offset, footer.data(), footer.size());
+    VerifyFooter({footer.data(), footer.size()}, fingerprint.Value());
+}
+
+std::shared_ptr<TextureCpuData> MakeCpuData(TextureArtifactDescription &&description)
+{
+    auto texture = std::make_shared<TextureCpuData>();
+    texture->dimension = description.dimension;
+    texture->semantic = description.semantic;
+    texture->format = description.format;
+    texture->mipLevels = std::move(description.mipLevels);
+    texture->bakeBasis = description.bakeBasis;
+    texture->valueMin = description.valueMin;
+    texture->valueMax = description.valueMax;
+    return texture;
+}
+
+} // namespace
+
+TextureArtifactDescription TextureArtifact::ReadDescription(const std::string &artifactPath,
+                                                            std::string_view expectedSourceContentHash)
+{
+    FileInput file(ToFsPath(artifactPath));
+    return ReadLayout(file, expectedSourceContentHash).description;
+}
+
+struct TextureReadCursor::Impl
+{
+    std::string path, sourceHash;
+    std::unique_ptr<FileInput> file;
+    TextureArtifactDescription description;
+    std::vector<uint8_t> output;
+    uint64_t payloadOffset = 0, readBytes = 0;
+    detail::FileFingerprint hash;
+    TextureReadState state = TextureReadState::Opening;
+};
+
+TextureReadCursor::TextureReadCursor(std::string artifactPath, std::string sourceContentHash)
+    : m_impl(std::make_unique<Impl>())
+{
+    m_impl->path = std::move(artifactPath);
+    m_impl->sourceHash = std::move(sourceContentHash);
+}
+TextureReadCursor::~TextureReadCursor() = default;
+TextureReadState TextureReadCursor::GetState() const noexcept
+{
+    return m_impl->state;
+}
+size_t TextureReadCursor::GetBufferedBytes() const noexcept
+{
+    return m_impl->output.size();
+}
+
+IoWork TextureReadCursor::DescribeWork(size_t maximum) const
+{
+    const auto &s = *m_impl;
+    switch (s.state) {
+    case TextureReadState::Opening:
+        return {"texture.open"};
+    case TextureReadState::Reading:
+        return IoByteWork("texture.read", s.description.payloadBytes - s.readBytes, maximum);
+    case TextureReadState::Closing:
+        return {"texture.close"};
+    default:
+        return {};
+    }
+}
+
+void TextureReadCursor::Advance(size_t maximum, size_t batchBytes)
+{
+    auto &s = *m_impl;
+    switch (s.state) {
+    case TextureReadState::Opening: {
+        auto file = std::make_unique<FileInput>(ToFsPath(s.path));
+        auto layout = ReadLayout(*file, s.sourceHash, &s.hash);
+        s.payloadOffset = layout.payloadOffset;
+        s.description = std::move(layout.description);
+        s.file = std::move(file);
+        s.state = TextureReadState::Reading;
+        return;
+    }
+    case TextureReadState::Reading: {
+        const auto offset = s.output.size();
+        const auto work = DescribeWork((std::min)(maximum, batchBytes - offset));
+        if (!work.bytes)
+            throw std::invalid_argument("texture read step requires a positive byte allowance");
+        if (batchBytes > s.output.capacity()) {
+            std::vector<uint8_t>().swap(s.output);
+            s.output.reserve(batchBytes);
+        }
+        s.output.resize(offset + work.bytes);
+        ReadPayload(*s.file, s.payloadOffset + s.readBytes, s.output.data() + offset, work.bytes, s.hash);
+        s.readBytes += work.bytes;
+        if (s.output.size() == batchBytes || s.readBytes == s.description.payloadBytes)
+            s.state = TextureReadState::Output;
+        return;
+    }
+    case TextureReadState::Closing: {
+        VerifyFooter(*s.file, s.payloadOffset + s.description.payloadBytes, s.hash);
+        s.file.reset();
+        std::vector<uint8_t>().swap(s.output);
+        s.state = TextureReadState::Complete;
+        return;
+    }
+    default:
+        throw std::logic_error("texture cursor has no IO step ready");
+    }
+}
+
+const TextureArtifactDescription &TextureReadCursor::GetDescription() const
+{
+    if (!m_impl->description.IsValid())
+        throw std::logic_error("texture description is not ready");
+    return m_impl->description;
+}
+const std::vector<uint8_t> &TextureReadCursor::GetOutput() const
+{
+    if (m_impl->state != TextureReadState::Output)
+        throw std::logic_error("texture output is not ready");
+    return m_impl->output;
+}
+void TextureReadCursor::ConsumeOutput()
+{
+    auto &s = *m_impl;
+    if (s.state != TextureReadState::Output)
+        throw std::logic_error("texture output is not ready");
+    s.output.clear();
+    s.state = s.readBytes == s.description.payloadBytes ? TextureReadState::Closing : TextureReadState::Reading;
+}
+void TextureReadCursor::Close()
+{
+    auto &s = *m_impl;
+    s.file.reset();
+    std::vector<uint8_t>().swap(s.output);
+    s.state = TextureReadState::Closed;
+}
+size_t TextureReadCursor::GetRetainedBytes() const noexcept
+{
+    const auto &s = *m_impl;
+    return sizeof(*this) + sizeof(Impl) + s.path.capacity() + s.sourceHash.capacity() +
+           s.description.mipLevels.capacity() * sizeof(TextureMipLevel) + s.output.capacity() +
+           (s.file ? sizeof(FileInput) : 0);
+}
+size_t TextureReadCursor::GetReservationBytes(size_t batchBytes) const
+{
+    const auto &s = *m_impl;
+    if (s.state == TextureReadState::Opening)
+        return GetRetainedBytes() + sizeof(FileInput) + MaximumHeaderBytes + MaximumHashBytes +
+               MaximumMipLevels * sizeof(TextureMipLevel);
+    if (s.state == TextureReadState::Reading)
+        return GetRetainedBytes() + (std::max)(s.output.capacity(), batchBytes) - s.output.capacity();
+    return GetRetainedBytes();
+}
+
+std::shared_ptr<const TextureCpuData> TextureArtifact::Read(const std::string &artifactPath,
+                                                            std::string_view expectedSourceContentHash)
+{
+    FileInput file(ToFsPath(artifactPath));
+    detail::FileFingerprint fingerprint;
+    auto layout = ReadLayout(file, expectedSourceContentHash, &fingerprint);
+    const auto bytes = static_cast<size_t>(layout.description.payloadBytes);
+    auto texture = MakeCpuData(std::move(layout.description));
+    texture->bytes.resize(bytes);
+    ReadPayload(file, layout.payloadOffset, texture->bytes.data(), bytes, fingerprint);
+    VerifyFooter(file, layout.payloadOffset + bytes, fingerprint);
+    return texture;
 }
 
 std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::string_view sourceContentHash)
@@ -290,8 +418,9 @@ std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::strin
         AppendU64(bytes, mip.slicePitch);
     }
     AppendU64(bytes, texture.bytes.size());
+    bytes.reserve(bytes.size() + texture.bytes.size() + sizeof(uint64_t));
     bytes.append(reinterpret_cast<const char *>(texture.bytes.data()), texture.bytes.size());
-    AppendU64(bytes, Fnv1a64(bytes));
+    AppendU64(bytes, detail::FileFingerprint::Of(bytes));
     return bytes;
 }
 
@@ -302,55 +431,12 @@ std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_v
         bytes.substr(0, Magic.size()) != Magic)
         throw std::invalid_argument("texture artifact has an invalid header");
     const size_t checksumOffset = bytes.size() - sizeof(uint64_t);
-    Reader checksumReader(bytes.substr(checksumOffset));
-    if (checksumReader.ReadU64() != Fnv1a64(bytes.substr(0, checksumOffset)))
-        throw std::invalid_argument("texture artifact checksum mismatch");
+    VerifyFooter(bytes.substr(checksumOffset), detail::FileFingerprint::Of(bytes.substr(0, checksumOffset)));
 
-    Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
-    if (reader.ReadU32() != EndianMarker)
-        throw std::invalid_argument("texture artifact has an invalid endian marker");
-    if (reader.ReadString() != expectedSourceContentHash)
-        throw std::invalid_argument("texture artifact does not match the imported source content");
-
-    auto texture = std::make_shared<TextureCpuData>();
-    texture->dimension = static_cast<TextureDimension>(reader.ReadU32());
-    texture->semantic = static_cast<TextureSemantic>(reader.ReadU32());
-    texture->format = static_cast<TextureFormat>(reader.ReadU32());
-    for (float &value : texture->bakeBasis)
-        value = reader.ReadFloat();
-    for (float &value : texture->valueMin)
-        value = reader.ReadFloat();
-    for (float &value : texture->valueMax)
-        value = reader.ReadFloat();
-    if (!IsValidFormat(texture->format))
-        throw std::invalid_argument("texture artifact has an unsupported concrete format");
-    const uint32_t mipCount = reader.ReadU32();
-    if (mipCount == 0 || mipCount > MaximumMipLevels)
-        throw std::invalid_argument("texture artifact has an invalid mip count");
-    texture->mipLevels.reserve(mipCount);
-    uint64_t offset = 0;
-    for (uint32_t index = 0; index < mipCount; ++index) {
-        TextureMipLevel mip;
-        mip.width = reader.ReadU32();
-        mip.height = reader.ReadU32();
-        mip.depth = reader.ReadU32();
-        mip.byteOffset = offset;
-        mip.byteSize = reader.ReadU64();
-        mip.rowPitch = reader.ReadU64();
-        mip.slicePitch = reader.ReadU64();
-        if (mip.byteSize > MaximumPayloadBytes - offset)
-            throw std::invalid_argument("texture artifact mip payload exceeds the format limit");
-        offset += mip.byteSize;
-        texture->mipLevels.push_back(mip);
-    }
-    const uint64_t payloadSize = reader.ReadU64();
-    if (payloadSize != offset || payloadSize > MaximumPayloadBytes)
-        throw std::invalid_argument("texture artifact has an invalid payload size");
-    const auto payload = reader.ReadBytes(payloadSize);
+    auto layout = ParseLayout(bytes, bytes.size(), expectedSourceContentHash);
+    const auto payload = bytes.substr(layout.payloadOffset, static_cast<size_t>(layout.description.payloadBytes));
+    auto texture = MakeCpuData(std::move(layout.description));
     texture->bytes.assign(payload.begin(), payload.end());
-    if (!reader.AtEnd())
-        throw std::invalid_argument("texture artifact contains trailing data");
-    ValidateTexture(*texture);
     return texture;
 }
 

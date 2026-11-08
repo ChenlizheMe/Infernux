@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/types/PixelFormat.h>
+
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -102,89 +104,62 @@ struct TextureArtifactDescription
     }
 };
 
+struct TextureFormatInfo
+{
+    rhi::PixelFormat pixelFormat;
+    const char *name;
+};
+
+// Indexed by the format codes stored in .inxtex.
+inline constexpr std::array<TextureFormatInfo, 16> kTextureFormats{{
+    {rhi::PixelFormat::Undefined, "unknown"},
+    {rhi::PixelFormat::RGBA8UNorm, "rgba8_unorm"},
+    {rhi::PixelFormat::RGBA8Srgb, "rgba8_srgb"},
+    {rhi::PixelFormat::RGBA32SFloat, "rgba32_float"},
+    {rhi::PixelFormat::BC1RgbaUNorm, "bc1_rgba_unorm"},
+    {rhi::PixelFormat::BC1RgbaSrgb, "bc1_rgba_srgb"},
+    {rhi::PixelFormat::BC3UNorm, "bc3_unorm"},
+    {rhi::PixelFormat::BC3Srgb, "bc3_srgb"},
+    {rhi::PixelFormat::BC4UNorm, "bc4_unorm"},
+    {rhi::PixelFormat::BC5UNorm, "bc5_unorm"},
+    {rhi::PixelFormat::BC6HUFloat, "bc6h_ufloat"},
+    {rhi::PixelFormat::BC7UNorm, "bc7_unorm"},
+    {rhi::PixelFormat::BC7Srgb, "bc7_srgb"},
+    {rhi::PixelFormat::RGBA4UNormPack16, "rgba4_unorm_pack16"},
+    {rhi::PixelFormat::RGBA16UNorm, "rgba16_unorm"},
+    {rhi::PixelFormat::RGBA16SFloat, "rgba16_float"},
+}};
+
+[[nodiscard]] constexpr const TextureFormatInfo &GetTextureFormatInfo(TextureFormat format) noexcept
+{
+    const auto code = static_cast<uint32_t>(format);
+    return kTextureFormats[code < kTextureFormats.size() ? code : 0];
+}
+
+[[nodiscard]] constexpr rhi::PixelFormatLayout GetTextureFormatLayout(TextureFormat format) noexcept
+{
+    return rhi::GetPixelFormatLayout(GetTextureFormatInfo(format).pixelFormat);
+}
+
 [[nodiscard]] constexpr bool TextureFormatIsSrgb(TextureFormat format) noexcept
 {
-    return format == TextureFormat::Rgba8Srgb || format == TextureFormat::BC1RgbaSrgb ||
-           format == TextureFormat::BC3Srgb || format == TextureFormat::BC7Srgb;
+    return rhi::IsSrgbFormat(GetTextureFormatInfo(format).pixelFormat);
 }
 
 [[nodiscard]] constexpr bool TextureFormatIsBlockCompressed(TextureFormat format) noexcept
 {
-    return format >= TextureFormat::BC1RgbaUNorm && format <= TextureFormat::BC7Srgb;
-}
-
-[[nodiscard]] constexpr uint32_t TextureFormatBlockBytes(TextureFormat format) noexcept
-{
-    switch (format) {
-    case TextureFormat::BC1RgbaUNorm:
-    case TextureFormat::BC1RgbaSrgb:
-    case TextureFormat::BC4UNorm:
-        return 8;
-    case TextureFormat::BC3UNorm:
-    case TextureFormat::BC3Srgb:
-    case TextureFormat::BC5UNorm:
-    case TextureFormat::BC6HUFloat:
-    case TextureFormat::BC7UNorm:
-    case TextureFormat::BC7Srgb:
-        return 16;
-    default:
-        return 0;
-    }
+    return rhi::IsBlockCompressedFormat(GetTextureFormatInfo(format).pixelFormat);
 }
 
 [[nodiscard]] constexpr uint32_t TextureFormatBytesPerTexel(TextureFormat format) noexcept
 {
-    switch (format) {
-    case TextureFormat::Rgba8UNorm:
-    case TextureFormat::Rgba8Srgb:
-        return 4;
-    case TextureFormat::Rgba32Float:
-        return 16;
-    case TextureFormat::Rgba4UNormPack16:
-        return 2;
-    case TextureFormat::Rgba16UNorm:
-    case TextureFormat::Rgba16Float:
-        return 8;
-    default:
-        return 0;
-    }
+    const auto layout = GetTextureFormatLayout(format);
+    return layout.blockWidth == 1 ? layout.bytesPerBlock : 0;
 }
 
 [[nodiscard]] constexpr const char *TextureFormatName(TextureFormat format) noexcept
 {
-    switch (format) {
-    case TextureFormat::Rgba8UNorm:
-        return "rgba8_unorm";
-    case TextureFormat::Rgba8Srgb:
-        return "rgba8_srgb";
-    case TextureFormat::Rgba32Float:
-        return "rgba32_float";
-    case TextureFormat::BC1RgbaUNorm:
-        return "bc1_rgba_unorm";
-    case TextureFormat::BC1RgbaSrgb:
-        return "bc1_rgba_srgb";
-    case TextureFormat::BC3UNorm:
-        return "bc3_unorm";
-    case TextureFormat::BC3Srgb:
-        return "bc3_srgb";
-    case TextureFormat::BC4UNorm:
-        return "bc4_unorm";
-    case TextureFormat::BC5UNorm:
-        return "bc5_unorm";
-    case TextureFormat::BC6HUFloat:
-        return "bc6h_ufloat";
-    case TextureFormat::BC7UNorm:
-        return "bc7_unorm";
-    case TextureFormat::BC7Srgb:
-        return "bc7_srgb";
-    case TextureFormat::Rgba4UNormPack16:
-        return "rgba4_unorm_pack16";
-    case TextureFormat::Rgba16UNorm:
-        return "rgba16_unorm";
-    case TextureFormat::Rgba16Float:
-        return "rgba16_float";
-    }
-    return "unknown";
+    return GetTextureFormatInfo(format).name;
 }
 
 /**

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioRuntimeApi.h"
 #include "AudioStreamDecoder.h"
 #include <SDL3/SDL_mutex.h>
 #include <array>
@@ -14,12 +15,13 @@ class AudioStreamBuffer
 {
   public:
     static constexpr size_t PageFrames = 8192, PageCount = 4;
-    AudioStreamBuffer(std::unique_ptr<AudioStreamDecoder> decoder, bool mono, uint64_t firstFrame);
-    ~AudioStreamBuffer();
+    INFERNUX_AUDIO_RUNTIME_API AudioStreamBuffer(std::unique_ptr<AudioStreamDecoder> decoder, bool mono,
+                                                 uint64_t firstFrame);
+    INFERNUX_AUDIO_RUNTIME_API ~AudioStreamBuffer();
     // Request once per mixing block; interpolation reads must not move the
     // read-ahead cursor backwards when sampling across a page boundary.
-    void Request(uint64_t frame);
-    bool ReadFrame(uint64_t frame, float &left, float &right);
+    INFERNUX_AUDIO_RUNTIME_API void Request(uint64_t frame);
+    INFERNUX_AUDIO_RUNTIME_API bool ReadFrame(uint64_t frame, float &left, float &right);
     bool Failed() const
     {
         return m_failed.load(std::memory_order_acquire);

@@ -104,6 +104,16 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
     # ---- Class-level serialized field metadata ----
     _serialized_fields_: ClassVar[Dict[str, Any]] = {}
 
+    def get_pass_parameters(self) -> tuple[Mapping[str, float], ...] | None:
+        """Optionally supply push constants in the order of this effect's passes.
+
+        Reuse these mappings in ``setup_passes`` and include an empty mapping
+        for each pass without constants. Declare any fields that affect pass
+        layout or resource bindings as ``topology_parameters`` on the feature.
+        Returning ``None`` uses graph replay to resolve live parameter edits.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Instance init
     # ------------------------------------------------------------------

@@ -12,6 +12,8 @@
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
 #include <function/resources/RenderTexture/RenderTextureArtifact.h>
+#include <function/scene/SerializedResourceReferences.h>
+#include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -310,10 +312,7 @@ std::string ModelNodeTopologyKey(const InxMesh &mesh, size_t nodeIndex)
 
 ImportArtifact PrefabImporter::Import(const ImportRequest &request) const
 {
-    std::ifstream stream(ToFsPath(request.sourcePath));
-    if (!stream)
-        throw std::runtime_error("Cannot open Prefab source: " + request.sourcePath);
-    const auto document = nlohmann::json::parse(stream);
+    const auto document = ReadAssetDocument(request.sourcePath);
     if (!document.is_object() || !document.contains("root_object") || !document["root_object"].is_object())
         throw std::runtime_error("Prefab source requires a root_object: " + request.sourcePath);
     ImportArtifact artifact(request.metadata);
@@ -323,8 +322,14 @@ ImportArtifact PrefabImporter::Import(const ImportRequest &request) const
         if (!variant->is_object() || !variant->contains("guid") || !(*variant)["guid"].is_string() ||
             (*variant)["guid"].get<std::string>().empty())
             throw std::runtime_error("Prefab Variant requires a base GUID: " + request.sourcePath);
-        artifact.dependencies.push_back((*variant)["guid"].get<std::string>());
     }
+    std::unordered_set<std::string> dependencies;
+    VisitPrefabResourceReferences(document, [&](const auto &guid, ResourceType, const auto &) {
+        if (!guid.empty())
+            dependencies.insert(guid);
+    });
+    artifact.dependencies.assign(dependencies.begin(), dependencies.end());
+    std::sort(artifact.dependencies.begin(), artifact.dependencies.end());
     return artifact;
 }
 
@@ -788,6 +793,11 @@ std::vector<std::string> DataAssetImporter::ScanDependencies(const ImportRequest
 ImportArtifact ModelImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
+    const auto copiedDefinition = request.skeletonDefinition ? request.skeletonDefinition() : nullptr;
+    if (request.skeletonDefinition &&
+        (!copiedDefinition || copiedDefinition->skeletonDefinitionGuid !=
+                                  request.metadata.GetDataAs<std::string>("skeleton_definition_guid")))
+        throw std::invalid_argument("copied skeleton definition artifact does not match its GUID owner");
     std::string sourcePath = request.sourcePath;
     std::string extension = FromFsPath(ToFsPath(sourcePath).extension());
     std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -796,15 +806,6 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     if (extension == ".blend") {
         blender = std::make_unique<BlenderSource>(request);
         sourcePath = blender->Convert(request);
-    }
-    std::shared_ptr<InxSkinnedMesh> copiedDefinition;
-    if (request.skeletonDefinition) {
-        const auto &snapshot = *request.skeletonDefinition;
-        if (snapshot.ownerGuid.empty() || snapshot.sourceContentHash.empty() || snapshot.artifactBytes.empty())
-            throw std::invalid_argument("copied skeleton definition snapshot is incomplete");
-        copiedDefinition = SkinnedMeshArtifact::Deserialize(snapshot.artifactBytes, snapshot.sourceContentHash);
-        if (!copiedDefinition || copiedDefinition->skeletonDefinitionGuid != snapshot.ownerGuid)
-            throw std::invalid_argument("copied skeleton definition artifact does not match its GUID owner");
     }
     auto imported =
         MeshLoader::ImportSourceDetailed(sourcePath, request.guid, artifact.metadata, copiedDefinition.get());
@@ -1160,6 +1161,8 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
         ImportArtifact::RuntimeArtifactKind::SkinnedMesh, ResourceType::Mesh,
         imported.skinnedMesh ? SkinnedMeshArtifact::Serialize(*imported.skinnedMesh, sourceHash)
                              : SkinnedMeshArtifact::SerializeEmpty(sourceHash)});
+    if (request.retainSkeletonDefinition)
+        artifact.skeletonDefinition = std::move(imported.skinnedMesh);
 
     // INXLOG_INFO("ModelImporter: imported '", FromFsPath(ToFsPath(request.sourcePath).filename()), "' — ",
     //             imported.meshCount, " mesh(es), ", imported.vertexCount, " verts, ", imported.indexCount, " indices,

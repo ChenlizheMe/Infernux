@@ -37,6 +37,7 @@ from infernux.core.shader import Shader
 from infernux.core.mesh import Mesh
 from infernux.core.audio_clip import AudioClip
 from infernux.core.physic_material import PhysicMaterial
+from infernux.core.document_store import PathWriteScope
 from infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, SHADER_DEPENDENCY_EXTENSIONS,
     SHADER_SOURCE_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
@@ -88,10 +89,8 @@ class _PendingDocumentWrite:
     edit_revision: int
     requested_write_revision: int
     commit_token: str
-    snapshot: str
     content_token: str
     imported_disk_revision: int = 0
-    expected_file_state: Any = None
     callback: Optional[Callable[[str], None]] = None
 
 
@@ -166,6 +165,18 @@ class AssetFile:
         return self.read_bytes().decode(encoding)
 
 
+class _AssetReferenceRevision:
+    """The cache generation shared by live references to one asset GUID."""
+
+    __slots__ = ("current", "__weakref__")
+
+    def __init__(self):
+        self.current = True
+
+    def __deepcopy__(self, memo):
+        return self
+
+
 class AssetManager:
     """Python-side asset loading & caching manager (singleton pattern).
 
@@ -175,6 +186,7 @@ class AssetManager:
 
     # Weak-ref cache: guid → weakref to loaded Python wrapper
     _cache: Dict[str, weakref.ref] = {}
+    _reference_revisions = weakref.WeakValueDictionary()
 
     # DataAsset values resolved by gameplay live in a separate strong cache.
     # The cache exists only between the Play enter/exit boundaries, so runtime
@@ -233,7 +245,7 @@ class AssetManager:
         tuple[str, str, str],
         tuple[int, int, int] | None,
     ] = {}
-    _pending_model_previous_scales: Dict[str, float] = {}
+    _pending_model_instance_sync: Dict[str, tuple[int, float | None]] = {}
     # A dependency error may outlive its file. Accepted compiler receipts
     # resolve it when all of its rejected consumers have been repaired.
     _shader_diagnostic_roots: Dict[str, tuple[str, frozenset[str]]] = {}
@@ -273,9 +285,8 @@ class AssetManager:
         """Drop every project/native reference before its Engine is destroyed."""
         if engine is not None and cls._engine is not engine:
             return
-        cls._cache.clear()
+        cls.flush()
         cls._play_data_asset_cache = None
-        cls._texture_cache.clear()
         with cls._pending_gpu_texture_reloads_lock:
             cls._pending_gpu_texture_reloads.clear()
         cls._scheduled_saves.clear()
@@ -288,8 +299,9 @@ class AssetManager:
         cls._self_write_commits.clear()
         cls._meta_write_suppression.clear()
         cls._watcher_echo_suppression.clear()
-        cls._pending_model_previous_scales.clear()
+        cls._pending_model_instance_sync.clear()
         cls._shader_diagnostic_roots.clear()
+        Shader._clear_runtime_publications()
         cls._asset_database = None
         cls._registry = None
         cls._engine = None
@@ -571,6 +583,14 @@ class AssetManager:
         return str(guid) if guid else ""
 
     @classmethod
+    def _reference_revision(cls, guid: str) -> _AssetReferenceRevision:
+        revision = cls._reference_revisions.get(guid)
+        if revision is None:
+            revision = _AssetReferenceRevision()
+            cls._reference_revisions[guid] = revision
+        return revision
+
+    @classmethod
     def invalidate(cls, guid: str) -> None:
         """Invalidate a cached asset (e.g. on file change).
 
@@ -579,6 +599,9 @@ class AssetManager:
         """
         cls._cache.pop(guid, None)
         cls._texture_cache.pop(guid, None)
+        revision = cls._reference_revisions.pop(guid, None)
+        if revision is not None:
+            revision.current = False
 
     @classmethod
     def invalidate_path(cls, path: str) -> None:
@@ -592,6 +615,9 @@ class AssetManager:
         """Clear all cached assets."""
         cls._cache.clear()
         cls._texture_cache.clear()
+        for revision in cls._reference_revisions.values():
+            revision.current = False
+        cls._reference_revisions.clear()
         if cls._play_data_asset_cache is not None:
             cls._play_data_asset_cache.clear()
 
@@ -679,49 +705,36 @@ class AssetManager:
     def begin_model_reimport(cls, path: str, settings_obj):
         """Submit an immutable model settings snapshot; return its owning database."""
         from infernux.core.asset_types import MeshImportSettings, TextureImportSettings
+        from infernux.engine.interaction import action_origin_scope, current_action_origin
 
         database = cls._mutation_database()
         settings_type = TextureImportSettings if "::subtex:" in path else MeshImportSettings
         snapshot = settings_type.from_dict(settings_obj.to_dict()).to_dict()
-        if settings_type is MeshImportSettings:
-            previous_scale = cls._model_effective_scale(database, path)
-            if previous_scale is not None:
-                cls._pending_model_previous_scales[path_key(path)] = previous_scale
-        database.begin_model_reimport(path, snapshot)
+        origin = current_action_origin()
+
+        def on_published(result, old_version, old_scale):
+            with action_origin_scope(origin):
+                cls._suppress_meta_watcher(result.path)
+                cls._publish_reimport_result(
+                    result.path, result, database=cls._mutation_database(), suppress_watcher_echo=False,
+                    model_baseline=(old_version, old_scale), source_unchanged=True,
+                )
+
+        database.begin_model_reimport(path, snapshot, on_published=on_published)
         return database
 
     @classmethod
     def poll_model_reimport(cls, database):
-        """Publish a completed model Apply on the editor owner thread, once."""
-        result = database.try_commit_model_reimport()
-        if result is None:
-            return result
-        previous_scale = cls._pending_model_previous_scales.pop(path_key(result.path), None)
-        if not result:
-            return result
-        cls._suppress_meta_watcher(result.path)
-        return cls._publish_reimport_result(
-            result.path, result, database=database, previous_model_scale=previous_scale
-        )
+        """Poll the owner-thread result of a model Apply."""
+        return database.try_commit_model_reimport()
 
-    @staticmethod
-    def _model_effective_scale(database, path: str) -> float | None:
-        guid = database.get_guid_from_path(path)
-        metadata = database.get_meta_by_guid(guid) if guid else None
-        if metadata is None:
-            return None
-        try:
-            if metadata.has_key("effective_scale"):
-                value = float(metadata.get_float("effective_scale"))
-            elif metadata.has_key("scale_factor"):
-                value = float(metadata.get_float("scale_factor"))
-                if metadata.has_key("source_unit_scale"):
-                    value *= float(metadata.get_float("source_unit_scale"))
-            else:
-                return None
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            return None
-        return value if value > 0.0 else None
+    @classmethod
+    def _resident_model_baseline(cls, guid: str) -> tuple[int, float | None]:
+        if not guid:
+            return (0, None)
+        registry = cls._get_registry()
+        mesh = registry.get_mesh(guid)
+        return (registry.get_asset_version(guid), float(mesh.imported_scale)) if mesh is not None else (0, None)
 
     @classmethod
     def _mutation_database(cls, database=None):
@@ -804,13 +817,13 @@ class AssetManager:
             )
 
     @classmethod
-    def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
+    def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True, write_scope=None):
         """Import one new asset and publish its editor-visible creation."""
         asset_database = cls._mutation_database(database)
         # Meta sidecars are written through DocumentStore atomic replace, which
         # briefly deletes the previous .meta and must not trigger rebuild work.
         cls._suppress_meta_watcher(path)
-        result = asset_database.import_asset(path)
+        result = asset_database.import_asset(path, write_scope=write_scope or PathWriteScope())
         if not result:
             if not result.database_committed:
                 cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
@@ -836,6 +849,7 @@ class AssetManager:
             path,
             result.guid,
             database=asset_database,
+            write_scope=write_scope,
         )
         if particle_error:
             from infernux.lib import AssetMutationErrorCode
@@ -867,14 +881,14 @@ class AssetManager:
             )
 
         ext = os.path.splitext(path)[1].lower()
-        from infernux.core.asset_types import MESH_EXTENSIONS
-        previous_model_scale = (
-            cls._model_effective_scale(asset_database, path)
-            if ext in MESH_EXTENSIONS else None
+        from infernux.lib import ResourceType
+        metadata = asset_database.get_meta_by_guid(guid)
+        model_baseline = (
+            cls._resident_model_baseline(guid)
+            if metadata is not None and metadata.get_resource_type() == ResourceType.Mesh else (0, None)
         )
         previous_shader_id = ""
         if ext in SHADER_EXTENSIONS:
-            metadata = asset_database.get_meta_by_guid(guid)
             if metadata is not None and metadata.has_key("shader_id"):
                 previous_shader_id = metadata.get_string("shader_id")
         native = cls._native_engine()
@@ -898,15 +912,18 @@ class AssetManager:
         return cls._publish_reimport_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
             native=native, has_shader_runtime=has_shader_runtime, previous_shader_id=previous_shader_id,
-            previous_model_scale=previous_model_scale,
+            model_baseline=model_baseline,
         )
 
     @classmethod
     def _publish_reimport_result(cls, path, result, *, database, suppress_watcher_echo=True,
                                  native=None, has_shader_runtime=False, previous_shader_id="",
-                                 previous_model_scale=None):
+                                 model_baseline=(0, None), source_unchanged=False):
+        from infernux.lib import ResourceType
+
         guid = result.guid
         ext = os.path.splitext(path)[1].lower()
+        is_mesh = result.resource_type == ResourceType.Mesh
         is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
         if is_ordinary_script:
             # Ordinary scripts have their own validated collector and atomic
@@ -959,7 +976,7 @@ class AssetManager:
             # but must never execute a script or reload the registry before
             # the collector has produced a validated revision.
             pass
-        elif (
+        elif not is_mesh and (
             ext not in IMAGE_EXTENSIONS or ext in _RUNTIME_VOLUME_TEXTURE_EXTENSIONS
         ) and not cls._is_compiled_authoring_source(path):
             # Textures have one authoritative runtime publication path below:
@@ -974,16 +991,30 @@ class AssetManager:
                 result.error = "loaded asset registry rejected reload"
                 return result
 
+        if ext == ".prefab" and suppress_watcher_echo:
+            from infernux.engine.prefab_manager import _published_prefab_sources_for
+            from infernux.engine.scene_manager import SceneFileManager
+
+            if _published_prefab_sources_for(database) is not None:
+                try:
+                    SceneFileManager.instance().sync_prefab_dependents(guid)
+                except Exception as exc:
+                    from infernux.lib import AssetMutationErrorCode
+
+                    result.succeeded = False
+                    result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+                    result.error = str(exc)
+                    return result
+
         cls._invalidate_shader_authoring_cache(path)
         if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
             cls.invalidate(guid)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
             cls._schedule_gpu_texture_reload(path)
-        from infernux.core.asset_types import MESH_EXTENSIONS
-        if ext in MESH_EXTENSIONS:
-            cls._reload_mesh_asset(path, previous_effective_scale=previous_model_scale)
-        cls.note_imported_disk_change(path)
+        if is_mesh:
+            cls._schedule_model_instance_sync(guid, model_baseline)
+        cls.note_imported_disk_change(path, source_unchanged=source_unchanged)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("modified", path)
         cls._publish_asset_content_change(path, "modified", guid=guid)
@@ -1009,7 +1040,8 @@ class AssetManager:
     @classmethod
     def _publish_shader_compile_result(cls, path: str, error: str, native) -> None:
         """Retire source diagnostics only after their consumers accept a candidate."""
-        roots = frozenset(path_key(source) for source in native._shader_reload_sources)
+        sources = tuple(native._shader_reload_sources)
+        roots = frozenset(path_key(source) for source in sources)
         key = path_key(path)
         cls._publish_compile_diagnostic(path, error)
         cls._shader_diagnostic_roots.pop(key, None)
@@ -1017,6 +1049,7 @@ class AssetManager:
             if roots:
                 cls._shader_diagnostic_roots[key] = (path, roots)
             return
+        Shader._record_runtime_publication(cls._asset_database, sources or (path,))
         for owner, (source, outstanding) in tuple(cls._shader_diagnostic_roots.items()):
             remaining = outstanding - roots
             if not remaining:
@@ -1069,7 +1102,7 @@ class AssetManager:
         )
 
     @classmethod
-    def _compile_particle_runtime(cls, path: str, guid: str, *, database=None) -> str:
+    def _compile_particle_runtime(cls, path: str, guid: str, *, database=None, write_scope=None) -> str:
         """Compile ParticleGraph/ParticleScript before publishing file changes."""
         if not cls._is_particle_source(path):
             return ""
@@ -1091,6 +1124,7 @@ class AssetManager:
                 path,
                 guid=guid,
                 runtime_artifact_path=runtime_artifact_path,
+                write_scope=write_scope,
             )
             cls._publish_compile_diagnostic(path)
             return ""
@@ -1174,6 +1208,7 @@ class AssetManager:
         origin="system",
         operation_id: str = "",
         publish_interaction: bool = True,
+        write_scope=None,
     ):
         """Commit one GUID-stable catalog move and update loaded runtime state.
 
@@ -1195,7 +1230,7 @@ class AssetManager:
                     origin=action_origin,
                     operation_id=operation_id,
                 )
-        result = asset_database.move_asset(old_path, new_path)
+        result = asset_database.move_asset(old_path, new_path, write_scope=write_scope or PathWriteScope())
         if not result:
             if mutations is not None and plan is not None:
                 mutations.abort_relocation(plan)
@@ -1233,12 +1268,9 @@ class AssetManager:
         guid: str = "",
         suppress_watcher_echo: bool = True,
     ) -> str:
-        """Apply loaded-runtime and editor-cache consequences of a catalog move."""
+        """Project a completed native catalog move into editor caches."""
         cls._invalidate_font_ui_cache(old_path)
         cls._invalidate_font_ui_cache(new_path)
-        registry = cls._get_registry()
-        if registry and guid:
-            registry.update_loaded_asset_path(guid, new_path)
         if guid:
             cls.invalidate(guid)
         if os.path.splitext(old_path)[1].lower() in IMAGE_EXTENSIONS:
@@ -1267,11 +1299,12 @@ class AssetManager:
         *,
         database=None,
         suppress_watcher_echo: bool = True,
+        write_scope=None,
     ):
         """Commit one native catalog batch, then project runtime consequences."""
         asset_database = cls._mutation_database(database)
         pairs = tuple((str(old), str(new)) for old, new in moves)
-        results = asset_database.move_assets_batch(pairs)
+        results = asset_database.move_assets_batch(pairs, write_scope=write_scope or PathWriteScope())
         if len(results) != len(pairs) or any(not result for result in results):
             return results
         for (old_path, new_path), result in zip(pairs, results):
@@ -1296,6 +1329,7 @@ class AssetManager:
         database=None,
         suppress_watcher_echo: bool = True,
         guid_hint: str = "",
+        write_scope=None,
     ):
         """Evict loaded state while preserving serialized references by GUID.
 
@@ -1312,7 +1346,7 @@ class AssetManager:
         # The catalog mutation owns dependency notification.  Do not evict
         # live payloads before it commits: a failed metadata/database delete
         # must leave the running editor exactly as it was.
-        result = asset_database.delete_asset(path)
+        result = asset_database.delete_asset(path, write_scope=write_scope or PathWriteScope())
         if not result:
             return result
 
@@ -1322,9 +1356,6 @@ class AssetManager:
         if revision_state is not None:
             revision_state.content_token = ""
 
-        registry = cls._get_registry()
-        if registry and guid:
-            registry.remove_asset(guid)
         if guid:
             cls.invalidate(guid)
 
@@ -1608,7 +1639,7 @@ class AssetManager:
         return False
 
     @classmethod
-    def note_imported_disk_change(cls, file_path: str) -> None:
+    def note_imported_disk_change(cls, file_path: str, *, source_unchanged: bool = False) -> None:
         """Advance the disk/dependency side of one asset's revision ledger."""
         normalized = path_key(file_path) if file_path else ""
         if not normalized:
@@ -1620,6 +1651,8 @@ class AssetManager:
         # edit back to that old value is a new change, not a duplicate.
         state.content_token = ""
         cls._publish_preview_dependency_revision(file_path)
+        if source_unchanged:
+            return
         try:
             from infernux.core.document_store import capture_document_file_state
 
@@ -1812,8 +1845,6 @@ class AssetManager:
         # or the last commit in this document chain) must not reject the
         # user's in-memory values. Explicit callers that still want
         # protection pass expected_file_state to submit_document_text.
-        expected = None
-
         state.requested_write_revision += 1
         requested_revision = state.requested_write_revision
         commit_token = uuid.uuid4().hex
@@ -1822,7 +1853,6 @@ class AssetManager:
         ticket = submit_document_text(
             file_path,
             snapshot,
-            expected_file_state=expected,
             commit_chain_token=chain_token,
         )
         record = _PendingDocumentWrite(
@@ -1831,10 +1861,8 @@ class AssetManager:
             edit_revision=state.edit_revision,
             requested_write_revision=requested_revision,
             commit_token=commit_token,
-            snapshot=snapshot,
             content_token=content_token,
             imported_disk_revision=state.imported_disk_revision,
-            expected_file_state=expected,
             callback=callback,
         )
         cls._pending_document_write_records.setdefault(normalized, []).append(record)
@@ -2047,13 +2075,17 @@ class AssetManager:
         return bool(due_keys)
 
     @classmethod
-    def flush_all_asset_writes(cls) -> None:
-        """Force pending snapshots into DocumentStore and wait for durability."""
+    def flush_all_asset_writes(cls, *, database=None) -> None:
+        """Wait for pending writes and return the outcome of any pending model Apply."""
         cls.flush_scheduled_saves(force=True)
         from infernux.core.document_store import DocumentStore
 
         DocumentStore.flush()
         cls.poll_pending_asset_writes()
+        database = database if database is not None else cls._asset_database
+        if database is not None:
+            return database.complete_pending_model_reimport()
+        return None
 
     @classmethod
     def begin_asset_write_flush(cls) -> None:
@@ -2070,7 +2102,7 @@ class AssetManager:
     def asset_writes_idle(cls) -> bool:
         """Poll submitted writes and report whether the durable queue drained."""
         cls.poll_pending_asset_writes()
-        if cls._pending_document_write_records:
+        if cls._pending_document_write_records or getattr(cls._asset_database, "model_reimport_pending", False):
             return False
         from infernux.core.document_store import DocumentStore
 
@@ -2305,15 +2337,10 @@ class AssetManager:
 
     @classmethod
     def _schedule_gpu_texture_reload(cls, path: str) -> None:
-        """Queue native GPU texture invalidation for the next post-draw tick."""
+        """Queue the GPU refresh after the imported pixels have been published."""
         key = cls._normalize_asset_path(path) or path_key(path)
         with cls._pending_gpu_texture_reloads_lock:
             cls._pending_gpu_texture_reloads[key] = path
-
-        guid = cls._get_guid_from_path(path)
-        if guid:
-            cls._texture_cache.pop(guid, None)
-            cls._cache.pop(guid, None)
 
     @classmethod
     def flush_pending_gpu_texture_reloads(
@@ -2350,22 +2377,10 @@ class AssetManager:
 
     @classmethod
     def _reload_gpu_texture_now(cls, path: str) -> None:
-        """Invalidate the C++ GPU texture cache so materials re-resolve it.
-
-        The runtime uses GUID-based cache keys, so we resolve path → GUID first.
-        Falls back to path-based invalidation for textures not yet in AssetDatabase.
-        """
-        guid = cls._get_guid_from_path(path)
+        """Refresh the renderer's texture after CPU-side import publication."""
         native = cls._native_engine()
         if native is not None and hasattr(native, 'reload_texture'):
-            # ReloadTexture(path) is the designated file-system → GUID boundary
-            # adapter: it resolves (or registers) the GUID once, then the whole
-            # renderer-side invalidation chain runs GUID-only.
             native.reload_texture(path)
-        # Evict from the Python-side strong cache
-        if guid:
-            cls._texture_cache.pop(guid, None)
-            cls._cache.pop(guid, None)
 
     @classmethod
     def is_meta_watcher_suppressed(cls, path: str) -> bool:
@@ -2444,26 +2459,33 @@ class AssetManager:
         return False
 
     @classmethod
-    def _reload_mesh_asset(cls, path: str, *, previous_effective_scale=None) -> None:
-        """Reload a mesh asset in AssetRegistry so updated import settings take effect."""
-        guid = cls._get_guid_from_path(path)
+    def _schedule_model_instance_sync(cls, guid, baseline):
+        # The scene still has the scale from before the first unapplied publication.
+        cls._pending_model_instance_sync.setdefault(guid, baseline)
         native = cls._native_engine()
-        if native is not None and hasattr(native, 'reload_mesh'):
-            native.reload_mesh(path)
-        if guid:
-            cls._cache.pop(guid, None)
-            # A model import is a source publication. MeshRenderers already
-            # observe the new shared geometry; this reconciles the authored
-            # node hierarchy in every resident editor scene while preserving
-            # the instance root and user-authored component overrides. Import-
-            # scale changes rescale source-node offsets about that stable root.
-            from infernux.engine.model_instance_sync import synchronize_loaded_model_instances
+        if native is None or not native.frame_work.active:
+            cls.flush_model_instance_sync()
 
-            current_scale = cls._model_effective_scale(cls.require_asset_database(), path)
-            scale_ratio = 1.0
-            if previous_effective_scale is not None and current_scale is not None:
-                scale_ratio = current_scale / float(previous_effective_scale)
-            synchronize_loaded_model_instances(guid, scale_ratio=scale_ratio)
+    @classmethod
+    def flush_model_instance_sync(cls) -> None:
+        if not cls._pending_model_instance_sync:
+            return
+        from infernux.engine.scene_manager import SceneFileManager
+
+        editor = SceneFileManager.instance()
+        if editor is not None and editor._is_play_mode():
+            return
+        registry = cls._get_registry()
+        for guid, (previous_version, previous_scale) in tuple(cls._pending_model_instance_sync.items()):
+            current_version, current_scale = cls._resident_model_baseline(guid)
+            if current_scale is not None and current_version != previous_version:
+                from infernux.engine.model_instance_sync import synchronize_loaded_model_instances
+
+                ratio = current_scale / previous_scale if previous_scale is not None else 1.0
+                synchronize_loaded_model_instances(guid, scale_ratio=ratio)
+                cls._pending_model_instance_sync[guid] = (current_version, current_scale)
+            if registry.pending_mesh_reload(guid) is None:
+                del cls._pending_model_instance_sync[guid]
 
     @classmethod
     def _invalidate_project_panel_cache(cls) -> None:

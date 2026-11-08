@@ -38,6 +38,8 @@ def _recreate_game_objects_from_documents(entries: list[tuple]) -> list:
             parent = scene.find_by_id(parent_id) if parent_id is not None else None
             if parent_id is not None and parent is None:
                 raise RuntimeError(f"GameObject undo restore cannot find parent {int(parent_id)}")
+            if sfm is not None:
+                document = sfm.resolve_published_prefabs({"objects": [document]})["objects"][0]
             worlds[world_id][1].append(document)
             planned.append((document, parent, sibling_index, scene))
 
@@ -55,14 +57,14 @@ def _recreate_game_objects_from_documents(entries: list[tuple]) -> list:
             if obj is None:
                 raise RuntimeError("scene rejected GameObject allocation during undo restore")
             created.append((scene, obj))
-            if not obj._commit_document(_native_object_graph_document(document), True):
+            if not obj._commit_document(_native_object_graph_document(document), True)[0]:
                 raise RuntimeError("GameObject document commit failed during undo restore")
             if int(obj.id) != document["id"]:
                 raise RuntimeError("GameObject undo restore changed stable identity")
             if parent is not None:
                 # The snapshot stores local coordinates, including rotated or
-                # scaled parent space. Reparenting must retain those coordinates.
-                obj.set_parent(parent, False)
+                # scaled parent space, and the links owned by this parent.
+                obj._set_prefab_instance_parent(parent)
             obj.transform.set_sibling_index(sibling_index)
 
         for scene, obj in created:

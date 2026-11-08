@@ -30,7 +30,6 @@ struct GpuResidencySnapshot
     size_t pendingGpuTransferCount = 0;
     bool uploadTimelineEnabled = false;
     uint64_t timelineUploadPublicationCount = 0;
-    uint64_t requiredUploadTimelineValue = 0;
     uint64_t deviceWaitIdleCount = 0;
     uint64_t shaderHotReloadRetirementCount = 0;
     size_t pendingAsyncGraphicsSubmissionCount = 0;

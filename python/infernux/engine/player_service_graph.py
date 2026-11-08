@@ -7,12 +7,12 @@ validate the packaged product before importing the engine runtime.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from .path_utils import (
     is_lexical_path_within,
@@ -562,6 +562,9 @@ class PlayerRuntimeAssetCatalog:
     _source_extensions_by_guid: Mapping[str, str]
     _package_directories: Mapping[str, str]
     _scene_paths_by_guid: Mapping[str, str]
+    _source_identity_by_guid: Mapping[str, tuple[object, ...]]
+    _content_roots: tuple[str, ...]
+    additional_scene_guids: tuple[str, ...] = ()
 
     @classmethod
     def from_documents(
@@ -569,6 +572,8 @@ class PlayerRuntimeAssetCatalog:
         project_root: str,
         catalog: object,
         asset_records: object,
+        *,
+        content_files: Optional[Mapping[str, int]] = None,
     ) -> "PlayerRuntimeAssetCatalog":
         if not isinstance(catalog, Mapping):
             raise RuntimeError("Player runtime asset catalog must be an object")
@@ -603,6 +608,10 @@ class PlayerRuntimeAssetCatalog:
                 str(artifact.get("package", "")).replace("\\", "/")
             ).name
             if package_name == "Content.inxpkg":
+                if content_files is not None and (
+                    normalized_path not in content_files or content_files[normalized_path] != artifact.get("content_bytes")
+                ):
+                    raise RuntimeError(f"Cooked content payload disagrees with its catalog: {normalized_path}")
                 content_artifact_paths.add(normalized_path)
             if (
                 artifact.get("logical_type") in {"scene", "scene_artifact"}
@@ -635,6 +644,7 @@ class PlayerRuntimeAssetCatalog:
         primary_paths_by_guid: dict[str, str] = {}
         source_extensions_by_guid: dict[str, str] = {}
         source_paths_by_guid: dict[str, str] = {}
+        source_identity_by_guid: dict[str, tuple[object, ...]] = {}
         # Raw package payloads retain sibling layout. Derive their directory
         # membership once from cataloged assets, never from a filesystem walk.
         package_directories: dict[str, str] = {}
@@ -680,6 +690,20 @@ class PlayerRuntimeAssetCatalog:
                 )
             primary_path = str(primary_artifact["runtime_path"])
             primary_paths_by_guid[guid] = primary_path
+            fingerprint = record.get("source_fingerprint", {})
+            if isinstance(fingerprint, Mapping):
+                source_hash = fingerprint.get("content_hash")
+                if isinstance(source_hash, str) and source_hash:
+                    metadata = record["metadata"]["metadata"]
+                    settings = _freeze_document({
+                        key: value for key, value in metadata.items()
+                        if key not in {"file_path", "last_modified"}
+                    })
+                    dependency_guids = tuple(sorted({
+                        str(artifacts_by_id[key].get("asset_guid") or artifacts_by_id[key]["runtime_path"])
+                        for key in dependencies
+                    }))
+                    source_identity_by_guid[guid] = (source_hash, record.get("resource_type"), settings, dependency_guids)
             source_alias = record.get("runtime_path")
             if source_alias:
                 normalized_alias = cls._normalized_runtime_path(source_alias)
@@ -703,8 +727,13 @@ class PlayerRuntimeAssetCatalog:
                 scene_paths_by_guid[guid] = primary_path
             seen_guids.add(guid)
 
+        root = resolved_path(project_root)
+
+        def physical(path: str) -> str:
+            return os.path.join(root, *path.split("/"))
+
         return cls(
-            project_root=resolved_path(project_root),
+            project_root=root,
             _artifacts_by_id=MappingProxyType(
                 {
                     artifact_id: _freeze_document(artifact)
@@ -717,13 +746,87 @@ class PlayerRuntimeAssetCatalog:
                     for guid, artifact_ids in artifact_ids_by_guid.items()
                 }
             ),
-            _asset_paths=MappingProxyType(dict(asset_paths)),
+            _asset_paths=MappingProxyType({key: physical(path) for key, path in asset_paths.items()}),
             _asset_guids_by_path=MappingProxyType(asset_guids_by_path),
             _primary_paths_by_guid=MappingProxyType(primary_paths_by_guid),
             _source_paths_by_guid=MappingProxyType(source_paths_by_guid),
             _source_extensions_by_guid=MappingProxyType(source_extensions_by_guid),
-            _package_directories=MappingProxyType(package_directories),
-            _scene_paths_by_guid=MappingProxyType(scene_paths_by_guid),
+            _package_directories=MappingProxyType({key: physical(path) for key, path in package_directories.items()}),
+            _scene_paths_by_guid=MappingProxyType({guid: physical(path) for guid, path in scene_paths_by_guid.items()}),
+            _source_identity_by_guid=MappingProxyType(source_identity_by_guid),
+            _content_roots=(root,),
+        )
+
+    def with_additional_content(
+        self, incoming: "PlayerRuntimeAssetCatalog", new_guids: set[str]
+    ) -> "PlayerRuntimeAssetCatalog":
+        """Merge the selected GUIDs while retaining shared, unchanged dependencies."""
+        if not new_guids or new_guids != incoming._primary_paths_by_guid.keys() - self._primary_paths_by_guid.keys():
+            raise RuntimeError("The content package must contain new, consistently indexed assets")
+        for guid in incoming._primary_paths_by_guid.keys() & self._primary_paths_by_guid.keys():
+            identity = incoming._source_identity_by_guid.get(guid)
+            if (
+                identity is None
+                or self._source_identity_by_guid.get(guid) != identity
+                or incoming.source_path_for_guid(guid) != self.source_path_for_guid(guid)
+            ):
+                raise RuntimeError(f"The content package changes a published asset: {guid}")
+
+        added_artifacts = {}
+        added_paths = set()
+        pending = [key for guid in new_guids for key in incoming.artifact_ids_for_guid(guid)]
+        while pending:
+            key = pending.pop()
+            if key in added_artifacts:
+                continue
+            artifact = incoming._artifacts_by_id[key]
+            guid = artifact.get("asset_guid")
+            previous = self._artifacts_by_id.get(key)
+            if previous is not None:
+                contract = ("asset_guid", "runtime_path", "logical_type", "payload_kind", "content_bytes", "dependencies")
+                if guid in new_guids or any(previous.get(field) != artifact.get(field) for field in contract):
+                    raise RuntimeError(f"The content package reuses an occupied artifact path: {artifact['runtime_path']}")
+                continue
+            if guid is not None and guid not in new_guids:
+                raise RuntimeError(f"The content package changes the cooked payload of a published asset: {guid}")
+            added_artifacts[key] = artifact
+            path = incoming._asset_paths.get(artifact["runtime_path"].casefold())
+            if path is None:
+                raise RuntimeError(f"Additional content requires a missing cooked payload: {artifact['runtime_path']}")
+            added_paths.add(path)
+            pending.extend(artifact.get("dependencies", ()))
+
+        paths = {key: path for key, path in incoming._asset_paths.items() if path in added_paths}
+        aliases = {key: guid for key, guid in incoming._asset_guids_by_path.items() if guid in new_guids}
+        occupied = (self._asset_paths.keys() | self._asset_guids_by_path.keys()) & (paths.keys() | aliases.keys())
+        if occupied:
+            raise RuntimeError(f"The content package reuses a published asset alias: {min(occupied)}")
+
+        def add_selected(existing: Mapping, values: Mapping) -> Mapping:
+            return MappingProxyType(existing | {guid: values[guid] for guid in new_guids if guid in values})
+
+        directories = {}
+        for key in paths:
+            parent = key.rpartition("/")[0]
+            while parent in incoming._package_directories:
+                directories[parent] = incoming._package_directories[parent]
+                parent = parent.rpartition("/")[0]
+        return replace(
+            self,
+            _artifacts_by_id=MappingProxyType(self._artifacts_by_id | added_artifacts),
+            _artifact_ids_by_guid=add_selected(self._artifact_ids_by_guid, incoming._artifact_ids_by_guid),
+            _asset_paths=MappingProxyType(self._asset_paths | paths),
+            _asset_guids_by_path=MappingProxyType(self._asset_guids_by_path | aliases),
+            _primary_paths_by_guid=add_selected(self._primary_paths_by_guid, incoming._primary_paths_by_guid),
+            _source_paths_by_guid=add_selected(self._source_paths_by_guid, incoming._source_paths_by_guid),
+            _source_extensions_by_guid=add_selected(self._source_extensions_by_guid, incoming._source_extensions_by_guid),
+            _scene_paths_by_guid=add_selected(self._scene_paths_by_guid, incoming._scene_paths_by_guid),
+            _source_identity_by_guid=add_selected(self._source_identity_by_guid, incoming._source_identity_by_guid),
+            _package_directories=MappingProxyType(directories | self._package_directories),
+            _content_roots=(*self._content_roots, incoming.project_root),
+            additional_scene_guids=(
+                *self.additional_scene_guids, *sorted(new_guids & incoming._scene_paths_by_guid.keys())
+            ),
         )
 
     @staticmethod
@@ -801,14 +904,18 @@ class PlayerRuntimeAssetCatalog:
         cooked_runtime_path = self._primary_paths_by_guid.get(str(guid))
         if cooked_runtime_path is None:
             return None
-        content_path = self._asset_paths.get(cooked_runtime_path.casefold())
-        if content_path is None:
-            return None
-        return os.path.join(self.project_root, *content_path.split("/"))
+        return self._asset_paths.get(cooked_runtime_path.casefold())
 
     def source_extension_for_guid(self, guid: str) -> str:
         """Return the frozen authored suffix without touching a payload file."""
         return self._source_extensions_by_guid.get(str(guid), "")
+
+    def script_payloads(self) -> Iterator[str]:
+        for guid, suffix in self._source_extensions_by_guid.items():
+            if suffix == ".pyc":
+                path = self.resolve_guid(guid)
+                if path is not None:
+                    yield path
 
     def source_path_for_guid(self, guid: str) -> str:
         """Return the authored relative path for a cataloged asset.
@@ -829,25 +936,18 @@ class PlayerRuntimeAssetCatalog:
         requested = lexical_path(
             raw if os.path.isabs(raw) else os.path.join(self.project_root, raw)
         )
-        if not is_lexical_path_within(requested, self.project_root, allow_root=False):
+        root = next((root for root in self._content_roots if is_lexical_path_within(requested, root, allow_root=False)), None)
+        if root is None:
             return None
-        runtime_path = relative_path(requested, self.project_root, resolve=False).replace("\\", "/")
+        runtime_path = relative_path(requested, root, resolve=False).replace("\\", "/")
         key = runtime_path.casefold()
         if not key.startswith("packages/"):
             return None
         directory = allow_directory and key in self._package_directories
-        cooked_runtime_path = (
-            self._package_directories[key] if directory else self._asset_paths.get(key)
-        )
-        if cooked_runtime_path is None:
-            return None
-        return os.path.join(self.project_root, *cooked_runtime_path.split("/"))
+        return self._package_directories[key] if directory else self._asset_paths.get(key)
 
     def resolve_scene(self, scene_guid: str) -> Optional[str]:
-        cooked_runtime_path = self._scene_paths_by_guid.get(str(scene_guid))
-        if cooked_runtime_path is None:
-            return None
-        return os.path.join(self.project_root, *cooked_runtime_path.split("/"))
+        return self._scene_paths_by_guid.get(str(scene_guid))
 
 
 def player_manifest_service_section(

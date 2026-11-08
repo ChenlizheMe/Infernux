@@ -68,17 +68,13 @@ _DIRECT_TEXTURE_SUFFIXES = IMAGE_EXTENSIONS
 # AssetDatabase and Project panel.  A source model must not become an opaque
 # blob merely because a newly supported interchange format was added there.
 _DIRECT_MODEL_SUFFIXES = frozenset(MESH_EXTENSIONS)
-_BINARY_ARTIFACT_MAGIC = {
-    ".inxtex": b"INXTEXTURE",
-    ".inxmesh": b"INXMESHART",
-    ".inxskin": b"INXSKINAR",
-    ".inxrtex": b"INXRTEX1",
+_BINARY_ARTIFACT_LAYOUTS = {
+    ".inxtex": (b"INXTEXTUREX", b""),
+    ".inxmesh": (b"INXMESHART", b"MSH2"),
+    ".inxskin": (b"INXSKINAR", b"SKN2"),
+    ".inxrtex": (b"INXRTEX1", b""),
 }
-_BINARY_ARTIFACT_SCHEMA = {
-    ".inxmesh": b"MSH1",
-    ".inxskin": b"SKN1",
-}
-_ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_MAGIC) | frozenset(
+_ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_LAYOUTS) | frozenset(
     {".inxparticle", ".inxeffect"}
 )
 
@@ -331,32 +327,28 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
             ):
                 raise RuntimeArtifactError(f"JSON artifact has no source_hash: {artifact}")
             return value
-        raw = artifact.read_bytes()
+        layout = _BINARY_ARTIFACT_LAYOUTS.get(suffix)
+        if layout is None:
+            raise RuntimeArtifactError(f"unsupported Library artifact: {artifact}")
+        magic, schema = layout
+        with artifact.open("rb") as stream:
+            if stream.read(len(magic)) != magic:
+                raise RuntimeArtifactError(f"Library artifact has an invalid header: {artifact}")
+            if stream.read(4) != b"\x04\x03\x02\x01":
+                raise RuntimeArtifactError(f"Library artifact has an invalid endian marker: {artifact}")
+            if schema:
+                if stream.read(len(schema)) != schema or len(stream.read(8)) != 8:
+                    raise RuntimeArtifactError(
+                        f"Library artifact has an invalid current format marker or workspace: {artifact}"
+                    )
+            raw_size = stream.read(4)
+            hash_size = int.from_bytes(raw_size, "little")
+            if len(raw_size) != 4 or not 0 < hash_size <= 1024:
+                raise RuntimeArtifactError(f"Library artifact has an invalid source hash: {artifact}")
+            raw_hash = stream.read(hash_size)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeArtifactError(f"Library artifact is unreadable: {artifact}") from exc
-    magic = _BINARY_ARTIFACT_MAGIC.get(suffix)
-    if magic is None or len(raw) < len(magic) + 8:
-        raise RuntimeArtifactError(f"unsupported or truncated Library artifact: {artifact}")
-    if not raw.startswith(magic):
-        raise RuntimeArtifactError(f"Library artifact has an invalid header: {artifact}")
-    marker_offset = len(magic)
-    if raw[marker_offset : marker_offset + 4] != b"\x04\x03\x02\x01":
-        raise RuntimeArtifactError(f"Library artifact has an invalid endian marker: {artifact}")
-    hash_size_offset = marker_offset + 4
-    schema = _BINARY_ARTIFACT_SCHEMA.get(suffix)
-    if schema is not None:
-        if raw[hash_size_offset : hash_size_offset + len(schema)] != schema:
-            raise RuntimeArtifactError(
-                f"Library artifact has an invalid current format marker: {artifact}"
-            )
-        hash_size_offset += len(schema)
-    hash_offset = hash_size_offset + 4
-    hash_size = int.from_bytes(
-        raw[hash_size_offset:hash_offset], "little", signed=False
-    )
-    if hash_size <= 0 or hash_offset + hash_size > len(raw):
-        raise RuntimeArtifactError(f"Library artifact has an invalid source hash: {artifact}")
-    value = raw[hash_offset : hash_offset + hash_size].decode("ascii", errors="ignore")
+    value = raw_hash.decode("ascii", errors="ignore")
     if len(value) != hash_size or any(character not in "0123456789abcdefABCDEF" for character in value):
         raise RuntimeArtifactError(f"Library artifact has no current source hash: {artifact}")
     return value
@@ -617,19 +609,38 @@ def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
         # Both are durable asset identities and must contribute to the Player
         # catalog dependency graph.  Path hints are display-only and never
         # identify a runtime dependency.
-        if value.get("$type") == "asset_ref" or (
+        typed_reference = value.get("$type") == "asset_ref"
+        reference = typed_reference or (
             "guid" in value and ("path_hint" in value or "asset_type" in value)
-        ):
+        )
+        if reference:
             guid = value.get("guid")
             if not isinstance(guid, str):
                 guid = ""
             if guid:
                 yield guid, ""
+            if typed_reference:
+                return
         for key, item in value.items():
-            yield from _asset_refs(item, str(key))
+            # Untagged dictionaries may hold other fields and nested refs.
+            if not (reference and key == "guid"):
+                yield from _asset_refs(item, str(key))
     elif isinstance(value, list):
         for item in value:
             yield from _asset_refs(item, field_name)
+    elif isinstance(value, str) and field_name == "type_id" and value.startswith("python:"):
+        # ComponentRecord encodes the owning script before its type/module/name.
+        # The type GUID is an identity; the script GUID is an asset dependency.
+        fields = value.split(":", 4)
+        if len(fields) == 5 and _COMPACT_ASSET_GUID.fullmatch(fields[1]):
+            from infernux.components.component_identity import intrinsic_script_guid
+
+            script_guid, module = fields[1], fields[3]
+            # Engine Python components live in the runtime package, rather
+            # than in a source asset. Their intrinsic GUID identifies a type.
+            if module.startswith("infernux.") and script_guid == intrinsic_script_guid(module):
+                return
+            yield script_guid, ""
     elif (
         isinstance(value, str)
         and _COMPACT_ASSET_GUID.fullmatch(value)

@@ -90,6 +90,16 @@ class Material(ResourceProxy):
     # ==========================================================================
 
     @staticmethod
+    def property_to_id(name: str) -> int:
+        """Return the same process-local property ID as Shader.property_to_id."""
+        return InxMaterial.property_to_id(name)
+
+    @staticmethod
+    def property_name(name_or_id: str | int) -> str:
+        """Resolve a registered ID at setup; unknown IDs raise KeyError."""
+        return InxMaterial.property_name(name_or_id)
+
+    @staticmethod
     def create_lit(name: str = "New Material") -> "Material":
         """Create a new PBR lit material (default_lit shader)."""
         native = InxMaterial.create_default_lit()
@@ -523,42 +533,87 @@ class Material(ResourceProxy):
     # Shader Property Setters (Unity-compatible naming)
     # ==========================================================================
 
-    def set_float(self, name: str, value: float):
+    def set_float(self, name: str | int, value: float):
         """Set a float shader property."""
         self._native.set_float(name, value)
         self._auto_save()
 
-    def set_int(self, name: str, value: int):
+    def set_int(self, name: str | int, value: int):
         """Set an integer shader property."""
         self._native.set_int(name, value)
         self._auto_save()
 
-    def set_color(self, name: str, r: float, g: float, b: float, a: float = 1.0):
+    def set_color(self, name: str | int, r: float, g: float, b: float, a: float = 1.0):
         """Set a color shader property (RGBA)."""
         self._native.set_color(name, (r, g, b, a))
         self._auto_save()
 
-    def set_vector2(self, name: str, x: float, y: float):
+    def set_vector2(self, name: str | int, x: float, y: float):
         """Set a vec2 shader property."""
         self._native.set_vector2(name, (x, y))
         self._auto_save()
 
-    def set_vector3(self, name: str, x: float, y: float, z: float):
+    def set_vector3(self, name: str | int, x: float, y: float, z: float):
         """Set a vec3 shader property."""
         self._native.set_vector3(name, (x, y, z))
         self._auto_save()
 
-    def set_vector4(self, name: str, x: float, y: float, z: float, w: float):
+    def set_vector4(self, name: str | int, x: float, y: float, z: float, w: float):
         """Set a vec4 shader property."""
         self._native.set_vector4(name, (x, y, z, w))
         self._auto_save()
 
-    def set_texture_guid(self, name: str, texture_guid: str):
+    def _texture_transform(self, name: str | int):
+        if isinstance(name, int):
+            name = InxMaterial.property_name(name)
+        if not isinstance(name, str) or not name:
+            raise TypeError("texture property name must be a nonempty string")
+        if not self.has_property(name):
+            raise ValueError(f"material has no texture property {name!r}")
+        texture = self._native.get_property(name)
+        if texture is not None and not isinstance(texture, str):
+            raise TypeError(f"material property {name!r} is not a texture")
+        transform = self._native.get_property(name + "_ST")
+        return (1.0, 1.0, 0.0, 0.0) if transform is None else tuple(transform)
+
+    def get_texture_offset(self, name: str | int):
+        """Texture offset stored in the companion ``<name>_ST.zw`` uniform."""
+        from infernux.math import Vector2
+        return Vector2(*self._texture_transform(name)[2:])
+
+    def set_texture_offset(self, name: str | int, offset) -> None:
+        """Set UV offset without overwriting independently animated tiling."""
+        import math
+        if isinstance(name, int):
+            name = InxMaterial.property_name(name)
+        offset = tuple(offset)
+        if len(offset) != 2 or not all(math.isfinite(x) for x in offset):
+            raise ValueError("texture offset requires two finite numbers")
+        transform = self._texture_transform(name)
+        self.set_vector4(name + "_ST", *transform[:2], *offset)
+
+    def get_texture_scale(self, name: str | int):
+        """Texture tiling stored in the companion ``<name>_ST.xy`` uniform."""
+        from infernux.math import Vector2
+        return Vector2(*self._texture_transform(name)[:2])
+
+    def set_texture_scale(self, name: str | int, scale) -> None:
+        """Set UV tiling without overwriting independently animated offset."""
+        import math
+        if isinstance(name, int):
+            name = InxMaterial.property_name(name)
+        scale = tuple(scale)
+        if len(scale) != 2 or not all(math.isfinite(x) for x in scale):
+            raise ValueError("texture scale requires two finite numbers")
+        transform = self._texture_transform(name)
+        self.set_vector4(name + "_ST", *scale, *transform[2:])
+
+    def set_texture_guid(self, name: str | int, texture_guid: str):
         """Set a texture shader property by asset GUID."""
         self._native.set_texture_guid(name, texture_guid)
         self._auto_save()
 
-    def set_matrix(self, name: str, value):
+    def set_matrix(self, name: str | int, value):
         """Set a matrix from a NumPy (4,4) array indexed [row, column].
 
         Camera matrices can be passed directly, with no transpose or flatten.
@@ -566,7 +621,7 @@ class Material(ResourceProxy):
         self._native.set_matrix(name, value)
         self._auto_save()
 
-    def set_param(self, name: str, value):
+    def set_param(self, name: str | int, value):
         """Set a non-texture material property using type/shape dispatch.
 
         Examples:
@@ -577,7 +632,7 @@ class Material(ResourceProxy):
         self._native.set_param(name, value)
         self._auto_save()
 
-    def set_texture(self, name: str, value):
+    def set_texture(self, name: str | int, value):
         """Bind a RenderTexture, texture asset, builtin token, or None.
 
         Supported values:
@@ -597,12 +652,12 @@ class Material(ResourceProxy):
         self._native.set_texture(name, value)
         self._auto_save()
 
-    def clear_texture(self, name: str):
+    def clear_texture(self, name: str | int):
         """Clear a texture shader property (remove texture reference)."""
         self._native.clear_texture(name)
         self._auto_save()
 
-    def remove_property(self, name: str) -> bool:
+    def remove_property(self, name: str | int) -> bool:
         """Remove a shader property and any asset dependency it owns."""
         removed = bool(self._native.remove_property(name))
         if removed:
@@ -613,46 +668,46 @@ class Material(ResourceProxy):
     # Shader Property Getters
     # ==========================================================================
 
-    def get_float(self, name: str, default: float = 0.0) -> float:
+    def get_float(self, name: str | int, default: float = 0.0) -> float:
         """Get a float shader property."""
         val = self._native.get_property(name)
         return float(val) if val is not None else default
 
-    def get_int(self, name: str, default: int = 0) -> int:
+    def get_int(self, name: str | int, default: int = 0) -> int:
         """Get an integer shader property."""
         val = self._native.get_property(name)
         return int(val) if val is not None else default
 
-    def get_color(self, name: str) -> Tuple[float, float, float, float]:
+    def get_color(self, name: str | int) -> Tuple[float, float, float, float]:
         """Get a color shader property as (r, g, b, a)."""
         val = self._native.get_color(name)
         return (val.x, val.y, val.z, val.w)
 
-    def get_vector2(self, name: str) -> Tuple[float, float]:
+    def get_vector2(self, name: str | int) -> Tuple[float, float]:
         """Get a vec2 shader property."""
         val = self._native.get_vector2(name)
         return (val.x, val.y)
 
-    def get_vector3(self, name: str) -> Tuple[float, float, float]:
+    def get_vector3(self, name: str | int) -> Tuple[float, float, float]:
         """Get a vec3 shader property."""
         val = self._native.get_vector3(name)
         return (val.x, val.y, val.z)
 
-    def get_vector4(self, name: str) -> Tuple[float, float, float, float]:
+    def get_vector4(self, name: str | int) -> Tuple[float, float, float, float]:
         """Get a vec4 shader property."""
         val = self._native.get_vector4(name)
         return (val.x, val.y, val.z, val.w)
 
-    def get_texture(self, name: str) -> Optional[str]:
+    def get_texture(self, name: str | int) -> Optional[str]:
         """Get a texture shader property GUID (or None if not set)."""
         val = self._native.get_property(name)
         return str(val) if val is not None else None
 
-    def has_property(self, name: str) -> bool:
+    def has_property(self, name: str | int) -> bool:
         """Check if the material has a property with the given name."""
         return self._native.has_property(name)
 
-    def get_property(self, name: str):
+    def get_property(self, name: str | int):
         """Get a property value by name (generic). Returns None if not found."""
         return self._native.get_property(name)
 

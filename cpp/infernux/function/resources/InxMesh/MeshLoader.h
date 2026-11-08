@@ -69,8 +69,7 @@ struct MeshSourceImportResult
  * runtime Load reads those artifacts, not the original model.
  * Key design points:
  *   - Load() produces a new shared_ptr<InxMesh> from imported geometry.
- *   - Reload() replaces the geometry data
- * in-place so all AssetRef holders see updated data without re-resolving.
+ *   - AssetRegistry applies the staged data in place, preserving AssetRef identity.
  *   - ScanDependencies() resolves external material textures to project GUIDs
  *     at the authoring boundary so
  * composite model sources are Cook-complete.
@@ -92,19 +91,19 @@ class MeshLoader final : public IAssetLoader
     [[nodiscard]] static std::set<std::string> ScanExternalTexturePaths(const std::string &filePath);
 
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
+    void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
     [[nodiscard]] bool SupportsWorkerLoad() const noexcept override
     {
         return true;
     }
+    WorkerAssetLoadPlan PlanWorkerLoad(const std::string &filePath, const std::string &guid,
+                                       AssetDatabase *adb) override;
 
-    bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
-                AssetDatabase *adb) override;
     [[nodiscard]] size_t EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const override;
 
     std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) override;
 
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InxResourceMeta &metaData) const override;
+    void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const override;
 };
 
 } // namespace infernux

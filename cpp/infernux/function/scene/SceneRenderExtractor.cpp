@@ -69,6 +69,7 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     const auto prepareStart = Clock::now();
 #endif
     SceneManager &sm = SceneManager::Instance();
+    sm.PublishSkeletonPoses();
     m_activeCamera = sm.GetEditorCameraController().GetCamera();
 
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
@@ -146,6 +147,7 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     m_activeCamera = camera;
 
     SceneManager &sm = SceneManager::Instance();
+    sm.PublishSkeletonPoses();
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
     const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
     const uint64_t currentContentRevision = sm.GetRenderContentRevision();
@@ -205,7 +207,7 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 void SceneRenderExtractor::SetAspectRatio(float aspect)
 {
     if (m_activeCamera) {
-        m_activeCamera->SetAspectRatio(aspect);
+        m_activeCamera->UpdateAutomaticAspectRatio(aspect);
     }
 }
 
@@ -265,6 +267,8 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         if (!renderer->HasMeshAsset() && !renderer->HasInlineMesh() && !renderer->GetMesh().IsValid())
             continue;
 
+        if (auto *skin = dynamic_cast<SkinnedMeshRenderer *>(renderer); skin && !skin->HasRuntimeSkinnedMesh())
+            continue;
         RenderProxy renderable;
         renderable.structural.objectId = obj->GetID();
         renderable.structural.layerMask = objectLayerBit;
@@ -385,26 +389,15 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
 
         if (cache.drawCallCount > 0) {
             const size_t drawCallEnd = cachedDrawCallEnd;
-            std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
-            const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
-            std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
-            const std::vector<glm::mat4> *previousSkinBoneMatricesPtr = nullptr;
-            const bool isSkinnedRenderer = source.skinnedRenderer != nullptr;
-            if (auto *skinned = source.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
-                const auto pose = skinned->GetRuntimeSkinPoseSnapshot();
-                skinBoneMatricesOwner = pose ? pose->current : nullptr;
-                skinBoneMatricesPtr = skinBoneMatricesOwner.get();
-                previousSkinBoneMatricesOwner = pose ? pose->previous : nullptr;
-                previousSkinBoneMatricesPtr = previousSkinBoneMatricesOwner.get();
-            }
+            auto *skinned = source.skinnedRenderer;
+            const auto pose =
+                skinned && skinned->HasRuntimeSkinnedMesh() ? skinned->GetRuntimeSkinPoseSnapshot() : nullptr;
 
             auto patchSkinPalette = [&](DrawCall &dc) {
-                if (!isSkinnedRenderer)
+                if (!skinned)
                     return;
-                dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
-                dc.skinBoneMatrices = skinBoneMatricesPtr;
-                dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
-                dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
+                dc.skinBoneMatrices = pose ? pose->current : nullptr;
+                dc.skinContinuity = pose ? pose->continuity : 0;
             };
 
             for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
@@ -439,11 +432,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
             if (renderTransformChanged || boundsTransformChanged || geometryPublicationChanged || dynamicSkinBounds) {
                 // Full patch: transform/bounds changed or dynamic mesh data
                 // needs a GPU re-upload.
-                const glm::vec3 &pivot = mr->GetMeshPivotOffset();
-                glm::mat4 drawWorldMatrix = worldMatrix;
-                if (mr->GetSubmeshIndex() >= 0 && pivot != glm::vec3(0.0f)) {
-                    drawWorldMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
-                }
+                const glm::mat4 drawWorldMatrix = mr->ResolveSubmeshWorldMatrix(worldMatrix);
 
                 bool firstDirty = true;
                 for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
@@ -455,7 +444,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                     patchSkinPalette(dc);
                     firstDirty = false;
                 }
-            } else if (isSkinnedRenderer) {
+            } else if (skinned) {
                 for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     patchSkinPalette(frame.m_drawCalls.drawCalls[drawCallIndex]);
                 }
@@ -519,12 +508,6 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         auto meshPtr = assetRef.Get();
         if (!meshPtr)
             return;
-        const auto stampAssetIdentity = [&assetRef, renderer](DrawCall &drawCall) {
-            drawCall.meshAssetGuid = assetRef.GetGuid();
-            drawCall.meshRuntimeVersion = assetRef.GetCachedVersion();
-            drawCall.meshGeometryView =
-                renderer->IsModelNodeLocal() ? MeshGeometryView::NodeLocal : MeshGeometryView::MergedModelSpace;
-        };
         const auto geometry = renderer->GetAssetGeometry();
         if (!geometry)
             return;
@@ -532,10 +515,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         const std::vector<uint32_t> *objIndicesPtr = &geometry->indices;
         const std::vector<SubMesh> *subMeshesPtr = &geometry->subMeshes;
         std::shared_ptr<const void> meshDataOwner = geometry;
-        std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
-        const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
-        std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
-        const std::vector<glm::mat4> *previousSkinBoneMatricesPtr = nullptr;
+        SkinPoseHistory::SnapshotPtr skinPose;
         MeshIndexFormat drawIndexFormat = meshPtr->GetIndexFormat();
         if (auto *skinned = source.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
             objVerticesPtr = &skinned->GetRuntimeSkinnedVertices();
@@ -545,12 +525,19 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             meshDataOwner = runtimeModel;
             if (runtimeModel)
                 drawIndexFormat = runtimeModel->indexFormat;
-            const auto pose = skinned->GetRuntimeSkinPoseSnapshot();
-            skinBoneMatricesOwner = pose ? pose->current : nullptr;
-            skinBoneMatricesPtr = skinBoneMatricesOwner.get();
-            previousSkinBoneMatricesOwner = pose ? pose->previous : nullptr;
-            previousSkinBoneMatricesPtr = previousSkinBoneMatricesOwner.get();
+            skinPose = skinned->GetRuntimeSkinPoseSnapshot();
         }
+        const auto stampGeometry = [&](DrawCall &draw) {
+            draw.meshAssetGuid = assetRef.GetGuid();
+            draw.meshRuntimeVersion = assetRef.GetCachedVersion();
+            draw.meshGeometryView =
+                renderer->IsModelNodeLocal() ? MeshGeometryView::NodeLocal : MeshGeometryView::MergedModelSpace;
+            draw.meshDataOwner = meshDataOwner;
+            if (skinPose) {
+                draw.skinBoneMatrices = skinPose->current;
+                draw.skinContinuity = skinPose->continuity;
+            }
+        };
         const auto &objVertices = *objVerticesPtr;
         const auto &objIndices = *objIndicesPtr;
         const bool gpuResidentOnly = !source.skinnedRenderer && !meshPtr->HasCpuGeometry();
@@ -583,22 +570,13 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
             dc.meshIndexFormat = drawIndexFormat;
-            dc.meshDataOwner = meshDataOwner;
-            stampAssetIdentity(dc);
-            dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
-            dc.skinBoneMatrices = skinBoneMatricesPtr;
-            dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
-            dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
+            stampGeometry(dc);
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
             // Single submesh mode — render only the specified submesh
             const auto &sub = (*subMeshesPtr)[static_cast<uint32_t>(submeshFilter)];
-            glm::mat4 effectiveMatrix = worldMatrix;
-            const glm::vec3 &pivot = renderer->GetMeshPivotOffset();
-            if (pivot != glm::vec3(0.0f)) {
-                effectiveMatrix = worldMatrix * glm::translate(glm::mat4(1.0f), pivot);
-            }
+            const glm::mat4 effectiveMatrix = renderer->ResolveSubmeshWorldMatrix(worldMatrix);
             DrawCall dc;
             dc.indexStart = sub.indexStart;
             dc.indexCount = sub.indexCount;
@@ -618,12 +596,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
             dc.meshIndexFormat = drawIndexFormat;
-            dc.meshDataOwner = meshDataOwner;
-            stampAssetIdentity(dc);
-            dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
-            dc.skinBoneMatrices = skinBoneMatricesPtr;
-            dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
-            dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
+            stampGeometry(dc);
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else {
@@ -669,12 +642,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
                 dc.meshIndexFormat = drawIndexFormat;
-                dc.meshDataOwner = meshDataOwner;
-                stampAssetIdentity(dc);
-                dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
-                dc.skinBoneMatrices = skinBoneMatricesPtr;
-                dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
-                dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
+                stampGeometry(dc);
                 dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                 firstDirty = false;
                 result.drawCalls.push_back(dc);

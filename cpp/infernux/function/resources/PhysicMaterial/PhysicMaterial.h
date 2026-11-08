@@ -19,6 +19,8 @@ enum class PhysicsMaterialCombine : uint8_t
 class PhysicMaterial
 {
   public:
+    /// Surface mutations invalidate collision mirrors without coupling assets to a scene.
+    [[nodiscard]] static uint64_t GetSurfaceRevision() noexcept;
     [[nodiscard]] float GetFriction() const
     {
         return m_friction;
@@ -82,6 +84,20 @@ class PhysicMaterial
     }
 
   private:
+    friend class Collider;
+    void AddColliderBinding() noexcept
+    {
+        ++m_colliderBindings;
+    }
+    void RemoveColliderBinding() noexcept
+    {
+        --m_colliderBindings;
+    }
+    [[nodiscard]] size_t GetColliderBindingCount() const noexcept
+    {
+        return m_colliderBindings;
+    }
+    void NotifySurfaceChanged() const noexcept;
     static void ValidateCombine(PhysicsMaterialCombine value, const char *fieldName);
 
     float m_friction = 0.6f;
@@ -91,6 +107,7 @@ class PhysicMaterial
     std::string m_name;
     std::string m_guid;
     std::string m_filePath;
+    size_t m_colliderBindings = 0;
 };
 
 } // namespace infernux

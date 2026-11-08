@@ -347,6 +347,10 @@ class ParticleRenderGraph
     {
         return m_lastConsumedFrame;
     }
+    [[nodiscard]] uint32_t LastConsumedSubstep() const noexcept
+    {
+        return m_lastConsumedSubstep;
+    }
     [[nodiscard]] const GpuParticleGraphOutputs &Outputs() const noexcept
     {
         return m_outputs;

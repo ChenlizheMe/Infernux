@@ -22,6 +22,7 @@ class ShaderLoader final : public IAssetLoader
 {
   public:
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
+    void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
     [[nodiscard]] bool SupportsWorkerLoad() const noexcept override
     {
         return true;
@@ -33,8 +34,7 @@ class ShaderLoader final : public IAssetLoader
 
     std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) override;
 
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InxResourceMeta &metaData) const override;
+    void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const override;
 };
 
 } // namespace infernux

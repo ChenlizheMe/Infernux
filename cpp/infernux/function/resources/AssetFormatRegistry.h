@@ -34,6 +34,12 @@ inline constexpr std::array<std::string_view, 36> kMeshExtensions = {
 // list so a visible AudioClip is always a format the runtime can decode.
 inline constexpr std::array<std::string_view, 4> kAudioExtensions = {".wav", ".ogg", ".mp3", ".flac"};
 
+// Opaque containers and files. Their metadata does not interpret the payload as text.
+inline constexpr std::array<std::string_view, 22> kBinaryExtensions = {
+    ".exe", ".dll", ".so",  ".dylib", ".bin", ".dat", ".mp4", ".avi",  ".mkv",   ".mov", ".zip",
+    ".rar", ".7z",  ".tar", ".gz",    ".pdf", ".ttf", ".otf", ".woff", ".woff2", ".eot", ".inm",
+};
+
 template <size_t N> inline bool Contains(const std::array<std::string_view, N> &extensions, std::string_view ext)
 {
     for (const auto candidate : extensions) {

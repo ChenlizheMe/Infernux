@@ -6,7 +6,9 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
+#include <function/resources/AssetRegistry/ArtifactFileReader.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
@@ -15,7 +17,9 @@
 
 #include <core/log/InxLog.h>
 #include <platform/filesystem/DocumentStore.h>
+#include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
+#include <platform/filesystem/IoAffinity.h>
 
 #include <algorithm>
 #include <cctype>
@@ -24,7 +28,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -47,7 +53,8 @@ std::string Utf8Diagnostic(const char *message)
     return nlohmann::json::parse(encoded).get<std::string>();
 }
 
-void ApplyDocumentationTextureMovePolicy(AssetDatabase &database, AssetMutationResult &result)
+void ApplyDocumentationTextureMovePolicy(AssetDatabase &database, AssetMutationResult &result,
+                                         const PathWriteScope &writeScope)
 {
     if (result.resourceType != ResourceType::Texture)
         return;
@@ -56,7 +63,7 @@ void ApplyDocumentationTextureMovePolicy(AssetDatabase &database, AssetMutationR
         return;
     // Relocation keeps the GUID, but entering a documentation directory
     // changes the import policy even when the source bytes are unchanged.
-    const auto imported = database.ReimportAsset(result.path);
+    const auto imported = database.ReimportAsset(result.path, nullptr, writeScope);
     if (!imported.succeeded) {
         result.succeeded = false;
         result.errorCode = AssetMutationErrorCode::RuntimeApplyFailed;
@@ -301,35 +308,53 @@ std::string SkeletonSourceHash(const InxResourceMeta *metadata)
     return metadata->GetDataAs<std::string>("content_hash");
 }
 
-std::shared_ptr<const SkeletonDefinitionSnapshot>
-ReadSkeletonSnapshot(const std::string &guid, const std::string &sourceHash, const std::string &artifactPath)
+// A single Apply pins the selected file across other catalog commits. A refresh
+// owns its catalog transaction, so shared inputs can open on first worker use.
+class SkeletonDefinitionCapture
 {
-    std::ifstream stream(ToFsPath(artifactPath), std::ios::binary);
-    if (!stream)
-        throw std::invalid_argument("copied skeleton definition has no current skinned artifact");
-    stream.seekg(0, std::ios::end);
-    const std::streamoff size = stream.tellg();
-    if (size <= 0 || static_cast<uintmax_t>(size) > std::numeric_limits<size_t>::max())
-        throw std::invalid_argument("copied skeleton definition artifact is invalid");
-    stream.seekg(0, std::ios::beg);
-    auto snapshot = std::make_shared<SkeletonDefinitionSnapshot>();
-    snapshot->ownerGuid = guid;
-    snapshot->sourceContentHash = sourceHash;
-    snapshot->artifactBytes.resize(static_cast<size_t>(size));
-    if (!stream.read(snapshot->artifactBytes.data(), size))
-        throw std::invalid_argument("copied skeleton definition artifact could not be read");
-    return snapshot;
-}
+  public:
+    SkeletonDefinitionCapture(std::string sourceHash, const std::string &artifactPath, bool pinFile)
+        : m_path(ToFsPath(artifactPath)), m_sourceHash(std::move(sourceHash))
+    {
+        if (pinFile)
+            m_input = std::make_unique<FileInput>(m_path);
+    }
 
-// A reused definition is read once on an import worker and shared by all its
-// consumers. Captured GUID/hash/path are immutable; failed reads are retained,
-// not retried by each model and never resolved against a mutable live catalog.
-struct CachedSkeletonCapture
-{
-    std::once_flag once;
-    std::shared_ptr<const SkeletonDefinitionSnapshot> snapshot;
-    std::exception_ptr failure;
+    std::shared_ptr<const InxSkinnedMesh> Read()
+    {
+        std::call_once(m_once, [this] {
+            auto input = std::move(m_input);
+            try {
+                if (!input)
+                    input = std::make_unique<FileInput>(m_path);
+                const auto workspace = SkinnedMeshArtifact::ReadWorkspace(*input);
+                const auto bytes = (std::min<uint64_t>)(input->Size(), ArtifactFileReader::BlockBytes);
+                std::vector<char> block(static_cast<size_t>(bytes));
+                m_mesh = SkinnedMeshArtifact::Read(*input, m_sourceHash, block, workspace);
+            } catch (...) {
+                m_failure = std::current_exception();
+            }
+        });
+        if (m_failure)
+            std::rethrow_exception(m_failure);
+        return m_mesh;
+    }
+
+  private:
+    std::filesystem::path m_path;
+    std::unique_ptr<FileInput> m_input;
+    std::string m_sourceHash;
+    std::once_flag m_once;
+    std::shared_ptr<const InxSkinnedMesh> m_mesh;
+    std::exception_ptr m_failure;
 };
+
+ImportRequest::SkeletonDefinitionReader CaptureSkeletonDefinition(std::string sourceHash,
+                                                                  const std::string &artifactPath, bool pinFile)
+{
+    auto capture = std::make_shared<SkeletonDefinitionCapture>(std::move(sourceHash), artifactPath, pinFile);
+    return [capture = std::move(capture)] { return capture->Read(); };
+}
 
 std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
@@ -365,10 +390,38 @@ bool RequiresRuntimeCpuArtifact(ResourceType type)
     return type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::RenderTexture;
 }
 
+std::string ShaderPathIndexKey(const InxResourceMeta &metadata)
+{
+    if (!metadata.HasKey("type") || !metadata.HasKey("shader_id"))
+        return {};
+    const auto type = metadata.GetDataAs<std::string>("type");
+    if (type != "vertex" && type != "fragment")
+        return {};
+    return type + ":" + metadata.GetDataAs<std::string>("shader_id");
+}
+
+std::ifstream OpenRuntimeCatalogDocument(const std::filesystem::path &path)
+{
+    std::ifstream stream(NativeFilePath(path), std::ios::binary);
+    if (!stream)
+        throw std::runtime_error("runtime catalog document cannot be opened: " + FromFsPath(path));
+    return stream;
+}
+
+nlohmann::json ReadRuntimeCatalogDocument(const std::filesystem::path &path)
+{
+    auto stream = OpenRuntimeCatalogDocument(path);
+    return nlohmann::json::parse(stream);
+}
+
 bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, ResourceType type,
                                      ImportArtifact::RuntimeArtifactKind kind)
 {
-    std::ifstream stream(path, std::ios::binary);
+    const auto nativePath = NativeFilePath(path);
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(nativePath, error))
+        return false;
+    std::ifstream stream(nativePath, std::ios::binary);
     if (!stream)
         return false;
     char buffer[32]{};
@@ -488,10 +541,12 @@ TakeRuntimeArtifactWrites(std::vector<ImportArtifact::RuntimeCpuArtifact> &artif
     return writes;
 }
 
-bool HasOwnerMergeBudget(const std::chrono::steady_clock::time_point started, size_t processed)
+bool HasOwnerMergeBudget(const FrameWorkOwner *owner, const std::chrono::steady_clock::time_point started,
+                         size_t processed)
 {
     return processed < kOwnerMergeEntryBudget &&
-           (processed == 0 || std::chrono::steady_clock::now() - started < kOwnerMergeTimeBudget);
+           (processed == 0 || (std::chrono::steady_clock::now() - started < kOwnerMergeTimeBudget &&
+                               (!owner || !owner->IsActive() || owner->Remaining(true) > 0)));
 }
 
 template <typename Callback> class ScopeExit final
@@ -539,27 +594,6 @@ std::string MakeReadOnlyGuid(const std::string &identityKey)
     stream << std::hex << std::setfill('0') << std::setw(16) << Fnv1a64(namespaced, 14695981039346656037ULL)
            << std::setw(16) << Fnv1a64(namespaced, 1099511628211ULL);
     return stream.str();
-}
-
-std::vector<char> ReadExactSourceBytes(const std::string &path)
-{
-    std::ifstream file(ToFsPath(path), std::ios::in | std::ios::binary);
-    if (!file.is_open())
-        throw std::runtime_error("failed to open source file: " + path);
-    file.seekg(0, std::ios::end);
-    const std::streampos size = file.tellg();
-    if (size == std::streampos(-1))
-        throw std::runtime_error("failed to determine source file size: " + path);
-    file.seekg(0, std::ios::beg);
-    if (!file)
-        throw std::runtime_error("failed to seek source file: " + path);
-
-    std::vector<char> content;
-    content.reserve(static_cast<size_t>(size));
-    content.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    if (file.bad())
-        throw std::runtime_error("failed while reading source file: " + path);
-    return content;
 }
 
 bool ReadFingerprint(const std::filesystem::path &path, AssetFileFingerprint &out)
@@ -617,7 +651,15 @@ AssetDatabase::AssetDatabase()
 
 AssetDatabase::~AssetDatabase()
 {
-    WaitForPendingWork();
+    WaitForCatalogWork(m_refreshWork);
+    WaitForCatalogWork(m_applyWork);
+    WaitForCatalogWork(m_runtimeCatalogWork);
+}
+
+AssetRegistry *AssetDatabase::BoundRegistry() const
+{
+    auto &registry = AssetRegistry::Instance();
+    return registry.GetAssetDatabase() == this ? &registry : nullptr;
 }
 
 std::string AssetDatabase::GetRuntimeArtifactPath(const std::string &guid, ResourceType type) const
@@ -625,7 +667,7 @@ std::string AssetDatabase::GetRuntimeArtifactPath(const std::string &guid, Resou
     const std::string relative = RuntimeArtifactRelativePath(guid, type);
     if (relative.empty() || m_projectRoot.empty())
         return {};
-    return FromFsPath(ToFsPath(m_projectRoot) / std::filesystem::u8path(relative));
+    return FromFsPath(ToFsPath(RuntimeArtifactRoot(guid)) / std::filesystem::u8path(relative));
 }
 
 std::string AssetDatabase::GetSkinnedMeshArtifactPath(const std::string &guid) const
@@ -634,35 +676,63 @@ std::string AssetDatabase::GetSkinnedMeshArtifactPath(const std::string &guid) c
         RuntimeArtifactRelativePath(guid, ResourceType::Mesh, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
     if (m_projectRoot.empty())
         return {};
-    return FromFsPath(ToFsPath(m_projectRoot) / std::filesystem::u8path(relative));
+    return FromFsPath(ToFsPath(RuntimeArtifactRoot(guid)) / std::filesystem::u8path(relative));
 }
 
-bool AssetDatabase::EnsureRuntimeArtifactCurrent(const std::string &guid, ResourceType type)
+std::string AssetDatabase::RuntimeArtifactRoot(const std::string &guid) const
 {
-    AssertMutationThread("EnsureRuntimeArtifactCurrent");
-    AssertNoPendingCommit("EnsureRuntimeArtifactCurrent");
-    const auto path = m_guidToPath.find(guid);
-    if (path == m_guidToPath.end() || path->second.empty())
-        return false;
-    const std::string normalizedPath = FilesystemPathKey(path->second);
-    const std::string primary = GetRuntimeArtifactPath(guid, type);
-    std::error_code error;
-    bool reusable =
-        !primary.empty() && std::filesystem::is_regular_file(ToFsPath(primary), error) && !error &&
-        HasCurrentRuntimeArtifactHeader(ToFsPath(primary), type, ImportArtifact::RuntimeArtifactKind::Primary);
-    if (reusable && type == ResourceType::Mesh) {
-        error.clear();
-        const std::string skinned = GetSkinnedMeshArtifactPath(guid);
-        reusable =
-            !skinned.empty() && std::filesystem::is_regular_file(ToFsPath(skinned), error) && !error &&
-            HasCurrentRuntimeArtifactHeader(ToFsPath(skinned), type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
+    if (m_cookedRuntimeCatalogInstalled) {
+        const auto snapshot = LoadQuerySnapshot();
+        if (const auto &roots = snapshot->runtimeArtifactRoots) {
+            const auto root = roots->find(guid);
+            if (root != roots->end())
+                return root->second;
+        }
     }
-    if (reusable)
+    return m_projectRoot;
+}
+
+bool AssetDatabase::HasCurrentMeshArtifacts(const std::string &guid) const
+{
+    const auto primary = ToFsPath(GetRuntimeArtifactPath(guid, ResourceType::Mesh));
+    const auto skinned = ToFsPath(GetSkinnedMeshArtifactPath(guid));
+    return HasCurrentRuntimeArtifactHeader(primary, ResourceType::Mesh, ImportArtifact::RuntimeArtifactKind::Primary) &&
+           HasCurrentRuntimeArtifactHeader(skinned, ResourceType::Mesh,
+                                           ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
+}
+
+bool AssetDatabase::IsModelReimportPending() const noexcept
+{
+    return m_pendingModelReimport && m_pendingModelReimport->phase != PendingModelReimport::Phase::Complete;
+}
+
+bool AssetDatabase::IsModelReimportPublishing() const noexcept
+{
+    return m_pendingModelReimport && (m_pendingModelReimport->phase == PendingModelReimport::Phase::Write ||
+                                      m_pendingModelReimport->phase == PendingModelReimport::Phase::Publish);
+}
+
+bool AssetDatabase::IsDeliveringModelReimport() const noexcept
+{
+    return m_pendingModelReimport && m_pendingModelReimport->phase == PendingModelReimport::Phase::Publish;
+}
+
+bool AssetDatabase::IsStagingRuntimeArtifact(const std::string &guid, ResourceType type) const noexcept
+{
+    if (type == ResourceType::Mesh && m_pendingRefreshCommit &&
+        m_pendingRefreshCommit->phase != PendingRefreshCommit::Phase::ReadyToFinalize)
         return true;
-    if (IsReadOnlyPath(normalizedPath))
-        return false;
-    const AssetMutationResult rebuilt = ReimportAsset(path->second);
-    return rebuilt.succeeded;
+    return IsModelReimportPublishing() && !IsDeliveringModelReimport() &&
+           m_pendingModelReimport->artifactGuids.count(guid) != 0;
+}
+
+void AssetDatabase::CompleteRuntimeArtifactPublication()
+{
+    AssertMutationThread("CompleteRuntimeArtifactPublication");
+    if (IsModelReimportPublishing())
+        CompletePendingModelReimport();
+    else if (IsRefreshPending())
+        CompletePendingRefresh();
 }
 
 void AssetDatabase::AssertMutationThread(const char *operation) const
@@ -678,6 +748,9 @@ void AssetDatabase::AssertNoPendingCommit(const char *operation) const
     if (m_pendingRefreshCommit)
         throw std::logic_error(std::string("AssetDatabase::") + operation +
                                " is unavailable while a refresh commit is pending");
+    if (IsModelReimportPublishing())
+        throw std::logic_error(std::string("AssetDatabase::") + operation +
+                               " is unavailable while a model Apply commit is pending");
 }
 
 bool AssetDatabase::IsOwnerThread() const
@@ -723,18 +796,16 @@ std::shared_ptr<const AssetDatabase::QuerySnapshot> AssetDatabase::LoadQuerySnap
 
 void AssetDatabase::PublishQuerySnapshot(bool includeCatalog)
 {
-    const auto previous = LoadQuerySnapshot();
     ExpandModelSubAssets(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults);
     InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults,
                                                     m_queryGeneration + 1, includeCatalog));
-    PublishModelSubAssetEvents(previous);
 }
 
 void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const QuerySnapshot> &previous,
                                                const std::unordered_set<std::string> *changedGuids)
 {
-    auto &registry = AssetRegistry::Instance();
-    auto &graph = AssetDependencyGraph::Instance();
+    auto *registry = BoundRegistry();
+    auto &graph = *m_dependencyGraph;
     const auto publish = [&](const std::string &guid) {
         const auto current = m_metas.find(guid);
         if (current != m_metas.end() && current->second->HasKey("import_document")) {
@@ -754,7 +825,8 @@ void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const Query
         if (!metadata->HasKey("import_owner_guid"))
             return;
         if (current == m_metas.end()) {
-            registry.RemoveAsset(guid);
+            if (registry)
+                registry->RemoveAsset(guid);
             graph.NotifyEvent(guid, metadata->GetResourceType(), AssetEvent::Deleted);
             graph.RemoveAsset(guid);
         } else if (metadata != current->second) {
@@ -768,9 +840,11 @@ void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const Query
                 after["metadata"].erase("file_path");
             }
             const auto event = moved && before == after ? AssetEvent::Moved : AssetEvent::Modified;
-            registry.UpdateLoadedAssetPath(guid, m_guidToPath.at(guid));
-            if (event == AssetEvent::Modified && registry.GetAssetType(guid) == ResourceType::Texture)
-                registry.ReloadAsset(guid);
+            if (registry) {
+                registry->UpdateLoadedAssetPath(guid, m_guidToPath.at(guid));
+                if (event == AssetEvent::Modified && current->second->GetResourceType() == ResourceType::Texture)
+                    registry->ReloadAsset(guid);
+            }
             graph.NotifyEvent(guid, metadata->GetResourceType(), event);
         }
     };
@@ -899,36 +973,49 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
     }
     std::sort(changes.begin(), changes.end(),
               [](const Change &left, const Change &right) { return left.guid < right.guid; });
-    auto &registry = AssetRegistry::Instance();
+    auto *registry = BoundRegistry();
     // Install every CPU cache change before notifying consumers, which may load
     // other changed assets through the already-published catalog.
-    for (const auto &change : changes) {
-        if (change.event == AssetEvent::Deleted) {
-            registry.RemoveAsset(change.guid);
-            continue;
-        }
-        if (change.moved)
-            registry.UpdateLoadedAssetPath(change.guid, m_guidToPath.at(change.guid));
-        if (change.event == AssetEvent::Modified) {
-            const bool loaded = registry.IsLoaded(change.guid);
-            if (!registry.ReloadAsset(change.guid) && loaded)
-                throw std::runtime_error("Could not publish refreshed runtime asset: " + change.guid);
+    if (registry) {
+        for (const auto &change : changes) {
+            if (change.event == AssetEvent::Deleted) {
+                registry->RemoveAsset(change.guid);
+                continue;
+            }
+            if (change.moved)
+                registry->UpdateLoadedAssetPath(change.guid, m_guidToPath.at(change.guid));
+            if (change.event == AssetEvent::Modified && change.type != ResourceType::Mesh) {
+                const bool loaded = registry->IsLoaded(change.guid);
+                if (!registry->ReloadAsset(change.guid) && loaded)
+                    throw std::runtime_error("Could not publish refreshed runtime asset: " + change.guid);
+            }
         }
     }
-    auto &graph = AssetDependencyGraph::Instance();
+    auto &graph = *m_dependencyGraph;
     for (const auto &change : changes) {
+        if (registry && change.event == AssetEvent::Modified && change.type == ResourceType::Mesh &&
+            registry->NotifySourceImported(change.guid, change.type))
+            continue;
         graph.NotifyEvent(change.guid, change.type, change.event);
         if (change.event == AssetEvent::Deleted)
             graph.RemoveAsset(change.guid);
     }
 }
 
-void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
+std::unordered_set<std::string> AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
 {
     const auto previous = LoadQuerySnapshot();
     if (!previous || !previous->catalog || paths.empty()) {
         PublishQuerySnapshot();
-        return;
+        std::unordered_set<std::string> changed;
+        for (const auto &[guid, metadata] : m_metas)
+            if (metadata->HasKey("import_owner_guid"))
+                changed.insert(guid);
+        if (previous)
+            for (const auto &[guid, metadata] : previous->metas)
+                if (metadata->HasKey("import_owner_guid"))
+                    changed.insert(guid);
+        return changed;
     }
 
     auto snapshot = std::make_shared<QuerySnapshot>(*previous);
@@ -1048,11 +1135,13 @@ void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> 
     snapshot->catalog = std::move(catalog);
     BuildShaderPathIndex(*snapshot);
     InstallQuerySnapshot(std::move(snapshot));
-    PublishModelSubAssetEvents(previous, &changedSubAssets);
+    return changedSubAssets;
 }
 
 void AssetDatabase::InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept
 {
+    if (m_cookedRuntimeCatalogInstalled && !snapshot->runtimeArtifactRoots)
+        snapshot->runtimeArtifactRoots = LoadQuerySnapshot()->runtimeArtifactRoots;
     m_queryGeneration = snapshot->generation;
     std::atomic_store_explicit(&m_querySnapshot, std::shared_ptr<const QuerySnapshot>(std::move(snapshot)),
                                std::memory_order_release);
@@ -1222,13 +1311,13 @@ bool AssetDatabase::RestoreCachedCatalog()
     auto query = BuildQuerySnapshotArtifact(restored.guidToPath, restored.pathToGuid, restored.metas,
                                             restored.fileStates, restored.importResults, queryGeneration);
     reportPhase("build_query_snapshot");
-    const uint64_t dependencyGeneration = AssetDependencyGraph::Instance().GetAssetGeneration() + 1;
+    const uint64_t dependencyGeneration = m_dependencyGraph->GetAssetGeneration() + 1;
     auto dependencySnapshot = AssetDependencyGraph::BuildAssetSnapshot(dependencies, dependencyGeneration);
     reportPhase("build_dependency_snapshot");
 
     (void)TakeWorkingSet();
     InstallWorkingSet(std::move(restored));
-    AssetDependencyGraph::Instance().InstallAssetSnapshot(std::move(dependencySnapshot));
+    m_dependencyGraph->InstallAssetSnapshot(std::move(dependencySnapshot));
     InstallQuerySnapshot(std::move(query));
     reportPhase("publish");
     m_assetIndexDirty = false;
@@ -1256,32 +1345,56 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
         previousPhase = now;
     };
 
-    std::ifstream stream(ToFsPath(catalogPath));
-    if (!stream)
-        throw std::runtime_error("runtime asset catalog cannot be opened: " + catalogPath);
-
-    const nlohmann::json document = nlohmann::json::parse(stream);
+    RuntimeCatalogPreparation preparation{CaptureRuntimeWorkingSet(), {}, m_queryGeneration, {}, {}};
+    const auto document = ReadRuntimeCatalogDocument(ToFsPath(catalogPath));
     reportPhase("parse");
+    const auto entryCount = PrepareRuntimeCatalog(preparation, document, m_projectRoot, m_readOnlyScanRoots,
+                                                  trustedPackage, nullptr, reportPhase);
+    InstallPreparedRuntimeCatalog(preparation);
+    m_cookedRuntimeCatalogInstalled = trustedPackage;
+    reportPhase("publish_snapshot");
+    INXLOG_INFO("AssetDatabase: installed ", entryCount, " cooked Player asset identities");
+}
+
+AssetDatabase::WorkingSet AssetDatabase::CaptureRuntimeWorkingSet() const
+{
+    return {m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults, {}, false};
+}
+
+size_t AssetDatabase::PrepareRuntimeCatalog(RuntimeCatalogPreparation &preparation, const nlohmann::json &document,
+                                            const std::string &contentRoot,
+                                            const std::unordered_set<std::string> &builtinRoots, bool trustedPackage,
+                                            const std::unordered_set<std::string> *newGuids,
+                                            const std::function<void(const char *)> &reportPhase)
+{
     if (document.value("$schema", std::string{}) != "infernux.runtime_asset_records")
         throw std::runtime_error("runtime asset catalog has an unsupported schema");
     const auto entries = document.find("entries");
     if (entries == document.end() || !entries->is_array())
         throw std::runtime_error("runtime asset catalog has no entry array");
 
-    // Player installation is a single bulk publication. Reserve every working
-    // map once so larger projects do not repeatedly rehash the same identity
-    // set while the startup window is still hidden.
-    const size_t expectedIdentityCount = m_guidToPath.size() + entries->size();
-    m_guidToPath.reserve(expectedIdentityCount);
-    m_pathToGuid.reserve(m_pathToGuid.size() + entries->size());
-    m_metas.reserve(m_metas.size() + entries->size());
-    m_importResults.reserve(m_importResults.size() + entries->size());
-    m_fileStates.reserve(m_fileStates.size() + entries->size());
+    auto &working = preparation.workingSet;
+    auto &guidToPath = working.guidToPath;
+    auto &pathToGuid = working.pathToGuid;
+    auto &metas = working.metas;
+    auto &fileStates = working.fileStates;
+    auto &importResults = working.importResults;
+    const size_t count = newGuids ? newGuids->size() : entries->size();
+    const size_t expectedIdentityCount = guidToPath.size() + count;
+    guidToPath.reserve(expectedIdentityCount);
+    pathToGuid.reserve(pathToGuid.size() + count);
+    metas.reserve(metas.size() + count);
+    importResults.reserve(importResults.size() + count);
+    fileStates.reserve(fileStates.size() + count);
 
+    const auto contentBase = ToFsPath(contentRoot);
+    size_t prepared = 0;
     for (const auto &entry : *entries) {
         if (!entry.is_object())
             throw std::runtime_error("runtime asset catalog entry is not an object");
         const std::string guid = entry.value("guid", std::string{});
+        if (newGuids && !newGuids->count(guid))
+            continue;
         const std::string relativePath = entry.value("runtime_path", std::string{});
         const auto metadataDocument = entry.find("metadata");
         if (guid.empty() || relativePath.empty() || metadataDocument == entry.end() || !metadataDocument->is_object())
@@ -1295,7 +1408,7 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
                 throw std::runtime_error("runtime asset catalog path escapes the project: " + relativePath);
         }
 
-        std::filesystem::path resolvedAssetPath = ToFsPath(m_projectRoot) / relative;
+        std::filesystem::path resolvedAssetPath = contentBase / relative;
         const auto runtimeArtifacts = entry.find("runtime_artifacts");
         if (runtimeArtifacts != entry.end() && runtimeArtifacts->is_array()) {
             const std::string primaryArtifactId = entry.value("primary_runtime_artifact_id", std::string{});
@@ -1317,7 +1430,7 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
                         if (part == "..")
                             throw std::runtime_error("runtime Content asset path escapes the project: " + runtimePath);
                     }
-                    const std::filesystem::path candidate = ToFsPath(m_projectRoot) / contentRelative;
+                    const std::filesystem::path candidate = contentBase / contentRelative;
                     if (!trustedPackage) {
                         std::error_code fileError;
                         if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
@@ -1342,7 +1455,7 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
                 }
 
                 bool found = false;
-                for (const auto &root : m_readOnlyScanRoots) {
+                for (const auto &root : builtinRoots) {
                     const std::filesystem::path candidate = ToFsPath(root) / builtinRelative;
                     if (!trustedPackage) {
                         std::error_code fileError;
@@ -1379,21 +1492,26 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
             metadata.UpdateFilePath(path);
         metadata.AddMetadata("read_only", true);
 
-        const auto oldPathGuid = m_pathToGuid.find(normalizedPath);
-        if (oldPathGuid != m_pathToGuid.end() && oldPathGuid->second != guid) {
-            m_guidToPath.erase(oldPathGuid->second);
-            m_metas.erase(oldPathGuid->second);
-            m_importResults.erase(oldPathGuid->second);
+        const auto oldPathGuid = pathToGuid.find(normalizedPath);
+        const auto oldGuidPath = guidToPath.find(guid);
+        if (newGuids && (oldPathGuid != pathToGuid.end() || oldGuidPath != guidToPath.end()))
+            throw std::runtime_error("runtime content conflicts with a published asset identity: " + guid);
+        if (oldPathGuid != pathToGuid.end() && oldPathGuid->second != guid) {
+            guidToPath.erase(oldPathGuid->second);
+            metas.erase(oldPathGuid->second);
+            importResults.erase(oldPathGuid->second);
         }
-        const auto oldGuidPath = m_guidToPath.find(guid);
-        if (oldGuidPath != m_guidToPath.end())
-            m_pathToGuid.erase(trustedPackage ? LexicalFilesystemPathKey(oldGuidPath->second)
-                                              : FilesystemPathKey(oldGuidPath->second));
+        if (oldGuidPath != guidToPath.end()) {
+            const std::string oldKey =
+                trustedPackage ? LexicalFilesystemPathKey(oldGuidPath->second) : FilesystemPathKey(oldGuidPath->second);
+            pathToGuid.erase(oldKey);
+            fileStates.erase(oldKey);
+        }
 
-        m_guidToPath[guid] = path;
-        m_pathToGuid[normalizedPath] = guid;
-        m_metas[guid] = std::make_shared<InxResourceMeta>(std::move(metadata));
-        m_importResults[guid] = {true, {}};
+        guidToPath[guid] = path;
+        pathToGuid[normalizedPath] = guid;
+        metas[guid] = std::make_shared<InxResourceMeta>(std::move(metadata));
+        importResults[guid] = {true, {}};
 
         CachedFileState fileState;
         fileState.readOnly = true;
@@ -1403,16 +1521,133 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
         // that trust decision. Editor/test callers retain strict validation.
         if (!trustedPackage)
             (void)ReadFingerprint(ToFsPath(path), fileState.source);
-        m_fileStates[normalizedPath] = fileState;
+        fileStates[normalizedPath] = fileState;
+        ++prepared;
     }
-    reportPhase("install_entries");
+    if (prepared != count)
+        throw std::runtime_error("runtime content catalog is missing selected asset identities");
+    if (reportPhase)
+        reportPhase("prepare_entries");
 
     // Player has no Project/FileManager panel. Keep GUID/path/metadata queries,
     // but do not expand source-model children over cooked artifact identities.
-    InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults,
-                                                    m_queryGeneration + 1, false));
-    reportPhase("publish_snapshot");
-    INXLOG_INFO("AssetDatabase: installed ", entries->size(), " cooked Player asset identities");
+    preparation.query = BuildQuerySnapshotArtifact(guidToPath, pathToGuid, metas, fileStates, importResults,
+                                                   preparation.baseGeneration + 1, false);
+    return prepared;
+}
+
+void AssetDatabase::InstallPreparedRuntimeCatalog(RuntimeCatalogPreparation &preparation) noexcept
+{
+    auto &working = preparation.workingSet;
+    m_guidToPath.swap(working.guidToPath);
+    m_pathToGuid.swap(working.pathToGuid);
+    m_metas.swap(working.metas);
+    m_importResults.swap(working.importResults);
+    m_fileStates.swap(working.fileStates);
+    InstallQuerySnapshot(std::move(preparation.query));
+}
+
+void AssetDatabase::BeginRuntimeAssetCatalog(const std::string &packageRoot, const std::string &contentRoot,
+                                             const std::vector<std::string> &allowedRoots)
+{
+    AssertMutationThread("BeginRuntimeAssetCatalog");
+    AssertNoPendingCommit("BeginRuntimeAssetCatalog");
+    ObserveCatalogWork(m_runtimeCatalogWork);
+    if (!m_cookedRuntimeCatalogInstalled || !m_frameWork || m_runtimeCatalog || !m_runtimeCatalogWork.Complete())
+        throw std::logic_error("runtime content preparation requires an idle cooked Player catalog and a host");
+    if (!ToFsPath(packageRoot).is_absolute() || !ToFsPath(contentRoot).is_absolute())
+        throw std::invalid_argument("runtime content requires resolved package and output directories");
+
+    auto preparation = std::make_shared<RuntimeCatalogPreparation>();
+    preparation->workingSet = CaptureRuntimeWorkingSet();
+    preparation->baseGeneration = m_queryGeneration;
+    QueueCatalogJob(
+        m_runtimeCatalogWork, CatalogIoStage::RuntimeCatalog,
+        [preparation, packageRoot, contentRoot, allowedRoots, builtinRoots = m_readOnlyScanRoots,
+         previous = LoadQuerySnapshot()] {
+            try {
+                const auto package = ToFsPath(packageRoot);
+                const auto destination = ToFsPath(contentRoot);
+                inxpack::Reader catalog(package / "AssetCatalog.inxcat");
+                preparation->documents["catalog"] = nlohmann::json::parse(catalog.Read("RuntimeAssetCatalog.json"));
+                auto packageIndex = OpenRuntimeCatalogDocument(package / "PackageIndex.inxmanifest");
+                preparation->documents["package_index"] = std::string(std::istreambuf_iterator<char>(packageIndex), {});
+                // The asset worker already owns the host IO grant. Cold Player
+                // startup uses parallel extraction before there is a host owner.
+                const auto content = inxpack::Extract(package / "Content.inxpkg", destination, allowedRoots, false);
+                const auto catalogManifest = catalog.GetManifest();
+                preparation->documents["content_identity"] = {inxpack::HashToHex(content.archiveHash),
+                                                              content.archiveBytes};
+                preparation->documents["catalog_identity"] = {inxpack::HashToHex(catalogManifest.archiveHash),
+                                                              catalogManifest.archiveBytes};
+                auto files = nlohmann::json::object();
+                for (const auto &entry : content.entries)
+                    files[entry.path] = entry.rawBytes;
+                preparation->documents["content_files"] = std::move(files);
+                auto &records = preparation->documents["records"];
+                records = ReadRuntimeCatalogDocument(destination / "Library" / "RuntimeAssetRecords.json");
+                preparation->documents["types"] =
+                    ReadRuntimeCatalogDocument(destination / "Library" / "RuntimeTypeRegistry.json");
+                std::unordered_set<std::string> newGuids;
+                for (const auto &entry : records.at("entries")) {
+                    const auto guid = entry.at("guid").get<std::string>();
+                    if (!previous->guidToPath.count(guid))
+                        newGuids.insert(guid);
+                }
+                PrepareRuntimeCatalog(*preparation, records, contentRoot, builtinRoots, true, &newGuids);
+                auto roots = previous->runtimeArtifactRoots
+                                 ? std::make_shared<RuntimeArtifactRoots>(*previous->runtimeArtifactRoots)
+                                 : std::make_shared<RuntimeArtifactRoots>();
+                auto shaderPaths = previous->shaderPaths;
+                for (const auto &guid : newGuids) {
+                    roots->emplace(guid, contentRoot);
+                    auto key = ShaderPathIndexKey(*preparation->workingSet.metas.at(guid));
+                    if (!key.empty() &&
+                        !shaderPaths.try_emplace(key, preparation->workingSet.guidToPath.at(guid)).second)
+                        throw std::runtime_error("runtime content conflicts with a published shader: " + key);
+                }
+                preparation->query->runtimeArtifactRoots = std::move(roots);
+                preparation->query->shaderPaths = std::move(shaderPaths);
+                preparation->documents["asset_guids"] = std::move(newGuids);
+            } catch (...) {
+                preparation->failure = std::current_exception();
+            }
+        });
+    m_runtimeCatalog = std::move(preparation);
+}
+
+bool AssetDatabase::IsRuntimeAssetCatalogReady()
+{
+    AssertMutationThread("IsRuntimeAssetCatalogReady");
+    ObserveCatalogWork(m_runtimeCatalogWork);
+    if (!m_runtimeCatalog || !m_runtimeCatalogWork.Complete())
+        return false;
+    if (m_runtimeCatalog->failure)
+        std::rethrow_exception(m_runtimeCatalog->failure);
+    AssertNoPendingCommit("IsRuntimeAssetCatalogReady");
+    if (m_runtimeCatalog->baseGeneration != m_queryGeneration)
+        throw std::runtime_error("runtime asset catalog changed while new content was being prepared");
+    return true;
+}
+
+const nlohmann::json *AssetDatabase::GetPreparedRuntimeCatalogDocuments()
+{
+    return IsRuntimeAssetCatalogReady() ? &m_runtimeCatalog->documents : nullptr;
+}
+
+void AssetDatabase::PublishRuntimeAssetCatalog()
+{
+    if (!IsRuntimeAssetCatalogReady())
+        throw std::logic_error("runtime content has not finished preparing");
+    InstallPreparedRuntimeCatalog(*m_runtimeCatalog);
+    m_runtimeCatalog.reset();
+}
+
+void AssetDatabase::DiscardRuntimeAssetCatalog()
+{
+    AssertMutationThread("DiscardRuntimeAssetCatalog");
+    m_runtimeCatalogWork.DropUnsubmitted();
+    m_runtimeCatalog.reset();
 }
 
 AssetDatabase::AssetScanRequest AssetDatabase::CaptureScanRequest() const
@@ -1523,11 +1758,152 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
     return artifact;
 }
 
+void AssetDatabase::QueueCatalogWork(CatalogWork &work, CatalogIoStage stage, uint32_t count, CatalogWork::Factory make)
+{
+    work = {stage, count, 0, count ? std::move(make) : CatalogWork::Factory{}, {}};
+    if (!m_frameWork)
+        SubmitCatalogWork(work, false);
+}
+
+void AssetDatabase::QueueCatalogJob(CatalogWork &work, CatalogIoStage stage, JobSystem::JobFn job)
+{
+    QueueCatalogWork(work, stage, 1, [job = std::move(job)](uint32_t) mutable { return std::move(job); });
+}
+
+bool AssetDatabase::CanSubmitCatalogStage(CatalogIoStage stage) const
+{
+    const auto &jobs = JobSystem::Get();
+    const auto workers = (std::max)(jobs.GetWorkerCount(), 1u);
+    const auto limit = jobs.GetDomainConcurrency(JobDomain::Asset);
+    const auto slots = limit ? (std::min)(workers, limit) : workers;
+    return m_refreshWork.active.size() + m_applyWork.active.size() + m_runtimeCatalogWork.active.size() < slots &&
+           m_frameWork->CanAdmitResource(FrameWorkResource::Io, m_catalogIoCosts[static_cast<size_t>(stage)], true);
+}
+
+bool AssetDatabase::CanSubmitCatalogWork(const CatalogWork &work) const
+{
+    return work.submitted < work.count && CanSubmitCatalogStage(work.stage);
+}
+
+bool AssetDatabase::SubmitCatalogWork(CatalogWork &work, bool managed)
+{
+    const auto remaining = work.count - work.submitted;
+    if (!remaining || (managed && !CanSubmitCatalogWork(work)))
+        return false;
+    const auto count = managed ? 1u : remaining;
+    work.active.reserve(work.active.size() + count);
+    for (uint32_t index = 0; index < count; ++index) {
+        auto elapsed = std::make_shared<uint64_t>(0);
+        auto &jobs = JobSystem::Get();
+        auto job = jobs.Schedule(
+            [task = work.make(work.submitted), elapsed] {
+                const auto started = std::chrono::steady_clock::now();
+                const auto measure = MakeScopeExit([&] {
+                    *elapsed = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started)
+                            .count());
+                });
+                task();
+            },
+            JobDomain::Asset, managed ? JobPriority::Low : JobPriority::Normal,
+            jobs.IsInline() ? JobAffinity::AnyThread : detail::IoJobAffinity);
+        CatalogWork::Receipt receipt{std::move(job), std::move(elapsed)};
+        if (managed) {
+            receipt.frame = m_frameWork->Opportunity();
+            receipt.grant = m_frameWork->RecordAcceptedResource(FrameWorkResource::Io,
+                                                                m_catalogIoCosts[static_cast<size_t>(work.stage)]);
+        }
+        work.active.push_back(std::move(receipt));
+        ++work.submitted;
+    }
+    if (work.submitted == work.count)
+        work.make = {};
+    return true;
+}
+
+void AssetDatabase::ObserveCatalogWork(CatalogWork &work) noexcept
+{
+    const auto remaining = std::remove_if(work.active.begin(), work.active.end(), [&](const auto &receipt) {
+        if (!receipt.job.IsComplete())
+            return false;
+        const auto actual = *receipt.elapsed;
+        if (actual)
+            m_catalogIoCosts[static_cast<size_t>(work.stage)] = actual;
+        if (m_frameWork)
+            m_frameWork->ObserveResource(FrameWorkResource::Io, actual, receipt.frame, receipt.grant);
+        return true;
+    });
+    work.active.erase(remaining, work.active.end());
+}
+
+void AssetDatabase::WaitForCatalogWork(CatalogWork &work) noexcept
+{
+    for (const auto &receipt : work.active) {
+        if (!receipt.job.IsComplete()) {
+            if (JobSystem::IsAvailable())
+                JobSystem::Get().WaitPassiveCompletion(receipt.job);
+            else
+                INXLOG_ERROR("AssetDatabase pending work outlived JobSystem");
+        }
+    }
+    ObserveCatalogWork(work);
+}
+
+FrameWorkSource AssetDatabase::GetCatalogWorkSource(FrameWorkOwner &owner)
+{
+    m_frameWork = &owner;
+    FrameWorkSource source;
+    source.observe = source.refresh = [this] {
+        ObserveCatalogWork(m_refreshWork);
+        ObserveCatalogWork(m_applyWork);
+        ObserveCatalogWork(m_runtimeCatalogWork);
+    };
+    source.describe = [this] {
+        FrameWorkFacts facts;
+        const bool refresh = m_pendingAssetScan || m_pendingRefreshCommit;
+        const bool advanceRefresh =
+            refresh && (m_refreshWork.Complete() ? !m_frameWork->IsLate() : CanSubmitCatalogWork(m_refreshWork));
+        const bool advanceApply = CanAdvanceModelReimport();
+        const bool advanceRuntimeCatalog = CanSubmitCatalogWork(m_runtimeCatalogWork);
+        facts.pending =
+            refresh || !m_refreshWork.Complete() || IsModelReimportPending() || !m_runtimeCatalogWork.Complete();
+        facts.workerBusy =
+            !m_refreshWork.active.empty() || !m_applyWork.active.empty() || !m_runtimeCatalogWork.active.empty();
+        facts.observe = facts.workerBusy;
+        facts.ioReady = advanceRefresh || advanceApply || advanceRuntimeCatalog;
+        if (advanceRefresh || advanceApply) {
+            const bool apply = advanceApply && (m_preferApply || !advanceRefresh);
+            facts.host = {static_cast<uint64_t>(apply), 0, true, false};
+        } else if (advanceRuntimeCatalog) {
+            facts.host = {2, 0, true, false};
+        }
+        return facts;
+    };
+    source.advance = [this](bool, uint64_t token) {
+        if (token == 2)
+            return SubmitCatalogWork(m_runtimeCatalogWork, true);
+        const bool apply = token != 0;
+        m_preferApply = !apply;
+        if (apply)
+            return AdvanceModelReimport(true);
+        try {
+            return AdvanceRefresh(true);
+        } catch (...) {
+            m_refreshFailure = std::current_exception();
+            m_pendingAssetScan.reset();
+            m_pendingRefreshCommit.reset();
+            m_refreshWork.DropUnsubmitted();
+            return true;
+        }
+    };
+    return source;
+}
+
 void AssetDatabase::BeginRefresh()
 {
     AssertMutationThread("BeginRefresh");
     AssertNoPendingCommit("BeginRefresh");
-    if (m_pendingAssetScan)
+    if (m_pendingAssetScan || !m_refreshWork.Complete() || m_refreshFailure)
         throw std::logic_error("AssetDatabase refresh is already pending");
     if (!JobSystem::IsAvailable())
         throw std::logic_error("AssetDatabase asynchronous refresh requires JobSystem");
@@ -1536,24 +1912,16 @@ void AssetDatabase::BeginRefresh()
     auto state = std::make_shared<PendingAssetScan>(request.expectedQueryGeneration);
     m_pendingAssetScan = state;
     try {
-        m_pendingAssetScanJob = JobSystem::Get().Schedule([state, request = std::move(request)]() {
-            std::optional<AssetScanArtifact> artifact;
-            std::exception_ptr failure;
+        QueueCatalogJob(m_refreshWork, CatalogIoStage::Scan, [state, request = std::move(request)] {
             try {
-                artifact = BuildScanArtifact(request);
+                state->artifact = BuildScanArtifact(request);
             } catch (...) {
-                failure = std::current_exception();
-            }
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->artifact = std::move(artifact);
-                state->failure = failure;
-                state->complete = true;
+                state->failure = std::current_exception();
             }
         });
     } catch (...) {
         m_pendingAssetScan.reset();
-        m_pendingAssetScanJob = {};
+        m_refreshWork.DropUnsubmitted();
         throw;
     }
 }
@@ -1561,21 +1929,51 @@ void AssetDatabase::BeginRefresh()
 bool AssetDatabase::TryCommitRefresh()
 {
     AssertMutationThread("TryCommitRefresh");
+    RethrowRefreshFailure();
+    if (m_frameWork && m_frameWork->IsActive())
+        return !IsRefreshPending();
+    (void)AdvanceRefresh(false);
+    return !IsRefreshPending();
+}
+
+void AssetDatabase::RethrowRefreshFailure()
+{
+    if (auto failure = std::exchange(m_refreshFailure, {}))
+        std::rethrow_exception(failure);
+}
+
+bool AssetDatabase::AdvanceRefresh(bool managed)
+{
+    ObserveCatalogWork(m_refreshWork);
+    if (!m_refreshWork.Complete())
+        return SubmitCatalogWork(m_refreshWork, managed);
+    if (!m_pendingAssetScan && !m_pendingRefreshCommit)
+        return false;
+    (void)CommitReadyRefresh();
+    return true;
+}
+
+bool AssetDatabase::CommitReadyRefresh()
+{
     if (m_pendingRefreshCommit) {
         const auto state = m_pendingRefreshCommit;
         try {
             if (state->phase == PendingRefreshCommit::Phase::MetadataPrepare) {
-                if (state->metadataJobs.IsValid() && !state->metadataJobs.IsComplete())
-                    return false;
                 state->phase = PendingRefreshCommit::Phase::MetadataMerge;
             }
             if (state->phase == PendingRefreshCommit::Phase::MetadataMerge) {
                 (void)ContinuePendingMetadataMerge(state);
                 return false;
             }
+            if (state->phase == PendingRefreshCommit::Phase::MetadataPublish) {
+                (void)ContinuePendingMetadataPublish(state);
+                return false;
+            }
+            if (state->phase == PendingRefreshCommit::Phase::ImportPrepare) {
+                (void)ContinuePendingImportPrepare(state);
+                return false;
+            }
             if (state->phase == PendingRefreshCommit::Phase::Import) {
-                if (state->importJobs.IsValid() && !state->importJobs.IsComplete())
-                    return false;
                 for (const auto index : state->importWave)
                     state->workerImports[index].complete = true;
                 if (BeginNextImportWave(state))
@@ -1587,11 +1985,10 @@ bool AssetDatabase::TryCommitRefresh()
                 return false;
             }
             if (state->phase == PendingRefreshCommit::Phase::MetadataWrite) {
-                if (state->metadataWriteJob.IsValid() && !state->metadataWriteJob.IsComplete())
-                    return false;
                 if (state->metadataWriteFailure)
                     std::rethrow_exception(state->metadataWriteFailure);
-                m_lastRefreshJournalUncompressedBytes = state->journalUncompressedBytes;
+                m_lastRefreshStagedBytes = state->stagedBytes;
+                m_lastRefreshStagingMilliseconds = state->stagingMilliseconds;
                 m_lastRefreshJournalBytes = state->journalBytes;
                 m_lastRefreshJournalSerializeMilliseconds = state->journalSerializeMilliseconds;
                 m_lastRefreshJournalWriteMilliseconds = state->journalWriteMilliseconds;
@@ -1610,7 +2007,7 @@ bool AssetDatabase::TryCommitRefresh()
             if (state->phase == PendingRefreshCommit::Phase::ReadyToBuildIndex)
                 BeginPendingIndexBuild(state);
             if (state->phase == PendingRefreshCommit::Phase::IndexBuild) {
-                if (state->indexBuildJob.IsValid() && !state->indexBuildJob.IsComplete())
+                if (!m_refreshWork.Complete())
                     return false;
                 if (state->indexBuildFailure)
                     std::rethrow_exception(state->indexBuildFailure);
@@ -1636,6 +2033,7 @@ bool AssetDatabase::TryCommitRefresh()
             FinalizePendingRefreshCommit(state);
         } catch (...) {
             m_pendingRefreshCommit.reset();
+            m_refreshWork.DropUnsubmitted();
             throw;
         }
         m_pendingRefreshCommit.reset();
@@ -1646,61 +2044,22 @@ bool AssetDatabase::TryCommitRefresh()
     if (!state)
         throw std::logic_error("AssetDatabase has no pending refresh");
 
-    std::optional<AssetScanArtifact> artifact;
-    std::exception_ptr failure;
-    {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (!state->complete)
-            return false;
-        artifact = std::move(state->artifact);
-        failure = state->failure;
-    }
     m_pendingAssetScan.reset();
-    m_pendingAssetScanJob = {};
-    if (failure)
-        std::rethrow_exception(failure);
-    if (!artifact)
+    if (state->failure)
+        std::rethrow_exception(state->failure);
+    if (!state->artifact)
         throw std::logic_error("AssetDatabase scan completed without an artifact");
     if (state->expectedQueryGeneration != m_queryGeneration) {
         BeginRefresh();
         return false;
     }
-    return CommitScanArtifact(std::move(*artifact), state->expectedQueryGeneration);
+    return CommitScanArtifact(std::move(*state->artifact), state->expectedQueryGeneration);
 }
 
 bool AssetDatabase::IsRefreshPending() const
 {
     AssertMutationThread("IsRefreshPending");
-    return static_cast<bool>(m_pendingAssetScan) || static_cast<bool>(m_pendingRefreshCommit);
-}
-
-void AssetDatabase::WaitForPendingWork() const noexcept
-{
-    const auto wait = [](const JobHandle &job) {
-        if (!job.IsValid() || job.IsComplete())
-            return;
-        if (!JobSystem::IsAvailable()) {
-            INXLOG_ERROR("AssetDatabase pending work outlived JobSystem");
-            return;
-        }
-        JobSystem::Get().WaitPassiveCompletion(job);
-    };
-    if (const auto pending = m_pendingModelReimport)
-        wait(pending->job);
-    if (m_pendingAssetScan) {
-        wait(m_pendingAssetScanJob);
-        return;
-    }
-    if (const auto commit = m_pendingRefreshCommit) {
-        if (commit->phase == PendingRefreshCommit::Phase::MetadataPrepare)
-            wait(commit->metadataJobs);
-        else if (commit->phase == PendingRefreshCommit::Phase::Import)
-            wait(commit->importJobs);
-        else if (commit->phase == PendingRefreshCommit::Phase::MetadataWrite)
-            wait(commit->metadataWriteJob);
-        else if (commit->phase == PendingRefreshCommit::Phase::IndexBuild)
-            wait(commit->indexBuildJob);
-    }
+    return m_pendingAssetScan || m_pendingRefreshCommit || !m_refreshWork.Complete() || m_refreshFailure;
 }
 
 void AssetDatabase::Refresh()
@@ -1715,8 +2074,11 @@ void AssetDatabase::CompletePendingRefresh()
     AssertMutationThread("CompletePendingRefresh");
     if (!IsRefreshPending())
         throw std::logic_error("AssetDatabase has no pending refresh");
-    while (!TryCommitRefresh())
-        WaitForPendingWork();
+    while (IsRefreshPending()) {
+        RethrowRefreshFailure();
+        (void)AdvanceRefresh(false);
+        WaitForCatalogWork(m_refreshWork);
+    }
 }
 
 void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
@@ -1740,31 +2102,21 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         if (sidecarExists && !item.file.readOnly) {
             InxResourceMeta loadedMetadata =
                 LoadMetadataDocument(metaPath, &*item.expectedMetadata, &item.metadataSource);
-            if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
-                item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
-                // The current source fingerprint is authoritative. Rebuild
-                // derived fields while preserving stable identity and importer
-                // settings from the current metadata document.
-                item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-            }
             previousMetadata = std::move(loadedMetadata);
             previousMetadataLoaded = true;
             preservedGuid = previousMetadata.GetGuid();
+            if (preservedGuid.empty())
+                throw std::runtime_error("asset metadata sidecar has no GUID: " + metaPath);
         }
 
-        const std::vector<char> content = ReadExactSourceBytes(item.file.path);
-        const char emptySource = '\0';
-        const char *contentData = content.empty() ? &emptySource : content.data();
-        item.loader->CreateMeta(contentData, content.size(), item.file.path, metadata);
+        AssetSource source(item.file.path);
+        item.loader->CreateMeta(source, metadata);
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
         item.createdGuid = metadata.GetGuid();
         item.inheritedGuid = !previousMetadataLoaded && !item.file.readOnly && !preservedGuid.empty();
 
-        if (item.mode == WorkerMetadataPrepare::Mode::Rebuild && previousMetadataLoaded) {
-            for (const auto &[key, value] : previousMetadata.GetMetadata())
-                if (key != "guid")
-                    metadata.CopyMetadataIfMissing(previousMetadata, key);
-        }
+        if (previousMetadataLoaded)
+            metadata.InheritSettings(previousMetadata);
         if (!preservedGuid.empty()) {
             metadata.AddMetadata("guid", preservedGuid);
         } else if (item.file.readOnly) {
@@ -1778,11 +2130,47 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
             throw std::runtime_error("metadata preparation produced an empty GUID");
         ApplyBuiltinSceneIconMetadata(metadata, item.file.path, item.file.readOnly);
         RequireUnchangedFingerprint(item.file.path, item.file.source);
-        item.metadata = std::move(metadata);
+        item.metadata = std::make_shared<InxResourceMeta>(std::move(metadata));
     } catch (const std::exception &exception) {
         item.error = Utf8Diagnostic(exception.what());
     } catch (...) {
         item.error = "metadata preparation raised a non-standard exception";
+    }
+}
+
+void AssetDatabase::PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot)
+{
+    if (item.file.readOnly || (item.expectedMetadata && item.expectedMetadata->exists))
+        return;
+    try {
+        std::string content = item.metadata->SerializeDocumentPortable(projectRoot).dump(4) + "\n";
+        DocumentWriteOptions options;
+        options.mode = FileWriteMode::Create;
+        options.writeScope = item.writeScope;
+        const auto ticket =
+            DocumentStore::Instance().Submit(InxResourceMeta::GetMetaFilePath(item.file.path), content, options);
+        ticket->Wait();
+        const auto publication = ticket->GetPublication().value();
+        if (publication == FilePublication::Written) {
+            item.expectedMetadata = ticket->GetCommittedFileState().value();
+            item.metadataSource = std::move(content);
+            item.inheritedGuid = false;
+        } else {
+            // Reuse the original preparation order: fresh source facts, then
+            // the winner's complete authored settings and GUID. A losing Mesh
+            // candidate must not retain its own prefilled default settings.
+            PrepareMetadata(item);
+            if (!item.error.empty())
+                return;
+            if (!item.expectedMetadata->exists)
+                throw std::runtime_error("metadata creation winner disappeared before adoption: " + item.file.path);
+        }
+        item.file.meta = {item.expectedMetadata->size, item.expectedMetadata->modifiedNs};
+        RequireUnchangedFingerprint(item.file.path, item.file.source);
+    } catch (const std::exception &exception) {
+        item.error = Utf8Diagnostic(exception.what());
+    } catch (...) {
+        item.error = "metadata identity publication raised a non-standard exception";
     }
 }
 
@@ -1809,7 +2197,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
     m_lastRefreshOwnerMergeMaxSliceMilliseconds = 0.0;
     m_lastRefreshOwnerMergeSliceCount = 0;
     m_lastRefreshMetadataWriteMilliseconds = 0.0;
-    m_lastRefreshJournalUncompressedBytes = 0;
+    m_lastRefreshStagedBytes = 0;
+    m_lastRefreshStagingMilliseconds = 0.0;
     m_lastRefreshJournalBytes = 0;
     m_lastRefreshJournalSerializeMilliseconds = 0.0;
     m_lastRefreshJournalWriteMilliseconds = 0.0;
@@ -1933,15 +2322,6 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             else if (indexed)
                 item.fallbackGuid = indexed->guid;
         }
-        if (indexed && !file.readOnly && indexed->resourceType != type) {
-            item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-        } else if (indexed && !file.readOnly && indexed->source == file.source && indexed->meta != file.meta) {
-            item.mode = WorkerMetadataPrepare::Mode::LoadExisting;
-        } else if (indexed && !file.readOnly && indexed->source != file.source) {
-            item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-        } else {
-            item.mode = WorkerMetadataPrepare::Mode::CreateOrLoad;
-        }
         workerMetadata.push_back(std::move(item));
         ++m_lastRefreshImportedCount;
         m_lastRefreshImportedPaths.push_back(file.path);
@@ -1953,6 +2333,15 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
     state->commitStarted = commitStarted;
     state->scanArtifact = std::move(artifact);
     state->workerMetadata = std::move(workerMetadata);
+    std::vector<std::string> writePaths{m_assetIndexPath, m_assetStartupCachePath};
+    for (const auto &item : state->workerMetadata)
+        if (!item.file.readOnly) {
+            writePaths.push_back(item.file.path);
+            writePaths.push_back(InxResourceMeta::GetMetaFilePath(item.file.path));
+        }
+    state->writeScope = PathWriteScope::BeginWrite(writePaths);
+    for (auto &item : state->workerMetadata)
+        item.writeScope = state->writeScope;
     m_lastRefreshMetadataTaskCount = state->workerMetadata.size();
     state->restoredDependencies = std::move(restoredDependencies);
     state->stagedWorkingSet = TakeWorkingSet();
@@ -1963,11 +2352,12 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         throw std::overflow_error("AssetDatabase metadata batch exceeds JobSystem capacity");
     m_pendingRefreshCommit = state;
     try {
-        state->metadataJobs = JobSystem::Get().ScheduleBatch(
-            static_cast<uint32_t>(state->workerMetadata.size()),
+        QueueCatalogWork(
+            m_refreshWork, CatalogIoStage::Metadata, static_cast<uint32_t>(state->workerMetadata.size()),
             [state](uint32_t index) { return [state, index] { PrepareMetadata(state->workerMetadata[index]); }; });
     } catch (...) {
         m_pendingRefreshCommit.reset();
+        m_refreshWork.DropUnsubmitted();
         throw;
     }
     m_lastRefreshPrepareMilliseconds =
@@ -1992,7 +2382,7 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     // GUID in the sidecar; a new source at the old path is a different asset.
     // Keep both passes inside the existing owner-thread merge budget.
     while (state->metadataIdentityCursor < state->workerMetadata.size() &&
-           HasOwnerMergeBudget(ownerStarted, processed)) {
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         const auto &item = state->workerMetadata[state->metadataIdentityCursor++];
         if (!item.error.empty())
             throw std::runtime_error("Metadata preparation failed for '" + item.file.path + "': " + item.error);
@@ -2007,8 +2397,10 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         ++processed;
     }
     while (state->metadataIdentityCursor == state->workerMetadata.size() &&
-           state->metadataMergeCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
-        auto &item = state->workerMetadata[state->metadataMergeCursor++];
+           state->metadataMergeCursor < state->workerMetadata.size() &&
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
+        const auto metadataIndex = state->metadataMergeCursor++;
+        auto &item = state->workerMetadata[metadataIndex];
         if (item.producerThread != m_ownerThread)
             ++m_lastRefreshWorkerMetadataCount;
         if (!item.error.empty())
@@ -2037,21 +2429,110 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         if (existingPath != workingSet.pathToGuid.end() && existingPath->second != guid)
             throw std::runtime_error("Asset path produced multiple GUIDs during refresh: " + item.file.path);
 
-        workingSet.metas[guid] = std::make_shared<InxResourceMeta>(std::move(*item.metadata));
+        workingSet.metas[guid] = item.metadata;
         workingSet.guidToPath[guid] = item.file.path;
         workingSet.pathToGuid[item.file.normalizedPath] = guid;
+        if (!item.file.readOnly && item.expectedMetadata && !item.expectedMetadata->exists)
+            state->metadataPublications.push_back(metadataIndex);
         state->pendingImports.push_back({guid, item.file.path, item.file.normalizedPath, item.file.source,
                                          item.file.meta, item.file.readOnly, !item.file.readOnly, item.expectedMetadata,
                                          std::move(item.metadataSource)});
         ++processed;
     }
 
+    const double elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ownerStarted).count();
+    m_lastRefreshPrepareMilliseconds += elapsed;
+    state->ownerMergeMaxSliceMilliseconds = std::max(state->ownerMergeMaxSliceMilliseconds, elapsed);
+    ++state->ownerMergeSliceCount;
+    if (state->metadataMergeCursor != state->workerMetadata.size())
+        return false;
+
+    if (state->metadataPublications.empty()) {
+        state->phase = PendingRefreshCommit::Phase::ImportPrepare;
+        return false;
+    }
+    const auto projectRoot = m_projectRoot;
+    QueueCatalogWork(m_refreshWork, CatalogIoStage::Sidecar, static_cast<uint32_t>(state->metadataPublications.size()),
+                     [state, projectRoot](uint32_t index) {
+                         return [state, projectRoot, index] {
+                             PublishMissingMetadata(state->workerMetadata[state->metadataPublications[index]],
+                                                    projectRoot);
+                         };
+                     });
+    state->phase = PendingRefreshCommit::Phase::MetadataPublish;
+    return false;
+}
+
+bool AssetDatabase::ContinuePendingMetadataPublish(const std::shared_ptr<PendingRefreshCommit> &state)
+{
+    if (!state || state->phase != PendingRefreshCommit::Phase::MetadataPublish)
+        throw std::logic_error("AssetDatabase metadata publication phase has invalid state");
+    const auto ownerStarted = std::chrono::steady_clock::now();
+    size_t processed = 0;
+    auto &workingSet = state->stagedWorkingSet;
+
+    // Remove changed candidates together before checking adopted identities.
+    // The staged maps have not escaped to importers or a published catalog.
+    while (state->metadataPublicationEraseCursor < state->metadataPublications.size() &&
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
+        const auto index = state->metadataPublications[state->metadataPublicationEraseCursor++];
+        const auto &item = state->workerMetadata[index];
+        const auto &asset = state->pendingImports[index];
+        if (!item.error.empty())
+            throw std::runtime_error("Metadata identity publication failed for '" + item.file.path +
+                                     "': " + item.error);
+        if (item.metadata->GetGuid() != asset.guid) {
+            workingSet.metas.erase(asset.guid);
+            workingSet.guidToPath.erase(asset.guid);
+            workingSet.pathToGuid.erase(asset.normalizedPath);
+        }
+        ++processed;
+    }
+    while (state->metadataPublicationEraseCursor == state->metadataPublications.size() &&
+           state->metadataPublicationMergeCursor < state->metadataPublications.size() &&
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
+        const auto index = state->metadataPublications[state->metadataPublicationMergeCursor++];
+        auto &item = state->workerMetadata[index];
+        auto &asset = state->pendingImports[index];
+        const std::string guid = item.metadata->GetGuid();
+        const auto registered = workingSet.guidToPath.find(guid);
+        if (registered != workingSet.guidToPath.end() && registered->second != item.file.path)
+            throw std::runtime_error("Duplicate asset GUID adopted during refresh: " + guid);
+        workingSet.metas[guid] = item.metadata;
+        workingSet.guidToPath[guid] = item.file.path;
+        workingSet.pathToGuid[item.file.normalizedPath] = guid;
+        asset.guid = guid;
+        asset.meta = item.file.meta;
+        asset.expectedMetadata = item.expectedMetadata;
+        asset.metadataSource = std::move(item.metadataSource);
+        ++processed;
+    }
+    const double elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ownerStarted).count();
+    m_lastRefreshPrepareMilliseconds += elapsed;
+    state->ownerMergeMaxSliceMilliseconds = std::max(state->ownerMergeMaxSliceMilliseconds, elapsed);
+    ++state->ownerMergeSliceCount;
+    if (state->metadataPublicationMergeCursor != state->metadataPublications.size())
+        return false;
+    state->phase = PendingRefreshCommit::Phase::ImportPrepare;
+    return false;
+}
+
+bool AssetDatabase::ContinuePendingImportPrepare(const std::shared_ptr<PendingRefreshCommit> &state)
+{
+    if (!state || state->phase != PendingRefreshCommit::Phase::ImportPrepare)
+        throw std::logic_error("AssetDatabase import preparation phase has invalid state");
+    const auto ownerStarted = std::chrono::steady_clock::now();
+    size_t processed = 0;
+    auto &workingSet = state->stagedWorkingSet;
     if (state->metadataMergeCursor == state->workerMetadata.size() && state->importRequestCursor == 0 &&
         !state->pendingImports.empty()) {
         state->workerImports.reserve(state->pendingImports.size());
     }
     while (state->metadataMergeCursor == state->workerMetadata.size() &&
-           state->importRequestCursor < state->pendingImports.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+           state->importRequestCursor < state->pendingImports.size() &&
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         const size_t assetIndex = state->importRequestCursor++;
         const auto &asset = state->pendingImports[assetIndex];
         const std::string extension = FromFsPath(ToFsPath(asset.path).extension());
@@ -2093,7 +2574,7 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     std::unordered_map<std::string, size_t> importByGuid;
     for (size_t index = 0; index < state->workerImports.size(); ++index)
         importByGuid.emplace(state->workerImports[index].request.guid, index);
-    std::unordered_map<std::string, std::shared_ptr<CachedSkeletonCapture>> reusedDefinitions;
+    std::unordered_map<std::string, ImportRequest::SkeletonDefinitionReader> reusedDefinitions;
     for (auto &item : state->workerImports) {
         if (item.request.resourceType != ResourceType::Mesh)
             continue;
@@ -2112,27 +2593,15 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
                 SkeletonSourceHash(metadata == workingSet.metas.end() ? nullptr : metadata->second.get());
             if (const auto dependency = importByGuid.find(owner); dependency != importByGuid.end()) {
                 item.skeletonDependency = dependency->second;
-                state->workerImports[dependency->second].providesSkeletonDefinition = true;
+                state->workerImports[dependency->second].request.retainSkeletonDefinition = true;
             } else {
                 const auto result = workingSet.importResults.find(owner);
                 if (result != workingSet.importResults.end() && !result->second.succeeded)
                     throw std::invalid_argument("copied skeleton definition import failed: " + owner);
-                auto &capture = reusedDefinitions[owner];
-                if (!capture)
-                    capture = std::make_shared<CachedSkeletonCapture>();
-                const auto artifactPath = GetSkinnedMeshArtifactPath(owner);
-                item.captureSkeletonDefinition = [capture, owner, sourceHash, artifactPath] {
-                    std::call_once(capture->once, [&] {
-                        try {
-                            capture->snapshot = ReadSkeletonSnapshot(owner, sourceHash, artifactPath);
-                        } catch (...) {
-                            capture->failure = std::current_exception();
-                        }
-                    });
-                    if (capture->failure)
-                        std::rethrow_exception(capture->failure);
-                    return capture->snapshot;
-                };
+                auto &definition = reusedDefinitions[owner];
+                if (!definition)
+                    definition = CaptureSkeletonDefinition(sourceHash, GetSkinnedMeshArtifactPath(owner), false);
+                item.request.skeletonDefinition = definition;
             }
         } catch (const std::exception &exception) {
             item.error = Utf8Diagnostic(exception.what());
@@ -2169,45 +2638,35 @@ bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshComm
         }
         return false;
     }
-    state->importJobs =
-        JobSystem::Get().ScheduleBatch(static_cast<uint32_t>(state->importWave.size()), [state](uint32_t waveIndex) {
-            const auto index = state->importWave[waveIndex];
-            return [state, index] {
-                auto &item = state->workerImports[index];
-                item.producerThread = std::this_thread::get_id();
-                try {
-                    if (!item.error.empty())
-                        return;
-                    if (item.skeletonDependency) {
-                        const auto &dependency = state->workerImports[*item.skeletonDependency];
-                        if (!dependency.error.empty() || !dependency.producedSkeletonDefinition)
-                            throw std::invalid_argument("copied skeleton definition import failed: " +
-                                                        dependency.request.guid);
-                        item.request.skeletonDefinition = dependency.producedSkeletonDefinition;
-                    } else if (item.captureSkeletonDefinition) {
-                        item.request.skeletonDefinition = item.captureSkeletonDefinition();
-                    }
-                    item.artifact = item.importer->Import(item.request);
-                    ValidateImportedDependencyIdentities(*item.artifact, item.request.sourcePath);
-                    RequireUnchangedFingerprint(item.request.sourcePath, item.expectedSource);
-                    if (item.providesSkeletonDefinition) {
-                        const auto &outputs = item.artifact->runtimeCpuArtifacts;
-                        const auto skinned = std::find_if(outputs.begin(), outputs.end(), [](const auto &output) {
-                            return output.kind == ImportArtifact::RuntimeArtifactKind::SkinnedMesh;
-                        });
-                        if (skinned == outputs.end())
-                            throw std::invalid_argument("copied skeleton definition has no skinned artifact");
-                        item.producedSkeletonDefinition =
-                            std::make_shared<const SkeletonDefinitionSnapshot>(SkeletonDefinitionSnapshot{
-                                item.request.guid, SkeletonSourceHash(&item.artifact->metadata), skinned->bytes});
-                    }
-                } catch (const std::exception &exception) {
-                    item.error = Utf8Diagnostic(exception.what());
-                } catch (...) {
-                    item.error = "Importer raised a non-standard exception";
-                }
-            };
-        });
+    QueueCatalogWork(m_refreshWork, CatalogIoStage::Cook, static_cast<uint32_t>(state->importWave.size()),
+                     [state](uint32_t waveIndex) {
+                         const auto index = state->importWave[waveIndex];
+                         return [state, index] {
+                             auto &item = state->workerImports[index];
+                             item.producerThread = std::this_thread::get_id();
+                             try {
+                                 if (!item.error.empty())
+                                     return;
+                                 if (item.skeletonDependency) {
+                                     const auto &dependency = state->workerImports[*item.skeletonDependency];
+                                     if (!dependency.error.empty() || !dependency.artifact ||
+                                         !dependency.artifact->skeletonDefinition)
+                                         throw std::invalid_argument("copied skeleton definition import failed: " +
+                                                                     dependency.request.guid);
+                                     item.request.skeletonDefinition =
+                                         [definition = dependency.artifact->skeletonDefinition] { return definition; };
+                                 }
+                                 item.artifact = item.importer->Import(item.request);
+                                 ValidateImportedDependencyIdentities(*item.artifact, item.request.sourcePath);
+                                 RequireUnchangedFingerprint(item.request.sourcePath, item.expectedSource);
+                             } catch (const std::exception &exception) {
+                                 item.error = Utf8Diagnostic(exception.what());
+                             } catch (...) {
+                                 item.error = "Importer raised a non-standard exception";
+                             }
+                             item.request.skeletonDefinition = {};
+                         };
+                     });
     return true;
 }
 
@@ -2226,7 +2685,7 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
     }
 
     while (state->importResultMergeCursor < state->workerImports.size() &&
-           HasOwnerMergeBudget(ownerStarted, processed)) {
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         auto &item = state->workerImports[state->importResultMergeCursor++];
         const auto &asset = state->pendingImports[item.assetIndex];
         if (item.producerThread != m_ownerThread)
@@ -2236,6 +2695,7 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                 throw std::runtime_error(item.error);
             if (!item.artifact)
                 throw std::logic_error("Worker importer completed without an artifact");
+            item.artifact->skeletonDefinition.reset();
             ResolveImportedDependencyPathHints(*item.artifact, workingSet.pathToGuid, asset.path);
             ValidateImportedDependencyIdentities(*item.artifact, asset.path);
             ValidateModelMaterialTargets(*item.artifact, [&workingSet](const std::string &guid) {
@@ -2244,6 +2704,10 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
             });
             auto runtimeArtifactWrites = TakeRuntimeArtifactWrites(item.artifact->runtimeCpuArtifacts, asset.guid,
                                                                    item.request.resourceType, m_projectRoot);
+            std::vector<std::string> artifactPaths;
+            for (const auto &write : runtimeArtifactWrites)
+                artifactPaths.push_back(write.path);
+            state->artifactWriteScopes.push_back(PathWriteScope::BeginWrite(artifactPaths));
             workingSet.metas[asset.guid] = std::make_shared<InxResourceMeta>(std::move(item.artifact->metadata));
             workingSet.importResults[asset.guid] = {true, {}};
             for (auto &runtimeArtifactWrite : runtimeArtifactWrites)
@@ -2258,7 +2722,7 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
 
     while (state->importResultMergeCursor == state->workerImports.size() &&
            state->metadataWritePrepareCursor < state->pendingImports.size() &&
-           HasOwnerMergeBudget(ownerStarted, processed)) {
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         auto &asset = state->pendingImports[state->metadataWritePrepareCursor++];
         state->committedDependencies.try_emplace(asset.guid, std::vector<std::string>{});
         if (asset.persistMetadata) {
@@ -2281,7 +2745,8 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
     }
 
     while (state->metadataWritePrepareCursor == state->pendingImports.size() &&
-           state->dependencyMergeCursor < state->workerImports.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+           state->dependencyMergeCursor < state->workerImports.size() &&
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         const auto &item = state->workerImports[state->dependencyMergeCursor++];
         const auto &asset = state->pendingImports[item.assetIndex];
         const auto result = workingSet.importResults.find(asset.guid);
@@ -2310,29 +2775,32 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
         const std::string projectRoot = m_projectRoot;
         const std::string journalPath = m_assetTransactionJournalPath;
         const std::string assetIndexPath = m_assetIndexPath;
-        state->metadataWriteJob = JobSystem::Get().Schedule([state, projectRoot, journalPath, assetIndexPath,
-                                                             writes = std::move(state->metadataWrites)]() mutable {
-            try {
-                for (const auto &asset : state->pendingImports)
-                    RequireUnchangedFingerprint(asset.path, asset.source);
-                const DocumentTransactionStats stats =
-                    DocumentTransaction::Commit(projectRoot, journalPath, std::move(writes), {assetIndexPath});
-                state->journalUncompressedBytes = stats.uncompressedBytes;
-                state->journalBytes = stats.journalBytes;
-                state->journalSerializeMilliseconds = stats.serializeMilliseconds;
-                state->journalWriteMilliseconds = stats.journalWriteMilliseconds;
-                state->journalApplyMilliseconds = stats.applyMilliseconds;
-                state->committedMetadataFingerprints.clear();
-                state->committedMetadataFingerprints.reserve(stats.committedFileStates.size());
-                for (const auto &file : stats.committedFileStates) {
-                    if (file.path.size() > 5 && file.path.compare(file.path.size() - 5, 5, ".meta") == 0)
-                        state->committedMetadataFingerprints.emplace(file.path.substr(0, file.path.size() - 5),
-                                                                     AssetFileFingerprint{file.size, file.modifiedNs});
+        QueueCatalogJob(
+            m_refreshWork, CatalogIoStage::Persist,
+            [state, projectRoot, journalPath, assetIndexPath, writes = std::move(state->metadataWrites)]() mutable {
+                try {
+                    for (const auto &asset : state->pendingImports)
+                        RequireUnchangedFingerprint(asset.path, asset.source);
+                    const DocumentTransactionStats stats = DocumentTransaction::Commit(
+                        projectRoot, journalPath, std::move(writes), {assetIndexPath}, state->writeScope);
+                    state->stagedBytes = stats.preparedBytes;
+                    state->stagingMilliseconds = stats.prepareMilliseconds;
+                    state->journalBytes = stats.journalBytes;
+                    state->journalSerializeMilliseconds = stats.serializeMilliseconds;
+                    state->journalWriteMilliseconds = stats.journalWriteMilliseconds;
+                    state->journalApplyMilliseconds = stats.applyMilliseconds;
+                    state->committedMetadataFingerprints.clear();
+                    state->committedMetadataFingerprints.reserve(stats.committedFileStates.size());
+                    for (const auto &file : stats.committedFileStates) {
+                        if (file.path.size() > 5 && file.path.compare(file.path.size() - 5, 5, ".meta") == 0)
+                            state->committedMetadataFingerprints.emplace(
+                                file.path.substr(0, file.path.size() - 5),
+                                AssetFileFingerprint{file.size, file.modifiedNs});
+                    }
+                } catch (...) {
+                    state->metadataWriteFailure = std::current_exception();
                 }
-            } catch (...) {
-                state->metadataWriteFailure = std::current_exception();
-            }
-        });
+            });
     }
     return true;
 }
@@ -2344,7 +2812,8 @@ bool AssetDatabase::ContinuePendingFileStateMerge(const std::shared_ptr<PendingR
 
     const auto ownerStarted = std::chrono::steady_clock::now();
     size_t processed = 0;
-    while (state->fileStateMergeCursor < state->pendingImports.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+    while (state->fileStateMergeCursor < state->pendingImports.size() &&
+           HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         const auto &asset = state->pendingImports[state->fileStateMergeCursor++];
         AssetFileFingerprint meta = asset.meta;
         if (asset.persistMetadata) {
@@ -2512,54 +2981,60 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
     const std::string assetIndexPath = m_assetIndexPath;
     const std::string assetStartupCachePath = m_assetStartupCachePath;
     const uint64_t queryGeneration = m_queryGeneration + 1;
-    state->expectedDependencyGeneration = AssetDependencyGraph::Instance().GetAssetGeneration();
+    state->expectedDependencyGeneration = m_dependencyGraph->GetAssetGeneration();
     const uint64_t dependencyGeneration = state->expectedDependencyGeneration + 1;
     state->phase = PendingRefreshCommit::Phase::IndexBuild;
-    state->indexBuildJob = JobSystem::Get().Schedule([state, normalizedProjectRoot, assetIndexPath,
-                                                      assetStartupCachePath, queryGeneration, dependencyGeneration] {
-        try {
-            if (state->indexRebuildRequired) {
-                state->indexProducerThread = std::this_thread::get_id();
-                const auto buildStarted = std::chrono::steady_clock::now();
-                AssetIndex index = BuildDerivedIndexArtifact(state->stagedWorkingSet, state->committedDependencies,
-                                                             normalizedProjectRoot);
-                state->indexBuildMilliseconds =
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStarted).count();
-                const auto saveStarted = std::chrono::steady_clock::now();
-                index.Save(assetIndexPath);
-                index.Save(assetStartupCachePath);
-                state->indexSaveMilliseconds =
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - saveStarted).count();
-                state->builtAssetIndex = std::move(index);
-            } else {
-                // A valid live index may predate the startup-cache feature.
-                // Publish its immutable snapshot asynchronously so a later
-                // metadata transaction can invalidate AssetIndex.json without
-                // turning the next launch into a full source-tree scan.
-                const auto saveStarted = std::chrono::steady_clock::now();
-                state->stagedWorkingSet.assetIndex.Save(assetStartupCachePath);
-                state->indexSaveMilliseconds =
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - saveStarted).count();
+    QueueCatalogJob(
+        m_refreshWork, CatalogIoStage::Index,
+        [state, normalizedProjectRoot, assetIndexPath, assetStartupCachePath, queryGeneration, dependencyGeneration] {
+            try {
+                if (state->indexRebuildRequired) {
+                    state->indexProducerThread = std::this_thread::get_id();
+                    const auto buildStarted = std::chrono::steady_clock::now();
+                    AssetIndex index = BuildDerivedIndexArtifact(state->stagedWorkingSet, state->committedDependencies,
+                                                                 normalizedProjectRoot);
+                    state->indexBuildMilliseconds =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStarted)
+                            .count();
+                    const auto saveStarted = std::chrono::steady_clock::now();
+                    index.Save(assetIndexPath, state->writeScope);
+                    index.Save(assetStartupCachePath, state->writeScope);
+                    state->indexSaveMilliseconds =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - saveStarted)
+                            .count();
+                    state->builtAssetIndex = std::move(index);
+                } else {
+                    // A valid live index may predate the startup-cache feature.
+                    // Publish its immutable snapshot asynchronously so a later
+                    // metadata transaction can invalidate AssetIndex.json without
+                    // turning the next launch into a full source-tree scan.
+                    const auto saveStarted = std::chrono::steady_clock::now();
+                    state->stagedWorkingSet.assetIndex.Save(assetStartupCachePath, state->writeScope);
+                    state->indexSaveMilliseconds =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - saveStarted)
+                            .count();
+                }
+
+                state->queryProducerThread = std::this_thread::get_id();
+                const auto queryStarted = std::chrono::steady_clock::now();
+                state->builtQuerySnapshot =
+                    BuildQuerySnapshotArtifact(state->stagedWorkingSet.guidToPath, state->stagedWorkingSet.pathToGuid,
+                                               state->stagedWorkingSet.metas, state->stagedWorkingSet.fileStates,
+                                               state->stagedWorkingSet.importResults, queryGeneration);
+                state->queryBuildMilliseconds =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - queryStarted).count();
+
+                state->dependencyProducerThread = std::this_thread::get_id();
+                const auto dependencyStarted = std::chrono::steady_clock::now();
+                state->builtDependencySnapshot =
+                    AssetDependencyGraph::BuildAssetSnapshot(state->committedDependencies, dependencyGeneration);
+                state->dependencyBuildMilliseconds =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dependencyStarted)
+                        .count();
+            } catch (...) {
+                state->indexBuildFailure = std::current_exception();
             }
-
-            state->queryProducerThread = std::this_thread::get_id();
-            const auto queryStarted = std::chrono::steady_clock::now();
-            state->builtQuerySnapshot = BuildQuerySnapshotArtifact(
-                state->stagedWorkingSet.guidToPath, state->stagedWorkingSet.pathToGuid, state->stagedWorkingSet.metas,
-                state->stagedWorkingSet.fileStates, state->stagedWorkingSet.importResults, queryGeneration);
-            state->queryBuildMilliseconds =
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - queryStarted).count();
-
-            state->dependencyProducerThread = std::this_thread::get_id();
-            const auto dependencyStarted = std::chrono::steady_clock::now();
-            state->builtDependencySnapshot =
-                AssetDependencyGraph::BuildAssetSnapshot(state->committedDependencies, dependencyGeneration);
-            state->dependencyBuildMilliseconds =
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dependencyStarted).count();
-        } catch (...) {
-            state->indexBuildFailure = std::current_exception();
-        }
-    });
+        });
 }
 
 void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRefreshCommit> &state)
@@ -2574,7 +3049,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         throw std::logic_error("AssetDatabase refresh query artifact has an invalid generation");
     if (!state->builtDependencySnapshot ||
         state->builtDependencySnapshot->GetGeneration() != state->expectedDependencyGeneration + 1 ||
-        AssetDependencyGraph::Instance().GetAssetGeneration() != state->expectedDependencyGeneration)
+        m_dependencyGraph->GetAssetGeneration() != state->expectedDependencyGeneration)
         throw std::logic_error("AssetDatabase refresh dependency artifact is stale");
     const auto finalizeStarted = std::chrono::steady_clock::now();
     const auto previousSnapshot = LoadQuerySnapshot();
@@ -2585,7 +3060,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         InstallWorkingSet(std::move(previousWorkingSet));
     });
 
-    AssetDependencyGraph::Instance().InstallAssetSnapshot(std::move(state->builtDependencySnapshot));
+    m_dependencyGraph->InstallAssetSnapshot(std::move(state->builtDependencySnapshot));
     m_assetIndexDirty = false;
     const auto publishStarted = std::chrono::steady_clock::now();
     InstallQuerySnapshot(std::move(state->builtQuerySnapshot));
@@ -2601,20 +3076,10 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
     restorePreviousWorkingSet.Release();
     PublishRefreshAssetEvents(previousWorkingSet);
     PublishModelSubAssetEvents(previousSnapshot);
-    // INXLOG_INFO("AssetDatabase.Refresh completed. Total assets: ", m_guidToPath.size(),
-    //             ", scanned: ", m_lastRefreshScannedCount, ", scan_ms: ", m_lastRefreshScanMilliseconds,
-    //             ", restore_ms: ", m_lastRefreshRestoreMilliseconds, ", import_ms: ", m_lastRefreshImportMilliseconds,
-    //             ", index_build_ms: ", m_lastRefreshIndexBuildMilliseconds,
-    //             ", index_save_ms: ", m_lastRefreshIndexSaveMilliseconds,
-    //             ", query_build_ms: ", m_lastRefreshQueryBuildMilliseconds,
-    //             ", dependency_build_ms: ", m_lastRefreshDependencyBuildMilliseconds,
-    //             ", owner_merge_max_slice_ms: ", m_lastRefreshOwnerMergeMaxSliceMilliseconds,
-    //             ", owner_merge_slices: ", m_lastRefreshOwnerMergeSliceCount,
-    //             ", publish_ms: ", m_lastRefreshPublishMilliseconds, ", prepare_ms: ",
-    //             m_lastRefreshPrepareMilliseconds,
-    //             ", metadata_write_ms: ", m_lastRefreshMetadataWriteMilliseconds,
-    //             ", finalize_ms: ", m_lastRefreshFinalizeMilliseconds, ", commit_ms: ",
-    //             m_lastRefreshCommitMilliseconds);
+    for (auto &item : state->workerMetadata)
+        item.writeScope.Close();
+    state->artifactWriteScopes.clear();
+    state->writeScope.Close();
 }
 
 bool AssetDatabase::IsReadOnlyPath(const std::string &normalizedPath) const
@@ -2636,7 +3101,7 @@ void AssetDatabase::RebuildDerivedIndex()
         (void)path;
         indexedGuids.push_back(guid);
     }
-    const auto dependencySets = AssetDependencyGraph::Instance().GetDependenciesBatch(indexedGuids);
+    const auto dependencySets = m_dependencyGraph->GetDependenciesBatch(indexedGuids);
     std::unordered_map<std::string, std::vector<std::string>> dependenciesByGuid;
     dependenciesByGuid.reserve(dependencySets.size());
     for (const auto &[guid, dependencies] : dependencySets)
@@ -2649,31 +3114,31 @@ void AssetDatabase::RebuildDerivedIndex()
 void AssetDatabase::FlushDerivedIndex(bool waitForPendingScan)
 {
     AssertMutationThread("FlushDerivedIndex");
-    if (!waitForPendingScan && (m_pendingAssetScan || m_pendingRefreshCommit)) {
+    if (!waitForPendingScan && (IsRefreshPending() || IsModelReimportPublishing())) {
         // Shutdown path: the derived index is a startup cache, and the next
         // launch revalidates it against the real asset state anyway. Blocking
         // engine teardown on a full background project scan (worst case:
         // quitting right after startup) trades seconds of exit latency for a
         // cache write we can simply skip.
-        INXLOG_INFO("FlushDerivedIndex skipped: background asset scan still pending at shutdown");
+        INXLOG_INFO("FlushDerivedIndex skipped: asset catalog work is still pending at shutdown");
         return;
     }
-    while (m_pendingAssetScan || m_pendingRefreshCommit) {
-        WaitForPendingWork();
-        TryCommitRefresh();
-    }
+    CompleteRuntimeArtifactPublication();
     if (!m_assetIndexDirty)
         return;
+    const auto writeScope = PathWriteScope::BeginWrite({m_assetIndexPath, m_assetStartupCachePath});
     RebuildDerivedIndex();
-    m_assetIndex.Save(m_assetIndexPath);
-    m_assetIndex.Save(m_assetStartupCachePath);
+    m_assetIndex.Save(m_assetIndexPath, writeScope);
+    m_assetIndex.Save(m_assetStartupCachePath, writeScope);
     m_assetIndexDirty = false;
 }
 
-AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
+AssetMutationResult AssetDatabase::ImportAsset(const std::string &requestedPath, const PathWriteScope &parentScope)
 {
     AssertMutationThread("ImportAsset");
     AssertNoPendingCommit("ImportAsset");
+    // Derive sidecars and writer ranges from the same actual source spelling.
+    const auto path = ResolveFilesystemPath(requestedPath);
     AssetMutationResult result;
     result.operation = "import";
     result.path = path;
@@ -2707,7 +3172,10 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     const std::string normalizedPath = FilesystemPathKey(path);
     const bool readOnly = IsReadOnlyPath(normalizedPath);
     std::optional<AtomicFileState> expectedMetadata;
-    std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath, &expectedMetadata);
+    const auto writeScope = PathWriteScope::BeginWrite({path, InxResourceMeta::GetMetaFilePath(path)}, parentScope);
+    const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
+    std::string guid =
+        CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath, &expectedMetadata, authorization);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = "asset metadata could not be created or loaded";
@@ -2721,9 +3189,10 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     // routing a new script through the generic importer only rewrites the
     // metadata sidecar that CreateOrLoadMetadata just persisted and commits a
     // heavyweight filesystem transaction on the editor thread.
-    const bool imported = type == ResourceType::Script ? (m_importResults[guid] = {true, {}}, true)
-                                                       : RunImporter(guid, path, false, !readOnly, nullptr, nullptr,
-                                                                     expectedMetadata ? &*expectedMetadata : nullptr);
+    const bool imported = type == ResourceType::Script
+                              ? (m_importResults[guid] = {true, {}}, true)
+                              : RunImporter(guid, path, false, !readOnly, nullptr, nullptr,
+                                            expectedMetadata ? &*expectedMetadata : nullptr, authorization);
     if (!imported) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = m_importResults.at(guid).error;
@@ -2731,7 +3200,8 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     // Failed files retain their authored identity, as during Refresh, but have no runtime publication.
     UpdateCachedFileState(path, readOnly);
     m_assetIndexDirty = true;
-    PublishQuerySnapshotForPaths({path});
+    const auto previous = LoadQuerySnapshot();
+    const auto changedSubAssets = PublishQuerySnapshotForPaths({path});
     result.succeeded = imported;
     result.databaseCommitted = true;
     result.changed = true;
@@ -2740,12 +3210,17 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     // intentionally survive deletion, so publish availability only after the
     // catalog and importer outputs have committed. Existing runtime references
     // can then resolve their cache without any Project-panel-specific repair.
-    if (imported)
-        AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Modified);
+    if (imported) {
+        PublishModelSubAssetEvents(previous, &changedSubAssets);
+        auto *registry = BoundRegistry();
+        if (!registry || !registry->NotifySourceImported(guid, type))
+            m_dependencyGraph->NotifyEvent(guid, type, AssetEvent::Modified);
+    }
     return result;
 }
 
-AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const nlohmann::json &settings)
+AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const nlohmann::json &settings,
+                                                 const PathWriteScope &parentScope)
 {
     AssertMutationThread("ReimportAsset");
     AssertNoPendingCommit("ReimportAsset");
@@ -2763,15 +3238,18 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
         result.error = "model Texture reimport requires settings; reimport its owner to refresh source content";
         return result;
     }
-    const auto sourcePath =
-        ownedTexture ? GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid")) : path;
+    const auto sourcePath = ownedTexture ? GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid"))
+                                         : ResolveFilesystemPath(path);
+    const auto writeScope =
+        PathWriteScope::BeginWrite({sourcePath, InxResourceMeta::GetMetaFilePath(sourcePath)}, parentScope);
+    const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
     if (!PrepareReimportInput(sourcePath, candidate, result) ||
         !PrepareReimportMetadata(candidate, ownedTexture ? nlohmann::json{} : settings, result))
         return result;
     if (ownedTexture)
         ApplyModelTextureSettings(*candidate.metadata, selected->GetGuid(), settings);
     if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source,
-                     &candidate.expectedMetadata.value())) {
+                     &candidate.expectedMetadata.value(), authorization)) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = m_importResults.at(result.guid).error;
         ReportAssetLoadFailure(result.guid, result.error);
@@ -2820,7 +3298,6 @@ bool AssetDatabase::PrepareReimportInput(const std::string &path, WorkerMetadata
     }
     candidate.resourceType = result.resourceType;
     candidate.fallbackGuid = guid;
-    candidate.mode = WorkerMetadataPrepare::Mode::Rebuild;
     const auto loader = m_loaders.find(result.resourceType);
     if (loader == m_loaders.end() || !loader->second)
         throw std::logic_error("Registered asset has no metadata loader");
@@ -2851,36 +3328,48 @@ bool AssetDatabase::PrepareReimportMetadata(WorkerMetadataPrepare &candidate, co
     return true;
 }
 
-void AssetDatabase::FinishReimport(AssetMutationResult &result)
+void AssetDatabase::FinishReimport(AssetMutationResult &result, const CachedFileState *committedFiles,
+                                   const std::shared_ptr<AssetLoadTicket> &repairTicket)
 {
-    UpdateCachedFileState(result.path, false);
+    if (committedFiles)
+        m_fileStates[LexicalFilesystemPathKey(result.path)] = *committedFiles;
+    else
+        UpdateCachedFileState(result.path, false);
     m_assetIndexDirty = true;
-    PublishQuerySnapshotForPaths({result.path});
+    const auto previous = LoadQuerySnapshot();
+    const auto changedSubAssets = PublishQuerySnapshotForPaths({result.path});
+    PublishModelSubAssetEvents(previous, &changedSubAssets);
+    auto *registry = BoundRegistry();
+    const bool meshPublication =
+        registry && registry->NotifySourceImported(result.guid, result.resourceType, repairTicket);
     // Python owns ordinary script dependency and live class publication.
-    if (result.resourceType != ResourceType::Script)
-        AssetDependencyGraph::Instance().NotifyEvent(result.guid, result.resourceType, AssetEvent::Modified);
+    if (result.resourceType != ResourceType::Script && !meshPublication)
+        m_dependencyGraph->NotifyEvent(result.guid, result.resourceType, AssetEvent::Modified);
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = true;
     result.queryGeneration = GetQueryGeneration();
 }
 
-void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::json &settings)
+void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::json &settings,
+                                       ModelReimportPublished onPublished)
 {
     AssertMutationThread("BeginModelReimport");
     AssertNoPendingCommit("BeginModelReimport");
-    if (m_pendingModelReimport && m_pendingModelReimport->discarded && m_pendingModelReimport->job.IsComplete())
+    ObserveCatalogWork(m_applyWork);
+    if (m_pendingModelReimport && m_pendingModelReimport->IsDiscarded() && m_applyWork.Complete())
         m_pendingModelReimport.reset();
-    if (m_pendingModelReimport)
+    if (m_finishedModelApply && m_finishedModelApply->abandoned)
+        m_finishedModelApply.reset();
+    if (m_pendingModelReimport || m_finishedModelApply)
         throw std::logic_error("A model Apply is already in progress");
-    if (!JobSystem::IsAvailable())
-        throw std::logic_error("Model Apply requires the engine JobSystem");
     const auto selected = GetMetaByPath(path);
     if (selected && selected->HasKey("import_document"))
         throw std::invalid_argument("model animation clips are edited through their model import settings");
     const auto textureGuid = selected && selected->HasKey("import_owner_guid") ? selected->GetGuid() : std::string{};
-    const auto sourcePath =
-        textureGuid.empty() ? path : GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid"));
+    const auto sourcePath = textureGuid.empty()
+                                ? ResolveFilesystemPath(path)
+                                : GetPathFromGuid(selected->GetDataAs<std::string>("import_owner_guid"));
     if (GetResourceTypeForPath(sourcePath) != ResourceType::Mesh || !settings.is_object())
         throw std::invalid_argument("Model Apply requires a model path and settings object");
 
@@ -2888,7 +3377,33 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
     m_lastModelReimportPrepareMilliseconds = 0.0;
     m_lastModelReimportPersistenceMilliseconds = 0.0;
     m_lastModelReimportLivePublicationMilliseconds = 0.0;
+    StartModelReimport(sourcePath, textureGuid, settings, std::move(onPublished));
+}
+
+bool AssetDatabase::CanBeginMeshArtifactRepair() const
+{
+    return !m_pendingModelReimport && !IsRefreshPending();
+}
+
+void AssetDatabase::BeginMeshArtifactRepair(const std::shared_ptr<AssetLoadTicket> &ticket)
+{
+    const auto path = GetPathFromGuid(ticket->GetGuid());
+    if (!m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(path).extension())))
+        throw std::runtime_error("Cooked mesh artifacts are unavailable for " + path);
+    StartModelReimport(path, {}, nlohmann::json::object(), {}, ticket);
+}
+
+void AssetDatabase::StartModelReimport(const std::string &sourcePath, const std::string &textureGuid,
+                                       const nlohmann::json &settings, ModelReimportPublished onPublished,
+                                       std::shared_ptr<AssetLoadTicket> repairTicket)
+{
+    if (!JobSystem::IsAvailable())
+        throw std::logic_error("Model import requires the engine JobSystem");
     auto pending = std::make_shared<PendingModelReimport>();
+    pending->onPublished = std::move(onPublished);
+    pending->repairTicket = std::move(repairTicket);
+    pending->writeScope =
+        PathWriteScope::BeginWrite({sourcePath, InxResourceMeta::GetMetaFilePath(sourcePath), m_assetIndexPath});
     if (!PrepareReimportInput(sourcePath, pending->metadata, pending->result))
         throw std::runtime_error(pending->result.error);
     auto &worker = pending->worker;
@@ -2905,7 +3420,7 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
     pending->settings = settings;
     pending->metadataExists =
         ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(sourcePath)), pending->metadataFingerprint);
-    pending->job = JobSystem::Get().Schedule([pending, textureGuid] {
+    QueueCatalogJob(m_applyWork, CatalogIoStage::Apply, [pending, textureGuid] {
         auto &worker = pending->worker;
         worker.producerThread = std::this_thread::get_id();
         try {
@@ -2924,6 +3439,8 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
         } catch (...) {
             worker.error = "Importer raised a non-standard exception";
         }
+        worker.request.skeletonDefinition = {};
+        pending->FinishWorker();
     });
     m_pendingModelReimport = std::move(pending);
 }
@@ -2931,62 +3448,229 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
 std::optional<AssetMutationResult> AssetDatabase::TryCommitModelReimport()
 {
     AssertMutationThread("TryCommitModelReimport");
-    if (!m_pendingModelReimport)
-        throw std::logic_error("No model Apply is in progress");
-    // A scan may have observed an external source edit. Let that transaction
-    // finish first, then reject stale Apply input instead of overwriting it.
-    if (!m_pendingModelReimport->job.IsComplete() || IsRefreshPending())
-        return std::nullopt;
-    auto pending = std::move(m_pendingModelReimport);
-    auto &worker = pending->worker;
-    auto &result = pending->result;
-    try {
-        if (pending->discarded)
-            throw std::runtime_error("Model Apply was discarded before publication");
-        if (!worker.error.empty())
-            throw std::runtime_error(worker.error);
-        if (!worker.artifact)
-            throw std::logic_error("Model importer completed without an artifact");
-        if (GetGuidFromPath(result.path) != result.guid)
-            throw std::runtime_error("Model identity changed while Apply was in progress");
-        RequireUnchangedFingerprint(result.path, worker.expectedSource);
-        AssetFileFingerprint currentMetadata;
-        const bool metadataExists =
-            ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(result.path)), currentMetadata);
-        if (metadataExists != pending->metadataExists ||
-            (metadataExists && !(currentMetadata == pending->metadataFingerprint)))
-            throw std::runtime_error("Model import settings changed outside this Apply");
-        m_lastModelReimportWorkerMilliseconds = pending->workerMilliseconds;
-        PublishImportArtifact(worker.request, std::move(*worker.artifact), true,
-                              &pending->metadata.expectedMetadata.value(), &m_lastModelReimportPrepareMilliseconds,
-                              &m_lastModelReimportPersistenceMilliseconds,
-                              &m_lastModelReimportLivePublicationMilliseconds);
-        const auto livePublicationStart = std::chrono::steady_clock::now();
-        FinishReimport(result);
-        m_lastModelReimportLivePublicationMilliseconds +=
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - livePublicationStart).count();
-    } catch (const std::exception &exception) {
-        result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = Utf8Diagnostic(exception.what());
-        INXLOG_ERROR("Model Apply failed for '", result.path, "': ", result.error);
+    if (!m_finishedModelApply) {
+        if (!m_pendingModelReimport || m_pendingModelReimport->repairTicket)
+            throw std::logic_error("No model Apply is in progress");
+        ObserveCatalogWork(m_applyWork);
+        if (!m_frameWork || !m_frameWork->IsActive())
+            AdvanceModelReimport(false);
+        if (!m_finishedModelApply)
+            return std::nullopt;
     }
+    auto result = std::move(m_finishedModelApply->result);
+    m_finishedModelApply.reset();
     return result;
 }
 
-void AssetDatabase::DiscardModelReimport()
+std::optional<AssetMutationResult> AssetDatabase::CompletePendingModelReimport()
 {
-    AssertMutationThread("DiscardModelReimport");
-    if (m_pendingModelReimport)
-        m_pendingModelReimport->discarded = true;
-    // Keep the worker alive until completion or database shutdown; it owns
-    // temporary products only and must never publish after its document closes.
+    AssertMutationThread("CompletePendingModelReimport");
+    if (IsDeliveringModelReimport())
+        throw std::logic_error("Model Apply cannot be awaited from its publication callback");
+    if (const auto pending = m_pendingModelReimport) {
+        if (IsRefreshPending())
+            CompletePendingRefresh();
+        while (pending->phase != PendingModelReimport::Phase::Complete) {
+            WaitForCatalogWork(m_applyWork);
+            AdvanceModelReimport(false);
+        }
+        if (pending->repairTicket && !pending->result.succeeded)
+            return pending->result;
+    }
+    if (m_finishedModelApply && !m_finishedModelApply->discarded)
+        return m_finishedModelApply->result;
+    return std::nullopt;
 }
 
-AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
+bool AssetDatabase::CanAdvanceModelReimport() const
+{
+    const auto &pending = m_pendingModelReimport;
+    if (!IsModelReimportPending() || IsDeliveringModelReimport())
+        return false;
+    if (!m_applyWork.Complete())
+        return CanSubmitCatalogWork(m_applyWork);
+    if (m_frameWork->IsLate())
+        return false;
+    return pending->phase == PendingModelReimport::Phase::Write || pending->IsDiscarded() ||
+           !pending->worker.error.empty() || (!IsRefreshPending() && CanSubmitCatalogStage(CatalogIoStage::Persist));
+}
+
+bool AssetDatabase::AdvanceModelReimport(bool managed)
+{
+    const auto pending = m_pendingModelReimport;
+    if (!IsModelReimportPending() || IsDeliveringModelReimport())
+        return false;
+    auto &worker = pending->worker;
+    auto &result = pending->result;
+    try {
+        if (!m_applyWork.Complete())
+            return SubmitCatalogWork(m_applyWork, managed);
+        if (managed && m_frameWork->IsLate())
+            return false;
+        if (pending->IsDiscarded())
+            throw std::runtime_error("Model Apply was discarded before publication");
+        if (!worker.error.empty())
+            throw std::runtime_error(worker.error);
+        if (pending->phase == PendingModelReimport::Phase::Write) {
+            PublishModelReimport(*pending);
+        } else {
+            // Refresh may have seen an external edit. Observe its published catalog before accepting a write.
+            if (IsRefreshPending() || (managed && !CanSubmitCatalogStage(CatalogIoStage::Persist)))
+                return false;
+            const auto started = std::chrono::steady_clock::now();
+            if (GetGuidFromCatalogPath(result.path) != result.guid)
+                throw std::runtime_error("Model identity changed while Apply was in progress");
+            ValidateImportPublication(worker.request, worker.artifact.value());
+            pending->artifactGuids.insert(result.guid);
+            for (const auto &output : worker.artifact->runtimeCpuArtifacts)
+                if (!output.guid.empty())
+                    pending->artifactGuids.insert(output.guid);
+            pending->prepareMilliseconds =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            pending->phase = PendingModelReimport::Phase::Write;
+            QueueCatalogJob(m_applyWork, CatalogIoStage::Persist, [this, pending] { WriteModelReimport(*pending); });
+            if (m_frameWork)
+                SubmitCatalogWork(m_applyWork, managed);
+            return true;
+        }
+    } catch (const std::exception &exception) {
+        m_applyWork.DropUnsubmitted();
+        result.succeeded = false;
+        result.errorCode = result.databaseCommitted ? AssetMutationErrorCode::RuntimeApplyFailed
+                                                    : AssetMutationErrorCode::ImportFailed;
+        result.error = Utf8Diagnostic(exception.what());
+        INXLOG_ERROR("Model import failed for '", result.path, "': ", result.error);
+    }
+    pending->phase = PendingModelReimport::Phase::Complete;
+    pending->writeScope.Close();
+    pending->onPublished = {};
+    if (pending->repairTicket) {
+        BoundRegistry()->FinishMeshArtifactRepair(*pending->repairTicket, result);
+    } else {
+        m_lastModelReimportWorkerMilliseconds = pending->workerMilliseconds;
+        m_lastModelReimportPrepareMilliseconds = pending->prepareMilliseconds;
+        m_lastModelReimportPersistenceMilliseconds = pending->persistenceMilliseconds;
+        m_finishedModelApply = FinishedModelApply{std::move(result), pending->IsDiscarded(), pending->abandoned};
+    }
+    m_pendingModelReimport.reset();
+    return true;
+}
+
+void AssetDatabase::WriteModelReimport(PendingModelReimport &pending)
+{
+    auto &worker = pending.worker;
+    const auto &path = worker.request.sourcePath;
+    try {
+        const auto started = std::chrono::steady_clock::now();
+        RequireUnchangedFingerprint(path, worker.expectedSource);
+        const auto metaPath = InxResourceMeta::GetMetaFilePath(path);
+        AssetFileFingerprint metadata;
+        const bool metadataExists = ReadFingerprint(ToFsPath(metaPath), metadata);
+        if (metadataExists != pending.metadataExists || (metadataExists && metadata != pending.metadataFingerprint))
+            throw std::runtime_error("Model import settings changed outside this Apply");
+        auto writes = BuildImportWrites(worker.request, *worker.artifact, &pending.metadata.expectedMetadata.value());
+        const auto writing = std::chrono::steady_clock::now();
+        pending.prepareMilliseconds += std::chrono::duration<double, std::milli>(writing - started).count();
+        const auto files = PersistImportWrites(worker.request, std::move(writes), pending.writeScope);
+        pending.persistenceMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - writing).count();
+        const auto key = LexicalFilesystemPathKey(metaPath);
+        const auto committed = std::find_if(
+            files.begin(), files.end(), [&](const auto &file) { return LexicalFilesystemPathKey(file.path) == key; });
+        if (committed == files.end())
+            throw std::logic_error("Model Apply did not persist its metadata");
+        pending.committedFiles = {worker.expectedSource, {committed->size, committed->modifiedNs}, false};
+    } catch (const std::exception &exception) {
+        worker.error = Utf8Diagnostic(exception.what());
+    } catch (...) {
+        worker.error = "Model Apply persistence raised a non-standard exception";
+    }
+}
+
+void AssetDatabase::PublishModelReimport(PendingModelReimport &pending)
+{
+    const auto started = std::chrono::steady_clock::now();
+    auto &result = pending.result;
+    uint64_t previousVersion = 0;
+    std::optional<float> previousScale;
+    if (pending.onPublished) {
+        if (const auto *registry = BoundRegistry()) {
+            if (const auto mesh = registry->GetAsset<InxMesh>(result.guid)) {
+                previousVersion = registry->GetAssetVersion(result.guid);
+                previousScale = mesh->GetImportedScale();
+            }
+        }
+    }
+    result.databaseCommitted = true;
+    InstallImportArtifact(result.guid, std::move(*pending.worker.artifact));
+    // Listeners now see the new snapshot and may acquire its runtime artifacts.
+    pending.phase = PendingModelReimport::Phase::Publish;
+    FinishReimport(result, &pending.committedFiles, pending.repairTicket);
+    if (!pending.repairTicket)
+        m_lastModelReimportLivePublicationMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    if (const auto published = std::exchange(pending.onPublished, {}))
+        published(result, previousVersion, previousScale);
+}
+
+bool AssetDatabase::DiscardModelReimport()
+{
+    AssertMutationThread("DiscardModelReimport");
+    if (m_finishedModelApply) {
+        m_finishedModelApply->abandoned = true;
+        return false;
+    }
+    const auto &pending = m_pendingModelReimport;
+    if (!pending || pending->repairTicket)
+        return false;
+    pending->abandoned = true;
+    if (pending->phase == PendingModelReimport::Phase::Complete || IsDeliveringModelReimport() ||
+        (pending->phase == PendingModelReimport::Phase::Write && m_applyWork.submitted))
+        return false;
+    pending->Discard();
+    if (!m_applyWork.submitted) {
+        m_applyWork.DropUnsubmitted();
+        pending->FinishWorker();
+    }
+    return true;
+}
+
+std::vector<std::string> AssetDatabase::GetDeletionWritePaths(const std::vector<std::string> &roots) const
+{
+    std::vector<std::string> paths;
+    std::vector<std::string> rootKeys;
+    for (const auto &root : roots) {
+        rootKeys.push_back(FilesystemPathKey(root));
+        paths.push_back(root);
+        paths.push_back(InxResourceMeta::GetMetaFilePath(root));
+    }
+    const auto snapshot = LoadQuerySnapshot();
+    for (const auto &[guid, path] : snapshot->guidToPath) {
+        const auto backing = path.substr(0, path.find("::"));
+        const auto key = LexicalFilesystemPathKey(backing);
+        if (std::none_of(rootKeys.begin(), rootKeys.end(),
+                         [&](const auto &root) { return IsFilesystemPathKeyWithin(key, root); }))
+            continue;
+        paths.push_back(backing);
+        paths.push_back(InxResourceMeta::GetMetaFilePath(backing));
+        const auto type = snapshot->metas.at(guid)->GetResourceType();
+        const auto artifact = GetRuntimeArtifactPath(guid, type);
+        if (!artifact.empty())
+            paths.push_back(artifact);
+        if (type == ResourceType::Mesh)
+            paths.push_back(GetSkinnedMeshArtifactPath(guid));
+    }
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+    return paths;
+}
+
+AssetMutationResult AssetDatabase::DeleteAsset(const std::string &requestedPath, const PathWriteScope &parentScope)
 {
     AssertMutationThread("DeleteAsset");
     AssertNoPendingCommit("DeleteAsset");
-    std::string guid = GetGuidFromPath(path);
+    std::string guid = GetGuidFromPath(requestedPath);
+    const auto path = guid.empty() ? ResolveFilesystemPath(requestedPath) : GetPathFromGuid(guid);
     ResourceType type = GetResourceTypeForPath(path);
     AssetMutationResult result;
     result.operation = "delete";
@@ -2994,13 +3678,19 @@ AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
     result.path = path;
     result.resourceType = type;
 
+    const auto deletionPaths = GetDeletionWritePaths({path});
+    std::vector<std::string> delegated, independent;
+    for (const auto &target : deletionPaths)
+        (parentScope.Covers(target) ? delegated : independent).push_back(target);
+    const auto owned = PathWriteScope::BeginMutation(delegated, {}, parentScope);
+    const auto derived = PathWriteScope::BeginMutation(independent);
+
     if (!guid.empty()) {
-        std::vector<std::string> artifactPaths;
-        artifactPaths.push_back(GetRuntimeArtifactPath(guid, type));
-        if (type == ResourceType::Mesh)
-            artifactPaths.push_back(GetSkinnedMeshArtifactPath(guid));
-        for (const std::string &artifactPath : artifactPaths) {
-            if (artifactPath.empty())
+        const auto sourceKey = FilesystemPathKey(path);
+        const auto metaKey = FilesystemPathKey(InxResourceMeta::GetMetaFilePath(path));
+        for (const auto &artifactPath : deletionPaths) {
+            const auto key = FilesystemPathKey(artifactPath);
+            if (key == sourceKey || key == metaKey)
                 continue;
             std::error_code artifactError;
             std::filesystem::remove(ToFsPath(artifactPath), artifactError);
@@ -3009,14 +3699,10 @@ AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
         }
     }
 
-    // Notify dependents BEFORE removing from maps (they need to resolve guid→path)
-    if (!guid.empty()) {
-        AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Deleted);
-        AssetDependencyGraph::Instance().RemoveAsset(guid);
-    }
-
+    // Retire catalog and runtime state only after the sidecar deletion
+    // succeeds. Notifications must observe a missing GUID, not reload the
+    // just-evicted payload through the old catalog.
     DeleteMetadata(path);
-
     if (!guid.empty()) {
         RemoveMappingByGuid(guid);
     } else {
@@ -3026,62 +3712,35 @@ AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
         m_importResults.erase(guid);
     m_fileStates.erase(FilesystemPathKey(path));
     m_assetIndexDirty = true;
-    PublishQuerySnapshotForPaths({path});
+    if (!guid.empty()) {
+        if (auto *registry = BoundRegistry())
+            registry->RemoveAsset(guid);
+        m_dependencyGraph->RemoveAsset(guid);
+    }
+    const auto previous = LoadQuerySnapshot();
+    const auto changedSubAssets = PublishQuerySnapshotForPaths({path});
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = !guid.empty();
     result.queryGeneration = GetQueryGeneration();
+    PublishModelSubAssetEvents(previous, &changedSubAssets);
+    if (!guid.empty())
+        m_dependencyGraph->NotifyEvent(guid, type, AssetEvent::Deleted);
     return result;
 }
 
-AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const std::string &newPath)
+AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const std::string &newPath,
+                                             const PathWriteScope &writeScope)
 {
-    AssertMutationThread("MoveAsset");
-    AssertNoPendingCommit("MoveAsset");
-    AssetMutationResult result;
+    auto results = MoveAssetsBatch({{oldPath, newPath}}, writeScope);
+    auto result = std::move(results.front());
     result.operation = "move";
-    result.path = newPath;
-    result.previousPath = oldPath;
-    result.resourceType = GetResourceTypeForPath(newPath);
-    const std::string normalizedOldPath = FilesystemPathKey(oldPath);
-    std::string guid = GetGuidFromPath(oldPath);
-    if (guid.empty()) {
-        result.errorCode = AssetMutationErrorCode::NotFound;
-        result.error = "asset relocation source has no registered GUID";
-        return result;
-    }
-    std::error_code destinationError;
-    if (!std::filesystem::exists(ToFsPath(newPath), destinationError)) {
-        result.errorCode = destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound;
-        result.error = destinationError
-                           ? "asset relocation destination cannot be inspected: " + destinationError.message()
-                           : "asset relocation destination must exist before notification";
-        return result;
-    }
-    MoveMetadata(oldPath, newPath);
-
-    UpdateMapping(guid, newPath);
-    if (normalizedOldPath != FilesystemPathKey(newPath))
-        RemoveMappingByPath(oldPath);
-    m_fileStates.erase(normalizedOldPath);
-    UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
-    m_assetIndexDirty = true;
-    PublishQuerySnapshotForPaths({oldPath, newPath});
-    // Notify dependents — GUID unchanged, but path changed
-    ResourceType type = GetResourceTypeForPath(newPath);
-    AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Moved);
-    result.succeeded = true;
-    result.databaseCommitted = true;
-    result.changed = true;
-    result.guid = std::move(guid);
-    result.resourceType = type;
-    result.queryGeneration = GetQueryGeneration();
-    ApplyDocumentationTextureMovePolicy(*this, result);
     return result;
 }
 
 std::vector<AssetMutationResult>
-AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves)
+AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves,
+                               const PathWriteScope &parentScope)
 {
     AssertMutationThread("MoveAssetsBatch");
     AssertNoPendingCommit("MoveAssetsBatch");
@@ -3096,6 +3755,7 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         std::string newKey;
         std::string guid;
         ResourceType resourceType = ResourceType::DefaultText;
+        bool reclassifySource = false;
     };
 
     auto failure = [](const std::string &oldPath, const std::string &newPath, AssetMutationErrorCode code,
@@ -3134,26 +3794,59 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
                            destinationError
                                ? "asset relocation destination cannot be inspected: " + destinationError.message()
                                : "asset relocation destination must exist before notification");
-        prepared.push_back({oldPath, newPath, oldKey, newKey, guid, GetResourceTypeForPath(newPath)});
+        const auto destination = ResolveFilesystemPath(newPath);
+        prepared.push_back(
+            {GetPathFromGuid(guid), destination, oldKey, newKey, guid, GetResourceTypeForPath(destination)});
     }
 
-    for (const PreparedMove &move : prepared) {
+    const auto isSourceOnly = [](ResourceType type) {
+        return type == ResourceType::Script || type == ResourceType::DefaultText || type == ResourceType::DefaultBinary;
+    };
+    for (PreparedMove &move : prepared) {
+        if (move.oldKey != move.newKey && sourceKeys.count(move.newKey) != 0)
+            return failure(move.oldPath, move.newPath, AssetMutationErrorCode::InvalidPath,
+                           "asset relocation destinations cannot overlap another source in the same batch");
         const auto occupied = m_pathToGuid.find(move.newKey);
-        if (occupied != m_pathToGuid.end() && occupied->second != move.guid && sourceKeys.count(move.newKey) == 0)
+        if (occupied != m_pathToGuid.end() && occupied->second != move.guid)
             return failure(move.oldPath, move.newPath, AssetMutationErrorCode::InvalidPath,
                            "asset relocation destination is occupied by another GUID");
+        const ResourceType previousType = m_metas.at(move.guid)->GetResourceType();
+        if (previousType != move.resourceType) {
+            // Raw sources and scripts have no native import artifacts to
+            // migrate. Rebuild their metadata for the completed rename.
+            if (!isSourceOnly(previousType) || !isSourceOnly(move.resourceType))
+                return failure(move.oldPath, move.newPath, AssetMutationErrorCode::UnsupportedType,
+                               "asset relocation cannot change its imported resource type");
+            move.reclassifySource = true;
+        }
     }
 
+    std::vector<std::string> writePaths;
+    for (const auto &move : prepared)
+        for (const auto &path : {move.oldPath, move.newPath}) {
+            writePaths.push_back(path);
+            writePaths.push_back(InxResourceMeta::GetMetaFilePath(path));
+        }
+    const auto writeScope = PathWriteScope::BeginMutation(writePaths, {}, parentScope);
     const auto guidToPathBefore = m_guidToPath;
     const auto pathToGuidBefore = m_pathToGuid;
     const auto metasBefore = m_metas;
     const auto fileStatesBefore = m_fileStates;
     const bool assetIndexDirtyBefore = m_assetIndexDirty;
+    const auto previous = LoadQuerySnapshot();
+    std::unordered_set<std::string> changedSubAssets;
     std::vector<const PreparedMove *> metadataMoved;
     metadataMoved.reserve(prepared.size());
     try {
         for (const PreparedMove &move : prepared) {
-            MoveMetadata(move.oldPath, move.newPath);
+            std::optional<InxResourceMeta> replacement;
+            if (move.reclassifySource) {
+                AssetSource source(move.newPath);
+                replacement.emplace();
+                m_loaders.at(move.resourceType)->CreateMeta(source, *replacement);
+                replacement->AddMetadata("guid", move.guid);
+            }
+            MoveMetadata(move.oldPath, move.newPath, writeScope, replacement ? &*replacement : nullptr);
             metadataMoved.push_back(&move);
             UpdateMapping(move.guid, move.newPath);
             if (move.oldKey != move.newKey)
@@ -3168,12 +3861,13 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
             changedPaths.push_back(move.oldPath);
             changedPaths.push_back(move.newPath);
         }
-        PublishQuerySnapshotForPaths(changedPaths);
+        changedSubAssets = PublishQuerySnapshotForPaths(changedPaths);
     } catch (const std::exception &exc) {
         std::string rollbackFailures;
         for (auto it = metadataMoved.rbegin(); it != metadataMoved.rend(); ++it) {
             try {
-                MoveMetadata((*it)->newPath, (*it)->oldPath);
+                const InxResourceMeta *original = (*it)->reclassifySource ? metasBefore.at((*it)->guid).get() : nullptr;
+                MoveMetadata((*it)->newPath, (*it)->oldPath, writeScope, original);
             } catch (const std::exception &rollbackError) {
                 if (!rollbackFailures.empty())
                     rollbackFailures += "; ";
@@ -3196,8 +3890,17 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
 
     std::vector<AssetMutationResult> results;
     results.reserve(prepared.size());
+    if (auto *registry = BoundRegistry()) {
+        for (const PreparedMove &move : prepared) {
+            if (move.reclassifySource)
+                registry->InvalidateAsset(move.guid);
+            else
+                registry->UpdateLoadedAssetPath(move.guid, m_guidToPath.at(move.guid));
+        }
+    }
+    PublishModelSubAssetEvents(previous, &changedSubAssets);
     for (const PreparedMove &move : prepared) {
-        AssetDependencyGraph::Instance().NotifyEvent(move.guid, move.resourceType, AssetEvent::Moved);
+        m_dependencyGraph->NotifyEvent(move.guid, move.resourceType, AssetEvent::Moved);
         AssetMutationResult result;
         result.succeeded = true;
         result.databaseCommitted = true;
@@ -3208,7 +3911,7 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         result.previousPath = move.oldPath;
         result.resourceType = move.resourceType;
         result.queryGeneration = GetQueryGeneration();
-        ApplyDocumentationTextureMovePolicy(*this, result);
+        ApplyDocumentationTextureMovePolicy(*this, result, writeScope);
         results.push_back(std::move(result));
     }
     return results;
@@ -3409,6 +4112,8 @@ bool AssetDatabase::IsAssetPath(const std::string &path) const
 
 bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
 {
+    if (IsAtomicTemporaryPath(path))
+        return true;
     const auto lowercase = [](std::string value) {
         std::transform(value.begin(), value.end(), value.begin(),
                        [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
@@ -3509,7 +4214,7 @@ void AssetDatabase::UpdateCachedFileState(const std::string &path, bool readOnly
 
 bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata,
                                 const InxResourceMeta *candidateMetadata, const AssetFileFingerprint *expectedSource,
-                                const AtomicFileState *expectedMetadata)
+                                const AtomicFileState *expectedMetadata, const PathWriteScope &writeScope)
 {
     if (guid.empty() || path.empty())
         throw std::invalid_argument("AssetDatabase importer request requires GUID and path");
@@ -3536,7 +4241,12 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
                                       : (isReimport ? importer->Reimport(request) : importer->Import(request));
         if (expectedSource)
             RequireUnchangedFingerprint(path, *expectedSource);
-        PublishImportArtifact(request, std::move(artifact), persistMetadata, expectedMetadata);
+        if (persistMetadata && !expectedMetadata)
+            throw std::logic_error("Author metadata publication requires its captured input state");
+        ValidateImportPublication(request, artifact);
+        auto writes = BuildImportWrites(request, artifact, persistMetadata ? expectedMetadata : nullptr);
+        PersistImportWrites(request, std::move(writes), writeScope);
+        InstallImportArtifact(guid, std::move(artifact));
         return true;
     } catch (const std::exception &exception) {
         error = Utf8Diagnostic(exception.what());
@@ -3562,7 +4272,7 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
         const auto result = m_importResults.find(owner);
         if (result != m_importResults.end() && !result->second.succeeded)
             throw std::invalid_argument("copied skeleton definition import failed: " + owner);
-        request.skeletonDefinition = ReadSkeletonSnapshot(owner, sourceHash, GetSkinnedMeshArtifactPath(owner));
+        request.skeletonDefinition = CaptureSkeletonDefinition(sourceHash, GetSkinnedMeshArtifactPath(owner), true);
     }
     return request;
 }
@@ -3583,76 +4293,86 @@ ImportRequest AssetDatabase::MakeImportRequestBase(const std::string &guid, cons
     return request;
 }
 
-void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
-                                          const AtomicFileState *expectedMetadata, double *prepareMilliseconds,
-                                          double *persistenceMilliseconds, double *livePublicationMilliseconds)
+void AssetDatabase::ValidateImportPublication(const ImportRequest &request, ImportArtifact &artifact) const
 {
-    const auto prepareStart = std::chrono::steady_clock::now();
-    const auto &guid = request.guid;
-    const auto &path = request.sourcePath;
-    const auto metaIt = m_metas.find(guid);
-    if (metaIt == m_metas.end())
+    if (m_metas.find(request.guid) == m_metas.end())
         throw std::logic_error("Import publication has no registered metadata");
     ResolveImportedDependencyPathHints(artifact, m_pathToGuid, request.sourcePath);
     ValidateImportedDependencyIdentities(artifact, request.sourcePath);
     ValidateModelMaterialTargets(artifact, [this](const std::string &dependency) { return GetMetaByGuid(dependency); });
+}
+
+std::vector<DocumentTransactionEntry> AssetDatabase::BuildImportWrites(const ImportRequest &request,
+                                                                       ImportArtifact &artifact,
+                                                                       const AtomicFileState *expectedMetadata)
+{
     std::vector<DocumentTransactionEntry> writes;
     writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
-    if (persistMetadata) {
-        if (!expectedMetadata)
-            throw std::logic_error("Author metadata publication requires its captured input state");
-        const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
-        if (metaPath.empty())
-            throw std::runtime_error("Failed to resolve importer metadata path");
-        writes.push_back(
-            {metaPath, artifact.metadata.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", *expectedMetadata});
+    if (expectedMetadata) {
+        writes.push_back({InxResourceMeta::GetMetaFilePath(request.sourcePath),
+                          artifact.metadata.SerializeDocumentPortable(request.projectRoot).dump(4) + "\n",
+                          *expectedMetadata});
     }
-    auto runtimeArtifactWrites =
-        TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
+    auto runtimeArtifactWrites = TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, request.guid,
+                                                           request.resourceType, request.projectRoot);
     for (auto &runtimeArtifactWrite : runtimeArtifactWrites)
         writes.push_back(std::move(runtimeArtifactWrite));
-    if (prepareMilliseconds)
-        *prepareMilliseconds =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prepareStart).count();
-    const auto persistenceStart = std::chrono::steady_clock::now();
-    if (!writes.empty()) {
-        if (IsFilesystemPathWithin(path, m_projectRoot)) {
-            (void)DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
-                                              {m_assetIndexPath});
-        } else {
-            for (auto &write : writes) {
-                const std::filesystem::path parent = ToFsPath(write.path).parent_path();
-                if (!parent.empty()) {
-                    std::error_code directoryError;
-                    std::filesystem::create_directories(parent, directoryError);
-                    if (directoryError)
-                        throw std::runtime_error("Failed to create external import target directory: " +
-                                                 directoryError.message());
-                }
-                DocumentWriteOptions options;
-                options.expectedFileState = write.expectedFileState;
-                (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content), options);
-            }
-            std::error_code indexError;
-            std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
-            if (indexError)
-                throw std::runtime_error("Failed to invalidate AssetIndex after external import: " +
-                                         indexError.message());
-        }
+    return writes;
+}
+
+std::vector<DocumentTransactionFileState>
+AssetDatabase::PersistImportWrites(const ImportRequest &request, std::vector<DocumentTransactionEntry> writes,
+                                   const PathWriteScope &writeScope) const
+{
+    if (writes.empty())
+        return {};
+    if (IsFilesystemPathWithin(request.sourcePath, m_projectRoot)) {
+        return DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
+                                           {m_assetIndexPath}, writeScope)
+            .committedFileStates;
     }
-    if (persistenceMilliseconds)
-        *persistenceMilliseconds =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - persistenceStart).count();
-    const auto livePublicationStart = std::chrono::steady_clock::now();
+
+    std::vector<PathWriteScope> outputScopes;
+    for (const auto &write : writes)
+        outputScopes.push_back(
+            PathWriteScope::BeginWrite({write.path}, writeScope.Covers(write.path) ? writeScope : PathWriteScope{}));
+    outputScopes.push_back(PathWriteScope::BeginWrite(
+        {m_assetIndexPath}, writeScope.Covers(m_assetIndexPath) ? writeScope : PathWriteScope{}));
+    std::vector<DocumentTransactionFileState> files;
+    files.reserve(writes.size());
+    for (auto &write : writes) {
+        const std::filesystem::path parent = ToFsPath(write.path).parent_path();
+        if (!parent.empty()) {
+            std::error_code directoryError;
+            std::filesystem::create_directories(NativeFilePath(parent), directoryError);
+            if (directoryError)
+                throw std::runtime_error("Failed to create external import target directory: " +
+                                         directoryError.message());
+        }
+        DocumentWriteOptions options;
+        options.expectedFileState = write.expectedFileState;
+        if (writeScope.Covers(write.path))
+            options.writeScope = writeScope;
+        auto ticket = DocumentStore::Instance().Submit(write.path, std::move(write.content), options);
+        ticket->Wait();
+        const auto state = ticket->GetCommittedFileState().value();
+        files.push_back({std::move(write.path), state.size, state.modifiedNs});
+    }
+    std::error_code indexError;
+    std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
+    if (indexError)
+        throw std::runtime_error("Failed to invalidate AssetIndex after external import: " + indexError.message());
+    return files;
+}
+
+void AssetDatabase::InstallImportArtifact(const std::string &guid, ImportArtifact artifact)
+{
     if (artifact.dependenciesAuthoritative) {
         const std::unordered_set<std::string> dependencies(artifact.dependencies.begin(), artifact.dependencies.end());
-        AssetDependencyGraph::Instance().SetAssetDependencies(guid, dependencies);
+        m_dependencyGraph->SetAssetDependencies(guid, dependencies);
     }
-    metaIt->second = std::make_shared<InxResourceMeta>(std::move(artifact.metadata));
+    m_metas.at(guid) = std::make_shared<InxResourceMeta>(std::move(artifact.metadata));
     m_importResults[guid] = {true, {}};
-    if (livePublicationMilliseconds)
-        *livePublicationMilliseconds =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - livePublicationStart).count();
 }
 
 // ============================================================================
@@ -3748,16 +4468,7 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     if (asset_formats::Contains(asset_formats::kMeshExtensions, ext)) {
         return ResourceType::Mesh;
     }
-    static const std::unordered_set<std::string> textExtensions = {
-        ".txt", ".md",  ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".html",
-        ".htm", ".css", ".js",   ".ts",  ".lua",  ".cs",  ".cpp",  ".c",   ".h",   ".hpp"};
-    if (textExtensions.find(ext) != textExtensions.end()) {
-        return ResourceType::DefaultText;
-    }
-    static const std::unordered_set<std::string> binaryExtensions = {
-        ".exe", ".dll", ".so",  ".dylib", ".bin", ".dat", ".wav", ".mp3", ".ogg", ".flac", ".mp4", ".avi",
-        ".mkv", ".mov", ".zip", ".rar",   ".7z",  ".tar", ".gz",  ".pdf", ".ttf", ".otf",  ".woff"};
-    if (binaryExtensions.find(ext) != binaryExtensions.end()) {
+    if (asset_formats::Contains(asset_formats::kBinaryExtensions, ext)) {
         return ResourceType::DefaultBinary;
     }
     return ResourceType::DefaultText;
@@ -3772,7 +4483,8 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                                 bool persistMetadata, const std::string &identityKey,
-                                                std::optional<AtomicFileState> *expectedMetadata)
+                                                std::optional<AtomicFileState> *expectedMetadata,
+                                                const PathWriteScope &writeScope)
 {
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
@@ -3785,71 +4497,62 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         return "";
     }
 
-    std::vector<char> content;
-    if (!ReadFile(filePath, content)) {
-        INXLOG_ERROR("Failed to read file for resource registration: ", filePath);
+    WorkerMetadataPrepare candidate;
+    candidate.writeScope = writeScope;
+    candidate.file.path = filePath;
+    candidate.file.normalizedPath = FilesystemPathKey(filePath);
+    candidate.file.identityKey = identityKey;
+    candidate.file.readOnly = readOnly;
+    candidate.resourceType = type;
+    candidate.loader = loader->second;
+    candidate.fallbackGuid = GetGuidFromPath(filePath);
+    if (!ReadFingerprint(ToFsPath(filePath), candidate.file.source)) {
+        INXLOG_ERROR("Failed to inspect source for resource registration: ", filePath);
         return "";
     }
-
-    if (content.size() == 0)
-        content.emplace_back(0);
-    const char *contentPtr = content.data();
-
-    InxResourceMeta metaFile;
-    std::string metaFilePath = InxResourceMeta::GetMetaFilePath(filePath);
-    bool loadedExistingMeta = false;
-    AtomicFileState metadataState;
-    std::string preservedGuid = GetGuidFromPath(filePath);
-    if (!readOnly && std::filesystem::is_regular_file(ToFsPath(metaFilePath))) {
-        metaFile = LoadMetadataDocument(metaFilePath, &metadataState);
-        loadedExistingMeta = true;
+    PrepareMetadata(candidate);
+    if (!candidate.error.empty()) {
+        INXLOG_ERROR("Failed to prepare resource metadata: ", filePath, ": ", candidate.error);
+        return "";
     }
-    if (!loadedExistingMeta) {
-        m_loaders[type]->CreateMeta(contentPtr, content.size(), filePath, metaFile);
-        if (readOnly) {
-            metaFile.AddMetadata("guid", MakeReadOnlyGuid(identityKey));
-            metaFile.AddMetadata("read_only", true);
-        } else {
-            if (!preservedGuid.empty())
-                metaFile.AddMetadata("guid", preservedGuid);
+    const std::string &preservedGuid = candidate.fallbackGuid;
+    const auto validateIdentity = [&](const std::string &guid) {
+        const auto registered = m_guidToPath.find(guid);
+        if (registered != m_guidToPath.end() && FilesystemPathKey(registered->second) != FilesystemPathKey(filePath))
+            throw std::runtime_error("Asset GUID is already registered at another path: " + guid + " ('" +
+                                     registered->second + "', '" + filePath + "')");
+        if (!preservedGuid.empty() && guid != preservedGuid)
+            throw std::runtime_error("Asset metadata changed the registered GUID at path: " + filePath);
+    };
+    validateIdentity(candidate.metadata->GetGuid());
+    if (!readOnly && persistMetadata) {
+        PublishMissingMetadata(candidate, m_projectRoot);
+        if (!candidate.error.empty()) {
+            INXLOG_ERROR("Failed to publish resource metadata: ", filePath, ": ", candidate.error);
+            return "";
         }
-        if (type == ResourceType::Mesh)
-            MeshImportSettings::InitializeDefaults(metaFile);
-        ApplyBuiltinSceneIconMetadata(metaFile, filePath, readOnly);
-    } else {
-        if (metaFile.GetResourceType() != type)
-            throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
-        // Refresh intrinsic source observations without reapplying loader
-        // defaults over authored settings such as Mesh Read/Write.
-        const std::string existingGuid = metaFile.GetGuid();
-        metaFile.Init(contentPtr, content.size(), filePath, type);
-        metaFile.AddMetadata("guid", existingGuid);
     }
-
-    std::string guid = metaFile.GetGuid();
-    // Incremental import publishes one asset, not a replacement catalog. It
-    // must not reinterpret an existing GUID as a move or replace a path's
-    // registered identity. Explicit relocation and full Refresh own those
-    // operations, including when a previous source has disappeared on disk.
-    const auto registered = m_guidToPath.find(guid);
-    if (registered != m_guidToPath.end() && FilesystemPathKey(registered->second) != FilesystemPathKey(filePath))
-        throw std::runtime_error("Asset GUID is already registered at another path: " + guid + " ('" +
-                                 registered->second + "', '" + filePath + "')");
-    if (!preservedGuid.empty() && guid != preservedGuid)
-        throw std::runtime_error("Asset metadata changed the registered GUID at path: " + filePath);
+    const auto &metaFile = *candidate.metadata;
+    const std::string guid = metaFile.GetGuid();
+    validateIdentity(guid);
+    const std::string metaFilePath = InxResourceMeta::GetMetaFilePath(filePath);
+    AtomicFileState metadataState = candidate.expectedMetadata.value_or(AtomicFileState{});
 
     // Validate ownership before the first durable write or live catalog edit.
-    if (!loadedExistingMeta && !readOnly && persistMetadata) {
-        DocumentWriteOptions options;
-        options.expectedFileState = metadataState;
-        const auto ticket = DocumentStore::Instance().Submit(
-            metaFilePath, metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options);
-        ticket->Wait();
-        metadataState = ticket->GetCommittedFileState().value();
+    if (!readOnly && persistMetadata) {
+        auto content = metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n";
+        if (content != candidate.metadataSource) {
+            DocumentWriteOptions options;
+            options.expectedFileState = metadataState;
+            options.writeScope = writeScope;
+            const auto ticket = DocumentStore::Instance().Submit(metaFilePath, std::move(content), options);
+            ticket->Wait();
+            metadataState = ticket->GetCommittedFileState().value();
+        }
     }
     if (expectedMetadata && !readOnly)
         *expectedMetadata = metadataState;
-    m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
+    m_metas[guid] = candidate.metadata;
     UpdateMapping(guid, filePath);
 
     return guid;
@@ -3859,81 +4562,68 @@ void AssetDatabase::DeleteMetadata(const std::string &path)
 {
     namespace fs = std::filesystem;
 
-    const auto pathIt = m_pathToGuid.find(FilesystemPathKey(path));
-    if (pathIt != m_pathToGuid.end())
-        m_metas.erase(pathIt->second);
-
     std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
     auto metaFsPath = ToFsPath(metaPath);
     if (fs::exists(metaFsPath)) {
         fs::remove(metaFsPath);
     }
+    const auto pathIt = m_pathToGuid.find(FilesystemPathKey(path));
+    if (pathIt != m_pathToGuid.end())
+        m_metas.erase(pathIt->second);
 }
 
-void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &newPath)
+void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &newPath,
+                                 const PathWriteScope &writeScope, const InxResourceMeta *replacement)
 {
     namespace fs = std::filesystem;
-
-    std::string oldMetaPath = InxResourceMeta::GetMetaFilePath(oldPath);
-    std::string newMetaPath = InxResourceMeta::GetMetaFilePath(newPath);
-
-    InxResourceMeta meta;
-    std::string existingGuid;
-
-    auto oldMetaFsPath = ToFsPath(oldMetaPath);
-    if (fs::exists(oldMetaFsPath) && meta.LoadFromFile(oldMetaPath)) {
-        existingGuid = meta.GetGuid();
-
-        const bool sameMetadata = FilesystemPathKey(oldMetaPath) == FilesystemPathKey(newMetaPath);
-        if (sameMetadata && oldMetaFsPath.filename() != ToFsPath(newMetaPath).filename())
-            fs::rename(oldMetaFsPath, ToFsPath(newMetaPath));
-        meta.UpdateFilePath(newPath);
-        DocumentStore::Instance().WriteAndWait(newMetaPath,
-                                               meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n");
-        if (!sameMetadata) {
-            std::error_code removeError;
-            if (!fs::remove(oldMetaFsPath, removeError) || removeError) {
-                std::error_code rollbackError;
-                fs::remove(ToFsPath(newMetaPath), rollbackError);
-                throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
-            }
+    const auto guid = m_pathToGuid.at(FilesystemPathKey(oldPath));
+    const auto current = m_metas.at(guid);
+    const std::string oldMetaPath = InxResourceMeta::GetMetaFilePath(oldPath);
+    const std::string newMetaPath = InxResourceMeta::GetMetaFilePath(newPath);
+    const bool sameMetadata = FilesystemPathKey(oldMetaPath) == FilesystemPathKey(newMetaPath);
+    const bool oldExists = fs::exists(ToFsPath(oldMetaPath));
+    AtomicFileState destinationState;
+    InxResourceMeta meta = *current;
+    if (oldExists) {
+        AtomicFileState sourceState;
+        meta = LoadMetadataDocument(oldMetaPath, &sourceState);
+        if (meta.GetGuid() != guid || meta.GetResourceType() != current->GetResourceType())
+            throw std::runtime_error("asset relocation source metadata has a different identity: " + oldPath);
+        if (!sameMetadata && fs::exists(ToFsPath(newMetaPath)))
+            throw std::runtime_error("asset relocation destination metadata already exists: " + newPath);
+        if (sameMetadata) {
+            if (ToFsPath(oldMetaPath).filename() != ToFsPath(newMetaPath).filename())
+                fs::rename(ToFsPath(oldMetaPath), ToFsPath(newMetaPath));
+            destinationState = sourceState;
         }
-
-        auto it = m_metas.find(existingGuid);
-        if (it != m_metas.end()) {
-            auto movedMeta = std::make_shared<InxResourceMeta>(*it->second);
-            movedMeta->UpdateFilePath(newPath);
-            it->second = std::move(movedMeta);
-        }
-
-        INXLOG_INFO("AssetDatabase: moved metadata ", oldPath, " -> ", newPath, " (guid preserved: ", existingGuid,
-                    ")");
-    } else {
-        // Directory relocation has already moved its sidecars on disk. This
-        // is still an explicit move of the registered asset, never an import
-        // of a new identity at the destination.
-        const auto source = m_pathToGuid.find(FilesystemPathKey(oldPath));
-        if (source == m_pathToGuid.end())
-            throw std::runtime_error("asset metadata relocation requires a registered source: " + oldPath);
-        const auto current = m_metas.at(source->second);
-        AtomicFileState destinationState;
-        if (fs::is_regular_file(ToFsPath(newMetaPath))) {
-            meta = LoadMetadataDocument(newMetaPath, &destinationState);
-            if (meta.GetGuid() != source->second || meta.GetResourceType() != current->GetResourceType())
-                throw std::runtime_error("asset relocation destination metadata has a different identity: " + newPath);
-        } else {
-            meta = *current;
-        }
-        meta.UpdateFilePath(newPath);
-        DocumentWriteOptions options;
-        options.expectedFileState = destinationState;
-        DocumentStore::Instance()
-            .Submit(newMetaPath, meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options)
-            ->Wait();
-        auto movedMeta = std::make_shared<InxResourceMeta>(*current);
-        movedMeta->UpdateFilePath(newPath);
-        m_metas[source->second] = std::move(movedMeta);
+    } else if (fs::exists(ToFsPath(newMetaPath))) {
+        // A directory relocation has already moved the sidecar on disk.
+        meta = LoadMetadataDocument(newMetaPath, &destinationState);
+        if (meta.GetGuid() != guid || meta.GetResourceType() != current->GetResourceType())
+            throw std::runtime_error("asset relocation destination metadata has a different identity: " + newPath);
     }
+    if (replacement)
+        meta = *replacement;
+    meta.UpdateFilePath(newPath);
+    DocumentWriteOptions options;
+    options.expectedFileState = destinationState;
+    options.writeScope = writeScope;
+    DocumentStore::Instance()
+        .Submit(newMetaPath, meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options)
+        ->Wait();
+    if (oldExists && !sameMetadata) {
+        std::error_code error;
+        if (!fs::remove(ToFsPath(oldMetaPath), error) || error) {
+            std::error_code cleanupError;
+            fs::remove(ToFsPath(newMetaPath), cleanupError);
+            throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
+        }
+    }
+    // Portable sidecars omit derived import state (hashes, model children,
+    // artifact descriptions). Relocation changes location, not that state.
+    auto movedMeta = std::make_shared<InxResourceMeta>(replacement ? *replacement : *current);
+    movedMeta->UpdateFilePath(newPath);
+    m_metas[guid] = std::move(movedMeta);
 }
 
 std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const std::string &shaderType) const
@@ -3956,14 +4646,14 @@ void AssetDatabase::BuildShaderPathIndex(QuerySnapshot &snapshot)
 {
     snapshot.shaderPaths.clear();
     for (const auto &[guid, meta] : snapshot.metas) {
-        if (!meta || !meta->HasKey("type") || !meta->HasKey("shader_id"))
+        if (!meta)
             continue;
-        const auto type = meta->GetDataAs<std::string>("type");
-        if (type != "vertex" && type != "fragment")
+        auto key = ShaderPathIndexKey(*meta);
+        if (key.empty())
             continue;
         const auto path = snapshot.guidToPath.find(guid);
         if (path != snapshot.guidToPath.end())
-            snapshot.shaderPaths.try_emplace(type + ":" + meta->GetDataAs<std::string>("shader_id"), path->second);
+            snapshot.shaderPaths.try_emplace(std::move(key), path->second);
     }
 }
 

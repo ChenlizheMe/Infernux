@@ -15,7 +15,9 @@ namespace
 class RecordingContext final : public rhi::ComputeRecordingContext
 {
   public:
-    RecordingContext(VulkanRhiDevice &device, VkCommandBuffer commands) : m_commands(commands)
+    RecordingContext(VulkanRhiDevice &device, VkCommandBuffer commands, VulkanQueueManager &queues,
+                     VulkanSubmissionExecutor::ExternalSync &sync)
+        : m_commands(commands), m_queues(queues), m_sync(sync)
     {
         m_compute = device.MakeComputeCommandEncoder(m_computeContext, commands);
         m_transfer = device.MakeTransferCommandEncoder(m_transferContext, commands);
@@ -27,6 +29,20 @@ class RecordingContext final : public rhi::ComputeRecordingContext
     rhi::TransferCommandEncoder Transfer() override
     {
         return m_transfer;
+    }
+    void Require(rhi::SubmissionTicket producer) override
+    {
+        if (!producer.IsValid())
+            return;
+        const auto point = m_queues.DependencyFor(producer, rhi::QueueRole::Compute);
+        if (point.semaphore == VK_NULL_HANDLE)
+            return;
+        const auto found = std::find_if(m_sync.producers.begin(), m_sync.producers.end(),
+                                        [&](const auto &wait) { return wait.timeline == point.semaphore; });
+        if (found == m_sync.producers.end())
+            m_sync.producers.push_back({point.semaphore, point.value});
+        else
+            found->value = (std::max)(found->value, point.value);
     }
     void PipelineBarrier(rhi::PipelineStage source, rhi::Access sourceAccess, rhi::PipelineStage destination,
                          rhi::Access destinationAccess) override
@@ -41,12 +57,16 @@ class RecordingContext final : public rhi::ComputeRecordingContext
 
   private:
     VkCommandBuffer m_commands;
+    VulkanQueueManager &m_queues;
+    VulkanSubmissionExecutor::ExternalSync &m_sync;
     VulkanComputeCommandContext m_computeContext;
     VulkanTransferCommandContext m_transferContext;
     rhi::ComputeCommandEncoder m_compute;
     rhi::TransferCommandEncoder m_transfer;
 };
 } // namespace
+
+VulkanComputeQueue::VulkanComputeQueue() = default;
 
 VulkanComputeQueue::~VulkanComputeQueue()
 {
@@ -83,6 +103,7 @@ bool VulkanComputeQueue::Initialize(VkDeviceContext &context, VulkanQueueManager
             return false;
         }
     }
+    (void)SetProfilingEnabled(true); // Optional query resources are cold, never created by the frame owner.
     return true;
 }
 
@@ -107,29 +128,26 @@ void VulkanComputeQueue::Destroy() noexcept
     m_next = 0;
     m_completed = 0;
     m_lastSubmission = {};
-    m_previousGraphicsTimeline = VK_NULL_HANDLE;
-    m_previousGraphicsTimelineValue = 0;
-}
-
-void VulkanComputeQueue::SetPreviousGraphicsCompletion(VkSemaphore timeline, uint64_t value) noexcept
-{
-    m_previousGraphicsTimeline = timeline;
-    m_previousGraphicsTimelineValue = timeline == VK_NULL_HANDLE ? 0 : value;
 }
 
 void VulkanComputeQueue::Complete(uint32_t index)
 {
     auto &slot = m_slots[index];
-    if (m_timestamps)
-        m_timestamps->CollectCompletedFrame(index);
+    const auto timing = m_timestamps ? m_timestamps->CollectCompletedFrame(index) : std::nullopt;
     m_executor.CompleteFrame(index);
     m_queues->CompleteCompletionEpoch(slot.epoch);
     m_completed = (std::max)(m_completed, slot.ticket.serial);
     slot.ticket = {};
     slot.epoch = rhi::InvalidSubmissionSerial;
-    slot.submission = {};
     // Publish completion before releasing owners whose older tickets may be queried.
-    slot.resources.reset();
+    if (slot.resources.receipt) {
+        if (timing) {
+            if (const auto *sample = timing->Find("compute_submission"))
+                slot.resources.receipt->deviceNanoseconds = sample->milliseconds * 1.0e6;
+        }
+        slot.resources.receipt->complete = true;
+    }
+    slot.resources = {};
 }
 
 uint32_t VulkanComputeQueue::Find(rhi::SubmissionTicket ticket) const
@@ -143,12 +161,6 @@ uint32_t VulkanComputeQueue::Find(rhi::SubmissionTicket ticket) const
     if (ticket.serial <= m_completed)
         return UINT32_MAX;
     throw std::invalid_argument("Unknown compute submission ticket");
-}
-
-VulkanSubmissionExecutor::ExecuteResult VulkanComputeQueue::DependencyFor(rhi::SubmissionTicket ticket) const
-{
-    const auto index = Find(ticket);
-    return index == UINT32_MAX ? VulkanSubmissionExecutor::ExecuteResult{} : m_slots[index].submission;
 }
 
 void VulkanComputeQueue::Wait(rhi::SubmissionTicket ticket)
@@ -222,60 +234,109 @@ uint64_t VulkanComputeQueue::GetPendingSubmissionCount() const noexcept
         std::count_if(m_slots.begin(), m_slots.end(), [](const Slot &slot) { return slot.ticket.IsValid(); }));
 }
 
-rhi::SubmissionTicket VulkanComputeQueue::Submit(const Recorder &record, std::shared_ptr<void> resources)
+rhi::SubmissionTicket VulkanComputeQueue::Submit(const Recorder &record, rhi::ComputeSubmissionResources resources)
 {
     if (!m_context || !record)
         throw std::invalid_argument("Compute submission requires an initialized host and recorder");
     Collect();
-    const auto index = m_next;
+    auto index = FindFreeSlot();
+    if (index == UINT32_MAX) {
+        index = m_next;
+        Wait(m_slots[index].ticket);
+    }
+    return *SubmitToSlot(index, record, std::move(resources), false, {});
+}
+
+std::optional<rhi::SubmissionTicket> VulkanComputeQueue::TrySubmit(const Recorder &record,
+                                                                   const rhi::ComputeSubmissionResources &resources,
+                                                                   const Admission &admit)
+{
+    if (!m_context || !record)
+        throw std::invalid_argument("Compute submission requires an initialized host and recorder");
+    Collect();
+    const auto index = FindFreeSlot();
+    if (index == UINT32_MAX)
+        return std::nullopt;
+    return SubmitToSlot(index, record, resources, true, admit);
+}
+
+uint32_t VulkanComputeQueue::FindFreeSlot() const noexcept
+{
+    const auto count = static_cast<uint32_t>(m_slots.size());
+    for (uint32_t distance = 0; distance < count; ++distance) {
+        const auto index = (m_next + distance) % count;
+        if (!m_slots[index].ticket.IsValid())
+            return index;
+    }
+    return UINT32_MAX;
+}
+
+std::optional<rhi::SubmissionTicket> VulkanComputeQueue::SubmitToSlot(uint32_t index, const Recorder &record,
+                                                                      rhi::ComputeSubmissionResources resources,
+                                                                      bool managed, const Admission &admit)
+{
+    const auto submitBegin = std::chrono::steady_clock::now();
+    auto &uploads = m_executor.CommandUploads(index, rhi::QueueRole::Compute);
     auto &slot = m_slots[index];
-    if (slot.ticket.IsValid())
-        Wait(slot.ticket); // Bounded capacity, never reuse pending commands.
+    struct PendingSubmission
+    {
+        VulkanCommandUploads &uploads;
+        VulkanQueueManager &queues;
+        Slot &slot;
+        bool recording = false;
+        bool submitted = false;
+        ~PendingSubmission()
+        {
+            if (!recording)
+                uploads.Discard();
+            if (!submitted && slot.epoch != rhi::InvalidSubmissionSerial) {
+                queues.CompleteCompletionEpoch(slot.epoch);
+                slot.epoch = rhi::InvalidSubmissionSerial;
+            }
+        }
+    } pending{uploads, *m_queues, slot};
+    if ((managed || resources.uploadStagingBytes) && !uploads.Prepare(resources.uploadStagingBytes, managed)) {
+        if (managed)
+            return std::nullopt;
+        throw std::runtime_error("Failed to allocate compute command upload storage");
+    }
+    if (admit && !admit())
+        return std::nullopt;
     if (vkResetFences(m_context->GetDevice(), 1, &slot.fence) != VK_SUCCESS)
         throw std::runtime_error("Compute fence reset failed");
     slot.epoch = m_queues->ReserveCompletionEpoch();
     VulkanSubmissionExecutor::ExternalSync sync;
     sync.completionFence = slot.fence;
     sync.completionEpoch = slot.epoch;
-    sync.previousFrameTimeline = m_previousGraphicsTimeline;
-    sync.previousFrameTimelineValue = m_previousGraphicsTimelineValue;
-    sync.previousFrameStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    sync.previousFrameWaitAtFirstBatch = true;
     std::exception_ptr recordingError;
-    const auto submitBegin = std::chrono::steady_clock::now();
-    const auto result = m_executor.Execute(
-        index, m_plan,
-        [&](uint32_t, VkCommandBuffer commands) {
-            rhi::TimestampRegionHandle region;
-            if (m_timestamps) {
-                m_timestamps->BeginFrame(commands, index);
-                region = m_timestamps->BeginRegion(commands, "compute_submission", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-            }
-            RecordingContext context(m_context->GetRhiDevice(), commands);
-            bool recorded = false;
-            try {
-                recorded = record(context);
-            } catch (...) {
-                recordingError = std::current_exception();
-            }
-            if (m_timestamps) {
-                m_timestamps->EndRegion(commands, region, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-                m_timestamps->FinishFrame(index);
-            }
-            return recorded;
-        },
-        sync);
+    const VulkanSubmissionExecutor::BatchRecorder recorder = [&](uint32_t, VkCommandBuffer commands) {
+        rhi::TimestampRegionHandle region;
+        if (m_timestamps) {
+            m_timestamps->BeginFrame(commands, index);
+            region = m_timestamps->BeginRegion(commands, "compute_submission", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        }
+        RecordingContext context(m_context->GetRhiDevice(), commands, *m_queues, sync);
+        bool recorded = false;
+        try {
+            recorded = record(context);
+        } catch (...) {
+            recordingError = std::current_exception();
+        }
+        if (m_timestamps) {
+            m_timestamps->EndRegion(commands, region, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+            m_timestamps->FinishFrame(commands, index);
+        }
+        return recorded;
+    };
+    pending.recording = true; // Execute now owns abandonment or retirement.
+    const auto result = m_executor.Execute(index, m_plan, recorder, sync);
+    pending.submitted = result.submittedBatchCount != 0;
     if (!result.Succeeded()) {
-        // A one-batch plan has no earlier submitted batches to roll back.
-        if (!result.submittedAny)
-            m_queues->CompleteCompletionEpoch(slot.epoch);
-        slot.epoch = rhi::InvalidSubmissionSerial;
         if (recordingError)
             std::rethrow_exception(recordingError);
         throw std::runtime_error("Compute submission failed");
     }
     slot.ticket = result.completionTicket;
-    slot.submission = result;
     slot.resources = std::move(resources);
     const auto submitEnd = std::chrono::steady_clock::now();
     RecordSubmission(std::chrono::duration<double, std::milli>(submitEnd - submitBegin).count());

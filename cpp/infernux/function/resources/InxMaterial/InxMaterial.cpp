@@ -73,10 +73,7 @@ std::optional<MaterialPropertyType> ShaderMaterialPropertyType(const ShaderProgr
 
 bool MaterialValueMatchesType(const MaterialProperty &property, MaterialPropertyType type)
 {
-    const auto isVector4 = [](MaterialPropertyType value) {
-        return value == MaterialPropertyType::Float4 || value == MaterialPropertyType::Color;
-    };
-    if (property.type != type && !(isVector4(property.type) && isVector4(type)))
+    if (!MaterialPropertyTypesCompatible(type, property.type))
         return false;
     switch (type) {
     case MaterialPropertyType::Float:
@@ -603,7 +600,33 @@ InxMaterial::InxMaterial(const std::string &name) : m_name(name)
 
 InxMaterial::~InxMaterial()
 {
-    AssetDependencyGraph::Instance().ClearRuntimeDependenciesOf(GetTextureDependencyOwner());
+    if (m_dependencyGraph)
+        m_dependencyGraph->ClearRuntimeDependenciesOf(GetTextureDependencyOwner());
+}
+
+void InxMaterial::BindDependencyGraph(std::shared_ptr<AssetDependencyGraph> graph)
+{
+    if (m_dependencyGraph && m_dependencyGraph != graph)
+        throw std::logic_error("A published material belongs to a different asset database");
+    m_dependencyGraph = std::move(graph);
+}
+
+void InxMaterial::PublishDependencies()
+{
+    if (!m_dependencyGraph || m_guid.empty())
+        return;
+    std::unordered_set<std::string> dependencies;
+    for (const auto &[name, property] : m_properties) {
+        if (property.type != MaterialPropertyType::Texture2D)
+            continue;
+        const auto &guid = std::get<std::string>(property.value);
+        if (!guid.empty() && !IsBuiltinTextureToken(guid))
+            dependencies.insert(guid);
+    }
+    for (const auto *reference : {&m_vertexShader, &m_fragmentShader})
+        if (!reference->guid.empty())
+            dependencies.insert(reference->guid);
+    m_dependencyGraph->SetAssetDependencies(m_guid, dependencies);
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
@@ -676,6 +699,8 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
 void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value)
 {
     const auto existing = m_properties.find(name);
+    const bool replacesTexture =
+        existing != m_properties.end() && existing->second.type == MaterialPropertyType::Texture2D;
     if (existing != m_properties.end()) {
         if (existing->second.type == MaterialPropertyType::FloatArray && type == MaterialPropertyType::FloatArray &&
             std::get<std::vector<float>>(existing->second.value).size() != std::get<std::vector<float>>(value).size())
@@ -685,9 +710,10 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
                 std::get<std::vector<glm::vec4>>(value).size())
             throw std::invalid_argument("material property '" + name + "' does not match the reflected array length");
     }
-    if (m_renderTextures.erase(name) ||
-        (existing != m_properties.end() && existing->second.type == MaterialPropertyType::Texture2D))
+    if (m_renderTextures.erase(name) || replacesTexture)
         m_textureAssetsPending = true;
+    if (m_rendererMaterialOverrides)
+        m_rendererMaterialOverrides->properties.insert(name);
     m_runtimeTextureOverrides.erase(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
     const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
@@ -697,6 +723,8 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
     m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range, textureDefault};
     m_propertiesDirty = true;
     ++m_version;
+    if (replacesTexture)
+        PublishDependencies();
 }
 
 void InxMaterial::SetFloat(const std::string &name, float value)
@@ -762,8 +790,11 @@ void InxMaterial::SetRenderTexture(const std::string &name, std::shared_ptr<rhi:
     if (GetRenderTexture(name) == texture && HasRuntimeTextureOverride(name))
         return;
     // Introduce the shader property if necessary, never a fake asset GUID.
-    if (property == m_properties.end())
+    if (property == m_properties.end()) {
         m_properties.emplace(name, MaterialProperty{name, MaterialPropertyType::Texture2D, std::string{}});
+        if (m_rendererMaterialOverrides)
+            m_rendererMaterialOverrides->properties.insert(name);
+    }
     m_renderTextures[name] = std::move(texture);
     m_runtimeTextureOverrides.insert(name);
     m_textureAssetsPending = true;
@@ -848,6 +879,8 @@ void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
 void InxMaterial::SetTextureGuid(const std::string &name, const std::string &textureGuid)
 {
     const std::string validatedGuid = RequireTextureGuid(textureGuid, true);
+    if (m_rendererMaterialOverrides)
+        m_rendererMaterialOverrides->properties.insert(name);
     const auto previous = m_properties.find(name);
     if (previous != m_properties.end() && previous->second.type == MaterialPropertyType::Texture2D &&
         std::get<std::string>(previous->second.value) == validatedGuid && !HasRuntimeTextureOverride(name))
@@ -857,7 +890,6 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     m_textureAssetsPending = true;
 
     auto it = m_properties.find(name);
-    std::string previousGuid;
     bool hdr = false;
     std::optional<std::array<double, 2>> range;
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
@@ -867,12 +899,8 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
         if (existing) {
             if (*existing == validatedGuid && !hadRuntimeTexture)
                 return;
-            previousGuid = *existing;
         }
     }
-
-    if (!m_guid.empty() && !previousGuid.empty() && !IsBuiltinTextureToken(previousGuid))
-        AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, previousGuid);
 
     const std::string textureDefault = it != m_properties.end() ? it->second.textureDefault : std::string{};
     m_properties[name] =
@@ -880,8 +908,7 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     m_propertiesDirty = true;
     ++m_version;
 
-    if (!m_guid.empty() && !validatedGuid.empty() && !IsBuiltinTextureToken(validatedGuid))
-        AssetDependencyGraph::Instance().AddAssetDependency(m_guid, validatedGuid);
+    PublishDependencies();
 }
 
 void InxMaterial::ClearTexture(const std::string &name)
@@ -894,17 +921,16 @@ void InxMaterial::ClearTexture(const std::string &name)
     }
     auto it = m_properties.find(name);
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
+        if (m_rendererMaterialOverrides)
+            m_rendererMaterialOverrides->properties.insert(name);
         const auto *oldGuid = std::get_if<std::string>(&it->second.value);
         // Early-out: already cleared.
         if (oldGuid && oldGuid->empty())
             return;
-        // Remove dependency for the old texture GUID
-        if (!m_guid.empty() && oldGuid && !oldGuid->empty()) {
-            AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, *oldGuid);
-        }
         it->second.value = std::string{};
         m_propertiesDirty = true;
         ++m_version;
+        PublishDependencies();
     }
 }
 
@@ -918,15 +944,14 @@ bool InxMaterial::RemoveProperty(const std::string &name)
     if (it == m_properties.end())
         return false;
 
-    if (it->second.type == MaterialPropertyType::Texture2D) {
-        const auto *oldGuid = std::get_if<std::string>(&it->second.value);
-        if (!m_guid.empty() && oldGuid && !oldGuid->empty() && !IsBuiltinTextureToken(*oldGuid))
-            AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, *oldGuid);
+    if (m_rendererMaterialOverrides) {
+        m_rendererMaterialOverrides->properties.insert(name);
+        m_rendererMaterialOverrides->samplers.insert(name);
     }
-
     m_properties.erase(it);
     m_propertiesDirty = true;
     ++m_version;
+    PublishDependencies();
     return true;
 }
 
@@ -972,11 +997,19 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         propertyOrder.push_back(binding.name);
         auto existing = m_properties.find(binding.name);
         if (existing == m_properties.end() || !MaterialValueMatchesType(existing->second, *expectedType)) {
-            m_properties[binding.name] =
-                MaterialProperty{binding.name, *expectedType, ParseShaderPropertyDefault(binding, *expectedType),
-                                 binding.hdr,  binding.range, binding.textureDefault};
+            m_properties[binding.name] = MaterialProperty{
+                binding.name,  *expectedType,          ParseShaderPropertyDefault(binding, *expectedType), binding.hdr,
+                binding.range, binding.textureDefault, *expectedType != MaterialPropertyType::Texture2D};
             changed = true;
             continue;
+        }
+
+        if (existing->second.inheritsShaderDefault) {
+            auto value = ParseShaderPropertyDefault(binding, *expectedType);
+            if (existing->second.value != value) {
+                existing->second.value = std::move(value);
+                changed = true;
+            }
         }
 
         // Color is a Float4 with editor semantics, not a different value
@@ -997,6 +1030,16 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         if (existing->second.textureDefault != binding.textureDefault) {
             existing->second.textureDefault = binding.textureDefault;
             changed = true;
+        }
+    }
+
+    for (auto property = m_properties.begin(); property != m_properties.end();) {
+        if (property->second.inheritsShaderDefault &&
+            std::find(propertyOrder.begin(), propertyOrder.end(), property->first) == propertyOrder.end()) {
+            property = m_properties.erase(property);
+            changed = true;
+        } else {
+            ++property;
         }
     }
 
@@ -1251,8 +1294,8 @@ nlohmann::json InxMaterial::SerializeDocument() const
     // Properties
     json props = json::object();
     for (const auto &[propName, prop] : m_properties) {
-        // Skip engine-internal properties derived from renderState
-        if (propName == "_AlphaClipThreshold")
+        // Preserve sparse authored documents so defaults continue to follow the shader.
+        if (propName == "_AlphaClipThreshold" || prop.inheritsShaderDefault)
             continue;
         json propJson;
         propJson["type"] = static_cast<int>(prop.type);
@@ -1416,12 +1459,46 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     if (!staged.ApplyDocument(document)) {
         return false;
     }
+    if (m_rendererMaterialOverrides) {
+        auto &overrides = *m_rendererMaterialOverrides;
+        for (const auto &[name, property] : m_properties) {
+            const auto *next = staged.GetProperty(name);
+            if (next ? property.inheritsShaderDefault || next->type != property.type || next->value != property.value
+                     : !property.inheritsShaderDefault)
+                overrides.properties.insert(name);
+        }
+        for (const auto &entry : staged.m_properties) {
+            if (!HasProperty(entry.first))
+                overrides.properties.insert(entry.first);
+        }
+        for (const auto &[name, sampler] : m_textureSamplers) {
+            const auto *next = staged.GetTextureSampler(name);
+            if (!next || !(*next == sampler))
+                overrides.samplers.insert(name);
+        }
+        for (const auto &entry : staged.m_textureSamplers) {
+            if (!GetTextureSampler(entry.first))
+                overrides.samplers.insert(entry.first);
+        }
+    }
     PublishDocument(std::move(staged));
     return true;
 }
 
-void InxMaterial::PublishDocument(InxMaterial &&staged)
+void InxMaterial::PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers)
 {
+    const auto expired = std::remove_if(m_rendererMaterialInstances.begin(), m_rendererMaterialInstances.end(),
+                                        [&](const std::weak_ptr<InxMaterial> &entry) {
+                                            auto instance = entry.lock();
+                                            if (!instance)
+                                                return true;
+                                            instance->RebaseRendererInstance(*this, staged);
+                                            return false;
+                                        });
+    m_rendererMaterialInstances.erase(expired, m_rendererMaterialInstances.end());
+    if (!keepRuntimeBuffers || !ReferencesSameShader(m_vertexShader, staged.m_vertexShader) ||
+        !ReferencesSameShader(m_fragmentShader, staged.m_fragmentShader))
+        m_buffers.clear();
     m_name = std::move(staged.m_name);
     m_builtin = staged.m_builtin;
     m_vertexShader = std::move(staged.m_vertexShader);
@@ -1431,8 +1508,6 @@ void InxMaterial::PublishDocument(InxMaterial &&staged)
     m_renderStateOverrides = staged.m_renderStateOverrides;
     m_properties = std::move(staged.m_properties);
     m_textureSamplers = std::move(staged.m_textureSamplers);
-    // Runtime buffer publications do not belong to the serialized asset.
-    m_buffers.clear();
     m_shaderPropertyOrder = std::move(staged.m_shaderPropertyOrder);
     // Resolve authored texture GUIDs again after publication. Explicit runtime
     // overrides survive only while their slot remains a texture property.
@@ -1451,6 +1526,7 @@ void InxMaterial::PublishDocument(InxMaterial &&staged)
     ++m_version;
     NotifyRoutingChanged();
     TrackRuntimeShaderReferences();
+    PublishDependencies();
 }
 
 bool InxMaterial::ApplyDocument(const nlohmann::json &document)
@@ -1896,6 +1972,8 @@ void InxMaterial::SetTextureSampler(const std::string &name, const MaterialTextu
     const auto property = m_properties.find(name);
     if (property == m_properties.end() || property->second.type != MaterialPropertyType::Texture2D)
         throw std::invalid_argument("texture sampler requires an existing Texture2D property: " + name);
+    if (m_rendererMaterialOverrides)
+        m_rendererMaterialOverrides->samplers.insert(name);
     if (!sampler.HasOverrides()) {
         ClearTextureSampler(name);
         return;
@@ -1916,6 +1994,8 @@ const MaterialTextureSampler *InxMaterial::GetTextureSampler(const std::string &
 
 void InxMaterial::ClearTextureSampler(const std::string &name)
 {
+    if (m_rendererMaterialOverrides)
+        m_rendererMaterialOverrides->samplers.insert(name);
     if (m_textureSamplers.erase(name) == 0)
         return;
     m_propertiesDirty = true;
@@ -2042,6 +2122,76 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
 
     clone->TrackRuntimeShaderReferences();
     return clone;
+}
+
+std::shared_ptr<InxMaterial> InxMaterial::CloneRendererInstance() const
+{
+    auto instance = Clone();
+    instance->m_rendererMaterialOverrides = std::make_unique<RendererMaterialOverrides>();
+    instance->m_rendererMaterialOverrides->source = weak_from_this().lock();
+    const auto expired = std::remove_if(m_rendererMaterialInstances.begin(), m_rendererMaterialInstances.end(),
+                                        [](const auto &entry) { return entry.expired(); });
+    m_rendererMaterialInstances.erase(expired, m_rendererMaterialInstances.end());
+    m_rendererMaterialInstances.push_back(instance);
+    return instance;
+}
+
+void InxMaterial::RebaseRendererInstance(const InxMaterial &previous, const InxMaterial &next)
+{
+    // A local shader switch makes this instance independent of the source's
+    // property contract.
+    if (!ReferencesSameShader(m_vertexShader, previous.m_vertexShader) ||
+        !ReferencesSameShader(m_fragmentShader, previous.m_fragmentShader))
+        return;
+
+    InxMaterial rebased(*this);
+    rebased.m_vertexShader = next.m_vertexShader;
+    rebased.m_fragmentShader = next.m_fragmentShader;
+    if (m_passTag == previous.m_passTag)
+        rebased.m_passTag = next.m_passTag;
+    if (m_renderState == previous.m_renderState && m_renderStateOverrides == previous.m_renderStateOverrides) {
+        rebased.m_renderState = next.m_renderState;
+        rebased.m_renderStateOverrides = next.m_renderStateOverrides;
+    }
+
+    rebased.m_properties = next.m_properties;
+    rebased.m_shaderPropertyOrder = next.m_shaderPropertyOrder;
+    auto &overrides = m_rendererMaterialOverrides->properties;
+    for (auto property = overrides.begin(); property != overrides.end();) {
+        const auto &name = *property;
+        const auto *local = GetProperty(name);
+        auto inherited = rebased.m_properties.find(name);
+        if (!local) {
+            rebased.m_properties.erase(name);
+        } else if (inherited == rebased.m_properties.end()) {
+            rebased.m_properties.emplace(name, *local);
+        } else if (MaterialPropertyOverrideCompatible(inherited->second, *local)) {
+            inherited->second.value = local->value;
+            inherited->second.inheritsShaderDefault = false;
+        } else {
+            property = overrides.erase(property);
+            continue;
+        }
+        ++property;
+    }
+
+    rebased.m_textureSamplers = next.m_textureSamplers;
+    for (const auto &name : m_rendererMaterialOverrides->samplers) {
+        const auto *property = rebased.GetProperty(name);
+        const auto *sampler = GetTextureSampler(name);
+        if (property && property->type == MaterialPropertyType::Texture2D && sampler)
+            rebased.m_textureSamplers[name] = *sampler;
+        else
+            rebased.m_textureSamplers.erase(name);
+    }
+    for (auto sampler = rebased.m_textureSamplers.begin(); sampler != rebased.m_textureSamplers.end();) {
+        const auto *property = rebased.GetProperty(sampler->first);
+        if (!property || property->type != MaterialPropertyType::Texture2D)
+            sampler = rebased.m_textureSamplers.erase(sampler);
+        else
+            ++sampler;
+    }
+    PublishDocument(std::move(rebased), true);
 }
 
 } // namespace infernux

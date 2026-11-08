@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
 
 
 RUNTIME_TYPE_REGISTRY_SCHEMA = "infernux.runtime_type_registry"
@@ -19,6 +20,7 @@ _RUNTIME_LIFECYCLE_METHODS = frozenset(
         "physics_pre_step",
         "physics_post_step",
         "update",
+        "animation_update",
         "late_update",
         "on_enable",
         "on_disable",
@@ -33,8 +35,8 @@ _RUNTIME_LIFECYCLE_METHODS = frozenset(
 )
 
 
-def _publish_semantic_edits(edits: list[dict[str, Any]]) -> None:
-    """Publish semantic edits for desktop Players with the editor catalog ABI.
+def _prepare_semantic_edits(edits: list[dict[str, Any]]) -> Any:
+    """Prepare semantic edits for desktop Players with the native catalog ABI.
 
     Web and Android Players use the cooked runtime type registry directly.
     Their minimal native runtimes intentionally do not ship the editor-only
@@ -52,14 +54,38 @@ def _publish_semantic_edits(edits: list[dict[str, Any]]) -> None:
         }:
             return
         raise AttributeError("native semantic catalog transaction is unavailable")
-    prepare(edits).publish()
+    return prepare(edits)
+
+
+@dataclass(slots=True)
+class _PreparedRuntimeTypes:
+    records: Optional[dict[str, dict[str, Any]]]
+    owners: set[str]
+    semantic_publication: Any
+
+    def publish(self) -> int:
+        global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
+
+        if self.records is None:
+            return len(_runtime_types)
+        if self.semantic_publication is not None:
+            self.semantic_publication.publish()
+        _runtime_types = self.records
+        _runtime_semantic_owners = self.owners
+        _runtime_registry_installed = True
+        return len(self.records)
 
 
 def install_runtime_type_registry(path: str) -> int:
-    global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
-
     with open(path, "r", encoding="utf-8") as stream:
-        document = json.load(stream)
+        return _prepare_runtime_type_registry(json.load(stream)).publish()
+
+
+def _prepare_runtime_type_registry(
+    document: object,
+    *,
+    new_scripts: Optional[Mapping[str, str]] = None,
+) -> _PreparedRuntimeTypes:
     if (
         not isinstance(document, dict)
         or document.get("$schema") != RUNTIME_TYPE_REGISTRY_SCHEMA
@@ -88,6 +114,12 @@ def install_runtime_type_registry(path: str) -> int:
         )
         if any(not isinstance(entry.get(key), str) or not entry[key] for key in required):
             raise RuntimeError("Player runtime type registry entry has incomplete identity")
+        if new_scripts is not None:
+            expected_module = new_scripts.get(entry["script_guid"])
+            if expected_module is None:
+                continue
+            if entry["module"] != expected_module:
+                raise RuntimeError(f"Player runtime type has the wrong cooked module: {entry['module']}")
         phases = entry.get("lifecycle", [])
         if not isinstance(phases, list) or any(
             not isinstance(phase, str) or not phase for phase in phases
@@ -123,16 +155,22 @@ def install_runtime_type_registry(path: str) -> int:
             lifecycle=tuple(sorted(set(phases))),
         )
 
+    owners = set(semantic_types)
+    if new_scripts is None:
+        changed_owners = _runtime_semantic_owners | owners
+    else:
+        if not prepared:
+            return _PreparedRuntimeTypes(None, set(), None)
+        if owners & _runtime_semantic_owners or prepared.keys() & _runtime_types.keys():
+            raise RuntimeError("New Player runtime types conflict with published script identities")
+        changed_owners = owners
+        owners = _runtime_semantic_owners | owners
+        prepared = _runtime_types | prepared
     edits = [
         {"owner": owner, "types": semantic_types.get(owner, [])}
-        for owner in sorted(_runtime_semantic_owners | set(semantic_types))
+        for owner in sorted(changed_owners)
     ]
-    _publish_semantic_edits(edits)
-
-    _runtime_types = prepared
-    _runtime_registry_installed = True
-    _runtime_semantic_owners = set(semantic_types)
-    return len(prepared)
+    return _PreparedRuntimeTypes(prepared, owners, _prepare_semantic_edits(edits))
 
 
 def runtime_type_contract(type_guid: str) -> Optional[dict[str, Any]]:
@@ -194,12 +232,14 @@ def bind_runtime_lifecycle_contract(component_type: type, record: Optional[dict[
 def clear_runtime_type_registry() -> None:
     global _runtime_types, _runtime_registry_installed, _runtime_semantic_owners
     if _runtime_semantic_owners:
-        _publish_semantic_edits(
+        publication = _prepare_semantic_edits(
             [
                 {"owner": owner, "types": []}
                 for owner in sorted(_runtime_semantic_owners)
             ]
         )
+        if publication is not None:
+            publication.publish()
     _runtime_types = {}
     _runtime_registry_installed = False
     _runtime_semantic_owners = set()

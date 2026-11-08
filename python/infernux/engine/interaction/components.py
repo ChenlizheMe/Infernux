@@ -332,6 +332,12 @@ class ComponentCommandService:
                 (component,), attribute, schema=schema, normalize=normalize, description=text,
             )
         else:
+            if (isinstance(component, BuiltinComponent) and not isinstance(native_property, CppProperty)
+                    and field not in ("enabled", "execution_order")):
+                from infernux.field_schema import get_native_field_schemas
+                schemas = get_native_field_schemas(f"native:infernux.{component._cpp_type_name}")
+                if not any(schema.attributes["field_id"] == field for schema in schemas):
+                    raise ValueError(f"{type(component).__name__}.{field} is not a declared authoring property")
             transaction = make_attribute_property_transaction(
                 (component,),
                 field,
@@ -485,7 +491,7 @@ class ComponentCommandService:
         if component is None or not isinstance(document, dict):
             raise ValueError("component restore requires a typed document")
         before = self._capture_document(component)
-        after = copy.deepcopy(document)
+        after = self._prepare_authoring_document(component, document)
         if before == after:
             return PropertyTransactionStatus.NO_CHANGE
         command = self._document_command(
@@ -514,7 +520,7 @@ class ComponentCommandService:
             if component is None or not isinstance(document, dict):
                 raise ValueError("component restore requires typed component documents")
             before = self._capture_document(component)
-            after = copy.deepcopy(document)
+            after = self._prepare_authoring_document(component, document)
             if before == after:
                 continue
             commands.append(
@@ -726,6 +732,12 @@ class ComponentCommandService:
         raise TypeError(
             f"{type(component).__name__} does not expose a serialized document"
         )
+
+    @classmethod
+    def _prepare_authoring_document(cls, component: Any, document: dict) -> dict:
+        if cls._is_python_component(component):
+            return copy.deepcopy(document)
+        return component.prepare_authoring_document(document)
 
     @classmethod
     def _restore_document(cls, component: Any, document: dict) -> None:

@@ -16,9 +16,7 @@ from infernux.renderstack.pipeline_dsl import (
     compile_queue_segments,
 )
 from infernux.renderstack.route_policy import RoutePolicy
-from infernux.renderstack._pipeline_common import (
-    DEFERRED_LIGHTING_SHADER,
-)
+from infernux.renderstack._pipeline_common import draw_deferred_lighting
 
 
 _CLEAR_TRANSPARENT = (0.0, 0.0, 0.0, 0.0)
@@ -175,7 +173,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
     color_format = Format.RGBA16_SFLOAT if definition.frame.hdr else Format.RGBA8_UNORM
     camera_color = graph.create_texture("color", format=color_format, camera_target=True)
     scene_scratch = graph.create_texture("_scene_composite", format=color_format)
-    depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+    depth = graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
     motion = None
     normal = None
     motion_draw = None
@@ -735,19 +733,10 @@ def _draw_deferred_route(
                     )
 
         with graph.add_pass("Lighting") as lighting_pass:
-            lighting_pass.set_textures(
-                {
-                    "gAlbedo": albedo,
-                    "gNormal": normal,
-                    "gMaterial": material,
-                    "gEmission": emission,
-                    "gObject": object_data,
-                    "sceneDepth": depth,
-                }
-            )
             lighting_pass.write_color(lit)
             lighting_pass.set_clear(color=_CLEAR_TRANSPARENT)
-            lighting_pass.fullscreen_quad(DEFERRED_LIGHTING_SHADER)
+            draw_deferred_lighting(lighting_pass, albedo=albedo, normal=normal, material=material,
+                                   emission=emission, object_data=object_data, depth=depth)
 
     return lit
 

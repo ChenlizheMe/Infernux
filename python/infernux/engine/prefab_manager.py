@@ -134,18 +134,28 @@ def _prefab_next_component_id(document):
     return document["next_component_id"]
 
 
-def _make_prefab_baseline(root, *, outer_source_id=0):
-    result = {"component_identity_version": 1, "root_object": copy.deepcopy(root)}
+_PREFAB_OCCURRENCE_FIELDS = ("outer_source_id", "outer_source_guid")
+
+
+def _make_prefab_baseline(root, *, outer_source_id=0, previous=None):
+    result = {"root_object": copy.deepcopy(root)}
+    if previous:
+        result.update((key, previous[key]) for key in _PREFAB_OCCURRENCE_FIELDS if key in previous)
     if outer_source_id:
         result["outer_source_id"] = outer_source_id
     return result
 
 
 def _prefab_baseline_root(baseline):
-    if set(baseline) - {"outer_source_id"} != {"component_identity_version", "root_object"} or type(baseline["component_identity_version"]) is not int or baseline["component_identity_version"] != 1:
-        raise PrefabDocumentError("Unsupported prefab component identity baseline")
+    if set(baseline) - set(_PREFAB_OCCURRENCE_FIELDS) != {"root_object"}:
+        raise PrefabDocumentError("Invalid prefab source baseline fields")
     if "outer_source_id" in baseline and (type(baseline["outer_source_id"]) is not int or baseline["outer_source_id"] <= 0):
         raise PrefabDocumentError("Nested Prefab outer source identity must be a positive integer")
+    if "outer_source_guid" in baseline and (
+        not isinstance(baseline["outer_source_guid"], str) or not baseline["outer_source_guid"]
+        or "outer_source_id" not in baseline
+    ):
+        raise PrefabDocumentError("Nested Prefab outer source GUID requires an outer source identity")
     return baseline["root_object"]
 
 
@@ -184,7 +194,8 @@ def _get_file_stamp(file_path: str):
         return None
 
 
-def _read_resolved_prefab_document(file_path, asset_database=None, *, path_for_guid=None, dependencies=None):
+def _read_resolved_prefab_document(file_path, asset_database=None, *, path_for_guid=None, dependencies=None,
+                                   resolve_base=None):
     """Resolve the current base chain without rewriting author files on read.
 
     Editor templates and cook share this projection. A stored Variant baseline
@@ -207,17 +218,20 @@ def _read_resolved_prefab_document(file_path, asset_database=None, *, path_for_g
                 dependencies[path] = _get_file_stamp(path)
             if "variant" in document:
                 guid = document["variant"]["guid"]
-                if path_for_guid is not None:
-                    base_path = path_for_guid(guid)
+                if resolve_base is not None:
+                    base = resolve_base(guid)
                 else:
-                    database = asset_database
-                    if database is None:
-                        from infernux.core.assets import AssetManager
-                        database = AssetManager.require_asset_database()
-                    base_path = database.get_path_from_guid(guid)
-                if not base_path:
-                    raise PrefabDocumentError(f"Variant base asset is unavailable: {guid}")
-                base = read(base_path)
+                    if path_for_guid is not None:
+                        base_path = path_for_guid(guid)
+                    else:
+                        database = asset_database
+                        if database is None:
+                            from infernux.core.assets import AssetManager
+                            database = AssetManager.require_asset_database()
+                        base_path = database.get_path_from_guid(guid)
+                    if not base_path:
+                        raise PrefabDocumentError(f"Variant base asset is unavailable: {guid}")
+                    base = read(base_path)
                 base = {name: value for name, value in base.items() if name != "variant"}
                 document = variant_document(rebase_variant_definition(variant_definition(document), base))
             resolved[key] = document
@@ -228,6 +242,46 @@ def _read_resolved_prefab_document(file_path, asset_database=None, *, path_for_g
     return read(file_path)
 
 
+def _published_prefab_sources_for(asset_database):
+    from infernux.engine.scene_manager import SceneFileManager
+
+    files = SceneFileManager.instance()
+    if asset_database is not None and isinstance(files, SceneFileManager) and files._asset_database is asset_database:
+        return files._published_prefab_sources
+    return None
+
+
+def _prefab_source_loader(asset_database, sources, published, *, refresh=()):
+    """Stage a consistent set of authored documents for one runtime operation."""
+    from infernux.engine.component_restore import validate_prefab_source_components
+
+    loading = set()
+
+    def load(guid):
+        if guid in sources:
+            return sources[guid]
+        path = asset_database.get_path_from_guid(guid)
+        if not path:
+            raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        if guid in published and guid not in refresh:
+            sources[guid] = published[guid]
+            return sources[guid]
+        if guid in loading:
+            raise PrefabDocumentError(f"Variant source cycle at '{guid}'")
+        loading.add(guid)
+        try:
+            document = _read_resolved_prefab_document(path, asset_database, resolve_base=load)
+            validate_prefab_source_components(document["root_object"])
+            sources[guid] = document
+            return document
+        finally:
+            loading.remove(guid)
+
+    return load
+
+
 def _load_prefab_template_payload(file_path: str, resolved_guid: str, asset_database=None, dependencies=None):
     try:
         prefab_data = _read_resolved_prefab_document(file_path, asset_database, dependencies=dependencies)
@@ -235,6 +289,24 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str, asset_data
         Debug.log_error(f"Failed to read prefab file: {exc}")
         return None
 
+    def load_source(guid):
+        if guid == resolved_guid:
+            return prefab_data["root_object"]
+        database = asset_database
+        if database is None:
+            from infernux.core.assets import AssetManager
+            database = AssetManager.require_asset_database()
+        path = database.get_path_from_guid(guid)
+        if not path:
+            raise PrefabDocumentError(f"Nested Prefab source cannot be resolved: {guid}")
+        if dependencies is not None:
+            dependencies[path] = _get_file_stamp(path)
+        return _read_resolved_prefab_document(path, database, dependencies=dependencies)["root_object"]
+
+    return _build_prefab_template_payload(prefab_data, resolved_guid, load_source)
+
+
+def _build_prefab_template_payload(prefab_data, resolved_guid, load_source):
     root_obj_data = copy.deepcopy(prefab_data["root_object"])
     _strip_prefab_runtime_fields(root_obj_data)
     _stamp_prefab_guid(root_obj_data, resolved_guid)
@@ -242,9 +314,6 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str, asset_data
         root_obj_data["prefab_source"] = _make_prefab_baseline(prefab_data["root_object"])
 
     if any(node.get("prefab_root") for child in root_obj_data["children"] for node in _prefab_nodes(child)):
-        if asset_database is None:
-            from infernux.core.assets import AssetManager
-            asset_database = AssetManager.require_asset_database()
         # A template uses a private document ID namespace. Fresh native IDs are
         # still allocated only once, when this prepared graph is instantiated.
         next_component = prefab_data["next_component_id"]
@@ -253,24 +322,41 @@ def _load_prefab_template_payload(file_path: str, resolved_guid: str, asset_data
             node["transform"]["component_id"] = next_component
             next_component += 1
 
-        def load_source(guid):
-            if guid == resolved_guid:
-                return prefab_data["root_object"]
-            path = asset_database.get_path_from_guid(guid)
-            if not path:
-                raise PrefabDocumentError(f"Nested Prefab source cannot be resolved: {guid}")
-            if dependencies is not None:
-                dependencies[path] = _get_file_stamp(path)
-            return _read_resolved_prefab_document(path, asset_database, dependencies=dependencies)["root_object"]
-
         from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
         root_obj_data = resolve_scene_prefab_documents({"objects": [root_obj_data]}, load_source)["objects"][0]
 
     return root_obj_data
 
 
+def _get_published_prefab_template(guid, asset_database, published):
+    cached = _PREFAB_TEMPLATE_CACHE.get(guid)
+    if cached and "sources" in cached and all(
+        published.get(identity) is document and os.path.isfile(asset_database.get_path_from_guid(identity) or "")
+        for identity, document in cached["sources"].items()
+    ):
+        return cached["document"]
+
+    sources = {}
+    load = _prefab_source_loader(asset_database, sources, published)
+    try:
+        prefab_data = load(guid)
+        template = _build_prefab_template_payload(prefab_data, guid, lambda identity: load(identity)["root_object"])
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+        Debug.log_error(f"Failed to prepare Prefab template '{guid}': {exc}")
+        return None
+
+    published.update(sources)
+    _PREFAB_TEMPLATE_CACHE[guid] = {"sources": sources, "document": template}
+    return template
+
+
 def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_database=None):
     """Cache authored data, never live objects in a loaded gameplay world."""
+    if resolved_guid:
+        published = _published_prefab_sources_for(asset_database)
+        if published is not None:
+            return _get_published_prefab_template(resolved_guid, asset_database, published)
+
     stamp = _get_file_stamp(file_path)
     if stamp is None:
         Debug.log_warning(f"Prefab file not found: {file_path}")
@@ -301,6 +387,21 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_databa
     return template_payload
 
 
+def _belongs_to_prefab_source(root, node):
+    guid = root.get("prefab_guid")
+    return not guid or node.get("prefab_guid") == guid
+
+
+def _component_source_link(component):
+    return component.get("prefab_source_id", 0), component.get("prefab_source_guid", "")
+
+
+def _source_component_id(root, node, component):
+    source_id, explicit_guid = _component_source_link(component)
+    guid = root.get("prefab_guid")
+    return source_id if not guid or (explicit_guid or node.get("prefab_guid")) == guid else 0
+
+
 def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_snapshot=False,
                                  object_id_map=None, next_component_id=1, component_id_map=None):
     """Localize a graph; negative IDs exist only in private instance merge snapshots.
@@ -325,19 +426,23 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
             collect(child, f"{location}.children[{index}]")
 
     collect(obj_data, "root_object")
+    owned_objects = {node["id"] for node, _location in nodes
+                     if "id" in node and _belongs_to_prefab_source(obj_data, node)}
     baseline = obj_data.get("prefab_source")
     has_runtime_ids = ["id" in node for node, _location in nodes]
     has_local_ids = ["local_id" in node for node, _location in nodes]
     if all(has_runtime_ids) and not any(has_local_ids):
         runtime_to_local = {}
-        source_ids = list(object_id_map.values()) if object_id_map is not None else [node.get("prefab_source_id", 0) for node, _ in nodes]
+        source_ids = (list(object_id_map.values()) if object_id_map is not None else
+                      [node.get("prefab_source_id", 0) for node, _ in nodes if node["id"] in owned_objects])
         linked_ids = [value for value in source_ids if value > 0]
         if len(linked_ids) != len(set(linked_ids)):
             raise PrefabDocumentError("ObjectGraph contains duplicate prefab source identities")
         next_local_id = max(next_local_id, max(linked_ids, default=0) + 1)
         for node, location in nodes:
             runtime_id = node["id"]
-            local_id = object_id_map.get(runtime_id, 0) if object_id_map is not None else node.get("prefab_source_id", 0)
+            local_id = (object_id_map.get(runtime_id, 0) if object_id_map is not None else
+                        node.get("prefab_source_id", 0) if runtime_id in owned_objects else 0)
             if local_id <= 0:
                 if instance_snapshot:
                     local_id = -runtime_id
@@ -398,7 +503,9 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
     component_ids = {} if runtime_to_local is not None else None
     transform_ids = {node["transform"].get("component_id") for node, _ in nodes}
     if component_ids is not None:
-        linked = list(component_id_map.values()) if component_id_map is not None else [component.get("prefab_source_id", 0) for component in components]
+        linked = (list(component_id_map.values()) if component_id_map is not None else
+                  [_source_component_id(obj_data, node, component) for node, _ in nodes
+                   for component in node["components"]])
         linked = [value for value in linked if value > 0]
         if len(linked) != len(set(linked)):
             raise PrefabDocumentError("ObjectGraph contains duplicate component source identities")
@@ -413,7 +520,8 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
                 continue
             runtime_id = component["component_id"]
             if component_ids is not None:
-                source_id = component_id_map.get(runtime_id, 0) if component_id_map is not None else component.get("prefab_source_id", 0)
+                source_id = (component_id_map.get(runtime_id, 0) if component_id_map is not None else
+                             _source_component_id(obj_data, node, component))
                 if source_id <= 0:
                     if instance_snapshot:
                         source_id = -runtime_id
@@ -432,19 +540,23 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
                 component["data"],
                 f"{location}.components[{index}].data",
             )
-            if component_ids is not None and component["type_id"] in (
-                "native:infernux.HingeJoint", "native:infernux.SliderJoint",
-            ):
-                fields = component["data"]
-                target = fields["connected_body_component_id"]
-                if target in component_ids:
-                    fields["connected_body_component_id"] = component_ids[target]
-                elif target and instance_snapshot:
-                    fields["connected_body_component_id"] = -target
-                elif target:
+            if component_ids is not None:
+                from infernux.engine.component_restore import rewrite_native_component_references
+
+                def local_component(target):
+                    if not target:
+                        return 0
+                    if target in component_ids:
+                        return component_ids[target]
+                    if instance_snapshot:
+                        return -target
                     raise PrefabDocumentError(
-                        f"{location}.components[{index}]: prefab joint references a body outside its subtree"
+                        f"{location}.components[{index}]: prefab references a component outside its subtree"
                     )
+
+                component["data"] = rewrite_native_component_references(
+                    component["type_id"], component["data"], local_component,
+                )
     if runtime_to_local is not None and baseline:
         # Native nodes carry their outer asset identity. Recover nested ownership
         # from that asset's immutable author baseline when creating a merge view.
@@ -472,6 +584,11 @@ def read_prefab_source_canvas(file_path: str = None, guid: str = None,
             file_path = str(asset_database.get_path_from_guid(resolved_guid) or "").strip()
         except Exception:
             return ""
+        published = _published_prefab_sources_for(asset_database)
+        if file_path and os.path.isfile(file_path) and published is not None:
+            if resolved_guid not in published and _get_published_prefab_template(resolved_guid, asset_database, published) is None:
+                return ""
+            return published[resolved_guid].get("source_canvas_name", "")
     if not file_path or not os.path.isfile(file_path):
         return ""
     try:
@@ -574,23 +691,50 @@ def _nested_source_projection(root, source=None):
     links = {node["local_id"]: node["nested_prefab"] for node in _prefab_nodes(source)
              if "nested_prefab" in node} if source else {}
     objects, components = {}, {}
+    guid = root.get("prefab_guid")
+
+    def collect_outer_components(node):
+        for component in node["components"]:
+            if source_id := _source_component_id(root, node, component):
+                components[component["component_id"]] = source_id
+
+    def collect_outer_members(node):
+        if node.get("prefab_root"):
+            if node.get("prefab_source", {}).get("outer_source_guid") == guid:
+                project_instance(node)
+                return
+        elif _belongs_to_prefab_source(root, node):
+            if source_id := node.get("prefab_source_id"):
+                objects[node["id"]] = source_id
+        collect_outer_components(node)
+        for child in node["children"]:
+            collect_outer_members(child)
+
+    def project_instance(node):
+        inner_objects, inner_components = _nested_source_projection(node)
+        baseline = node.get("prefab_source", {})
+        owner = baseline.get("outer_source_guid", guid)
+        link = links.get(baseline.get("outer_source_id")) if owner == guid else None
+        if link and link["guid"] != node["prefab_guid"]:
+            link = None
+        object_sources = {inner: outer for outer, inner in link["object_sources"]} if link else {}
+        component_sources = {inner: outer for outer, inner in link["component_sources"]} if link else {}
+        objects.update((identity, object_sources.get(inner, -identity)) for identity, inner in inner_objects.items())
+        components.update((identity, component_sources.get(inner, -identity)) for identity, inner in inner_components.items())
+        if guid:
+            collect_outer_components(node)
+            for child in node["children"]:
+                collect_outer_members(child)
 
     def visit(node, is_root=False):
         if not is_root and node.get("prefab_root") and node.get("prefab_guid"):
-            inner_objects, inner_components = _nested_source_projection(node)
-            anchor = node.get("prefab_source", {}).get("outer_source_id", 0)
-            link = links.get(anchor)
-            if link and link["guid"] != node["prefab_guid"]:
-                link = None
-            object_sources = {inner: outer for outer, inner in link["object_sources"]} if link else {}
-            component_sources = {inner: outer for outer, inner in link["component_sources"]} if link else {}
-            objects.update((identity, object_sources.get(inner, -identity)) for identity, inner in inner_objects.items())
-            components.update((identity, component_sources.get(inner, -identity)) for identity, inner in inner_components.items())
+            project_instance(node)
             return
-        objects[node["id"]] = node.get("prefab_source_id", 0) or -node["id"]
+        owned = _belongs_to_prefab_source(root, node)
+        objects[node["id"]] = (node.get("prefab_source_id", 0) if owned else 0) or -node["id"]
         for component in node["components"]:
             identity = component["component_id"]
-            components[identity] = component.get("prefab_source_id", 0) or -identity
+            components[identity] = _source_component_id(root, node, component) or -identity
         for child in node["children"]:
             visit(child)
 
@@ -606,21 +750,20 @@ def _capture_nested_instances(root):
     therefore cannot collide, and inner baselines retain deeper nested links.
     """
     captured = []
+    guid = root.get("prefab_guid")
 
-    def visit(node):
+    def visit(node, inside_instance=False):
         if node.get("prefab_root") and node.get("prefab_guid"):
             baseline = node.get("prefab_source")
             if not baseline:
                 raise PrefabDocumentError("Nested Prefab requires a synchronized source baseline before saving")
-            objects, components = _nested_source_projection(node)
-            captured.append((node, {"guid": node["prefab_guid"],
-                                    "baseline": copy.deepcopy(_prefab_baseline_root(baseline))}, objects, components))
-            # Clear only this new outer namespace's links. The inner identity is
-            # retained in the projection above, not overwritten with outer IDs.
-            _strip_prefab_fields(node)
-            return
+            if not inside_instance or (guid and baseline.get("outer_source_guid") == guid):
+                objects, components = _nested_source_projection(node)
+                captured.append((node, {"guid": node["prefab_guid"],
+                                        "baseline": copy.deepcopy(_prefab_baseline_root(baseline))}, objects, components))
+            inside_instance = True
         for child in node["children"]:
-            visit(child)
+            visit(child, inside_instance)
 
     for child in root["children"]:
         visit(child)
@@ -775,11 +918,19 @@ def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True, *, sourc
         component_sources = dict(link["component_sources"])
         baseline_nodes = {node["local_id"]: node for node in _prefab_nodes(link["baseline"])}
         saved = []
+        outer_nodes = []
+        foreign_instances = {}
+        object_namespace, component_namespace = {}, {}
         for node in _prefab_nodes(obj_data):
             local_id = node["local_id"]
             source_id = object_sources.get(local_id, -abs(local_id))
+            if source_id < 0 < local_id and (source_ids is None or local_id in source_ids):
+                outer_nodes.append(node)
+            if source_id < 0 and "nested_prefab" in node:
+                foreign_instances[local_id] = node
             saved.append((node, "local_id", local_id))
             node["local_id"] = source_id
+            object_namespace[local_id] = source_id
             original = baseline_nodes.get(source_id)
             if original and "nested_prefab" in original:
                 node["nested_prefab"] = copy.deepcopy(original["nested_prefab"])
@@ -787,10 +938,35 @@ def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True, *, sourc
                 identity = component["component_id"]
                 saved.append((component, "component_id", identity))
                 component["component_id"] = component_sources.get(identity, -abs(identity))
+                component_namespace[identity] = component["component_id"]
+        for node in foreign_instances.values():
+            nested = node["nested_prefab"]
+            for key, namespace in (("object_sources", object_namespace), ("component_sources", component_namespace)):
+                nested[key] = [[namespace[outer], inner] for outer, inner in nested[key] if outer in namespace]
         _stamp_prefab_guid(obj_data, link["guid"], is_root=True,
                            source_ids=set(object_sources.values()), component_source_ids=set(component_sources.values()))
         for record, key, value in saved:
             record[key] = value
+        for node in outer_nodes:
+            if node.get("prefab_root"):
+                # Its placement is owned by the enclosing asset even though
+                # another nested instance now contains it in the scene.
+                if node["local_id"] in foreign_instances:
+                    node["prefab_source"]["outer_source_id"] = node["local_id"]
+                    node["prefab_source"]["outer_source_guid"] = guid
+                continue
+            if node.get("prefab_source_id"):
+                continue
+            node["prefab_guid"] = guid
+            node["prefab_source_id"] = node["local_id"]
+        for node in _prefab_nodes(obj_data):
+            for component in node["components"]:
+                identity = component["component_id"]
+                if (not component.get("prefab_source_id") and identity > 0
+                        and (component_source_ids is None or identity in component_source_ids)):
+                    component["prefab_source_id"] = identity
+                    if node["prefab_guid"] != guid:
+                        component["prefab_source_guid"] = guid
         obj_data["prefab_source"] = _make_prefab_baseline(link["baseline"], outer_source_id=outer_id if outer_id > 0 else 0)
         return
     obj_data["prefab_guid"] = guid
@@ -802,6 +978,7 @@ def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True, *, sourc
     if is_root:
         obj_data["prefab_root"] = True
     for component in obj_data["components"]:
+        component.pop("prefab_source_guid", None)
         source_id = component["component_id"]
         if source_id > 0 and (component_source_ids is None or source_id in component_source_ids):
             component["prefab_source_id"] = source_id
@@ -811,13 +988,13 @@ def _stamp_prefab_guid(obj_data: dict, guid: str, is_root: bool = True, *, sourc
         _stamp_prefab_guid(child, guid, is_root=False, source_ids=source_ids, component_source_ids=component_source_ids)
 
 
-def _link_prefab_components(obj, component_ids):
+def _link_prefab_components(obj, component_links):
     """Assign links on existing native handles without restoring author state."""
     from infernux.components import InxComponent
     for component in obj.get_components():
         native = component._cpp_component if isinstance(component, InxComponent) else component
-        if native.component_id in component_ids:
-            native._prefab_source_id = component_ids[native.component_id]
+        if native.component_id in component_links:
+            native._prefab_source = component_links[native.component_id]
 
 
 def _link_created_prefab_source(game_object, file_path: str, asset_database) -> bool:
@@ -853,7 +1030,7 @@ def _link_prefab_hierarchy(game_object, document, guid):
         obj.prefab_source_id = node.get("prefab_source_id", 0)
         obj._prefab_source_document = node.get("prefab_source")
         records = obj.serialize_document()["components"]
-        _link_prefab_components(obj, {current["component_id"]: source.get("prefab_source_id", 0)
+        _link_prefab_components(obj, {current["component_id"]: _component_source_link(source)
                                      for current, source in zip(records, node["components"], strict=True)})
         for child, source in zip(obj.get_children(), node["children"], strict=True):
             _link(child, source, False)
@@ -870,5 +1047,6 @@ def _strip_prefab_fields(obj_data: dict):
     obj_data.pop("prefab_source", None)
     for component in obj_data.get("components", []):
         component.pop("prefab_source_id", None)
+        component.pop("prefab_source_guid", None)
     for child in obj_data.get("children", []):
         _strip_prefab_fields(child)

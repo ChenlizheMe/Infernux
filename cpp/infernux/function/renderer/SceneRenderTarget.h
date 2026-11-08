@@ -43,6 +43,10 @@ class SceneRenderTarget
     /// Adopt an existing allocation for an offscreen camera. No copy, second
     /// allocation, ImGui descriptor or editor outline target is created.
     void BindAttachments(std::shared_ptr<const rhi::RenderTextureGeneration> attachments);
+    [[nodiscard]] const auto &GetAttachments() const
+    {
+        return m_attachments;
+    }
 
     /// @brief Get the ImGui texture ID for displaying this render target
     /// @return Texture ID (VkDescriptorSet) or 0 if not ready

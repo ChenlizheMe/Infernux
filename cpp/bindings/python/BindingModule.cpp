@@ -76,10 +76,18 @@ PYBIND11_MODULE(_Infernux, module)
         "is_frame_profile_enabled", []() { return INFERNUX_FRAME_PROFILE != 0; },
         "Return whether this native module was built with detailed frame profiling enabled.");
     infernux::RegisterSemanticCatalogBindings(module);
+    infernux::RegisterRuntimeNumericsBindings(module);
+    infernux::RegisterFrameWorkBindings(module);
     infernux::RegisterTextBindings(module);
 #if defined(INFERNUX_PYBIND_WEB_PLAYER)
     module.attr("__runtime_profile__") = "web-player";
     infernux::RegisterVector2Bindings(module);
+    infernux::RegisterAnimationCurveBindings(module);
+    infernux::RegisterMotionPathBindings(module);
+    infernux::RegisterTweenNumericsBindings(module);
+    infernux::RegisterEulerTweenBindings(module);
+    infernux::RegisterVectorTweenBindings(module);
+    infernux::RegisterStringTweenBindings(module);
     infernux::RegisterVector3Bindings(module);
     infernux::RegisterVec4fBindings(module);
     infernux::RegisterBatchBindings(module);
@@ -95,6 +103,12 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterInfernuxBindings(module);
     infernux::RegisterGUIBindings(module);
     infernux::RegisterVector2Bindings(module);
+    infernux::RegisterAnimationCurveBindings(module);
+    infernux::RegisterMotionPathBindings(module);
+    infernux::RegisterTweenNumericsBindings(module);
+    infernux::RegisterEulerTweenBindings(module);
+    infernux::RegisterVectorTweenBindings(module);
+    infernux::RegisterStringTweenBindings(module);
     infernux::RegisterVector3Bindings(module);
     infernux::RegisterVec4fBindings(module);
     infernux::RegisterResourceBindings(module);
@@ -111,4 +125,6 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterAudioBindings(module);
     infernux::RegisterBatchBindings(module);
 #endif
+    infernux::RegisterCpuComputeBindings(module);
+    infernux::RegisterRandomBindings(module);
 }

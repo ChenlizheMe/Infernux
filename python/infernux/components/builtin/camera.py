@@ -22,10 +22,13 @@ Example::
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
 from infernux.components._gizmo_ids import ICON_KIND_CAMERA
+
+if TYPE_CHECKING:
+    from infernux.core.render_texture import RenderTexture
 
 
 def _vec4_to_list(v):
@@ -138,6 +141,7 @@ def _render_sensor_type(ctx, comp, label_width) -> None:
 def _render_culling_mask(ctx, comp, label_width) -> None:
     from infernux.engine.ui.inspector_components import _record_builtin_property
     from infernux.engine.ui.inspector_utils import field_label
+    from infernux.engine.ui.theme import ImGuiCol, ImGuiStyleVar, Theme
     from infernux.lib import TagLayerManager
 
     names = list(TagLayerManager.instance().get_all_layers() or [])
@@ -147,7 +151,22 @@ def _render_culling_mask(ctx, comp, label_width) -> None:
     selected = sum(1 for i in range(32) if old_mask & (1 << i))
     label = "Everything" if selected == 32 else ("Nothing" if selected == 0 else f"{selected} Layers")
     field_label(ctx, "Culling Mask", label_width)
-    if ctx.button(f"{label}##camera_culling_mask"):
+    ctx.push_style_var_vec2(ImGuiStyleVar.ButtonTextAlign, 0.0, 0.5)
+    ctx.push_style_color(ImGuiCol.Button, *Theme.FRAME_BG)
+    ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.FRAME_BG_HOVERED)
+    ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.FRAME_BG_ACTIVE)
+    try:
+        opened = ctx.button(f"{label}##camera_culling_mask", width=-1.0)
+    finally:
+        ctx.pop_style_color(3)
+        ctx.pop_style_var(1)
+    right = ctx.get_item_rect_max_x()
+    top, bottom = ctx.get_item_rect_min_y(), ctx.get_item_rect_max_y()
+    ctx.draw_text_aligned(
+        right - (bottom - top), top, right, bottom, "▼",
+        *Theme.TEXT, align_x=0.5, align_y=0.5,
+    )
+    if opened:
         ctx.open_popup("##camera_culling_mask_popup")
     if ctx.begin_popup("##camera_culling_mask_popup"):
         new_mask = old_mask
@@ -251,11 +270,52 @@ class Camera(BuiltinComponent):
     )
     stop_nans = CppProperty.from_native("Camera", "stop_nans")
     dithering = CppProperty.from_native("Camera", "dithering")
+    render_to_texture = CppProperty.from_native("Camera", "render_to_texture")
+    render_on_demand = CppProperty.from_native(
+        "Camera", "render_on_demand", visible_when=lambda comp: comp.render_to_texture,
+    )
     target_texture = CppProperty.from_native(
         "Camera", "target_texture",
         native_getter=lambda cpp: (cpp.target_texture_guid, cpp.target_texture),
         get_converter=_wrap_target_texture, native_setter=_set_target_texture,
+        visible_when=lambda comp: comp.render_to_texture,
     )
+    memory_output_size = CppProperty.from_native(
+        "Camera", "memory_output_size",
+        visible_when=lambda comp: comp.render_to_texture and comp.target_texture is None,
+    )
+
+    @property
+    def output_texture(self) -> Optional["RenderTexture"]:
+        """Return the Camera's assigned or owned GPU output, with no pixel readback.
+
+        Enable `render_to_texture` and leave the target empty to render to a
+        camera-owned, single-sample RGBA32F target without creating an asset.
+        With a target assigned, this returns the same texture that receives
+        the render. Reading this property does not request a new image. The
+        texture starts black and retains the last image between writes. With
+        texture output disabled, this returns None.
+        """
+        from infernux.application import Application
+        from infernux.core.render_texture import RenderTexture
+
+        engine = Application._current_engine()
+        if engine is None:
+            return None
+        texture = engine.get_native_engine()._camera_output_texture(self._require_cpp_component())
+        return RenderTexture._from_native(texture) if texture is not None else None
+
+    def request_render(self) -> None:
+        """Request a write during one render opportunity for an on-demand Camera.
+
+        If this opportunity cannot render, the output keeps its current contents.
+        """
+        from infernux.application import Application
+
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError("Camera.request_render() requires a running graphical engine")
+        engine.get_native_engine()._request_camera_render(self._require_cpp_component())
 
     def render_inspector(self, ctx) -> None:
         """Render the camera with a named, multi-select layer mask.
@@ -281,11 +341,45 @@ class Camera(BuiltinComponent):
 
     @property
     def aspect_ratio(self) -> float:
-        """Aspect ratio (width / height) — read-only, computed from viewport."""
+        """Projection aspect; assignment overrides viewport sizing until reset."""
         cpp = self._cpp_component
         if cpp is not None:
             return cpp.aspect_ratio
         return 1.778
+
+    @aspect_ratio.setter
+    def aspect_ratio(self, value: float) -> None:
+        self._require_cpp_component().aspect_ratio = value
+
+    def reset_aspect_ratio(self) -> None:
+        """Resume the latest viewport aspect, including changes during an override."""
+        self._require_cpp_component().reset_aspect_ratio()
+
+    @property
+    def has_custom_aspect_ratio(self) -> bool:
+        return self._require_cpp_component().has_custom_aspect_ratio
+
+    @property
+    def rect(self):
+        """Normalized viewport Rect, with bottom-left origin."""
+        from infernux.screen import Rect
+        return Rect(*self._require_cpp_component().rect)
+
+    @rect.setter
+    def rect(self, value) -> None:
+        from infernux.lib import vec4f
+        self._require_cpp_component().rect = vec4f(*value)
+
+    @property
+    def pixel_rect(self):
+        """Clipped pixel viewport Rect, with bottom-left origin."""
+        from infernux.screen import Rect
+        return Rect(*self._require_cpp_component().pixel_rect)
+
+    @pixel_rect.setter
+    def pixel_rect(self, value) -> None:
+        from infernux.lib import vec4f
+        self._require_cpp_component().pixel_rect = vec4f(*value)
 
     @property
     def pixel_width(self) -> int:

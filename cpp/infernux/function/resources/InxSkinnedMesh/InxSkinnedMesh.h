@@ -18,10 +18,18 @@ namespace infernux
 
 constexpr uint32_t kMaxSkinInfluences = 4;
 
+struct SkinnedNodePose
+{
+    glm::vec3 translation{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 scale{1.0f};
+};
+
 struct EvaluatedSkinPose
 {
     std::vector<glm::mat4> palette;
     std::vector<glm::mat4> nodeGlobals;
+    std::vector<SkinnedNodePose> localPoses; // Sampled directly, including collapsed-scale parents.
 };
 
 struct SkinInfluence
@@ -167,18 +175,12 @@ class Skeleton
     std::unordered_map<std::string, uint32_t> boneByName;
 
     [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] std::vector<std::vector<std::string>> GetNodePaths() const;
     [[nodiscard]] SkeletonRetargetMap BuildRetargetMap(const Skeleton &source,
                                                        const SkinnedRuntimeAnimation &animation) const;
     [[nodiscard]] bool IsAnimationCompatible(const Skeleton &source, const SkinnedRuntimeAnimation &animation,
                                              std::string *reason = nullptr) const;
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
-};
-
-struct SkinnedNodePose
-{
-    glm::vec3 translation{0.0f};
-    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-    glm::vec3 scale{1.0f};
 };
 
 struct SkinnedSampleRequest
@@ -258,6 +260,7 @@ class InxSkinnedMesh
 
     [[nodiscard]] const SkinnedRuntimeAnimation *FindAnimation(const std::string &takeName) const;
     [[nodiscard]] float GetAnimationDurationSeconds(const std::string &takeName) const;
+    void InvalidatePoseCache() const;
     /// Looping composes the complete cycle transform (including translation).
     /// Supports reverse intervals; non-looping samples clamp to clip bounds.
     [[nodiscard]] RootMotionDelta SampleRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
@@ -344,12 +347,15 @@ class InxSkinnedMesh
                                                            const InxSkinnedMesh *blendAnimationSource) const;
     [[nodiscard]] std::vector<glm::mat4> EvaluateNodeGlobals(const SkinnedSampleRequest &request,
                                                              const InxSkinnedMesh *animationSource,
-                                                             const InxSkinnedMesh *blendAnimationSource) const;
+                                                             const InxSkinnedMesh *blendAnimationSource,
+                                                             std::vector<SkinnedNodePose> *localPoses = nullptr) const;
     [[nodiscard]] std::vector<glm::mat4>
     EvaluatePoseStackGlobals(const std::vector<PoseStackLayer> &layers,
-                             const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources) const;
+                             const std::vector<std::shared_ptr<const InxSkinnedMesh>> &animationSources,
+                             std::vector<SkinnedNodePose> *localPoses = nullptr) const;
     [[nodiscard]] std::vector<glm::mat4> BuildPalette(const std::vector<glm::mat4> &globals, float importScale) const;
-    [[nodiscard]] EvaluatedSkinPose MakeEvaluatedPose(std::vector<glm::mat4> globals) const;
+    [[nodiscard]] EvaluatedSkinPose MakeEvaluatedPose(std::vector<glm::mat4> globals,
+                                                      std::vector<SkinnedNodePose> localPoses = {}) const;
     [[nodiscard]] static PaletteCacheKey MakePaletteCacheKey(const SkinnedSampleRequest &request,
                                                              const InxSkinnedMesh *animationSource,
                                                              const InxSkinnedMesh *blendAnimationSource);

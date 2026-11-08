@@ -33,6 +33,8 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include "VkTypes.h"
 #include <core/config/EngineConfig.h>
 #include <function/renderer/rhi/RhiHandles.h>
@@ -84,13 +86,13 @@ class VkSwapchainManager
     };
 
     VkSwapchainManager() = default;
-    ~VkSwapchainManager();
+    INFERNUX_VULKAN_BACKEND_API ~VkSwapchainManager();
 
     // Non-copyable, movable
     VkSwapchainManager(const VkSwapchainManager &) = delete;
     VkSwapchainManager &operator=(const VkSwapchainManager &) = delete;
-    VkSwapchainManager(VkSwapchainManager &&other) noexcept;
-    VkSwapchainManager &operator=(VkSwapchainManager &&other) noexcept;
+    INFERNUX_VULKAN_BACKEND_API VkSwapchainManager(VkSwapchainManager &&other) noexcept;
+    INFERNUX_VULKAN_BACKEND_API VkSwapchainManager &operator=(VkSwapchainManager &&other) noexcept;
 
     // ========================================================================
     // Lifecycle Management
@@ -104,8 +106,9 @@ class VkSwapchainManager
      * @param height Initial height (0 = use surface capabilities)
      * @return true if creation succeeded
      */
-    bool Create(const VkDeviceContext &context, uint32_t width = 0, uint32_t height = 0);
-    bool Create(const VkDeviceContext &context, uint32_t width, uint32_t height, const Dispatch &dispatch);
+    INFERNUX_VULKAN_BACKEND_API bool Create(const VkDeviceContext &context, uint32_t width = 0, uint32_t height = 0);
+    INFERNUX_VULKAN_BACKEND_API bool Create(const VkDeviceContext &context, uint32_t width, uint32_t height,
+                                            const Dispatch &dispatch);
 
     /**
      * @brief Recreate the swapchain (e.g., after window resize)
@@ -115,13 +118,14 @@ class VkSwapchainManager
      * @param height New height (0 = use surface capabilities)
      * @return true if recreation succeeded
      */
-    bool Recreate(const VkDeviceContext &context, VulkanQueueManager &queues, uint32_t width, uint32_t height,
-                  const BeforeGenerationRetire &beforeRetire);
+    INFERNUX_VULKAN_BACKEND_API bool Recreate(const VkDeviceContext &context, VulkanQueueManager &queues,
+                                              uint32_t width, uint32_t height,
+                                              const BeforeGenerationRetire &beforeRetire);
 
     /**
      * @brief Cleanup all swapchain resources
      */
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
     /// @brief Skip vkDeviceWaitIdle in Destroy (device already drained at shutdown)
     void SetSkipWaitIdle(bool v)
@@ -155,7 +159,7 @@ class VkSwapchainManager
      * @param[out] imageIndex Index of the acquired image
      * @return SwapchainResult indicating success or need for recreation
      */
-    SwapchainResult AcquireNextImage(uint32_t frameSlot, uint32_t &imageIndex);
+    INFERNUX_VULKAN_BACKEND_API SwapchainResult AcquireNextImage(uint32_t frameSlot, uint32_t &imageIndex);
 
     /**
      * @brief Present the rendered image
@@ -163,7 +167,7 @@ class VkSwapchainManager
      * @param imageIndex Index of the image to present
      * @return SwapchainResult indicating success or need for recreation
      */
-    SwapchainResult Present(VulkanQueueManager &queues, uint32_t imageIndex);
+    INFERNUX_VULKAN_BACKEND_API SwapchainResult Present(VulkanQueueManager &queues, uint32_t imageIndex);
 
     // ========================================================================
     // Accessors
@@ -223,7 +227,7 @@ class VkSwapchainManager
     }
 
     /// @brief Get image view at index
-    [[nodiscard]] VkImageView GetImageView(size_t index) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkImageView GetImageView(size_t index) const;
 
     [[nodiscard]] bool SupportsTransferSource() const noexcept
     {
@@ -231,10 +235,10 @@ class VkSwapchainManager
     }
 
     /// @brief Get the image-available semaphore for a renderer-owned frame slot.
-    [[nodiscard]] VkSemaphore GetImageAvailableSemaphore(uint32_t frameSlot) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkSemaphore GetImageAvailableSemaphore(uint32_t frameSlot) const;
 
     /// @brief Get render finished semaphore for a specific swapchain image
-    [[nodiscard]] VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const;
 
   private:
     struct SwapchainGeneration

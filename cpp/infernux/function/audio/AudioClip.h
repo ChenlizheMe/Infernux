@@ -55,6 +55,10 @@ class AudioClip
     /// Catalog metadata takes precedence over sidecars (Player ships no .meta files).
     bool LoadFromFile(const std::string &filePath, const InxResourceMeta *metadata = nullptr);
 
+    /// Update the descriptor used by future streaming voices; keep decoded
+    /// PCM and already-open voices intact during a catalog relocation.
+    void SetFilePath(const std::string &filePath);
+
     /// @brief Unload audio data and free memory
     void Unload();
 

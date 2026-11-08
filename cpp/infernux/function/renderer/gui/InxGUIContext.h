@@ -131,6 +131,7 @@ class InxGUIContext
     bool Checkbox(const std::string &label, bool *value);
     /// Inspector checkbox: square at ``INSPECTOR_CHECKBOX_BOX_SCALE``, label at normal font size.
     bool CheckboxInspector(const std::string &label, bool *value);
+    bool CheckboxField(const std::string &label, bool *value);
     void IntSlider(const std::string &label, int *value, int min, int max);
     void FloatSlider(const std::string &label, float *value, float min, float max, const char *format = nullptr);
     bool DragFloat(const std::string &label, float *value, float speed = 1.0f, float min = 0.0f, float max = 0.0f,
@@ -167,6 +168,8 @@ class InxGUIContext
     /* combo & lists */
     bool Combo(const std::string &label, int *currentItem, const std::vector<std::string> &items,
                int popupMaxHeightInItems = -1);
+    uint64_t FlagsCombo(const std::string &label, uint64_t value, const std::vector<std::string> &items,
+                        const std::vector<uint64_t> &masks, const std::string &preview);
     int SearchableCombo(const std::string &id, int currentItem, const std::vector<std::string> &items,
                         float width = 0.0f, int maxVisibleItems = 8, const std::string &searchHint = "Filter...",
                         const std::string &emptyText = "No results");
@@ -427,6 +430,10 @@ class InxGUIContext
                        float uv0_y = 0.0f, float uv1_x = 1.0f, float uv1_y = 1.0f, float tintR = 1.0f,
                        float tintG = 1.0f, float tintB = 1.0f, float tintA = 1.0f, float rotation = 0.0f,
                        bool mirrorH = false, bool mirrorV = false, float rounding = 0.0f);
+    void DrawFilledImage(uint64_t textureId, float minX, float minY, float maxX, float maxY, float u0 = 0, float v0 = 0,
+                         float u1 = 1, float v1 = 1, float r = 1, float g = 1, float b = 1, float a = 1,
+                         float amount = 1, int method = 4, int origin = 0, bool clockwise = true, float rotation = 0,
+                         bool mirrorH = false, bool mirrorV = false);
     void DrawText(float x, float y, const std::string &text, float r, float g, float b, float a, float fontSize = 0.0f);
     void DrawTextAligned(float minX, float minY, float maxX, float maxY, const std::string &text, float r, float g,
                          float b, float a, float alignX, float alignY, float fontSize = 0.0f, bool clip = false);

@@ -84,13 +84,15 @@ TextLayoutResult LayoutText(const TextLayoutParams &params)
     const char *cursor = textBegin;
     bool endedWithNewline = false;
 
-    float lineWidth = 0.0f;
-    float characterStartWidth = 0.0f;
+    // Round at published layout coordinates, not once per glyph. Equal font
+    // cells must reach the same column regardless of their character count.
+    double lineWidth = 0.0;
+    double characterStartWidth = 0.0;
     int glyphCount = 0;
     size_t lastCharacter = text::NoWord;
     const char *lastBreak = nullptr;
     const char *resumeAfterBreak = nullptr;
-    float widthAtBreak = 0.0f;
+    double widthAtBreak = 0.0;
     size_t glyphCursor = 0;
     const char *spaceRunEnd = textBegin;
     size_t styleIndex = 0;
@@ -161,9 +163,9 @@ TextLayoutResult LayoutText(const TextLayoutParams &params)
         const float glyphWidth = glyph.advance;
         const bool newCharacter = glyph.character != lastCharacter;
         const float spacing = glyphCount > 0 && newCharacter ? letterSpacing : 0.0f;
-        const float nextWidth = lineWidth + spacing + glyphWidth;
+        const double nextWidth = lineWidth + spacing + glyphWidth;
 
-        if (wrapWidth > 0.0f && glyphCount > 0 && newCharacter && nextWidth > wrapWidth) {
+        if (wrapWidth > 0.0f && glyphCount > 0 && newCharacter && static_cast<float>(nextWidth) > wrapWidth) {
             if (lastBreak != nullptr && lastBreak > lineStart) {
                 PushLine(result, textBegin, lineStart, lastBreak, widthAtBreak);
                 lineStart = resumeAfterBreak != nullptr ? resumeAfterBreak : lastBreak;
@@ -231,22 +233,23 @@ TextLayoutResult LayoutText(const TextLayoutParams &params)
                 baseline = std::max(baseline, glyph.baseline);
             }
             bool visible = false;
-            float cursorX = 0.0f;
+            double cursorX = 0.0;
             size_t lastCharacter = text::NoWord;
             for (size_t glyphIndex = line.glyphStart; glyphIndex < line.glyphEnd; ++glyphIndex) {
                 auto &glyph = result.glyphs[glyphIndex];
                 if (lastCharacter != text::NoWord && glyph.character != lastCharacter)
                     cursorX += letterSpacing;
                 glyph.line = static_cast<size_t>(&line - result.lines.data());
-                glyph.originX = cursorX;
+                glyph.originX = static_cast<float>(cursorX);
                 glyph.originY = lineY + baseline - glyph.baseline;
                 if (glyph.visible) {
-                    glyph.bounds[0] += cursorX;
+                    glyph.bounds[0] += glyph.originX;
                     glyph.bounds[1] += glyph.originY;
-                    glyph.bounds[2] += cursorX;
+                    glyph.bounds[2] += glyph.originX;
                     glyph.bounds[3] += glyph.originY;
                 } else {
-                    glyph.bounds = {cursorX, lineY, cursorX + glyph.advance, lineY + line.height};
+                    glyph.bounds = {glyph.originX, lineY, static_cast<float>(cursorX + glyph.advance),
+                                    lineY + line.height};
                 }
                 cursorX += glyph.advance;
                 lastCharacter = glyph.character;
@@ -332,14 +335,11 @@ std::shared_ptr<TextLayoutResult> CreateTextLayout(const TextLayoutParams &param
 }
 
 void RenderLine(ImDrawList *drawList, const TextLayoutResult &layout, const TextLine &line, float x, float y,
-                ImU32 color, float letterSpacing, const ImVec4 *clipRect)
+                ImU32 color, const ImVec4 *clipRect)
 {
     if (drawList == nullptr || layout.font == nullptr)
         return;
 
-    float cursorX = x;
-    int glyphIndex = 0;
-    size_t lastCharacter = text::NoWord;
     const auto base = ImGui::ColorConvertU32ToFloat4(color);
     const bool colored = layout.styles.size() > 1 ||
                          (!layout.styles.empty() && layout.styles.front().color != std::array<float, 4>{1, 1, 1, 1});
@@ -347,23 +347,18 @@ void RenderLine(ImDrawList *drawList, const TextLayoutResult &layout, const Text
         const TextGlyph &glyph = layout.glyphs[index];
         if (!glyph.font)
             continue;
-        if (glyphIndex > 0 && glyph.character != lastCharacter)
-            cursorX += letterSpacing;
         const auto codepoint = static_cast<ImWchar>(
             glyph.codepoint <= IM_UNICODE_CODEPOINT_MAX ? glyph.codepoint : IM_UNICODE_CODEPOINT_INVALID);
         const ImU32 tint = colored ? ImGui::ColorConvertFloat4ToU32({base.x * glyph.color[0], base.y * glyph.color[1],
                                                                      base.z * glyph.color[2], base.w * glyph.color[3]})
                                    : color;
-        glyph.font->RenderChar(drawList, glyph.fontSize, ImVec2(cursorX, y + glyph.originY - line.y), tint, codepoint,
-                               clipRect);
-        cursorX += glyph.advance;
-        ++glyphIndex;
-        lastCharacter = glyph.character;
+        glyph.font->RenderChar(drawList, glyph.fontSize, ImVec2(x + glyph.originX, y + glyph.originY - line.y), tint,
+                               codepoint, clipRect);
     }
 }
 
 void RenderTextBox(ImDrawList *drawList, float minX, float minY, float maxX, float maxY, const TextLayoutResult &layout,
-                   ImU32 color, float alignX, float alignY, float letterSpacing, const ImVec4 *clipRect)
+                   ImU32 color, float alignX, float alignY, const ImVec4 *clipRect)
 {
     if (drawList == nullptr || layout.font == nullptr || layout.lines.empty())
         return;
@@ -377,7 +372,7 @@ void RenderTextBox(ImDrawList *drawList, float minX, float minY, float maxX, flo
         const TextLine &line = layout.lines[index];
         const float lineX = minX + (boxWidth - line.width) * alignX;
         const float lineY = baseY + line.y;
-        RenderLine(drawList, layout, line, lineX, lineY, color, letterSpacing, clipRect);
+        RenderLine(drawList, layout, line, lineX, lineY, color, clipRect);
     }
 }
 

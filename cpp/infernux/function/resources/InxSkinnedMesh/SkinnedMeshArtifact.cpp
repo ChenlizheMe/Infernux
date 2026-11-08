@@ -1,6 +1,7 @@
 #include "SkinnedMeshArtifact.h"
 
 #include "InxSkinnedMesh.h"
+#include <function/resources/InxMesh/MeshDecodeStorage.h>
 #include <function/resources/InxMesh/MeshGeometryCodec.h>
 
 #include <algorithm>
@@ -16,10 +17,9 @@ namespace infernux
 namespace
 {
 constexpr std::string_view Magic = "INXSKINAR";
-constexpr uint32_t EndianMarker = 0x01020304U;
 // Persistent schema identity. Obsolete Library artifacts are reimported; the
 // runtime never branches into retired skinned-mesh layouts.
-constexpr uint32_t ArtifactSchema = 0x314e4b53U; // SKN1
+constexpr uint32_t ArtifactSchema = 0x324e4b53U; // SKN2 with decode workspace
 constexpr uint32_t MaximumVertices = 10'000'000U;
 constexpr uint32_t MaximumIndices = 30'000'000U;
 constexpr uint32_t MaximumObjects = 1'000'000U;
@@ -112,12 +112,8 @@ void AppendMat4(std::string &output, const glm::mat4 &value)
         AppendVec4(output, value[column]);
 }
 
-using Reader = binary_codec::Reader<MaximumStringBytes>;
-
-glm::vec2 ReadVec2(Reader &reader)
-{
-    return {reader.ReadFloat(), reader.ReadFloat()};
-}
+using Input = binary_codec::Reader<MaximumStringBytes>;
+using Reader = mesh_decode_storage::Reader<MaximumStringBytes>;
 
 glm::vec3 ReadVec3(Reader &reader)
 {
@@ -164,22 +160,6 @@ void AppendVertex(std::string &output, const Vertex &vertex, bool secondaryUv)
     AppendVec4(output, vertex.boneWeights);
 }
 
-Vertex ReadVertex(Reader &reader, bool secondaryUv)
-{
-    Vertex vertex;
-    vertex.pos = ReadVec3(reader);
-    vertex.normal = ReadVec3(reader);
-    vertex.tangent = ReadVec4(reader);
-    vertex.color = ReadVec3(reader);
-    vertex.texCoord = ReadVec2(reader);
-    if (secondaryUv)
-        vertex.texCoord1 = ReadVec2(reader);
-    for (glm::length_t component = 0; component < vertex.boneIndices.length(); ++component)
-        vertex.boneIndices[component] = reader.ReadU32();
-    vertex.boneWeights = ReadVec4(reader);
-    return vertex;
-}
-
 template <typename Value, typename AppendValue>
 void AppendKeys(std::string &output, const std::vector<std::pair<double, Value>> &keys, AppendValue appendValue)
 {
@@ -198,7 +178,7 @@ template <typename Value, typename ReadValue>
 std::vector<std::pair<double, Value>> ReadKeys(Reader &reader, ReadValue readValue)
 {
     std::vector<std::pair<double, Value>> keys;
-    const uint32_t count = reader.ReadCount(MaximumKeys, sizeof(double) + sizeof(Value));
+    const uint32_t count = reader.ReadArrayCount<std::pair<double, Value>>(MaximumKeys, sizeof(double) + sizeof(Value));
     keys.reserve(count);
     double previousTime = -std::numeric_limits<double>::infinity();
     for (uint32_t index = 0; index < count; ++index) {
@@ -219,9 +199,20 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         throw std::invalid_argument("cannot serialize invalid skinned Mesh data");
     if (sourceContentHash.empty() || sourceContentHash.size() > MaximumHashBytes)
         throw std::invalid_argument("skinned Mesh artifact requires a bounded source content hash");
-    std::string bytes(Magic);
-    AppendU32(bytes, EndianMarker);
-    AppendU32(bytes, ArtifactSchema);
+
+    // Programmatic meshes use their resource identity when there is no imported rig definition.
+    const std::string_view definitionGuid = mesh.skeletonDefinitionGuid.empty()
+                                                ? (mesh.guid.empty() ? sourceContentHash : std::string_view(mesh.guid))
+                                                : std::string_view(mesh.skeletonDefinitionGuid);
+    const std::string_view definitionId =
+        mesh.skeletonDefinitionId.empty() ? "skeleton" : std::string_view(mesh.skeletonDefinitionId);
+    const int rootNodeIndex = mesh.skeletonRootNodeIndex < 0 ? 0 : mesh.skeletonRootNodeIndex;
+    if (rootNodeIndex < 0 || static_cast<size_t>(rootNodeIndex) >= mesh.skeleton.nodes.size())
+        throw std::invalid_argument("skinned Mesh contains an invalid skeleton definition");
+
+    std::string bytes;
+    artifact_layout::AppendHeader(bytes, Magic, ArtifactSchema,
+                                  mesh_decode_storage::Skin(mesh, sourceContentHash, definitionGuid, definitionId));
     AppendString(bytes, sourceContentHash, false);
     AppendU32(bytes, 1);
     AppendFloat(bytes, mesh.scaleFactor);
@@ -235,7 +226,7 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         for (const Vertex &vertex : mesh.baseVertices)
             AppendVertex(bytes, vertex, true);
     } else {
-        const std::string encoded = mesh_geometry_codec::Encode(mesh.baseVertices, mesh.compression, true);
+        const std::string encoded = mesh_geometry_codec::Encode(mesh.baseVertices, mesh.compression);
         AppendCount(bytes, encoded.size(), MaximumArtifactBytes);
         bytes.append(encoded);
     }
@@ -401,21 +392,6 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         appendDeltas(target.normalDeltas);
         appendDeltas(target.tangentDeltas);
     }
-    // Definition identity and exposed attachment nodes are part of the cooked
-    // rig payload.  GUID + local ID, never a source path, is the runtime key.
-    // Programmatic assets have no import settings document. They still obtain
-    // a deterministic in-memory definition from their resource GUID (or the
-    // checked source hash for test-only transient assets); imported assets are
-    // always populated by ApplyRigSettings above.
-    const std::string_view definitionGuid = mesh.skeletonDefinitionGuid.empty()
-                                                ? (mesh.guid.empty() ? sourceContentHash : std::string_view(mesh.guid))
-                                                : std::string_view(mesh.skeletonDefinitionGuid);
-    const std::string_view definitionId =
-        mesh.skeletonDefinitionId.empty() ? "skeleton" : std::string_view(mesh.skeletonDefinitionId);
-    const int rootNodeIndex = mesh.skeletonRootNodeIndex < 0 ? 0 : mesh.skeletonRootNodeIndex;
-    if (definitionGuid.empty() || definitionId.empty() || rootNodeIndex < 0 ||
-        static_cast<size_t>(rootNodeIndex) >= mesh.skeleton.nodes.size())
-        throw std::invalid_argument("skinned Mesh contains an invalid skeleton definition");
     AppendU32(bytes, RigDefinitionV2);
     AppendString(bytes, definitionGuid, false);
     AppendString(bytes, definitionId, false);
@@ -460,33 +436,26 @@ std::string SkinnedMeshArtifact::SerializeEmpty(std::string_view sourceContentHa
 {
     if (sourceContentHash.empty() || sourceContentHash.size() > MaximumHashBytes)
         throw std::invalid_argument("skinned Mesh artifact requires a bounded source content hash");
-    std::string bytes(Magic);
-    AppendU32(bytes, EndianMarker);
-    AppendU32(bytes, ArtifactSchema);
+    mesh_decode_storage::DecodeWorkspace work;
+    work.AddText(sourceContentHash);
+    std::string bytes;
+    artifact_layout::AppendHeader(bytes, Magic, ArtifactSchema, work.Bytes());
     AppendString(bytes, sourceContentHash, false);
     AppendU32(bytes, 0);
     AppendU64(bytes, Fnv1a64(bytes));
     return bytes;
 }
 
-std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_view bytes,
-                                                                 std::string_view expectedSourceContentHash)
+namespace
+{
+std::shared_ptr<InxSkinnedMesh> ReadSkinnedPayload(Input input, std::string_view expectedSourceContentHash,
+                                                   uint64_t workspaceLimit = UINT64_MAX)
 {
     if (expectedSourceContentHash.empty() || expectedSourceContentHash.size() > MaximumHashBytes)
         throw std::invalid_argument("skinned Mesh artifact requires an expected source content hash");
-    if (bytes.size() > MaximumArtifactBytes || bytes.size() < Magic.size() + sizeof(uint32_t) + sizeof(uint64_t) ||
-        bytes.substr(0, Magic.size()) != Magic)
-        throw std::invalid_argument("skinned Mesh artifact has an invalid header");
-    const size_t checksumOffset = bytes.size() - sizeof(uint64_t);
-    Reader checksum(bytes.substr(checksumOffset));
-    if (checksum.ReadU64() != Fnv1a64(bytes.substr(0, checksumOffset)))
-        throw std::invalid_argument("skinned Mesh artifact checksum mismatch");
-
-    Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
-    if (reader.ReadU32() != EndianMarker)
-        throw std::invalid_argument("skinned Mesh artifact has an invalid endian marker");
-    if (reader.ReadU32() != ArtifactSchema)
-        throw std::invalid_argument("skinned Mesh artifact has an unsupported schema");
+    const auto workspace = artifact_layout::ReadHeader(input, Magic, ArtifactSchema, workspaceLimit);
+    Reader reader(std::move(input), workspace);
+    auto &work = reader.Workspace();
     const std::string sourceHash = reader.ReadString(false);
     if (sourceHash != expectedSourceContentHash)
         throw std::invalid_argument("skinned Mesh artifact does not match the imported source content");
@@ -499,6 +468,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     if (hasPayload != 1)
         throw std::invalid_argument("skinned Mesh artifact has an invalid payload marker");
 
+    work.Add<InxSkinnedMesh>();
     auto mesh = std::make_shared<InxSkinnedMesh>();
     mesh->scaleFactor = reader.ReadFloat();
     if (mesh->scaleFactor <= 0.0f)
@@ -514,17 +484,10 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     if (encodedCompression > static_cast<uint32_t>(MeshCompression::High))
         throw std::invalid_argument("skinned Mesh artifact contains unsupported geometry compression");
     mesh->compression = static_cast<MeshCompression>(encodedCompression);
-    const uint32_t vertexCount = reader.ReadCount(MaximumVertices);
-    if (mesh->compression == MeshCompression::Off) {
-        reader.Require(static_cast<size_t>(vertexCount) * 100u);
-        mesh->baseVertices.reserve(vertexCount);
-        for (uint32_t index = 0; index < vertexCount; ++index)
-            mesh->baseVertices.push_back(ReadVertex(reader, true));
-    } else {
-        const uint32_t encodedSize = reader.ReadCount(static_cast<uint32_t>(MaximumArtifactBytes));
-        mesh->baseVertices =
-            mesh_geometry_codec::Decode(reader.ReadBytes(encodedSize), vertexCount, mesh->compression, true);
-    }
+    const uint32_t vertexCount = reader.ReadArrayCount<Vertex>(MaximumVertices);
+    work.Add<SkinInfluence>(vertexCount);
+    mesh->baseVertices = mesh_geometry_codec::ReadVertices(reader, vertexCount, mesh->compression,
+                                                           static_cast<uint32_t>(MaximumArtifactBytes));
     mesh->influences.reserve(vertexCount);
     for (const Vertex &vertex : mesh->baseVertices) {
         SkinInfluence influence;
@@ -535,7 +498,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         mesh->influences.push_back(influence);
     }
 
-    const uint32_t indexCount = reader.ReadCount(MaximumIndices, indexBits / 8u);
+    const uint32_t indexCount = reader.ReadArrayCount<uint32_t>(MaximumIndices, indexBits / 8u);
     mesh->indices.reserve(indexCount);
     for (uint32_t index = 0; index < indexCount; ++index) {
         const uint32_t vertexIndex = mesh->indexFormat == MeshIndexFormat::UInt16 ? reader.ReadU16() : reader.ReadU32();
@@ -544,7 +507,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         mesh->indices.push_back(vertexIndex);
     }
 
-    mesh->subMeshes.resize(reader.ReadCount(MaximumObjects, 52u));
+    mesh->subMeshes.resize(reader.ReadArrayCount<SubMesh>(MaximumObjects, 52u));
     for (SubMesh &subMesh : mesh->subMeshes) {
         subMesh.indexStart = reader.ReadU32();
         subMesh.indexCount = reader.ReadU32();
@@ -562,11 +525,13 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
             throw std::invalid_argument("skinned Mesh artifact contains an invalid submesh range");
     }
 
-    const uint32_t nodeCount = reader.ReadCount(MaximumObjects, 72u);
+    const uint32_t nodeCount = reader.ReadArrayCount<SkinnedRuntimeNode>(MaximumObjects, 72u);
+    work.ReserveNameTable(mesh->skeleton.nodeByName, nodeCount);
     mesh->skeleton.nodes.reserve(nodeCount);
     for (uint32_t index = 0; index < nodeCount; ++index) {
         SkinnedRuntimeNode node;
         node.name = reader.ReadString(false);
+        work.AddText(node.name);
         node.parent = reader.ReadI32();
         node.bindLocal = ReadMat4(reader);
         if (node.parent < -1 || (node.parent >= 0 && static_cast<size_t>(node.parent) >= index) ||
@@ -578,11 +543,13 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         mesh->skeleton.nodes.push_back(std::move(node));
     }
 
-    const uint32_t boneCount = reader.ReadCount(MaximumObjects, 72u);
+    const uint32_t boneCount = reader.ReadArrayCount<SkinnedRuntimeBone>(MaximumObjects, 72u);
+    work.ReserveNameTable(mesh->skeleton.boneByName, boneCount);
     mesh->skeleton.bones.reserve(boneCount);
     for (uint32_t index = 0; index < boneCount; ++index) {
         SkinnedRuntimeBone bone;
         bone.name = reader.ReadString(false);
+        work.AddText(bone.name);
         bone.nodeIndex = reader.ReadI32();
         bone.inverseBind = ReadMat4(reader);
         if (bone.nodeIndex < -1 ||
@@ -599,18 +566,21 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         }
     }
 
-    const uint32_t animationCount = reader.ReadCount(MaximumObjects, 24u);
+    const uint32_t animationCount = reader.ReadArrayCount<SkinnedRuntimeAnimation>(MaximumObjects, 24u);
     mesh->animations.reserve(animationCount);
     std::unordered_set<std::string> animationNames;
+    work.ReserveNameTable(animationNames, animationCount);
     for (uint32_t animationIndex = 0; animationIndex < animationCount; ++animationIndex) {
         SkinnedRuntimeAnimation animation;
         animation.name = reader.ReadString(false);
+        work.AddText(animation.name);
         animation.durationTicks = reader.ReadDouble();
         animation.ticksPerSecond = reader.ReadDouble();
         if (!animationNames.insert(animation.name).second || animation.durationTicks < 0.0 ||
             animation.ticksPerSecond <= 0.0)
             throw std::invalid_argument("skinned Mesh artifact contains an invalid animation timing");
-        const uint32_t trackCount = reader.ReadCount(MaximumObjects, 16u);
+        const uint32_t trackCount = reader.ReadArrayCount<SkinnedRuntimeTrack>(MaximumObjects, 16u);
+        work.Add<int>(nodeCount);
         animation.tracks.reserve(trackCount);
         animation.trackByNodeIndex.assign(mesh->skeleton.nodes.size(), -1);
         for (uint32_t trackIndex = 0; trackIndex < trackCount; ++trackIndex) {
@@ -630,10 +600,14 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     if (reader.ReadU32() != AnimationIdentities || reader.ReadCount(MaximumObjects) != animationCount)
         throw std::invalid_argument("skinned Mesh artifact has an invalid animation identity table");
     std::unordered_set<std::string> clipIds;
+    work.ReserveNameTable(clipIds, animationCount);
     for (auto &animation : mesh->animations) {
         animation.id = reader.ReadString();
-        if (!animation.id.empty() && !clipIds.insert(animation.id).second)
-            throw std::invalid_argument("skinned Mesh artifact contains duplicate animation ids");
+        if (!animation.id.empty()) {
+            work.AddText(animation.id);
+            if (!clipIds.insert(animation.id).second)
+                throw std::invalid_argument("skinned Mesh artifact contains duplicate animation ids");
+        }
     }
 
     if (reader.ReadU32() != AnimationRootMotion || reader.ReadCount(MaximumObjects) != animationCount)
@@ -659,19 +633,21 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     if (reader.ReadU32() != AnimationExtras || reader.ReadCount(MaximumObjects) != animationCount)
         throw std::invalid_argument("skinned Mesh artifact has an invalid animation extras table");
     for (auto &animation : mesh->animations) {
-        const uint32_t curveCount = reader.ReadCount(MaximumObjects);
+        const uint32_t curveCount = reader.ReadArrayCount<SkinnedRuntimeFloatCurve>(MaximumObjects, 8u);
         std::unordered_set<std::string> curveNames;
+        work.ReserveNameTable(curveNames, curveCount);
         animation.curves.reserve(curveCount);
         for (uint32_t index = 0; index < curveCount; ++index) {
             SkinnedRuntimeFloatCurve curve;
             curve.name = reader.ReadString(false);
+            work.AddText(curve.name);
             curve.keys = ReadKeys<float>(reader, [](Reader &input) { return input.ReadFloat(); });
             if (!curveNames.insert(curve.name).second ||
                 (!curve.keys.empty() && (curve.keys.front().first < 0.0 || curve.keys.back().first > 1.0)))
                 throw std::invalid_argument("skinned Mesh artifact contains invalid animation curves");
             animation.curves.push_back(std::move(curve));
         }
-        const uint32_t eventCount = reader.ReadCount(MaximumObjects);
+        const uint32_t eventCount = reader.ReadArrayCount<SkinnedRuntimeEvent>(MaximumObjects, 24u);
         animation.events.reserve(eventCount);
         double previousEvent = -1.0;
         for (uint32_t index = 0; index < eventCount; ++index) {
@@ -686,11 +662,13 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
             previousEvent = event.normalizedTime;
             animation.events.push_back(std::move(event));
         }
-        const uint32_t maskCount = reader.ReadCount(MaximumObjects);
+        const uint32_t maskCount = reader.ReadArrayCount<std::string>(MaximumObjects, 4u);
         std::unordered_set<std::string> maskedBones;
+        work.ReserveNameTable(maskedBones, maskCount);
         animation.boneMask.reserve(maskCount);
         for (uint32_t index = 0; index < maskCount; ++index) {
             auto bone = reader.ReadString(false);
+            work.AddText(bone);
             if (mesh->skeleton.nodeByName.find(bone) == mesh->skeleton.nodeByName.end() ||
                 !maskedBones.insert(bone).second)
                 throw std::invalid_argument("skinned Mesh artifact contains an invalid animation bone mask");
@@ -700,14 +678,14 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
 
     if (reader.ReadU32() != MorphTargetsV1)
         throw std::invalid_argument("skinned Mesh artifact has an invalid morph-target table");
-    const uint32_t morphCount = reader.ReadCount(MaximumObjects);
+    const uint32_t morphCount = reader.ReadArrayCount<MeshMorphTarget>(MaximumObjects, 20u);
     mesh->morphTargets.reserve(morphCount);
     for (uint32_t morphIndex = 0; morphIndex < morphCount; ++morphIndex) {
         MeshMorphTarget target;
         target.name = reader.ReadString();
         target.defaultWeight = reader.ReadFloat();
         const auto readDeltas = [&](std::vector<glm::vec3> &values) {
-            const uint32_t count = reader.ReadCount(MaximumVertices, 12u);
+            const uint32_t count = reader.ReadArrayCount<glm::vec3>(MaximumVertices, 12u);
             values.reserve(count);
             for (uint32_t index = 0; index < count; ++index)
                 values.push_back(ReadVec3(reader));
@@ -726,13 +704,14 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     if (mesh->skeletonRootNodeIndex < 0 ||
         static_cast<size_t>(mesh->skeletonRootNodeIndex) >= mesh->skeleton.nodes.size())
         throw std::invalid_argument("skinned Mesh artifact contains an invalid rig root");
-    const uint32_t exposedCount = reader.ReadCount(MaximumObjects);
-    std::unordered_set<int> exposedNodes;
+    const uint32_t exposedCount = reader.ReadArrayCount<int>(MaximumObjects, 4u);
+    work.Add<uint8_t>(nodeCount);
+    std::vector<uint8_t> usedNodes(nodeCount);
     mesh->exposedSkeletonNodeIndices.reserve(exposedCount);
     for (uint32_t index = 0; index < exposedCount; ++index) {
         const int nodeIndex = reader.ReadI32();
         if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= mesh->skeleton.nodes.size() ||
-            !exposedNodes.insert(nodeIndex).second)
+            std::exchange(usedNodes[nodeIndex], 1))
             throw std::invalid_argument("skinned Mesh artifact contains an invalid exposed skeleton node");
         mesh->exposedSkeletonNodeIndices.push_back(nodeIndex);
     }
@@ -746,19 +725,21 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     mesh->humanoid.requiredBonesValid = requiredBonesValid != 0U;
     mesh->humanoid.hierarchyValid = hierarchyValid != 0U;
     mesh->humanoid.referencePoseValid = referencePoseValid != 0U;
-    const uint32_t humanoidBoneCount = reader.ReadCount(MaximumObjects);
+    const uint32_t humanoidBoneCount = reader.ReadArrayCount<std::pair<std::string, int>>(MaximumObjects, 8u);
     std::unordered_set<std::string> humanoidSlots;
-    std::unordered_set<int> humanoidNodes;
+    work.ReserveNameTable(humanoidSlots, humanoidBoneCount);
+    std::fill(usedNodes.begin(), usedNodes.end(), 0);
     mesh->humanoid.bones.reserve(humanoidBoneCount);
     for (uint32_t index = 0; index < humanoidBoneCount; ++index) {
         auto slot = reader.ReadString(false);
+        work.AddText(slot);
         const int nodeIndex = reader.ReadI32();
         if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= mesh->skeleton.nodes.size() ||
-            !humanoidSlots.insert(slot).second || !humanoidNodes.insert(nodeIndex).second)
+            !humanoidSlots.insert(slot).second || std::exchange(usedNodes[nodeIndex], 1))
             throw std::invalid_argument("skinned Mesh artifact contains an invalid humanoid mapping");
         mesh->humanoid.bones.emplace_back(std::move(slot), nodeIndex);
     }
-    const uint32_t issueCount = reader.ReadCount(MaximumObjects);
+    const uint32_t issueCount = reader.ReadArrayCount<HumanoidValidationIssue>(MaximumObjects, 12u);
     mesh->humanoid.issues.reserve(issueCount);
     for (uint32_t index = 0; index < issueCount; ++index) {
         HumanoidValidationIssue issue;
@@ -774,19 +755,33 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
     mesh->NormalizeInfluences();
     return mesh;
 }
+} // namespace
+
+std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_view bytes,
+                                                                 std::string_view expectedSourceContentHash)
+{
+    if (bytes.size() > MaximumArtifactBytes)
+        throw std::invalid_argument("skinned Mesh artifact exceeds its format limit");
+    return ReadSkinnedPayload(Input(binary_codec::CheckedPayload(bytes)), expectedSourceContentHash);
+}
+
+std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Read(FileInput &file, std::string_view expectedSourceContentHash,
+                                                          std::vector<char> &block, uint64_t workspaceLimit)
+{
+    ArtifactFileReader input(file, MaximumArtifactBytes, block);
+    auto mesh = ReadSkinnedPayload(input.Begin<Input>(), expectedSourceContentHash, workspaceLimit);
+    input.Verify();
+    return mesh;
+}
 
 bool SkinnedMeshArtifact::HasCurrentHeader(std::string_view bytes) noexcept
 {
-    const size_t schemaOffset = Magic.size() + sizeof(uint32_t);
-    return bytes.size() >= schemaOffset + sizeof(uint32_t) && bytes.substr(0, Magic.size()) == Magic &&
-           static_cast<unsigned char>(bytes[Magic.size()]) == 0x04 &&
-           static_cast<unsigned char>(bytes[Magic.size() + 1]) == 0x03 &&
-           static_cast<unsigned char>(bytes[Magic.size() + 2]) == 0x02 &&
-           static_cast<unsigned char>(bytes[Magic.size() + 3]) == 0x01 &&
-           static_cast<unsigned char>(bytes[schemaOffset]) == 'S' &&
-           static_cast<unsigned char>(bytes[schemaOffset + 1]) == 'K' &&
-           static_cast<unsigned char>(bytes[schemaOffset + 2]) == 'N' &&
-           static_cast<unsigned char>(bytes[schemaOffset + 3]) == '1';
+    return artifact_layout::HasHeader(bytes, Magic, ArtifactSchema);
+}
+
+uint64_t SkinnedMeshArtifact::ReadWorkspace(FileInput &file)
+{
+    return artifact_layout::ReadWorkspace(file, Magic, ArtifactSchema);
 }
 
 } // namespace infernux

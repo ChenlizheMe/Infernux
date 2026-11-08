@@ -29,6 +29,8 @@ from .ramp import (
     Gradient,
     GradientKey,
     Keyframe,
+    WrapMode,
+    WeightedMode,
 )
 from .registry import (
     COMMON_NODE_REGISTRY,

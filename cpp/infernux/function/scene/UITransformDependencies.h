@@ -137,6 +137,9 @@ class UITransformDependencies
             if (!store.IsValid(entry.handle))
                 throw std::runtime_error("UI dependency membership outlived its Transform; rebuild the snapshot");
             auto *transform = store.GetOwner(entry.handle);
+            const uint64_t layoutRevision = store.GetRectLayoutVersion(entry.handle);
+            entryChanged |= layoutRevision != entry.layoutRevision;
+            entry.layoutRevision = layoutRevision;
             if (entry.world) {
                 const int layer = transform->GetGameObject()->GetLayer();
                 entryChanged |= layer != entry.layer;
@@ -276,6 +279,7 @@ class UITransformDependencies
         TransformECSStore::Handle handle;
         bool world;
         int layer = -1;
+        uint64_t layoutRevision = 0;
         glm::vec3 position{0.0f};
         glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
     };

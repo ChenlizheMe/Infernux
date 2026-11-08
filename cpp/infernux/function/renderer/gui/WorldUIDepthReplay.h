@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../RenderGraphDescription.h"
+#include <algorithm>
 #include <optional>
 #include <string_view>
 
@@ -23,26 +24,25 @@ struct WorldUIDepthReplay
 {
     if (preservesCameraDepth)
         return std::nullopt;
-    bool hasViewDepth = false;
-    for (const auto &texture : graph.textures)
-        hasViewDepth = hasViewDepth || texture.IsViewDepth();
-    if (!hasViewDepth)
+    const auto depth = std::find_if(graph.textures.begin(), graph.textures.end(),
+                                    [](const auto &texture) { return texture.IsViewDepth(); });
+    if (depth == graph.textures.end())
         return std::nullopt;
 
     std::optional<WorldUIDepthReplay> source;
     for (const auto &pass : graph.passes) {
         const auto *command = pass.commands.empty() ? nullptr : &pass.commands.front();
+        const bool writesViewDepth = pass.WritesTexture(depth->name);
         if (command && command->type == GraphCommandType::DrawWorldUI) {
             if (pass.name == worldUIPassName)
-                return pass.commands.size() == 1 && pass.writeDepth == "depth" && !pass.clearDepth ? source
-                                                                                                   : std::nullopt;
+                return pass.commands.size() == 1 && writesViewDepth && !pass.clearDepth ? source : std::nullopt;
             // Ordinary UI only reads scene depth. Clearing it changes the
             // depth contract seen by a later stage and cannot be replayed.
-            if (pass.writeDepth == "depth" && pass.clearDepth)
+            if (writesViewDepth && pass.clearDepth)
                 return std::nullopt;
             continue;
         }
-        if (pass.writeDepth != "depth")
+        if (!writesViewDepth)
             continue;
         if (source || !command || pass.type != GraphPassType::Raster || pass.commands.size() != 1 ||
             command->type != GraphCommandType::DrawRenderers || command->shaderTarget != ShaderCompileTarget::Forward ||

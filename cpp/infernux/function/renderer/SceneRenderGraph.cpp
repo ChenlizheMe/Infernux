@@ -22,6 +22,7 @@
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
 #include "rhi/RhiComputeBuffer.h"
+#include "rhi/RhiComputeKernel.h"
 #include "shader/ShaderReflection.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
@@ -35,7 +36,6 @@
 #include <core/types/ColorSpace.h>
 #include <cstring>
 #include <function/renderer/rhi/RhiBuffer.h>
-#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -46,11 +46,190 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_set>
 
 namespace infernux
 {
+
+GraphFramePublication::~GraphFramePublication()
+{
+    for (const auto &capture : captures)
+        capture.request->Cancel("graph submission did not succeed");
+}
+
+void GraphFramePublication::Accept(rhi::SubmissionTicket completion, GraphEventQueue &acceptedEvents) noexcept
+{
+    for (auto &write : writes)
+        write.allocation->PublishGraphValue(completion, rhi::QueueRole::Graphics, std::move(write.initialized),
+                                            std::move(write.written));
+    for (auto &capture : captures)
+        if (capture.request->status == GraphBufferCapture::Status::Pending) {
+            capture.request->value = std::move(capture.value);
+            capture.request->status = GraphBufferCapture::Status::Accepted;
+        }
+    captures.clear();
+    for (auto &event : events)
+        event.submission = completion;
+    acceptedEvents.splice(acceptedEvents.end(), events);
+}
+
+void SceneRenderGraph::CancelBufferCaptures(const std::string &reason)
+{
+    for (const auto &weak : m_bufferCaptures)
+        if (const auto capture = weak.lock())
+            capture->Cancel(reason);
+    m_bufferCaptures.clear();
+}
+
+const GraphBufferDesc &SceneRenderGraph::FindBufferExport(const std::string &name) const
+{
+    const auto buffer =
+        std::find_if(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                     [&](const auto &item) { return item.name == name && item.exportLayout.has_value(); });
+    if (!m_hasPythonGraph || !m_pythonGraphValid || buffer == m_pythonGraphDesc.buffers.end())
+        throw std::invalid_argument("No exported buffer in this view: " + name);
+    return *buffer;
+}
+
+std::shared_ptr<GraphBufferCapture> SceneRenderGraph::MakeBufferCapture(const GraphBufferDesc &buffer) const
+{
+    auto capture = std::make_shared<GraphBufferCapture>();
+    capture->name = buffer.name;
+    capture->shape = buffer.exportShape;
+    capture->scalarType = buffer.exportLayout->scalarType;
+    capture->byteOffset = buffer.byteOffset;
+    capture->storageByteSize = buffer.exportLayout->GetByteSize();
+    capture->view = m_renderView.id;
+    capture->generation = m_bufferGeneration;
+    capture->occurrence = m_bufferOccurrence + 1;
+    return capture;
+}
+
+std::shared_ptr<GraphBufferCapture> SceneRenderGraph::CaptureBuffer(const std::string &name)
+{
+    const auto &buffer = FindBufferExport(name);
+    auto capture = MakeBufferCapture(buffer);
+    const auto &storage = ResolveGraphBufferStorage(m_pythonGraphDesc, buffer);
+    auto imported = storage.computeBuffer;
+    if (!storage.workBinding.empty()) {
+        const auto *work = FindGraphWorkBinding(m_pythonGraphDesc, storage.workBinding);
+        imported = work->recipe->GetSlots()[storage.workSlot].external;
+        capture->storageClaim = "work:" + work->name + "/" + std::to_string(storage.workSlot);
+    }
+    if (storage.input) {
+        capture->storageClaim = "input:" + std::to_string(reinterpret_cast<uintptr_t>(storage.input.get()));
+    } else if (imported && imported->IsFrozen()) {
+        capture->storageBuffer = imported;
+        const auto handle = imported->GetBuffer();
+        capture->storageClaim = "frozen:" + std::to_string(handle.index) + ":" + std::to_string(handle.generation);
+    } else if (imported)
+        capture->storageClaim = "import:" + std::to_string(reinterpret_cast<uintptr_t>(imported.get()));
+    else if (capture->storageClaim.empty())
+        capture->storageClaim = "buffer:" + storage.name;
+    m_bufferCaptures.push_back(capture);
+    return capture;
+}
+
+static std::shared_ptr<GraphEventInterest> FindActiveEventInterest(const GraphEventInterests &interests,
+                                                                   const std::string &label)
+{
+    const auto found = interests.find(label);
+    if (found == interests.end())
+        return {};
+    auto interest = found->second.lock();
+    return interest && interest->active ? interest : nullptr;
+}
+
+std::shared_ptr<GraphFramePublication> SceneRenderGraph::PreparePublication(const GraphEventInterests &interests)
+{
+    if (m_graphBufferOwners.empty() && m_executedEventPasses.empty())
+        return {};
+    std::shared_ptr<GraphFramePublication> publication;
+    const auto prepare = [&]() -> GraphFramePublication & {
+        if (!publication)
+            publication = std::make_shared<GraphFramePublication>();
+        return *publication;
+    };
+    std::unordered_set<const rhi::ComputeBufferAllocation *> graphWriters;
+    for (const auto &name : m_graphBufferWrites) {
+        const auto owner = m_graphBufferOwners.find(name);
+        if (owner != m_graphBufferOwners.end())
+            graphWriters.insert(owner->second->GetAllocation().get());
+    }
+    std::unordered_set<const rhi::ComputeBufferAllocation *> written;
+    for (const auto &buffer : m_pythonGraphDesc.buffers) {
+        if (!buffer.exportLayout)
+            continue;
+        const auto &allocation = m_computeBufferReads.at(m_graphBufferOwners.at(buffer.name).get());
+        if (graphWriters.count(allocation.get()) && written.insert(allocation.get()).second) {
+            const auto &known = m_graphBufferContents.at(buffer.name);
+            prepare().writes.push_back({allocation, known, known});
+        }
+    }
+    ++m_bufferOccurrence;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> frozen;
+    const auto prepareCapture = [&](const std::shared_ptr<GraphBufferCapture> &capture) {
+        auto [entry, inserted] = frozen.try_emplace(capture->name);
+        if (inserted) {
+            const auto &owner = m_graphBufferOwners.at(capture->name);
+            // Keep the allocation used by this execution's descriptors and commands.
+            if (owner->GetAllocation() != m_computeBufferReads.at(owner.get()))
+                throw std::logic_error("Graph output changed after actual resource capture");
+            entry->second = owner->FreezeScalars();
+        }
+        prepare().captures.push_back({capture, entry->second});
+        capture->occurrence = m_bufferOccurrence;
+        capture->selected = true;
+    };
+    auto output = m_bufferCaptures.begin();
+    for (auto it = m_bufferCaptures.begin(); it != m_bufferCaptures.end(); ++it) {
+        const auto capture = it->lock();
+        if (!capture || capture->status != GraphBufferCapture::Status::Pending)
+            continue;
+        *output++ = *it;
+        if (!capture->selected)
+            prepareCapture(capture);
+    }
+    m_bufferCaptures.erase(output, m_bufferCaptures.end());
+    std::shared_ptr<GraphEventViewSample> viewSample;
+    for (size_t index : m_executedEventPasses) {
+        const auto &pass = m_pythonGraphDesc.passes[index];
+        for (size_t ordinal = 0; ordinal < pass.events.size(); ++ordinal) {
+            const auto &declaration = pass.events[ordinal];
+            const auto interest = FindActiveEventInterest(interests, declaration.label);
+            if (!interest)
+                continue;
+            if (!viewSample && m_hasCachedCameraVP && m_cameraMatricesStaged) {
+                viewSample = std::make_shared<GraphEventViewSample>(GraphEventViewSample{
+                    m_width, m_height, m_temporalJitterNdc, m_cachedView, m_cachedProj, m_cachedUnjitteredProj,
+                    m_cameraHistoryValid ? std::optional{m_previousViewProj} : std::nullopt});
+            }
+            decltype(GraphEventRecord::sources) sources;
+            sources.reserve(declaration.buffers.size());
+            for (const auto &[name, resource] : declaration.buffers) {
+                auto capture = MakeBufferCapture(FindBufferExport(resource));
+                prepareCapture(capture);
+                sources.emplace_back(name, std::move(capture));
+            }
+            prepare().events.push_back({declaration.label,
+                                        declaration.metadata,
+                                        interest,
+                                        pass.name,
+                                        ordinal,
+                                        m_renderView.id,
+                                        m_bufferGeneration,
+                                        m_bufferOccurrence,
+                                        m_historyEpoch,
+                                        {},
+                                        viewSample,
+                                        std::move(sources)});
+        }
+    }
+    return publication;
+}
 
 namespace
 {
@@ -113,828 +292,7 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
     return result;
 }
 
-bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
-{
-    return a.name == b.name && a.format == b.format && a.isBackbuffer == b.isBackbuffer && a.isDepth == b.isDepth &&
-           a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor && a.samples == b.samples &&
-           a.role == b.role && a.temporalKey == b.temporalKey && a.renderTexture == b.renderTexture &&
-           a.attachment == b.attachment && a.assetGuid == b.assetGuid && a.depth == b.depth && a.isVolume == b.isVolume;
-}
-
-uint32_t EffectiveTextureSamples(const GraphTextureDesc &texture, uint32_t frameSamples)
-{
-    return texture.isBackbuffer || texture.samples == 0 ? frameSamples : texture.samples;
-}
-
-bool TextureExtentsMatch(const GraphTextureDesc &a, const GraphTextureDesc &b)
-{
-    return a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor;
-}
-
-bool PassWritesTexture(const GraphPassDesc &pass, const std::string &name)
-{
-    return pass.writeDepth == name || pass.resolveColor == name ||
-           std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
-                       [&](const auto &output) { return output.second == name; }) ||
-           std::any_of(pass.commands.begin(), pass.commands.end(), [&](const GraphCommandDesc &command) {
-               return command.type == GraphCommandType::CopyTexture && command.destinationResource == name;
-           });
-}
-
-bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
-{
-    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage && a.computeBuffer == b.computeBuffer &&
-           a.viewLightList == b.viewLightList;
-}
-
-bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessDesc &b)
-{
-    return a.resource == b.resource && a.type == b.type;
-}
-
-bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
-{
-    const auto parameterLayoutEquals = [](const GraphCommandDesc &lhs, const GraphCommandDesc &rhs) {
-        if (lhs.parameterBlock.empty())
-            return lhs.pushConstants == rhs.pushConstants;
-        if (lhs.pushConstants.size() != rhs.pushConstants.size())
-            return false;
-        for (size_t i = 0; i < lhs.pushConstants.size(); ++i) {
-            if (lhs.pushConstants[i].first != rhs.pushConstants[i].first)
-                return false;
-        }
-        return true;
-    };
-    return a.type == b.type && a.shaderTarget == b.shaderTarget && a.materialFilter == b.materialFilter &&
-           a.queueMin == b.queueMin && a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
-           a.overrideMaterial == b.overrideMaterial && a.rendererSelection == b.rendererSelection &&
-           a.depthTest == b.depthTest && a.depthWrite == b.depthWrite && a.depthCompare == b.depthCompare &&
-           a.alphaBlend == b.alphaBlend && a.lightIndex == b.lightIndex && a.screenUIList == b.screenUIList &&
-           a.worldUILayerMask == b.worldUILayerMask && a.shaderName == b.shaderName &&
-           a.parameterBlock == b.parameterBlock && parameterLayoutEquals(a, b) && a.inputBindings == b.inputBindings &&
-           a.sourceResource == b.sourceResource && a.destinationResource == b.destinationResource &&
-           a.copyBytes == b.copyBytes;
-}
-
-bool CommandListEquals(const std::vector<GraphCommandDesc> &a, const std::vector<GraphCommandDesc> &b)
-{
-    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const auto &lhs, const auto &rhs) {
-               return CommandDescEquals(lhs, rhs);
-           });
-}
-
-const GraphCommandDesc *PrimaryCommand(const GraphPassDesc &pass)
-{
-    return pass.commands.empty() ? nullptr : &pass.commands.front();
-}
-
-VkBufferUsageFlags ToVkBufferUsage(uint32_t usage)
-{
-    VkBufferUsageFlags result = 0;
-    if ((usage & static_cast<uint32_t>(GraphBufferUsage::Storage)) != 0)
-        result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    if ((usage & static_cast<uint32_t>(GraphBufferUsage::Indirect)) != 0)
-        result |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    if ((usage & static_cast<uint32_t>(GraphBufferUsage::TransferSource)) != 0)
-        result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    if ((usage & static_cast<uint32_t>(GraphBufferUsage::TransferDestination)) != 0)
-        result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    return result;
-}
-
-bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
-{
-    return a.name == b.name && a.type == b.type && a.readTextures == b.readTextures && a.writeColors == b.writeColors &&
-           a.writeDepth == b.writeDepth && a.resolveColor == b.resolveColor && a.clearColor == b.clearColor &&
-           a.clearDepth == b.clearDepth && a.clearColorR == b.clearColorR && a.clearColorG == b.clearColorG &&
-           a.clearColorB == b.clearColorB && a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue &&
-           a.sideEffect == b.sideEffect && a.bufferAccesses.size() == b.bufferAccesses.size() &&
-           std::equal(a.bufferAccesses.begin(), a.bufferAccesses.end(), b.bufferAccesses.begin(), BufferAccessEquals) &&
-           CommandListEquals(a.commands, b.commands);
-}
-
-bool GraphDescEquals(const RenderGraphDescription &a, const RenderGraphDescription &b)
-{
-    if (a.name != b.name || a.outputTexture != b.outputTexture || a.msaaSamples != b.msaaSamples ||
-        a.temporalJitter != b.temporalJitter || a.linearOutputTexture != b.linearOutputTexture ||
-        a.linearOutputPassCount != b.linearOutputPassCount || a.textures.size() != b.textures.size() ||
-        a.buffers.size() != b.buffers.size() || a.passes.size() != b.passes.size()) {
-        return false;
-    }
-
-    for (size_t i = 0; i < a.buffers.size(); ++i) {
-        if (!BufferDescEquals(a.buffers[i], b.buffers[i])) {
-            return false;
-        }
-    }
-
-    for (size_t i = 0; i < a.textures.size(); ++i) {
-        if (!TextureDescEquals(a.textures[i], b.textures[i])) {
-            return false;
-        }
-    }
-
-    for (size_t i = 0; i < a.passes.size(); ++i) {
-        if (!PassDescEquals(a.passes[i], b.passes[i])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples)
-{
-    const uint32_t frameSamples = desc.msaaSamples > 0 ? static_cast<uint32_t>(desc.msaaSamples) : activeFrameSamples;
-    std::unordered_map<std::string, const GraphTextureDesc *> textures;
-    textures.reserve(desc.textures.size());
-    struct TemporalPair
-    {
-        const GraphTextureDesc *read = nullptr;
-        const GraphTextureDesc *write = nullptr;
-    };
-    std::unordered_map<std::string, TemporalPair> temporalPairs;
-
-    for (const auto &tex : desc.textures) {
-        if (tex.name.empty()) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture name cannot be empty");
-            return false;
-        }
-        if (!textures.emplace(tex.name, &tex).second) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: duplicate texture '", tex.name, "'");
-            return false;
-        }
-        if (tex.sizeDivisor == 1) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
-                         "' uses sizeDivisor=1; use 0 or >1");
-            return false;
-        }
-        if (tex.width > 0 && tex.height > 0 && tex.sizeDivisor > 0) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
-                         "' cannot use both explicit size and sizeDivisor");
-            return false;
-        }
-        if ((tex.width == 0) != (tex.height == 0)) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
-                         "' must specify both width and height together");
-            return false;
-        }
-        if (tex.isBackbuffer && tex.isDepth) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
-                         "' cannot be both backbuffer and depth");
-            return false;
-        }
-        if (tex.samples != 0 && !IsValidMsaaSampleCount(static_cast<int>(tex.samples))) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name, "' has invalid sample count ",
-                         tex.samples);
-            return false;
-        }
-        if (tex.isBackbuffer && tex.samples != 0) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: backbuffer texture '", tex.name,
-                         "' must inherit the frame sample count");
-            return false;
-        }
-        if (!tex.isBackbuffer && tex.role != GraphTextureRole::Asset && !rhi::IsValidPixelFormat(tex.format)) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name, "' has an undefined pixel format");
-            return false;
-        }
-        if (!tex.isBackbuffer && tex.role != GraphTextureRole::Asset && tex.isDepth != rhi::IsDepthFormat(tex.format)) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
-                         "' depth flag does not match its pixel format");
-            return false;
-        }
-        if (tex.role == GraphTextureRole::Persistent) {
-            if (!tex.renderTexture || tex.isBackbuffer || tex.sizeDivisor != 0 || !tex.temporalKey.empty()) {
-                INXLOG_ERROR("Persistent graph textures require an explicit RenderTexture attachment");
-                return false;
-            }
-            const auto generation = tex.renderTexture->Acquire();
-            const rhi::TextureResource *image = nullptr;
-            switch (tex.attachment) {
-            case GraphTextureAttachment::Color:
-                image = &generation->ColorAttachment();
-                break;
-            case GraphTextureAttachment::Depth:
-                image = generation->depth.get();
-                break;
-            case GraphTextureAttachment::Resolve:
-                if (generation->multisampleColor)
-                    image = generation->color.get();
-                break;
-            }
-            const uint32_t samples = tex.attachment == GraphTextureAttachment::Resolve
-                                         ? 1u
-                                         : static_cast<uint32_t>(generation->description.samples);
-            if (!image || !image->IsValid() || tex.samples != samples || tex.format != image->GetFormat()) {
-                INXLOG_ERROR("Persistent graph texture description does not match its live owner");
-                return false;
-            }
-            // A local writer must define the contents before reading. A pure
-            // import instead requires a producer in the frame's view schedule.
-            const auto writer = std::find_if(desc.passes.begin(), desc.passes.end(), [&](const GraphPassDesc &pass) {
-                return PassWritesTexture(pass, tex.name);
-            });
-            if (writer != desc.passes.end() &&
-                (!PrimaryCommand(*writer) || PrimaryCommand(*writer)->type != GraphCommandType::CopyTexture) &&
-                (tex.isDepth ? !writer->clearDepth
-                             : (!writer->clearColor && writer->resolveColor != tex.name &&
-                                (!PrimaryCommand(*writer) ||
-                                 PrimaryCommand(*writer)->type != GraphCommandType::FullscreenQuad)))) {
-                INXLOG_ERROR("Persistent graph target requires a clear on its first writer: ", tex.name);
-                return false;
-            }
-            for (auto pass = desc.passes.begin(); writer != desc.passes.end() && pass != std::next(writer); ++pass) {
-                const bool reads =
-                    std::find(pass->readTextures.begin(), pass->readTextures.end(), tex.name) !=
-                        pass->readTextures.end() ||
-                    std::any_of(pass->commands.begin(), pass->commands.end(), [&](const GraphCommandDesc &command) {
-                        return command.sourceResource == tex.name ||
-                               std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
-                                           [&](const auto &input) { return input.second == tex.name; });
-                    });
-                if (reads) {
-                    INXLOG_ERROR("Persistent graph target cannot be read before its first writer completes: ",
-                                 tex.name);
-                    return false;
-                }
-            }
-            for (const auto &pass : desc.passes) {
-                const bool sampled =
-                    std::any_of(pass.commands.begin(), pass.commands.end(), [&](const GraphCommandDesc &command) {
-                        return std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
-                                           [&](const auto &input) { return input.second == tex.name; }) ||
-                               (command.type == GraphCommandType::FullscreenQuad &&
-                                std::find(pass.readTextures.begin(), pass.readTextures.end(), tex.name) !=
-                                    pass.readTextures.end());
-                    });
-                const bool sampledByMaterial =
-                    std::any_of(pass.commands.begin(), pass.commands.end(), [&](const GraphCommandDesc &command) {
-                        return command.type != GraphCommandType::FullscreenQuad &&
-                               std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
-                                           [&](const auto &input) { return input.second == tex.name; });
-                    });
-                if (sampled &&
-                    ((samples != 1 && sampledByMaterial) || (tex.isDepth && !generation->description.sampledDepth))) {
-                    INXLOG_ERROR("Material sampling requires resolved color; depth sampling requires sampledDepth: ",
-                                 tex.name);
-                    return false;
-                }
-            }
-            continue;
-        }
-        if (tex.role == GraphTextureRole::Asset) {
-            if (tex.assetGuid.empty() || tex.renderTexture || tex.isBackbuffer || tex.isDepth || tex.sizeDivisor != 0 ||
-                !tex.temporalKey.empty() || tex.samples != 1 || tex.width == 0 || tex.height == 0 || tex.depth == 0 ||
-                (!tex.isVolume && tex.depth != 1)) {
-                INXLOG_ERROR("Sampled graph texture assets require a GUID, explicit dimensions, and one sample: ",
-                             tex.name);
-                return false;
-            }
-            const bool written = std::any_of(desc.passes.begin(), desc.passes.end(), [&](const GraphPassDesc &pass) {
-                return PassWritesTexture(pass, tex.name);
-            });
-            if (written) {
-                INXLOG_ERROR("Sampled graph texture assets are read-only: ", tex.name);
-                return false;
-            }
-            continue;
-        }
-        if (tex.renderTexture) {
-            INXLOG_ERROR("Only persistent graph textures may retain a RenderTexture owner");
-            return false;
-        }
-        if (tex.role == GraphTextureRole::Transient) {
-            if (!tex.temporalKey.empty()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: transient texture '", tex.name,
-                             "' cannot declare a temporal key");
-                return false;
-            }
-            continue;
-        }
-        if (tex.temporalKey.empty() || tex.isBackbuffer || tex.isDepth || tex.samples != 1) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal texture '", tex.name,
-                         "' must be a single-sample color texture with a temporal key");
-            return false;
-        }
-        auto &pair = temporalPairs[tex.temporalKey];
-        const GraphTextureDesc **slot = tex.role == GraphTextureRole::TemporalRead ? &pair.read : &pair.write;
-        if (*slot != nullptr) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: duplicate temporal role for '", tex.temporalKey, "'");
-            return false;
-        }
-        *slot = &tex;
-    }
-    for (const auto &temporalEntry : temporalPairs) {
-        const auto &key = temporalEntry.first;
-        const auto &pair = temporalEntry.second;
-        if (!pair.read || !pair.write || pair.read->format != pair.write->format ||
-            pair.read->width != pair.write->width || pair.read->height != pair.write->height ||
-            pair.read->sizeDivisor != pair.write->sizeDivisor) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal history '", key,
-                         "' requires one matching read/write pair");
-            return false;
-        }
-        bool written = false;
-        for (const auto &pass : desc.passes) {
-            const auto writes = [&](const std::string &name) {
-                return pass.writeDepth == name || pass.resolveColor == name ||
-                       std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
-                                   [&](const auto &output) { return output.second == name; }) ||
-                       std::any_of(pass.commands.begin(), pass.commands.end(), [&](const auto &command) {
-                           return command.type == GraphCommandType::CopyTexture && command.destinationResource == name;
-                       });
-            };
-            if (writes(pair.read->name)) {
-                INXLOG_ERROR("Temporal history input is read-only: ", pair.read->name);
-                return false;
-            }
-            const bool readsOutput =
-                std::find(pass.readTextures.begin(), pass.readTextures.end(), pair.write->name) !=
-                    pass.readTextures.end() ||
-                std::any_of(pass.commands.begin(), pass.commands.end(), [&](const auto &command) {
-                    return (command.type == GraphCommandType::CopyTexture &&
-                            command.sourceResource == pair.write->name) ||
-                           std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
-                                       [&](const auto &binding) { return binding.second == pair.write->name; });
-                });
-            if (readsOutput && (!written || writes(pair.write->name))) {
-                INXLOG_ERROR("Temporal output must be produced before a separate pass reads it: ", pair.write->name);
-                return false;
-            }
-            written = written || writes(pair.write->name);
-        }
-        if (!written) {
-            INXLOG_ERROR("Temporal history requires an output write on every execution: ", key);
-            return false;
-        }
-    }
-
-    constexpr uint32_t kKnownBufferUsages = static_cast<uint32_t>(GraphBufferUsage::Storage) |
-                                            static_cast<uint32_t>(GraphBufferUsage::Indirect) |
-                                            static_cast<uint32_t>(GraphBufferUsage::TransferSource) |
-                                            static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
-    std::unordered_map<std::string, const GraphBufferDesc *> buffers;
-    buffers.reserve(desc.buffers.size());
-    size_t viewLightListCount = 0;
-    for (const auto &buffer : desc.buffers) {
-        if (buffer.name.empty() || textures.find(buffer.name) != textures.end()) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid or duplicate buffer name '", buffer.name, "'");
-            return false;
-        }
-        if (!buffers.emplace(buffer.name, &buffer).second || buffer.byteSize == 0 || buffer.usage == 0 ||
-            (buffer.usage & ~kKnownBufferUsages) != 0) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid buffer description for '", buffer.name, "'");
-            return false;
-        }
-        if (buffer.computeBuffer &&
-            (buffer.computeBuffer->GetByteSize() != buffer.byteSize || !buffer.computeBuffer->GetBuffer().IsValid())) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", buffer.name,
-                         "' has no live allocation of the declared size");
-            return false;
-        }
-        if (buffer.viewLightList) {
-            ++viewLightListCount;
-            if (buffer.computeBuffer || buffer.byteSize < sizeof(uint32_t) * 4 ||
-                buffer.usage != static_cast<uint32_t>(GraphBufferUsage::Storage)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", buffer.name,
-                             "' must be a read-only storage resource with a 16-byte header");
-                return false;
-            }
-        }
-    }
-    if (viewLightListCount > 1) {
-        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: only one view light list is allowed");
-        return false;
-    }
-
-    std::unordered_set<std::string> passNames;
-    passNames.reserve(desc.passes.size());
-    std::unordered_set<std::string> parameterBlockIds;
-    std::unordered_set<std::string> producedTextures;
-    for (const auto &pass : desc.passes) {
-        if (pass.name.empty()) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass name cannot be empty");
-            return false;
-        }
-        if (!passNames.insert(pass.name).second) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: duplicate pass '", pass.name, "'");
-            return false;
-        }
-        if (pass.commands.size() > 1) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                         "' records multiple commands; command-list execution is not enabled yet");
-            return false;
-        }
-        const GraphCommandDesc *command = PrimaryCommand(pass);
-        if (command) {
-            if (command->type == GraphCommandType::FullscreenQuad) {
-                if (pass.writeColors.size() != 1 || pass.writeColors.front().first != 0 ||
-                    (command->depthTest && pass.writeDepth.empty()) || (command->depthWrite && !command->depthTest) ||
-                    static_cast<uint8_t>(command->depthCompare) > static_cast<uint8_t>(rhi::CompareFunction::Always)) {
-                    INXLOG_ERROR("Fullscreen pass '", pass.name, "' has an invalid color/depth contract");
-                    return false;
-                }
-                const auto requiresExisting = [&](const std::string &name) {
-                    const auto texture = textures.find(name);
-                    return texture == textures.end() ||
-                           (texture->second->role != GraphTextureRole::Persistent && !producedTextures.count(name));
-                };
-                if (((command->alphaBlend || command->depthTest) && !pass.clearColor &&
-                     requiresExisting(pass.writeColors.front().second)) ||
-                    (!pass.writeDepth.empty() && !pass.clearDepth && requiresExisting(pass.writeDepth))) {
-                    INXLOG_ERROR("Fullscreen pass '", pass.name, "' must clear or load an earlier attachment output");
-                    return false;
-                }
-                if (std::find(pass.readTextures.begin(), pass.readTextures.end(), pass.writeDepth) !=
-                        pass.readTextures.end() ||
-                    std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
-                                [&](const auto &binding) { return binding.second == pass.writeDepth; })) {
-                    INXLOG_ERROR("Fullscreen pass '", pass.name, "' cannot sample its attached depth; copy it first");
-                    return false;
-                }
-            } else if (command->depthTest || command->depthWrite || command->alphaBlend) {
-                INXLOG_ERROR("Explicit fullscreen raster state used by a non-fullscreen pass: ", pass.name);
-                return false;
-            }
-            if (command->rendererSelection &&
-                (command->type != GraphCommandType::DrawRenderers || !command->overrideMaterial.empty())) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: renderer selection requires DrawRenderers "
-                             "without another override material in pass '",
-                             pass.name, "'");
-                return false;
-            }
-            if (command->pushConstants.size() > 32) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' exceeds the 32-float push constant limit");
-                return false;
-            }
-            std::unordered_set<std::string> parameterNames;
-            for (const auto &[name, value] : command->pushConstants) {
-                if (name.empty() || !parameterNames.insert(name).second || !std::isfinite(value)) {
-                    INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                                 "' has an invalid push constant layout");
-                    return false;
-                }
-            }
-            if (!command->parameterBlock.empty()) {
-                if (command->type != GraphCommandType::FullscreenQuad ||
-                    !parameterBlockIds.insert(command->parameterBlock).second) {
-                    INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                                 "' has an invalid or duplicate runtime parameter block '", command->parameterBlock,
-                                 "'");
-                    return false;
-                }
-            }
-        }
-        const bool rasterCommand =
-            command &&
-            (command->type == GraphCommandType::DrawRenderers || command->type == GraphCommandType::DrawSkybox ||
-             command->type == GraphCommandType::DrawShadowCasters || command->type == GraphCommandType::DrawWorldUI ||
-             command->type == GraphCommandType::DrawScreenUI || command->type == GraphCommandType::FullscreenQuad);
-        const bool copyCommand = command && (command->type == GraphCommandType::CopyTexture ||
-                                             command->type == GraphCommandType::CopyBuffer);
-        if ((pass.type == GraphPassType::Raster && command && !rasterCommand) ||
-            (pass.type == GraphPassType::Copy && !copyCommand) ||
-            (pass.type == GraphPassType::Present && (!command || command->type != GraphCommandType::Present))) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                         "' command does not match its execution domain");
-            return false;
-        }
-        if (pass.type != GraphPassType::Raster && (!pass.writeColors.empty() || !pass.writeDepth.empty() ||
-                                                   !pass.resolveColor.empty() || pass.clearColor || pass.clearDepth)) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: non-raster pass '", pass.name,
-                         "' declares raster attachments");
-            return false;
-        }
-        for (const auto &access : pass.bufferAccesses) {
-            const auto buffer = buffers.find(access.resource);
-            if (buffer == buffers.end()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' references unknown buffer '",
-                             access.resource, "'");
-                return false;
-            }
-            uint32_t requiredUsage = 0;
-            switch (access.type) {
-            case GraphBufferAccessType::StorageRead:
-            case GraphBufferAccessType::StorageWrite:
-                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::Storage);
-                break;
-            case GraphBufferAccessType::IndirectRead:
-                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::Indirect);
-                break;
-            case GraphBufferAccessType::TransferRead:
-                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::TransferSource);
-                break;
-            case GraphBufferAccessType::TransferWrite:
-                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
-                break;
-            }
-            if ((buffer->second->usage & requiredUsage) == 0) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' buffer '", access.resource,
-                             "' does not declare the required usage");
-                return false;
-            }
-            if (buffer->second->viewLightList && access.type != GraphBufferAccessType::StorageRead) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", access.resource,
-                             "' is read-only");
-                return false;
-            }
-            if (buffer->second->computeBuffer && (access.type == GraphBufferAccessType::StorageWrite ||
-                                                  access.type == GraphBufferAccessType::TransferWrite)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", access.resource,
-                             "' is read-only in the render graph");
-                return false;
-            }
-        }
-        if (command && command->type == GraphCommandType::CopyTexture) {
-            const auto source = textures.find(command->sourceResource);
-            const auto destination = textures.find(command->destinationResource);
-            if (source == textures.end() || destination == textures.end() || source == destination ||
-                source->second->isBackbuffer || destination->second->isBackbuffer ||
-                source->second->role == GraphTextureRole::Asset ||
-                destination->second->role == GraphTextureRole::Asset ||
-                source->second->format != destination->second->format) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture copy pass '", pass.name,
-                             "' has incompatible resources");
-                return false;
-            }
-        } else if (command && command->type == GraphCommandType::CopyBuffer) {
-            const auto source = buffers.find(command->sourceResource);
-            const auto destination = buffers.find(command->destinationResource);
-            if (source == buffers.end() || destination == buffers.end() ||
-                command->sourceResource == command->destinationResource ||
-                command->copyBytes > std::min(source->second->byteSize, destination->second->byteSize)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: buffer copy pass '", pass.name,
-                             "' has incompatible resources");
-                return false;
-            }
-            const uint32_t transferSource = static_cast<uint32_t>(GraphBufferUsage::TransferSource);
-            const uint32_t transferDestination = static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
-            if ((source->second->usage & transferSource) == 0 ||
-                (destination->second->usage & transferDestination) == 0) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: buffer copy pass '", pass.name,
-                             "' resources do not declare transfer usage");
-                return false;
-            }
-            if (destination->second->computeBuffer) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", command->destinationResource,
-                             "' cannot be a copy destination");
-                return false;
-            }
-        } else if (command && command->type == GraphCommandType::Present &&
-                   textures.find(command->sourceResource) == textures.end()) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: present pass '", pass.name,
-                         "' references an unknown texture");
-            return false;
-        } else if (command && command->type == GraphCommandType::Present &&
-                   textures.at(command->sourceResource)->isDepth) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: present pass '", pass.name,
-                         "' cannot export a depth texture");
-            return false;
-        }
-        if (command && command->type == GraphCommandType::DrawShadowCasters) {
-            if (command->shaderTarget != ShaderCompileTarget::Shadow) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
-                             "' requires the Shadow shader target");
-                return false;
-            }
-            if (!pass.writeColors.empty()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
-                             "' cannot write color targets");
-                return false;
-            }
-            if (pass.writeDepth.empty()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
-                             "' requires a depth output");
-                return false;
-            }
-        }
-        if (command && command->type == GraphCommandType::DrawWorldUI &&
-            (pass.writeColors.size() != 1 || pass.writeDepth.empty())) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: world UI pass '", pass.name,
-                         "' requires one color output and one depth output");
-            return false;
-        }
-        if (pass.clearDepth && pass.writeDepth.empty()) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                         "' clears depth but has no depth output");
-            return false;
-        }
-
-        const bool depthOnlyMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
-                                           (command->shaderTarget == ShaderCompileTarget::Depth ||
-                                            command->shaderTarget == ShaderCompileTarget::Shadow);
-        if (depthOnlyMaterialPass && (!pass.writeColors.empty() || pass.writeDepth.empty())) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: depth-only material pass '", pass.name,
-                         "' requires one depth output and no color outputs");
-            return false;
-        }
-        const bool motionMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
-                                        command->shaderTarget == ShaderCompileTarget::Motion;
-        if (motionMaterialPass) {
-            const auto color =
-                pass.writeColors.size() == 1 ? textures.find(pass.writeColors.front().second) : textures.end();
-            const bool hasReadableDepth =
-                std::any_of(pass.readTextures.begin(), pass.readTextures.end(), [&](const std::string &textureName) {
-                    const auto texture = textures.find(textureName);
-                    const bool sampled =
-                        std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
-                                    [&](const auto &binding) { return binding.second == textureName; });
-                    return texture != textures.end() && texture->second->isDepth && !sampled;
-                });
-            if (color == textures.end() || pass.writeColors.front().first != 0 ||
-                color->second->format != rhi::PixelFormat::RG16SFloat || !hasReadableDepth ||
-                !pass.writeDepth.empty()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: motion pass '", pass.name,
-                             "' requires one RG16SFloat color[0], one readable depth attachment, and no depth write");
-                return false;
-            }
-        }
-        const bool rgbaGeometryMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
-                                              (command->shaderTarget == ShaderCompileTarget::Normal ||
-                                               command->shaderTarget == ShaderCompileTarget::BaseColor);
-        if (rgbaGeometryMaterialPass) {
-            const auto color =
-                pass.writeColors.size() == 1 ? textures.find(pass.writeColors.front().second) : textures.end();
-            const bool hasReadableDepth =
-                std::any_of(pass.readTextures.begin(), pass.readTextures.end(), [&](const std::string &textureName) {
-                    const auto texture = textures.find(textureName);
-                    const bool sampled =
-                        std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
-                                    [&](const auto &binding) { return binding.second == textureName; });
-                    return texture != textures.end() && texture->second->isDepth && !sampled;
-                });
-            if (color == textures.end() || pass.writeColors.front().first != 0 ||
-                color->second->format != rhi::PixelFormat::RGBA16SFloat || !hasReadableDepth ||
-                !pass.writeDepth.empty()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: ", ShaderCompileTargetName(command->shaderTarget),
-                             " pass '", pass.name,
-                             "' requires one RGBA16SFloat color[0], one readable depth attachment, and no depth write");
-                return false;
-            }
-        }
-
-        std::unordered_set<int> colorSlots;
-        uint32_t attachmentSamples = 0;
-        const auto acceptAttachmentSamples = [&](const GraphTextureDesc &texture) {
-            const uint32_t samples = EffectiveTextureSamples(texture, frameSamples);
-            if (attachmentSamples == 0) {
-                attachmentSamples = samples;
-                return true;
-            }
-            return attachmentSamples == samples;
-        };
-
-        for (const auto &[slot, textureName] : pass.writeColors) {
-            if (slot < 0 || slot >= 8 || !colorSlots.insert(slot).second) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' has an invalid or duplicate color slot ", slot);
-                return false;
-            }
-            auto texIt = textures.find(textureName);
-            if (texIt == textures.end()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes unknown color target '",
-                             textureName, "'");
-                return false;
-            }
-            if (texIt->second->isDepth) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes depth texture '",
-                             textureName, "' as color slot ", slot);
-                return false;
-            }
-            if (texIt->second->role == GraphTextureRole::Asset) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' cannot write sampled Texture asset '", textureName, "'");
-                return false;
-            }
-            if (!acceptAttachmentSamples(*texIt->second)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' uses color and depth attachments with different sample counts");
-                return false;
-            }
-        }
-        for (int slot = 0; slot < static_cast<int>(colorSlots.size()); ++slot) {
-            if (colorSlots.find(slot) == colorSlots.end()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' must use contiguous color slots starting at zero");
-                return false;
-            }
-        }
-
-        if (!pass.writeDepth.empty()) {
-            auto texIt = textures.find(pass.writeDepth);
-            if (texIt == textures.end()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes unknown depth target '",
-                             pass.writeDepth, "'");
-                return false;
-            }
-            if (!texIt->second->isDepth) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes color texture '",
-                             pass.writeDepth, "' as depth");
-                return false;
-            }
-            if (texIt->second->role == GraphTextureRole::Asset) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' cannot write sampled Texture asset '", pass.writeDepth, "'");
-                return false;
-            }
-            if (!acceptAttachmentSamples(*texIt->second)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' uses color and depth attachments with different sample counts");
-                return false;
-            }
-        }
-
-        uint32_t readOnlyDepthAttachmentCount = 0;
-        if (command && command->type != GraphCommandType::FullscreenQuad) {
-            for (const auto &textureName : pass.readTextures) {
-                const bool sampledInput =
-                    std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
-                                [&textureName](const auto &binding) { return binding.second == textureName; });
-                if (sampledInput)
-                    continue;
-                auto texIt = textures.find(textureName);
-                if (texIt == textures.end() || !texIt->second->isDepth)
-                    continue;
-                ++readOnlyDepthAttachmentCount;
-                if (!acceptAttachmentSamples(*texIt->second)) {
-                    INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                                 "' uses color and depth attachments with different sample counts");
-                    return false;
-                }
-            }
-        }
-        if (readOnlyDepthAttachmentCount > 1 || (readOnlyDepthAttachmentCount != 0 && !pass.writeDepth.empty())) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                         "' must declare exactly one depth attachment as either read-only or writable");
-            return false;
-        }
-
-        if (!pass.resolveColor.empty()) {
-            const auto resolve = textures.find(pass.resolveColor);
-            const auto source = pass.writeColors.size() == 1 && pass.writeColors.front().first == 0
-                                    ? textures.find(pass.writeColors.front().second)
-                                    : textures.end();
-            if (resolve == textures.end() || source == textures.end() || resolve->second->isBackbuffer ||
-                resolve->second->role == GraphTextureRole::Asset || resolve->second->isDepth ||
-                pass.resolveColor == pass.writeColors.front().second ||
-                EffectiveTextureSamples(*source->second, frameSamples) <= 1 ||
-                EffectiveTextureSamples(*resolve->second, frameSamples) != 1 ||
-                source->second->format != resolve->second->format ||
-                !TextureExtentsMatch(*source->second, *resolve->second)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' has an invalid MSAA color resolve contract");
-                return false;
-            }
-        }
-
-        for (const auto &textureName : pass.readTextures) {
-            if (textures.find(textureName) == textures.end()) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' reads unknown texture '",
-                             textureName, "'");
-                return false;
-            }
-        }
-
-        for (const auto &[slot, name] : pass.writeColors)
-            producedTextures.insert(name);
-        if (!pass.writeDepth.empty())
-            producedTextures.insert(pass.writeDepth);
-        if (!pass.resolveColor.empty())
-            producedTextures.insert(pass.resolveColor);
-        if (command && command->type == GraphCommandType::CopyTexture)
-            producedTextures.insert(command->destinationResource);
-
-        if (!command)
-            continue;
-        for (const auto &[samplerName, textureName] : command->inputBindings) {
-            if (textures.find(textureName) == textures.end() &&
-                (command->type != GraphCommandType::FullscreenQuad || buffers.find(textureName) == buffers.end())) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' input '", samplerName,
-                             "' references unknown resource '", textureName, "'");
-                return false;
-            }
-        }
-    }
-
-    if (!desc.outputTexture.empty() && textures.find(desc.outputTexture) == textures.end()) {
-        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: output texture '", desc.outputTexture, "' is not declared");
-        return false;
-    }
-    if (!desc.outputTexture.empty() && textures.at(desc.outputTexture)->role == GraphTextureRole::Asset) {
-        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: a sampled Texture asset cannot be the graph output");
-        return false;
-    }
-
-    return true;
-}
-
 } // namespace
-
-bool SceneRenderGraph::ValidateGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples)
-{
-    return ValidatePythonGraphDescription(desc, activeFrameSamples);
-}
 
 // ============================================================================
 // Constructor / Destructor
@@ -997,6 +355,35 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
                               &vkCore->GetBackendContext().Queues());
     m_renderGraph->SetRenderView(m_renderView);
 
+    // Logical identity is immediate; an unused successor must not allocate a
+    // complete set of view buffers and descriptors before it is replaced.
+    m_shadowCameraResourceId = vkCore->CreateShadowCameraResources();
+    if (m_shadowCameraResourceId == 0) {
+        INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local shadow resource identity");
+        return false;
+    }
+    return true;
+}
+
+bool SceneRenderGraph::EnsureViewGpuResources()
+{
+    if (m_viewGpuResourcesReady)
+        return true;
+    if (!m_vkCore || !m_sceneTarget || !m_sceneTarget->IsReady())
+        return false;
+
+    // Every early return and exception rolls back this same owned subset.
+    // Logical view identity and RenderGraph image inventory remain untouched.
+    struct Rollback
+    {
+        SceneRenderGraph &graph;
+        ~Rollback()
+        {
+            if (!graph.m_viewGpuResourcesReady)
+                graph.ReleaseViewGpuResources();
+        }
+    } rollback{*this};
+    auto *vkCore = m_vkCore;
     // Allocate a complete camera-local lighting domain. Geometry and particles
     // share this camera's atlas and LightingUBO, but Scene, Game and future
     // camera graphs never overwrite one another's shadow state.
@@ -1032,11 +419,6 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local canonical light buffers");
         return false;
     }
-    m_shadowCameraResourceId = vkCore->CreateShadowCameraResources();
-    if (m_shadowCameraResourceId == 0) {
-        INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local shadow resource identity");
-        return false;
-    }
     m_perViewLayout = rhiDevice.RegisterBindingLayout(vkCore->GetPerViewDescSetLayout());
     if (!m_perViewLayout.IsValid()) {
         INXLOG_ERROR("SceneRenderGraph: failed to register the canonical per-view descriptor layout");
@@ -1069,6 +451,10 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
     m_fullscreenRenderer.Initialize(vkCore);
+    if (!m_fullscreenRenderer.GetLinearSampler().IsValid()) {
+        INXLOG_ERROR("SceneRenderGraph: failed to prepare fullscreen view resources");
+        return false;
+    }
 
     const auto depthResolveSupport = vkCore->GetDeviceContext().GetCapabilities().CheckFormat(
         rhi::PixelFormat::R32SFloat, rhi::FormatFeature::Sampled | rhi::FormatFeature::Storage);
@@ -1097,6 +483,7 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         }
     }
 
+    m_viewGpuResourcesReady = true;
     return true;
 }
 
@@ -1106,6 +493,10 @@ void SceneRenderGraph::InvalidateBeforeTargetReplacement()
         return; // A screen resize does not replace this camera's allocation.
     m_graphBuilt = false;
     m_needsCompile = true;
+    if (!m_workInstances.empty()) {
+        RetireWorkInstances();
+        m_needsRebuild = true;
+    }
 }
 
 void SceneRenderGraph::SetOutputTexture(std::shared_ptr<rhi::RenderTexture> output)
@@ -1129,21 +520,42 @@ void SceneRenderGraph::SetOutputTexture(std::shared_ptr<rhi::RenderTexture> outp
     SetEffectiveMsaaSamples(m_effectiveMsaaSamples);
 }
 
+bool SceneRenderGraph::SetCameraViewport(const Camera &camera)
+{
+    auto *output = m_outputTarget && m_outputTexture ? m_outputTarget.get() : m_screenTarget;
+    if (!output || !output->GetAttachments())
+        return false;
+    const bool changed = m_viewport.Prepare(m_vkCore->GetDeviceContext().GetRhiDevice(),
+                                            "camera-viewport/" + std::to_string(m_renderView.id),
+                                            output->GetAttachments(), camera.GetRect());
+    const auto generation = m_viewport.Work() ? m_viewport.Work()->Acquire() : nullptr;
+    if (changed || generation != m_viewportGeneration) {
+        m_sceneTarget = nullptr;
+        m_viewportGeneration = generation;
+        if (generation) {
+            if (!m_viewportWorkTarget)
+                m_viewportWorkTarget = std::make_unique<SceneRenderTarget>(m_vkCore);
+            m_viewportWorkTarget->BindAttachments(generation);
+        } else {
+            m_viewportWorkTarget.reset();
+        }
+        ReplaceSceneTarget(m_screenTarget);
+        SetEffectiveMsaaSamples(m_effectiveMsaaSamples);
+    }
+    return !m_viewport.IsEmpty();
+}
+
 bool SceneRenderGraph::HasLocalTextureProducer(const RenderGraphDescription &description,
                                                const MaterialTextureRead &read)
 {
-    const auto attachment =
-        read.generation->multisampleColor ? GraphTextureAttachment::Resolve : GraphTextureAttachment::Color;
     bool reachedReader = false, hasWriter = false, priorWriter = false;
     for (const auto &pass : description.passes) {
         const bool writes =
             std::any_of(description.textures.begin(), description.textures.end(), [&](const GraphTextureDesc &texture) {
-                const auto physicalAttachment =
-                    !read.generation->multisampleColor && texture.attachment == GraphTextureAttachment::Resolve
-                        ? GraphTextureAttachment::Color
-                        : texture.attachment;
                 return texture.role == GraphTextureRole::Persistent && texture.renderTexture == read.texture &&
-                       physicalAttachment == attachment && PassWritesTexture(pass, texture.name);
+                       ResolveGraphTextureAttachment(*read.generation, texture.attachment) ==
+                           read.generation->color.get() &&
+                       pass.WritesTexture(texture.name);
             });
         if (pass.name == read.passName) {
             if (writes)
@@ -1165,39 +577,157 @@ bool SceneRenderGraph::HasLocalTextureProducer(const RenderGraphDescription &des
 RenderViewAccess SceneRenderGraph::GetResourceAccess() const
 {
     RenderViewAccess access;
-    access.writes.push_back(m_outputTexture ? static_cast<const void *>(m_outputTexture.get()) : m_sceneTarget);
+    access.viewId = m_renderView.id;
+    if (m_hasPythonGraph && !m_pythonGraphValid)
+        return access;
+    const auto addRead = [&access](const rhi::TextureResource *texture, bool requiresProducer) {
+        const auto found = std::find_if(access.reads.begin(), access.reads.end(),
+                                        [texture](const auto &read) { return read.texture == texture; });
+        if (found == access.reads.end())
+            access.reads.emplace_back(texture, requiresProducer);
+        else
+            found->requiresProducer |= requiresProducer;
+    };
+    for (auto *input : m_liveBufferInputs)
+        if (input->IsWaitingForResult())
+            for (const auto &source : input->GetResultSources())
+                if (source->status == GraphBufferCapture::Status::Pending)
+                    access.pendingResults.push_back({input, source->view});
+    if (!m_outputGeneration)
+        access.writes.push_back(m_screenTarget);
+    const auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    const auto addWrite = [&](const rhi::TextureResource *attachment, bool expected) {
+        if (!attachment)
+            return false;
+        const bool writes =
+            m_graphBuilt ? m_renderGraph->HasLiveWriteToImage(device.Resolve(attachment->GetTexture())) : expected;
+        if (!writes)
+            return false;
+        if (std::find(access.writes.begin(), access.writes.end(), attachment) == access.writes.end())
+            access.writes.push_back(attachment);
+        return true;
+    };
+    if (m_outputGeneration) {
+        addWrite(m_outputGeneration->color.get(), true);
+        addWrite(m_outputGeneration->multisampleColor.get(), true);
+        addWrite(m_outputGeneration->depth.get(), true);
+    }
+    const auto &executionOrder = m_renderGraph->GetExecutionOrder();
     for (const auto &texture : m_pythonGraphDesc.textures) {
         if (texture.role != GraphTextureRole::Persistent)
             continue;
-        bool writes = false, reads = false;
-        for (const auto &pass : m_pythonGraphDesc.passes) {
-            writes |= PassWritesTexture(pass, texture.name);
-            reads |=
-                std::find(pass.readTextures.begin(), pass.readTextures.end(), texture.name) != pass.readTextures.end();
-            for (const auto &command : pass.commands) {
-                reads |= command.sourceResource == texture.name ||
-                         std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
-                                     [&](const auto &item) { return item.second == texture.name; });
-            }
-        }
-        if (writes || reads) {
-            auto &resources = writes ? access.writes : access.reads;
-            if (std::find(resources.begin(), resources.end(), texture.renderTexture.get()) == resources.end())
-                resources.push_back(texture.renderTexture.get());
-        }
+        const auto bound = m_importedTextureBindings.find(texture.name);
+        const auto generation = m_graphBuilt ? nullptr : texture.renderTexture->Acquire();
+        const auto *attachment = generation ? ResolveGraphTextureAttachment(*generation, texture.attachment)
+                                 : bound == m_importedTextureBindings.end() ? nullptr
+                                                                            : bound->second.persistentAttachment;
+        if (!attachment)
+            continue;
+        const bool expected =
+            !m_graphBuilt && std::any_of(m_pythonGraphDesc.passes.begin(), m_pythonGraphDesc.passes.end(),
+                                         [&](const auto &pass) { return pass.WritesTexture(texture.name); });
+        if (addWrite(attachment, expected) || !m_graphBuilt)
+            continue;
+        const bool reads = m_pythonGraphDesc.outputTexture == texture.name ||
+                           m_pythonGraphDesc.linearOutputTexture == texture.name ||
+                           std::any_of(executionOrder.begin(), executionOrder.end(), [&](uint32_t passId) {
+                               const auto author = m_authorPassIndices.find(passId);
+                               return author != m_authorPassIndices.end() &&
+                                      m_pythonGraphDesc.passes[author->second.index].ReadsTexture(texture.name);
+                           });
+        if (reads)
+            addRead(attachment, texture.requireCurrentWrite);
     }
-    for (const auto &read : m_materialTextureReads) {
-        if (!HasLocalTextureProducer(m_pythonGraphDesc, read) &&
-            std::find(access.reads.begin(), access.reads.end(), read.texture.get()) == access.reads.end())
-            access.reads.push_back(read.texture.get());
-    }
+    if (m_graphBuilt)
+        for (const auto &read : m_materialTextureReads)
+            if (!HasLocalTextureProducer(m_pythonGraphDesc, read))
+                addRead(read.generation->color.get(), false);
     return access;
+}
+
+bool SceneRenderGraph::HasPendingBufferInputs(bool forStep) const
+{
+    return std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *input) {
+        return input->IsWaitingForResult() && (!forStep || input->HoldsStep());
+    });
+}
+
+void SceneRenderGraph::CacheLiveAuthorPasses()
+{
+    m_executedEventPasses.clear();
+    m_liveBufferInputs.clear();
+    std::unordered_map<std::string_view, GraphBufferInput *> inputs;
+    for (const auto &buffer : m_pythonGraphDesc.buffers) {
+        const auto &storage = ResolveGraphBufferStorage(m_pythonGraphDesc, buffer);
+        if (storage.input)
+            inputs.emplace(buffer.name, storage.input.get());
+    }
+    const auto read = [&](std::string_view name) {
+        const auto input = inputs.find(name);
+        if (input != inputs.end() &&
+            std::find(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), input->second) == m_liveBufferInputs.end())
+            m_liveBufferInputs.push_back(input->second);
+    };
+    // Native export passes are retained reads even when the author only
+    // exports an imported slot and no other pass consumes it.
+    for (const auto &buffer : m_pythonGraphDesc.buffers)
+        if (buffer.exportLayout)
+            read(buffer.name);
+    if (m_authorPassIndices.empty())
+        return;
+    const auto &order = m_renderGraph->GetExecutionOrder();
+    std::unordered_set<size_t> seen;
+    // A split author pass publishes at its last live piece. Identify slots
+    // by their authored binding; several slots can alias one GPU allocation.
+    for (auto nativePass = order.rbegin(); nativePass != order.rend(); ++nativePass) {
+        const auto author = m_authorPassIndices.find(*nativePass);
+        if (author == m_authorPassIndices.end())
+            continue;
+        const auto &record = author->second;
+        const auto &pass = m_pythonGraphDesc.passes[record.index];
+        const bool firstLivePart = seen.insert(record.index).second;
+        if (firstLivePart && !pass.events.empty())
+            m_executedEventPasses.push_back(record.index);
+        if (inputs.empty())
+            continue;
+        if (record.dispatch) {
+            const auto &work = *FindGraphWorkBinding(m_pythonGraphDesc, pass.PrimaryCommand()->workBinding);
+            const auto &ports = work.recipe->GetPorts();
+            const auto &bindings = work.recipe->GetDispatches()[*record.dispatch].bindings;
+            for (const auto &inputBinding : work.inputBindings) {
+                if (inputs.find(inputBinding.second) == inputs.end())
+                    continue;
+                const auto port = std::find_if(ports.begin(), ports.end(), [&inputBinding](const auto &entry) {
+                    return entry.input && entry.name == inputBinding.first;
+                });
+                if (std::any_of(bindings.begin(), bindings.end(), [&](const auto &binding) {
+                        return binding.range.slot == port->range.slot &&
+                               (static_cast<uint8_t>(binding.access) &
+                                static_cast<uint8_t>(rhi::ComputeBufferAccess::Read));
+                    }))
+                    read(inputBinding.second);
+            }
+            continue;
+        }
+        if (!firstLivePart)
+            continue;
+        for (const auto &access : pass.bufferAccesses)
+            if (access.type != GraphBufferAccessType::StorageWrite &&
+                access.type != GraphBufferAccessType::TransferWrite)
+                read(access.resource);
+        for (const auto &command : pass.commands)
+            if (command.type == GraphCommandType::CopyBuffer || command.type == GraphCommandType::CopyBufferToTexture)
+                read(command.sourceResource);
+    }
+    std::reverse(m_executedEventPasses.begin(), m_executedEventPasses.end());
 }
 
 void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
 {
     m_screenTarget = sceneTarget;
-    sceneTarget = m_outputTarget && m_outputTexture ? m_outputTarget.get() : sceneTarget;
+    sceneTarget = m_viewportGeneration                ? m_viewportWorkTarget.get()
+                  : m_outputTarget && m_outputTexture ? m_outputTarget.get()
+                                                      : sceneTarget;
     if (!sceneTarget)
         return;
     if (m_sceneTarget == sceneTarget && m_width == sceneTarget->GetWidth() && m_height == sceneTarget->GetHeight() &&
@@ -1223,22 +753,26 @@ void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
     m_importedColorTarget = {};
     m_importedResolveTarget = {};
     m_importedDepthTarget = {};
-    m_previousViewProj = glm::mat4(1.0f);
-    m_cameraHistoryValid = false;
-    RetireTemporalHistoryResources();
+    m_temporalHistories.clear();
+    InvalidateTemporalHistory();
 }
 
 void SceneRenderGraph::InvalidateTemporalHistory()
 {
+    // Several discontinuities before the next accepted view begin one new history.
+    if (!m_historyResetPending) {
+        ++m_historyEpoch;
+        m_historyResetPending = true;
+    }
     m_cameraHistoryValid = false;
+    m_motionHistory.Clear();
     m_temporalSampleIndex = 0;
-    m_temporalJitterNdc = glm::vec2(0.0f);
+    UpdateTemporalProjection();
     for (auto &[key, history] : m_temporalHistories) {
         (void)key;
         history.valid = false;
         history.readIndex = 0;
     }
-    m_renderView.history = {};
 }
 
 uint64_t SceneRenderGraph::CurrentParticleDrawRegistryRevision() const noexcept
@@ -1290,17 +824,8 @@ void SceneRenderGraph::InvalidateParticleViews()
     m_graphBuilt = false;
 }
 
-void SceneRenderGraph::RetireTemporalHistoryResources()
-{
-    m_temporalHistories.clear();
-    m_renderView.history = {};
-}
-
 void SceneRenderGraph::RetireImportedTextureAssets()
 {
-    m_graphTextureSamplers.clear();
-    m_graphTextureFormats.clear();
-    m_graphTextureAssetVersions.clear();
     if (m_graphTexturePublications.empty())
         return;
     if (!m_vkCore) {
@@ -1311,25 +836,203 @@ void SceneRenderGraph::RetireImportedTextureAssets()
     m_vkCore->GetRetirementQueue().Retire([retired = std::move(retired)]() mutable { retired.clear(); });
 }
 
-void SceneRenderGraph::Destroy()
+void SceneRenderGraph::RetireWorkInstances()
 {
-    ReleaseParticleViewBindings();
-    if (m_particleViewDiagnosticState) {
-        std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
-        for (const auto &request : m_pendingParticleViewDiagnostics) {
-            auto &snapshot = m_particleViewDiagnosticState->snapshots[request.requestId];
-            if (snapshot.status == particle::GpuParticleViewDiagnosticStatus::Pending) {
-                snapshot.status = particle::GpuParticleViewDiagnosticStatus::Failed;
-                snapshot.error = "Particle view render graph was destroyed before diagnostics were recorded";
+    const bool published = m_graphBuffersPublished;
+    m_graphBuffersPublished = false;
+    if (published)
+        RetireComputeBufferBindings();
+    else
+        m_computeBufferReads.clear();
+    auto instances = std::move(m_workInstances);
+    auto owners = std::move(m_graphBufferOwners);
+    if (published && m_vkCore && (!instances.empty() || !owners.empty()))
+        m_vkCore->GetRetirementQueue().Retire([instances = std::move(instances), owners = std::move(owners)]() mutable {
+            instances.clear();
+            owners.clear();
+        });
+}
+
+std::shared_ptr<rhi::ComputeBuffer> SceneRenderGraph::ResolveGraphBufferOwner(const GraphBufferDesc &buffer) const
+{
+    if (buffer.computeBuffer)
+        return buffer.computeBuffer;
+    const auto found = m_graphBufferOwners.find(buffer.name);
+    return found == m_graphBufferOwners.end() ? nullptr : found->second;
+}
+
+bool SceneRenderGraph::ProveGraphBufferContents()
+{
+    GraphBufferContents contents;
+    if (RequiresGraphBufferProof(m_pythonGraphDesc)) {
+        auto effective = m_pythonGraphDesc;
+        effective.msaaSamples = 0;
+        if (const auto overridden = ResolveCameraClearOverride()) {
+            const auto pass = std::find_if(effective.passes.begin(), effective.passes.end(),
+                                           [&](const auto &item) { return item.name == overridden->name; });
+            pass->clearColor = overridden->clearColor;
+            pass->clearDepth = overridden->clearDepth;
+        }
+        if (!ValidateOutputTextureAliases(effective) ||
+            !ValidateRenderGraphDescription(effective, m_renderView, &contents))
+            return false;
+    }
+    m_graphBufferContents = std::move(contents);
+    m_graphBufferWrites = RequiresGraphBufferOwners(m_pythonGraphDesc) ? FindGraphBufferWrites(m_pythonGraphDesc)
+                                                                       : std::unordered_set<std::string>{};
+    m_bufferProofClearFlags = m_cameraClearFlags;
+    return true;
+}
+
+bool SceneRenderGraph::PrepareGraphBuffers()
+{
+    m_graphStorageDeferred = false;
+    if (!RequiresGraphBufferOwners(m_pythonGraphDesc)) {
+        RetireWorkInstances();
+        m_computeBufferReads = CaptureComputeBufferReads();
+        return true;
+    }
+    try {
+        rhi::ComputeHost current(m_vkCore->GetDeviceContext().GetRhiDevice(), m_vkCore->PrepareComputeQueue());
+        // A cached graph description may outlive its original Engine. Compare
+        // captured service facts before dereferencing any old device or queue.
+        for (const auto &binding : m_pythonGraphDesc.workBindings) {
+            if (!binding.recipe->GetHost().SharesServicesWith(current))
+                throw std::invalid_argument("Graph work belongs to an expired or different compute host");
+        }
+        decltype(m_graphBufferOwners) owners;
+        for (const auto &buffer : m_pythonGraphDesc.buffers) {
+            if (buffer.computeBuffer) {
+                owners.emplace(buffer.name, buffer.computeBuffer);
+            } else if (buffer.workBinding.empty() && buffer.exportLayout) {
+                const auto old = m_graphBufferOwners.find(buffer.name);
+                const auto &layout = *buffer.exportLayout;
+                std::shared_ptr<rhi::ComputeBuffer> owner;
+                if (old != m_graphBufferOwners.end() && old->second->GetHost().SharesServicesWith(current)) {
+                    const auto &previous = old->second->GetDesc();
+                    if (previous.elementCount == layout.elementCount && previous.scalarType == layout.scalarType &&
+                        previous.lanes == layout.lanes && !old->second->GetAllocation()->IsReadProtected())
+                        owner = old->second;
+                }
+                if (!owner)
+                    owner = rhi::ComputeBuffer::TryCreateGraphBuffer(current, layout);
+                if (!owner) {
+                    m_graphStorageDeferred = true;
+                    return false;
+                }
+                owners.emplace(buffer.name, std::move(owner));
             }
         }
+        std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> instances;
+        for (const auto &binding : m_pythonGraphDesc.workBindings) {
+            std::vector<rhi::ComputeWorkInput> inputs;
+            for (const auto &[port, resource] : binding.inputBindings) {
+                const auto owner = owners.find(resource);
+                if (owner == owners.end())
+                    throw std::invalid_argument("Work input has no earlier typed graph allocation owner");
+                inputs.push_back({port, owner->second});
+            }
+            const auto previous = m_workInstances.find(binding.name);
+            auto instance = previous != m_workInstances.end() && &previous->second->GetRecipe() == binding.recipe.get()
+                                ? previous->second->Rebind(std::move(inputs))
+                                : binding.recipe->Instantiate(std::move(inputs));
+            if (!instance) {
+                m_graphStorageDeferred = true;
+                return false;
+            }
+            for (const auto &buffer : m_pythonGraphDesc.buffers)
+                if (buffer.workBinding == binding.name)
+                    owners[buffer.name] = instance->GetBuffers().at(buffer.workSlot);
+            instances.emplace(binding.name, std::move(instance));
+        }
+        RetireWorkInstances();
+        m_workInstances = std::move(instances);
+        m_graphBufferOwners = std::move(owners);
+        m_computeBufferReads = CaptureComputeBufferReads();
+        return true;
+    } catch (const std::exception &error) {
+        INXLOG_ERROR("SceneRenderGraph: cannot prepare graph work: ", error.what());
+        return false;
     }
-    m_pendingParticleViewDiagnostics.clear();
-    m_particleCullers.clear();
-    m_particleSorters.clear();
-    RetireImportedTextureAssets();
+}
+
+bool SceneRenderGraph::CanRetainEventBuffers(const GraphEventInterests &interests) const
+{
+    if (interests.empty() || m_graphBufferWrites.empty())
+        return true;
+    std::unordered_set<rhi::BufferHandle, rhi::HandleHash<rhi::BufferTag>> captured;
+    for (size_t index : m_executedEventPasses) {
+        for (const auto &event : m_pythonGraphDesc.passes[index].events) {
+            if (!FindActiveEventInterest(interests, event.label))
+                continue;
+            for (const auto &[name, resource] : event.buffers)
+                captured.insert(m_graphBufferOwners.at(resource)->GetBuffer());
+        }
+    }
+    if (captured.empty())
+        return true;
+
+    // Check replacement headroom once for every actual captured writer.
+    // Read-only imports do not acquire another allocation on the next draw.
+    std::vector<rhi::BufferHandle> retained;
+    retained.reserve(captured.size());
+    for (const auto &name : m_graphBufferWrites) {
+        const auto owner = m_graphBufferOwners.find(name);
+        if (owner == m_graphBufferOwners.end())
+            continue;
+        const auto handle = owner->second->GetBuffer();
+        if (captured.erase(handle))
+            retained.push_back(handle);
+    }
+    return retained.empty() || m_vkCore->GetDeviceContext().GetRhiDevice().CanRetainGraphBuffers(retained);
+}
+
+bool SceneRenderGraph::AdmitGraphEvents(const GraphEventInterests &interests)
+{
+    if (!m_graphBuilt)
+        return false;
+    m_graphStorageDeferred = !CanRetainEventBuffers(interests);
+    if (m_graphStorageDeferred && !m_graphBuffersPublished) {
+        // Unrecorded buffers do not need to wait for GPU retirement.
+        m_renderGraph->Reset();
+        RetireWorkInstances();
+        m_graphBuilt = false;
+        m_needsRebuild = true;
+    }
+    return !m_graphStorageDeferred;
+}
+
+void SceneRenderGraph::PublishGraphBuffers()
+{
+    const auto publish = [](const auto &owner) {
+        if (owner->GetAllocation()->IsGraphWritable())
+            owner->PublishStorage();
+    };
+    for (const auto &[name, owner] : m_graphBufferOwners)
+        publish(owner);
+    for (const auto &[name, instance] : m_workInstances)
+        for (const auto &owner : instance->GetBuffers())
+            publish(owner);
+    m_graphBuffersPublished = true;
+}
+
+bool SceneRenderGraph::ValidateOutputTextureAliases(const RenderGraphDescription &description) const
+{
+    if (!m_outputGeneration)
+        return true;
+    if (const auto *alias = FindGraphOutputTextureAlias(description, *m_outputGeneration)) {
+        INXLOG_ERROR("A camera target attachment cannot also be imported as a separate persistent graph resource: ",
+                     alias->name);
+        return false;
+    }
+    return true;
+}
+
+void SceneRenderGraph::ReleaseViewGpuResources() noexcept
+{
+    RetireWorkInstances();
+    m_viewGpuResourcesReady = false;
     m_fullscreenRenderer.Destroy();
-    RetireTemporalHistoryResources();
     m_sceneDepthResolver.Destroy();
     m_forwardPlusGeometryGrid.Shutdown();
     m_forwardPlusParticleGrid.Shutdown();
@@ -1352,12 +1055,35 @@ void SceneRenderGraph::Destroy()
             frame = {};
         }
         rhiDevice.Release(m_perViewLayout);
-        m_cameraCanonicalLights.Shutdown();
-        m_vkCore->DestroyShadowCameraResources(m_shadowCameraResourceId);
     }
     m_perViewLayout = {};
+    m_cameraCanonicalLights.Shutdown();
+}
+
+void SceneRenderGraph::Destroy()
+{
+    CancelBufferCaptures("render view was destroyed");
+    ReleaseParticleViewBindings();
+    if (m_particleViewDiagnosticState) {
+        std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
+        for (const auto &request : m_pendingParticleViewDiagnostics) {
+            auto &snapshot = m_particleViewDiagnosticState->snapshots[request.requestId];
+            if (snapshot.status == particle::GpuParticleViewDiagnosticStatus::Pending) {
+                snapshot.status = particle::GpuParticleViewDiagnosticStatus::Failed;
+                snapshot.error = "Particle view render graph was destroyed before diagnostics were recorded";
+            }
+        }
+    }
+    m_pendingParticleViewDiagnostics.clear();
+    m_particleCullers.clear();
+    m_particleSorters.clear();
+    RetireImportedTextureAssets();
+    m_importedTextureBindings.clear();
+    ReleaseViewGpuResources();
+    m_temporalHistories.clear();
+    if (m_vkCore)
+        m_vkCore->DestroyShadowCameraResources(m_shadowCameraResourceId);
     m_shadowCameraResourceId = 0;
-    m_transientResources.clear();
     m_parameterBlocks.clear();
     m_submittedParameterBlocks.clear();
     ++m_parameterBlockGeneration;
@@ -1375,6 +1101,9 @@ void SceneRenderGraph::Destroy()
     m_vkCore = nullptr;
     m_sceneTarget = nullptr;
     m_screenTarget = nullptr;
+    m_viewportWorkTarget.reset();
+    m_viewportGeneration.reset();
+    m_viewport.Reset();
     m_outputTarget.reset();
     m_outputGeneration.reset();
     m_outputTexture.reset();
@@ -1591,7 +1320,6 @@ void SceneRenderGraph::SetCameraInvertCulling(bool invert)
     if (m_cameraInvertCulling == invert)
         return;
     m_cameraInvertCulling = invert;
-    m_cameraHistoryValid = false;
     InvalidateTemporalHistory();
 }
 
@@ -1622,22 +1350,24 @@ void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &
         cameraCut = glm::dot(cameraDelta, cameraDelta) > kCameraCutDistance * kCameraCutDistance ||
                     glm::dot(previousForward, currentForward) < kCameraCutDirectionCosine || projectionDelta > 1e-3f;
     }
-    if (cameraCut) {
-        m_cameraHistoryValid = false;
+    if (cameraCut)
         InvalidateTemporalHistory();
-    }
 
     m_cachedCamera = camera;
     m_cachedCameraHistoryRevision = historyRevision;
     m_cachedView = view;
     m_drawView = view;
     m_cachedUnjitteredProj = proj;
-    m_temporalJitterNdc = m_pythonGraphDesc.temporalJitter
+    m_hasCachedCameraVP = true;
+    UpdateTemporalProjection();
+}
+
+void SceneRenderGraph::UpdateTemporalProjection()
+{
+    m_temporalJitterNdc = m_hasCachedCameraVP && m_pythonGraphValid && m_pythonGraphDesc.temporalJitter
                               ? ComputeTemporalJitterNdc(m_temporalSampleIndex, m_width, m_height)
                               : glm::vec2(0.0f);
-    m_cachedProj = ProjectionForPass(proj, m_temporalJitterNdc, false);
-    m_hasCachedCameraVP = true;
-    (void)StageCameraMatrices(view, m_cachedProj);
+    m_cachedProj = ProjectionForPass(m_cachedUnjitteredProj, m_temporalJitterNdc, false);
 }
 
 glm::vec2 SceneRenderGraph::ComputeTemporalJitterNdc(uint32_t sampleIndex, uint32_t width, uint32_t height)
@@ -1680,7 +1410,8 @@ glm::mat4 SceneRenderGraph::ProjectionForPass(const glm::mat4 &projection, const
 bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj,
                                            const glm::mat4 *previousViewProj)
 {
-    if (!m_vkCore || !m_cachedCamera)
+    m_cameraMatricesStaged = false;
+    if (!m_vkCore || !m_cachedCamera || !EnsureViewGpuResources())
         return false;
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
@@ -1726,6 +1457,7 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
         INXLOG_ERROR("SceneRenderGraph: failed to upload editor overlay camera UBO");
         return false;
     }
+    m_cameraMatricesStaged = true;
     return true;
 }
 
@@ -1742,57 +1474,36 @@ void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const g
     m_cameraLightCollector.SetAmbientLinear(environmentLighting.ambientSkyColor,
                                             environmentLighting.ambientEquatorColor,
                                             environmentLighting.ambientGroundColor);
-    const lighting::ShadowDepthRange visibleDepthRange =
-        m_hasCachedDrawCalls ? VisibleShadowDepthRange(camera, m_cachedRenderers.DrawCalls())
-                             : lighting::ShadowDepthRange{};
-    m_cameraLightCollector.ComputeShadowVP(scene, cameraPosition, static_cast<float>(GetShadowMapResolution()), camera,
-                                           visibleDepthRange);
+    if (m_renderView.kind != rhi::RenderViewKind::Preview) {
+        const lighting::ShadowDepthRange visibleDepthRange =
+            m_hasCachedDrawCalls ? VisibleShadowDepthRange(camera, m_cachedRenderers.DrawCalls())
+                                 : lighting::ShadowDepthRange{};
+        m_cameraLightCollector.ComputeShadowVP(scene, cameraPosition, static_cast<float>(GetShadowMapResolution()),
+                                               camera, visibleDepthRange);
+    }
     m_cameraLightCollector.BuildShaderLightingUBO();
+}
 
+bool SceneRenderGraph::UploadCameraLighting()
+{
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     const ShaderLightingUBO &lighting = m_cameraLightCollector.GetShaderLightingUBO();
     if (!frame.lighting.IsValid() || !rhiDevice.WriteBuffer(frame.lighting, 0, &lighting, sizeof(lighting))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local LightingUBO");
+        return false;
     }
     if (!m_cameraCanonicalLights.Update(frameIndex, m_cameraLightCollector.GetCanonicalLightSnapshot())) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local canonical lights");
+        return false;
     }
+    return true;
 }
 
 // ============================================================================
 // Resource management
 // ============================================================================
-
-vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &name, uint32_t width, uint32_t height,
-                                                            VkFormat format, bool isTransient)
-{
-    if (!m_renderGraph) {
-        INXLOG_ERROR("SceneRenderGraph::CreateTransientTexture: RenderGraph not initialized");
-        return {};
-    }
-
-    // Check if resource already exists
-    auto it = m_transientResources.find(name);
-    if (it != m_transientResources.end()) {
-        INXLOG_WARN("SceneRenderGraph::CreateTransientTexture: Resource '", name,
-                    "' already exists, returning existing handle");
-        return it->second;
-    }
-
-    // ========================================================================
-    // Allocate a real ResourceData entry in the underlying RenderGraph so
-    // the returned handle can be resolved by ResolveTextureView().
-    // ========================================================================
-    vk::ResourceHandle handle =
-        m_renderGraph->RegisterTransientTexture(name, width, height, format, VK_SAMPLE_COUNT_1_BIT, isTransient);
-
-    m_transientResources[name] = handle;
-    m_needsRebuild = true;
-
-    return handle;
-}
 
 // ============================================================================
 // RenderGraph topology defined from Python
@@ -1824,64 +1535,6 @@ MaterialPassPipelineDescriptor SceneRenderGraph::GetEditorOverlayMaterialPass() 
     return descriptor;
 }
 
-MaterialPassPipelineDescriptor SceneRenderGraph::ResolveMaterialPass(const RenderGraphDescription &graph,
-                                                                     const GraphPassDesc &pass,
-                                                                     const rhi::RenderViewContext &view,
-                                                                     bool invertCulling)
-{
-    MaterialPassPipelineDescriptor result;
-    const auto *command = PrimaryCommand(pass);
-    result.target = command ? command->shaderTarget : ShaderCompileTarget::Forward;
-    // Light-space geometry is not reflected with the observing camera.
-    result.invertCulling = invertCulling && command && command->type != GraphCommandType::DrawShadowCasters;
-    result.samples = view.samples;
-    const auto texture = [&](const std::string &name) -> const GraphTextureDesc & {
-        const auto found = std::find_if(graph.textures.begin(), graph.textures.end(),
-                                        [&](const GraphTextureDesc &item) { return item.name == name; });
-        if (found == graph.textures.end())
-            throw std::invalid_argument("Material pass references undeclared texture '" + name + "'");
-        return *found;
-    };
-    const auto samples = [&](const GraphTextureDesc &item) {
-        return item.isBackbuffer || item.IsViewDepth() || item.samples == 0
-                   ? view.samples
-                   : ToRhiSampleCount(static_cast<int>(item.samples));
-    };
-    auto colors = pass.writeColors;
-    std::sort(colors.begin(), colors.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-    for (const auto &[slot, name] : colors) {
-        (void)slot;
-        const auto &item = texture(name);
-        result.colorFormats.push_back(item.isBackbuffer ? view.colorFormat : item.format);
-        result.samples = samples(item);
-    }
-    // The topology builder's implicit color target applies only to a pass
-    // without an explicit depth output; depth-only really means depth-only.
-    if (colors.empty() && pass.writeDepth.empty() && result.target != ShaderCompileTarget::Depth &&
-        result.target != ShaderCompileTarget::Shadow)
-        result.colorFormats = {view.colorFormat};
-    const auto setDepth = [&](const GraphTextureDesc &item) {
-        result.depthFormat = item.IsViewDepth() ? view.depthFormat : item.format;
-        result.samples = samples(item);
-    };
-    if (!pass.writeDepth.empty()) {
-        setDepth(texture(pass.writeDepth));
-    } else {
-        for (const auto &name : pass.readTextures) {
-            if (command && std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
-                                       [&](const auto &binding) { return binding.second == name; }))
-                continue;
-            const auto &item = texture(name);
-            if (item.isDepth) {
-                setDepth(item);
-                result.depthReadOnly = true;
-                break;
-            }
-        }
-    }
-    return result;
-}
-
 bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
     if (!m_vkCore || !m_sceneTarget) {
@@ -1889,28 +1542,62 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return false;
     }
 
-    RenderGraphDescription normalizedDesc = desc;
-    if (HasOutputTexture()) {
-        normalizedDesc.msaaSamples = static_cast<int>(m_renderView.samples);
-        if (!normalizedDesc.linearOutputTexture.empty()) {
-            if (normalizedDesc.linearOutputPassCount > normalizedDesc.passes.size())
-                throw std::invalid_argument("RenderGraph linear output boundary exceeds its pass list");
-            normalizedDesc.passes.resize(normalizedDesc.linearOutputPassCount);
-            normalizedDesc.outputTexture = normalizedDesc.linearOutputTexture;
-        }
-        normalizedDesc.passes.erase(std::remove_if(normalizedDesc.passes.begin(), normalizedDesc.passes.end(),
-                                                   [](const GraphPassDesc &pass) {
-                                                       const auto *command = PrimaryCommand(pass);
-                                                       return command &&
-                                                              command->type == GraphCommandType::DrawScreenUI;
-                                                   }),
-                                    normalizedDesc.passes.end());
+    const auto rejectGraph = [&](RenderGraphDescription attempted) {
+        CancelBufferCaptures("render graph was rejected");
+        RetireWorkInstances();
+        if (m_renderGraph)
+            m_renderGraph->Reset();
+        m_liveBufferInputs.clear();
+        m_pythonGraphDesc = std::move(attempted);
+        m_hasPythonGraph = true;
+        m_pythonGraphValid = false;
+        m_graphBuilt = false;
+        m_needsRebuild = true;
+        m_pythonGraphSourceRevision = 0;
+        m_pythonCallbacks.clear();
+        m_pythonMaterialPasses.clear();
+        m_materialTextureReads.clear();
+        m_materialBufferReads.clear();
+        m_hasShadowCasterPass = false;
+        m_parameterBlocks.clear();
+        m_submittedParameterBlocks.clear();
+        ++m_resourceAccessRevision;
+        return false;
+    };
+    RenderGraphDescription normalizedDesc;
+    try {
+        normalizedDesc = NormalizeRenderGraphForOutput(desc, HasOutputTexture(), m_renderView.samples);
+    } catch (const std::invalid_argument &error) {
+        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: ", error.what());
+        return rejectGraph(desc);
     }
+    for (auto &buffer : normalizedDesc.buffers)
+        if (buffer.input)
+            buffer.computeBuffer = buffer.input->GetValue();
     const auto callbackTarget = GetEditorOverlayMaterialPass().RenderingSignature();
-    const auto callbackSamples = m_renderView.samples;
-    const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(normalizedDesc, m_pythonGraphDesc);
+    const bool topologyChanged = !m_pythonGraphValid || !RenderGraphTopologyEquals(normalizedDesc, m_pythonGraphDesc);
     const bool callbackContractChanged =
         m_pythonCallbackTarget != callbackTarget || m_pythonCallbackInvertCulling != m_cameraInvertCulling;
+    const auto publishParameterValues = [&] {
+        std::vector<GraphParameterBlockUpdate> updates;
+        for (const auto &pass : normalizedDesc.passes) {
+            const auto *command = pass.PrimaryCommand();
+            if (command && !command->parameterBlock.empty())
+                updates.push_back({command->parameterBlock, 0, command->pushConstants});
+        }
+        UpdateParameterBlocks(updates);
+    };
+    if (!normalizedDesc.RenderTextureLayoutsCurrent()) {
+        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: RenderTexture attachment layout changed");
+        return rejectGraph(std::move(normalizedDesc));
+    }
+    if (!ValidateOutputTextureAliases(normalizedDesc))
+        return rejectGraph(std::move(normalizedDesc));
+    if (topologyChanged || callbackContractChanged ||
+        (desc.sourceRevision != 0 && desc.sourceRevision != m_pythonGraphSourceRevision)) {
+        CancelBufferCaptures("render graph definition changed");
+        ++m_bufferGeneration;
+    }
     if (!topologyChanged && !callbackContractChanged) {
         // Replaying an already-applied description must not clobber live
         // parameter blocks: effect edits arrive through UpdateParameterBlocks
@@ -1918,14 +1605,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         // constants are only authoritative when a genuinely new Python build
         // (fresh source revision) is being applied.
         if (desc.sourceRevision == 0 || desc.sourceRevision != m_pythonGraphSourceRevision) {
-            std::vector<GraphParameterBlockUpdate> updates;
-            for (const auto &pass : normalizedDesc.passes) {
-                const GraphCommandDesc *command = PrimaryCommand(pass);
-                if (command && !command->parameterBlock.empty()) {
-                    updates.push_back({command->parameterBlock, 0, command->pushConstants});
-                }
-            }
-            UpdateParameterBlocks(updates);
+            publishParameterValues();
         }
         if (desc.sourceRevision != 0) {
             m_pythonGraphSourceRevision = desc.sourceRevision;
@@ -1934,15 +1614,20 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return true;
     }
 
-    if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc, static_cast<uint32_t>(callbackSamples))) {
-        return false;
+    if (!ValidateRenderGraphDescription(normalizedDesc, m_renderView)) {
+        return rejectGraph(std::move(normalizedDesc));
     }
+
+    // A cold asset can postpone the replacement graph's build.
+    m_graphBuilt = false;
+    RetireWorkInstances();
+    m_renderGraph->Reset();
 
     if (topologyChanged) {
         ++m_resourceAccessRevision;
         std::unordered_map<std::string, RuntimeParameterBlock> blocks;
         for (const auto &pass : normalizedDesc.passes) {
-            const GraphCommandDesc *command = PrimaryCommand(pass);
+            const GraphCommandDesc *command = pass.PrimaryCommand();
             if (!command || command->parameterBlock.empty())
                 continue;
             RuntimeParameterBlock block;
@@ -1957,13 +1642,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_parameterBlocks = std::move(blocks);
         ++m_parameterBlockGeneration;
     } else if (desc.sourceRevision != m_pythonGraphSourceRevision) {
-        std::vector<GraphParameterBlockUpdate> updates;
-        for (const auto &pass : normalizedDesc.passes) {
-            const GraphCommandDesc *command = PrimaryCommand(pass);
-            if (command && !command->parameterBlock.empty())
-                updates.push_back({command->parameterBlock, 0, command->pushConstants});
-        }
-        UpdateParameterBlocks(updates);
+        publishParameterValues();
     }
 
     m_pythonCallbacks.clear();
@@ -1972,7 +1651,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 
     InxVkCoreModular *vkCore = m_vkCore;
     for (const auto &passDesc : normalizedDesc.passes) {
-        const GraphCommandDesc *command = PrimaryCommand(passDesc);
+        const GraphCommandDesc *command = passDesc.PrimaryCommand();
         if (!command) {
             m_pythonCallbacks[passDesc.name] = [](vk::RenderContext &, uint32_t, uint32_t) {};
             continue;
@@ -2010,7 +1689,9 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             case GraphCommandType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
                                           m_drawView, queueMin, queueMax, sortMode, overrideMaterial, passTag,
-                                          &materialPass, materialFilter, rendererSelection.get());
+                                          &materialPass, materialFilter, rendererSelection.get(), 0, false,
+                                          materialPass.target == ShaderCompileTarget::Motion ? &m_motionHistory
+                                                                                             : nullptr);
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
@@ -2115,15 +1796,17 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     // Store description for BuildRenderGraph()'s topology traversal. Exact
     // repeats return before validation/callback construction above.
     if (topologyChanged) {
-        if (normalizedDesc.temporalJitter != m_pythonGraphDesc.temporalJitter)
-            InvalidateTemporalHistory();
+        m_liveBufferInputs.clear();
+        m_importedTextureBindings.clear();
         m_pythonGraphDesc = std::move(normalizedDesc);
     }
     m_hasPythonGraph = true;
+    m_pythonGraphValid = true;
     m_pythonGraphSourceRevision = desc.sourceRevision;
     m_pythonCallbackTarget = callbackTarget;
     m_pythonCallbackInvertCulling = m_cameraInvertCulling;
     if (topologyChanged || callbackContractChanged) {
+        InvalidateTemporalHistory();
         m_needsRebuild = true;
     }
     return true;
@@ -2180,15 +1863,17 @@ void SceneRenderGraph::CaptureParameterBlocksForSubmission()
 
 bool SceneRenderGraph::IsPythonGraphCurrent(uint64_t sourceRevision) const
 {
-    return sourceRevision != 0 && m_hasPythonGraph && m_pythonGraphSourceRevision == sourceRevision && m_vkCore &&
+    return sourceRevision != 0 && m_pythonGraphValid && m_pythonGraphSourceRevision == sourceRevision && m_vkCore &&
            m_pythonCallbackTarget.colorFormats[0] == m_renderView.colorFormat &&
            m_pythonCallbackTarget.depthFormat == m_renderView.depthFormat &&
            m_pythonCallbackTarget.samples == m_renderView.samples &&
-           m_pythonCallbackInvertCulling == m_cameraInvertCulling;
+           m_pythonCallbackInvertCulling == m_cameraInvertCulling && m_pythonGraphDesc.RenderTextureLayoutsCurrent();
 }
 
 uint32_t SceneRenderGraph::GetShadowMapResolution() const
 {
+    if (m_hasPythonGraph && !m_pythonGraphValid)
+        return 0;
     for (const auto &pass : m_pythonGraphDesc.passes) {
         const bool drawsShadows =
             std::any_of(pass.commands.begin(), pass.commands.end(), [](const GraphCommandDesc &command) {
@@ -2203,15 +1888,7 @@ uint32_t SceneRenderGraph::GetShadowMapResolution() const
         if (texture == m_pythonGraphDesc.textures.end())
             return 0;
 
-        uint32_t width = texture->width;
-        uint32_t height = texture->height;
-        if (texture->sizeDivisor > 0u) {
-            width = std::max(m_width / texture->sizeDivisor, 1u);
-            height = std::max(m_height / texture->sizeDivisor, 1u);
-        } else {
-            width = width > 0u ? width : m_width;
-            height = height > 0u ? height : m_height;
-        }
+        const auto [width, height] = texture->ResolveExtent(m_width, m_height);
         return width == height ? width : 0u;
     }
     return 0;
@@ -2223,6 +1900,8 @@ uint32_t SceneRenderGraph::GetShadowMapResolution() const
 
 void SceneRenderGraph::RefreshMaterialTextureReads()
 {
+    if (m_hasPythonGraph && !m_pythonGraphValid)
+        return;
     std::vector<MaterialTextureRead> reads;
     std::vector<MaterialBufferRead> bufferReads;
     std::vector<const DrawCall *> resourceDraws;
@@ -2235,10 +1914,51 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
         if (draw.frustumVisible && (hasMaterialResources || hasRendererBuffers))
             resourceDraws.push_back(&draw);
     }
-    // Shadow draws use the engine shadow pipeline, not material samplers.
-    // Scene draws use the camera's submitted (layer/frustum filtered) list.
+    const auto readBuffers = [&](const std::string &pass, const DrawCall &draw, bool parameters) {
+        if (draw.material)
+            for (const auto &[name, buffer] : draw.material->GetBuffers())
+                if (buffer)
+                    bufferReads.push_back({pass, buffer});
+        if (parameters && draw.parameterBlock)
+            for (const auto &[name, buffer] : draw.parameterBlock->buffers)
+                if (buffer)
+                    bufferReads.push_back({pass, buffer});
+    };
+    if (m_outlinePassesEnabled && m_outlineRenderer)
+        for (const auto &draw : GetCachedDrawCalls())
+            if (m_outlineRenderer->IsOutlinedObject(draw.objectId))
+                readBuffers("__EditorOutlineMask", draw, true);
     for (const auto &pass : m_pythonGraphDesc.passes) {
-        const auto *command = PrimaryCommand(pass);
+        const auto *command = pass.PrimaryCommand();
+        if (command && command->type == GraphCommandType::DrawShadowCasters) {
+            const auto &shadowViews = m_cameraLightCollector.GetShadowFrame().views;
+            if (shadowViews.empty())
+                continue;
+            uint32_t shadowLayers = 0;
+            for (const auto &view : shadowViews)
+                shadowLayers |= view.cullingMask;
+            for (const auto &draw : GetCachedShadowDrawCalls()) {
+                if (draw.castsShadows && (draw.layerMask & shadowLayers) && draw.material &&
+                    draw.material->GetRenderQueue() >= command->queueMin &&
+                    draw.material->GetRenderQueue() <= command->queueMax) {
+                    const auto &textures = draw.material->GetRenderTextures();
+                    if (!textures.empty()) {
+                        const auto *material = m_vkCore->ResolveMeshMaterial(draw.material);
+                        const auto program =
+                            material ? m_vkCore->ShareShaderProgramArtifact(material->programKey.stages) : nullptr;
+                        if (program && program->FindVariant(ShaderCompileTarget::Shadow))
+                            for (const auto &binding : program->properties) {
+                                if (!binding.IsTexture())
+                                    continue;
+                                if (const auto texture = textures.find(binding.name); texture != textures.end())
+                                    reads.push_back({pass.name, texture->second, texture->second->Acquire()});
+                            }
+                    }
+                    readBuffers(pass.name, draw, false);
+                }
+            }
+            continue;
+        }
         if (command && m_screenUIRenderer &&
             (command->type == GraphCommandType::DrawWorldUI ||
              (command->type == GraphCommandType::DrawScreenUI && m_screenUIOutput &&
@@ -2336,7 +2056,17 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
         return std::less<const rhi::ComputeBuffer *>{}(a.buffer.get(), b.buffer.get());
     });
     bufferReads.erase(std::unique(bufferReads.begin(), bufferReads.end()), bufferReads.end());
-    if (reads != m_materialTextureReads || bufferReads != m_materialBufferReads) {
+    const bool bufferSourcesChanged = bufferReads != m_materialBufferReads;
+    if (reads != m_materialTextureReads || bufferSourcesChanged) {
+        // A pending asset can leave the old compiled graph in service. It can
+        // keep running only while it covers every current sampled allocation.
+        if (bufferSourcesChanged || (m_graphBuilt && std::any_of(reads.begin(), reads.end(), [this](const auto &read) {
+                                         const auto bound = m_drawTextureInputs.find(read.passName);
+                                         return bound == m_drawTextureInputs.end() ||
+                                                std::find(bound->second.begin(), bound->second.end(),
+                                                          read.generation) == bound->second.end();
+                                     })))
+            m_graphBuilt = false;
         m_materialTextureReads = std::move(reads);
         m_materialBufferReads = std::move(bufferReads);
         m_needsRebuild = true;
@@ -2344,47 +2074,184 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
     }
 }
 
-rhi::SubmissionTicket
-SceneRenderGraph::GetLatestComputeBufferWriteSubmission(rhi::PipelineStage &consumerStages) const noexcept
+void SceneRenderGraph::RetireComputeBufferBindings()
 {
-    rhi::SubmissionTicket latest{};
-    consumerStages = rhi::PipelineStage::None;
-    const auto include = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
-        if (!buffer || !m_renderGraph)
-            return;
-        const auto stages = m_renderGraph->GetImportedBufferAccessStages(buffer->GetBuffer());
-        const auto ticket = buffer->GetLastWriteSubmission();
-        if (!ticket.IsValid() || stages == rhi::PipelineStage::None)
-            return;
-        if (!latest.IsValid() || ticket.serial > latest.serial)
-            latest = ticket;
-        consumerStages = consumerStages | stages;
-    };
+    if (m_computeBufferReads.empty())
+        return;
+    auto retired = std::move(m_computeBufferReads);
+    if (m_vkCore)
+        m_vkCore->GetRetirementQueue().Retire([retired = std::move(retired)]() mutable { retired.clear(); });
+}
+
+static rhi::QueueRole GraphBufferWriter(const rhi::ComputeBufferAllocation &allocation)
+{
+    return allocation.GetLastWriteSubmission().IsValid() ? allocation.GetLastWriterQueue() : rhi::QueueRole::Graphics;
+}
+
+void SceneRenderGraph::DeclareMaterialBufferReads(vk::PassBuilder &builder, const std::string &passName)
+{
     for (const auto &read : m_materialBufferReads) {
+        if (read.passName != passName)
+            continue;
+        const auto &allocation = m_computeBufferReads.at(read.buffer.get());
+        const auto handle =
+            builder.ImportBuffer("__MaterialBuffer/" + passName, allocation->GetBuffer(), allocation->GetByteSize());
+        if (!handle.IsValid())
+            throw std::runtime_error("Material storage buffer could not be imported into the render graph");
+        m_materialBufferImports.emplace_back(handle, read.buffer.get());
+        m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::MemoryWrite,
+                                               rhi::PipelineStage::AllCommands, GraphBufferWriter(*allocation));
+        builder.ReadStorageBuffer(handle, rhi::PipelineStage::AllGraphics);
+    }
+}
+
+rhi::ComputeBufferBindings SceneRenderGraph::CaptureComputeBufferReads() const
+{
+    rhi::ComputeBufferBindings reads;
+    const auto include = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+        if (buffer)
+            reads.emplace(buffer.get(), buffer->GetAllocation());
+    };
+    for (const auto &read : m_materialBufferReads)
         include(read.buffer);
-    }
-    for (const auto &buffer : m_pythonGraphDesc.buffers) {
+    for (const auto &buffer : m_pythonGraphDesc.buffers)
         include(buffer.computeBuffer);
+    for (const auto &[name, owner] : m_graphBufferOwners)
+        include(owner);
+    return reads;
+}
+
+bool SceneRenderGraph::RefreshComputeBufferBindings(bool &prepared)
+{
+    bool inputChanged = false;
+    for (auto &buffer : m_pythonGraphDesc.buffers) {
+        if (buffer.input && buffer.computeBuffer != buffer.input->GetValue()) {
+            buffer.computeBuffer = buffer.input->GetValue();
+            inputChanged = true;
+        }
     }
-    return latest;
+    // Static graph validation checks layout. Every actual frame checks its
+    // captured external value, including unchanged graph descriptions.
+    for (const auto &buffer : m_pythonGraphDesc.buffers) {
+        if (!buffer.computeBuffer)
+            continue;
+        const auto allocation = buffer.computeBuffer->GetAllocation();
+        const auto producer = allocation->GetLastWriteSubmission();
+        // Typed compute allocations support ordinary graph reads. Indirect
+        // commands additionally require that capability on the actual value.
+        const bool indirect = (buffer.usage & static_cast<uint32_t>(GraphBufferUsage::Indirect)) != 0;
+        if (!producer.IsValid() || producer.device != allocation->GetBuffer().Device() ||
+            !allocation->HasInitializedRange(buffer.byteOffset, buffer.byteSize) ||
+            (indirect && !rhi::HasBufferUsage(allocation->GetStorageDesc().usage, rhi::BufferUsageFlags::Indirect))) {
+            INXLOG_ERROR("Graph buffer '", buffer.name, "' lacks an accepted range or the required indirect usage");
+            m_graphBuilt = false;
+            m_needsRebuild = true;
+            return false;
+        }
+    }
+
+    const bool writesPinned =
+        std::any_of(m_graphBufferWrites.begin(), m_graphBufferWrites.end(), [this](const auto &name) {
+            const auto owner = m_graphBufferOwners.find(name);
+            return owner != m_graphBufferOwners.end() && owner->second->GetAllocation()->IsReadProtected();
+        });
+    if (m_graphBuilt && !inputChanged && !writesPinned && CaptureComputeBufferReads() == m_computeBufferReads)
+        return true;
+
+    m_graphBuilt = false;
+    if (m_needsRebuild)
+        return true;
+    if (!PrepareGraphBuffers())
+        return false;
+    prepared = true;
+
+    std::vector<vk::RenderGraph::ImportedBufferBinding> bindings;
+    bindings.reserve(m_graphBufferImports.size() + m_materialBufferImports.size());
+    const auto bind = [&](vk::ResourceHandle handle, const rhi::ComputeBuffer &owner, bool graphLocal) {
+        const auto &allocation = m_computeBufferReads.at(&owner);
+        bindings.push_back({handle, allocation->GetBuffer(), GraphBufferWriter(*allocation), graphLocal});
+    };
+    for (const auto &[handle, index] : m_graphBufferImports) {
+        const auto owner = ResolveGraphBufferOwner(m_pythonGraphDesc.buffers[index]);
+        bind(handle, *owner, owner->GetAllocation()->IsGraphWritable() && !owner->IsFrozen());
+    }
+    for (const auto &[handle, owner] : m_materialBufferImports)
+        bind(handle, *owner, false);
+    m_graphBuilt = m_renderGraph->RebindImportedBuffers(bindings);
+    m_needsRebuild = !m_graphBuilt;
+    return true;
+}
+
+std::shared_ptr<void> SceneRenderGraph::AcquireComputeReadValues() const
+{
+    if (m_computeBufferReads.empty())
+        return {};
+    auto values = std::make_shared<std::vector<std::shared_ptr<rhi::ComputeBufferState>>>();
+    std::unordered_set<const rhi::ComputeBufferAllocation *> included;
+    const auto include = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+        const auto &allocation = m_computeBufferReads.at(buffer.get());
+        if (m_renderGraph->GetImportedBufferAccessStages(allocation->GetBuffer()) != rhi::PipelineStage::None &&
+            included.insert(allocation.get()).second)
+            values->push_back(std::make_shared<rhi::ComputeBufferState>(buffer->GetDesc(), allocation, true));
+    };
+    for (const auto &read : m_materialBufferReads)
+        include(read.buffer);
+    for (const auto &buffer : m_pythonGraphDesc.buffers)
+        if (buffer.computeBuffer)
+            include(buffer.computeBuffer);
+    for (const auto &[name, instance] : m_workInstances) {
+        const auto &slots = instance->GetRecipe().GetSlots();
+        for (size_t index = 0; index < slots.size(); ++index)
+            if (slots[index].external)
+                include(instance->GetBuffers()[index]);
+    }
+    return values->empty() ? nullptr : values;
+}
+
+std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependencies() const
+{
+    std::vector<rhi::SubmissionDependency> dependencies;
+    if (!m_graphBuilt || !m_renderGraph || (m_hasPythonGraph && !m_pythonGraphValid))
+        return dependencies;
+    for (const auto &[owner, allocation] : m_computeBufferReads) {
+        const auto stages = m_renderGraph->GetImportedBufferAccessStages(allocation->GetBuffer());
+        const auto ticket = allocation->GetLastWriteSubmission();
+        if (ticket.IsValid() && stages != rhi::PipelineStage::None)
+            dependencies.push_back({ticket, stages});
+    }
+    return dependencies;
 }
 
 void SceneRenderGraph::EnsureGraphBuilt()
 {
+    if (m_hasPythonGraph && !m_pythonGraphValid) {
+        m_graphBuilt = false;
+        return;
+    }
     if (!m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
+        return;
+    }
+
+    // Only views entering actual preparation allocate GPU resources. Keep the
+    // staged lighting current even when a later rebuild waits on an asset.
+    if (!EnsureViewGpuResources() || !UploadCameraLighting()) {
+        m_graphBuilt = false;
+        m_needsRebuild = true;
         return;
     }
 
     // Culling is submitted after the Python graph. Discover runtime material
     // inputs here, before graph compilation and cross-camera scheduling.
     RefreshMaterialTextureReads();
+    if (m_bufferProofClearFlags != m_cameraClearFlags && RequiresGraphBufferProof(m_pythonGraphDesc))
+        m_needsRebuild = true;
 
     uint64_t worldUIDepthSignature = 0;
     if (m_screenUIRenderer) {
         const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
         for (size_t passIndex = 0; passIndex < m_pythonGraphDesc.passes.size(); ++passIndex) {
             const auto &pass = m_pythonGraphDesc.passes[passIndex];
-            const auto *command = PrimaryCommand(pass);
+            const auto *command = pass.PrimaryCommand();
             if (!command || command->type != GraphCommandType::DrawWorldUI)
                 continue;
             const uint32_t mask = cameraMask & command->worldUILayerMask;
@@ -2411,7 +2278,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
         std::optional<WorldUIDepthReplay> replay;
         const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
         for (const auto &pass : m_pythonGraphDesc.passes) {
-            const auto *command = PrimaryCommand(pass);
+            const auto *command = pass.PrimaryCommand();
             if (!command || command->type != GraphCommandType::DrawWorldUI ||
                 !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraMask & command->worldUILayerMask))
                 continue;
@@ -2462,22 +2329,20 @@ void SceneRenderGraph::EnsureGraphBuilt()
         }
     }
 
-    for (auto &texture : m_pythonGraphDesc.textures) {
-        if (texture.role == GraphTextureRole::Asset) {
-            const uint64_t currentVersion = AssetRegistry::Instance().GetAssetVersion(texture.assetGuid);
-            const auto found = m_graphTextureAssetVersions.find(texture.assetGuid);
-            if (found == m_graphTextureAssetVersions.end() || found->second != currentVersion)
-                m_needsRebuild = true;
+    const auto &assetRegistry = AssetRegistry::Instance();
+    bool persistentImportsChanged = false;
+    for (const auto &texture : m_pythonGraphDesc.textures) {
+        if (texture.role != GraphTextureRole::Asset && texture.role != GraphTextureRole::Persistent)
             continue;
-        }
-        if (texture.role != GraphTextureRole::Persistent)
-            continue;
-        const auto generation = texture.renderTexture->Acquire();
-        const auto found = m_persistentTextureRevisions.find(texture.renderTexture.get());
-        if (found == m_persistentTextureRevisions.end() || found->second != generation->revision) {
-            texture.width = generation->width;
-            texture.height = generation->height;
+        const bool asset = texture.role == GraphTextureRole::Asset;
+        const uint64_t revision =
+            asset ? assetRegistry.GetAssetVersion(texture.assetGuid) : texture.renderTexture->Acquire()->revision;
+        const auto found = m_importedTextureBindings.find(texture.name);
+        // The content change can precede the next CPU/GPU publication by several frames.
+        if (found == m_importedTextureBindings.end() || found->second.revision != revision ||
+            (asset && found->second.contentGeneration != assetRegistry.GetAssetContentGeneration(texture.assetGuid))) {
             m_needsRebuild = true;
+            persistentImportsChanged |= !asset;
         }
     }
 
@@ -2510,8 +2375,15 @@ void SceneRenderGraph::EnsureGraphBuilt()
     if (m_width != m_sceneTarget->GetWidth() || m_height != m_sceneTarget->GetHeight()) {
         m_width = m_sceneTarget->GetWidth();
         m_height = m_sceneTarget->GetHeight();
+        m_renderView.width = m_width;
+        m_renderView.height = m_height;
+        m_renderGraph->SetRenderView(m_renderView);
         m_needsRebuild = true;
     }
+
+    bool buffersPrepared = false;
+    if (!RefreshComputeBufferBindings(buffersPrepared))
+        return;
 
     // Asset publication is asynchronous. Do not reset a working graph while a
     // cold or reimported texture revision is still uploading; keep executing
@@ -2525,6 +2397,10 @@ void SceneRenderGraph::EnsureGraphBuilt()
             const auto resolved = m_vkCore->ResolveTextureForGraph(texture.assetGuid, texture.isVolume, false);
             if (resolved.status == TextureResolveStatus::Pending)
                 return;
+        }
+        if (persistentImportsChanged && !ValidateRenderGraphDescription(m_pythonGraphDesc, m_renderView)) {
+            m_graphBuilt = false;
+            return;
         }
     }
 
@@ -2544,7 +2420,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
         // to the new object. Force every frame-local descriptor generation
         // to be republished after the rebuild.
         InvalidatePerViewShadowBindings();
-        BuildRenderGraph();
+        BuildRenderGraph(buffersPrepared);
         if (!m_graphBuilt)
             return;
         m_needsRebuild = false;
@@ -2557,6 +2433,8 @@ void SceneRenderGraph::EnsureGraphBuilt()
             m_graphBuilt = false;
             return;
         }
+        CacheLiveAuthorPasses();
+        ++m_resourceAccessRevision;
         const vk::ResourceHandle displayTarget =
             m_importedResolveTarget.IsValid() ? m_importedResolveTarget : m_importedColorTarget;
         m_renderView.color = m_renderGraph->ResolveRhiTextureView(displayTarget);
@@ -2587,7 +2465,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
 
 bool SceneRenderGraph::UsesForwardPlus() const
 {
-    if (!m_hasPythonGraph)
+    if (!m_pythonGraphValid)
         return false;
     for (const auto &pass : m_pythonGraphDesc.passes) {
         for (const auto &command : pass.commands) {
@@ -2608,7 +2486,7 @@ bool SceneRenderGraph::UsesForwardPlus() const
 void SceneRenderGraph::RefreshForwardPlusParticleRequirement()
 {
     m_forwardPlusParticlesRequired = false;
-    if (!m_hasPythonGraph || !m_particleDrawRegistry)
+    if (!m_pythonGraphValid || !m_particleDrawRegistry)
         return;
     for (const auto &pass : m_pythonGraphDesc.passes) {
         for (const auto &command : pass.commands) {
@@ -2750,23 +2628,26 @@ void SceneRenderGraph::RetireForwardPlusResources()
 
 bool SceneRenderGraph::PrepareSubmissionExecution()
 {
-    if (!m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
+    if (!IsGraphBuilt() || !m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
         return false;
     }
+    if (!m_graphBuffersPublished)
+        PublishGraphBuffers();
 
+    m_motionHistory.BeginFrame();
     if (m_importedColorTarget.IsValid()) {
         if (m_sceneTarget->IsMsaaEnabled()) {
             m_renderGraph->SetResourceInitialState(m_importedColorTarget, rhi::TextureLayout::ColorAttachment,
                                                    rhi::Access::ColorWrite, rhi::PipelineStage::ColorOutput);
         } else {
             m_renderGraph->SetResourceInitialState(m_importedColorTarget, rhi::TextureLayout::ShaderReadOnly,
-                                                   rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
+                                                   rhi::Access::ShaderRead, rhi::RenderTextureSampleStages);
         }
     }
 
     if (m_importedResolveTarget.IsValid()) {
         m_renderGraph->SetResourceInitialState(m_importedResolveTarget, rhi::TextureLayout::ShaderReadOnly,
-                                               rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
+                                               rhi::Access::ShaderRead, rhi::RenderTextureSampleStages);
     }
 
     if (m_importedDepthTarget.IsValid()) {
@@ -2776,12 +2657,8 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
             m_importedDepthTarget,
             sampled ? rhi::TextureLayout::DepthStencilReadOnly : rhi::TextureLayout::DepthStencilAttachment,
             sampled ? rhi::Access::ShaderRead : rhi::Access::DepthRead | rhi::Access::DepthWrite,
-            sampled ? rhi::PipelineStage::FragmentShader
-                    : rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth);
+            sampled ? rhi::RenderTextureSampleStages : rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth);
     }
-
-    if (!m_graphBuilt)
-        return false;
 
     RefreshShadowAtlasUpdateState();
 
@@ -2910,18 +2787,21 @@ bool SceneRenderGraph::CompleteSubmissionExecution(VkCommandBuffer commandBuffer
         return false;
 
     RecordParticleViewDiagnostics(commandBuffer);
-    CommitTemporalHistory();
-    ++m_executionCount;
-    m_lastExecutedBuildRevision = m_graphBuildRevision;
     return true;
 }
 
-void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
+void SceneRenderGraph::CommitSubmissionExecution()
 {
-    if (!PrepareSubmissionExecution())
-        return;
-    m_renderGraph->Execute(commandBuffer);
-    (void)CompleteSubmissionExecution(commandBuffer);
+    if (m_hasCachedCameraVP && !m_cameraMatricesStaged) {
+        InvalidateTemporalHistory();
+    } else {
+        CommitTemporalHistory();
+        CommitCameraHistory();
+        m_motionHistory.CommitFrame();
+        m_historyResetPending = false;
+    }
+    ++m_executionCount;
+    m_lastExecutedBuildRevision = m_graphBuildRevision;
 }
 
 void SceneRenderGraph::RefreshPerViewShadowDescriptor()
@@ -2989,12 +2869,13 @@ std::string SceneRenderGraph::GetDebugString() const
         "SceneRenderGraph [RenderGraph Mode] (" + std::to_string(m_width) + "x" + std::to_string(m_height) + ")\n";
     result += "Graph Built: " + std::string(m_graphBuilt ? "Yes" : "No") + "\n";
     result += "Python Graph: " + std::string(m_hasPythonGraph ? "Yes" : "No") + "\n";
+    result += "Python Graph Valid: " + std::string(m_pythonGraphValid ? "Yes" : "No") + "\n";
     if (m_hasPythonGraph) {
         result += "Passes (" + std::to_string(m_pythonGraphDesc.passes.size()) + "):\n";
         for (const auto &pass : m_pythonGraphDesc.passes) {
             result += "  " + pass.name + "\n";
         }
-        if (m_vkCore) {
+        if (m_vkCore && m_pythonGraphValid) {
             std::vector<std::string> fullscreenShaders;
             for (const auto &pass : m_pythonGraphDesc.passes) {
                 for (const auto &command : pass.commands) {
@@ -3069,16 +2950,20 @@ std::string SceneRenderGraph::GetDebugString() const
 
 void SceneRenderGraph::ImportSceneTargetResources()
 {
+    m_viewportColorPublished = false;
     if (!m_sceneTarget || !m_renderGraph) {
         return;
     }
 
-    if (m_outputGeneration) {
-        const auto attachments = m_renderGraph->ImportRenderTexture("CameraOutput", m_outputGeneration);
+    const auto generation = m_viewportGeneration ? m_viewportGeneration : m_outputGeneration;
+    if (generation) {
+        const auto attachments = m_renderGraph->ImportRenderTexture("CameraOutput", generation);
         m_importedColorTarget = attachments.color;
         m_importedDepthTarget = attachments.depth;
         m_importedResolveTarget = attachments.resolve;
         m_renderGraph->SetBackbuffer(m_importedColorTarget);
+        if (m_viewportGeneration)
+            ImportViewportDestination();
         return;
     }
 
@@ -3101,6 +2986,55 @@ void SceneRenderGraph::ImportSceneTargetResources()
     m_importedDepthTarget = m_renderGraph->ImportTexture(
         "SceneDepth", m_sceneTarget->GetDepthImage(), m_sceneTarget->GetDepthImageView(),
         m_sceneTarget->GetDepthFormat(), m_width, m_height, m_sceneTarget->GetMsaaSampleCount());
+}
+
+vk::ResourceHandle SceneRenderGraph::CopyViewportRegion(const std::string &name, vk::ResourceHandle source,
+                                                        vk::ResourceHandle destination, rhi::TextureAspect aspect,
+                                                        bool restore)
+{
+    vk::ResourceHandle written;
+    m_renderGraph->AddTransferPass(name, [=, &written](vk::PassBuilder &builder) {
+        builder.SetQueueRole(rhi::QueueRole::Graphics);
+        builder.TransferRead(source);
+        written = builder.TransferWrite(destination);
+        builder.SetSideEffect();
+        const auto target = written;
+        return [=](vk::RenderContext &context) {
+            rhi::TextureCopyRegion region;
+            region.aspect = aspect == rhi::TextureAspect::Depth &&
+                                    rhi::IsStencilFormat(m_viewport.Output()->description.depthFormat)
+                                ? rhi::TextureAspect::DepthStencil
+                                : aspect;
+            region.width = m_viewport.Width();
+            region.height = m_viewport.Height();
+            if (restore) {
+                region.sourceX = m_viewport.X();
+                region.sourceY = m_viewport.Y();
+            } else {
+                region.destinationX = m_viewport.X();
+                region.destinationY = m_viewport.Y();
+            }
+            context.GetTransferCommandEncoder().CopyTexture(context.GetTextureHandle(source),
+                                                            context.GetTextureHandle(target), region);
+        };
+    });
+    return written;
+}
+
+void SceneRenderGraph::ImportViewportDestination()
+{
+    const auto output = m_renderGraph->ImportRenderTexture("ViewportDestination", m_viewport.Output());
+    m_viewportOutputRaster = output.color;
+    m_viewportOutputColor = output.resolve.IsValid() ? output.resolve : output.color;
+    m_viewportOutputDepth = output.depth;
+    if (m_cameraClearFlags == CameraClearFlags::DepthOnly || m_cameraClearFlags == CameraClearFlags::DontClear) {
+        m_importedColorTarget = CopyViewportRegion("__ViewportRestoreColor", m_viewportOutputRaster,
+                                                   m_importedColorTarget, rhi::TextureAspect::Color, true);
+        m_renderGraph->SetBackbuffer(m_importedColorTarget);
+    }
+    if (m_cameraClearFlags == CameraClearFlags::DontClear && m_importedDepthTarget.IsValid())
+        m_importedDepthTarget = CopyViewportRegion("__ViewportRestoreDepth", m_viewportOutputDepth,
+                                                   m_importedDepthTarget, rhi::TextureAspect::Depth, true);
 }
 
 void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles)
@@ -3131,8 +3065,7 @@ void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::st
         const auto &key = requestEntry.first;
         const auto &request = requestEntry.second;
         const auto &desc = *request.read; // Pair validated when the graph is published.
-        const uint32_t width = desc.width ? desc.width : std::max(1u, m_width / std::max(1u, desc.sizeDivisor));
-        const uint32_t height = desc.height ? desc.height : std::max(1u, m_height / std::max(1u, desc.sizeDivisor));
+        const auto [width, height] = desc.ResolveExtent(m_width, m_height);
         auto &history = m_temporalHistories[key];
         if (!history.targets[0] || history.width != width || history.height != height ||
             history.format != desc.format) {
@@ -3185,14 +3118,11 @@ void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::st
 
 void SceneRenderGraph::BindTemporalHistoryResources()
 {
-    m_renderView.history = {};
     for (auto &[key, history] : m_temporalHistories) {
         const auto read = history.targets[history.readIndex]->Acquire();
         const auto write = history.targets[history.readIndex ^ 1u]->Acquire();
         m_renderGraph->UpdateImportedRenderTextureColor(history.readHandle, read);
         m_renderGraph->UpdateImportedRenderTextureColor(history.writeHandle, write);
-        if (!m_renderView.history.IsValid())
-            m_renderView.history = read->color->GetView();
     }
 }
 
@@ -3217,44 +3147,108 @@ void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, 
     m_cameraStopNaNs = stopNaNs;
 
     if (m_prevClearStateValid && m_prevCameraClearFlags != clearFlags) {
+        InvalidateTemporalHistory();
         m_needsRebuild = true;
     }
+}
+
+std::optional<GraphPassDesc> SceneRenderGraph::ResolveCameraClearOverride() const
+{
+    if (!m_hasCameraClearOverride)
+        return std::nullopt;
+    const auto persistent = [&](const std::string &name) {
+        return std::any_of(
+            m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
+            [&](const auto &texture) { return texture.name == name && texture.role == GraphTextureRole::Persistent; });
+    };
+    for (const auto &pass : m_pythonGraphDesc.passes) {
+        if (!pass.clearColor || persistent(pass.writeDepth) || persistent(pass.resolveColor) ||
+            std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
+                        [&](const auto &output) { return persistent(output.second); }))
+            continue;
+        auto effective = pass;
+        const bool writesDepth = !pass.writeDepth.empty();
+        const auto clearFlags =
+            m_renderView.kind == rhi::RenderViewKind::Preview && (m_cameraClearFlags == CameraClearFlags::DepthOnly ||
+                                                                  m_cameraClearFlags == CameraClearFlags::DontClear)
+                ? CameraClearFlags::SolidColor
+                : m_cameraClearFlags;
+        switch (clearFlags) {
+        case CameraClearFlags::Skybox:
+            effective.clearColor = true;
+            effective.clearDepth = writesDepth;
+            break;
+        case CameraClearFlags::SolidColor:
+            effective.clearColor = true;
+            effective.clearDepth = writesDepth;
+            effective.clearColorR = m_cameraBgColor.r;
+            effective.clearColorG = m_cameraBgColor.g;
+            effective.clearColorB = m_cameraBgColor.b;
+            effective.clearColorA = m_cameraBgColor.a;
+            break;
+        case CameraClearFlags::DepthOnly:
+            effective.clearColor = false;
+            effective.clearDepth = writesDepth;
+            break;
+        case CameraClearFlags::DontClear:
+            effective.clearColor = false;
+            effective.clearDepth = false;
+            break;
+        }
+        return effective;
+    }
+    return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------
 // BuildRenderGraph helpers
 // ---------------------------------------------------------------------------
 
-bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
-                                                 std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
+bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
+                                             std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
-    m_persistentTextureRevisions.clear();
+    // Camera post processing uses viewport-local images. Overlay UI and its
+    // following display-space effects operate on the composited full output.
+    // Allocate a tail-only intermediate in that domain from its first writer,
+    // rather than stretching a small camera texture over the screen later.
+    std::unordered_set<std::string> screenTextures;
+    if (m_viewportGeneration && m_screenUIOutput) {
+        std::unordered_set<std::string> writtenTextures;
+        bool screenDomain = false;
+        for (const auto &pass : m_pythonGraphDesc.passes) {
+            const auto *command = pass.PrimaryCommand();
+            if (command && command->type == GraphCommandType::DrawScreenUI && command->screenUIList != 0)
+                screenDomain = true;
+            const auto rememberWrite = [&](const std::string &name) {
+                if (!name.empty() && writtenTextures.insert(name).second && screenDomain)
+                    screenTextures.insert(name);
+            };
+            for (const auto &[slot, name] : pass.writeColors)
+                rememberWrite(name);
+            rememberWrite(pass.writeDepth);
+            rememberWrite(pass.resolveColor);
+            if (command && command->CopiesToTexture())
+                rememberWrite(command->destinationResource);
+        }
+    }
+    std::unordered_map<std::string, ImportedTextureBinding> bindings;
     m_drawTextureInputs.clear();
     for (const auto &tex : m_pythonGraphDesc.textures) {
         if (tex.role != GraphTextureRole::Persistent)
             continue;
         const auto generation = tex.renderTexture->Acquire();
         const auto attachments = m_renderGraph->ImportRenderTexture(tex.name, generation);
-        switch (tex.attachment) {
-        case GraphTextureAttachment::Color:
-            customRTHandles[tex.name] = attachments.color;
-            m_graphTextureSamplers[tex.name] = generation->ColorAttachment().GetSampler();
-            m_graphTextureFormats[tex.name] = generation->ColorAttachment().GetFormat();
-            break;
-        case GraphTextureAttachment::Depth:
-            customRTHandles[tex.name] = attachments.depth;
-            m_graphTextureSamplers[tex.name] = generation->depth->GetSampler();
-            m_graphTextureFormats[tex.name] = generation->depth->GetFormat();
-            break;
-        case GraphTextureAttachment::Resolve:
-            customRTHandles[tex.name] = attachments.resolve;
-            m_graphTextureSamplers[tex.name] = generation->color->GetSampler();
-            m_graphTextureFormats[tex.name] = generation->color->GetFormat();
-            break;
-        }
-        m_persistentTextureRevisions[tex.renderTexture.get()] = generation->revision;
+        const auto *image = ResolveGraphTextureAttachment(*generation, tex.attachment);
+        const auto handle = tex.attachment == GraphTextureAttachment::Depth ? attachments.depth
+                            : tex.attachment == GraphTextureAttachment::Resolve && attachments.resolve.IsValid()
+                                ? attachments.resolve
+                                : attachments.color;
+        customRTHandles[tex.name] = handle;
+        bindings.emplace(tex.name, ImportedTextureBinding{image->GetTexture(), image->GetSampler(), image->GetFormat(),
+                                                          generation->revision, 0, image});
     }
-    for (auto &tex : m_pythonGraphDesc.textures) {
+    const auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    for (const auto &tex : m_pythonGraphDesc.textures) {
         if (tex.role != GraphTextureRole::Asset)
             continue;
         const auto resolved = m_vkCore->ResolveTextureForGraph(tex.assetGuid, tex.isVolume, false);
@@ -3274,17 +3268,15 @@ bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
                          "' changed dimension after the graph was authored");
             return false;
         }
-        const auto asset = AssetRegistry::Instance().GetAsset<InxTexture>(tex.assetGuid);
-        if (!asset || asset->GetPixelWidth() == 0 || asset->GetPixelHeight() == 0 || asset->GetPixelDepth() == 0) {
-            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' has no current dimensions");
+        rhi::TextureDesc description;
+        if (!device.GetTextureDesc(publication->GetTexture(), description)) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' has no resident description");
             return false;
         }
-        tex.width = asset->GetPixelWidth();
-        tex.height = asset->GetPixelHeight();
-        tex.depth = asset->GetPixelDepth();
         const auto handle = m_renderGraph->ImportTexture(tex.name, publication->GetTexture(), publication->GetView(),
-                                                         rhi::ToVkFormat(publication->GetFormat()), tex.width,
-                                                         tex.height, VK_SAMPLE_COUNT_1_BIT, tex.depth, tex.isVolume);
+                                                         rhi::ToVkFormat(description.format), description.width,
+                                                         description.height, rhi::ToVkSampleCount(description.samples),
+                                                         description.depthOrLayers, tex.isVolume);
         if (!handle.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' could not be imported");
             return false;
@@ -3292,11 +3284,20 @@ bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
         m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
                                                rhi::PipelineStage::FragmentShader);
         customRTHandles[tex.name] = handle;
-        m_graphTextureSamplers[tex.name] = publication->GetSampler();
-        m_graphTextureFormats[tex.name] = publication->GetFormat();
-        m_graphTextureAssetVersions[tex.assetGuid] = publication->GetRevision();
+        bindings.emplace(tex.name,
+                         ImportedTextureBinding{publication->GetTexture(), publication->GetSampler(),
+                                                publication->GetFormat(), publication->GetRevision(),
+                                                AssetRegistry::Instance().GetAssetContentGeneration(tex.assetGuid)});
         m_graphTexturePublications.push_back(publication);
     }
+    const bool sourceReplaced = std::any_of(bindings.begin(), bindings.end(), [&](const auto &entry) {
+        const auto previous = m_importedTextureBindings.find(entry.first);
+        return previous != m_importedTextureBindings.end() && previous->second != entry.second;
+    });
+    // A pending file or upload leaves the previously bound history untouched.
+    if (sourceReplaced)
+        InvalidateTemporalHistory();
+    m_importedTextureBindings = std::move(bindings);
     for (const auto &read : m_materialTextureReads) {
         m_drawTextureInputs[read.passName].push_back(read.generation);
     }
@@ -3305,13 +3306,11 @@ bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
     for (const auto &tex : m_pythonGraphDesc.textures) {
         if (tex.IsViewDepth()) {
             customRTHandles[tex.name] = m_importedDepthTarget;
-        } else if (tex.role == GraphTextureRole::Transient && !tex.isBackbuffer) {
-            uint32_t texW = (tex.width > 0) ? tex.width : width;
-            uint32_t texH = (tex.height > 0) ? tex.height : height;
-            if (tex.sizeDivisor > 1) {
-                texW = std::max(1u, width / tex.sizeDivisor);
-                texH = std::max(1u, height / tex.sizeDivisor);
-            }
+        } else if (tex.role == GraphTextureRole::Transient) {
+            const bool screenDomain = screenTextures.find(tex.name) != screenTextures.end();
+            const auto [texW, texH] =
+                tex.ResolveExtent(screenDomain ? m_viewport.Output()->description.width : width,
+                                  screenDomain ? m_viewport.Output()->description.height : height);
             const uint32_t requestedSamples =
                 tex.samples == 0 ? static_cast<uint32_t>(m_sceneTarget->GetMsaaSampleCount()) : tex.samples;
             vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
@@ -3373,6 +3372,7 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
     vk::ResourceHandle writtenMask;
     m_renderGraph->AddPass("__EditorOutlineMask", [this, width, height, rendererList, &mask,
                                                    &writtenMask](vk::PassBuilder &builder) {
+        DeclareMaterialBufferReads(builder, "__EditorOutlineMask");
         mask = builder.ImportTexture("__EditorOutlineMaskTexture", m_sceneTarget->GetOutlineMaskImage(),
                                      m_sceneTarget->GetOutlineMaskImageView(), VK_FORMAT_R8G8B8A8_UNORM, width, height);
         if (mask.IsValid()) {
@@ -3420,7 +3420,7 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
         auto texIt = std::find_if(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
                                   [&](const GraphTextureDesc &t) { return t.name == m_pythonGraphDesc.outputTexture; });
         if (texIt != m_pythonGraphDesc.textures.end()) {
-            if (!texIt->isBackbuffer && !texIt->isDepth) {
+            if (!texIt->IsViewColor() && !texIt->IsDepth()) {
                 auto rtIt = customRTHandles.find(m_pythonGraphDesc.outputTexture);
                 if (rtIt != customRTHandles.end())
                     graphOutput = rtIt->second;
@@ -3429,11 +3429,12 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
     }
 
     vk::ResourceHandle displayTarget = m_importedColorTarget;
-    const vk::ResourceHandle msaaSource = m_importedColorTarget;
+    vk::ResourceHandle msaaSource = m_importedColorTarget;
+    vk::ResourceHandle exportDepth = m_importedDepthTarget;
     if (m_sceneTarget->IsMsaaEnabled() && msaaSource.IsValid() && m_importedResolveTarget.IsValid()) {
         const auto resolveDestination = m_importedResolveTarget;
-        const uint32_t width = m_width;
-        const uint32_t height = m_height;
+        const uint32_t width = m_viewportColorPublished ? m_viewport.Output()->description.width : m_width;
+        const uint32_t height = m_viewportColorPublished ? m_viewport.Output()->description.height : m_height;
         vk::ResourceHandle resolvedVersion;
         m_renderGraph->AddTransferPass("__SceneFinalMsaaResolve", [=, &resolvedVersion](vk::PassBuilder &builder) {
             // Vulkan image resolve requires a graphics-capable command pool,
@@ -3457,23 +3458,36 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
     if (!graphOutput.IsValid())
         graphOutput = displayTarget;
 
+    if (m_viewportGeneration && !m_viewportColorPublished) {
+        displayTarget = CopyViewportRegion("__ViewportPublishColor", graphOutput, m_viewportOutputColor,
+                                           rhi::TextureAspect::Color, false);
+        graphOutput = displayTarget;
+        if (m_sceneTarget->IsMsaaEnabled())
+            msaaSource = CopyViewportRegion("__ViewportPublishMsaa", msaaSource, m_viewportOutputRaster,
+                                            rhi::TextureAspect::Color, false);
+        if (exportDepth.IsValid())
+            exportDepth = CopyViewportRegion("__ViewportPublishDepth", exportDepth, m_viewportOutputDepth,
+                                             rhi::TextureAspect::Depth, false);
+    }
+
     if (displayTarget.IsValid()) {
         const bool preserveMsaaAttachment = m_sceneTarget->IsMsaaEnabled() && msaaSource.IsValid();
         m_renderGraph->AddPresentPass("__SceneOutputExport", [=](vk::PassBuilder &builder) {
             // Scene/Game targets are sampled by ImGui, capture and later view
             // consumers. The graph, not an out-of-band Vulkan barrier, owns
             // their published layout.
-            builder.Read(displayTarget, rhi::PipelineStage::FragmentShader);
+            builder.Read(displayTarget,
+                         m_outputTexture ? rhi::RenderTextureSampleStages : rhi::PipelineStage::FragmentShader);
             if (graphOutput.IsValid() && graphOutput != displayTarget)
                 builder.Read(graphOutput, rhi::PipelineStage::FragmentShader);
             if (preserveMsaaAttachment)
                 builder.PrepareColorAttachment(msaaSource);
-            if (m_importedDepthTarget.IsValid()) {
+            if (exportDepth.IsValid()) {
                 if (m_outputGeneration && m_outputGeneration->description.sampledDepth &&
                     m_outputGeneration->description.samples == rhi::SampleCount::One)
-                    builder.ReadSampledDepth(m_importedDepthTarget);
+                    builder.ReadSampledDepth(exportDepth, rhi::RenderTextureSampleStages);
                 else
-                    builder.PrepareDepthStencilAttachment(m_importedDepthTarget);
+                    builder.PrepareDepthStencilAttachment(exportDepth);
             }
             builder.SetSideEffect();
             return [](vk::RenderContext &) {};
@@ -3484,8 +3498,12 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
         m_renderGraph->SetOutput(graphOutput);
 }
 
-void SceneRenderGraph::BuildRenderGraph()
+void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared)
 {
+    if (m_hasPythonGraph && !m_pythonGraphValid) {
+        m_graphBuilt = false;
+        return;
+    }
     if (!m_renderGraph || !m_sceneTarget || !m_vkCore) {
         INXLOG_WARN("SceneRenderGraph::BuildRenderGraph - Missing required components");
         return;
@@ -3502,15 +3520,24 @@ void SceneRenderGraph::BuildRenderGraph()
     }
     m_renderGraph->Reset();
     m_graphBuilt = false;
+    m_authorPassIndices.clear();
+    m_executedEventPasses.clear();
+    m_graphBufferImports.clear();
+    m_materialBufferImports.clear();
+    if (!ProveGraphBufferContents())
+        return;
+    if (!buffersPrepared && !PrepareGraphBuffers()) {
+        if (m_graphStorageDeferred)
+            RetireWorkInstances();
+        return;
+    }
     m_committedShadowContentSignature = 0;
     m_pendingShadowContentSignature = 0;
     m_shadowAtlasValid = false;
     m_shadowAtlasUpdateRequired = true;
-    InvalidateTemporalHistory();
     m_renderView.color = {};
     m_renderView.depth = {};
     m_renderView.motion = {};
-    m_renderView.history = {};
     // The renderer has waited only for the current frame slot. Clear both
     // geometry and particle views for that slot before retiring graph-owned
     // shadow images; the other slot is republished after its own fence.
@@ -3539,20 +3566,6 @@ void SceneRenderGraph::BuildRenderGraph()
     m_shadowMapInputIsDepth = false;
     m_visibleRendererList = {};
     m_shadowRendererList = {};
-
-    const auto declareMaterialBufferReads = [this](vk::PassBuilder &builder, const std::string &passName) {
-        for (const auto &read : m_materialBufferReads) {
-            if (read.passName != passName || !read.buffer)
-                continue;
-            const auto handle = builder.ImportBuffer("__MaterialBuffer/" + passName, read.buffer->GetBuffer(),
-                                                     read.buffer->GetByteSize());
-            if (!handle.IsValid())
-                throw std::runtime_error("Material storage buffer could not be imported into the render graph");
-            m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::MemoryWrite,
-                                                   rhi::PipelineStage::AllCommands, rhi::QueueRole::Compute);
-            builder.ReadStorageBuffer(handle, rhi::PipelineStage::AllGraphics);
-        }
-    };
 
     const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
         if (!culler)
@@ -3725,6 +3738,8 @@ void SceneRenderGraph::BuildRenderGraph()
             viewLightListByteSize = std::max(viewLightListByteSize, lights.capacityBytes);
         }
     }
+    if (!m_pythonGraphDesc.passes.empty() && !RegisterGraphTextures(m_width, m_height, customRTHandles))
+        return;
     ImportTemporalHistoryResources(customRTHandles);
     if (!m_pythonGraphDesc.passes.empty()) {
         std::unordered_map<std::string, const GraphTextureDesc *> texDescMap;
@@ -3757,7 +3772,7 @@ void SceneRenderGraph::BuildRenderGraph()
         const uint32_t cameraWorldUIMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
         std::unordered_map<std::string, WorldUIDepthReplay> worldUIOpaqueSources;
         for (const auto &candidate : sortedPasses) {
-            const auto *candidateCommand = PrimaryCommand(candidate);
+            const auto *candidateCommand = candidate.PrimaryCommand();
             if (!candidateCommand || candidateCommand->type != GraphCommandType::DrawWorldUI || !m_screenUIRenderer ||
                 !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraWorldUIMask & candidateCommand->worldUILayerMask))
                 continue;
@@ -3785,35 +3800,33 @@ void SceneRenderGraph::BuildRenderGraph()
         // cameras may clear or preserve it through their clear flags.
         vk::ResourceHandle sharedDepth = m_importedDepthTarget;
 
-        // =================================================================
-        // Custom RT tracking: Non-backbuffer color textures get a transient
-        // resource created by the first pass that writes to them. Later
-        // passes can read them via builder.Read() for proper DAG edges.
-        // =================================================================
-
-        // Pre-register transient textures so their ResourceHandles are
-        // available before passes reference them.
-        if (!RegisterTransientTextures(width, height, customRTHandles))
-            return;
-        for (const auto &buffer : m_pythonGraphDesc.buffers) {
+        for (size_t index = 0; index < m_pythonGraphDesc.buffers.size(); ++index) {
+            const auto &buffer = m_pythonGraphDesc.buffers[index];
             if (buffer.viewLightList) {
                 bufferHandles[buffer.name] = viewLightListHandles[0];
                 continue;
             }
-            if (buffer.computeBuffer) {
-                const auto owner = buffer.computeBuffer;
-                m_renderGraph->AddPass("__ImportGraphBuffer/" + buffer.name, [&](vk::PassBuilder &builder) {
-                    bufferHandles[buffer.name] =
-                        builder.ImportBuffer(buffer.name, owner->GetBuffer(), owner->GetByteSize());
-                    return [](vk::RenderContext &) {};
-                });
-                if (!bufferHandles[buffer.name].IsValid()) {
+            if (const auto owner = ResolveGraphBufferOwner(buffer)) {
+                const auto &allocation = m_computeBufferReads.at(owner.get());
+                if (allocation->GetBuffer().Device() != m_renderView.device) {
+                    INXLOG_ERROR("SceneRenderGraph: imported buffer '", buffer.name, "' belongs to another device");
+                    return;
+                }
+                const bool graphLocal = allocation->IsGraphWritable() && !owner->IsFrozen();
+                const auto handle = m_renderGraph->ImportBuffer(buffer.name, allocation->GetBuffer(),
+                                                                allocation->GetByteSize(), graphLocal);
+                if (!handle.IsValid()) {
                     INXLOG_ERROR("SceneRenderGraph: imported buffer '", buffer.name, "' is unavailable");
                     return;
                 }
+                bufferHandles[buffer.name] = handle;
+                m_graphBufferImports.emplace_back(handle, index);
+                m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::MemoryRead | rhi::Access::MemoryWrite,
+                                                       rhi::PipelineStage::AllCommands, GraphBufferWriter(*allocation));
             } else {
-                bufferHandles[buffer.name] =
-                    m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+                bufferHandles[buffer.name] = m_renderGraph->RegisterTransientBuffer(
+                    buffer.name, buffer.byteSize, static_cast<GraphBufferUsage>(buffer.usage));
             }
         }
 
@@ -4112,7 +4125,6 @@ void SceneRenderGraph::BuildRenderGraph()
             for (auto &[name, current] : bufferHandles) {
                 if (current.id == handle.id) {
                     current = handle;
-                    return;
                 }
             }
         };
@@ -4220,7 +4232,7 @@ void SceneRenderGraph::BuildRenderGraph()
         // passes still participate in dependency and layout tracking.
         std::string perViewShadowTextureName;
         for (const auto &candidatePass : sortedPasses) {
-            const GraphCommandDesc *candidateCommand = PrimaryCommand(candidatePass);
+            const GraphCommandDesc *candidateCommand = candidatePass.PrimaryCommand();
             if (!candidateCommand)
                 continue;
             const auto shadowBinding =
@@ -4235,7 +4247,7 @@ void SceneRenderGraph::BuildRenderGraph()
         // Camera clear settings remain active across frames. Consumption is
         // local to this graph build so only the first color-clearing pass is
         // overridden without disabling later per-frame color updates.
-        bool cameraClearOverridePending = m_hasCameraClearOverride;
+        const auto cameraClearOverride = ResolveCameraClearOverride();
         m_mainClearPassName.clear();
 
         // Scene overlays are authored in linear space. Composite them before
@@ -4254,8 +4266,39 @@ void SceneRenderGraph::BuildRenderGraph()
             sceneOverlaysAppended = true;
         };
 
-        for (const auto &passDesc : sortedPasses) {
-            const GraphCommandDesc *command = PrimaryCommand(passDesc);
+        const bool trackInputs = std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                                             [](const auto &buffer) { return buffer.input != nullptr; });
+        const bool trackPersistentTextures =
+            std::any_of(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
+                        [](const auto &texture) { return texture.role == GraphTextureRole::Persistent; });
+        for (size_t passIndex = 0; passIndex < sortedPasses.size(); ++passIndex) {
+            const auto &passDesc = sortedPasses[passIndex];
+            const auto trackAuthorPass = [&](vk::PassHandle pass, std::optional<size_t> dispatch = std::nullopt) {
+                if (trackInputs || trackPersistentTextures || !passDesc.events.empty())
+                    m_authorPassIndices.emplace(pass.id, AuthorPass{passIndex, dispatch});
+            };
+            const GraphCommandDesc *command = passDesc.PrimaryCommand();
+            if (m_viewportGeneration && m_screenUIOutput && !m_viewportColorPublished && command &&
+                command->type == GraphCommandType::DrawScreenUI && command->screenUIList != 0) {
+                // Finish the camera's display-encoded rectangle first. Overlay
+                // coordinates and subsequent display-space effects belong to
+                // the full output, including pixels outside this camera.
+                m_importedColorTarget = CopyViewportRegion("__ViewportComposeBeforeOverlay", m_importedColorTarget,
+                                                           m_viewportOutputRaster, rhi::TextureAspect::Color, false);
+                m_importedDepthTarget = CopyViewportRegion("__ViewportDepthBeforeOverlay", m_importedDepthTarget,
+                                                           m_viewportOutputDepth, rhi::TextureAspect::Depth, false);
+                sharedDepth = m_importedDepthTarget;
+                for (const auto &texture : m_pythonGraphDesc.textures) {
+                    if (texture.IsViewDepth())
+                        customRTHandles[texture.name] = sharedDepth;
+                }
+                m_importedResolveTarget = m_sceneTarget->IsMsaaEnabled() ? m_viewportOutputColor : vk::ResourceHandle{};
+                m_renderGraph->SetBackbuffer(m_importedColorTarget);
+                m_viewportColorPublished = true;
+                width = m_viewport.Output()->description.width;
+                height = m_viewport.Output()->description.height;
+                backbufferDirtySinceResolve = true;
+            }
             if (command && command->type == GraphCommandType::FullscreenQuad &&
                 command->shaderName == "Display Encode") {
                 appendSceneOverlays();
@@ -4268,8 +4311,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 isPersistent(passDesc.writeDepth) || isPersistent(passDesc.resolveColor) ||
                 std::any_of(passDesc.writeColors.begin(), passDesc.writeColors.end(),
                             [&](const auto &output) { return isPersistent(output.second); }) ||
-                (command && command->type == GraphCommandType::CopyTexture &&
-                 isPersistent(command->destinationResource));
+                (command && command->CopiesToTexture() && isPersistent(command->destinationResource));
             static const std::vector<std::pair<std::string, std::string>> kNoInputBindings;
             const auto &commandInputBindings = command ? command->inputBindings : kNoInputBindings;
             // Look up render callback from the Python callbacks map
@@ -4310,7 +4352,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 const auto texture = texDescMap.find(name);
                 if (texture == texDescMap.end())
                     return {};
-                if (texture->second->isBackbuffer)
+                if (texture->second->IsViewColor())
                     return m_importedColorTarget;
                 const auto custom = customRTHandles.find(name);
                 if (custom != customRTHandles.end())
@@ -4321,12 +4363,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 const auto texture = texDescMap.find(name);
                 if (texture == texDescMap.end())
                     return {0, 0, 1};
-                uint32_t resourceWidth = texture->second->width > 0 ? texture->second->width : width;
-                uint32_t resourceHeight = texture->second->height > 0 ? texture->second->height : height;
-                if (texture->second->sizeDivisor > 1) {
-                    resourceWidth = std::max(1u, width / texture->second->sizeDivisor);
-                    resourceHeight = std::max(1u, height / texture->second->sizeDivisor);
-                }
+                const auto [resourceWidth, resourceHeight] = texture->second->ResolveExtent(width, height);
                 return {resourceWidth, resourceHeight, 1};
             };
 
@@ -4348,19 +4385,72 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle written;
                     const auto sourceHandle = source->second;
                     const auto destinationHandle = destination->second;
-                    m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                    const auto sourceOffset = sourceDesc->byteOffset;
+                    const auto destinationOffset = destinationDesc->byteOffset;
+                    const bool partialCopy = destinationOffset != 0 || copyBytes != destinationDesc->byteSize;
+                    const auto pass = m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
                         // Public scene-graph copies sit between dependent raster
                         // passes, like MSAA resolves; keep them on Graphics instead
                         // of adding two ownership handoffs with no async work.
                         builder.SetQueueRole(rhi::QueueRole::Graphics);
                         builder.TransferRead(sourceHandle);
-                        written = builder.TransferWrite(destinationHandle);
+                        written = builder.TransferWrite(destinationHandle, partialCopy);
                         builder.SetSideEffect(passDesc.sideEffect);
-                        return [sourceHandle, written, copyBytes](vk::RenderContext &ctx) {
+                        return [sourceHandle, written, copyBytes, sourceOffset,
+                                destinationOffset](vk::RenderContext &ctx) {
                             ctx.GetTransferCommandEncoder().CopyBuffer(ctx.GetBufferHandle(sourceHandle),
-                                                                       ctx.GetBufferHandle(written), {0, 0, copyBytes});
+                                                                       ctx.GetBufferHandle(written),
+                                                                       {sourceOffset, destinationOffset, copyBytes});
                         };
                     });
+                    trackAuthorPass(pass);
+                    publishResourceVersion(written);
+                    continue;
+                }
+
+                if (command->type == GraphCommandType::CopyTextureToBuffer ||
+                    command->type == GraphCommandType::CopyBufferToTexture) {
+                    const bool toBuffer = command->type == GraphCommandType::CopyTextureToBuffer;
+                    const auto &textureName = toBuffer ? command->sourceResource : command->destinationResource;
+                    const auto &bufferName = toBuffer ? command->destinationResource : command->sourceResource;
+                    const auto texture = resolveTextureHandle(textureName);
+                    const auto buffer = bufferHandles.at(bufferName);
+                    const auto bufferDesc =
+                        std::find_if(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                                     [&](const auto &desc) { return desc.name == bufferName; });
+                    const auto &image = *texDescMap.at(textureName);
+                    const auto format = image.EffectiveFormat(m_renderView);
+                    const auto extent = textureExtent(textureName);
+                    const rhi::TextureBufferCopyRegion region{rhi::TextureBufferCopyRegion::AspectFor(format),
+                                                              0,
+                                                              0,
+                                                              toBuffer ? command->copyWidth : extent.width,
+                                                              toBuffer ? command->copyHeight : extent.height,
+                                                              bufferDesc->byteOffset + command->copyBufferOffset};
+                    const bool partialBufferWrite =
+                        toBuffer && (command->copyBufferOffset != 0 ||
+                                     rhi::TextureBufferCopyRegion::ByteSize(format, region.width, region.height) !=
+                                         bufferDesc->byteSize);
+                    const auto source = toBuffer ? texture : buffer;
+                    const auto destination = toBuffer ? buffer : texture;
+                    vk::ResourceHandle written;
+                    const auto pass = m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                        builder.SetQueueRole(rhi::QueueRole::Graphics);
+                        builder.TransferRead(source);
+                        written = builder.TransferWrite(destination, partialBufferWrite);
+                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
+                        return [source, written, region, toBuffer](vk::RenderContext &ctx) {
+                            auto encoder = ctx.GetTransferCommandEncoder();
+                            const bool copied =
+                                toBuffer ? encoder.CopyTextureToBuffer(ctx.GetTextureHandle(source),
+                                                                       ctx.GetBufferHandle(written), region)
+                                         : encoder.CopyBufferToTexture(ctx.GetBufferHandle(source),
+                                                                       ctx.GetTextureHandle(written), region);
+                            if (!copied)
+                                throw std::runtime_error("Prepared graph texture-buffer transfer could not record");
+                        };
+                    });
+                    trackAuthorPass(pass);
                     publishResourceVersion(written);
                     continue;
                 }
@@ -4375,13 +4465,15 @@ void SceneRenderGraph::BuildRenderGraph()
                     const VkExtent3D destinationExtent = textureExtent(command->destinationResource);
                     const VkExtent3D copyExtent{std::min(sourceExtent.width, destinationExtent.width),
                                                 std::min(sourceExtent.height, destinationExtent.height), 1};
+                    const bool partialCopy =
+                        copyExtent.width < destinationExtent.width || copyExtent.height < destinationExtent.height;
                     const rhi::TextureAspect aspect =
-                        sourceDesc->isDepth ? rhi::TextureAspect::Depth : rhi::TextureAspect::Color;
+                        sourceDesc->IsDepth() ? rhi::TextureAspect::Depth : rhi::TextureAspect::Color;
                     vk::ResourceHandle written;
-                    m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                    const auto pass = m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
                         builder.SetQueueRole(rhi::QueueRole::Graphics);
                         builder.TransferRead(sourceHandle);
-                        written = builder.TransferWrite(destinationHandle);
+                        written = builder.TransferWrite(destinationHandle, partialCopy);
                         builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                         return [sourceHandle, written, copyExtent, aspect](vk::RenderContext &ctx) {
                             ctx.GetTransferCommandEncoder().CopyTexture(
@@ -4389,20 +4481,89 @@ void SceneRenderGraph::BuildRenderGraph()
                                 {aspect, 0, 0, 0, 0, copyExtent.width, copyExtent.height, copyExtent.depth});
                         };
                     });
+                    trackAuthorPass(pass);
                     publishResourceVersion(written);
                     continue;
                 }
+            }
+
+            if (passDesc.type == GraphPassType::Compute && command) {
+                const auto instance = m_workInstances.at(command->workBinding);
+                const auto &recipe = instance->GetRecipe();
+                std::vector<std::string> slotNames(recipe.GetSlots().size());
+                for (const auto &buffer : m_pythonGraphDesc.buffers) {
+                    if (buffer.workBinding == command->workBinding && buffer.byteOffset == 0 &&
+                        buffer.byteSize == recipe.GetSlots()[buffer.workSlot].allocation.GetByteSize())
+                        slotNames[buffer.workSlot] = buffer.name;
+                }
+                for (size_t index = 0; index < instance->GetDispatches().size(); ++index) {
+                    const auto &work = instance->GetDispatches()[index];
+                    const auto &operation = recipe.GetDispatches()[index];
+                    struct Access
+                    {
+                        vk::ResourceHandle handle;
+                        bool uniformRead = false;
+                        bool storageRead = false;
+                        bool write = false;
+                    };
+                    std::vector<Access> accesses;
+                    for (size_t binding = 0; binding < operation.bindings.size(); ++binding) {
+                        const auto &item = operation.bindings[binding];
+                        const auto handle = bufferHandles.at(slotNames[item.range.slot]);
+                        auto found = std::find_if(accesses.begin(), accesses.end(),
+                                                  [&](const auto &access) { return access.handle.id == handle.id; });
+                        if (found == accesses.end()) {
+                            accesses.push_back({handle});
+                            found = std::prev(accesses.end());
+                        }
+                        const auto bits = static_cast<uint8_t>(item.access);
+                        if (bits & static_cast<uint8_t>(rhi::ComputeBufferAccess::Read)) {
+                            if (work.GetBufferBindingTypes()[binding] == rhi::BindingType::UniformBuffer)
+                                found->uniformRead = true;
+                            else
+                                found->storageRead = true;
+                        }
+                        found->write |= (bits & static_cast<uint8_t>(rhi::ComputeBufferAccess::Write)) != 0;
+                    }
+                    std::vector<vk::ResourceHandle> written;
+                    const auto pass = m_renderGraph->AddComputePass(
+                        passDesc.name + "/" + std::to_string(index), [&](vk::PassBuilder &builder) {
+                            builder.SetQueueRole(rhi::QueueRole::Graphics);
+                            for (const auto &access : accesses) {
+                                if (access.uniformRead)
+                                    builder.ReadUniformBuffer(access.handle);
+                                if (access.storageRead)
+                                    builder.ReadStorageBuffer(access.handle);
+                                if (access.write)
+                                    written.push_back(builder.WriteStorageBuffer(access.handle));
+                            }
+                            builder.SetSideEffect(passDesc.sideEffect);
+                            return [this, workName = command->workBinding, index](vk::RenderContext &ctx) {
+                                const auto &current = *m_workInstances.at(workName);
+                                if (!current.GetDispatches()[index].RecordOne(ctx.GetComputeCommandEncoder()))
+                                    throw std::runtime_error("Prepared common graph work could not record");
+                                const auto &dispatch = current.GetRecipe().GetDispatches()[index];
+                                ctx.RecordComputeDispatch(dispatch.groupCountX, dispatch.groupCountY,
+                                                          dispatch.groupCountZ, 0, false);
+                            };
+                        });
+                    trackAuthorPass(pass, index);
+                    for (const auto handle : written)
+                        publishResourceVersion(handle);
+                }
+                continue;
             }
 
             if (passDesc.type == GraphPassType::Present && command) {
                 const auto source = resolveTextureHandle(command->sourceResource);
                 if (!source.IsValid())
                     continue;
-                m_renderGraph->AddPresentPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                const auto pass = m_renderGraph->AddPresentPass(passDesc.name, [&](vk::PassBuilder &builder) {
                     builder.Read(source, rhi::PipelineStage::FragmentShader);
                     builder.SetSideEffect();
                     return [](vk::RenderContext &) {};
                 });
+                trackAuthorPass(pass);
                 continue;
             }
 
@@ -4415,7 +4576,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     continue;
                 }
                 auto texIt = texDescMap.find(texName);
-                if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
+                if (texIt != texDescMap.end() && texIt->second->IsViewColor()) {
                     colorTargets[slot] = m_importedColorTarget;
                 } else {
                     // Non-backbuffer texture: look up pre-registered transient handle
@@ -4450,17 +4611,15 @@ void SceneRenderGraph::BuildRenderGraph()
             for (const auto &readTex : passDesc.readTextures) {
                 auto texIt = texDescMap.find(readTex);
                 if (texIt != texDescMap.end()) {
-                    if (texIt->second->isDepth) {
-                        const bool sampledInput =
-                            std::any_of(commandInputBindings.begin(), commandInputBindings.end(),
-                                        [&readTex](const auto &binding) { return binding.second == readTex; });
+                    if (texIt->second->IsDepth()) {
+                        const bool sampledInput = command && command->BindsResource(readTex);
                         if (!sampledInput) {
                             readsDepth = true;
                             const auto depthIt = customRTHandles.find(readTex);
                             if (depthIt != customRTHandles.end())
                                 declaredReadOnlyDepth = depthIt->second;
                         }
-                    } else if (!texIt->second->isBackbuffer) {
+                    } else if (!texIt->second->IsViewColor()) {
                         // Non-depth, non-backbuffer read: look up custom RT handle
                         auto rtIt = customRTHandles.find(readTex);
                         if (rtIt != customRTHandles.end()) {
@@ -4484,13 +4643,13 @@ void SceneRenderGraph::BuildRenderGraph()
                     bufferHandles.find(textureName) != bufferHandles.end())
                     continue;
                 auto texIt = texDescMap.find(textureName);
-                if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
+                if (texIt != texDescMap.end() && texIt->second->IsViewColor()) {
                     // Backbuffer texture — use the imported color target
                     inputBindingHandles.push_back({samplerName, m_importedColorTarget, false});
                 } else {
                     auto rtIt = customRTHandles.find(textureName);
                     if (rtIt != customRTHandles.end()) {
-                        bool isDepthInput = (texIt != texDescMap.end()) ? texIt->second->isDepth : false;
+                        bool isDepthInput = texIt != texDescMap.end() && texIt->second->IsDepth();
                         inputBindingHandles.push_back({samplerName, rtIt->second, isDepthInput});
                     } else {
                         INXLOG_WARN("SceneRenderGraph: Input binding '", samplerName, "' references unknown texture '",
@@ -4514,39 +4673,17 @@ void SceneRenderGraph::BuildRenderGraph()
 
             // Persistent outputs have their own producer clear contract. Camera
             // background/accumulation settings belong to its view, not those outputs.
-            if (cameraClearOverridePending && passDesc.clearColor && !writesPersistent) {
-                switch (m_cameraClearFlags) {
-                case CameraClearFlags::Skybox:
-                    clearColor = true;
-                    clearDepth = true;
-                    // Preserve the graph-authored clear color. Declarative
-                    // pipelines use transparent scene accumulators and place
-                    // the sky underneath them later; forcing opaque black here
-                    // makes the real sky impossible to composite back in.
-                    break;
-                case CameraClearFlags::SolidColor:
-                    clearColor = true;
-                    clearDepth = true;
-                    clearColorR = m_cameraBgColor.r;
-                    clearColorG = m_cameraBgColor.g;
-                    clearColorB = m_cameraBgColor.b;
-                    clearColorA = m_cameraBgColor.a;
-                    break;
-                case CameraClearFlags::DepthOnly:
-                    clearColor = false;
-                    clearDepth = true;
-                    break;
-                case CameraClearFlags::DontClear:
-                    clearColor = false;
-                    clearDepth = false;
-                    break;
-                }
+            if (cameraClearOverride && cameraClearOverride->name == passDesc.name) {
+                clearColor = cameraClearOverride->clearColor;
+                clearDepth = cameraClearOverride->clearDepth;
+                clearColorR = cameraClearOverride->clearColorR;
+                clearColorG = cameraClearOverride->clearColorG;
+                clearColorB = cameraClearOverride->clearColorB;
+                clearColorA = cameraClearOverride->clearColorA;
                 // Record the pass name for per-frame clear-value updates.
                 // Execute() uses this to update clear values without
                 // rebuilding the graph.
                 m_mainClearPassName = passDesc.name;
-                // Only override the first eligible pass
-                cameraClearOverridePending = false;
             }
 
             // Capture depth state for the lambda (by value — sharedDepth
@@ -4648,15 +4785,46 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (image.multisampled)
                         multisampledBindings.insert(image.binding);
                 }
-                std::vector<std::string> inputNames;
-                for (const auto &[samplerName, textureName] : commandInputBindings)
-                    inputNames.push_back(textureName);
+                std::vector<std::string> inputNames(commandInputBindings.size());
+                const auto declaredInputCount =
+                    std::count_if(inputReflection.GetSampledImages().begin(), inputReflection.GetSampledImages().end(),
+                                  [](const auto &input) { return input.set == 0; }) +
+                    std::count_if(inputReflection.GetStorageBuffers().begin(),
+                                  inputReflection.GetStorageBuffers().end(),
+                                  [](const auto &input) { return input.set == 0; });
+                if (!commandInputBindings.empty() && commandInputBindings.size() != declaredInputCount) {
+                    INXLOG_ERROR("Fullscreen pass '", passDesc.name,
+                                 "' must bind every declared set-0 input exactly once");
+                    return;
+                }
+                for (const auto &[resourceName, sourceName] : commandInputBindings) {
+                    std::optional<uint32_t> binding;
+                    const bool bufferSource = bufferHandles.find(sourceName) != bufferHandles.end();
+                    for (const auto &image : inputReflection.GetSampledImages())
+                        if (!bufferSource && image.set == 0 && image.name == resourceName && image.arraySize == 1 &&
+                            image.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                            binding = image.binding;
+                    for (const auto &buffer : inputReflection.GetStorageBuffers())
+                        if (bufferSource && buffer.set == 0 && buffer.name == resourceName && buffer.arraySize == 1)
+                            binding = buffer.binding;
+                    if (!binding) {
+                        INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' has no matching scalar shader input '",
+                                     resourceName, "' for resource '", sourceName, "' in set 0");
+                        return;
+                    }
+                    if (*binding >= inputNames.size() || !inputNames[*binding].empty()) {
+                        INXLOG_ERROR("Fullscreen pass '", passDesc.name,
+                                     "' must bind each declared input from binding 0 without gaps");
+                        return;
+                    }
+                    inputNames[*binding] = sourceName;
+                }
                 if (inputNames.empty()) {
                     // Preserve the implicit binding order: ordinary color, then camera color.
                     for (bool backbuffer : {false, true}) {
                         for (const auto &name : passDesc.readTextures) {
                             const auto *texture = texDescMap.at(name);
-                            if (!texture->isDepth && texture->isBackbuffer == backbuffer)
+                            if (!texture->IsDepth() && texture->IsViewColor() == backbuffer)
                                 inputNames.push_back(name);
                         }
                     }
@@ -4669,6 +4837,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     bool depthRead = false;
                     bool storageBuffer = false;
                     bool frameLocal = false;
+                    uint64_t byteOffset = 0;
                     uint64_t byteSize = 0;
                     rhi::SamplerHandle sampler;
                 };
@@ -4685,8 +4854,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         if (reflected == inputReflection.GetStorageBuffers().end() || !reflected->readOnly ||
                             reflected->arraySize != 1) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' input '", name,
-                                         "' requires a read-only scalar storage-buffer declaration at binding ",
-                                         binding);
+                                         "' requires one read-only storage-buffer descriptor at binding ", binding);
                             return;
                         }
                         const auto description =
@@ -4694,19 +4862,34 @@ void SceneRenderGraph::BuildRenderGraph()
                                          [&name](const GraphBufferDesc &item) { return item.name == name; });
                         if (description == m_pythonGraphDesc.buffers.end())
                             return;
-                        const auto maxRange =
-                            m_vkCore->GetDeviceContext().GetDeviceProperties().limits.maxStorageBufferRange;
                         const uint64_t inputByteSize =
                             description->viewLightList ? viewLightListByteSize : description->byteSize;
-                        if (inputByteSize > maxRange) {
-                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name, "' size ",
-                                         inputByteSize, " exceeds Vulkan maxStorageBufferRange ", maxRange);
+                        const auto &capabilities = m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilities();
+                        if (!capabilities.IsStorageBufferRangeValid(description->byteOffset, inputByteSize)) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
+                                         "' has an unsupported storage-buffer offset or range");
                             return;
+                        }
+                        if (const auto *type = ResolveGraphComputeBufferDesc(m_pythonGraphDesc, *description)) {
+                            const auto scalar = type->scalarType;
+                            const auto format =
+                                scalar == rhi::ComputeScalarType::Float32 ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_R32_UINT;
+                            if (type->lanes != 1 ||
+                                (scalar != rhi::ComputeScalarType::Float32 &&
+                                 scalar != rhi::ComputeScalarType::UInt32) ||
+                                reflected->scalarArrayFormat != format || reflected->arrayMemberOffset != 0 ||
+                                reflected->arrayStride != sizeof(uint32_t) ||
+                                reflected->arrayElementCount > inputByteSize / sizeof(uint32_t)) {
+                                INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
+                                             "' requires a matching flat scalar array with offset 0 and stride 4");
+                                return;
+                            }
                         }
                         FullscreenReadResource input{};
                         input.handle = buffer->second;
                         input.format = rhi::PixelFormat::Undefined;
                         input.storageBuffer = true;
+                        input.byteOffset = description->byteOffset;
                         input.byteSize = inputByteSize;
                         input.frameLocal = description->viewLightList;
                         if (input.frameLocal)
@@ -4717,10 +4900,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     const auto &texture = *texDescMap.at(name);
                     if (texture.role == GraphTextureRole::TemporalRead)
                         temporalHistoryKey = texture.temporalKey;
-                    const uint32_t samples = EffectiveTextureSamples(texture, static_cast<uint32_t>(msaaSamples));
-                    auto source = texture.isBackbuffer ? m_importedColorTarget : customRTHandles.at(name);
-                    auto format =
-                        texture.isBackbuffer ? rhi::FromVkFormat(m_sceneTarget->GetColorFormat()) : texture.format;
+                    const uint32_t samples = texture.EffectiveSamples(static_cast<uint32_t>(msaaSamples));
+                    auto source = texture.IsViewColor() ? m_importedColorTarget : customRTHandles.at(name);
+                    auto format = texture.EffectiveFormat(m_renderView);
                     rhi::SamplerHandle sampler;
                     if (texture.role == GraphTextureRole::Asset) {
                         const auto dimension = sampledDimensions.find(binding);
@@ -4733,15 +4915,9 @@ void SceneRenderGraph::BuildRenderGraph()
                         }
                     }
                     if (texture.role == GraphTextureRole::Asset || texture.role == GraphTextureRole::Persistent) {
-                        const auto formatIt = m_graphTextureFormats.find(name);
-                        const auto samplerIt = m_graphTextureSamplers.find(name);
-                        if (formatIt == m_graphTextureFormats.end() || samplerIt == m_graphTextureSamplers.end()) {
-                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' imported texture '", name,
-                                         "' has no resident GPU publication");
-                            return;
-                        }
-                        format = formatIt->second;
-                        sampler = samplerIt->second;
+                        const auto &imported = m_importedTextureBindings.at(name);
+                        format = imported.format;
+                        sampler = imported.sampler;
                     }
                     const bool rawSamples = multisampledBindings.count(binding) != 0;
                     if (rawSamples && samples == 1) {
@@ -4753,16 +4929,15 @@ void SceneRenderGraph::BuildRenderGraph()
                         FullscreenReadResource input{};
                         input.handle = source;
                         input.format = format;
-                        input.depthRead = texture.isDepth;
+                        input.depthRead = texture.IsDepth();
                         input.sampler = sampler;
                         fsReadInputs.push_back(input);
                         continue;
                     }
-                    const uint32_t inputWidth =
-                        texture.width ? texture.width : std::max(1u, width / std::max(1u, texture.sizeDivisor));
-                    const uint32_t inputHeight =
-                        texture.height ? texture.height : std::max(1u, height / std::max(1u, texture.sizeDivisor));
-                    if (texture.isDepth) {
+                    const auto inputExtent = texture.ResolveExtent(width, height);
+                    const auto inputWidth = inputExtent.first;
+                    const auto inputHeight = inputExtent.second;
+                    if (texture.IsDepth()) {
                         if (!m_sceneDepthResolver.IsValid()) {
                             INXLOG_ERROR("SceneRenderGraph: sampled MSAA depth resolve is unavailable for pass '",
                                          passDesc.name, "'");
@@ -4796,8 +4971,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     // Camera color shares its existing resolve; transient MSAA color
                     // resolves at the consuming version, never by averaging owner IDs
                     // explicitly declared Texture2DMS in the shader.
-                    vk::ResourceHandle resolved = texture.isBackbuffer ? m_importedResolveTarget : vk::ResourceHandle{};
-                    if (!texture.isBackbuffer || backbufferDirtySinceResolve) {
+                    vk::ResourceHandle resolved =
+                        texture.IsViewColor() ? m_importedResolveTarget : vk::ResourceHandle{};
+                    if (!texture.IsViewColor() || backbufferDirtySinceResolve) {
                         const auto resolveName = "__MSAA_resolve_pre_fs_" + std::to_string(msaaResolvePassCounter++);
                         m_renderGraph->AddTransferPass(resolveName, [&](vk::PassBuilder &builder) {
                             builder.SetQueueRole(rhi::QueueRole::Graphics);
@@ -4813,7 +4989,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                     {rhi::TextureAspect::Color, 0, 0, 0, 0, inputWidth, inputHeight, 1});
                             };
                         });
-                        if (texture.isBackbuffer) {
+                        if (texture.IsViewColor()) {
                             publishResourceVersion(resolved);
                             backbufferDirtySinceResolve = false;
                         }
@@ -4884,32 +5060,18 @@ void SceneRenderGraph::BuildRenderGraph()
                         auto texIt = texDescMap.find(texName);
                         if (texIt != texDescMap.end()) {
                             const uint32_t outputSamples =
-                                EffectiveTextureSamples(*texIt->second, static_cast<uint32_t>(msaaSamples));
+                                texIt->second->EffectiveSamples(static_cast<uint32_t>(msaaSamples));
                             fsSamples = ToRhiSampleCount(static_cast<int>(outputSamples));
-                            if (!texIt->second->isBackbuffer && texIt->second->format != rhi::PixelFormat::Undefined) {
+                            if (!texIt->second->IsViewColor() && texIt->second->format != rhi::PixelFormat::Undefined) {
                                 fsColorFormat = texIt->second->format;
                             }
                         }
                     }
                 }
 
-                // Determine pass dimensions (check output texture sizeDivisor)
-                uint32_t fsPassWidth = width;
-                uint32_t fsPassHeight = height;
-                for (const auto &[slot, texName] : passDesc.writeColors) {
-                    if (slot == 0 && !texName.empty()) {
-                        auto texIt = texDescMap.find(texName);
-                        if (texIt != texDescMap.end()) {
-                            if (texIt->second->width > 0 && texIt->second->height > 0) {
-                                fsPassWidth = texIt->second->width;
-                                fsPassHeight = texIt->second->height;
-                            } else if (texIt->second->sizeDivisor > 1) {
-                                fsPassWidth = std::max(1u, width / texIt->second->sizeDivisor);
-                                fsPassHeight = std::max(1u, height / texIt->second->sizeDivisor);
-                            }
-                        }
-                    }
-                }
+                const auto fsPassExtent = ResolveGraphPassExtent(m_pythonGraphDesc, passDesc, width, height);
+                const auto fsPassWidth = fsPassExtent.first;
+                const auto fsPassHeight = fsPassExtent.second;
 
                 vk::ResourceHandle fullscreenShadowInput;
                 if (!fullscreenShadowDependencyDeclared && !perViewShadowTextureName.empty()) {
@@ -4918,8 +5080,9 @@ void SceneRenderGraph::BuildRenderGraph()
                         fullscreenShadowInput = shadow->second;
                 }
                 vk::ResourceHandle fsResolvedVersion;
-                m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
-                                                       &fsWrittenDepthVersion](vk::PassBuilder &builder) {
+                const auto pass = m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
+                                                                         &fsWrittenDepthVersion](
+                                                                            vk::PassBuilder &builder) {
                     builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                     // Declare read dependencies for DAG edges + barriers
                     for (const auto &input : fsReadInputs) {
@@ -4989,6 +5152,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                                                        EngineConfig::kFrameSlotCapacity]
                                         : fsReadInputs[i].handle;
                                 inputs[i].buffer = ctx.GetBufferHandle(resource);
+                                inputs[i].byteOffset = fsReadInputs[i].byteOffset;
                                 inputs[i].byteSize = fsReadInputs[i].byteSize;
                                 if (!inputs[i].buffer.IsValid()) {
                                     INXLOG_ERROR("FullscreenQuad '", shaderName,
@@ -5074,6 +5238,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                          drawPushConstantSize);
                     };
                 });
+                trackAuthorPass(pass);
                 if (fullscreenShadowInput.IsValid()) {
                     m_shadowMapInputHandle = fullscreenShadowInput;
                     m_shadowMapInputIsDepth = true;
@@ -5159,7 +5324,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle writtenAlternateDepth;
                     m_renderGraph->AddPass(replayName, [=, &writtenAlternateDepth](vk::PassBuilder &builder) {
                         builder.ReadRendererList(m_visibleRendererList);
-                        declareMaterialBufferReads(builder, worldUIOpaqueSource.passName);
+                        DeclareMaterialBufferReads(builder, worldUIOpaqueSource.passName);
                         for (const auto texture : replayTextureReads)
                             builder.Read(texture,
                                          rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
@@ -5191,7 +5356,8 @@ void SceneRenderGraph::BuildRenderGraph()
                     const bool lastRun = runIndex + 1 == worldUIDepthRuns.size();
                     vk::ResourceHandle writtenColor;
                     vk::ResourceHandle writtenResolve;
-                    m_renderGraph->AddPass(runName, [=, &writtenColor, &writtenResolve](vk::PassBuilder &builder) {
+                    const auto pass = m_renderGraph->AddPass(runName, [=, &writtenColor,
+                                                                       &writtenResolve](vk::PassBuilder &builder) {
                         builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                         builder.ReadDepth(runDepth);
                         for (const auto texture : drawTextureReads)
@@ -5211,6 +5377,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 run.firstOrdinal, run.endOrdinal);
                         };
                     });
+                    trackAuthorPass(pass);
                     currentColor = writtenColor;
                     publishResourceVersion(writtenColor);
                     publishResourceVersion(writtenResolve);
@@ -5219,12 +5386,13 @@ void SceneRenderGraph::BuildRenderGraph()
                     backbufferDirtySinceResolve = true;
                 continue;
             }
-            m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth, &writtenColorVersions, &writtenDepthVersion,
-                                                   &writtenResolveVersion](vk::PassBuilder &builder) {
+            const auto pass = m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth, &writtenColorVersions,
+                                                                     &writtenDepthVersion,
+                                                                     &writtenResolveVersion](vk::PassBuilder &builder) {
                 builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                 // Local alias to make vkCore capturable by nested lambdas (MSVC C3481)
                 InxVkCoreModular *localVkCore = vkCore;
-                declareMaterialBufferReads(builder, passDesc.name);
+                DeclareMaterialBufferReads(builder, passDesc.name);
 
                 struct ParticlePacket
                 {
@@ -5326,41 +5494,10 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.SkipCallbackWhenRendererListsEmpty(!usesShadowRendererList && particlePackets.empty());
                 }
 
-                // ----- Determine pass dimensions -----
-                // Shadow caster passes may use custom-sized depth textures.
-                // Determine the actual pass dimensions from the depth target.
-                uint32_t passWidth = width;
-                uint32_t passHeight = height;
+                const auto passExtent = ResolveGraphPassExtent(m_pythonGraphDesc, passDesc, width, height);
+                const auto passWidth = passExtent.first;
+                const auto passHeight = passExtent.second;
                 bool isShadowPass = command && command->type == GraphCommandType::DrawShadowCasters;
-
-                // Use the primary output's declared extent for offscreen passes.
-                if (!passDesc.writeColors.empty()) {
-                    const auto primary =
-                        std::min_element(passDesc.writeColors.begin(), passDesc.writeColors.end(),
-                                         [](const auto &left, const auto &right) { return left.first < right.first; });
-                    auto colorTexIt = texDescMap.find(primary->second);
-                    if (colorTexIt != texDescMap.end() && !colorTexIt->second->isBackbuffer) {
-                        if (colorTexIt->second->width > 0 && colorTexIt->second->height > 0) {
-                            passWidth = colorTexIt->second->width;
-                            passHeight = colorTexIt->second->height;
-                        } else if (colorTexIt->second->sizeDivisor > 1) {
-                            passWidth = std::max(1u, width / colorTexIt->second->sizeDivisor);
-                            passHeight = std::max(1u, height / colorTexIt->second->sizeDivisor);
-                        }
-                    }
-                } else if (!passDesc.writeDepth.empty()) {
-                    auto depthTexIt = texDescMap.find(passDesc.writeDepth);
-                    if (depthTexIt != texDescMap.end()) {
-                        if (depthTexIt->second->width > 0)
-                            passWidth = depthTexIt->second->width;
-                        if (depthTexIt->second->height > 0)
-                            passHeight = depthTexIt->second->height;
-                        if (depthTexIt->second->sizeDivisor > 1) {
-                            passWidth = std::max(1u, width / depthTexIt->second->sizeDivisor);
-                            passHeight = std::max(1u, height / depthTexIt->second->sizeDivisor);
-                        }
-                    }
-                }
 
                 // ----- Depth -----
                 vk::ResourceHandle depth;
@@ -5412,7 +5549,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.Read(readHandle);
                 }
                 for (const auto handle : drawTextureReads)
-                    builder.Read(handle, rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                    builder.Read(handle, rhi::RenderTextureSampleStages);
 
                 // ----- Input binding reads (sampled textures, e.g. shadow map) -----
                 // Input bindings reference textures by name for descriptor
@@ -5563,6 +5700,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 };
             });
 
+            trackAuthorPass(pass);
             for (const auto &written : writtenColorVersions)
                 publishResourceVersion(written);
             publishResourceVersion(writtenDepthVersion);
@@ -5586,22 +5724,32 @@ void SceneRenderGraph::BuildRenderGraph()
             // Every imported attachment leaves the graph in its declared
             // handoff layout, including unsampleable MSAA/depth attachments.
             const bool sampleable = texture.samples == 1 &&
-                                    (!texture.isDepth || texture.renderTexture->Acquire()->description.sampledDepth);
+                                    (!texture.IsDepth() || texture.renderTexture->Acquire()->description.sampledDepth);
             const auto output = customRTHandles.at(texture.name);
             m_renderGraph->AddPass("__Export/" + texture.name,
-                                   [output, isDepth = texture.isDepth, sampleable](vk::PassBuilder &builder) {
+                                   [output, isDepth = texture.IsDepth(), sampleable](vk::PassBuilder &builder) {
                                        if (!sampleable && isDepth)
                                            builder.PrepareDepthStencilAttachment(output);
                                        else if (!sampleable)
                                            builder.PrepareColorAttachment(output);
                                        else if (isDepth)
-                                           builder.ReadSampledDepth(output);
+                                           builder.ReadSampledDepth(output, rhi::RenderTextureSampleStages);
                                        else
-                                           builder.Read(output);
+                                           builder.Read(output, rhi::RenderTextureSampleStages);
                                        builder.SetSideEffect();
                                        return [](vk::RenderContext &) {};
                                    });
         }
+
+        for (const auto &buffer : m_pythonGraphDesc.buffers)
+            if (buffer.exportLayout) {
+                const auto value = bufferHandles.at(buffer.name);
+                m_renderGraph->AddPass("__ExportBuffer/" + buffer.name, [value](vk::PassBuilder &builder) {
+                    builder.ReadStorageBuffer(value, rhi::PipelineStage::AllCommands);
+                    builder.SetSideEffect();
+                    return [](vk::RenderContext &) {};
+                });
+            }
 
         // Custom author pipelines may omit the built-in display encode. Keep
         // their editor overlays observable at the graph tail without adding

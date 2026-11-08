@@ -1,0 +1,23 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "platform-plugins",
+      "displayName": "Platform plugin release artifacts",
+      "binaryDir": "${sourceDir}/out/build/platform-plugins-driver",
+      "cacheVariables": {"INFERNUX_PLATFORM_PLUGINS_ONLY": "ON"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "platform-plugins", "configurePreset": "platform-plugins", "targets": ["update_platform_plugins"]}
+  ],
+  "workflowPresets": [
+    {
+      "name": "platform-plugins",
+      "steps": [
+        {"type": "configure", "name": "platform-plugins"},
+        {"type": "build", "name": "platform-plugins"}
+      ]
+    }
+  ]
+}

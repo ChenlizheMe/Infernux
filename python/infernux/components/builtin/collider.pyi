@@ -5,6 +5,7 @@ from typing import Any
 
 from infernux.components.builtin_component import BuiltinComponent
 from infernux.core.asset_ref import PhysicMaterialRef
+from infernux.core.physic_material import PhysicMaterial
 
 class PhysicsMaterialCombine(IntEnum):
     Average = 0
@@ -18,6 +19,9 @@ class Collider(BuiltinComponent):
     _cpp_type_name: str
     _component_category_: str
     _always_show: bool
+
+    @property
+    def attached_rigidbody(self) -> Any | None: ...
 
     # ---- CppProperty fields as properties ----
 
@@ -36,5 +40,9 @@ class Collider(BuiltinComponent):
     def is_trigger(self, value: bool) -> None: ...
 
     physic_material: PhysicMaterialRef
+    @property
+    def material(self) -> PhysicMaterial: ...
+    @material.setter
+    def material(self, value: PhysicMaterial | PhysicMaterialRef | None) -> None: ...
     def raycast(self, origin: Any, direction: Any, max_distance: float = 1000.0) -> Any | None: ...
     def closest_point(self, point: Any) -> Any: ...

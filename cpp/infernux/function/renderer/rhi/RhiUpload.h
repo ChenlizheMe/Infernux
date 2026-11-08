@@ -8,18 +8,25 @@
 namespace infernux::rhi
 {
 
-enum class BufferUsage : uint8_t
+inline constexpr uint64_t InlineBufferUpdateBytes = 64 * 1024;
+inline constexpr uint64_t MinUploadStagingClass = 4 * 1024;
+inline constexpr uint64_t MaxPooledUploadStagingClass = 16 * 1024 * 1024;
+
+[[nodiscard]] constexpr uint64_t UploadStagingClass(uint64_t bytes) noexcept
 {
-    Vertex,
-    Index,
-    Storage,
-};
+    if (!bytes || bytes > MaxPooledUploadStagingClass)
+        return bytes;
+    uint64_t size = MinUploadStagingClass;
+    while (size < bytes)
+        size *= 2;
+    return size;
+}
 
 struct BufferUploadRequest
 {
     const void *data = nullptr;
     size_t byteSize = 0;
-    BufferUsage usage = BufferUsage::Storage;
+    BufferUsageFlags usage = BufferUsageFlags::Storage;
     /// Queues that consume the uploaded buffer; the uploader adds its own queue.
     QueueAccessFlags queueAccess = QueueAccessFlags::Graphics;
 };

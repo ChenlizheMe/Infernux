@@ -184,7 +184,6 @@ void InxVkCoreModular::DestroyGlobalsDescriptorResources()
     m_skinInstanceBuffers.clear();
     m_skinPaletteBuffers.clear();
     m_instanceAuxBuffers.clear();
-    m_instanceHistory.Clear();
     m_globalsDescSets.clear();
     auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
     for (const auto &lease : m_globalsDescriptorLeases)
@@ -467,13 +466,12 @@ void InxVkCoreModular::UpdateInstanceAuxBufferDescriptor(uint32_t frameIndex)
     (void)PublishGlobalsDescriptorRevision(frameIndex);
 }
 
-void InxVkCoreModular::PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances)
+void InxVkCoreModular::PrepareInstanceAuxiliary(size_t totalInstances)
 {
     if (totalInstances == 0)
         return;
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
-    m_instanceHistory.BeginFrame(frameSerial);
 
     const VkBuffer previousBuffer = frameIndex < m_instanceAuxBuffers.size() && m_instanceAuxBuffers[frameIndex].buffer
                                         ? m_instanceAuxBuffers[frameIndex].buffer->GetBuffer()
@@ -485,8 +483,7 @@ void InxVkCoreModular::PrepareInstanceAuxiliary(uint64_t frameSerial, size_t tot
 }
 
 bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
-                                              const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                              uint64_t objectId, uint32_t layerMask, bool receivesShadows)
+                                              const GPUInstanceAuxData &auxiliary)
 {
     if (frameIndex >= m_instanceAuxBuffers.size())
         return false;
@@ -499,9 +496,6 @@ bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t inst
     if (!frame.mapped)
         return false;
 
-    auto auxiliary = m_instanceHistory.Resolve(identity, currentModel, objectId, layerMask);
-    if (!receivesShadows)
-        auxiliary.flags |= kGPUInstanceAuxFlagNoReceiveShadows;
     static_cast<GPUInstanceAuxData *>(frame.mapped)[instanceIndex] = auxiliary;
     return true;
 }

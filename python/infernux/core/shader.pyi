@@ -3,6 +3,11 @@
 class Shader:
     """Query published shaders and reimport edited ShaderInfo authoring assets."""
 
+    @staticmethod
+    def property_to_id(name: str) -> int:
+        """Return a process-local property ID shared by all material instances."""
+        ...
+
     @classmethod
     def is_loaded(cls, name: str, shader_type: str = ...) -> bool:
         """Query GPU publication of a standalone stage or linked material program."""

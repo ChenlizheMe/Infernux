@@ -1,6 +1,7 @@
 #include "PhysicMaterial.h"
 #include <platform/filesystem/AssetDocument.h>
 
+#include <atomic>
 #include <cmath>
 #include <platform/filesystem/DocumentStore.h>
 #include <stdexcept>
@@ -9,18 +10,41 @@
 namespace infernux
 {
 
+namespace
+{
+std::atomic<uint64_t> surfaceRevision{0};
+}
+
+uint64_t PhysicMaterial::GetSurfaceRevision() noexcept
+{
+    return surfaceRevision.load(std::memory_order_relaxed);
+}
+
+void PhysicMaterial::NotifySurfaceChanged() const noexcept
+{
+    // Staged decoding and unused asset edits cannot affect a collision scene.
+    if (m_colliderBindings != 0)
+        surfaceRevision.fetch_add(1, std::memory_order_relaxed);
+}
+
 void PhysicMaterial::SetFriction(float value)
 {
     if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
         throw std::invalid_argument("PhysicMaterial friction must be finite and in [0, 1]");
-    m_friction = value;
+    if (m_friction != value) {
+        m_friction = value;
+        NotifySurfaceChanged();
+    }
 }
 
 void PhysicMaterial::SetBounciness(float value)
 {
     if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
         throw std::invalid_argument("PhysicMaterial bounciness must be finite and in [0, 1]");
-    m_bounciness = value;
+    if (m_bounciness != value) {
+        m_bounciness = value;
+        NotifySurfaceChanged();
+    }
 }
 
 void PhysicMaterial::ValidateCombine(PhysicsMaterialCombine value, const char *fieldName)
@@ -35,13 +59,19 @@ void PhysicMaterial::ValidateCombine(PhysicsMaterialCombine value, const char *f
 void PhysicMaterial::SetFrictionCombine(PhysicsMaterialCombine value)
 {
     ValidateCombine(value, "friction_combine");
-    m_frictionCombine = value;
+    if (m_frictionCombine != value) {
+        m_frictionCombine = value;
+        NotifySurfaceChanged();
+    }
 }
 
 void PhysicMaterial::SetBounceCombine(PhysicsMaterialCombine value)
 {
     ValidateCombine(value, "bounce_combine");
-    m_bounceCombine = value;
+    if (m_bounceCombine != value) {
+        m_bounceCombine = value;
+        NotifySurfaceChanged();
+    }
 }
 
 nlohmann::json PhysicMaterial::SerializeDocument() const
@@ -84,10 +114,14 @@ void PhysicMaterial::DeserializeDocument(const nlohmann::json &document)
 
 void PhysicMaterial::CopyValuesFrom(const PhysicMaterial &other)
 {
+    if (m_friction == other.m_friction && m_bounciness == other.m_bounciness &&
+        m_frictionCombine == other.m_frictionCombine && m_bounceCombine == other.m_bounceCombine)
+        return;
     m_friction = other.m_friction;
     m_bounciness = other.m_bounciness;
     m_frictionCombine = other.m_frictionCombine;
     m_bounceCombine = other.m_bounceCombine;
+    NotifySurfaceChanged();
 }
 
 void PhysicMaterial::SaveToFile() const

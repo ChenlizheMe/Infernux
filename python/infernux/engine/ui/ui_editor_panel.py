@@ -470,20 +470,9 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     # ------------------------------------------------------------------
 
     def _sync_text_layout(self, ctx: InxGUIContext, text_comp):
-        from infernux.ui.ui_render_dispatch import resolve_text_layout
+        from infernux.ui.ui_render_dispatch import resolve_text_layout_for_context
 
-        def measure(text, font_size, wrap_width, font_path, line_height, letter_spacing, fallback_font_paths=()):
-            if wrap_width > 0.0:
-                return ctx.calc_text_size_wrapped(
-                    text, font_size, wrap_width, font_path, line_height, letter_spacing,
-                    fallback_font_paths,
-                )
-            return ctx.calc_text_size(
-                text, font_size, font_path, line_height, letter_spacing,
-                fallback_font_paths,
-            )
-
-        return resolve_text_layout(text_comp, measure, 1.0)
+        return resolve_text_layout_for_context(ctx, text_comp)
 
     # ------------------------------------------------------------------
     # EditorPanel hooks

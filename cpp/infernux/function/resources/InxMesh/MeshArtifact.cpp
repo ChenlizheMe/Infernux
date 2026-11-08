@@ -1,6 +1,7 @@
 #include "MeshArtifact.h"
 
 #include "InxMesh.h"
+#include "MeshDecodeStorage.h"
 #include "MeshGeometryCodec.h"
 
 #include <algorithm>
@@ -8,7 +9,6 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
-#include <unordered_set>
 #include <vector>
 
 namespace infernux
@@ -17,10 +17,10 @@ namespace
 {
 constexpr std::string_view Magic = "INXMESHART";
 constexpr std::string_view AuthoredSourceIdentity = "infernux.static-mesh.source";
-constexpr uint32_t EndianMarker = 0x01020304U;
+constexpr uint32_t SourceSchema = 0x3148534dU; // MSH1, authored mesh
 // Persistent schema identity. AssetDatabase uses this hard boundary to
 // reimport obsolete Library artifacts instead of attempting format fallback.
-constexpr uint32_t ArtifactSchema = 0x3148534dU;     // MSH1
+constexpr uint32_t ArtifactSchema = 0x3248534dU;     // MSH2 with decode workspace
 constexpr uint32_t ModelNodesSource = 0x33444f4eU;   // NOD3, node-local geometry + inherited visibility
 constexpr uint32_t ModelNodesBaked = 0x34444f4eU;    // NOD4, baked geometry + inherited visibility
 constexpr uint32_t MaterialBindingsV1 = 0x3142544dU; // MTB1, source identity and external GUID per slot
@@ -49,7 +49,8 @@ void AppendString(std::string &out, std::string_view value)
     out.append(value);
 }
 
-using Reader = binary_codec::Reader<MaximumStringBytes>;
+using Input = binary_codec::Reader<MaximumStringBytes>;
+using Reader = mesh_decode_storage::Reader<MaximumStringBytes>;
 
 void AppendVec2(std::string &out, const glm::vec2 &value)
 {
@@ -72,11 +73,6 @@ void AppendVec4(std::string &out, const glm::vec4 &value)
     AppendFloat(out, value.w);
 }
 
-glm::vec2 ReadVec2(Reader &reader)
-{
-    return {reader.ReadFloat(), reader.ReadFloat()};
-}
-
 glm::vec3 ReadVec3(Reader &reader)
 {
     return {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
@@ -94,35 +90,26 @@ void AppendCount(std::string &out, size_t count)
     AppendU32(out, static_cast<uint32_t>(count));
 }
 
-} // namespace
-
-std::string MeshArtifact::SerializeSource(const InxMesh &mesh)
-{
-    if (mesh.HasSkinnedData())
-        throw std::invalid_argument("Static mesh source cannot discard skinned mesh data");
-    return Serialize(mesh, AuthoredSourceIdentity);
-}
-
-std::shared_ptr<InxMesh> MeshArtifact::DeserializeSource(std::string_view bytes)
-{
-    return Deserialize(bytes, AuthoredSourceIdentity);
-}
-
-std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view sourceContentHash)
+std::string WriteMesh(const InxMesh &mesh, std::string_view sourceContentHash, bool cooked)
 {
     if (sourceContentHash.empty())
         throw std::invalid_argument("mesh artifact requires a source content hash");
     if (!mesh.HasCpuGeometry())
         throw std::runtime_error("mesh artifact serialization requires retained CPU geometry");
 
-    std::string bytes(Magic);
-    AppendU32(bytes, EndianMarker);
-    AppendU32(bytes, ArtifactSchema);
+    const auto sourceGeometry = mesh.GetModelSourceGeometry();
+    const auto geometry = sourceGeometry ? sourceGeometry : mesh.GetGeometrySnapshot();
+    const bool sourceLocal = sourceGeometry && !mesh.GetModelNodes().empty();
+    std::string bytes;
+    if (cooked) {
+        artifact_layout::AppendHeader(bytes, Magic, ArtifactSchema,
+                                      mesh_decode_storage::Mesh(mesh, *geometry, sourceLocal, sourceContentHash));
+    } else {
+        artifact_layout::AppendSignature(bytes, Magic, SourceSchema);
+    }
     AppendString(bytes, sourceContentHash);
     AppendString(bytes, mesh.GetName());
 
-    const auto sourceGeometry = mesh.GetModelSourceGeometry();
-    const auto geometry = sourceGeometry ? sourceGeometry : mesh.GetGeometrySnapshot();
     const auto &vertices = geometry->vertices;
     const auto indexFormat = ResolveMeshIndexFormat(mesh.GetIndexFormat(), vertices.size(), geometry->indices);
     AppendU32(bytes, GeometryEncoding);
@@ -142,7 +129,7 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
             AppendVec4(bytes, vertex.boneWeights);
         }
     } else {
-        const std::string encoded = mesh_geometry_codec::Encode(vertices, mesh.GetCompression(), true);
+        const std::string encoded = mesh_geometry_codec::Encode(vertices, mesh.GetCompression());
         AppendCount(bytes, encoded.size());
         bytes.append(encoded);
     }
@@ -261,27 +248,15 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
     return bytes;
 }
 
-std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::string_view expectedSourceContentHash)
+std::shared_ptr<InxMesh> ReadMeshPayload(Reader &reader, std::string_view expectedSourceContentHash)
 {
-    if (bytes.size() < Magic.size() + sizeof(uint32_t) + sizeof(uint64_t) || bytes.substr(0, Magic.size()) != Magic)
-        throw std::invalid_argument("mesh artifact has an invalid header");
-
-    const size_t payloadSize = bytes.size() - sizeof(uint64_t);
-    Reader checksumReader(bytes.substr(payloadSize));
-    const uint64_t storedChecksum = checksumReader.ReadU64();
-    if (storedChecksum != Fnv1a64(bytes.substr(0, payloadSize)))
-        throw std::invalid_argument("mesh artifact checksum mismatch");
-
-    Reader reader(bytes.substr(Magic.size(), payloadSize - Magic.size()));
-    if (reader.ReadU32() != EndianMarker)
-        throw std::invalid_argument("mesh artifact has an invalid endian marker");
-    if (reader.ReadU32() != ArtifactSchema)
-        throw std::invalid_argument("mesh artifact has an unsupported schema");
+    auto &work = reader.Workspace();
     const std::string sourceContentHash = reader.ReadString();
     if (sourceContentHash.empty() || sourceContentHash != expectedSourceContentHash)
-        throw std::invalid_argument("mesh artifact source content hash '" + sourceContentHash +
-                                    "' does not match metadata hash '" + std::string(expectedSourceContentHash) + "'");
+        throw std::invalid_argument("mesh artifact source content hash does not match metadata");
 
+    work.Add<InxMesh>();
+    work.Add<MeshGeometry>(2);
     auto mesh = std::make_shared<InxMesh>(reader.ReadString());
 
     if (reader.ReadU32() != GeometryEncoding)
@@ -294,37 +269,19 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     if (encodedCompression > static_cast<uint32_t>(MeshCompression::High))
         throw std::invalid_argument("mesh artifact contains an unsupported geometry compression");
     const auto compression = static_cast<MeshCompression>(encodedCompression);
-    const uint32_t vertexCount = reader.ReadCount();
+    const uint32_t vertexCount = reader.ReadArrayCount<Vertex>(MaximumElementCount);
     mesh->SetIndexFormat(indexFormat);
     mesh->SetCompression(compression);
-    std::vector<Vertex> vertices;
-    if (compression == MeshCompression::Off) {
-        reader.Require(static_cast<size_t>(vertexCount) * 100u);
-        vertices.resize(vertexCount);
-        for (Vertex &vertex : vertices) {
-            vertex.pos = ReadVec3(reader);
-            vertex.normal = ReadVec3(reader);
-            vertex.tangent = ReadVec4(reader);
-            vertex.color = ReadVec3(reader);
-            vertex.texCoord = ReadVec2(reader);
-            vertex.texCoord1 = ReadVec2(reader);
-            for (glm::length_t component = 0; component < vertex.boneIndices.length(); ++component)
-                vertex.boneIndices[component] = reader.ReadU32();
-            vertex.boneWeights = ReadVec4(reader);
-        }
-    } else {
-        const uint32_t encodedSize = reader.ReadCount();
-        vertices = mesh_geometry_codec::Decode(reader.ReadBytes(encodedSize), vertexCount, compression, true);
-    }
+    auto vertices = mesh_geometry_codec::ReadVertices(reader, vertexCount, compression, MaximumElementCount);
 
-    std::vector<uint32_t> indices(reader.ReadCount(MaximumElementCount, indexBits / 8u));
+    std::vector<uint32_t> indices(reader.ReadArrayCount<uint32_t>(MaximumElementCount, indexBits / 8u));
     for (uint32_t &index : indices) {
         index = indexFormat == MeshIndexFormat::UInt16 ? reader.ReadU16() : reader.ReadU32();
         if (index >= vertices.size())
             throw std::invalid_argument("mesh artifact contains an out-of-range vertex index");
     }
 
-    std::vector<SubMesh> subMeshes(reader.ReadCount(MaximumElementCount, 52u));
+    std::vector<SubMesh> subMeshes(reader.ReadArrayCount<SubMesh>(MaximumElementCount, 52u));
     for (SubMesh &subMesh : subMeshes) {
         subMesh.indexStart = reader.ReadU32();
         subMesh.indexCount = reader.ReadU32();
@@ -340,11 +297,11 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
             throw std::invalid_argument("mesh artifact contains an invalid submesh range");
     }
 
-    std::vector<std::string> slotNames(reader.ReadCount(MaximumElementCount, 4u));
+    std::vector<std::string> slotNames(reader.ReadArrayCount<std::string>(MaximumElementCount, 4u));
     for (auto &name : slotNames)
         name = reader.ReadString();
 
-    std::vector<MaterialSlotData> slotData(reader.ReadCount(MaximumElementCount, 44u));
+    std::vector<MaterialSlotData> slotData(reader.ReadArrayCount<MaterialSlotData>(MaximumElementCount, 44u));
     for (MaterialSlotData &material : slotData) {
         material.baseColor = ReadVec4(reader);
         material.emissionColor = ReadVec4(reader);
@@ -353,7 +310,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
         material.opacity = reader.ReadFloat();
     }
 
-    std::vector<std::string> nodeNames(reader.ReadCount(MaximumElementCount, 4u));
+    std::vector<std::string> nodeNames(reader.ReadArrayCount<std::string>(MaximumElementCount, 4u));
     for (auto &name : nodeNames)
         name = reader.ReadString();
     std::vector<ImportedModelNode> nodes;
@@ -370,15 +327,12 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
             if (readMorphTargets)
                 throw std::invalid_argument("mesh artifact repeats its morph-target section");
             readMorphTargets = true;
-            morphTargets.resize(reader.ReadCount(MaximumElementCount, 20u));
-            std::unordered_set<std::string> names;
+            morphTargets.resize(reader.ReadArrayCount<MeshMorphTarget>(MaximumElementCount, 20u));
             for (auto &target : morphTargets) {
                 target.name = reader.ReadString();
                 target.defaultWeight = reader.ReadFloat();
-                if (target.name.empty() || !names.insert(target.name).second)
-                    throw std::invalid_argument("mesh artifact contains invalid morph-target names");
                 const auto readDeltas = [&](std::vector<glm::vec3> &values, bool required) {
-                    const uint32_t count = reader.ReadCount(MaximumElementCount, 12u);
+                    const uint32_t count = reader.ReadArrayCount<glm::vec3>(MaximumElementCount, 12u);
                     if ((required && count != vertices.size()) || (!required && count != 0 && count != vertices.size()))
                         throw std::invalid_argument("mesh artifact morph target does not match its vertex domain");
                     values.reserve(count);
@@ -462,7 +416,7 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
         sourceLocal = nodeFormat == ModelNodesSource;
         if (nodeFormat != ModelNodesSource && nodeFormat != ModelNodesBaked)
             throw std::invalid_argument("mesh artifact has an unsupported model hierarchy section");
-        nodes.resize(reader.ReadCount(MaximumElementCount, 80u));
+        nodes.resize(reader.ReadArrayCount<ImportedModelNode>(MaximumElementCount, 80u));
         const auto readNodeIndex = [&reader]() -> int32_t {
             const uint32_t value = reader.ReadU32();
             if (value == std::numeric_limits<uint32_t>::max())
@@ -488,6 +442,12 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     if (!slotData.empty() && (!readBindings || !readSurface || !readTextures))
         throw std::invalid_argument("mesh artifact is missing current material sections");
 
+    work.Add<uint8_t>(nodeNames.size());
+    work.AddNameTable(morphTargets.size());
+    if (sourceLocal) {
+        mesh_decode_storage::AddSourceLocal(work, vertices.size(), indices.size(), subMeshes, morphTargets, nodeNames,
+                                            nodes.size());
+    }
     mesh->SetMaterialSlotNames(std::move(slotNames));
     mesh->SetMaterialSlotData(std::move(slotData));
     mesh->SetNodeNames(std::move(nodeNames));
@@ -501,18 +461,58 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     return mesh;
 }
 
+std::shared_ptr<InxMesh> ReadCookedMesh(Input input, std::string_view expectedSourceContentHash,
+                                        uint64_t workspaceLimit = UINT64_MAX)
+{
+    const auto workspace = artifact_layout::ReadHeader(input, Magic, ArtifactSchema, workspaceLimit);
+    Reader reader(std::move(input), workspace);
+    return ReadMeshPayload(reader, expectedSourceContentHash);
+}
+} // namespace
+
+std::string MeshArtifact::SerializeSource(const InxMesh &mesh)
+{
+    if (mesh.HasSkinnedData())
+        throw std::invalid_argument("Static mesh source cannot discard skinned mesh data");
+    return WriteMesh(mesh, AuthoredSourceIdentity, false);
+}
+
+std::shared_ptr<InxMesh> MeshArtifact::DeserializeSource(std::string_view bytes)
+{
+    Input input(binary_codec::CheckedPayload(bytes));
+    if (!artifact_layout::ReadSignature(input, Magic, SourceSchema))
+        throw std::invalid_argument("invalid authored mesh layout");
+    Reader reader(std::move(input), UINT64_MAX);
+    return ReadMeshPayload(reader, AuthoredSourceIdentity);
+}
+
+std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view sourceContentHash)
+{
+    return WriteMesh(mesh, sourceContentHash, true);
+}
+
+std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::string_view expectedSourceContentHash)
+{
+    return ReadCookedMesh(Input(binary_codec::CheckedPayload(bytes)), expectedSourceContentHash);
+}
+
+std::shared_ptr<InxMesh> MeshArtifact::Read(FileInput &file, std::string_view expectedSourceContentHash,
+                                            std::vector<char> &block, uint64_t workspaceLimit)
+{
+    ArtifactFileReader input(file, (std::numeric_limits<size_t>::max)(), block);
+    auto mesh = ReadCookedMesh(input.Begin<Input>(), expectedSourceContentHash, workspaceLimit);
+    input.Verify();
+    return mesh;
+}
+
 bool MeshArtifact::HasCurrentHeader(std::string_view bytes) noexcept
 {
-    const size_t schemaOffset = Magic.size() + sizeof(uint32_t);
-    return bytes.size() >= schemaOffset + sizeof(uint32_t) && bytes.substr(0, Magic.size()) == Magic &&
-           static_cast<unsigned char>(bytes[Magic.size()]) == 0x04 &&
-           static_cast<unsigned char>(bytes[Magic.size() + 1]) == 0x03 &&
-           static_cast<unsigned char>(bytes[Magic.size() + 2]) == 0x02 &&
-           static_cast<unsigned char>(bytes[Magic.size() + 3]) == 0x01 &&
-           static_cast<unsigned char>(bytes[schemaOffset]) == 'M' &&
-           static_cast<unsigned char>(bytes[schemaOffset + 1]) == 'S' &&
-           static_cast<unsigned char>(bytes[schemaOffset + 2]) == 'H' &&
-           static_cast<unsigned char>(bytes[schemaOffset + 3]) == '1';
+    return artifact_layout::HasHeader(bytes, Magic, ArtifactSchema);
+}
+
+uint64_t MeshArtifact::ReadWorkspace(FileInput &file)
+{
+    return artifact_layout::ReadWorkspace(file, Magic, ArtifactSchema);
 }
 
 } // namespace infernux

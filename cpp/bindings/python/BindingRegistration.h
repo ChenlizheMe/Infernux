@@ -6,9 +6,18 @@ namespace infernux
 {
 
 void RegisterInfernuxBindings(pybind11::module_ &module);
+void RegisterFrameWorkBindings(pybind11::module_ &module);
+void RegisterRuntimeNumericsBindings(pybind11::module_ &module);
 void RegisterGUIBindings(pybind11::module_ &module);
 void RegisterTextBindings(pybind11::module_ &module);
 void RegisterVector2Bindings(pybind11::module_ &module);
+void RegisterAnimationCurveBindings(pybind11::module_ &module);
+void RegisterMotionPathBindings(pybind11::module_ &module);
+void RegisterTweenNumericsBindings(pybind11::module_ &module);
+void RegisterEulerTweenBindings(pybind11::module_ &module);
+void RegisterVectorTweenBindings(pybind11::module_ &module);
+void RegisterStringTweenBindings(pybind11::module_ &module);
+void RegisterRandomBindings(pybind11::module_ &module);
 void RegisterVector3Bindings(pybind11::module_ &module);
 void RegisterVec4fBindings(pybind11::module_ &module);
 void RegisterResourceBindings(pybind11::module_ &module);
@@ -24,6 +33,8 @@ void RegisterInputBindings(pybind11::module_ &module);
 void RegisterPhysicsBindings(pybind11::module_ &module);
 void RegisterAudioBindings(pybind11::module_ &module);
 void RegisterBatchBindings(pybind11::module_ &module);
+void RegisterComputeBindings(pybind11::module_ &module);
+void RegisterCpuComputeBindings(pybind11::module_ &module);
 void RegisterSemanticCatalogBindings(pybind11::module_ &module);
 
 } // namespace infernux

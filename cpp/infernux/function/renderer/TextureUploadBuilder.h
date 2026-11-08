@@ -13,6 +13,7 @@ class TextureUploadBatch final
 {
   public:
     TextureUploadBatch(const TextureCpuData &cpuData, const rhi::SamplerDesc &sampler);
+    TextureUploadBatch(const TextureArtifactDescription &description, const rhi::SamplerDesc &sampler);
 
     [[nodiscard]] const rhi::TextureUploadRequest &GetRequest() noexcept
     {
@@ -22,6 +23,8 @@ class TextureUploadBatch final
     }
 
   private:
+    void Build(TextureDimension dimension, TextureFormat format, const std::vector<TextureMipLevel> &mips,
+               const rhi::SamplerDesc &sampler);
     rhi::TextureUploadRequest m_request;
     std::vector<rhi::TextureSubresourceUpload> m_subresources;
 };

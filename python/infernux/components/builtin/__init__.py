@@ -28,7 +28,9 @@ Usage::
 from .light import Light
 from .mesh_renderer import MeshRenderer
 from .line_renderer import LineRenderer
+from .trail_renderer import TrailRenderer
 from .skinned_mesh_renderer import SkinnedMeshRenderer
+from .skeleton_instance import SkeletonInstance
 from .camera import Camera
 from .collider import Collider, PhysicsMaterialCombine
 from .box_collider import BoxCollider
@@ -43,6 +45,13 @@ from .rigidbody import (
     RigidbodyInterpolation,
 )
 from .hinge_joint import HingeJoint
+from .six_dof_joint import SixDOFJoint
+from infernux.lib import JointMotion
+from .swing_twist_joint import SwingTwistJoint
+from infernux.lib import JointMotorMode, JointSwingType
+from .fixed_joint import FixedJoint
+from .ragdoll import Ragdoll
+from .distance_joint import DistanceJoint
 from .slider_joint import SliderJoint
 from .audio_source import AudioSource
 from .audio_listener import AudioListener
@@ -52,7 +61,9 @@ __all__ = [
     "Light",
     "MeshRenderer",
     "LineRenderer",
+    "TrailRenderer",
     "SkinnedMeshRenderer",
+    "SkeletonInstance",
     "Camera",
     "Collider",
     "PhysicsMaterialCombine",
@@ -66,6 +77,14 @@ __all__ = [
     "CollisionDetectionMode",
     "RigidbodyInterpolation",
     "HingeJoint",
+    "SixDOFJoint",
+    "JointMotion",
+    "SwingTwistJoint",
+    "JointMotorMode",
+    "JointSwingType",
+    "FixedJoint",
+    "Ragdoll",
+    "DistanceJoint",
     "SliderJoint",
     "AudioSource",
     "AudioListener",

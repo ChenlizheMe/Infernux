@@ -1,9 +1,12 @@
 #pragma once
 
+#include "AssetSource.h"
 #include <core/types/InxFwdType.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -15,6 +18,12 @@ namespace infernux
 {
 
 class AssetDatabase;
+
+enum class AssetReloadMode
+{
+    InPlace,
+    Invalidate,
+};
 
 class RuntimeAssetPayload final
 {
@@ -49,6 +58,11 @@ class RuntimeAssetPayload final
         return m_instance.use_count();
     }
 
+    [[nodiscard]] std::weak_ptr<const void> GetStorageOwner() const noexcept
+    {
+        return m_instance;
+    }
+
     template <typename T> [[nodiscard]] std::shared_ptr<T> Get() const
     {
         if (!m_instance)
@@ -62,6 +76,29 @@ class RuntimeAssetPayload final
   private:
     std::shared_ptr<void> m_instance;
     std::type_index m_type{typeid(void)};
+};
+
+struct WorkerAssetLoadPlan
+{
+    enum class ReadKind
+    {
+        RangedFile,
+        GeometryArtifact,
+        SkeletonArtifact,
+        Count
+    };
+
+    struct Read
+    {
+        uint64_t bytes = 0;
+        ReadKind kind = ReadKind::RangedFile;
+    };
+
+    uint64_t storageBytes = 0;
+    /// The worker receives the admitted byte count and describes its next read
+    /// when it returns an incomplete payload.
+    std::function<RuntimeAssetPayload(uint64_t, Read &)> advance;
+    Read read;
 };
 
 /// @brief Interface for type-specific asset loading/reloading in AssetRegistry.
@@ -83,7 +120,8 @@ class IAssetLoader
   public:
     virtual ~IAssetLoader() = default;
 
-    /// @brief Load an asset from disk.
+    /// Prepare a private CPU payload. Global dependency/residency state belongs
+    /// to the registry owner and must not change before candidate publication.
     /// @return Type-tagged runtime object. Empty means this asset has no C++ runtime payload.
     virtual RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) = 0;
 
@@ -93,19 +131,37 @@ class IAssetLoader
         return false;
     }
 
-    /// Load transient data needed to publish a runtime resource. The returned
-    /// payload must never be inserted into AssetRegistry; the consumer owns it
-    /// only until it has copied the data into its native staging resource.
-    virtual RuntimeAssetPayload LoadStaging(const std::string & /*filePath*/, const std::string & /*guid*/,
-                                            AssetDatabase * /*adb*/)
+    /// Optional worker-side size discovery before a managed payload allocation.
+    /// An accepted plan keeps its claim until its last step retires.
+    virtual WorkerAssetLoadPlan PlanWorkerLoad(const std::string &, const std::string &, AssetDatabase *)
     {
-        return nullptr;
+        return {};
     }
 
-    /// @brief Reload an already-loaded asset in-place.
-    /// @return true on success.
-    virtual bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
-                        AssetDatabase *adb) = 0;
+    /// Mutable runtime objects keep their identity; immutable source revisions
+    /// leave the cache and are prepared again through the original shared ticket.
+    [[nodiscard]] virtual AssetReloadMode GetReloadMode() const noexcept
+    {
+        return AssetReloadMode::InPlace;
+    }
+
+    /// Synchronous in-place reload for asset types that own that boundary.
+    virtual bool Reload(const RuntimeAssetPayload &, const std::string &, const std::string &, AssetDatabase *)
+    {
+        throw std::logic_error("Asset loader requires registry-managed publication");
+    }
+
+    /// Apply loader-owned global state after the owner accepts the live payload.
+    /// Synchronous loading, reloading and worker publication share this boundary.
+    virtual void OnPublished(const RuntimeAssetPayload &, const std::string &, AssetDatabase *)
+    {
+    }
+
+    /// A catalog move preserves the payload and its runtime version. Only
+    /// loaders whose live objects retain a location need to update it here.
+    virtual void OnRelocated(const RuntimeAssetPayload &, const std::string &)
+    {
+    }
 
     /// @brief Estimate bytes exclusively owned by this live CPU payload.
     /// A non-empty payload must never report zero.
@@ -117,11 +173,8 @@ class IAssetLoader
     /// derive an edge from a path, path_hint, filename, or search result.
     virtual std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) = 0;
 
-    /// @brief Create metadata from the source bytes already read by AssetDatabase.
-    virtual void CreateMeta(const char * /*content*/, size_t /*contentSize*/, const std::string & /*filePath*/,
-                            InxResourceMeta & /*metaData*/) const
-    {
-    }
+    /// Source bytes are materialized only when this metadata parser needs them.
+    virtual void CreateMeta(AssetSource &source, InxResourceMeta &metadata) const = 0;
 };
 
 } // namespace infernux

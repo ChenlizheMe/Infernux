@@ -14,19 +14,22 @@ ShaderInfo {
         Float normalScale = 1.0 Range(0.0, 2.0)
         Color emissionColor = [0.0, 0.0, 0.0, 0.0] HDR
         Texture2D texSampler = white
+        Float4 texSampler_ST = [1.0, 1.0, 0.0, 0.0]
         Texture2D aoMap = white
+        Float4 aoMap_ST = [1.0, 1.0, 0.0, 0.0]
         Texture2D normalMap = normal
+        Float4 normalMap_ST = [1.0, 1.0, 0.0, 0.0]
     }
 }
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
 
-    vec4 texColor = sampleAlbedoAlpha(texSampler);
+    vec4 texColor = sampleAlbedoAlpha(texSampler, transformTextureUV(v_TexCoord, material.texSampler_ST));
     s.albedo = texColor.rgb * getVertexColor() * material.baseColor.rgb;
-    s.normalWS = sampleNormal(normalMap, material.normalScale);
+    s.normalWS = sampleNormal(normalMap, transformTextureUV(v_TexCoord, material.normalMap_ST), material.normalScale);
     s.smoothness = material.smoothness;
-    s.occlusion = sampleGrayscale(aoMap) * material.ambientOcclusion;
+    s.occlusion = sampleGrayscale(aoMap, transformTextureUV(v_TexCoord, material.aoMap_ST)) * material.ambientOcclusion;
     s.emission = material.emissionColor.rgb * material.emissionColor.a;
     s.alpha = texColor.a * material.baseColor.a;
     s.specularHighlights = material.specularHighlights;

@@ -30,10 +30,6 @@ option(INFERNUX_BUILD_PLAYER_HOST
     "Build the native single-process PlayerHost bootstrap"
     OFF
 )
-option(INFERNUX_RUNTIME_STATIC
-    "Link the private runtime composition layer statically into the Python module"
-    ON
-)
 option(INFERNUX_RELEASE_LTO "Enable IPO/LTO for native Release targets" ON)
 option(INFERNUX_FRAME_PROFILE_TERMINAL "Emit bounded frame-profile reports to stderr" OFF)
 

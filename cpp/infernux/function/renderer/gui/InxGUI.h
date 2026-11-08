@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../GpuResidency.h"
+#include "../InxRenderStruct.h"
 #include "../rhi/RhiRenderTexture.h"
 
 #include "InxVkCoreModular.h"
@@ -12,6 +13,7 @@
 #include <SDL3/SDL.h>
 #include <backends/imgui_impl_sdl3.h>
 #include <backends/imgui_impl_vulkan.h>
+#include <functional>
 #include <imgui.h>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +27,7 @@ class EditorShortcutInput;
 namespace vk
 {
 class TextureUploadTicket;
+class ImageReadbackTicket;
 } // namespace vk
 
 class InxGUI
@@ -43,7 +46,8 @@ class InxGUI
     }
     void BuildFrame();
     [[nodiscard]] bool ScheduleFrameBuild(bool force = false);
-    void BuildScheduledFrame();
+    void BuildScheduledFrame(bool canCollectRetiredFonts = true);
+    void PublishCompletedTextureUploads();
     void CompleteInputFrame();
     void RequestFrame() noexcept;
     void RequestSyntheticInputFrame() noexcept;
@@ -95,14 +99,21 @@ class InxGUI
     /// @param filter VK_FILTER_LINEAR (default) or VK_FILTER_NEAREST for point sampling
     /// @return A monotonic submission version. Poll GetImGuiTextureVersion before consuming a replacement.
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
-                                   int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+                                   int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false,
+                                   std::function<bool()> canPublish = {});
 
     /// Present an already-resident engine texture in ImGui without decoding or
     /// uploading a second CPU-authored preview texture.
+    /// ownedBytes charges an exclusively handed-off preview image. Borrowed
+    /// asset/RenderTexture views keep zero to avoid counting their owners twice.
     uint64_t PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
-                                        bool pinned = false);
+                                        bool pinned = false, uint64_t ownedBytes = 0);
     uint64_t PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture);
-    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels);
+    [[nodiscard]] vk::RenderGraph::PersistentImageInitializations TakeRenderTextureInitializations();
+    /// Explicit CPU consumer; ordinary GUI display never requests this copy.
+    std::shared_ptr<vk::ImageReadbackTicket> RequestTextureReadback(const std::string &name);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels,
+                                           std::function<bool()> canPublish);
     std::shared_ptr<rhi::RenderTexture> ResolveImGuiRenderTexture(uint64_t textureId) const;
 
     /// Invalidate queued uploads for a name without removing its currently
@@ -122,6 +133,7 @@ class InxGUI
     /// @param name Texture identifier
     /// @return Texture ID or 0 if not found
     uint64_t GetImGuiTextureId(const std::string &name);
+    [[nodiscard]] ImGuiTexturePublication GetImGuiTexturePublication(const std::string &name);
     /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
     /// @return false when the descriptor is no longer owned by the live texture registry.
     bool TouchImGuiTextureId(uint64_t textureId);
@@ -142,7 +154,7 @@ class InxGUI
     }
     [[nodiscard]] uint64_t GetImGuiTextureResidentBytes() const noexcept
     {
-        return m_textureResidentBytes;
+        return m_textureResidency->heldBytes;
     }
     [[nodiscard]] size_t GetImGuiTextureEntryCount() const noexcept
     {
@@ -184,7 +196,7 @@ class InxGUI
 
   private:
     uint64_t SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels, VkFilter filter,
-                                      bool pinned, bool displayEncoding);
+                                      bool pinned, bool displayEncoding, std::function<bool()> canPublish = {});
     void RefreshDisplayScale();
     void ReloadGUIFont();
 
@@ -195,10 +207,17 @@ class InxGUI
         uint64_t residentBytes = 0;
         uint64_t lastUsedFrame = 0;
         uint64_t uploadGeneration = 0;
+        int width = 0;
+        int height = 0;
         bool pinned = false;
         bool requiresDisplayEncoding = false;
         std::shared_ptr<const rhi::TextureGpuView> externalView;
         std::weak_ptr<rhi::RenderTexture> renderTexture;
+
+        [[nodiscard]] rhi::SubmissionTicket GetUploadSubmission() const noexcept
+        {
+            return externalView ? externalView->GetUploadSubmission() : texture->GetUploadSubmission();
+        }
     };
 
     struct DeferredTextureRelease
@@ -214,6 +233,7 @@ class InxGUI
         bool pinned = false;
         std::shared_ptr<vk::TextureUploadTicket> ticket;
         bool requiresDisplayEncoding = false;
+        std::function<bool()> canPublish;
     };
 
     InxVkCoreModular *m_vkCore_ptr = nullptr;
@@ -236,15 +256,22 @@ class InxGUI
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
+    vk::RenderGraph::PersistentImageInitializations m_renderTextureInitializations;
     std::unordered_map<VkDescriptorSet, std::string> m_textureNamesByDescriptor;
     std::unordered_map<std::string, uint64_t> m_textureUploadGenerations;
     std::unordered_map<std::string, uint64_t> m_failedTextureUploadVersions;
     std::vector<PendingTextureUpload> m_pendingTextureUploads;
     std::vector<std::string> m_pendingTextureRemovals;
     std::vector<DeferredTextureRelease> m_deferredTextureReleases;
+    std::unordered_map<ImTextureData *, rhi::SubmissionSerial> m_atlasRetirementEpochs;
     uint64_t m_guiFrameCounter = 0;
     uint64_t m_textureBudgetBytes = 128ULL * 1024ULL * 1024ULL;
-    uint64_t m_textureResidentBytes = 0;
+    struct TextureResidency
+    {
+        uint64_t heldBytes = 0;
+        uint64_t retiringBytes = 0;
+    };
+    std::shared_ptr<TextureResidency> m_textureResidency = std::make_shared<TextureResidency>();
     uint64_t m_pendingTextureUploadBytes = 0;
     uint64_t m_submittedTextureUploadCount = 0;
     uint64_t m_completedTextureUploadCount = 0;
@@ -259,7 +286,6 @@ class InxGUI
 
     void ApplyPendingDockTabSelections();
     void PromoteActiveModal();
-    void PumpTextureUploads();
     void DeferTextureRelease(ImGuiTextureResource resource);
     void ReleaseTextureResource(ImGuiTextureResource &resource);
 };

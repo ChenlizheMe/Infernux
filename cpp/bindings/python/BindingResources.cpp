@@ -1,12 +1,16 @@
+#include "InxPackPyBridge.h"
 #include "JsonPyBridge.h"
+#include "MaterialPropertyName.h"
 #include "MatrixPyBridge.h"
 #include "ResourceMetaPyView.h"
 #include <array>
+#include <core/threading/FrameWorkOwner.h>
 #include <fstream>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -18,7 +22,10 @@
 #include <platform/filesystem/AtomicFile.h>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPack.h>
+#include <platform/filesystem/InxPackTask.h>
 #include <platform/filesystem/InxPath.h>
+#include <platform/filesystem/NativeModule.h>
+#include <platform/filesystem/VerifiedFile.h>
 #include <sstream>
 
 #include <pybind11/pybind11.h>
@@ -34,6 +41,50 @@ namespace infernux
 
 namespace
 {
+
+/// Shared conversion from one reflected material property to its Python value.
+///
+/// The single-property and bulk getters both use this so their two switches
+/// cannot drift apart. The returned shapes are a public binding contract:
+/// Mat4 is a flat 16-float list in GLM column-major order, Float4Array is a
+/// list of 4-tuples, and Color shares the Float4 branch.
+py::object PyValueFromMaterialProperty(const MaterialProperty &prop)
+{
+    switch (prop.type) {
+    case MaterialPropertyType::Float:
+        return py::cast(std::get<float>(prop.value));
+    case MaterialPropertyType::Float2:
+        return py::cast(std::get<glm::vec2>(prop.value));
+    case MaterialPropertyType::Float3:
+        return py::cast(std::get<glm::vec3>(prop.value));
+    case MaterialPropertyType::Float4:
+    case MaterialPropertyType::Color:
+        return py::cast(std::get<glm::vec4>(prop.value));
+    case MaterialPropertyType::Int:
+        return py::cast(std::get<int>(prop.value));
+    case MaterialPropertyType::Mat4: {
+        // mat4 is not registered as a pybind11 type: expose the GLM storage
+        // order (column-major) as 16 floats.
+        auto &matrix = std::get<glm::mat4>(prop.value);
+        py::list result;
+        const float *data = &matrix[0][0];
+        for (int index = 0; index < 16; ++index)
+            result.append(data[index]);
+        return result;
+    }
+    case MaterialPropertyType::Texture2D:
+        return py::cast(std::get<std::string>(prop.value));
+    case MaterialPropertyType::FloatArray:
+        return py::cast(std::get<std::vector<float>>(prop.value));
+    case MaterialPropertyType::Float4Array: {
+        py::list result;
+        for (const auto &value : std::get<std::vector<glm::vec4>>(prop.value))
+            result.append(py::make_tuple(value.x, value.y, value.z, value.w));
+        return result;
+    }
+    }
+    return py::none();
+}
 
 template <typename Value, typename... Options, typename Access>
 void BindMetadataReadMethods(py::class_<Value, Options...> &binding, Access access)
@@ -110,84 +161,24 @@ ShaderAssetReference ShaderReferenceFromPython(py::handle value)
     return reference;
 }
 
-py::dict InxPackManifestToPython(const inxpack::Manifest &manifest)
-{
-    py::dict result;
-    result["format"] = "infernux-native-inxpack";
-    result["codec"] = "zstd-or-store";
-    result["file_count"] = manifest.entries.size();
-    result["raw_bytes"] = manifest.rawBytes;
-    result["stored_bytes"] = manifest.storedBytes;
-    result["payload_bytes"] = manifest.payloadBytes;
-    result["archive_bytes"] = manifest.archiveBytes;
-    result["archive_sha256"] = inxpack::HashToHex(manifest.archiveHash);
-    py::list files;
-    for (const auto &entry : manifest.entries) {
-        py::dict item;
-        item["path"] = entry.path;
-        item["offset"] = entry.offset;
-        item["stored_bytes"] = entry.storedBytes;
-        item["raw_bytes"] = entry.rawBytes;
-        item["codec"] = inxpack::CodecName(entry.codec);
-        files.append(std::move(item));
-    }
-    result["files"] = std::move(files);
-    return result;
-}
-
-std::vector<inxpack::SourceFile> InxPackSourcesFromPython(py::handle value)
-{
-    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
-        throw std::invalid_argument("InxPack sources must be a sequence of (logical_path, source_path) pairs");
-    const py::sequence sequence = py::reinterpret_borrow<py::sequence>(value);
-    std::vector<inxpack::SourceFile> sources;
-    sources.reserve(sequence.size());
-    for (const py::handle item : sequence) {
-        if (!py::isinstance<py::sequence>(item) || py::isinstance<py::str>(item))
-            throw std::invalid_argument("InxPack source entry must be a two-value sequence");
-        const py::sequence pair = py::reinterpret_borrow<py::sequence>(item);
-        if (pair.size() != 2)
-            throw std::invalid_argument("InxPack source entry must contain logical and filesystem paths");
-        sources.push_back({py::cast<std::string>(pair[0]), ToFsPath(py::cast<std::string>(pair[1]))});
-    }
-    return sources;
-}
-
-std::vector<std::string> InxPackAllowedRootsFromPython(py::handle value)
-{
-    if (value.is_none())
-        return {};
-    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
-        throw std::invalid_argument("InxPack allowed_roots must be a sequence or None");
-    const py::sequence sequence = py::reinterpret_borrow<py::sequence>(value);
-    std::vector<std::string> roots;
-    roots.reserve(sequence.size());
-    for (const py::handle item : sequence)
-        roots.push_back(py::cast<std::string>(item));
-    return roots;
-}
-
-inxpack::WriteOptions InxPackWriteOptionsFromPython(py::handle compressionLevel, const std::string &profile)
-{
-    inxpack::WriteOptions options;
-    if (profile == "development")
-        options.profile = inxpack::CompressionProfile::Development;
-    else if (profile == "release")
-        options.profile = inxpack::CompressionProfile::Release;
-    else
-        throw std::invalid_argument("InxPack compression profile must be 'development' or 'release'");
-
-    if (!compressionLevel.is_none()) {
-        options.compressionLevel = py::cast<int>(compressionLevel);
-        inxpack::ValidateCompressionLevel(options.compressionLevel);
-    }
-    return options;
-}
-
 } // namespace
 
 void RegisterResourceBindings(py::module_ &m)
 {
+    py::register_exception<PathWriteBusy>(m, "PathWriteBusy", PyExc_RuntimeError);
+    py::class_<PathWriteScope>(m, "PathWriteScope")
+        .def(py::init<>())
+        .def_static("begin_write", &PathWriteScope::BeginWrite, py::arg("paths"), py::arg("parent") = PathWriteScope{})
+        .def_static("begin_mutation", &PathWriteScope::BeginMutation, py::arg("paths"),
+                    py::arg("directories") = std::vector<std::string>{}, py::arg("parent") = PathWriteScope{})
+        .def_property_readonly("is_open", &PathWriteScope::IsOpen)
+        .def("covers", &PathWriteScope::Covers)
+        .def("close", &PathWriteScope::Close)
+        .def(
+            "__enter__", [](PathWriteScope &scope) -> PathWriteScope & { return scope; },
+            py::return_value_policy::reference_internal)
+        .def("__exit__", [](PathWriteScope &scope, py::object, py::object, py::object) { scope.Close(); });
+
     m.def(
         "_asset_source_stat",
         [](const std::string &path) {
@@ -205,24 +196,11 @@ void RegisterResourceBindings(py::module_ &m)
             const auto file = ToFsPath(path);
             const auto size = std::filesystem::file_size(file);
             const auto modified = std::filesystem::last_write_time(file);
-            std::ifstream input(file, std::ios::binary);
-            if (!input)
-                throw std::runtime_error("Cannot open asset source: " + path);
-            std::array<char, 65536> buffer;
-            uint64_t hash = 14695981039346656037ULL;
-            while (input) {
-                input.read(buffer.data(), buffer.size());
-                for (std::streamsize i = 0; i < input.gcount(); ++i) {
-                    hash ^= static_cast<unsigned char>(buffer[i]);
-                    hash *= 1099511628211ULL;
-                }
-            }
-            if (input.bad() || size != std::filesystem::file_size(file) ||
-                modified != std::filesystem::last_write_time(file))
+            AssetSource source(path);
+            const auto hash = source.ContentHash();
+            if (size != std::filesystem::file_size(file) || modified != std::filesystem::last_write_time(file))
                 throw std::runtime_error("Asset source changed or could not be read: " + path);
-            std::ostringstream result;
-            result << std::hex << std::setfill('0') << std::setw(16) << hash;
-            return result.str();
+            return hash;
         },
         py::call_guard<py::gil_scoped_release>());
     m.def("_encode_asset_document",
@@ -232,61 +210,257 @@ void RegisterResourceBindings(py::module_ &m)
         return JsonToPython(DecodeAssetDocument(bytes));
     });
     m.def("_read_asset_document", [](const std::string &path) { return JsonToPython(ReadAssetDocument(path)); });
-    m.def(
-        "_inxpack_write",
-        [](py::handle sources, const std::string &destination, py::handle compressionLevel,
-           const std::string &profile) {
-            auto sourceFiles = InxPackSourcesFromPython(sources);
-            const auto destinationPath = ToFsPath(destination);
-            const auto options = InxPackWriteOptionsFromPython(compressionLevel, profile);
-            inxpack::Manifest manifest;
-            {
-                // Content packaging runs on the editor build worker. Holding
-                // the GIL here would still starve the render/UI thread for the
-                // entire read, hash, compression and durable-write operation.
-                py::gil_scoped_release release;
-                manifest = inxpack::Write(destinationPath, std::move(sourceFiles), options);
-            }
-            return InxPackManifestToPython(manifest);
-        },
-        py::arg("sources"), py::arg("destination"), py::arg("compression_level") = py::none(),
-        py::arg("profile") = "development", "Write the single native InxPack format using Store/Zstandard codecs.");
-    m.def(
-        "_inxpack_read_manifest",
-        [](const std::string &path) {
-            inxpack::Manifest manifest;
-            {
-                py::gil_scoped_release release;
-                manifest = inxpack::ReadManifest(ToFsPath(path));
-            }
-            return InxPackManifestToPython(manifest);
-        },
-        py::arg("path"), "Read and fully validate a native InxPack manifest.");
-    m.def(
-        "_inxpack_extract",
-        [](const std::string &path, const std::string &destination, py::handle allowedRoots) {
-            const auto roots = InxPackAllowedRootsFromPython(allowedRoots);
-            inxpack::Manifest manifest;
-            {
-                py::gil_scoped_release release;
-                manifest = inxpack::Extract(ToFsPath(path), ToFsPath(destination), roots);
-            }
-            return InxPackManifestToPython(manifest);
-        },
-        py::arg("path"), py::arg("destination"), py::arg("allowed_roots") = py::none(),
-        "Validate and extract a native InxPack with an optional allowed root filter.");
-    m.def(
-        "_inxpack_read_entry",
-        [](const std::string &path, const std::string &entryPath) {
-            std::vector<uint8_t> bytes;
-            {
-                py::gil_scoped_release release;
-                bytes = inxpack::ReadEntry(ToFsPath(path), entryPath);
-            }
-            return py::bytes(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-        },
-        py::arg("path"), py::arg("entry_path"), "Read one validated native InxPack entry.");
-
+    binding::BindPackFunctions(m);
+    py::class_<IoWork>(m, "_IoWork")
+        .def_readonly("operation", &IoWork::operation)
+        .def_readonly("bytes", &IoWork::bytes)
+        .def_readonly("remaining_bytes", &IoWork::remainingBytes)
+        .def_readonly("parameter", &IoWork::parameter);
+    py::class_<IoSpan>(m, "_IoSpan")
+        .def_readonly("kind", &IoSpan::kind)
+        .def_readonly("operation", &IoSpan::operation)
+        .def_readonly("entry_index", &IoSpan::entryIndex)
+        .def_readonly("parameter", &IoSpan::parameter)
+        .def_readonly("input_bytes", &IoSpan::inputBytes)
+        .def_readonly("output_bytes", &IoSpan::outputBytes)
+        .def_readonly("finish_operation", &IoSpan::finishOperation)
+        .def_readonly("entry_bytes", &IoSpan::entryBytes);
+    py::class_<VerifiedFile, std::shared_ptr<VerifiedFile>>(m, "_VerifiedFile")
+        .def_property_readonly("path", [](const VerifiedFile &file) { return FromFsPath(file.Path()); })
+        .def_property_readonly("sha256", &VerifiedFile::Sha256)
+        .def_property_readonly("byte_size", &VerifiedFile::Bytes)
+        .def_property_readonly("retained_bytes", &VerifiedFile::RetainedBytes);
+#if defined(INX_PLATFORM_WINDOWS) && (defined(_M_X64) || defined(__x86_64__))
+    m.attr("_native_cpu_program_target") = "windows-x86_64";
+#elif defined(INX_PLATFORM_LINUX) && defined(__x86_64__)
+    m.attr("_native_cpu_program_target") = "linux-x86_64";
+#else
+    m.attr("_native_cpu_program_target") = py::none();
+#endif
+#if defined(INX_PLATFORM_WINDOWS) || defined(INX_PLATFORM_LINUX)
+    py::class_<NativeModule, std::shared_ptr<NativeModule>>(m, "_NativeModule")
+        .def_static("load", &NativeModule::Load, py::arg("file"), py::arg("symbols"),
+                    py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("identity", &NativeModule::Identity)
+        .def_property_readonly("image_bytes", &NativeModule::ImageBytes)
+        .def_property_readonly("published", &NativeModule::IsPublished)
+        .def("address", &NativeModule::Address, py::arg("symbol"))
+        .def("require_published", &NativeModule::RequirePublished)
+        .def("publish", &NativeModule::Publish)
+        .def("discard_unpublished", &NativeModule::Discard, py::call_guard<py::gil_scoped_release>());
+    py::class_<NativeModuleTask>(m, "_NativeModuleTask")
+        .def(py::init<std::shared_ptr<VerifiedFile>, std::vector<std::string>>(), py::arg("file"), py::arg("symbols"))
+        .def("advance", &NativeModuleTask::Advance, py::arg("max_bytes"), py::call_guard<py::gil_scoped_release>())
+        .def("describe_work", &NativeModuleTask::DescribeWork, py::arg("max_bytes"))
+        .def("describe_remaining_work", &NativeModuleTask::DescribeRemainingWork)
+        .def_property_readonly("submitted_work", &NativeModuleTask::GetSubmittedWork)
+        .def_property_readonly("module", &NativeModuleTask::GetModule)
+        .def("commit", &NativeModuleTask::Commit)
+        .def("cancel", &NativeModuleTask::Cancel, py::call_guard<py::gil_scoped_release>())
+        .def("wait", &NativeModuleTask::Wait, py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("pending", &NativeModuleTask::IsPending)
+        .def_property_readonly("done", &NativeModuleTask::IsComplete)
+        .def_property_readonly("state", &NativeModuleTask::GetStateName)
+        .def_property_readonly("error", &NativeModuleTask::GetError)
+        .def_property_readonly("retained_bytes", &NativeModuleTask::GetRetainedBytes)
+        .def_property_readonly("reservation_bytes", &NativeModuleTask::GetReservationBytes)
+        .def_property_readonly("image_bytes", &NativeModuleTask::GetImageBytes)
+        .def_property_readonly("module_identity", &NativeModuleTask::GetModuleIdentity)
+        .def_property_readonly("read_bytes", &NativeModuleTask::GetReadBytes)
+        .def_property_readonly("load_ns", &NativeModuleTask::GetLoadNs)
+        .def_property_readonly("execution_ns", &NativeModuleTask::GetExecutionNs)
+        .def_property_readonly("submissions", &NativeModuleTask::GetSubmissionCount)
+        .def_property_readonly("ran_on_worker", &NativeModuleTask::RanOnWorker);
+#endif
+    py::class_<inxpack::WriteTask>(m, "_InxPackWriteTask")
+        .def(py::init([](const std::string &path, py::sequence entries, size_t blockBytes, std::string textHeader,
+                         const PathWriteScope &writeScope, const py::tuple &residentInputs) {
+                 if (residentInputs.size() && residentInputs.size() != entries.size())
+                     throw std::invalid_argument("resident input slots must match the InxPack write entries");
+                 auto pins = std::make_shared<std::vector<py::buffer_info>>();
+                 std::vector<inxpack::WriteEntry> sources;
+                 sources.reserve(entries.size());
+                 for (const auto item : entries) {
+                     const auto row = py::cast<py::tuple>(item);
+                     if (row.size() != 3)
+                         throw std::invalid_argument("InxPack write entry requires (path, byte_count, store)");
+                     sources.push_back(
+                         {py::cast<std::string>(row[0]), py::cast<uint64_t>(row[1]), py::cast<bool>(row[2])});
+                     if (residentInputs.size()) {
+                         const auto buffer = residentInputs[sources.size() - 1];
+                         if (buffer.is_none())
+                             continue;
+                         auto info = bindings::ContiguousBuffer(buffer);
+                         if (!info.readonly || static_cast<uint64_t>(info.size * info.itemsize) != sources.back().bytes)
+                             throw std::invalid_argument("resident input must be read-only and match its entry size");
+                         sources.back().residentData = static_cast<const uint8_t *>(info.ptr);
+                         pins->push_back(std::move(info));
+                     }
+                 }
+                 inxpack::WriteOptions options;
+                 options.writeScope = writeScope;
+                 if (!textHeader.empty())
+                     options.textHeader = std::make_shared<const std::string>(std::move(textHeader));
+                 return std::make_unique<inxpack::WriteTask>(ToFsPath(path), std::move(sources), options, blockBytes,
+                                                             std::move(pins));
+             }),
+             py::arg("path"), py::arg("entries"), py::arg("block_bytes") = 64u * 1024u, py::arg("text_header") = "",
+             py::kw_only(), py::arg("write_scope") = PathWriteScope{}, py::arg("resident_inputs") = py::tuple())
+        .def("append",
+             [](inxpack::WriteTask &task, py::handle input) {
+                 auto info = bindings::ContiguousBuffer(input);
+                 py::gil_scoped_release release;
+                 task.Append(static_cast<const uint8_t *>(info.ptr), static_cast<size_t>(info.size * info.itemsize));
+             })
+        .def("advance", &inxpack::WriteTask::Advance, py::arg("max_bytes"), py::arg("target_ns") = 0,
+             py::arg("continuous") = false, py::call_guard<py::gil_scoped_release>())
+        .def("describe_work", &inxpack::WriteTask::DescribeWork, py::arg("max_bytes"), py::arg("publish") = false)
+        .def("describe_remaining_work", &inxpack::WriteTask::DescribeRemainingWork)
+        .def_property_readonly("submitted_work", &inxpack::WriteTask::GetSubmittedWork)
+        .def("publish", &inxpack::WriteTask::Publish, py::call_guard<py::gil_scoped_release>())
+        .def("cancel", &inxpack::WriteTask::Cancel, py::call_guard<py::gil_scoped_release>())
+        .def("wait", &inxpack::WriteTask::Wait, py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("pending", &inxpack::WriteTask::IsPending)
+        .def_property_readonly("done", &inxpack::WriteTask::IsComplete)
+        .def_property_readonly("state", &inxpack::WriteTask::GetStateName)
+        .def_property_readonly("error", &inxpack::WriteTask::GetError)
+        .def_property_readonly("input_path", &inxpack::WriteTask::GetInputPath)
+        .def_property_readonly("input_bytes", &inxpack::WriteTask::GetInputBytes)
+        .def_property_readonly("retained_bytes", &inxpack::WriteTask::GetRetainedBytes)
+        .def_property_readonly("reservation_bytes", &inxpack::WriteTask::GetReservationBytes)
+        .def_property_readonly("execution_ns", &inxpack::WriteTask::GetExecutionNs)
+        .def_property_readonly("submissions", &inxpack::WriteTask::GetSubmissionCount)
+        .def_property_readonly("ran_on_worker", &inxpack::WriteTask::RanOnWorker)
+        .def_property_readonly("progress",
+                               [](const inxpack::WriteTask &task) {
+                                   const auto progress = task.GetProgress();
+                                   py::dict result;
+                                   result["queued_bytes"] = progress.queuedBytes;
+                                   result["consumed_bytes"] = progress.consumedBytes;
+                                   result["written_bytes"] = progress.writtenBytes;
+                                   result["hashed_bytes"] = progress.hashedBytes;
+                                   return result;
+                               })
+        .def_property_readonly("manifest", [](const inxpack::WriteTask &task) {
+            return binding::InxPackManifestToPython(task.GetManifest());
+        });
+    using PackReadBuffer = inxpack::ReadTask::ReadBuffer;
+    py::class_<PackReadBuffer, std::shared_ptr<PackReadBuffer>>(m, "_InxPackReadBuffer", py::buffer_protocol())
+        .def_buffer([](PackReadBuffer &buffer) {
+            return py::buffer_info(buffer.data.get(), static_cast<py::ssize_t>(buffer.bytes));
+        });
+    py::class_<inxpack::ReadTask>(m, "_InxPackReadTask")
+        .def(py::init([](const std::string &path, size_t metadataLimit, size_t blockBytes) {
+                 return std::make_unique<inxpack::ReadTask>(ToFsPath(path), metadataLimit, blockBytes);
+             }),
+             py::arg("path"), py::arg("metadata_bytes"), py::arg("block_bytes") = 64u * 1024u)
+        .def("advance", &inxpack::ReadTask::Advance, py::arg("max_bytes"), py::arg("target_ns") = 0,
+             py::arg("directory_extra_bytes") = 0, py::call_guard<py::gil_scoped_release>())
+        .def("describe_work", &inxpack::ReadTask::DescribeWork, py::arg("max_bytes"))
+        .def("describe_remaining_work", &inxpack::ReadTask::DescribeRemainingWork)
+        .def("describe_read_work", &inxpack::ReadTask::DescribeReadWork, py::arg("entry"), py::arg("windowed") = false)
+        .def_property_readonly("submitted_work", &inxpack::ReadTask::GetSubmittedWork)
+        .def("begin_checksum", &inxpack::ReadTask::BeginChecksum)
+        .def("begin_read_buffer", &inxpack::ReadTask::BeginReadBuffer, py::arg("entry"), py::arg("owner"),
+             py::arg("reserved") = nullptr, py::call_guard<py::gil_scoped_release>())
+        .def("begin_read_stream", &inxpack::ReadTask::BeginReadStream, py::arg("entry"))
+        .def("reserve_read_window", &inxpack::ReadTask::ReserveReadWindow, py::arg("owner"), py::arg("maximum"),
+             py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("read_buffer_remaining_bytes", &inxpack::ReadTask::ReadBufferRemainingBytes)
+        .def("take_read_buffer", &inxpack::ReadTask::TakeReadBuffer)
+        .def(
+            "begin_materialize",
+            [](inxpack::ReadTask &task, const std::string &entry, const std::string &destination,
+               const std::string &sha256) { task.BeginMaterialize(entry, ToFsPath(destination), sha256); },
+            py::arg("entry"), py::arg("destination"), py::arg("sha256"))
+        .def("take_materialized_file", &inxpack::ReadTask::TakeMaterializedFile)
+        .def("close", &inxpack::ReadTask::Close, py::call_guard<py::gil_scoped_release>())
+        .def("cancel", &inxpack::ReadTask::Cancel)
+        .def("wait", &inxpack::ReadTask::Wait, py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("pending", &inxpack::ReadTask::IsPending)
+        .def_property_readonly("done", &inxpack::ReadTask::IsComplete)
+        .def_property_readonly("state", &inxpack::ReadTask::GetStateName)
+        .def_property_readonly("error", &inxpack::ReadTask::GetError)
+        .def_property_readonly("checksum_verified", &inxpack::ReadTask::IsChecksumVerified)
+        .def_property_readonly("retained_bytes", &inxpack::ReadTask::GetRetainedBytes)
+        .def_property_readonly("reservation_bytes", &inxpack::ReadTask::GetReservationBytes)
+        .def_property_readonly("execution_ns", &inxpack::ReadTask::GetExecutionNs)
+        .def_property_readonly("submissions", &inxpack::ReadTask::GetSubmissionCount)
+        .def_property_readonly("ran_on_worker", &inxpack::ReadTask::RanOnWorker)
+        .def_property_readonly("progress",
+                               [](const inxpack::ReadTask &task) {
+                                   const auto progress = task.GetProgress();
+                                   py::dict result;
+                                   result["read_bytes"] = progress.readBytes;
+                                   result["hashed_bytes"] = progress.hashedBytes;
+                                   result["codec_input_bytes"] = progress.codecInputBytes;
+                                   result["decoded_bytes"] = progress.decodedBytes;
+                                   result["consumed_bytes"] = progress.consumedBytes;
+                                   result["written_bytes"] = progress.writtenBytes;
+                                   result["buffered_bytes"] = progress.bufferedBytes;
+                                   result["buffer_work_bytes"] = progress.bufferWorkBytes;
+                                   result["overlapped_reads"] = progress.overlappedReads;
+                                   result["pending_overlapped_reads"] = progress.pendingOverlappedReads;
+                                   result["range_completion_ns"] = progress.fileCompletionNs;
+                                   return result;
+                               })
+        .def_property_readonly("manifest", [](const inxpack::ReadTask &task) {
+            return binding::InxPackManifestToPython(task.GetManifest());
+        });
+    py::class_<inxpack::Reader>(m, "_InxPackReader")
+        .def(py::init([](const std::string &path) { return std::make_unique<inxpack::Reader>(ToFsPath(path)); }))
+        .def_property_readonly(
+            "manifest",
+            [](const inxpack::Reader &reader) { return binding::InxPackManifestToPython(reader.GetManifest()); })
+        .def("verify_checksum", &inxpack::Reader::VerifyChecksum, py::call_guard<py::gil_scoped_release>())
+        .def("read",
+             [](inxpack::Reader &reader, const std::string &name) {
+                 std::vector<uint8_t> bytes;
+                 {
+                     py::gil_scoped_release release;
+                     bytes = reader.Read(name);
+                 }
+                 return py::bytes(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+             })
+        .def("read_into",
+             [](inxpack::Reader &reader, const std::string &name, py::handle output) {
+                 auto info = bindings::ContiguousBuffer(output, true);
+                 py::gil_scoped_release release;
+                 reader.ReadInto(name, static_cast<uint8_t *>(info.ptr),
+                                 static_cast<size_t>(info.size * info.itemsize));
+             })
+        .def("extract_entry",
+             [](inxpack::Reader &reader, const std::string &name, const std::string &destination,
+                const std::string &expectedSha256) {
+                 py::gil_scoped_release release;
+                 return reader.ExtractEntry(name, ToFsPath(destination), expectedSha256);
+             })
+        .def("close", &inxpack::Reader::Close);
+    m.def("_copy_file_verified",
+          [](const std::string &source, const std::string &destination, const std::string &expectedSha256) {
+              py::gil_scoped_release release;
+              return inxpack::CopyVerifiedFile(ToFsPath(source), ToFsPath(destination), expectedSha256);
+          });
+    py::class_<FileInput>(m, "_FileInput")
+        .def(py::init([](const std::string &path) { return std::make_unique<FileInput>(ToFsPath(path)); }))
+        .def_property_readonly("size", &FileInput::Size)
+        .def("seek", &FileInput::Seek)
+        .def("read",
+             [](FileInput &file, size_t bytes) {
+                 std::string data(bytes, '\0');
+                 {
+                     py::gil_scoped_release release;
+                     file.Read(data.data(), bytes);
+                 }
+                 return py::bytes(data);
+             })
+        .def(
+            "sha256", [](FileInput &file) { return inxpack::HashToHex(inxpack::HashFile(file)); },
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "__enter__", [](FileInput &file) -> FileInput & { return file; },
+            py::return_value_policy::reference_internal)
+        .def("__exit__", [](FileInput &file, py::object, py::object, py::object) { file.Close(); });
     py::register_exception<DocumentWriteSuperseded>(m, "DocumentWriteSuperseded");
     py::register_exception<DocumentWriteCancelled>(m, "DocumentWriteCancelled");
 
@@ -297,11 +471,19 @@ void RegisterResourceBindings(py::module_ &m)
         .def_readwrite("modified_ns", &DocumentFileState::modifiedNs)
         .def_readwrite("content_hash", &DocumentFileState::contentHash);
 
+    py::enum_<FileWriteMode>(m, "FileWriteMode")
+        .value("Replace", FileWriteMode::Replace)
+        .value("Create", FileWriteMode::Create);
+    py::enum_<FilePublication>(m, "FilePublication")
+        .value("Written", FilePublication::Written)
+        .value("AlreadyExists", FilePublication::AlreadyExists);
+
     py::class_<DocumentWriteOptions>(m, "DocumentWriteOptions")
         .def(py::init<>())
-        .def_readwrite("create_backup", &DocumentWriteOptions::createBackup)
+        .def_readwrite("mode", &DocumentWriteOptions::mode)
         .def_readwrite("expected_file_state", &DocumentWriteOptions::expectedFileState)
         .def_readwrite("commit_chain_token", &DocumentWriteOptions::commitChainToken)
+        .def_readwrite("write_scope", &DocumentWriteOptions::writeScope)
         // Keep the short name available to Python tooling while the native
         // field remains explicit about its role in the write chain.
         .def_readwrite("chain_id", &DocumentWriteOptions::commitChainToken);
@@ -320,14 +502,36 @@ void RegisterResourceBindings(py::module_ &m)
         .def_property_readonly("status", &DocumentWriteTicket::GetStatusName)
         .def_property_readonly("error", &DocumentWriteTicket::GetError)
         .def_property_readonly("committed_file_state", &DocumentWriteTicket::GetCommittedFileState)
+        .def_property_readonly("publication", &DocumentWriteTicket::GetPublication)
         .def("wait", &DocumentWriteTicket::Wait, py::call_guard<py::gil_scoped_release>());
 
     py::class_<DocumentStore>(m, "NativeDocumentStore")
+        .def_static("is_temporary_path", [](const std::string &path) { return IsAtomicTemporaryPath(ToFsPath(path)); })
         .def_static("instance", &DocumentStore::Instance, py::return_value_policy::reference)
         .def("submit", &DocumentStore::Submit, py::arg("path"), py::arg("content"),
-             py::arg("options") = DocumentWriteOptions{})
-        .def("write_and_wait", &DocumentStore::WriteAndWait, py::arg("path"), py::arg("content"),
              py::arg("options") = DocumentWriteOptions{}, py::call_guard<py::gil_scoped_release>())
+        .def(
+            "write_and_wait",
+            [](DocumentStore &store, const std::string &path, py::object content, DocumentWriteOptions options) {
+                std::string snapshot;
+                std::string_view view;
+                if (PyUnicode_Check(content.ptr())) {
+                    Py_ssize_t size = 0;
+                    const auto *bytes = PyUnicode_AsUTF8AndSize(content.ptr(), &size);
+                    if (!bytes)
+                        throw py::error_already_set();
+                    view = {bytes, static_cast<size_t>(size)};
+                } else if (PyBytes_Check(content.ptr())) {
+                    view = {PyBytes_AS_STRING(content.ptr()), static_cast<size_t>(PyBytes_GET_SIZE(content.ptr()))};
+                } else {
+                    snapshot = content.cast<std::string>();
+                    view = snapshot;
+                }
+                // The binding keeps the Python owner alive through the synchronous write.
+                py::gil_scoped_release release;
+                return store.WriteAndWait(path, view, std::move(options));
+            },
+            py::arg("path"), py::arg("content"), py::arg("options") = DocumentWriteOptions{})
         .def("cancel", &DocumentStore::Cancel, py::arg("ticket"))
         .def("get_metrics", &DocumentStore::GetMetrics, py::arg("path"))
         .def("capture_file_state", &DocumentStore::CaptureFileState, py::arg("path"))
@@ -443,20 +647,15 @@ void RegisterResourceBindings(py::module_ &m)
                 if (path.empty())
                     return std::nullopt;
                 TextureLoader loader;
-                const auto payload = loader.LoadStaging(path, guid, database);
-                const auto pixels = texture_pixels::ToRgba8(*payload.Get<TextureCpuData>());
-                const auto &mip = pixels.mipLevels.front();
+                const auto payload = loader.ReadPixels(path, guid, database);
+                const auto &mip = payload->mipLevels.front();
                 InxTextureData result;
                 result.width = static_cast<int>(mip.width);
                 result.height = static_cast<int>(mip.height);
                 result.channels = 4;
                 result.sourcePath = path;
                 result.name = FromFsPath(ToFsPath(path).stem());
-                result.pixels.resize(static_cast<size_t>(mip.width) * mip.height * 4);
-                for (uint32_t row = 0; row < mip.height; ++row)
-                    std::memcpy(result.pixels.data() + static_cast<size_t>(row) * mip.width * 4,
-                                pixels.bytes.data() + mip.byteOffset + row * mip.rowPitch,
-                                static_cast<size_t>(mip.width) * 4);
+                result.pixels = texture_pixels::BaseMipRgba8(*payload);
                 return result;
             },
             py::arg("guid"), "Read imported Texture2D pixels by GUID as RGBA8")
@@ -480,6 +679,10 @@ void RegisterResourceBindings(py::module_ &m)
 
     // InxMaterial - material definition (named InxMaterial to avoid conflict with ResourceType.Material)
     py::class_<InxMaterial, std::shared_ptr<InxMaterial>>(m, "InxMaterial")
+        .def_static("property_to_id", &ShaderPropertyIds::Get, py::arg("name"))
+        .def_static(
+            "property_name", [](const bindings::MaterialPropertyName &name) { return std::string(name); },
+            py::arg("name_or_id"))
         .def(py::init<>())
         .def(py::init<const std::string &>(), py::arg("name"))
         .def(py::init<const std::string &, const std::string &>(), py::arg("name"), py::arg("shader_name"))
@@ -524,10 +727,11 @@ void RegisterResourceBindings(py::module_ &m)
         .def("is_deleted", &InxMaterial::IsDeleted, "True if the backing .mat file has been deleted")
         .def("mark_as_deleted", &InxMaterial::MarkAsDeleted, "Mark this material as deleted (prevents save)")
         // Property setters (accept both tuple and individual args)
-        .def("set_float", &InxMaterial::SetFloat, py::arg("name"), py::arg("value"), "Set a float property")
+        .def("set_float", bindings::MaterialNameMethod(&InxMaterial::SetFloat), py::arg("name"), py::arg("value"),
+             "Set a float property")
         .def(
             "set_vector2",
-            [](InxMaterial &mat, const std::string &name, py::args args) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::args args) {
                 glm::vec2 v;
                 if (args.size() == 1) {
                     py::object obj = args[0];
@@ -547,7 +751,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Set a vec2 property: set_vector2(name, x, y) or set_vector2(name, (x,y))")
         .def(
             "set_vector3",
-            [](InxMaterial &mat, const std::string &name, py::args args) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::args args) {
                 glm::vec3 v;
                 if (args.size() == 1) {
                     py::object obj = args[0];
@@ -567,7 +771,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Set a vec3 property: set_vector3(name, x, y, z) or set_vector3(name, (x,y,z))")
         .def(
             "set_vector4",
-            [](InxMaterial &mat, const std::string &name, py::args args) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::args args) {
                 glm::vec4 v;
                 if (args.size() == 1) {
                     py::object obj = args[0];
@@ -589,7 +793,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Set a vec4 property: set_vector4(name, x, y, z, w) or set_vector4(name, (x,y,z,w))")
         .def(
             "set_color",
-            [](InxMaterial &mat, const std::string &name, py::args args) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::args args) {
                 glm::vec4 color;
                 if (args.size() == 1) {
                     py::object obj = args[0];
@@ -612,18 +816,19 @@ void RegisterResourceBindings(py::module_ &m)
                 mat.SetColor(name, color);
             },
             py::arg("name"), "Set a color property: set_color(name, r, g, b[, a]) or set_color(name, (r,g,b,a))")
-        .def("set_int", &InxMaterial::SetInt, py::arg("name"), py::arg("value"), "Set an int property")
+        .def("set_int", bindings::MaterialNameMethod(&InxMaterial::SetInt), py::arg("name"), py::arg("value"),
+             "Set an int property")
         .def(
             "set_matrix",
-            [](InxMaterial &mat, const std::string &name, py::handle value) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::handle value) {
                 mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
             },
             py::arg("name"), py::arg("value"), "Set a mat4 from a [row, column] array")
-        .def("set_float_array", &InxMaterial::SetFloatArray, py::arg("name"), py::arg("values"),
-             "Set a reflected float array property")
+        .def("set_float_array", bindings::MaterialNameMethod(&InxMaterial::SetFloatArray), py::arg("name"),
+             py::arg("values"), "Set a reflected float array property")
         .def(
             "set_vector4_array",
-            [](InxMaterial &material, const std::string &name, py::sequence values) {
+            [](InxMaterial &material, const bindings::MaterialPropertyName &name, py::sequence values) {
                 std::vector<glm::vec4> native;
                 native.reserve(py::len(values));
                 for (py::handle item : values) {
@@ -636,14 +841,15 @@ void RegisterResourceBindings(py::module_ &m)
                 material.SetVector4Array(name, native);
             },
             py::arg("name"), py::arg("values"), "Set a reflected vec4 array property")
-        .def("set_texture_guid", &InxMaterial::SetTextureGuid, py::arg("name"), py::arg("texture_guid"),
-             "Set a texture property by GUID")
-        .def("set_buffer", &InxMaterial::SetBuffer, py::arg("name"), py::arg("buffer"),
+        .def("set_texture_guid", bindings::MaterialNameMethod(&InxMaterial::SetTextureGuid), py::arg("name"),
+             py::arg("texture_guid"), "Set a texture property by GUID")
+        .def("set_buffer", bindings::MaterialNameMethod(&InxMaterial::SetBuffer), py::arg("name"), py::arg("buffer"),
              "Bind a reflected runtime storage buffer")
-        .def("get_buffer", &InxMaterial::GetBuffer, py::arg("name"), "Get a reflected runtime storage buffer binding")
+        .def("get_buffer", bindings::MaterialNameMethod(&InxMaterial::GetBuffer), py::arg("name"),
+             "Get a reflected runtime storage buffer binding")
         .def(
             "set_param",
-            [](InxMaterial &mat, const std::string &name, py::object value) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::object value) {
                 const MaterialProperty *prop = mat.GetProperty(name);
 
                 if ((prop && prop->type == MaterialPropertyType::Mat4) || py::isinstance<py::array>(value)) {
@@ -716,16 +922,17 @@ void RegisterResourceBindings(py::module_ &m)
                     "set_param: unsupported value type. Expected int/float/bool, vec2/3/4 tuple, or a (4, 4) matrix.");
             },
             py::arg("name"), py::arg("value"), "Set a non-texture material property using value-shape/type dispatch")
-        .def("clear_texture", &InxMaterial::ClearTexture, py::arg("name"),
+        .def("clear_texture", bindings::MaterialNameMethod(&InxMaterial::ClearTexture), py::arg("name"),
              "Clear a texture property (remove texture reference)")
-        .def("_set_render_texture", &InxMaterial::SetRenderTexture, py::arg("name"), py::arg("texture"))
-        .def("_get_render_texture", &InxMaterial::GetRenderTexture, py::arg("name"))
+        .def("_set_render_texture", bindings::MaterialNameMethod(&InxMaterial::SetRenderTexture), py::arg("name"),
+             py::arg("texture"))
+        .def("_get_render_texture", bindings::MaterialNameMethod(&InxMaterial::GetRenderTexture), py::arg("name"))
         .def_property_readonly("_texture_assets_pending", &InxMaterial::NeedsTextureAssetResolution)
-        .def("remove_property", &InxMaterial::RemoveProperty, py::arg("name"),
+        .def("remove_property", bindings::MaterialNameMethod(&InxMaterial::RemoveProperty), py::arg("name"),
              "Remove a material property and its asset dependency")
         .def(
             "set_texture",
-            [](InxMaterial &mat, const std::string &name, py::object value) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::object value) {
                 if (value.is_none()) {
                     mat.ClearTexture(name);
                     return;
@@ -762,7 +969,7 @@ void RegisterResourceBindings(py::module_ &m)
         // Individual property getters (convenience wrappers over GetProperty)
         .def(
             "get_float",
-            [](const InxMaterial &mat, const std::string &name, float defaultVal) -> float {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name, float defaultVal) -> float {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && prop->type == MaterialPropertyType::Float)
                     return std::get<float>(prop->value);
@@ -771,7 +978,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), py::arg("default_value") = 0.0f, "Get a float property")
         .def(
             "get_int",
-            [](const InxMaterial &mat, const std::string &name, int defaultVal) -> int {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name, int defaultVal) -> int {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && prop->type == MaterialPropertyType::Int)
                     return std::get<int>(prop->value);
@@ -780,7 +987,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), py::arg("default_value") = 0, "Get an int property")
         .def(
             "get_color",
-            [](const InxMaterial &mat, const std::string &name) -> glm::vec4 {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec4 {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && (prop->type == MaterialPropertyType::Float4 || prop->type == MaterialPropertyType::Color)) {
                     return std::get<glm::vec4>(prop->value);
@@ -790,7 +997,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Get a color property as vec4f")
         .def(
             "get_vector2",
-            [](const InxMaterial &mat, const std::string &name) -> glm::vec2 {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec2 {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && prop->type == MaterialPropertyType::Float2) {
                     return std::get<glm::vec2>(prop->value);
@@ -800,7 +1007,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Get a vec2 property as Vector2")
         .def(
             "get_vector3",
-            [](const InxMaterial &mat, const std::string &name) -> glm::vec3 {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec3 {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && prop->type == MaterialPropertyType::Float3) {
                     return std::get<glm::vec3>(prop->value);
@@ -810,7 +1017,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Get a vec3 property as Vector3")
         .def(
             "get_vector4",
-            [](const InxMaterial &mat, const std::string &name) -> glm::vec4 {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec4 {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && (prop->type == MaterialPropertyType::Float4 || prop->type == MaterialPropertyType::Color)) {
                     return std::get<glm::vec4>(prop->value);
@@ -820,7 +1027,7 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), "Get a vec4 property as vec4f")
         .def(
             "get_texture",
-            [](const InxMaterial &mat, const std::string &name) -> py::object {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> py::object {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (prop && prop->type == MaterialPropertyType::Texture2D)
                     return py::cast(std::get<std::string>(prop->value));
@@ -828,48 +1035,16 @@ void RegisterResourceBindings(py::module_ &m)
             },
             py::arg("name"), "Get a texture property GUID (or None)")
         // Generic property access
-        .def("has_property", &InxMaterial::HasProperty, py::arg("name"), "Check if material has a property")
+        .def("has_property", bindings::MaterialNameMethod(&InxMaterial::HasProperty), py::arg("name"),
+             "Check if material has a property")
         .def(
             "get_property",
-            [](const InxMaterial &mat, const std::string &name) -> py::object {
+            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> py::object {
                 const MaterialProperty *prop = mat.GetProperty(name);
                 if (!prop) {
                     return py::none();
                 }
-                // Return the property value as appropriate Python type
-                switch (prop->type) {
-                case MaterialPropertyType::Float:
-                    return py::cast(std::get<float>(prop->value));
-                case MaterialPropertyType::Float2:
-                    return py::cast(std::get<glm::vec2>(prop->value));
-                case MaterialPropertyType::Float3:
-                    return py::cast(std::get<glm::vec3>(prop->value));
-                case MaterialPropertyType::Float4:
-                case MaterialPropertyType::Color:
-                    return py::cast(std::get<glm::vec4>(prop->value));
-                case MaterialPropertyType::Int:
-                    return py::cast(std::get<int>(prop->value));
-                case MaterialPropertyType::Mat4: {
-                    // mat4 not registered as pybind11 type — return as list of 16 floats
-                    auto &m = std::get<glm::mat4>(prop->value);
-                    py::list result;
-                    const float *data = &m[0][0];
-                    for (int i = 0; i < 16; ++i)
-                        result.append(data[i]);
-                    return result;
-                }
-                case MaterialPropertyType::Texture2D:
-                    return py::cast(std::get<std::string>(prop->value));
-                case MaterialPropertyType::FloatArray:
-                    return py::cast(std::get<std::vector<float>>(prop->value));
-                case MaterialPropertyType::Float4Array: {
-                    py::list result;
-                    for (const auto &value : std::get<std::vector<glm::vec4>>(prop->value))
-                        result.append(py::make_tuple(value.x, value.y, value.z, value.w));
-                    return result;
-                }
-                }
-                return py::none();
+                return PyValueFromMaterialProperty(*prop);
             },
             py::arg("name"), "Get a property value by name")
         .def(
@@ -877,47 +1052,7 @@ void RegisterResourceBindings(py::module_ &m)
             [](const InxMaterial &mat) -> py::dict {
                 py::dict result;
                 for (const auto &[name, prop] : mat.GetAllProperties()) {
-                    switch (prop.type) {
-                    case MaterialPropertyType::Float:
-                        result[py::str(name)] = std::get<float>(prop.value);
-                        break;
-                    case MaterialPropertyType::Float2:
-                        result[py::str(name)] = py::cast(std::get<glm::vec2>(prop.value));
-                        break;
-                    case MaterialPropertyType::Float3:
-                        result[py::str(name)] = py::cast(std::get<glm::vec3>(prop.value));
-                        break;
-                    case MaterialPropertyType::Float4:
-                    case MaterialPropertyType::Color:
-                        result[py::str(name)] = py::cast(std::get<glm::vec4>(prop.value));
-                        break;
-                    case MaterialPropertyType::Int:
-                        result[py::str(name)] = std::get<int>(prop.value);
-                        break;
-                    case MaterialPropertyType::Mat4: {
-                        // mat4 not registered as pybind11 type — return as list of 16 floats
-                        auto &m4 = std::get<glm::mat4>(prop.value);
-                        py::list ml;
-                        const float *data = &m4[0][0];
-                        for (int i = 0; i < 16; ++i)
-                            ml.append(data[i]);
-                        result[py::str(name)] = ml;
-                        break;
-                    }
-                    case MaterialPropertyType::Texture2D:
-                        result[py::str(name)] = std::get<std::string>(prop.value);
-                        break;
-                    case MaterialPropertyType::FloatArray:
-                        result[py::str(name)] = py::cast(std::get<std::vector<float>>(prop.value));
-                        break;
-                    case MaterialPropertyType::Float4Array: {
-                        py::list values;
-                        for (const auto &value : std::get<std::vector<glm::vec4>>(prop.value))
-                            values.append(py::make_tuple(value.x, value.y, value.z, value.w));
-                        result[py::str(name)] = std::move(values);
-                        break;
-                    }
-                    }
+                    result[py::str(name)] = PyValueFromMaterialProperty(prop);
                 }
                 return result;
             },

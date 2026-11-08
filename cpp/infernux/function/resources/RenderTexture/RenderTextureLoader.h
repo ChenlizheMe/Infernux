@@ -28,7 +28,7 @@ class RenderTextureLoader final : public IAssetLoader
     {
         return {};
     }
-    void CreateMeta(const char *content, size_t size, const std::string &path, InxResourceMeta &meta) const override;
+    void CreateMeta(AssetSource &source, InxResourceMeta &meta) const override;
 
   private:
     BeforePublish m_beforePublish;
