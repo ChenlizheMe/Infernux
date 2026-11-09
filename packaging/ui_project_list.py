@@ -14,7 +14,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from database import ProjectDatabase
 from hub_utils import is_frozen, is_project_open
 from i18n import tr
-from project_python_runtime import read_project_python_version
+from project_python_runtime import project_runtime_exists, read_project_python_version
 from version_manager import VersionManager, display_release, hotfix_number
 from view.forge import Monogram, StatusLed, chip, fmt_age, mono_label, toast, track
 from view.hover_widgets import AnimatedSurfaceFrame
@@ -141,12 +141,12 @@ class _ProjectCard(AnimatedSurfaceFrame):
             version_label.setObjectName("projectVersion")
             version_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             unavailable_reason = ""
-            if is_frozen() and version_manager is not None:
-                try:
-                    python_version = read_project_python_version(path)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    python_version = ""
-                    unavailable_reason = str(exc)
+            try:
+                python_version = read_project_python_version(path)
+            except RuntimeError:
+                python_version = ""
+            has_runtime = python_version and project_runtime_exists(path, python_version)
+            if not has_runtime and is_frozen() and version_manager is not None:
                 if not version:
                     unavailable_reason = tr("Project engine version is missing")
                 elif not python_version:
@@ -157,7 +157,7 @@ class _ProjectCard(AnimatedSurfaceFrame):
                         f"{tr('is not installed')}"
                     )
                     fix_action = "install"
-            elif version and not is_frozen() and version != source_engine_version():
+            elif not has_runtime and version and not is_frozen() and version != source_engine_version():
                 unavailable_reason = (
                     f"Project requires Infernux {version}; the source engine is {source_engine_version()}"
                 )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 
 from python_runtime_catalog import PythonRuntimeId
 
@@ -61,9 +62,20 @@ def project_runtime_directory(
     return os.path.join(str(project_dir), ".runtime", runtime_id.directory_name)
 
 
+def project_runtime_executable(project_dir: str | os.PathLike[str], version: str | PythonRuntimeId) -> str:
+    root = project_runtime_directory(project_dir, version)
+    return os.path.join(root, "python.exe") if sys.platform == "win32" else os.path.join(root, "bin", "python")
+
+
+def project_runtime_exists(project_dir: str | os.PathLike[str], version: str | PythonRuntimeId) -> bool:
+    return os.path.lexists(project_runtime_directory(project_dir, version))
+
+
 __all__ = [
     "PROJECT_RUNTIME_SETTINGS",
     "project_runtime_directory",
+    "project_runtime_executable",
+    "project_runtime_exists",
     "project_runtime_settings_path",
     "read_project_python_version",
     "write_project_python_version",

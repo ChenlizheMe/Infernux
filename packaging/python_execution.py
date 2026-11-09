@@ -29,6 +29,11 @@ def python_executable_path(path: str) -> str:
     return windows_native_path(path)
 
 
+def requires_short_windows_host(executable: str) -> bool:
+    # Graphics drivers can still use MAX_PATH for the process image name.
+    return len(os.path.abspath(executable).encode("utf-16-le")) // 2 >= 260
+
+
 @dataclass(frozen=True)
 class EditorPythonRuntime:
     """A stable Windows process host with the project's private Python home."""
@@ -74,7 +79,7 @@ def editor_python_runtime(project_python: str, managed_python: str | None) -> Ed
     executable = os.path.abspath(managed_python)
     # Bound only the process host: assets and native extension paths retain
     # their independent long-path support. Windows counts UTF-16 code units.
-    if len(executable.encode("utf-16-le")) // 2 >= 260:
+    if requires_short_windows_host(executable):
         raise RuntimeError(
             "The managed Python executable path is too long for Windows graphics drivers. "
             "Install the Hub runtime in a shorter directory; the project can keep its location.\n"

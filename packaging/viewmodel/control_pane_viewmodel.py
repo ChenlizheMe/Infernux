@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal, Slot, QObject, QTimer, Qt
 from model.project_model import ProjectModel, source_engine_version
 from hub_utils import HubLaunchContext, is_project_open, write_project_lock, remove_project_lock
 from project_paths import ProjectPathError
+from project_python_runtime import project_runtime_executable, project_runtime_exists
 from i18n import tr
 from view import dialogs
 from view.forge import toast
@@ -175,6 +176,7 @@ class LaunchPreparationWorker(QObject):
         self.launch_context = launch_context or HubLaunchContext.current()
         self.lock_token = uuid.uuid4().hex
         self.editor_runtime = None
+        self.uses_project_runtime = False
 
     def run(self):
         reserved = False
@@ -203,71 +205,35 @@ class LaunchPreparationWorker(QObject):
                 if self.version_manager
                 else ""
             )
-            if (
-                self.launch_context.uses_installed_versions
-                and pinned_version
-                and self.version_manager
-                and not self.version_manager.is_installed(
-                    pinned_version, python_version
-                )
-            ):
-                raise RuntimeError(
-                    f"Infernux {pinned_version} for Python {python_version} is "
-                    f"required by this project. Open {tr('Installs')} and install "
-                    "that exact engine/Python combination before launching."
-                )
-
-            if self.launch_context.uses_installed_versions:
+            self.uses_project_runtime = project_runtime_exists(project_path, python_version)
+            if self.uses_project_runtime:
+                python_exe = project_runtime_executable(project_path, python_version)
+                if not os.path.isfile(python_exe):
+                    raise RuntimeError(tr("Restore the project's Python executable at {path} before launching.",
+                                          path=python_exe))
+                self.progress.emit("Using project runtime...", 9)
+            elif self.launch_context.uses_installed_versions:
                 if not pinned_version:
                     raise RuntimeError(
                         "This project does not pin an Infernux engine version.\n\n"
                         "Commit .infernux-version with the project before opening it "
                         "from an installed Hub."
                     )
-                self.progress.emit("Checking project runtime...", 7)
-                python_exe = ProjectModel._get_project_python(project_path)
-                if not os.path.isfile(python_exe):
-                    runtime_manager = getattr(self.model, "runtime_manager", None)
-                    if runtime_manager is None or not runtime_manager.has_runtime(
-                        python_version
-                    ):
-                        raise RuntimeError(
-                            f"Infernux {pinned_version} requires Python {python_version}.\n\n"
-                            f"Install Python {python_version} in Hub before launching "
-                            "this project."
-                        )
-
-                    self.progress.emit("Preparing project runtime...", 8)
-                    status = lambda message: self.progress.emit(message, 9)
-                    self.model._create_project_runtime(
-                        project_path,
-                        on_status=status,
-                        replace_existing=True,
+                if self.version_manager is None or not self.version_manager.is_installed(pinned_version, python_version):
+                    raise RuntimeError(
+                        f"Infernux {pinned_version} for Python {python_version} is "
+                        f"required by this project. Open {tr('Installs')} and install "
+                        "that exact engine/Python combination before launching."
                     )
-                    python_exe = ProjectModel._get_project_python(project_path)
-                    if not os.path.isfile(python_exe):
-                        raise RuntimeError(
-                            "Project Python runtime could not be rebuilt at:\n"
-                            f"{os.path.dirname(python_exe)}"
-                        )
-                # The private runtime must contain exactly the pinned engine.
-                # Publish it from the local installation; its receipt skips an
-                # unchanged runtime. Version changes are explicit in Hub.
-                self.model._install_infernux_in_runtime(
+                self.progress.emit("Preparing project runtime...", 8)
+                self.model._provision_project_runtime(
                     project_path,
                     pinned_version,
                     on_status=lambda message: self.progress.emit(message, 9),
-                    validate_current=False,
                 )
                 self.model._create_vscode_workspace(project_path)
-                if sys.platform == "win32":
-                    from python_execution import editor_python_runtime
-                    self.editor_runtime = editor_python_runtime(
-                        python_exe, self.model.runtime_manager.get_runtime_path(python_version)
-                    )
-                # Starting the editor is the authoritative native import check.
-                # A separate smoke-test process here used to double cold-start
-                # Python before the splash screen could even become responsive.
+                python_exe = project_runtime_executable(project_path, python_version)
+                self.uses_project_runtime = True
             else:
                 current_version = source_engine_version()
                 if pinned_version != current_version:
@@ -286,6 +252,14 @@ class LaunchPreparationWorker(QObject):
                 self.progress.emit("Updating editor integration...", 9)
                 self.model._create_vscode_workspace(project_path)
                 python_exe = sys.executable
+
+            if self.uses_project_runtime and sys.platform == "win32":
+                from python_execution import editor_python_runtime, python_executable_path, requires_short_windows_host
+
+                if requires_short_windows_host(python_executable_path(python_exe)):
+                    self.editor_runtime = editor_python_runtime(
+                        python_exe, self.model.runtime_manager.get_runtime_path(python_version)
+                    )
         except Exception as exc:
             detail = str(exc)
             if reserved:
@@ -335,9 +309,6 @@ class ControlPaneViewModel(QObject):
         project_name = record.name
         project_path = record.path
         
-        from engine_wheel import editor_launch_script
-        script = editor_launch_script(installed=self.launch_context.uses_installed_versions)
-
         from splash_screen import EngineSplashScreen
         from hub_resources import ICON_PATH
 
@@ -382,11 +353,23 @@ class ControlPaneViewModel(QObject):
             if error:
                 splash.show_preparation_failure(error)
             elif python_exe:
+                from engine_wheel import editor_launch_script
+
+                project_runtime = worker.uses_project_runtime
+                runtime_env = {
+                    "PYTHONHOME": "",
+                    "PYTHONPATH": "",
+                    "PYTHONNOUSERSITE": "1",
+                    "PYTHONSAFEPATH": "1",
+                    "INFERNUX_NATIVE_MODULE_DIR": "",
+                    "INFERNUX_GPU_JIT_VENDOR_DIR": "",
+                } if project_runtime else None
                 splash.launch(
                     python_exe,
-                    script,
+                    editor_launch_script(installed=project_runtime),
                     project_path,
                     detached=self.launch_context.uses_installed_versions,
+                    extra_env=runtime_env,
                     lock_token=worker.lock_token,
                     runtime=worker.editor_runtime,
                 )
@@ -433,20 +416,7 @@ class ControlPaneViewModel(QObject):
         self.project_list.refresh()
         self.project_list.select_project(record.project_id)
 
-        if (
-            self.launch_context.uses_installed_versions
-            and info.engine_version
-            and self.version_manager is not None
-            and not self.version_manager.is_installed(info.engine_version)
-        ):
-            dialogs.information(
-                parent,
-                tr("Engine Version Not Installed"),
-                f"Project '{info.name}' was added to Hub, but engine version "
-                f"{info.engine_version} is not installed yet.\n\nOpen Installs to install it before launching.",
-            )
-        else:
-            toast(parent, tr("Added {name} to Hub", name=info.name))
+        toast(parent, tr("Added {name} to Hub", name=info.name))
         return record
 
     def _record_for(self, project_id):
@@ -541,8 +511,8 @@ class ControlPaneViewModel(QObject):
             choices.addItem(label, version)
         dialog = dialogs.HubDialog(
             parent, title=title,
-            text=tr("The project will use the selected engine on its next launch. "
-                    "Commit the engine and Python version settings with your project so the team uses the same release."),
+            text=tr("This updates the project's engine and Python version settings. "
+                    "If the project already has a runtime for that Python version, update its engine files before launching."),
             subject=(record.name, tr("Current engine: {version}", version=current)), content=choices,
         )
         dialog.addButton(tr("Cancel"), "reject")
