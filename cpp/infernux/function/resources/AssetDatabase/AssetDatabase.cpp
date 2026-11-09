@@ -117,7 +117,7 @@ void ApplyModelTextureSettings(InxResourceMeta &model, const std::string &guid, 
     if (!settings.is_object())
         throw std::invalid_argument("model Texture settings must be an object");
     InxResourceMeta defaults;
-    TextureImporter{}.EnsureDefaultSettings(defaults);
+    TextureImporter::ApplyDefaultSettings(defaults);
     const auto fields = defaults.SerializeDocument().at("metadata");
     auto records = nlohmann::json::parse(model.GetDataAs<std::string>("model_textures"));
     for (auto &record : records) {
@@ -722,7 +722,7 @@ struct AssetDatabase::TextureSourceSnapshot
             try {
                 auto options = *settings;
                 options.AddMetadata("resource_type", ResourceType::Texture);
-                TextureImporter{}.EnsureDefaultSettings(options);
+                TextureImporter::ApplyDefaultSettings(options);
                 ApplyPluginPageTextureMetadata(options, path, *boundedProjectRoot);
                 workingBytes = TextureDecoder::PlanPng(*source, options).bytes;
             } catch (const std::invalid_argument &exception) {

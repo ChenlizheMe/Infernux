@@ -850,7 +850,7 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
             }
         const std::string guid = metadata.GetGuid();
         metadata.UpdateFilePath(request.sourcePath + "::subtex:" + guid);
-        TextureImporter{}.EnsureDefaultSettings(metadata);
+        TextureImporter::ApplyDefaultSettings(metadata);
         metadata.AddMetadata("import_owner_guid", request.guid);
         metadata.AddMetadata("resource_name", image.name);
         const auto sourceHash = request.metadata.GetDataAs<std::string>("content_hash");

@@ -53,6 +53,11 @@ class TextureImporter final : public AssetImporter
 
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
+        ApplyDefaultSettings(meta);
+    }
+
+    static void ApplyDefaultSettings(InxResourceMeta &meta)
+    {
         if (!meta.HasKey("texture_type"))
             meta.AddMetadata("texture_type", std::string("default"));
         if (!meta.HasKey("wrap_mode"))
