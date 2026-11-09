@@ -897,26 +897,36 @@ def test_real_observer_is_owned_joinable_and_commits_on_main(monkeypatch, tmp_pa
     asset_calls = []
     _patch_asset_manager(monkeypatch, asset_calls)
 
-    manager.start()
-    deadline = time.monotonic() + 3.0
-    while manager._observer is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert manager._observer is not None
-    assert manager._observer.daemon is False
-    assert manager._thread.daemon is False
+    try:
+        manager.start()
+        deadline = time.monotonic() + 3.0
+        observer = manager._observer
+        while (observer is None or not observer.is_alive()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+            observer = manager._observer
+        assert observer is not None and observer.is_alive()
+        assert observer.daemon is False
+        assert manager._thread.daemon is False
 
-    path = assets / "watched.txt"
-    path.write_text("content", encoding="utf-8")
-    while (manager._event_handler is None or manager._event_handler.pending_count == 0) and time.monotonic() < deadline:
-        time.sleep(0.01)
+        path = assets / "watched.txt"
+        path.write_text("content", encoding="utf-8")
+        deadline = time.monotonic() + 3.0
+        while manager._event_handler.pending_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
 
-    assert manager._event_handler.pending_count > 0
-    assert database.mutations == []
-    manager.process_pending_reloads(force=True)
-    assert database.mutations
-    assert all(entry[-1] == threading.get_ident() for entry in database.mutations)
+        assert manager._event_handler.pending_count > 0
+        assert database.mutations == []
+        # A later filesystem event can supersede the first claimed import.
+        deadline = time.monotonic() + 3.0
+        while not database.mutations and time.monotonic() < deadline:
+            manager.process_pending_reloads(force=True)
+            if not database.mutations:
+                time.sleep(0.01)
+        assert any(entry[0] == "import" and path_key(entry[1]) == path_key(path) for entry in database.mutations)
+        assert all(entry[-1] == threading.get_ident() for entry in database.mutations)
+    finally:
+        manager.cleanup()
 
-    manager.cleanup()
     assert manager._thread is None
     assert manager._observer is None
 
