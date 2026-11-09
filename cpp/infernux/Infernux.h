@@ -532,12 +532,10 @@ class Infernux
     {
         std::string resourceKey;
         uint64_t generation = 0;
-        int width = 0;
-        int height = 0;
         bool nearest = false;
-        bool success = false;
-        std::vector<unsigned char> pixels;
-        std::shared_ptr<const TextureCpuData> sourcePixels;
+        bool displayEncoding = false;
+        std::shared_ptr<FrameCpuStorageClaim> storage;
+        std::shared_ptr<const TextureCpuData> pixels;
         PreviewPixelSummary summary;
     };
 
@@ -569,6 +567,8 @@ class Infernux
         std::string textureFormat = "auto";
         std::string textureType = "default";
     };
+
+    struct PngTexturePreviewSource;
 
     struct MeshPreviewRequest
     {
@@ -623,6 +623,7 @@ class Infernux
         uint64_t failedGeneration = 0; ///< Retry decode only when the source/settings change
         uint64_t lastContentStamp = 0; ///< Last content stamp seen from caller
         uint64_t decodeGeneration = 0;
+        std::shared_ptr<const TexturePreviewRequest> fileRequest;
         PendingPreviewUpload upload;
         bool authoring = false;
         std::string textureName;
@@ -677,6 +678,15 @@ class Infernux
     bool PrepareMeshPreview(MeshPreviewRequest &request, bool gpu, std::shared_ptr<InxMesh> &mesh,
                             std::vector<std::shared_ptr<InxMaterial>> &materials, bool &progressed);
     void EnqueuePreviewTask(std::function<void()> fn, std::optional<std::weak_ptr<const void>> owner = std::nullopt);
+    void EnqueuePreviewTask(std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> fn, uint64_t storageBytes,
+                            std::optional<std::weak_ptr<const void>> owner);
+    void QueueTextureFilePreview(const std::shared_ptr<const TexturePreviewRequest> &request);
+    void DecodeTextureFilePreview(const TexturePreviewRequest &request, int decodeSize,
+                                  const PngTexturePreviewSource *png = nullptr,
+                                  std::shared_ptr<FrameCpuStorageClaim> storage = {},
+                                  const std::function<bool()> &retired = {});
+    void CompleteTexturePreview(TexturePreviewCompleted completed);
+    void RetireTexturePreviewDecode(const std::string &key, TexturePreviewState &state);
     FrameWorkSource GetPreviewIoWorkSource();
     void ObservePreviewJob();
     static std::string BuildPreviewTextureName(const std::string &resourceKey);
@@ -733,14 +743,16 @@ class Infernux
 
     struct PendingPreviewJob
     {
-        std::function<void()> run;
+        std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> run;
         std::optional<std::weak_ptr<const void>> owner;
+        uint64_t storageBytes = 0;
         bool IsRetired() const noexcept
         {
             return owner && owner->expired();
         }
     };
-    std::queue<PendingPreviewJob> m_previewJobs;
+    std::deque<PendingPreviewJob>::iterator FindReadyPreviewJob();
+    std::deque<PendingPreviewJob> m_previewJobs;
     JobHandle m_previewDispatcherJob;
     std::mutex m_previewJobMutex;
     bool m_acceptPreviewJobs = true;
@@ -748,7 +760,7 @@ class Infernux
     uint64_t m_previewJobFrame = 0, m_previewJobGrant = 0;
 
     mutable std::mutex m_previewResultMutex;
-    std::queue<TexturePreviewCompleted> m_texturePreviewCompletedQueue;
+    std::deque<TexturePreviewCompleted> m_texturePreviewCompletedQueue;
     std::deque<MaterialPreviewRequest> m_materialPreviewRequestQueue;
     std::deque<MeshPreviewRequest> m_meshPreviewRequestQueue;
     std::unordered_map<std::string, MaterialPreviewState> m_materialPreviewStates;

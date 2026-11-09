@@ -29,6 +29,7 @@ namespace infernux
 {
 struct TextureCpuData;
 class FrameWorkOwner;
+class FrameCpuStorageClaim;
 struct PreviewImage;
 struct PreviewGeometryUpload;
 struct RenderGraphDescription;
@@ -439,9 +440,13 @@ class InxRenderer
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false,
                                    std::function<bool()> canPublish = {});
+    uint64_t SubmitTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
+                                   rhi::FilterMode filter, bool pinned, std::function<bool()> canPublish,
+                                   std::shared_ptr<FrameCpuStorageClaim> storage = {});
     uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid, bool &progressed);
-    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels,
-                                           std::function<bool()> canPublish);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
+                                           std::function<bool()> canPublish,
+                                           std::shared_ptr<FrameCpuStorageClaim> storage = {});
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;

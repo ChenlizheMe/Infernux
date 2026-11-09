@@ -558,21 +558,37 @@ bool PreparedComputeBatch::HasWork() const noexcept
             std::any_of(m_readbacks.begin(), m_readbacks.end(), [](const auto &read) { return !read->IsCancelled(); }));
 }
 
-bool PreparedComputeBatch::HasPendingWrite(const ComputeBuffer &buffer) const noexcept
+template <typename Visitor> bool PreparedComputeBatch::VisitWriters(Visitor &&visitor) const
 {
-    if (!m_batch || m_ticket.IsValid())
+    if (!m_batch)
         return false;
     for (const auto &update : m_batch->updates)
-        if (update.state == buffer.m_state)
+        if (visitor(update.state))
             return true;
     for (const auto &dispatch : m_batch->dispatches)
         for (size_t index = 0; index < dispatch.work.states.size(); ++index)
-            if (dispatch.work.states[index] == buffer.m_state &&
-                (static_cast<uint8_t>(dispatch.work.bufferAccesses[index]) &
-                 static_cast<uint8_t>(ComputeBufferAccess::Write)))
+            if ((static_cast<uint8_t>(dispatch.work.bufferAccesses[index]) &
+                 static_cast<uint8_t>(ComputeBufferAccess::Write)) &&
+                visitor(dispatch.work.states[index]))
                 return true;
     return std::any_of(m_batch->copies.begin(), m_batch->copies.end(),
-                       [&](const auto &copy) { return copy.destinationState == buffer.m_state; });
+                       [&](const auto &copy) { return visitor(copy.destinationState); });
+}
+
+bool PreparedComputeBatch::HasPendingWrite(const ComputeBuffer &buffer) const noexcept
+{
+    return !m_ticket.IsValid() &&
+           VisitWriters([&](const auto &state) { return state.get() == buffer.GetWriterStateIdentity(); });
+}
+
+void PreparedComputeBatch::AppendPendingWriterStates(WriterStateSet &states) const
+{
+    if (m_ticket.IsValid())
+        return;
+    VisitWriters([&](const auto &state) {
+        states.insert(state.get());
+        return false;
+    });
 }
 
 bool PreparedComputeBatch::RequiresPreparation() const
@@ -645,21 +661,11 @@ bool PreparedComputeBatch::OverwritesBeforeRead(const ComputeBufferState &state)
 std::vector<std::shared_ptr<ComputeBufferState>> PreparedComputeBatch::WriterStates() const
 {
     std::vector<std::shared_ptr<ComputeBufferState>> writers;
-    if (!m_batch)
-        return writers;
-    const auto writer = [&](const auto &state) {
+    VisitWriters([&](const auto &state) {
         if (std::find(writers.begin(), writers.end(), state) == writers.end())
             writers.push_back(state);
-    };
-    for (const auto &update : m_batch->updates)
-        writer(update.state);
-    for (const auto &dispatch : m_batch->dispatches)
-        for (size_t index = 0; index < dispatch.work.states.size(); ++index)
-            if (static_cast<uint8_t>(dispatch.work.bufferAccesses[index]) &
-                static_cast<uint8_t>(ComputeBufferAccess::Write))
-                writer(dispatch.work.states[index]);
-    for (const auto &copy : m_batch->copies)
-        writer(copy.destinationState);
+        return false;
+    });
     return writers;
 }
 

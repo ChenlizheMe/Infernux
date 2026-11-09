@@ -179,6 +179,27 @@ std::pair<uint32_t, uint32_t> FitDimensions(uint32_t width, uint32_t height, uin
             (std::max)(1U, static_cast<uint32_t>(height * scale))};
 }
 
+template <typename ReadRow>
+std::vector<uint8_t> SamplePreview(uint32_t width, uint32_t height, uint32_t outWidth, uint32_t outHeight, ReadRow row)
+{
+    const auto bytes = LevelByteSize(outWidth, outHeight, TextureFormat::Rgba8UNorm);
+    std::vector<uint8_t> output(static_cast<size_t>(bytes));
+    for (uint32_t y = 0; y < outHeight; ++y) {
+        const auto sourceY = std::min(static_cast<uint32_t>((y + 0.5f) * height / outHeight), height - 1);
+        const auto *source = row(sourceY);
+        auto *dest = output.data() + size_t(y) * outWidth * 4;
+        if (width == outWidth) {
+            std::memcpy(dest, source, size_t(width) * 4);
+            continue;
+        }
+        for (uint32_t x = 0; x < outWidth; ++x) {
+            const auto sourceX = std::min(static_cast<uint32_t>((x + 0.5f) * width / outWidth), width - 1);
+            std::memcpy(dest + size_t(x) * 4, source + size_t(sourceX) * 4, 4);
+        }
+    }
+    return output;
+}
+
 void SetRgba8BaseLevel(TextureCpuData &texture, const uint8_t *pixels, uint32_t width, uint32_t height,
                        uint32_t maxSize)
 {
@@ -237,8 +258,9 @@ std::pair<uint32_t, uint32_t> PngDimensions(const std::array<unsigned char, 33> 
 class PngRows
 {
   public:
-    PngRows(AssetSource &source, uint32_t width, uint32_t height)
-        : m_source(source), m_width(width), m_height(height), m_rowBytes(size_t(width) * 4 + 1), m_rows(m_rowBytes * 2)
+    PngRows(AssetSource &source, uint32_t width, uint32_t height, const std::function<bool()> *retired = nullptr)
+        : m_source(source), m_retired(retired), m_width(width), m_height(height), m_rowBytes(size_t(width) * 4 + 1),
+          m_rows(m_rowBytes * 2)
     {
         std::array<unsigned char, 33> header{};
         Read(header.data(), header.size());
@@ -260,6 +282,13 @@ class PngRows
     PngRows(const PngRows &) = delete;
     PngRows &operator=(const PngRows &) = delete;
 
+    const unsigned char *Row(int y)
+    {
+        while (m_lastRow < y)
+            Advance();
+        return m_rows.data() + size_t(y % 2) * m_rowBytes + 1;
+    }
+
     static const void *ReadRow(void *, const void *, int pixels, int x, int y, void *context) noexcept
     {
         auto &self = *static_cast<PngRows *>(context);
@@ -268,9 +297,7 @@ class PngRows
                 if (x < 0 || y < 0 || uint32_t(x) > self.m_width || uint32_t(y) >= self.m_height || pixels < 0 ||
                     uint32_t(pixels) > self.m_width - uint32_t(x) || y < self.m_lastRow - 1)
                     throw std::runtime_error("PNG resize requested a scanline outside its window");
-                while (self.m_lastRow < y)
-                    self.Advance();
-                return self.m_rows.data() + size_t(y % 2) * self.m_rowBytes + 1 + size_t(x) * 4;
+                return self.Row(y) + size_t(x) * 4;
             } catch (...) {
                 self.m_error = std::current_exception();
             }
@@ -305,7 +332,8 @@ class PngRows
                 throw std::invalid_argument("unexpected PNG chunk after image data");
             SkipChunk();
         }
-        while (m_cursor != m_source.Size()) {
+        // Imported assets also consume the entire encoded source for its identity.
+        while (m_source.IsSequential() && m_cursor != m_source.Size()) {
             size_t bytes = m_window.size();
             (void)ReadSpan(bytes);
         }
@@ -349,7 +377,10 @@ class PngRows
         if (m_cursor == m_windowEnd) {
             m_windowBegin = m_cursor;
             const auto count = size_t(std::min<uint64_t>(m_window.size(), m_source.Size() - m_cursor));
-            m_source.ReadSequential(m_window.data(), count);
+            if (m_source.IsSequential())
+                m_source.ReadSequential(m_window.data(), count);
+            else
+                m_source.OpenedFile()->ReadAt(m_cursor, m_window.data(), count);
             m_windowEnd += count;
         }
         const auto *span = m_window.data() + (m_cursor - m_windowBegin);
@@ -449,6 +480,8 @@ class PngRows
 
     void Advance()
     {
+        if (m_retired && (*m_retired)())
+            throw std::runtime_error("PNG preview was retired");
         const auto index = size_t(++m_lastRow % 2);
         auto *row = m_rows.data() + index * m_rowBytes;
         const auto *previous = m_rows.data() + (1 - index) * m_rowBytes;
@@ -486,6 +519,7 @@ class PngRows
     }
 
     AssetSource &m_source;
+    const std::function<bool()> *m_retired;
     uint32_t m_width;
     uint32_t m_height;
     size_t m_rowBytes;
@@ -532,6 +566,57 @@ std::pair<uint32_t, uint32_t> TextureDecoder::ReadPngDimensions(AssetSource &sou
         return {};
     source.OpenedFile()->ReadAt(0, header.data(), header.size());
     return PngDimensions(header);
+}
+
+TextureDecoder::PngPreviewPlan TextureDecoder::PlanPngPreview(AssetSource &source, uint32_t maxSize)
+{
+    const auto [width, height] = ReadPngDimensions(source);
+    if (!width)
+        return {};
+    const auto [outWidth, outHeight] = FitDimensions(width, height, maxSize ? maxSize : MaximumDimension);
+    const auto pixels = LevelByteSize(outWidth, outHeight, TextureFormat::Rgba8UNorm);
+    const uint64_t scanlines = sizeof(PngRows) + uint64_t(width) * 8 + 2 + PngInflateBytes;
+    return {width, height, outWidth, outHeight, pixels + scanlines};
+}
+
+InxTextureData TextureDecoder::DecodePngPreview(AssetSource &source, const PngPreviewPlan &plan,
+                                                const std::function<bool()> &retired)
+{
+    PngRows rows(source, plan.width, plan.height, &retired);
+    InxTextureData image;
+    image.width = static_cast<int>(plan.previewWidth);
+    image.height = static_cast<int>(plan.previewHeight);
+    image.pixels = SamplePreview(plan.width, plan.height, plan.previewWidth, plan.previewHeight,
+                                 [&](uint32_t row) { return rows.Row(static_cast<int>(row)); });
+    rows.Finish();
+    return image;
+}
+
+void TextureDecoder::ResizeRgba8Preview(InxTextureData &image, uint32_t maxSize)
+{
+    const auto width = static_cast<uint32_t>(image.width);
+    const auto height = static_cast<uint32_t>(image.height);
+    const auto [outWidth, outHeight] = FitDimensions(width, height, maxSize);
+    if (outWidth == width && outHeight == height)
+        return;
+    image.pixels = SamplePreview(width, height, outWidth, outHeight,
+                                 [&](uint32_t row) { return image.pixels.data() + size_t(row) * width * 4; });
+    image.width = static_cast<int>(outWidth);
+    image.height = static_cast<int>(outHeight);
+}
+
+std::shared_ptr<const TextureCpuData> TextureDecoder::TakeRgba8Preview(InxTextureData image, bool srgb)
+{
+    TextureCpuData texture;
+    texture.semantic = srgb ? TextureSemantic::UserInterface : TextureSemantic::Data;
+    texture.format = srgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+    const auto level = DescribeBaseLevel(image.width, image.height, texture.format);
+    if (level.byteSize != image.pixels.size())
+        throw std::invalid_argument("preview pixels do not match image dimensions");
+    texture.bytes = std::move(image.pixels);
+    texture.mipLevels.push_back(level);
+    return TextureProcessor::Process(
+        std::move(texture), TextureProcessOptions{false, TextureCompression::None, TextureCompressionQuality::Normal});
 }
 
 TextureDecoder::PngPlan TextureDecoder::PlanPng(AssetSource &source, const InxResourceMeta &metadata)

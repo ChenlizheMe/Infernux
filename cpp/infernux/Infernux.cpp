@@ -41,6 +41,7 @@
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
 #include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
@@ -93,6 +94,12 @@ struct TimelineCubePreviewCandidate
     glm::vec3 camera{0.0f};
     int size = 0;
     uint64_t hash = 0;
+};
+
+struct Infernux::PngTexturePreviewSource
+{
+    TextureDecoder::PngPreviewPlan plan;
+    FileInput::Revision revision;
 };
 
 namespace
@@ -1281,7 +1288,7 @@ void Infernux::Cleanup()
 void Infernux::DrainPreviewJobs()
 {
     JobHandle dispatcher;
-    std::queue<PendingPreviewJob> unaccepted;
+    std::deque<PendingPreviewJob> unaccepted;
     {
         std::lock_guard<std::mutex> lock(m_previewJobMutex);
         m_acceptPreviewJobs = false;
@@ -1298,8 +1305,7 @@ void Infernux::DrainPreviewJobs()
     ObservePreviewJob();
 
     std::lock_guard<std::mutex> lock(m_previewResultMutex);
-    std::queue<TexturePreviewCompleted> emptyTextures;
-    m_texturePreviewCompletedQueue.swap(emptyTextures);
+    m_texturePreviewCompletedQueue.clear();
     m_materialPreviewRequestQueue.clear();
     m_meshPreviewRequestQueue.clear();
     m_materialPreviewStates.clear();
@@ -1315,6 +1321,12 @@ void Infernux::EnqueuePreviewTask(std::function<void()> fn, std::optional<std::w
 {
     if (!fn)
         throw std::invalid_argument("preview job requires a callable");
+    EnqueuePreviewTask([task = std::move(fn)](auto) { task(); }, 0, std::move(owner));
+}
+
+void Infernux::EnqueuePreviewTask(std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> fn, uint64_t storageBytes,
+                                  std::optional<std::weak_ptr<const void>> owner)
+{
     if (!JobSystem::IsAvailable())
         throw std::logic_error("preview jobs require an initialized JobSystem");
 
@@ -1322,7 +1334,7 @@ void Infernux::EnqueuePreviewTask(std::function<void()> fn, std::optional<std::w
         std::lock_guard<std::mutex> lock(m_previewJobMutex);
         if (!m_acceptPreviewJobs)
             throw std::runtime_error("preview jobs are no longer accepted during engine shutdown");
-        m_previewJobs.push({std::move(fn), std::move(owner)});
+        m_previewJobs.push_back({std::move(fn), std::move(owner), storageBytes});
     }
     // Enqueue can also run on a worker. The owner wakes this source at the
     // next host boundary; workers never touch the frame coordinator.
@@ -1338,6 +1350,18 @@ void Infernux::ObservePreviewJob()
     m_previewJobFrame = m_previewJobGrant = 0;
 }
 
+std::deque<Infernux::PendingPreviewJob>::iterator Infernux::FindReadyPreviewJob()
+{
+    m_previewJobs.erase(
+        std::remove_if(m_previewJobs.begin(), m_previewJobs.end(), [](const auto &job) { return job.IsRetired(); }),
+        m_previewJobs.end());
+    return std::find_if(m_previewJobs.begin(), m_previewJobs.end(), [this](const auto &job) {
+        // A permanently oversized request runs only to report its capacity error.
+        return !job.storageBytes || job.storageBytes > m_frameWork.CpuStorageLimit() ||
+               m_frameWork.CanReserveCpuStorage(job.storageBytes);
+    });
+}
+
 FrameWorkSource Infernux::GetPreviewIoWorkSource()
 {
     FrameWorkSource source;
@@ -1346,33 +1370,40 @@ FrameWorkSource Infernux::GetPreviewIoWorkSource()
     source.describe = [this] {
         FrameWorkFacts facts;
         std::lock_guard<std::mutex> lock(m_previewJobMutex);
-        while (!m_previewJobs.empty() && m_previewJobs.front().IsRetired())
-            m_previewJobs.pop();
+        const bool canStart = m_acceptPreviewJobs && !m_previewDispatcherJob.IsValid() &&
+                              m_frameWork.CanAdmitResource(FrameWorkResource::Io, 0) &&
+                              FindReadyPreviewJob() != m_previewJobs.end();
         facts.pending = !m_previewJobs.empty() || m_previewDispatcherJob.IsValid();
         facts.workerBusy = m_previewDispatcherJob.IsValid() && !m_previewDispatcherJob.IsComplete();
         facts.observe = facts.pending;
-        facts.host.ready = m_acceptPreviewJobs && !m_previewJobs.empty() && !m_previewDispatcherJob.IsValid() &&
-                           m_frameWork.CanAdmitResource(FrameWorkResource::Io, 0);
+        facts.host.ready = canStart;
         facts.ioReady = facts.host.ready;
         return facts;
     };
     source.advance = [this](bool, uint64_t) {
         if (m_previewDispatcherJob.IsValid() || !m_frameWork.CanAdmitResource(FrameWorkResource::Io, 0))
             return false;
-        std::function<void()> task;
+        PendingPreviewJob task;
+        std::shared_ptr<FrameCpuStorageClaim> storage;
         {
             std::lock_guard<std::mutex> lock(m_previewJobMutex);
-            if (!m_acceptPreviewJobs || m_previewJobs.empty())
+            const auto ready = FindReadyPreviewJob();
+            if (!m_acceptPreviewJobs || ready == m_previewJobs.end())
                 return false;
-            task = std::move(m_previewJobs.front().run);
-            m_previewJobs.pop();
+            if (ready->storageBytes && ready->storageBytes <= m_frameWork.CpuStorageLimit()) {
+                storage = m_frameWork.TryReserveCpuStorage(ready->storageBytes);
+                if (!storage)
+                    return false;
+            }
+            task = std::move(*ready);
+            m_previewJobs.erase(ready);
         }
         m_previewExecutionNanoseconds = 0;
         m_previewDispatcherJob = JobSystem::Get().Schedule(
-            [this, task = std::move(task)] {
+            [this, run = std::move(task.run), storage = std::move(storage)]() mutable {
                 const auto started = std::chrono::steady_clock::now();
                 try {
-                    task();
+                    run(std::move(storage));
                 } catch (const std::exception &error) {
                     INXLOG_ERROR("Preview worker job failed: ", error.what());
                 } catch (...) {
@@ -1449,44 +1480,6 @@ static std::string CanonicalizePreviewKey(const std::string &resourceKey)
     return out;
 }
 
-static void DownsampleNearestRgba(const std::vector<unsigned char> &src, int srcW, int srcH, int maxPx,
-                                  std::vector<unsigned char> &dst, int &dstW, int &dstH)
-{
-    if (srcW <= 0 || srcH <= 0 || src.empty()) {
-        dst.clear();
-        dstW = 0;
-        dstH = 0;
-        return;
-    }
-
-    if (maxPx <= 0 || (srcW <= maxPx && srcH <= maxPx)) {
-        dst = src;
-        dstW = srcW;
-        dstH = srcH;
-        return;
-    }
-
-    const float scale = static_cast<float>(maxPx) / static_cast<float>(std::max(srcW, srcH));
-    dstW = std::max(1, static_cast<int>(srcW * scale));
-    dstH = std::max(1, static_cast<int>(srcH * scale));
-    dst.resize(static_cast<size_t>(dstW) * static_cast<size_t>(dstH) * 4u);
-
-    const int rowStride = srcW * 4;
-    for (int dy = 0; dy < dstH; ++dy) {
-        const int sy = std::min(static_cast<int>((dy + 0.5f) * srcH / dstH), srcH - 1);
-        const int rowOff = sy * rowStride;
-        for (int dx = 0; dx < dstW; ++dx) {
-            const int sx = std::min(static_cast<int>((dx + 0.5f) * srcW / dstW), srcW - 1);
-            const int srcIdx = rowOff + sx * 4;
-            const int dstIdx = (dy * dstW + dx) * 4;
-            dst[dstIdx + 0] = src[srcIdx + 0];
-            dst[dstIdx + 1] = src[srcIdx + 1];
-            dst[dstIdx + 2] = src[srcIdx + 2];
-            dst[dstIdx + 3] = src[srcIdx + 3];
-        }
-    }
-}
-
 static void ApplyLinearToSrgbPreviewInPlace(std::vector<unsigned char> &pixels)
 {
     if (pixels.empty())
@@ -1554,7 +1547,7 @@ static void ApplyNormalMapPreviewInPlace(std::vector<unsigned char> &pixels, int
 struct Infernux::MaterialPreviewRaster
 {
     std::shared_ptr<FrameCpuStorageClaim> storage;
-    std::vector<unsigned char> pixels;
+    std::shared_ptr<const TextureCpuData> pixels;
     PreviewPixelSummary summary;
     std::exception_ptr failure;
     std::atomic<bool> complete{false};
@@ -1920,9 +1913,14 @@ int Infernux::AdvanceMaterialPreview(bool gpu, int uploadBudget, bool &progresse
                          database = GetAssetDatabase()] {
                             if (const auto work = weak.lock()) {
                                 try {
-                                    MaterialPreviewer::RenderCpuPreview(*material, kMaterialPreviewSize, work->pixels,
+                                    InxTextureData image;
+                                    image.width = image.height = kMaterialPreviewSize;
+                                    MaterialPreviewer::RenderCpuPreview(*material, kMaterialPreviewSize, image.pixels,
                                                                         database);
-                                    work->summary = SummarizePreviewPixels(work->pixels);
+                                    if (image.IsValid()) {
+                                        work->pixels = TextureDecoder::TakeRgba8Preview(std::move(image), false);
+                                        work->summary = SummarizePreviewPixels(*work->pixels);
+                                    }
                                 } catch (...) {
                                     work->failure = std::current_exception();
                                 }
@@ -1959,11 +1957,10 @@ int Infernux::AdvanceMaterialPreview(bool gpu, int uploadBudget, bool &progresse
             return consumed;
         }
 
-        const auto &raster = *request.raster;
+        auto &raster = *request.raster;
         if (raster.failure)
             std::rethrow_exception(raster.failure);
-        const auto &pixels = raster.pixels;
-        if (pixels.empty()) {
+        if (!raster.pixels) {
             finish(nullptr);
             return consumed;
         }
@@ -1981,9 +1978,15 @@ int Infernux::AdvanceMaterialPreview(bool gpu, int uploadBudget, bool &progresse
             return consumed;
         }
         auto inputs = std::make_shared<const decltype(request.inputRevisions)>(std::move(request.inputRevisions));
-        const auto uploadVersion = m_renderer->SubmitTextureForImGui(
-            state.textureName, pixels.data(), pixels.size(), kMaterialPreviewSize, kMaterialPreviewSize,
-            rhi::FilterMode::Linear, false, [inputs] { return MaterialPreviewInputsCurrent(*inputs); });
+        const auto canPublish = [this, key = request.resourceKey, generation = request.generation, inputs] {
+            std::lock_guard stateLock(m_previewResultMutex);
+            const auto current = m_materialPreviewStates.find(key);
+            return current != m_materialPreviewStates.end() && current->second.generation == generation &&
+                   MaterialPreviewInputsCurrent(*inputs);
+        };
+        const auto uploadVersion =
+            m_renderer->SubmitTextureForImGui(state.textureName, std::move(raster.pixels), rhi::FilterMode::Linear,
+                                              false, canPublish, std::move(raster.storage));
         state.pendingGeneration = 0;
         if (!uploadVersion) {
             state.failedGeneration = request.generation;
@@ -2190,28 +2193,22 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
 
     // ── Process completed texture uploads ────────────────────────
     if (lane == 2) {
-        std::queue<TexturePreviewCompleted> texLocal;
-        {
-            std::lock_guard<std::mutex> lock(m_previewResultMutex);
-            texLocal.swap(m_texturePreviewCompletedQueue);
-        }
-
-        while (!texLocal.empty() && uploadBudget > 0) {
-            TexturePreviewCompleted completed = std::move(texLocal.front());
-            texLocal.pop();
+        std::lock_guard lock(m_previewResultMutex);
+        while (!m_texturePreviewCompletedQueue.empty() && uploadBudget > 0) {
+            TexturePreviewCompleted completed = std::move(m_texturePreviewCompletedQueue.front());
+            m_texturePreviewCompletedQueue.pop_front();
             progressed = true; // Consume this distinct completion, including a retired generation.
 
-            std::lock_guard lock(m_previewResultMutex);
             const auto found = m_texturePreviewStates.find(completed.resourceKey);
             if (found == m_texturePreviewStates.end() || found->second.decodeGeneration != completed.generation)
                 continue;
             auto &state = found->second;
             state.decodeGeneration = 0;
+            state.fileRequest.reset();
             if (state.generation != completed.generation)
                 continue;
 
-            if (!completed.success || (completed.pixels.empty() && !completed.sourcePixels) || completed.width <= 0 ||
-                completed.height <= 0) {
+            if (!completed.pixels) {
                 state.failedGeneration = completed.generation;
                 continue;
             }
@@ -2222,19 +2219,22 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
                 return current != m_texturePreviewStates.end() && current->second.generation == generation;
             };
             try {
+                const auto &mip = completed.pixels->mipLevels.front();
+                const auto width = static_cast<int>(mip.width);
+                const auto height = static_cast<int>(mip.height);
                 const auto version =
-                    completed.sourcePixels
-                        ? m_renderer->SubmitDocumentTextureForImGui(state.textureName, *completed.sourcePixels,
-                                                                    canPublish)
-                        : m_renderer->SubmitTextureForImGui(
-                              state.textureName, completed.pixels.data(), completed.pixels.size(), completed.width,
-                              completed.height, completed.nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear,
-                              false, canPublish);
+                    completed.displayEncoding
+                        ? m_renderer->SubmitDocumentTextureForImGui(state.textureName, std::move(completed.pixels),
+                                                                    canPublish, std::move(completed.storage))
+                        : m_renderer->SubmitTextureForImGui(state.textureName, std::move(completed.pixels),
+                                                            completed.nearest ? rhi::FilterMode::Nearest
+                                                                              : rhi::FilterMode::Linear,
+                                                            false, canPublish, std::move(completed.storage));
                 if (!version) {
                     state.failedGeneration = completed.generation;
                     continue;
                 }
-                state.upload = {version, completed.generation, completed.width, completed.height, completed.summary};
+                state.upload = {version, completed.generation, width, height, completed.summary};
                 m_hasPendingPreviewUploads.store(true, std::memory_order_release);
                 m_hasPreviewPumpWork.store(true, std::memory_order_release);
                 --uploadBudget;
@@ -2244,15 +2244,8 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
             }
         }
 
-        // Put unconsumed items back for next frame.
-        if (!texLocal.empty()) {
-            std::lock_guard<std::mutex> lock(m_previewResultMutex);
+        if (!m_texturePreviewCompletedQueue.empty())
             m_hasPreviewPumpWork.store(true, std::memory_order_release);
-            while (!texLocal.empty()) {
-                m_texturePreviewCompletedQueue.push(std::move(texLocal.front()));
-                texLocal.pop();
-            }
-        }
     }
 
     // ── Mesh preview render + direct GPU publication ─────────────────
@@ -2579,7 +2572,7 @@ void Infernux::InvalidateTexturePreviewTask(const std::string &resourceKey)
     // Keep the last imported preview visible while its replacement is prepared.
     it->second.generation++;
     it->second.lastContentStamp = 0;
-    it->second.decodeGeneration = 0;
+    RetireTexturePreviewDecode(it->first, it->second);
     it->second.upload = {};
     if (!it->second.importedTextureGuid.empty()) {
         it->second.importedGpuPending = true;
@@ -2602,6 +2595,7 @@ void Infernux::ReleaseTexturePreviewTask(const std::string &resourceKey)
         m_renderer->RemoveImGuiTexture(state.textureName);
     // Keep the epoch when a streaming slot is reused. Both an old worker
     // result and an already submitted GPU upload must remain retired.
+    RetireTexturePreviewDecode(found->first, state);
     state = TexturePreviewState{};
     state.generation = retiredGeneration;
 }
@@ -2748,7 +2742,7 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
                                  (contentStampHint != 0 && state.lastContentStamp != contentStampHint);
             if (differentSource) {
                 ++state.generation;
-                state.decodeGeneration = 0;
+                RetireTexturePreviewDecode(key, state);
                 state.upload = {};
                 state.sourcePath.clear();
                 state.importedContentGeneration = 0;
@@ -2769,8 +2763,7 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
         }
     }
 
-    bool shouldEnqueue = false;
-    TexturePreviewRequest req;
+    std::shared_ptr<const TexturePreviewRequest> request;
     ImGuiTexturePublication published;
 
     {
@@ -2801,77 +2794,155 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
         state.maxSize = sanitizedMaxSize;
         state.textureFormat = textureFormat;
         state.textureType = textureType;
+        if (state.decodeGeneration && state.decodeGeneration != state.generation)
+            RetireTexturePreviewDecode(key, state);
         const bool upToDate = published.textureId && state.readyGeneration == state.generation;
         if (!upToDate && state.failedGeneration != state.generation && !state.HasPendingWork()) {
+            request = std::make_shared<const TexturePreviewRequest>(TexturePreviewRequest{
+                key, textureFilePath, state.generation, nearest, srgb, sanitizedMaxSize, textureFormat, textureType});
             state.decodeGeneration = state.generation;
-            req = TexturePreviewRequest{key,  textureFilePath,  state.generation, nearest,
-                                        srgb, sanitizedMaxSize, textureFormat,    textureType};
-            shouldEnqueue = true;
+            state.fileRequest = request;
         }
     }
 
-    if (shouldEnqueue) {
-        // Inspector component icons (~16 logical px, often 2x framebuffer); keep GPU texture near
-        // display density instead of a 256px atlas + heavy minification.
-        constexpr int kComponentIconPreviewMaxDim = 64;
-        EnqueuePreviewTask([this, req, kComponentIconPreviewMaxDim]() {
-            TexturePreviewCompleted completed;
-            completed.resourceKey = req.resourceKey;
-            completed.generation = req.generation;
-            completed.nearest = req.nearest;
-            try {
-                if (req.resourceKey.compare(0, 9, "document|") == 0) {
-                    InxResourceMeta settings;
-                    settings.AddMetadata("texture_type", std::string("ui"));
-                    settings.AddMetadata("texture_compression", std::string("none"));
-                    settings.AddMetadata("texture_format", std::string("auto"));
-                    settings.AddMetadata("max_size", 0);
-                    settings.AddMetadata("srgb", true);
-                    settings.AddMetadata("generate_mipmaps", false);
-                    completed.sourcePixels = TextureDecoder::Decode(req.textureFilePath, settings, true);
-                    const auto &mip = completed.sourcePixels->mipLevels.front();
-                    completed.width = static_cast<int>(mip.width);
-                    completed.height = static_cast<int>(mip.height);
-                    completed.success = true;
-                } else {
-                    const int decodeSize = req.resourceKey.compare(0, 9, "compicon|") == 0
-                                               ? (std::min)(kComponentIconPreviewMaxDim, req.maxSize)
-                                               : req.maxSize;
-                    auto texData = InxTextureLoader::LoadFromFile(req.textureFilePath, "", decodeSize);
-                    if (texData.IsValid()) {
-                        std::vector<unsigned char> sampled;
-                        int outW = 0;
-                        int outH = 0;
-                        const bool spriteEditPreview = req.resourceKey.compare(0, 11, "spriteedit|") == 0;
-                        const int maxDim = spriteEditPreview ? std::max(texData.width, texData.height) : decodeSize;
-                        DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW,
-                                              outH);
-                        if (!sampled.empty() && outW > 0 && outH > 0) {
-                            if (req.textureType == "normal_map")
-                                ApplyNormalMapPreviewInPlace(sampled, outW, outH);
-                            else if (!req.srgb)
-                                ApplyLinearToSrgbPreviewInPlace(sampled);
-                            ApplyTextureFormatPreviewInPlace(sampled, req.textureFormat);
-                            completed.width = outW;
-                            completed.height = outH;
-                            completed.success = true;
-                            completed.pixels = std::move(sampled);
-                        }
-                    }
-                }
-                completed.summary = completed.sourcePixels ? SummarizePreviewPixels(*completed.sourcePixels)
-                                                           : SummarizePreviewPixels(completed.pixels);
-            } catch (const std::exception &error) {
-                INXLOG_WARN("Texture preview decode failed for ", req.textureFilePath, ": ", error.what());
-            }
-
-            std::lock_guard<std::mutex> lock(m_previewResultMutex);
-            m_texturePreviewCompletedQueue.push(std::move(completed));
-            m_hasPreviewPumpWork.store(true, std::memory_order_release);
-        });
-    }
-
+    if (request)
+        QueueTextureFilePreview(request);
     return {published.textureId, published.width, published.height};
+}
+
+void Infernux::QueueTextureFilePreview(const std::shared_ptr<const TexturePreviewRequest> &request)
+{
+    constexpr int componentIconSize = 64;
+    const auto &key = request->resourceKey;
+    const int decodeSize =
+        key.compare(0, 9, "compicon|") == 0 ? (std::min)(componentIconSize, request->maxSize) : request->maxSize;
+    const bool fullImage = key.compare(0, 9, "document|") == 0 || key.compare(0, 11, "spriteedit|") == 0;
+    const std::weak_ptr weak(request);
+    EnqueuePreviewTask(
+        [this, weak, decodeSize, fullImage] {
+            const auto req = weak.lock();
+            if (!req)
+                return;
+            try {
+                PngTexturePreviewSource png;
+                {
+                    AssetSource source(req->textureFilePath);
+                    if (source.Size() > static_cast<uint64_t>((std::numeric_limits<int>::max)()))
+                        throw std::length_error("texture preview source exceeds decoder limits");
+                    png.revision = source.OpenedFile()->InspectRevision();
+                    png.plan = TextureDecoder::PlanPngPreview(source, fullImage ? 0 : decodeSize);
+                }
+                if (png.plan.bytes) {
+                    EnqueuePreviewTask(
+                        [this, weak, decodeSize, png](std::shared_ptr<FrameCpuStorageClaim> storage) {
+                            if (auto request = weak.lock()) {
+                                const auto input = *request;
+                                request.reset();
+                                DecodeTextureFilePreview(input, decodeSize, &png, std::move(storage),
+                                                         [&weak] { return weak.expired(); });
+                            }
+                        },
+                        png.plan.bytes, weak);
+                } else {
+                    DecodeTextureFilePreview(*req, decodeSize);
+                }
+            } catch (const std::exception &error) {
+                INXLOG_WARN("Texture preview preparation failed for ", req->textureFilePath, ": ", error.what());
+                TexturePreviewCompleted completed;
+                completed.resourceKey = req->resourceKey;
+                completed.generation = req->generation;
+                CompleteTexturePreview(std::move(completed));
+            }
+        },
+        weak);
+}
+
+void Infernux::DecodeTextureFilePreview(const TexturePreviewRequest &req, int decodeSize,
+                                        const PngTexturePreviewSource *png,
+                                        std::shared_ptr<FrameCpuStorageClaim> storage,
+                                        const std::function<bool()> &retired)
+{
+    TexturePreviewCompleted completed;
+    completed.resourceKey = req.resourceKey;
+    completed.generation = req.generation;
+    completed.nearest = req.nearest;
+    completed.displayEncoding = req.resourceKey.compare(0, 9, "document|") == 0;
+    completed.storage = std::move(storage);
+    try {
+        InxTextureData pixels;
+        if (png) {
+            if (!completed.storage)
+                throw std::length_error("PNG preview exceeds host CPU storage capacity");
+            AssetSource source(req.textureFilePath);
+            auto &file = *source.OpenedFile();
+            if (!(file.InspectRevision() == png->revision))
+                throw std::runtime_error("PNG preview source changed before decode");
+            pixels = TextureDecoder::DecodePngPreview(source, png->plan, retired);
+            if (!(file.InspectRevision() == png->revision) ||
+                !(FileInput(ToFsPath(req.textureFilePath)).InspectRevision() == png->revision))
+                throw std::runtime_error("PNG preview source changed during decode");
+        }
+        if (completed.displayEncoding && !png) {
+            InxResourceMeta settings;
+            settings.AddMetadata("texture_type", std::string("ui"));
+            settings.AddMetadata("texture_compression", std::string("none"));
+            settings.AddMetadata("texture_format", std::string("auto"));
+            settings.AddMetadata("max_size", 0);
+            settings.AddMetadata("srgb", true);
+            settings.AddMetadata("generate_mipmaps", false);
+            completed.pixels = TextureDecoder::Decode(req.textureFilePath, settings, true);
+        } else if (completed.displayEncoding) {
+            completed.pixels = TextureDecoder::TakeRgba8Preview(std::move(pixels), true);
+        } else {
+            if (!png) {
+                pixels = InxTextureLoader::LoadFromFile(req.textureFilePath, "", decodeSize);
+                if (pixels.IsValid() && req.resourceKey.compare(0, 11, "spriteedit|") != 0)
+                    TextureDecoder::ResizeRgba8Preview(pixels, static_cast<uint32_t>(decodeSize));
+            }
+            if (pixels.IsValid()) {
+                if (req.textureType == "normal_map")
+                    ApplyNormalMapPreviewInPlace(pixels.pixels, pixels.width, pixels.height);
+                else if (!req.srgb)
+                    ApplyLinearToSrgbPreviewInPlace(pixels.pixels);
+                ApplyTextureFormatPreviewInPlace(pixels.pixels, req.textureFormat);
+                completed.pixels = TextureDecoder::TakeRgba8Preview(std::move(pixels), false);
+            }
+        }
+        if (completed.pixels) {
+            completed.summary = SummarizePreviewPixels(*completed.pixels);
+            if (completed.storage)
+                completed.storage->ReduceTo(sizeof(TextureCpuData) + completed.pixels->bytes.capacity() +
+                                            completed.pixels->mipLevels.capacity() * sizeof(TextureMipLevel));
+        }
+    } catch (const std::exception &error) {
+        if (!retired || !retired())
+            INXLOG_WARN("Texture preview decode failed for ", req.textureFilePath, ": ", error.what());
+    }
+    CompleteTexturePreview(std::move(completed));
+}
+
+void Infernux::CompleteTexturePreview(TexturePreviewCompleted completed)
+{
+    std::lock_guard<std::mutex> lock(m_previewResultMutex);
+    const auto found = m_texturePreviewStates.find(completed.resourceKey);
+    if (found == m_texturePreviewStates.end() || found->second.decodeGeneration != completed.generation)
+        return;
+    m_texturePreviewCompletedQueue.push_back(std::move(completed));
+    m_hasPreviewPumpWork.store(true, std::memory_order_release);
+}
+
+void Infernux::RetireTexturePreviewDecode(const std::string &key, TexturePreviewState &state)
+{
+    const auto generation = std::exchange(state.decodeGeneration, 0);
+    state.fileRequest.reset();
+    if (!generation)
+        return;
+    auto &completed = m_texturePreviewCompletedQueue;
+    completed.erase(std::remove_if(completed.begin(), completed.end(),
+                                   [&](const auto &result) {
+                                       return result.generation == generation && result.resourceKey == key;
+                                   }),
+                    completed.end());
 }
 
 bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, std::vector<unsigned char> imageData,
@@ -2923,19 +2994,14 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
         try {
             auto texData = InxTextureLoader::LoadFromMemory(dataCopy->data(), dataCopy->size());
             if (texData.IsValid()) {
-                completed.width = texData.width;
-                completed.height = texData.height;
-                completed.success = true;
-                completed.pixels = std::move(texData.pixels);
-                completed.summary = SummarizePreviewPixels(completed.pixels);
+                completed.pixels = TextureDecoder::TakeRgba8Preview(std::move(texData), false);
+                completed.summary = SummarizePreviewPixels(*completed.pixels);
             }
         } catch (const std::exception &error) {
             INXLOG_WARN("In-memory texture preview decode failed: ", error.what());
         }
 
-        std::lock_guard<std::mutex> lock(m_previewResultMutex);
-        m_texturePreviewCompletedQueue.push(std::move(completed));
-        m_hasPreviewPumpWork.store(true, std::memory_order_release);
+        CompleteTexturePreview(std::move(completed));
     });
 
     return true;

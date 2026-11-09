@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -15,6 +16,7 @@ namespace infernux
 
 class InxResourceMeta;
 class AssetSource;
+struct InxTextureData;
 
 class TextureDecoder final
 {
@@ -28,8 +30,22 @@ class TextureDecoder final
         size_t mipBytes = 0;
     };
 
+    struct PngPreviewPlan
+    {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t previewWidth = 0;
+        uint32_t previewHeight = 0;
+        uint64_t bytes = 0;
+    };
+
     [[nodiscard]] static PngPlan PlanPng(AssetSource &source, const InxResourceMeta &metadata);
     [[nodiscard]] static std::pair<uint32_t, uint32_t> ReadPngDimensions(AssetSource &source);
+    [[nodiscard]] static PngPreviewPlan PlanPngPreview(AssetSource &source, uint32_t maxSize);
+    [[nodiscard]] static InxTextureData DecodePngPreview(AssetSource &source, const PngPreviewPlan &plan,
+                                                         const std::function<bool()> &retired);
+    static void ResizeRgba8Preview(InxTextureData &image, uint32_t maxSize);
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData> TakeRgba8Preview(InxTextureData image, bool srgb);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData>
     Decode(const std::string &sourcePath, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData>

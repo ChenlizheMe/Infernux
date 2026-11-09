@@ -15,6 +15,8 @@ namespace infernux
 {
 
 class FrameCpuStorageClaim;
+class DocumentWriteTicket;
+struct StagedDocumentWrite;
 
 struct DocumentTransactionEntry
 {
@@ -30,6 +32,7 @@ struct DocumentTransactionEntry
     // Identity of the exact authored input consumed by this transaction.
     // nullopt is reserved for derived outputs with no author baseline.
     std::optional<AtomicFileState> expectedFileState;
+    std::shared_ptr<StagedDocumentWrite> staged;
 };
 
 struct DocumentTransactionFileState
@@ -58,6 +61,9 @@ struct DocumentTransactionStats
 class DocumentTransaction final
 {
   public:
+    /// Queue a private, journal-compatible sibling without changing the target.
+    INFERNUX_FOUNDATION_API static std::shared_ptr<DocumentWriteTicket> Stage(const std::string &projectRoot,
+                                                                              DocumentTransactionEntry &entry);
     INFERNUX_FOUNDATION_API static DocumentTransactionStats Commit(const std::string &projectRoot,
                                                                    const std::string &journalPath,
                                                                    std::vector<DocumentTransactionEntry> entries,

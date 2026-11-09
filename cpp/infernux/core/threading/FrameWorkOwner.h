@@ -206,7 +206,8 @@ class FrameWorkOwner
     [[nodiscard]] INFERNUX_FOUNDATION_API bool TryGrowCpuStorage(FrameCpuStorageClaim &claim, uint64_t bytes);
     /// Account a payload already owned by a producer. Only the counter changes;
     /// an IO job that releases this storage can still run under memory pressure.
-    [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> TrackOwnedCpuStorage(uint64_t bytes) const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API std::shared_ptr<FrameCpuStorageClaim>
+    TrackOwnedCpuStorage(uint64_t bytes) const;
     [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> SplitCpuStorage(FrameCpuStorageClaim &reserved, uint64_t bytes);
     INFERNUX_FOUNDATION_API uint64_t BeginOpportunity();
     INFERNUX_FOUNDATION_API bool AdvanceEarly();

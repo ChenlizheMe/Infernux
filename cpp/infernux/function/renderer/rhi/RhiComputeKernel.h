@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -443,6 +444,9 @@ class PreparedComputeBatch final
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasWork() const noexcept;
     /// Declared writers still awaiting acceptance; reads never make a writer.
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasPendingWrite(const ComputeBuffer &buffer) const noexcept;
+    using WriterStateSet = std::unordered_set<const ComputeBufferState *>;
+    /// Borrowed identities for an uninterrupted observation of the existing FIFO.
+    INFERNUX_RENDER_CORE_API void AppendPendingWriterStates(WriterStateSet &states) const;
     /// Exact retained buffer capacities and CPU byte-vector payload; callers
     /// deduplicate storage by handle. These queries never collect or submit.
     INFERNUX_RENDER_CORE_API void AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const;
@@ -488,6 +492,7 @@ class PreparedComputeBatch final
     [[nodiscard]] bool ResolveStorage(bool managed);
     [[nodiscard]] bool PrepareReadbacks(bool managed);
     [[nodiscard]] bool OverwritesBeforeRead(const ComputeBufferState &state) const;
+    template <typename Visitor> bool VisitWriters(Visitor &&visitor) const;
     [[nodiscard]] std::vector<std::shared_ptr<ComputeBufferState>> WriterStates() const;
 
     friend INFERNUX_RENDER_CORE_API std::shared_ptr<PreparedComputeBatch>

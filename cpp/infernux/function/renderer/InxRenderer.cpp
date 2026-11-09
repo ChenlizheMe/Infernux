@@ -749,6 +749,8 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
 
 void InxRenderer::PreparePipeline()
 {
+    if (!m_frameWorkOwner)
+        throw std::logic_error("Renderer pipeline requires registered frame work");
     auto pumpStartup = [this]() {
         if (!PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
@@ -762,6 +764,7 @@ void InxRenderer::PreparePipeline()
         INXLOG_DEBUG("Init GUI.");
         m_gui = std::make_unique<InxGUI>(m_vkCore.get());
         m_gui->Init(m_view->m_window);
+        m_gui->RegisterTextureUploadWork(*m_frameWorkOwner);
         pumpStartup();
 
         // Initialize scene render target with default size
@@ -2443,7 +2446,7 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.meshBytes = m_vkCore->GetMeshGpuResidentBytes();
     snapshot.textureBytes = m_vkCore->GetTextureGpuResidentBytes();
     snapshot.imguiTextureBytes = m_gui ? m_gui->GetImGuiTextureResidentBytes() : 0;
-    snapshot.pendingImguiTextureBytes = m_gui ? m_gui->GetPendingImGuiTextureUploadBytes() : 0;
+    snapshot.pendingImguiTextureBytes = m_gui ? m_gui->GetAllocatedImGuiTextureUploadBytes() : 0;
     snapshot.stagingPoolBytes = m_vkCore->GetStagingPoolBytes();
     snapshot.pendingReadbackBytes = m_vkCore->GetResourceManager().GetPendingImageReadbackBytes();
     snapshot.pendingReadbackCount = m_vkCore->GetResourceManager().GetPendingImageReadbackCount();
@@ -2951,6 +2954,17 @@ uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, const unsig
                                         std::move(canPublish));
 }
 
+uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
+                                            rhi::FilterMode filter, bool pinned, std::function<bool()> canPublish,
+                                            std::shared_ptr<FrameCpuStorageClaim> storage)
+{
+    if (!m_gui)
+        throw std::logic_error("ImGui texture submission requires an initialized GUI");
+    const VkFilter vkFilter = filter == rhi::FilterMode::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    return m_gui->SubmitTextureForImGui(name, std::move(pixels), vkFilter, pinned, std::move(canPublish),
+                                        std::move(storage));
+}
+
 uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid,
                                                    bool &progressed)
 {
@@ -2960,12 +2974,14 @@ uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, cons
     return texture ? m_gui->PublishTextureViewForImGui(name, std::move(texture)) : 0;
 }
 
-uint64_t InxRenderer::SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels,
-                                                    std::function<bool()> canPublish)
+uint64_t InxRenderer::SubmitDocumentTextureForImGui(const std::string &name,
+                                                    std::shared_ptr<const TextureCpuData> pixels,
+                                                    std::function<bool()> canPublish,
+                                                    std::shared_ptr<FrameCpuStorageClaim> storage)
 {
     if (!m_gui)
         throw std::logic_error("Document texture submission requires an initialized GUI");
-    return m_gui->SubmitDocumentTextureForImGui(name, pixels, std::move(canPublish));
+    return m_gui->SubmitDocumentTextureForImGui(name, std::move(pixels), std::move(canPublish), std::move(storage));
 }
 
 uint64_t InxRenderer::GetRenderTextureUITextureId(const std::shared_ptr<rhi::RenderTexture> &texture)

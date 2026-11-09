@@ -158,6 +158,11 @@ class ComputeBuffer final : public std::enable_shared_from_this<ComputeBuffer>
     {
         return m_state->GetAllocation();
     }
+    /// Logical writer identity, shared by views and unchanged by allocation replacement.
+    [[nodiscard]] const ComputeBufferState *GetWriterStateIdentity() const noexcept
+    {
+        return m_state.get();
+    }
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeBuffer> Freeze();
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeBuffer> FreezeScalars();
     INFERNUX_RENDER_CORE_API void PublishStorage();

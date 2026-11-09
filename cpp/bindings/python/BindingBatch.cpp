@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/scene/ComponentDataStore.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Scene.h>
@@ -12,6 +13,9 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "BindingRegistration.h"
@@ -168,10 +172,56 @@ std::optional<py::array> CpuPoseArray(py::handle buffer)
     return array;
 }
 
-class CpuTransformExchange
+// Derived once from the current open builder and prepared FIFO for each host
+// used in a native span. The caller ends that span at every Python action.
+class PendingTransformWriters
 {
   public:
-    explicit CpuTransformExchange(ObjectHandle target) : m_target(target)
+    PendingTransformWriters(const py::dict &streams, const py::function &openWrites)
+        : m_streams(streams), m_openWrites(openWrites)
+    {
+    }
+
+    bool Contains(py::handle wrapper, const rhi::ComputeBuffer &buffer)
+    {
+        // Same ordered compute lane identity as the existing Python stream.
+        const auto identity = reinterpret_cast<uintptr_t>(&buffer.GetHost().queue);
+        auto [entry, fresh] = m_writers.try_emplace(identity);
+        auto &writers = entry->second;
+        if (fresh) {
+            const py::object stream = m_streams.attr("get")(identity);
+            if (!stream.is_none()) {
+                for (const py::handle open : m_openWrites(stream))
+                    if (!open.is_none())
+                        writers.open.insert(open.ptr());
+                for (const py::handle packet : stream["pending"]) {
+                    const py::object native = packet.attr("native");
+                    if (!native.is_none())
+                        native.cast<const rhi::PreparedComputeBatch &>().AppendPendingWriterStates(writers.prepared);
+                }
+            }
+        }
+        // Open views deliberately share their Python native wrapper. Sealing
+        // records the mutable state, which survives COW allocation changes.
+        return writers.open.find(wrapper.ptr()) != writers.open.end() ||
+               writers.prepared.find(buffer.GetWriterStateIdentity()) != writers.prepared.end();
+    }
+
+  private:
+    struct HostWriters
+    {
+        std::unordered_set<PyObject *> open;
+        rhi::PreparedComputeBatch::WriterStateSet prepared;
+    };
+    const py::dict &m_streams;
+    const py::function &m_openWrites;
+    std::unordered_map<uintptr_t, HostWriters> m_writers;
+};
+
+class TransformExchange
+{
+  public:
+    TransformExchange(ObjectHandle target, bool cpu) : m_target(target), m_cpu(cpu)
     {
     }
 
@@ -179,7 +229,7 @@ class CpuTransformExchange
     {
         const py::object pending = binding.attr("_pending_cpu_pose");
         if (!pending.is_none() && !CpuPoseArray(binding.attr("_pose"))) {
-            binding.attr("_native_cpu_exchange") = py::none();
+            binding.attr("_native_transform_exchange") = py::none();
             return;
         }
         m_published = CpuTransformPose::FromPython(binding.attr("_published_pose"));
@@ -188,7 +238,8 @@ class CpuTransformExchange
     }
 
     // True means Python code ran and the caller must refresh the context-local Step permit.
-    bool Advance(py::handle binding, const StepPermission &permission, const py::object &factory)
+    bool Advance(py::handle binding, const StepPermission &permission, const py::object &factory,
+                 PendingTransformWriters &writers)
     {
         using Status = ComponentExecutionState::Status;
         const py::object scope = binding.attr("_execution_scope");
@@ -211,6 +262,24 @@ class CpuTransformExchange
         auto &transform = *object->GetTransform();
         const auto current = CpuTransformPose::Read(transform);
         const bool paused = componentScope.Read(scope, permission) == Status::Paused;
+        if (!m_cpu) {
+            const py::object published = binding.attr("_published_pose");
+            if (!published.is_none() && current.ChangedFrom(CpuTransformPose::FromPython(published)))
+                return Poll(binding);
+            if (paused)
+                return false;
+            const py::object observed = binding.attr("_readback_source");
+            const py::object wrapper = buffer.attr("_native");
+            const auto &native = wrapper.cast<const rhi::ComputeBuffer &>();
+            const auto ticket = native.GetLastWriteSubmission();
+            using WriteIdentity = std::tuple<rhi::DeviceId, uint32_t, rhi::SubmissionSerial>;
+            if (observed.is_none() ||
+                observed.cast<WriteIdentity>() !=
+                    WriteIdentity(ticket.device, static_cast<uint32_t>(ticket.queue), ticket.serial) ||
+                writers.Contains(wrapper, native))
+                return Poll(binding);
+            return false;
+        }
         if (m_published && current.ChangedFrom(*m_published)) {
             binding.attr("_apply_native_cpu_authoring")(m_published->ToPython(factory), current.ToPython(factory),
                                                         paused);
@@ -223,9 +292,8 @@ class CpuTransformExchange
         if (!array) {
             binding.attr("_published_pose") = m_published ? m_published->ToPython(factory) : py::none();
             binding.attr("_pending_cpu_pose") = m_pending ? m_pending->ToPython(factory) : py::none();
-            binding.attr("_native_cpu_exchange") = py::none();
-            binding.attr("_poll")();
-            return true;
+            binding.attr("_native_transform_exchange") = py::none();
+            return Poll(binding);
         }
         if (m_pending) {
             try {
@@ -241,6 +309,12 @@ class CpuTransformExchange
     }
 
   private:
+    static bool Poll(py::handle binding)
+    {
+        binding.attr("_poll")();
+        return true;
+    }
+
     static void ClearPythonPoses(py::handle binding)
     {
         binding.attr("_published_pose") = py::none();
@@ -248,19 +322,23 @@ class CpuTransformExchange
     }
 
     ObjectHandle m_target;
+    bool m_cpu;
     std::optional<CpuTransformPose> m_published;
     std::optional<CpuTransformPose> m_pending;
 };
 
 size_t AdvanceTransformBindings(const py::tuple &bindings, size_t first, const py::object &factory,
-                                const StepPermission &permission)
+                                const StepPermission &permission, const py::dict &streams,
+                                const py::function &openWrites)
 {
+    PendingTransformWriters writers(streams, openWrites);
     for (size_t index = first; index < bindings.size(); ++index) {
         const py::handle binding = bindings[index];
-        const py::object exchange = binding.attr("_native_cpu_exchange");
-        if (exchange.is_none() || !binding.attr("_initial_pose").is_none())
+        const py::object exchange = binding.attr("_native_transform_exchange");
+        // The existing owner observes, cancels and materializes active readbacks.
+        if (exchange.is_none() || !binding.attr("_initial_pose").is_none() || !binding.attr("_readback").is_none())
             return index;
-        if (exchange.cast<CpuTransformExchange &>().Advance(binding, permission, factory))
+        if (exchange.cast<TransformExchange &>().Advance(binding, permission, factory, writers))
             return index + 1;
     }
     return bindings.size();
@@ -916,9 +994,9 @@ void RegisterBatchBindings(py::module_ &m)
     py::class_<ComponentExecutionState>(m, "_ComponentExecutionState")
         .def(py::init<py::handle, SceneManager &, uint64_t, bool>())
         .def("state", &ComponentExecutionState::State);
-    py::class_<CpuTransformExchange>(m, "_CpuTransformExchange")
-        .def(py::init<ObjectHandle>())
-        .def("adopt_python_state", &CpuTransformExchange::AdoptPythonState);
+    py::class_<TransformExchange>(m, "_TransformExchange")
+        .def(py::init<ObjectHandle, bool>())
+        .def("adopt_python_state", &TransformExchange::AdoptPythonState);
     m.def("_advance_transform_bindings", &AdvanceTransformBindings);
 
     m.def("_transform_batch_read", &TransformBatchRead, py::arg("targets"), py::arg("property"),

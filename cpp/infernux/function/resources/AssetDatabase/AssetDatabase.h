@@ -581,6 +581,10 @@ class AssetDatabase : public NativeLifetimeOwner
         ImportRequest request;
         AssetFileFingerprint expectedSource;
         std::optional<ImportArtifact> artifact;
+        std::shared_ptr<FrameCpuStorageClaim> storage;
+        std::optional<DocumentTransactionEntry> stagedTexture;
+        std::shared_ptr<DocumentWriteTicket> stageWrite;
+        std::exception_ptr stageFailure;
         std::string error;
         std::thread::id producerThread;
         std::optional<size_t> skeletonDependency;
@@ -600,6 +604,8 @@ class AssetDatabase : public NativeLifetimeOwner
         std::shared_ptr<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
         std::optional<FileInput::Revision> textureRevision;
+        uint64_t textureWorkingBytes = 0;
+        std::string texturePlanningError;
         std::string metadataSource;
         std::string error;
         std::thread::id producerThread;
@@ -747,6 +753,7 @@ class AssetDatabase : public NativeLifetimeOwner
         };
 
         AssetScanArtifact scanArtifact;
+        std::string projectRoot;
         std::vector<WorkerMetadataPrepare> workerMetadata;
         std::vector<PendingAsset> pendingImports;
         std::vector<size_t> metadataPublications;
@@ -755,7 +762,9 @@ class AssetDatabase : public NativeLifetimeOwner
         WorkingSet stagedWorkingSet;
         std::unordered_map<std::string, std::vector<std::string>> committedDependencies;
         std::vector<DocumentTransactionEntry> metadataWrites;
+        std::unordered_set<std::string> stagedTextureGuids;
         std::vector<size_t> importWave;
+        uint64_t importStorageWaitBytes = 0;
         std::exception_ptr metadataWriteFailure;
         std::exception_ptr indexBuildFailure;
         std::optional<AssetIndex> builtAssetIndex;
@@ -841,7 +850,10 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingMetadataPublish(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportPrepare(const std::shared_ptr<PendingRefreshCommit> &state);
-    [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state);
+    [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state, bool managed,
+                                           bool drain);
+    [[nodiscard]] static bool AreImportWaveWritesComplete(const PendingRefreshCommit &state);
+    [[nodiscard]] static bool FinishImportWave(PendingRefreshCommit &state, bool drain);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
@@ -853,7 +865,7 @@ class AssetDatabase : public NativeLifetimeOwner
     bool SubmitCatalogWork(CatalogWork &work, bool managed);
     void ObserveCatalogWork(CatalogWork &work) noexcept;
     void WaitForCatalogWork(CatalogWork &work) noexcept;
-    bool AdvanceRefresh(bool managed);
+    bool AdvanceRefresh(bool managed, bool drain = false);
     [[nodiscard]] bool CanAdvanceWatcherImport() const;
     [[nodiscard]] static bool IsWatcherSourceCurrent(const PendingWatcherImport &pending);
     bool AdvanceWatcherImport(bool managed);
@@ -866,7 +878,7 @@ class AssetDatabase : public NativeLifetimeOwner
     bool AdvanceModelReimport(bool managed);
     void WriteModelReimport(PendingModelReimport &pending);
     void PublishModelReimport(PendingModelReimport &pending);
-    bool CommitReadyRefresh();
+    bool CommitReadyRefresh(bool managed, bool drain);
     void RethrowRefreshFailure();
     [[nodiscard]] static bool IsIgnoredImportPath(const std::filesystem::path &path);
     [[nodiscard]] bool IsMetaFile(const std::filesystem::path &path) const;

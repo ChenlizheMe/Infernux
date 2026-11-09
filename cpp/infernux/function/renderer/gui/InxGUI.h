@@ -23,6 +23,8 @@ namespace infernux
 {
 struct TextureCpuData;
 class EditorShortcutInput;
+class FrameCpuStorageClaim;
+class FrameWorkOwner;
 
 namespace vk
 {
@@ -47,6 +49,7 @@ class InxGUI
     void BuildFrame();
     [[nodiscard]] bool ScheduleFrameBuild(bool force = false);
     void BuildScheduledFrame(bool canCollectRetiredFonts = true);
+    void RegisterTextureUploadWork(FrameWorkOwner &owner);
     void PublishCompletedTextureUploads();
     void CompleteInputFrame();
     void RequestFrame() noexcept;
@@ -101,6 +104,9 @@ class InxGUI
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false,
                                    std::function<bool()> canPublish = {});
+    uint64_t SubmitTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
+                                   VkFilter filter, bool pinned, std::function<bool()> canPublish,
+                                   std::shared_ptr<FrameCpuStorageClaim> storage = {});
 
     /// Present an already-resident engine texture in ImGui without decoding or
     /// uploading a second CPU-authored preview texture.
@@ -112,8 +118,9 @@ class InxGUI
     [[nodiscard]] vk::RenderGraph::PersistentImageInitializations TakeRenderTextureInitializations();
     /// Explicit CPU consumer; ordinary GUI display never requests this copy.
     std::shared_ptr<vk::ImageReadbackTicket> RequestTextureReadback(const std::string &name);
-    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels,
-                                           std::function<bool()> canPublish);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
+                                           std::function<bool()> canPublish,
+                                           std::shared_ptr<FrameCpuStorageClaim> storage = {});
     std::shared_ptr<rhi::RenderTexture> ResolveImGuiRenderTexture(uint64_t textureId) const;
 
     /// Invalidate queued uploads for a name without removing its currently
@@ -168,6 +175,7 @@ class InxGUI
     {
         return m_pendingTextureUploadBytes;
     }
+    [[nodiscard]] uint64_t GetAllocatedImGuiTextureUploadBytes() const noexcept;
     [[nodiscard]] uint64_t GetSubmittedImGuiTextureUploadCount() const noexcept
     {
         return m_submittedTextureUploadCount;
@@ -195,8 +203,13 @@ class InxGUI
     }
 
   private:
-    uint64_t SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels, VkFilter filter,
-                                      bool pinned, bool displayEncoding, std::function<bool()> canPublish = {});
+    struct PendingTextureUpload;
+    uint64_t SubmitCpuTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
+                                      VkFilter filter, bool pinned, bool displayEncoding,
+                                      std::function<bool()> canPublish, std::shared_ptr<FrameCpuStorageClaim> storage);
+    [[nodiscard]] bool RetireStaleTextureUpload(PendingTextureUpload &pending);
+    void FailTextureUpload(PendingTextureUpload &pending, const char *error);
+    bool AppendTextureUpload(PendingTextureUpload &pending, FrameWorkOwner &owner);
     void RefreshDisplayScale();
     void ReloadGUIFont();
 
@@ -234,6 +247,15 @@ class InxGUI
         std::shared_ptr<vk::TextureUploadTicket> ticket;
         bool requiresDisplayEncoding = false;
         std::function<bool()> canPublish;
+        std::shared_ptr<FrameCpuStorageClaim> storage;
+        std::shared_ptr<const TextureCpuData> pixels;
+        bool retired = false;
+
+        void ReleaseSource() noexcept
+        {
+            pixels.reset();
+            storage.reset();
+        }
     };
 
     InxVkCoreModular *m_vkCore_ptr = nullptr;
@@ -261,6 +283,9 @@ class InxGUI
     std::unordered_map<std::string, uint64_t> m_textureUploadGenerations;
     std::unordered_map<std::string, uint64_t> m_failedTextureUploadVersions;
     std::vector<PendingTextureUpload> m_pendingTextureUploads;
+    FrameWorkOwner *m_textureUploadOwner = nullptr;
+    uint64_t m_textureUploadWorkSource = 0;
+    size_t m_nextTextureUpload = 0;
     std::vector<std::string> m_pendingTextureRemovals;
     std::vector<DeferredTextureRelease> m_deferredTextureReleases;
     std::unordered_map<ImTextureData *, rhi::SubmissionSerial> m_atlasRetirementEpochs;

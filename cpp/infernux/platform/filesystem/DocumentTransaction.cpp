@@ -18,6 +18,25 @@
 
 namespace infernux
 {
+struct StagedDocumentWrite
+{
+    std::string path;
+    std::shared_ptr<DocumentWriteTicket> ticket;
+
+    ~StagedDocumentWrite()
+    {
+        if (path.empty() || !ticket)
+            return;
+        try {
+            ticket->Wait();
+            std::error_code ignored;
+            std::filesystem::remove(NativeFilePath(ToFsPath(path)), ignored);
+        } catch (...) {
+            // Failed writers already retire their unpublished output.
+        }
+    }
+};
+
 namespace
 {
 constexpr std::string_view JournalMagic = "INXDTX-STAGED\n";
@@ -365,7 +384,9 @@ void StageWrites(Journal &journal, std::vector<DocumentTransactionEntry> &entrie
 {
     RunWrites(
         journal.entries.size(),
-        [&](size_t index) {
+        [&](size_t index) -> std::shared_ptr<DocumentWriteTicket> {
+            if (journal.entries[index].prepared.state.exists)
+                return {};
             const auto &path = journal.entries[index].prepared.path;
             const auto &owner = parent.Covers(path) ? parent : preparedOwnership;
             return DocumentStore::Instance().SubmitStaged(path, std::move(entries[index].content), owner,
@@ -502,6 +523,22 @@ PathWriteScope OwnJournal(const std::string &path, const PathWriteScope &parent)
 }
 } // namespace
 
+std::shared_ptr<DocumentWriteTicket> DocumentTransaction::Stage(const std::string &projectRoot,
+                                                                DocumentTransactionEntry &entry)
+{
+    if (entry.staged)
+        throw std::logic_error("document transaction entry is already staging");
+    CanonicalParentCache parents;
+    const auto target = RequireInsideRoot(NormalizeRoot(projectRoot), entry.path, parents);
+    std::filesystem::create_directories(NativeFilePath(target.parent_path()));
+    auto staged = std::make_shared<StagedDocumentWrite>();
+    staged->path = FromFsPath(MakeAtomicTemporaryPath(target.parent_path() / ToFsPath(std::string(StagedBasename))));
+    staged->ticket = DocumentStore::Instance().SubmitStaged(staged->path, std::move(entry.content), {},
+                                                            std::move(entry.preclaimedStorage));
+    entry.staged = std::move(staged);
+    return entry.staged->ticket;
+}
+
 DocumentTransactionStats DocumentTransaction::Commit(const std::string &projectRoot, const std::string &journalPath,
                                                      std::vector<DocumentTransactionEntry> entries,
                                                      std::vector<std::string> invalidatedPaths,
@@ -523,7 +560,8 @@ DocumentTransactionStats DocumentTransaction::Commit(const std::string &projectR
     Journal journal;
     journal.entries.reserve(entries.size());
     for (const auto &entry : entries) {
-        const auto name = FromFsPath(MakeAtomicTemporaryPath(ToFsPath(std::string(StagedBasename))));
+        const auto name = entry.staged ? FromFsPath(ToFsPath(entry.staged->path).filename())
+                                       : FromFsPath(MakeAtomicTemporaryPath(ToFsPath(std::string(StagedBasename))));
         journal.entries.push_back({{entry.path, {}}, {name, {}}, entry.expectedFileState, {}, {}});
     }
     for (const auto &path : invalidatedPaths)
@@ -534,8 +572,23 @@ DocumentTransactionStats DocumentTransaction::Commit(const std::string &projectR
     StagedCleanup cleanup{journal};
     DocumentTransactionStats stats;
     stats.entryCount = entries.size();
-    for (const auto &entry : entries)
-        stats.preparedBytes += entry.content.size();
+    for (size_t index = 0; index < entries.size(); ++index) {
+        auto &entry = entries[index];
+        if (!entry.staged) {
+            stats.preparedBytes += entry.content.size();
+            continue;
+        }
+        auto &prepared = journal.entries[index].prepared;
+        auto &stage = *entry.staged;
+        if (LexicalFilesystemPathKey(prepared.path) != LexicalFilesystemPathKey(stage.path) ||
+            !stage.ticket->IsComplete())
+            throw std::logic_error("document transaction entry does not own a completed sibling");
+        stage.ticket->Wait();
+        prepared.state = stage.ticket->GetCommittedFileState().value();
+        stats.preparedBytes += prepared.state.size;
+        // Cleanup moves to the journal only after adopting this exact sibling.
+        stage.path.clear();
+    }
     auto directories = PublicationDirectories(journal);
     directories.insert(ToFsPath(normalizedJournal).parent_path());
     for (const auto &directory : directories)
