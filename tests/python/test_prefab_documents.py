@@ -263,7 +263,7 @@ def test_typed_scene_document_bridge_and_instantiation(scene):
     assert isinstance(document["children"], list)
     assert document["children"][0]["name"] == "DocumentChild"
 
-    clone = scene._instantiate_document(document)
+    clone, _ = scene._instantiate_document(document)
     assert clone is not None
     assert clone.id != root.id
     assert clone.get_child(0).id != child.id

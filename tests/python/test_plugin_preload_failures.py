@@ -7,7 +7,7 @@ import pytest
 from infernux.engine import player_package_native
 from infernux.plugins import InxPackage, PluginManager
 from infernux.plugins.preload import _ensure_script_guid
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_COMPATIBILITY_VERSION
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def package_project(tmp_path, monkeypatch):
         source = tmp_path / ('source-' + reference.replace('/', '-'))
         source.mkdir()
         (source / 'inx_package.json').write_text(json.dumps({
-            'reference': reference, 'version': '1.0.0', 'engine': '==' + ENGINE_VERSION,
+            'reference': reference, 'version': '1.0.0', 'engine': '==' + ENGINE_COMPATIBILITY_VERSION,
         }), encoding='utf-8')
         for name, content in sources.items():
             path = source / name

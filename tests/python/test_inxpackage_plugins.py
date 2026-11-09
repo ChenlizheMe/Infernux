@@ -628,7 +628,12 @@ def test_new_project_installs_builtins_before_resolving_default_registry(tmp_pat
 
     assert [state.reference for state in states] == ["infernux/default-fixture"]
     record = PluginRegistry(str(project)).installed_record("infernux/default-fixture")
-    assert record is not None and record["source"]["type"] == "local"
+    assert record is not None
+    source = record["source"]
+    assert source["builtin"] is True
+    assert source["cache_scope"] == "hub"
+    assert source["type"] == catalog_source["type"]
+    assert source["location"] == catalog_source["location"]
 
 
 def test_shared_guid_reuses_existing_asset_without_duplicate_import(tmp_path):

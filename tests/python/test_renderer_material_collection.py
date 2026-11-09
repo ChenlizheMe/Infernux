@@ -56,7 +56,7 @@ def test_invalid_collection_never_publishes_prefix(scene, kind, entry):
         else:
             replace(renderer, entry, [candidate, object()])
     assert renderer.serialize_document() == before
-    assert renderer.material.native is previous.native
+    assert renderer.shared_material.native is previous.native
 
 
 @pytest.mark.parametrize("kind", RENDERERS)

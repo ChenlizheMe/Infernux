@@ -413,7 +413,7 @@ def test_regular_prefab_child_crossing_scope_becomes_private_and_undo_restores_l
     assert child.serialize_document() == before
 
 
-def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, monkeypatch):
+def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, monkeypatch, engine):
     from infernux.core.assets import AssetManager
     from types import SimpleNamespace
     from infernux.engine.scene_manager import SceneFileManager
@@ -428,6 +428,7 @@ def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, m
     manager = SceneFileManager()
     database = SimpleNamespace(
         get_path_from_guid=lambda guid: inner_path if guid == "inner-guid" else path if guid == "outer-guid" else "",
+        dependency_graph=engine.get_asset_database().dependency_graph,
         get_guid_from_path=lambda candidate: (
             "inner-guid"
             if str(candidate).casefold() == inner_path.casefold()

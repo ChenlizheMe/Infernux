@@ -52,7 +52,7 @@ class DepthCoveragePipeline(RenderPipeline):
         color = graph.create_texture('color', camera_target=True)
         forward = graph.create_texture('forward', format=Format.RGBA16_SFLOAT, samples=1)
         forward_depth = graph.create_texture('forward_depth', format=Format.D32_SFLOAT, samples=1)
-        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
+        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, camera_target=True)
         graph.add_pass('Forward coverage').write_color(forward).write_depth(forward_depth).set_clear(
             color=(0,0,0,0), depth=0.0).draw_renderers(material_pass='forward')
         graph.add_pass('Depth coverage').write_depth(depth).set_clear(depth=0.0).draw_renderers(material_pass='depth')

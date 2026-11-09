@@ -7,13 +7,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from infernux.engine.build import BuildProfile, BuildRequest
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_RELEASE, ENGINE_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -287,6 +286,7 @@ def _installed_web_payload(tmp_path):
     manifest = {
         "$schema": "infernux.web_player",
         "engine": ENGINE_VERSION,
+        "engine_release": ENGINE_RELEASE,
         "platform": "web",
         "architecture": "wasm32",
         "python_abi": "cp313",
@@ -594,6 +594,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     module = _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
     exporter = module.WebPlatformExporter()
+    installed = _installed_web_payload(tmp_path)
     monkeypatch.setattr(
         exporter,
         "doctor",
@@ -604,6 +605,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
                 "emsdk_root": "/fixture/emsdk",
                 "cpython_root": "/fixture/cpython",
                 "source_root": str(ROOT),
+                "player_root": str(installed / "player"),
                 "player": {"python_runtime": _web_python_runtime_manifest()},
             },
         ),
@@ -704,7 +706,8 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
 
     assert result.success
     assert result.diagnostics == ()
-    assert [item.kind for item in result.artifacts] == [
+    license_root = Path(request.output_dir) / "licenses"
+    assert [item.kind for item in result.artifacts if not Path(item.path).is_relative_to(license_root)] == [
         "html",
         "js",
         "wasm",
@@ -717,10 +720,9 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         "webmanifest",
         "js",
         "json",
-        "file",
-        "md",
         "css",
     ]
+    assert any(Path(item.path).is_relative_to(license_root) for item in result.artifacts)
     assert all(Path(item.path).is_file() for item in result.artifacts)
     assert (Path(request.output_dir) / "licenses/infernux/utf8proc/LICENSE.md").read_bytes() == (
         ROOT / "licenses/utf8proc/LICENSE.md"
@@ -755,7 +757,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     assert result.logs == ("host built",)
 
 
-def test_web_scene_shader_passes_pinned_tint_validation():
+def test_web_scene_shader_passes_pinned_tint_validation(tmp_path):
     renderer = (ROOT / "external" / "plugins" / "infernux_web" / "native" / "WebSceneRenderer.cpp").read_text(
         encoding="utf-8"
     )
@@ -773,15 +775,14 @@ def test_web_scene_shader_passes_pinned_tint_validation():
         assert tint.is_file(), f"Configured pinned Tint does not exist: {tint}"
     if not tint.is_file():
         pytest.skip(f"pinned Tint is unavailable for {platform_name}; set INFERNUX_TEST_TINT to the built tool")
-    with tempfile.TemporaryDirectory(prefix="web-wgsl-", dir=ROOT / "out") as temp_dir:
-        shader = Path(temp_dir) / "WebSceneRenderer.wgsl"
-        shader.write_text(match.group(1), encoding="utf-8")
-        completed = subprocess.run(
-            [str(tint), "--input-format", "wgsl", "--format", "wgsl", str(shader)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    shader = tmp_path / "WebSceneRenderer.wgsl"
+    shader.write_text(match.group(1), encoding="utf-8")
+    completed = subprocess.run(
+        [str(tint), "--input-format", "wgsl", "--format", "wgsl", str(shader)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
 

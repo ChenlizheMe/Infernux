@@ -229,6 +229,7 @@ def _capture_exception(callback, errors):
 
 
 def test_scene_deleted_id_watermarks_survive_a_fresh_process(tmp_path):
+    import infernux
     from infernux.lib import _Infernux
 
     path = tmp_path / "Deleted.scene"
@@ -264,7 +265,7 @@ assert component.component_id >= document["nextComponentId"]
     for script in (source, restore):
         environment = os.environ.copy()
         environment["INFERNUX_NATIVE_MODULE_DIR"] = str(Path(_Infernux.__file__).parent)
-        environment["PYTHONPATH"] = str((Path(__file__).resolve().parents[2] / "python"))
+        environment["PYTHONPATH"] = str(Path(infernux.__file__).resolve().parents[1])
         result = subprocess.run(
             [sys.executable, "-c", script, str(path)],
             capture_output=True,
@@ -1086,6 +1087,14 @@ class TestInstantiate:
                     }
                     return paths.get(str(guid), "")
 
+                @staticmethod
+                def contains_path(path):
+                    return Path(path).exists()
+
+            from infernux.core.assets import AssetManager
+
+            monkeypatch.setattr(AssetManager, "import_asset", lambda *_args, **_kwargs: True)
+            monkeypatch.setattr(AssetManager, "reimport_asset", lambda *_args, **_kwargs: True)
             manager.set_asset_database(_AssetDatabase())
             monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
             monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)

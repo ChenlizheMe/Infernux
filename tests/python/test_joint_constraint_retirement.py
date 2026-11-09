@@ -66,7 +66,7 @@ def current(joint, kind):
 def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene, kind, operation, read_path):
     manager = SceneManager.instance()
     support_scene = manager.create_scene("Support world") if operation == "unload_target" else scene
-    owner, body, joint, support, _ = make_joint(scene, kind, support_scene)
+    owner, body, joint, support, support_body = make_joint(scene, kind, support_scene)
     joint_handle = joint.handle
     support_handle = support.handle
     native_joint = joint._require_cpp_component()
@@ -80,9 +80,12 @@ def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene
         assert manager.get_scene_by_world_id(world_id) is None
     else:
         assert support.remove_component(support.get_component("BoxCollider"))
+        # An enabled Rigidbody retains its endpoint with an empty collision shape.
+        assert joint.connected_body is support_body
+        assert displacement(body) == pytest.approx(0, abs=.015)
+        assert support.remove_component(support_body)
     assert scene.resolve_component(joint_handle) is not None
-    if operation != "remove_target_collider":
-        assert joint.connected_body is None
+    assert joint.connected_body is None
     reader = native_joint if read_path == "native" else joint
     assert current(reader, kind) == 0
     steps(1)
@@ -153,7 +156,11 @@ def test_constraint_owner_retirement_and_reconnection_stress(scene, kind):
         assert current(joint._require_cpp_component(), kind) == 0
         assert current(joint, kind) == 0
         assert joint.connected_body is support_body
+        assert displacement(body) == pytest.approx(0, abs=.015)
+        support_body.enabled = False
+        assert current(joint, kind) == 0
         assert displacement(body) == pytest.approx(1, abs=.015)
+        support_body.enabled = True
         support.add_component("BoxCollider")
         steps(1)
         assert displacement(body) == pytest.approx(0, abs=.015)

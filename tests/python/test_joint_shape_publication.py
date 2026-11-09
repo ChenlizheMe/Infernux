@@ -85,6 +85,10 @@ def test_runtime_scale_preserves_each_joint_attachment(scene, kind, side, sleepi
     connected_anchor = support.transform.inverse_transform_point(owner.transform.transform_point(joint.anchor))
     if side == 'world':
         joint.connected_body = None
+        # This case measures attachment to the world, not contact with the
+        # former support. At scale Y=.9, the anchored box would overlap that
+        # support by .15 m; contact and world attachment cannot both hold.
+        Physics.ignore_collision(owner.get_component('BoxCollider'), support.get_component('BoxCollider'), True)
     fixed_anchor = owner.transform.transform_point(joint.anchor)
     edited = support if side == 'support' else owner
     if parent_scale:

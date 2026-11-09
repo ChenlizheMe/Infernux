@@ -2390,8 +2390,9 @@ void Infernux::PollGpuCompletions()
 {
     if (!m_renderer)
         return;
-    FrameWorkOwner::Scope scope(m_frameWork);
+    // Retiring foreground GPU work is part of advancing the renderer itself.
     m_renderer->PollGpuCompletions();
+    FrameWorkOwner::Scope scope(m_frameWork);
     if (CommitPublishedPreviewTextures())
         m_frameWork.ReportProgress();
 }

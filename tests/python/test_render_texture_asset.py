@@ -237,9 +237,12 @@ def test_new_project_asset_assigns_to_camera_without_depth_setup(imported_target
     camera = scene.create_game_object("NewTargetCamera").add_component("Camera")
     try:
         camera.target_texture = RenderTextureRef(imported.guid, str(source))
+        assert camera.output_texture is None
+        camera.render_to_texture = True
         engine.resize_game_render_target(320, 180)
         assert engine.get_game_texture_id() == 0
         target = camera.target_texture
+        assert camera.output_texture is target
         assert isinstance(target, RenderTexture)
         assert target.guid == imported.guid and target.depth_format == PixelFormat.D32_SFLOAT
         assert (target.width, target.height) == (256, 256)
@@ -253,7 +256,7 @@ def test_camera_scene_identity_decodes_without_allocating_then_renders(imported_
     _, guid, _, _ = imported_target
     camera = scene.create_game_object("AuthoredMonitorCamera").add_component("Camera")
     cpp = camera._require_cpp_component()
-    document = cpp.serialize_document() | {"targetTextureGuid": guid}
+    document = cpp.serialize_document() | {"targetTextureGuid": guid, "renderToTexture": True}
     assert cpp.deserialize_document(document)
     assert cpp.target_texture is None
     assert not AssetRegistry.instance().is_loaded(guid)
@@ -281,6 +284,7 @@ def test_camera_scene_identity_decodes_without_allocating_then_renders(imported_
 def test_camera_missing_target_does_not_become_screen_camera(scene, engine):
     engine.resize_game_render_target(320, 180)
     camera = scene.create_game_object("MissingTargetCamera").add_component("Camera")
+    camera.render_to_texture = True
     missing_guid = "1234567890abcdef1234567890abcdef"
     camera._require_cpp_component().target_texture_guid = missing_guid
     assert camera.target_texture.guid == missing_guid
@@ -297,6 +301,7 @@ def test_camera_delete_and_restore_preserve_guid_and_reconnect(imported_target, 
     source, guid, document, database = imported_target
     metadata = Path(str(source) + ".meta").read_bytes()
     camera = scene.create_game_object("RestorableTargetCamera").add_component("Camera")
+    camera.render_to_texture = True
     camera.target_texture = RenderTexture.load_by_guid(guid)
     lease = camera.target_texture
     assert AssetManager.delete_asset(str(source), database=database).succeeded
@@ -319,6 +324,7 @@ def test_camera_asset_events_follow_published_component_identity(imported_target
     source, guid, _, database = imported_target
     owner = scene.create_game_object("ReopenedTargetCamera")
     camera = owner.add_component("Camera")
+    camera.render_to_texture = True
     camera.target_texture = RenderTexture.load_by_guid(guid)
     published_id = camera.component_id
     document = scene.serialize_document()
@@ -326,7 +332,7 @@ def test_camera_asset_events_follow_published_component_identity(imported_target
     if scope == "scene":
         assert scene._commit_document(document)
     else:
-        assert owner._commit_document(owner.serialize_document())
+        assert owner._commit_document(owner.serialize_document())[0]
     camera = scene.find("ReopenedTargetCamera").get_component(inx.Camera)
     assert camera.component_id == published_id
     engine.resize_game_render_target(320, 180)
@@ -457,7 +463,7 @@ def test_camera_depth_requirement_survives_disable_clone_and_owner_removal(impor
     owner = scene.create_game_object("DepthConsumer")
     camera = owner.add_component("Camera")
     camera.target_texture = target
-    clone = scene._clone_game_object(owner)
+    clone, _ = scene._clone_game_object(owner)
     clone_camera = clone.get_component("Camera")
     camera.enabled = clone_camera.enabled = False
     document["depth_format"] = "undefined"

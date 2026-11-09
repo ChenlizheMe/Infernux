@@ -379,7 +379,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         throw std::logic_error("TextureResolver resolved a payload without a published runtime version");
     const std::string filterMode = filterOverride ? filterOverride : infTex->GetFilterMode();
     const std::string wrapMode = wrapOverride ? wrapOverride : infTex->GetWrapMode();
-    const int anisoLevel = infTex->GetAnisoLevel();
+    // Simulation volumes use point or linear interpolation at a single position.
+    const int anisoLevel = filterOverride ? 1 : infTex->GetAnisoLevel();
     rhi::SamplerDesc sampler;
     sampler.maxLod = static_cast<float>(infTex->GetMipCount() - 1);
     const auto &capabilities = m_backend.Device().GetCapabilities();
