@@ -6,6 +6,7 @@ import numpy as np
 
 import infernux as inx
 from infernux import Engine
+from infernux.engine.cpu_continuation import CpuWorkBudget
 from infernux.gizmos import Gizmos
 
 
@@ -41,11 +42,14 @@ def main():
         positions = domain = None
         failures = []
         frames = 0
+        verified = False
         try:
             frontend.init_renderer(64, 64, str(project))
             engine.resize_scene_render_target(64, 64)
             engine.set_editor_fps_cap(240.0)
             engine.set_editor_idle_fps(0.0)
+            # Software Vulkan needs credit for both Gizmo expansion and topology uploads.
+            frontend._cpu_work(CpuWorkBudget(gpu_frame_ns=10_000_000))
             initial = np.array(
                 [[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.75, 0.0]],
                 dtype=np.float32,
@@ -97,16 +101,20 @@ def main():
             scene.create_game_object('Resident Gizmo Probe').add_py_component(probe)
 
             def after_draw():
-                nonlocal frames
+                nonlocal frames, verified
                 try:
                     frames += 1
-                    if frames == 64:
-                        assert engine.resident_mesh_vertex_buffer_count >= 4
+                    # Deferred callbacks also run when no GPU frame slot is ready.
+                    resident_count = engine.resident_mesh_vertex_buffer_count
+                    if frames >= 64 and resident_count >= 4:
                         assert len(positions._gizmo_line_pool.states) == 2
                         assert len(positions._gizmo_wire_sphere_pool.states) == 2
                         values = positions.get_data().numpy(copy=False)
                         np.testing.assert_allclose(values[:, 1], initial[:, 1] + 0.75, atol=1.0e-5)
+                        verified = True
                         engine.exit()
+                    elif engine.submitted_render_frames >= 64:
+                        raise AssertionError(f"Only {resident_count} resident Gizmo buffers after 64 render submissions")
                 except BaseException as exc:
                     failures.append(exc)
                     engine.exit()
@@ -116,7 +124,7 @@ def main():
             engine.run()
             if failures:
                 raise failures[0]
-            assert frames >= 64
+            assert verified
         finally:
             if positions is not None:
                 positions.close()
