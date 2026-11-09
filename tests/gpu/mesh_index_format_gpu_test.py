@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
 
@@ -16,6 +17,7 @@ from infernux import Engine
 from infernux.core.asset_types import read_mesh_import_settings
 from infernux.core.assets import AssetManager
 from infernux.lib import CameraClearFlags, InxMaterial, SceneManager, Vector3
+from infernux.renderstack import DefaultForwardPipeline
 
 
 def main() -> int:
@@ -50,7 +52,9 @@ def main() -> int:
                 return 77
             engine.set_editor_fps_cap(240.0)
             engine.set_editor_idle_fps(0.0)
+            engine.set_scene_view_visible(False)
             frontend.resize_game_render_target(64, 64)
+            frontend.set_render_pipeline(DefaultForwardPipeline())
 
             database = frontend.get_asset_database()
             imported = AssetManager.import_asset(str(source), database=database)
@@ -64,78 +68,76 @@ def main() -> int:
 
             scene = SceneManager.instance().get_active_scene()
             assert scene is not None
+            for owner in scene.get_root_objects():
+                scene.destroy_game_object(owner)
             camera_owner = scene.create_game_object("IndexFormatCamera")
             camera_owner.transform.position = Vector3(0.0, 0.0, -4.0)
             camera = camera_owner.add_component("Camera")
             camera.clear_flags = CameraClearFlags.SolidColor
             engine.set_game_camera_enabled(True)
 
-            light_owner = scene.create_game_object("IndexFormatLight")
-            light_owner.add_component("Light")
-
             probe = scene.create_game_object("IndexFormatProbe")
             renderer = probe.add_component("MeshRenderer")
             renderer.set_mesh_asset_guid(imported.guid)
             renderer.set_material(0, InxMaterial.create_default_unlit())
 
-            frames = 0
-            stage = "wait16"
-            first_ticket = None
-            second_ticket = None
+            deadline = monotonic() + 15.0
+            format_observed_at = None
+            ticket = None
             first_pixels = None
-            switched_frame = 0
 
-            def published_index_info():
+            def after_frame(_foreground_ready: bool) -> None:
+                nonlocal format_observed_at, ticket, first_pixels, completed
                 try:
-                    return engine.get_object_mesh_index_gpu_info(probe.id)
-                except IndexError:
-                    return None
-
-            def after_draw() -> None:
-                nonlocal frames, stage, first_ticket, second_ticket
-                nonlocal first_pixels, switched_frame, completed
-                try:
-                    frames += 1
-                    if stage == "wait16" and frames >= 8:
-                        info = published_index_info()
-                        if info is not None:
-                            assert info == {"format": "uint16", "bytes": 12}, info
-                            first_ticket = frontend.request_render_target_readback(True)
-                            stage = "capture16"
-                    elif stage == "capture16" and first_ticket.done:
-                        first_pixels = first_ticket.result_numpy().copy()
-                        assert np.isfinite(first_pixels).all()
-                        settings.index_format = "uint32"
-                        result = AssetManager.reimport_asset(
-                            str(source), import_settings=settings.to_dict(), database=database
+                    expected_format, expected_bytes = ("uint16", 12) if first_pixels is None else ("uint32", 24)
+                    frame = engine.renderer_frame_snapshot
+                    execution = frame["game_render_graph_execution_count"]
+                    if ticket is None:
+                        try:
+                            info = engine.get_object_mesh_index_gpu_info(probe.id)
+                        except IndexError:
+                            info = None
+                        if info is not None and info["format"] == expected_format:
+                            assert info["bytes"] == expected_bytes, info
+                            # The allocation can appear before a Game draw. Capture
+                            # only after Game accepts a later execution using it.
+                            if format_observed_at is None:
+                                format_observed_at = execution
+                            elif execution > format_observed_at and frame["game_draw_call_count"] > 0:
+                                ticket = frontend.request_render_target_readback(True)
+                    elif ticket.done:
+                        pixels = ticket.result_numpy()
+                        assert np.isfinite(pixels).all()
+                        assert pixels.shape == (64, 64, 4), pixels.shape
+                        assert np.all(pixels[32, 32, :3] > 0.5), (expected_format, execution, pixels[32, 32])
+                        assert np.any(pixels[..., :3] != pixels[0, 0, :3])
+                        if first_pixels is None:
+                            first_pixels = pixels.copy()
+                            settings.index_format = "uint32"
+                            result = AssetManager.reimport_asset(
+                                str(source), import_settings=settings.to_dict(), database=database
+                            )
+                            assert result, result.error
+                            format_observed_at = None
+                            ticket = None
+                        else:
+                            np.testing.assert_array_equal(pixels, first_pixels)
+                            completed = True
+                            print(
+                                "mesh index format GPU regression: UInt16=12 bytes, "
+                                "UInt32=24 bytes, pixel output identical"
+                            )
+                            engine.exit()
+                    if not completed and monotonic() >= deadline:
+                        raise AssertionError(
+                            f"Timed out waiting for {expected_format} Game output. "
+                            f"Format seen at {format_observed_at}, Game execution {execution}."
                         )
-                        assert result, result.error
-                        switched_frame = frames
-                        stage = "wait32"
-                    elif stage == "wait32" and frames >= switched_frame + 4:
-                        info = published_index_info()
-                        if info is not None and info["format"] == "uint32":
-                            assert info["bytes"] == 24, info
-                            second_ticket = frontend.request_render_target_readback(True)
-                            stage = "capture32"
-                    elif stage == "capture32" and second_ticket.done:
-                        second_pixels = second_ticket.result_numpy()
-                        assert first_pixels is not None
-                        np.testing.assert_array_equal(second_pixels, first_pixels)
-                        assert np.any(first_pixels[..., :3] != first_pixels[0, 0, :3])
-                        completed = True
-                        print(
-                            "mesh index format GPU regression: UInt16=12 bytes, "
-                            "UInt32=24 bytes, pixel output identical"
-                        )
-                        engine.exit()
-                    if frames >= 180 and not completed:
-                        raise AssertionError(f"index format GPU test timed out in {stage}")
                 except BaseException as exception:
                     failures.append(exception)
                     engine.exit()
 
-            engine.set_post_draw_callback(after_draw)
+            engine.set_end_frame_callback(after_frame)
             engine.set_play_mode_rendering(True)
             engine.run()
             if failures:
