@@ -1091,7 +1091,7 @@ class Plan:
     @classmethod
     def capture(cls, entry, inputs, *, binding_precompiled=False):
         root = entry._bind()
-        _check_options(None, inputs[0].device, binding_precompiled=binding_precompiled)
+        _check_options(None, inputs[0].device, allow_automatic_recording=binding_precompiled)
         _check_storage((*(x._data for x in inputs), *root._state))
         if any(parameter.device != inputs[0].device for _, parameter in root._named):
             raise ValueError("model parameters and input must use the same device")

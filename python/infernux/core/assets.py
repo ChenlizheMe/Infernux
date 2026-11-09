@@ -829,6 +829,13 @@ class AssetManager:
                 cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        return cls._publish_import_result(
+            path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
+            write_scope=write_scope,
+        )
+
+    @classmethod
+    def _publish_import_result(cls, path, result, *, database, suppress_watcher_echo, write_scope=None):
         dependency_error = cls._compile_shader_dependency_runtime(path)
         if dependency_error:
             from infernux.lib import AssetMutationErrorCode
@@ -848,7 +855,7 @@ class AssetManager:
         particle_error = cls._compile_particle_runtime(
             path,
             result.guid,
-            database=asset_database,
+            database=database,
             write_scope=write_scope,
         )
         if particle_error:
@@ -880,21 +887,13 @@ class AssetManager:
                 "reimport", path, AssetMutationErrorCode.NOT_FOUND, "asset is not registered"
             )
 
-        ext = os.path.splitext(path)[1].lower()
         from infernux.lib import ResourceType
         metadata = asset_database.get_meta_by_guid(guid)
         model_baseline = (
             cls._resident_model_baseline(guid)
             if metadata is not None and metadata.get_resource_type() == ResourceType.Mesh else (0, None)
         )
-        previous_shader_id = ""
-        if ext in SHADER_EXTENSIONS:
-            if metadata is not None and metadata.has_key("shader_id"):
-                previous_shader_id = metadata.get_string("shader_id")
-        native = cls._native_engine()
-        has_shader_runtime = bool(
-            ext in SHADER_SOURCE_EXTENSIONS and native is not None and native.has_renderer
-        )
+        runtime = cls._reimport_shader_runtime(path, metadata)
 
         # Persist metadata before touching runtime state. Pre-reload used to run
         # first and could abort reimport (and meta rebuild) on transient IO races
@@ -911,14 +910,23 @@ class AssetManager:
             cls._suppress_meta_watcher(path)
         return cls._publish_reimport_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
-            native=native, has_shader_runtime=has_shader_runtime, previous_shader_id=previous_shader_id,
-            model_baseline=model_baseline,
+            model_baseline=model_baseline, **runtime,
         )
+
+    @classmethod
+    def _reimport_shader_runtime(cls, path, metadata):
+        ext = os.path.splitext(path)[1].lower()
+        previous_shader_id = ""
+        if ext in SHADER_EXTENSIONS and metadata is not None and metadata.has_key("shader_id"):
+            previous_shader_id = metadata.get_string("shader_id")
+        native = cls._native_engine()
+        return dict(native=native, previous_shader_id=previous_shader_id,
+                    has_shader_runtime=bool(ext in SHADER_SOURCE_EXTENSIONS and native is not None and native.has_renderer))
 
     @classmethod
     def _publish_reimport_result(cls, path, result, *, database, suppress_watcher_echo=True,
                                  native=None, has_shader_runtime=False, previous_shader_id="",
-                                 model_baseline=(0, None), source_unchanged=False):
+                                 model_baseline=(0, None), source_unchanged=False, capture_file_state=True):
         from infernux.lib import ResourceType
 
         guid = result.guid
@@ -1014,7 +1022,7 @@ class AssetManager:
             cls._schedule_gpu_texture_reload(path)
         if is_mesh:
             cls._schedule_model_instance_sync(guid, model_baseline)
-        cls.note_imported_disk_change(path, source_unchanged=source_unchanged)
+        cls.note_imported_disk_change(path, source_unchanged=source_unchanged, capture_file_state=capture_file_state)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("modified", path)
         cls._publish_asset_content_change(path, "modified", guid=guid)
@@ -1639,7 +1647,8 @@ class AssetManager:
         return False
 
     @classmethod
-    def note_imported_disk_change(cls, file_path: str, *, source_unchanged: bool = False) -> None:
+    def note_imported_disk_change(cls, file_path: str, *, source_unchanged: bool = False,
+                                  capture_file_state: bool = True) -> None:
         """Advance the disk/dependency side of one asset's revision ledger."""
         normalized = path_key(file_path) if file_path else ""
         if not normalized:
@@ -1653,14 +1662,15 @@ class AssetManager:
         cls._publish_preview_dependency_revision(file_path)
         if source_unchanged:
             return
-        try:
-            from infernux.core.document_store import capture_document_file_state
+        state.persisted_file_state = state.expected_file_state = None
+        if capture_file_state or normalized in cls._document_write_metadata:
+            try:
+                from infernux.core.document_store import capture_document_file_state
 
-            state.persisted_file_state = capture_document_file_state(file_path)
-            state.expected_file_state = state.persisted_file_state
-        except (ImportError, OSError, RuntimeError, ValueError):
-            state.persisted_file_state = None
-            state.expected_file_state = None
+                state.persisted_file_state = capture_document_file_state(file_path)
+                state.expected_file_state = state.persisted_file_state
+            except (ImportError, OSError, RuntimeError, ValueError):
+                pass
         cls._self_write_commits.pop(normalized, None)
 
     @classmethod

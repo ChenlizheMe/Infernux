@@ -1701,6 +1701,12 @@ class _Analyzer:
                 )
         for statement in node.body:
             for child in ast.walk(statement):
+                if isinstance(child, ast.NamedExpr):
+                    self.diagnostic(
+                        DiagnosticCode.UNSUPPORTED_EXPRESSION,
+                        "assignment expression can invalidate row bounds. Use a separate assignment statement",
+                        child, loop_id=loop_id,
+                    )
                 if isinstance(child, (ast.Assign, ast.AnnAssign)):
                     targets = child.targets if isinstance(child, ast.Assign) else [child.target]
                     if child.value is not None:

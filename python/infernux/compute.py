@@ -35,6 +35,7 @@ _cpu_work_item = threading.local()
 _cpu_dirty_mesh_buffers = weakref.WeakSet()
 _cpu_dirty_transform_bindings = weakref.WeakSet()
 _buffer_generations = count(1)
+_command_source_ids = count(1)
 _retiring_native_kernels = {}
 _cpu_statistics = {
     "submission_count": 0,
@@ -211,6 +212,7 @@ class _PreparedCommands:
     execution_signature: tuple = ()
     accepted_transfer_bytes: int = 0
     preservation: object = None
+    sources: weakref.WeakValueDictionary | None = None
 
     def __post_init__(self):
         try:
@@ -234,7 +236,13 @@ class _PreparedCommands:
         finally:
             self.native = None
             if self.completion is not None:
-                on_accepted(self)
+                try:
+                    if self.sources is not None:
+                        for source in tuple(self.sources.values()):
+                            source.publish(self.completion)
+                finally:
+                    self.sources = None
+                    on_accepted(self)
 
     @property
     def transfer_bytes(self):
@@ -274,6 +282,13 @@ class _PreparedCommands:
             self.native = None
             self.storage_blocks = ()
             self.payload_bytes = 0
+            self._reject_sources("compute producer was discarded")
+
+    def _reject_sources(self, reason):
+        if self.sources:
+            for source in tuple(self.sources.values()):
+                source.reject(reason)
+        self.sources = None
 
 
 def _command_streams() -> dict[int, dict]:
@@ -435,8 +450,11 @@ def _storage_blocks(values):
 
 def _has_pending_write(stream, native) -> bool:
     """Query actual writer declarations without sealing or admitting the FIFO."""
-    if any(packet.native.has_pending_write(native) for packet in stream["pending"]):
-        return True
+    return _has_open_write(stream, native) or any(
+        packet.native.has_pending_write(native) for packet in stream["pending"])
+
+
+def _has_open_write(stream, native) -> bool:
     if any(buffer is native for buffer, _, _ in stream["updates"]):
         return True
     for _, buffers, accesses, *_ in stream["dispatches"]:
@@ -491,6 +509,8 @@ def _submit_commands(packet, *, block: bool, on_accepted) -> bool:
         # Native acceptance is final even if host reporting subsequently fails.
         if int(packet.native.submission_serial) != 0:
             packet._release_accepted(on_accepted)
+        else:
+            packet._reject_sources(str(exception) or "compute producer submission failed")
         raise ComputeExecutionError("GPU compute submission failed") from exception
     if serial is None:
         return False
@@ -587,6 +607,8 @@ def _fail_command_stream(stream: dict, exception: Exception) -> None:
         f"GPU compute stopped: {cause}. Call infernux.compute.discard_pending() "
         "before recording replacement work."
     )
+    for packet in stream["pending"]:
+        packet._reject_sources(stream["failure"])
     # Keep text, not an exception/traceback that owns the unaccepted payload.
     Debug.log_error(stream["failure"])
 
@@ -1518,6 +1540,10 @@ def _freeze_cpu_buffer(source, frame_work):
 def _freeze_gpu_buffer(source):
     """Retain one accepted GPU value without copying it at capture time."""
     _accepted_buffer_version(source)
+    return _freeze_gpu_storage(source)
+
+
+def _freeze_gpu_storage(source):
     value = source.view(readonly=True)
     try:
         value._native = source._native.freeze()
@@ -1544,6 +1570,94 @@ def _buffer_version_current(source, version):
         return False
     stream = _command_streams().get(int(source._host.identity))
     return stream is None or not _has_pending_write(stream, source._native)
+
+
+class _CommandValueLease:
+    """One logical input view at one ordinary compute packet's acceptance."""
+    device = "gpu"
+
+    def __init__(self, identity, source, shape):
+        self.identity, self.shape = identity, shape
+        self.layout = source._dtype
+        self.dtype = self.layout.scalar
+        self.storage = source.view(readonly=True)
+        self.done = False
+        self.error = ""
+
+    @property
+    def ready(self):
+        return self.done and self.storage is not None
+
+    @property
+    def transfer_key(self):
+        return self.identity
+
+    @property
+    def storage_claims(self):
+        return _storage_blocks((self.storage,))
+
+    def publish(self, completion):
+        source = self.storage
+        try:
+            # Native acceptance stamps this packet's ticket on its writes
+            # before this callback. No other submission can write in between.
+            # The frozen allocation retains its full native device/queue ticket.
+            if (source._native.last_write_serial != completion.submission_serial or
+                    not source._native.has_initialized_range(source._byte_offset, source.nbytes)):
+                raise ValueError("compute producer did not initialize the complete input range")
+            self.storage = _freeze_gpu_storage(source)
+            self.done = True
+        except Exception as error:
+            self.reject(str(error) or "compute producer capture failed")
+
+    def reject(self, reason):
+        self.storage = None
+        self.error = reason
+        self.done = True
+
+    def acquire(self):
+        return self.storage.view(readonly=True)
+
+
+class _CommandBufferSource(BufferSource):
+    def __init__(self, lease, requires_grad):
+        super().__init__(lease)
+        self._layout = lease.layout
+        self._requires_grad = requires_grad
+
+    @property
+    def dtype(self):
+        return self._layout if self._layout.lanes > 1 else super().dtype
+
+    @property
+    def requires_grad(self):
+        return self._requires_grad
+
+
+def _pending_managed_source(source, *, shape=None, requires_grad=False):
+    """Capture the writer preceding a managed call without admitting its FIFO."""
+    if (not getattr(_command_recording, "automatic_depth", 0) or _explicit_recording_depth()
+            or source._native is None):
+        return None
+    source._require_open()
+    stream = _command_streams().get(int(source._host.identity))
+    if stream is None or stream["failure"] is not None:
+        return None
+    if _has_open_write(stream, source._native):
+        _seal_commands(stream)
+    packet = next((item for item in reversed(stream["pending"])
+                   if item.native.has_pending_write(source._native)), None)
+    if packet is None:
+        return None
+    shape = source.shape if shape is None else shape
+    key = (id(source._native), source._byte_offset, source.nbytes, shape, source.dtype)
+    if packet.sources is None:
+        packet.sources = weakref.WeakValueDictionary()
+    lease = packet.sources.get(key)
+    if lease is None:
+        lease = _CommandValueLease(("compute-packet", next(_command_source_ids)), source, shape)
+        packet.sources[key] = lease
+    return _CommandBufferSource(lease, requires_grad)
 
 
 class _TransferCursor:
@@ -1749,10 +1863,11 @@ def transfer(source: Buffer | BufferSource, *, device: Literal["cpu", "gpu"], fi
     """Release a budgeted copy; result stays private until complete.
 
     CPU input is captured once during release and must not be concurrently
-    modified during that capture. GPU input retains its accepted value. A
-    BufferSource may still await its producer; binding and transfers then use
-    the same request, host budget and original completion window. Ordinary
-    buffer read/write methods retain their synchronous semantics.
+    modified during that capture. GPU input retains its accepted value or the
+    value of its preceding writer in an automatic engine callback. A pending
+    writer or BufferSource uses the same request, host budget and completion
+    window once its value can bind. Ordinary buffer read/write methods retain
+    their synchronous semantics.
     """
     from infernux.application import Application
 
@@ -3032,7 +3147,8 @@ def prepare_continuation(declaration: Kernel, params):
     finish_within_frames=..., budget=...). Output parameters are layout
     prototypes: completed readonly Buffers appear by name in request.result.
     CPU inputs are snapshotted at submission. GPU inputs retain their accepted
-    value without copying; later writers preserve it through the common FIFO.
+    value or the value of their preceding writer in an automatic engine callback.
+    Later writers preserve that value through the common FIFO.
     """
     from ._work import Continuation
     return Continuation(declaration, params)

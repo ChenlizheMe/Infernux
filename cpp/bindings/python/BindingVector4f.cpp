@@ -2,6 +2,7 @@
 
 #include "BindingRegistration.h"
 #include "PythonEase.h"
+#include "VectorBindingMath.h"
 #include "infernux/core/math/QuaternionEuler.h"
 #include "infernux/core/math/QuaternionInterpolation.h"
 #include "infernux/core/math/QuaternionLookRotation.h"
@@ -32,14 +33,6 @@ inline float Dot(const glm::vec4 &a, const glm::vec4 &b)
 {
     return glm::dot(a, b);
 }
-inline float Magnitude(const glm::vec4 &v)
-{
-    return glm::length(v);
-}
-inline float SqrMagnitude(const glm::vec4 &v)
-{
-    return glm::dot(v, v);
-}
 inline glm::vec4 Project(const glm::vec4 &a, const glm::vec4 &b)
 {
     float denom = Dot(b, b);
@@ -49,7 +42,7 @@ inline glm::vec4 Project(const glm::vec4 &a, const glm::vec4 &b)
 }
 inline float Distance(const glm::vec4 &a, const glm::vec4 &b)
 {
-    return Magnitude(a - b);
+    return glm::length(a - b);
 }
 inline glm::vec4 Lerp(const glm::vec4 &a, const glm::vec4 &b, float t)
 {
@@ -71,19 +64,11 @@ inline glm::vec4 Min(const glm::vec4 &a, const glm::vec4 &b)
 inline glm::vec4 MoveTowards(const glm::vec4 &current, const glm::vec4 &target, float maxDelta)
 {
     glm::vec4 to = target - current;
-    float dist = Magnitude(to);
+    float dist = glm::length(to);
     if (dist <= maxDelta || dist < 1e-6f)
         return target;
     return current + to * (maxDelta / dist);
 }
-inline glm::vec4 Normalize(const glm::vec4 &v)
-{
-    float mag = Magnitude(v);
-    if (mag < 1e-6f)
-        return glm::vec4(0.f);
-    return v / mag;
-}
-
 inline float RequireFiniteFloat(float value)
 {
     if (!std::isfinite(value))
@@ -113,7 +98,7 @@ inline glm::vec4 SmoothDamp(glm::vec4 current, glm::vec4 target, glm::vec4 &curr
     glm::vec4 originalTarget = target;
     glm::vec4 diff = current - target;
     float maxDist = maxSpeed * smoothTime;
-    float dist = Magnitude(diff);
+    float dist = glm::length(diff);
     if (std::isfinite(maxDist) && dist > maxDist && dist > 1e-6f)
         diff = diff * (maxDist / dist);
     glm::vec4 targetPos = current - diff;
@@ -293,20 +278,19 @@ void RegisterVec4fBindings(py::module_ &m)
             .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z, -v.w); })
             .def("__len__", [](const Vec &) { return 4; })
             .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z, v.w).attr("__iter__")(); })
-            .def("__bool__", [](const Vec &v) { return vec4_util::SqrMagnitude(v) > 1e-12f; })
+            .def("__bool__", [](const Vec &v) { return glm::dot(v, v) > 1e-12f; })
             .def("__abs__",
                  [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y), std::abs(v.z), std::abs(v.w)); })
             .def("__copy__", [](const Vec &v) { return Vec(v); })
             .def("__deepcopy__", [](const Vec &v, py::dict) { return Vec(v); })
             // ---- Instance properties ----
             .def_property_readonly(
-                "magnitude", [](const Vec &v) { return vec4_util::Magnitude(v); },
+                "magnitude", [](const Vec &v) { return glm::length(v); },
                 "Length of this vector. Unity: vector.magnitude")
+            .def_property_readonly("normalized", &vector_binding::Normalize<Vec>,
+                                   "Normalized copy of this vector. Unity: vector.normalized")
             .def_property_readonly(
-                "normalized", [](const Vec &v) { return vec4_util::Normalize(v); },
-                "Normalized copy of this vector. Unity: vector.normalized")
-            .def_property_readonly(
-                "sqr_magnitude", [](const Vec &v) { return vec4_util::SqrMagnitude(v); },
+                "sqr_magnitude", [](const Vec &v) { return glm::dot(v, v); },
                 "Squared length of this vector. Unity: vector.sqrMagnitude")
             // ---- Instance methods ----
             .def(
@@ -337,7 +321,7 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_static("negative_infinity", []() { return Vec(-std::numeric_limits<float>::infinity()); })
             .def_static("positive_infinity", []() { return Vec(std::numeric_limits<float>::infinity()); })
             // ---- Static math operations ----
-            .def_static("normalize", &vec4_util::Normalize)
+            .def_static("normalize", &vector_binding::Normalize<Vec>)
             .def_static("distance", &vec4_util::Distance)
             .def_static("project", &vec4_util::Project)
             .def_static("dot", &vec4_util::Dot)

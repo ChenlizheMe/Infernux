@@ -342,6 +342,13 @@ class ImportCoordinator:
         with self._lock:
             self._inflight.pop(id(event), None)
 
+    def has_source_successor(self, event: AssetFsEvent) -> bool:
+        """Whether a later source event replaces content at this claimed path."""
+        target = _path_key(event.destination or event.path)
+        with self._lock:
+            return any(key.startswith("asset:") and target in self._identity_keys(key, item.event)
+                       for key, item in self._pending.items())
+
     def _requeue_locked(self, event: AssetFsEvent, current: float, *, retry: bool, asset_published: bool) -> bool:
         if self._inflight.pop(id(event), None) is not event:
             return False

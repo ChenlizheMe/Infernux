@@ -8,7 +8,10 @@ from . import _primitives as p
 from ._tensor import Parameter, Tensor, _empty
 from ._grad import _enabled, is_grad_enabled
 from ._plan import _map_result, _result_values
-from .sources import _materials, _TensorChannel, _BatchChannel, _SourceProxy, _SourceInputs
+from .sources import (
+    _BatchChannel, _MaterialChannel, _SourceInputs, _SourceProxy, _TensorChannel,
+    _buffer_source_sample, _materials,
+)
 from infernux.engine.cpu_continuation import CpuWorkBudget as Budget
 from infernux.compute_source import BufferSource
 
@@ -243,7 +246,8 @@ class Program:
         for name, value in bound.arguments.items():
             materials = _materials(value)
             if materials is not None:
-                key.append((name, "materials", len(materials)))
+                resident = value.resident_signature if isinstance(value, _MaterialChannel) else ()
+                key.append((name, "materials", len(materials), resident))
             elif isinstance(value, _TensorChannel):
                 key.append((name, "tensor-fields", value.signature))
             elif isinstance(value, _BatchChannel):
@@ -264,9 +268,7 @@ class Program:
         try:
             for name, value in bound.arguments.items():
                 if isinstance(value, BufferSource):
-                    storage = _empty(value.shape, value.device, value.dtype)
-                    sample = Tensor._from_buffer(storage, value.shape)
-                    storage._close(flush=False)
+                    sample = _buffer_source_sample(value)
                     capture.samples.append(sample)
                     proxies[name] = _Value(capture, sample, name)
                 else:

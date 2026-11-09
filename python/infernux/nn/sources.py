@@ -1,9 +1,9 @@
 """Declared scene fields sampled into the existing numerical request pipeline."""
+from collections.abc import Mapping
 from dataclasses import dataclass
 import math
 from time import perf_counter_ns
 
-from infernux import compute
 from infernux.compute_source import BufferSource
 from ._tensor import Tensor, _empty
 
@@ -11,8 +11,15 @@ from ._tensor import Tensor, _empty
 class Channel:
     """A batch source declaration; preparation never reads its numeric values."""
     @staticmethod
-    def materials(materials):
-        return _MaterialChannel(materials)
+    def materials(materials, *, resident_fields: Mapping[str, Tensor | BufferSource] | None = None):
+        """Declare a Material batch with optional GPU fields in the same row order.
+
+        Each field is a leaf/detached GPU Tensor or GPU BufferSource with shape
+        [rows, components] and the getter's dtype. Use nn.as_tensor(buffer) to
+        share an existing compute buffer. Undeclared fields sample the Material
+        batch, and ordinary Material getters continue to read its properties.
+        """
+        return _MaterialChannel(materials, resident_fields)
 
     @staticmethod
     def tensors(fields):
@@ -75,15 +82,28 @@ class _TransformChannel(_BatchChannel):
 
 
 class _MaterialChannel:
-    def __init__(self, materials):
+    def __init__(self, materials, resident_fields):
         from infernux.core.material import Material
         self._materials = tuple(materials)
         if not self._materials or any(not isinstance(value, Material) for value in self._materials):
             raise TypeError("material channels require a nonempty Material batch")
+        self._resident_fields = {} if resident_fields is None else dict(resident_fields)
+        for name, value in self._resident_fields.items():
+            if (not isinstance(name, str) or not name
+                    or not (isinstance(value, BufferSource) or _is_tensor_field(value))
+                    or len(value.shape) != 2 or value.device != "gpu"):
+                raise TypeError("resident material fields require named GPU [rows,components] "
+                                "leaf/detached Tensors or BufferSources")
+            if value.shape[0] != self.rows:
+                raise ValueError("resident material fields must describe the same row batch as the materials")
 
     @property
     def rows(self):
         return len(self._materials)
+
+    @property
+    def resident_signature(self):
+        return _field_signature(self._resident_fields)
 
 
 def _materials(value):
@@ -91,11 +111,18 @@ def _materials(value):
     return value._materials if isinstance(value, _MaterialChannel) else (value,) if isinstance(value, Material) else None
 
 
+def _is_tensor_field(value):
+    return isinstance(value, Tensor) and not value.requires_grad and value._run is None and value._loss is None
+
+
+def _field_signature(fields):
+    return tuple((name, value.shape, value.device, value.dtype.name) for name, value in sorted(fields.items()))
+
+
 class _TensorChannel:
     def __init__(self, fields):
         self.fields = dict(fields)
-        if not self.fields or any(not isinstance(name, str) or not isinstance(value, Tensor)
-                or len(value.shape) != 2 or value.requires_grad or value._run is not None or value._loss is not None
+        if not self.fields or any(not isinstance(name, str) or not _is_tensor_field(value) or len(value.shape) != 2
                 for name, value in self.fields.items()):
             raise TypeError("tensor channels require named [rows,components] leaf/detached Tensor fields")
         self.rows = next(iter(self.fields.values())).shape[0]
@@ -104,7 +131,7 @@ class _TensorChannel:
 
     @property
     def signature(self):
-        return tuple((name, value.shape, value.device, value.dtype.name) for name, value in sorted(self.fields.items()))
+        return _field_signature(self.fields)
 
 
 @dataclass(frozen=True)
@@ -120,6 +147,31 @@ class _Field:
         return self.rows, {"float": 1, "int": 1, "vector2": 2, "vector3": 3, "vector4": 4, "color": 4}[self.kind]
 
 
+def _bound_field(source, field):
+    if isinstance(source, _TensorChannel):
+        value = source.fields[field.name]
+    elif isinstance(source, _MaterialChannel):
+        value = source._resident_fields.get(field.name)
+        if value is None:
+            return None
+    else:
+        return None
+    if value.shape != field.shape:
+        raise ValueError("channel field shape differs from its getter's components")
+    expected = ("int32", "uint32", "int64") if field.kind == "int" else ("float32",)
+    if value.dtype.name not in expected:
+        raise TypeError("channel field dtype differs from its getter")
+    return value
+
+
+def _buffer_source_sample(value):
+    storage = _empty(value.shape, value.device, value.dtype)
+    try:
+        return Tensor._from_buffer(storage, value.shape)
+    finally:
+        storage._close(flush=False)
+
+
 class _SourceProxy:
     def __init__(self, capture, argument, value):
         self.capture, self.argument, self.source = capture, argument, value
@@ -133,17 +185,12 @@ class _SourceProxy:
         if isinstance(self.source, _BatchChannel):
             if kind != "vector" + str(self.source.field_width(name)):
                 raise ValueError("scene field getter must match its native vector width")
-        if isinstance(self.source, _TensorChannel):
-            value = self.source.fields[name]
-            if value.shape != field.shape:
-                raise ValueError("channel field shape differs from its getter's components")
-            expected = ("int32", "uint32", "int64") if kind == "int" else ("float32",)
-            if value.dtype.name not in expected:
-                raise TypeError("channel field dtype differs from its getter")
-            sample = value.detach()
+        value = _bound_field(self.source, field)
+        if value is not None:
+            sample = _buffer_source_sample(value) if isinstance(value, BufferSource) else value.detach()
         else:
             if kind == "int":
-                raise TypeError("integer getter fields require a Tensor channel")
+                raise TypeError("integer getter fields require a declared Tensor or BufferSource field")
             storage = _empty(field.shape, "cpu")
             sample = Tensor._from_buffer(storage, field.shape)
             storage.close()
@@ -175,8 +222,9 @@ class _SourceInputs:
         self.buffers, self.values, self.groups = [], {}, {}
         self.done = False
         bindings = tuple(dict.fromkeys(binding for binding in bindings if binding is not None))
-        sampled_fields = [binding for binding in bindings if isinstance(binding, _Field)
-                           and not isinstance(arguments[binding.argument], _TensorChannel)]
+        bound_fields = {binding: _bound_field(arguments[binding.argument], binding)
+                        for binding in bindings if isinstance(binding, _Field)}
+        sampled_fields = [field for field, value in bound_fields.items() if value is None]
         self.units = sum(binding.rows for binding in sampled_fields)
         self.nbytes = sum(math.prod(binding.shape) * 4 for binding in sampled_fields)
         self.service_key = tuple((arguments[field.argument].kind if isinstance(arguments[field.argument], _BatchChannel) else "material",
@@ -187,18 +235,14 @@ class _SourceInputs:
         if owner is not None:
             self.validate(owner)
         for binding in bindings:
-            if binding is None or binding in self.values:
-                continue
             if isinstance(binding, str):
                 self.values[binding] = arguments[binding]
                 continue
-            source = arguments[binding.argument]
-            if isinstance(source, _TensorChannel):
-                value = source.fields[binding.name]
-                if value.shape != binding.shape:
-                    raise ValueError("channel field shape changed; prepare its current layout")
+            value = bound_fields[binding]
+            if value is not None:
                 self.values[binding] = value
                 continue
+            source = arguments[binding.argument]
             native_source = source if isinstance(source, _BatchChannel) else _materials(source)
             if native_source is None or (source.rows if isinstance(source, _BatchChannel) else len(native_source)) != binding.rows:
                 raise ValueError("scene source layout changed; prepare the new batch shape")

@@ -61,7 +61,6 @@ def test_only_latest_material_write_callback_can_publish_a_to_b_to_c(monkeypatch
                 edit_revision=index,
                 requested_write_revision=index,
                 commit_token=f"commit-{token}",
-                snapshot=token,
                 content_token=token,
                 callback=lambda status, token=token: callbacks.append((token, status)),
             )
@@ -85,7 +84,6 @@ def test_self_write_watcher_is_acknowledged_by_committed_fingerprint(monkeypatch
         edit_revision=1,
         requested_write_revision=1,
         commit_token="self-commit",
-        snapshot="B",
         content_token="B",
     )
     AssetManager._pending_document_write_records[normalized] = [record]

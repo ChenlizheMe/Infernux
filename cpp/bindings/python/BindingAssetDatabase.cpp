@@ -124,6 +124,35 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
             py::arg("path"), py::arg("settings") = py::none(), py::kw_only(), py::arg("write_scope") = PathWriteScope{},
             "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
         .def(
+            "_begin_watcher_import",
+            [](AssetDatabase &database, const std::string &path, py::function onReady, py::function onFinished) {
+                auto ready = std::make_shared<PythonCallback>(std::move(onReady));
+                auto finished = std::make_shared<PythonCallback>(std::move(onFinished));
+                return database.BeginWatcherImport(
+                    path,
+                    [ready](const AssetMutationResult &result, bool beforeWrite) {
+                        py::gil_scoped_acquire acquire;
+                        try {
+                            return ready->function(AssetMutationResult(result), beforeWrite).cast<bool>();
+                        } catch (const py::error_already_set &error) {
+                            throw std::runtime_error(error.what());
+                        }
+                    },
+                    [finished](std::string_view outcome, const AssetMutationResult &result, uint64_t oldVersion,
+                               std::optional<float> oldScale) {
+                        py::gil_scoped_acquire acquire;
+                        try {
+                            finished->function(outcome, AssetMutationResult(result), oldVersion, oldScale);
+                        } catch (const py::error_already_set &error) {
+                            throw std::runtime_error(error.what());
+                        }
+                    });
+            },
+            py::arg("path"), py::arg("on_ready"), py::arg("on_finished"))
+        .def("_complete_pending_watcher_import", &AssetDatabase::CompletePendingWatcherImport,
+             py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("_watcher_import_pending", &AssetDatabase::IsWatcherImportPending)
+        .def(
             "begin_model_reimport",
             [](AssetDatabase &database, const std::string &path, py::object settings, py::object onPublished) {
                 AssetDatabase::ModelReimportPublished published;

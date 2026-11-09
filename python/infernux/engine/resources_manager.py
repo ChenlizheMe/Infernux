@@ -225,6 +225,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._retired_script_transactions: set[str] = set()
         self._initial_scan_transaction_id: str | None = None
         self._coordinator = ImportCoordinator(max_attempts=8)
+        self._active_watcher_import = None
         self._shader_cache_invalidation_callbacks = []
         self._asset_database = engine.get_asset_database()
         if self._asset_database is None:
@@ -516,6 +517,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
     def pending_count(self) -> int:
         return (
             self._coordinator.pending_count
+            + int(self._active_watcher_import is not None)
             + self._script_change_collector.pending_count
             + self._script_change_collector.completed_count
         )
@@ -531,18 +533,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if force or not self._frontend_worker_running:
             self.process_script_worker()
 
-        # Asset import and live GPU publication are owner-thread operations.
-        # Import one asset per frame. Script edits take priority while the
-        # coordinator preserves earlier work for the same asset identity.
-        events = self._coordinator.drain(
-            force=force,
-            max_events=None if force else 1,
-        )
+        if force and self._active_watcher_import is not None:
+            self._asset_database._complete_pending_watcher_import()
+
+        # The active source keeps its coordinator claim through native commit.
+        # Later notifications remain coalescible while its worker is running.
+        events = (self._coordinator.drain(force=force, max_events=None if force else 1)
+                  if self._active_watcher_import is None else ())
         if events:
             request_full_speed = getattr(self._engine, "request_full_speed_frame", None)
             if callable(request_full_speed):
                 request_full_speed()
         for event in events:
+            retained = False
             try:
                 # A catalog transaction owns mutation until its prepared
                 # commit is published on this thread.
@@ -553,21 +556,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
                         getattr(self._asset_database, "model_reimport_publishing", False)):
                     self._reschedule_asset_event(event, retry=False)
                     continue
-                self._dispatch_event(event)
-            except _AssetLocalWritePending:
-                self._reschedule_asset_event(event, retry=False)
-            except _AssetImportRejected as exc:
-                # Recompiling identical invalid source cannot make it valid.
-                # A subsequent source save submits a new candidate normally.
-                if exc.compiled:
-                    self._rejected_compiled_assets.add(path_key(event.destination or event.path))
-            except (_AssetImportNotReady, PermissionError) as exc:
-                if not self._reschedule_asset_event(event, retry=True):
-                    Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
+                retained = self._dispatch_event(event)
+                if retained and force:
+                    self._asset_database._complete_pending_watcher_import()
             except Exception as exc:
-                Debug.log_error(f"Asset event failed: {event}: {exc}")
+                self._handle_asset_event_failure(event, exc)
             finally:
-                self._coordinator.complete(event)
+                if not retained:
+                    self._coordinator.complete(event)
 
         # Dispatch first: a script event can submit its immutable snapshot to
         # the frontend worker, whose result may already be ready by the time
@@ -581,6 +577,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self.process_script_worker()
             processed += self._drain_script_results()
         return processed + len(events)
+
+    def _handle_asset_event_failure(self, event: AssetFsEvent, exc: Exception) -> None:
+        if isinstance(exc, _AssetLocalWritePending):
+            self._reschedule_asset_event(event, retry=False)
+        elif isinstance(exc, _AssetImportRejected):
+            # Recompiling identical invalid source cannot make it valid.
+            if exc.compiled:
+                self._rejected_compiled_assets.add(path_key(event.destination or event.path))
+        elif isinstance(exc, (_AssetImportNotReady, PermissionError)):
+            if not self._reschedule_asset_event(event, retry=True):
+                Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
+        else:
+            Debug.log_error(f"Asset event failed: {event}: {exc}")
 
     def _reschedule_asset_event(self, event: AssetFsEvent, *, retry: bool) -> bool:
         # An importer can wait after its create/move catalog commit. The
@@ -1379,7 +1388,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     self._try_publish_script_transaction(state)
         return initial_scan_count
 
-    def _dispatch_event(self, event: AssetFsEvent) -> None:
+    @staticmethod
+    def _is_source_watcher_echo(event: AssetFsEvent) -> bool:
+        from infernux.core.assets import AssetManager
+
+        if AssetManager.is_watcher_echo_suppressed(event.kind.value, event.path, event.destination):
+            return True
+        # A create notification at an already registered path is normalized
+        # to MODIFIED. The same explicit creation may still own this echo.
+        return event.kind is AssetFsEventKind.MODIFIED and AssetManager.is_watcher_echo_suppressed(
+            AssetFsEventKind.CREATED.value, event.path, event.destination,
+        )
+
+    def _dispatch_event(self, event: AssetFsEvent) -> bool:
         from infernux.core.assets import AssetManager
         if event.kind is AssetFsEventKind.META_DELETED:
             # META_DELETED is advisory: watchdog may deliver it after the
@@ -1387,40 +1408,20 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # replace has already completed. Never rebuild a missing sidecar
             # for a vanished owner or during our own atomic write gap.
             if not os.path.isfile(event.path):
-                return
+                return False
             if (not os.path.isfile(event.path + ".meta")
                     and AssetManager.is_meta_watcher_suppressed(event.path)):
-                return
-        elif event.kind is not AssetFsEventKind.META_MODIFIED:
-            watcher_echo = AssetManager.is_watcher_echo_suppressed(
-                event.kind.value,
-                event.path,
-                event.destination,
-            )
-            # A create notification at an already registered path is
-            # normalized to MODIFIED above.  Preserve exact self-write echo
-            # suppression for an explicit import which registered that path
-            # immediately before its watcher notification arrived.
-            if (
-                not watcher_echo
-                and event.kind is AssetFsEventKind.MODIFIED
-                and AssetManager.is_watcher_echo_suppressed(
-                    AssetFsEventKind.CREATED.value,
-                    event.path,
-                    event.destination,
-                )
-            ):
-                watcher_echo = True
-            if watcher_echo:
-                return
+                return False
+        elif event.kind is not AssetFsEventKind.META_MODIFIED and self._is_source_watcher_echo(event):
+            return False
         from infernux.engine.interaction import ActionOrigin, action_origin_scope
 
         with action_origin_scope(ActionOrigin.EXTERNAL):
-            if event.kind is AssetFsEventKind.CREATED:
-                self._commit_created(event.path)
-            elif event.kind is AssetFsEventKind.MODIFIED:
-                self._commit_modified(event.path)
+            if event.kind in (AssetFsEventKind.CREATED, AssetFsEventKind.MODIFIED):
+                return self._begin_watcher_import(event)
             elif event.kind is AssetFsEventKind.DELETED:
+                if os.path.isfile(event.path):
+                    return self._begin_watcher_import(event)
                 self._commit_deleted(event.path, guid_hint=event.guid_hint)
             elif event.kind is AssetFsEventKind.MOVED:
                 self._commit_moved(event.path, event.destination)
@@ -1429,13 +1430,107 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     # Notifications can arrive out of order after replacement.
                     # Inspect the surviving candidate instead of losing a real
                     # meta edit when its stale delete was delivered last.
-                    self._commit_metadata_modified(event.path)
+                    return self._begin_watcher_metadata_import(event)
                 else:
                     self._process_meta_missing_rebuild(event.path)
             elif event.kind is AssetFsEventKind.META_MODIFIED:
-                self._commit_metadata_modified(event.path)
+                return self._begin_watcher_metadata_import(event)
             else:
                 raise RuntimeError(f"Unhandled asset event kind: {event.kind}")
+        return False
+
+    def _begin_watcher_import(self, event: AssetFsEvent, *, metadata_only: bool = False) -> bool:
+        from infernux.core.assets import AssetManager
+        from infernux.engine.interaction import ActionOrigin, action_origin_scope
+
+        path = event.path
+        if not self._source_ready_for_import(path):
+            return False
+        database = self._asset_database
+        documents = None
+        asset_guid = ""
+        runtime = {}
+        created = False
+        successor = False
+        rejected = None
+
+        def ready(result, before_write):
+            nonlocal documents, asset_guid, runtime, created, successor, rejected
+            successor = self._coordinator.has_source_successor(event)
+            if successor or not before_write:
+                return not successor
+            with action_origin_scope(ActionOrigin.EXTERNAL):
+                try:
+                    if not metadata_only and self._is_source_watcher_echo(event):
+                        return False
+                    created = event.kind is AssetFsEventKind.CREATED and result.operation == "import"
+                    if not created:
+                        preflight = self._preflight_modified(path, metadata_only=metadata_only)
+                        if preflight is None:
+                            return False
+                        documents, asset_guid = preflight
+                    if result.operation == "reimport":
+                        runtime = AssetManager._reimport_shader_runtime(path, database.get_meta_by_guid(result.guid))
+                    AssetManager._suppress_meta_watcher(path)
+                    return True
+                except Exception as exc:
+                    rejected = exc
+                    return False
+
+        def finished(outcome, result, old_version, old_scale):
+            self._active_watcher_import = None
+            with action_origin_scope(ActionOrigin.EXTERNAL):
+                try:
+                    if rejected is not None:
+                        raise rejected
+                    if successor or outcome in {"superseded", "busy"}:
+                        if documents is not None:
+                            documents._cancel_external_resource_change_preflight(path, guid=asset_guid)
+                        # The queued source import reads the sidecar too. A
+                        # deferred older sidecar event would block that source.
+                        if not (successor and metadata_only):
+                            self._reschedule_asset_event(event, retry=False)
+                        return
+                    if outcome == "skipped":
+                        return
+                    if not result.database_committed:
+                        AssetManager._meta_write_suppression.pop(AssetManager._normalize_asset_path(path), None)
+                    if result:
+                        if result.operation == "reimport":
+                            result = AssetManager._publish_reimport_result(
+                                path, result, database=database, suppress_watcher_echo=False,
+                                model_baseline=(old_version, old_scale),
+                                capture_file_state=bool(documents.documents_for_resource(path, guid=asset_guid)),
+                                **runtime,
+                            )
+                        else:
+                            result = AssetManager._publish_import_result(
+                                path, result, database=database, suppress_watcher_echo=False,
+                            )
+                    if not result:
+                        _reject_failed_asset_import(path, result)
+                        raise _AssetImportNotReady(f"{result.operation} failed: {path}: {result.error}")
+                    if created:
+                        self._publish_created(path, result)
+                    else:
+                        self._publish_modified(path, result, documents, asset_guid, metadata_only=metadata_only)
+                except Exception as exc:
+                    if documents is not None:
+                        documents.fail_external_resource_change(path, guid=asset_guid, message=str(exc))
+                    self._handle_asset_event_failure(event, exc)
+                finally:
+                    self._coordinator.complete(event)
+                    self._wake_editor()
+
+        try:
+            started = database._begin_watcher_import(path, ready, finished)
+        except RuntimeError as exc:
+            raise _AssetImportNotReady(str(exc)) from exc
+        if not started:
+            self._reschedule_asset_event(event, retry=False)
+            return False
+        self._active_watcher_import = event
+        return True
 
     def _source_ready_for_import(self, path: str) -> bool:
         try:
@@ -1450,24 +1545,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetImportNotReady(f"asset file is not ready: {path}: {exc}") from exc
         raise _AssetImportNotReady(f"asset file is not ready: {path}")
 
-    def _commit_created(self, path: str) -> None:
-        if not self._source_ready_for_import(path):
-            return
+    def _publish_created(self, path, result) -> None:
         from infernux.core.assets import AssetManager
-        try:
-            result = AssetManager.import_asset(
-                path,
-                database=self._asset_database,
-                suppress_watcher_echo=False,
-            )
-            if not result:
-                _reject_failed_asset_import(path, result)
-                detail = str(getattr(result, "error", "") or "unknown import error")
-                raise _AssetImportNotReady(f"import failed: {path}: {detail}")
-        except _AssetImportRejected:
-            raise
-        except RuntimeError as exc:
-            raise _AssetImportNotReady(str(exc)) from exc
+
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
             if is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="created")
@@ -1506,26 +1586,25 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 files.sync_prefab_dependents(str(result.guid))
         self._rejected_compiled_assets.discard(path_key(path))
 
-    def _commit_metadata_modified(self, path: str) -> None:
+    def _begin_watcher_metadata_import(self, event: AssetFsEvent) -> bool:
         # A sidecar can outlive a deleted/moved source, or arrive before the
         # source's create event. The source transaction owns registration.
+        path = event.path
         if not os.path.isfile(path) or not os.path.isfile(path + ".meta"):
-            return
+            return False
         metadata = self._asset_database.get_meta_by_path(path)
         if metadata is None:
-            return
+            return False
         with open(path + ".meta", encoding="utf-8") as stream:
             candidate = json.load(stream)
         # Compare the same authored representation that native import writes.
         # Runtime observations and absolute paths never enter this comparison.
         # No time window: an immediate collaborator edit must remain visible.
         if candidate == metadata.serialize_document_portable(self._asset_database.project_root):
-            return
-        self._commit_modified(path, metadata_only=True)
+            return False
+        return self._begin_watcher_import(event, metadata_only=True)
 
-    def _commit_modified(self, path: str, *, metadata_only: bool = False) -> None:
-        if not self._source_ready_for_import(path):
-            return
+    def _preflight_modified(self, path: str, *, metadata_only: bool = False):
         from infernux.core.assets import AssetManager
         from infernux.engine.interaction import DocumentRegistry
 
@@ -1563,7 +1642,17 @@ class ResourceChangeHandler(FileSystemEventHandler):
             path, guid=asset_guid, metadata_only=metadata_only,
         ):
             return
-        script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
+        return documents, asset_guid
+
+    def _commit_modified(self, path: str, *, metadata_only: bool = False) -> None:
+        from infernux.core.assets import AssetManager
+
+        if not self._source_ready_for_import(path):
+            return
+        preflight = self._preflight_modified(path, metadata_only=metadata_only)
+        if preflight is None:
+            return
+        documents, asset_guid = preflight
         was_registered = self._asset_database.contains_path(path)
         try:
             if was_registered:
@@ -1596,18 +1685,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     raise _AssetImportNotReady(
                         f"import failed: {path}: {detail}"
                     )
-            # AssetMutationService normally consumes this preflight while
-            # publishing a registered reimport. If it did not, finalize the
-            # same successful external change here for both branches.
-            published_guid = str(getattr(result, "guid", "") or asset_guid).strip()
-            if documents.has_pending_external_change_preflight(
-                path,
-                guid=published_guid,
-            ):
-                documents.publish_external_resource_change(
-                    path,
-                    guid=published_guid,
-                )
         except Exception as exc:
             documents.fail_external_resource_change(
                 path,
@@ -1615,6 +1692,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 message=str(exc),
             )
             raise
+        self._publish_modified(path, result, documents, asset_guid, metadata_only=metadata_only)
+
+    def _publish_modified(self, path, result, documents, asset_guid, *, metadata_only=False) -> None:
+        # AssetMutationService normally consumes the approved preflight.
+        published_guid = str(getattr(result, "guid", "") or asset_guid).strip()
+        if documents.has_pending_external_change_preflight(path, guid=published_guid):
+            documents.publish_external_resource_change(path, guid=published_guid)
+        script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
         if script_change:
             if is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="modified")

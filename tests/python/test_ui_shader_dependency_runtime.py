@@ -210,7 +210,8 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
         if not fragment.exists():
             restore_shader()
     rejected = [entry for entry in console._get_visible_log_snapshot(1000)
-                if 'Material shader GUID cannot be resolved' in entry['message']]
+                if 'Material shader GUID cannot be resolved' in entry['message']
+                and 'This UI draw is disabled' in entry['message']]
     assert len(rejected) == 2, rejected
     assert all(fragment_guid in entry['message'] for entry in rejected)
 

@@ -9,14 +9,14 @@ from infernux import compute
 from infernux._compiler.kernel_contract import ARRAY_KINDS
 
 
-def _check_options(dtype, device, *, binding_precompiled=False):
+def _check_options(dtype, device, *, allow_automatic_recording=False):
     if dtype is not None and np.dtype(dtype).name not in ARRAY_KINDS:
         raise TypeError("infernux.nn supports float32, int32, uint32 and int64")
     if device not in (None, "cpu", "gpu"):
         raise ValueError("infernux.nn device must be 'cpu' or 'gpu'")
     if device == "gpu":
         compute.assert_runtime_owner_thread()
-        if compute._explicit_recording_depth() or (not binding_precompiled and compute._recording_depth()):
+        if compute._explicit_recording_depth() or (not allow_automatic_recording and compute._recording_depth()):
             raise RuntimeError("synchronous offline nn cannot run inside compute.recording")
         if compute._web_cpu_compute_enabled():
             raise compute.ComputeCapabilityError("nn GPU execution requires native Vulkan, without a CPU fallback")
@@ -378,7 +378,7 @@ def as_tensor(data, *, dtype=None, device=None):
     if storage is None:
         return Tensor(data, dtype=dtype, device=device)
     try:
-        _check_options(storage._dtype.scalar, storage.device)
+        _check_options(storage._dtype.scalar, storage.device, allow_automatic_recording=True)
         value = Tensor._from_buffer(storage, shape, shared_input=storage.device == 'cpu')
         if (device is None or device == value.device) and (dtype is None or np.dtype(dtype) == value.dtype):
             return value

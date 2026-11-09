@@ -208,7 +208,6 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     camera_data = scene["objects"][0]["components"][0]["data"]
     assert camera_data["projectionMode"] == 0
     assert set(camera_data) == {
-        "aspectRatio",
         "backgroundColor",
         "clearFlags",
         "cullingMask",

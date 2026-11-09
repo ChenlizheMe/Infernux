@@ -2072,6 +2072,11 @@ class DocumentRegistry:
             self._touch()
         return tuple(document_ids)
 
+    def _cancel_external_resource_change_preflight(self, resource_path: str, *, guid: str = "") -> None:
+        """Release a prepared watcher revision that was superseded before publication."""
+        identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
+        self._external_change_preflights.pop(identity, None)
+
     def publish_external_resource_change(
         self,
         resource_path: str,
@@ -2108,6 +2113,11 @@ class DocumentRegistry:
             if (document := self.get(document_id)) is not None
         )
         for document in affected:
+            if document.kind is DocumentKind.SCENE and (
+                document.is_dirty or self.active_save_ticket(document.document_id) is not None
+            ):
+                document.state = DocumentState.CONFLICT
+                continue
             if deleted:
                 if document.kind is DocumentKind.SCENE:
                     document.state = DocumentState.CONFLICT

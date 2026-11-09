@@ -3,7 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from infernux.lib import Vector2
 from infernux.ui import UICanvas
+from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
 from infernux.ui.ui_texture_cache import UITextureCache
 
 
@@ -80,7 +82,8 @@ class _Renderer:
         self.capturing = False
         self.clip_calls, self.world_calls = self.saved_calls
 
-    def append_command_packets(self, packets):
+    def append_command_packets(self, packets, opacities):
+        assert len(packets) == len(opacities)
         for clips, worlds in packets:
             self.clip_calls.extend(clips)
             self.world_calls.extend(self.resolve_world(call) for call in worlds)
@@ -163,8 +166,14 @@ def _install_scene_manager(monkeypatch, scene, persistent_scene=None) -> None:
 class _UIElementStub:
     """UI components have stable object identity, unlike SimpleNamespace."""
 
+    _resolved_rect_geometry = InxUIScreenComponent._resolved_rect_geometry
+    pivot = Vector2(.5, .5)
+
     def __init__(self, **fields):
         self.__dict__.update(fields)
+
+    def get_layout_rotation(self):
+        return 0.0
 
 
 def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatch):
@@ -174,7 +183,7 @@ def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatc
 
     renderer = _Renderer()
     engine = _Engine(renderer)
-    engine._render_submission_frame = 1
+    engine._service_opportunity = 1
     scene = SimpleNamespace(structure_version=4, get_root_objects=lambda: ())
     element = _UIElementStub(
         text="first",
@@ -230,7 +239,7 @@ def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatc
     assert len(dispatches) == 1
 
     element.text = "latest"
-    engine._render_submission_frame = 2
+    engine._service_opportunity = 2
     assert submission.submit() is True
     assert [entry[0] for entry in dispatches] == ["first", "latest"]
 
@@ -243,7 +252,7 @@ def test_runtime_submission_anchors_against_live_logical_canvas(monkeypatch, sce
     native_scene = scene
     renderer = _Renderer()
     engine = _Engine(renderer)
-    engine._render_submission_frame = 1
+    engine._service_opportunity = 1
     scene = SimpleNamespace(structure_version=1, get_root_objects=lambda: ())
     logical_sizes = []
     element = _UIElementStub(
@@ -324,7 +333,7 @@ def test_runtime_submission_resolves_text_before_geometry_and_keeps_authored_siz
 
     renderer = _Renderer()
     engine = _Engine(renderer)
-    engine._render_submission_frame = 1
+    engine._service_opportunity = 1
     runtime_scene = SimpleNamespace(structure_version=1, get_root_objects=lambda: ())
     element = UIText()
     owner = scene.create_game_object("Auto text Canvas")
@@ -423,7 +432,7 @@ def test_canvas_free_ui_submits_each_element_as_transform_owned_world_geometry(m
 
     renderer = _Renderer()
     engine = _Engine(renderer)
-    engine._render_submission_frame = 1
+    engine._service_opportunity = 1
     texture_cache = UITextureCache()
     texture_cache.get_bound = lambda _engine: lambda _path: 0
     dispatches = []
@@ -459,15 +468,15 @@ def test_canvas_free_ui_submits_each_element_as_transform_owned_world_geometry(m
     assert root_object.transform.serialize_document() == authored_transform
     assert (root.width, root.height) == authored_layout
 
-    engine._render_submission_frame += 1
+    engine._service_opportunity += 1
     assert submission.submit() is False  # Unchanged world UI reuses native commands.
     assert len(dispatches) == 2
     root_object.transform.position = Vector3(5.0, 3.0, 4.0)
-    engine._render_submission_frame += 1
+    engine._service_opportunity += 1
     assert submission.submit() is True  # Parent pose changes the child's world geometry too.
     assert renderer.world_calls[-2][1][12] == pytest.approx(4.45)
     child.enabled = False
-    engine._render_submission_frame += 1
+    engine._service_opportunity += 1
     assert submission.submit() is True
     assert dispatches[-1][0] is root
 
@@ -733,7 +742,8 @@ def test_script_free_physics_barriers_do_not_open_an_unowned_native_frame(monkey
     engine = Engine.__new__(Engine)
     scheduler = RuntimeExecutionScheduler(name="script-free-barrier")
     engine._runtime_scheduler = scheduler
-    engine._runtime_scene_manager = SimpleNamespace(get_fixed_time_step=lambda: 0.02)
+    engine._runtime_scene_manager = SimpleNamespace(get_fixed_time_step=lambda: 0.02,
+                                                   is_playing=lambda: False, is_paused=lambda: False)
     try:
         for _ in range(3):
             for barrier in (

@@ -541,7 +541,7 @@ class NnRequest(CpuRequest):
         from infernux.nn._tensor import Tensor
         for name, buffer in values.items():
             previous = self.target if name == 'target' else self.inputs[name]
-            value = Tensor._from_buffer(buffer, previous.shape)
+            value = Tensor._from_buffer(buffer, previous.shape, requires_grad=previous.requires_grad)
             if name == 'target':
                 self.target = value
             else:
@@ -1692,6 +1692,8 @@ class CpuWorkOwner:
             raise ValueError("transfer device must be 'cpu' or 'gpu'")
         if compute._explicit_recording_depth():
             raise RuntimeError("managed transfers cannot release inside compute.recording")
+        if isinstance(source, compute.Buffer):
+            source = compute._pending_managed_source(source) or source
         if isinstance(source, BufferSource):
             from .input_binding import InputBindings
             web = compute._web_cpu_compute_enabled()
@@ -1762,10 +1764,16 @@ class CpuWorkOwner:
 
     @_admission_cost
     def release_kernel(self, prepared, params, *, window_opportunities, finish_within_ms=None):
+        from infernux import compute
         from .kernel_continuation import KernelRequest
         facts = self._accept(window_opportunities, finish_within_ms=finish_within_ms)
         prepared._validate(params, allow_sources=True)
-        request = KernelRequest.create(self, facts, prepared, params)
+        inputs = list(params)
+        for index in prepared.reads:
+            value = inputs[index]
+            if index not in prepared.writes and isinstance(value, compute.Buffer):
+                inputs[index] = compute._pending_managed_source(value) or value
+        request = KernelRequest.create(self, facts, prepared, tuple(inputs))
         try:
             if self._capacity(request) > self.budget.capacity_bytes:
                 raise ValueError("kernel inputs, outputs and preparation exceed numerical capacity")
@@ -1859,6 +1867,17 @@ class CpuWorkOwner:
             for x in inputs:
                 if isinstance(x, Tensor):
                     _check_storage((x._data,))
+
+            def pending_source(value):
+                if isinstance(value, Tensor):
+                    pending = compute._pending_managed_source(value._data, shape=value.shape,
+                                                              requires_grad=value.requires_grad)
+                    if pending is not None:
+                        return pending
+                return value
+
+            inputs = tuple(pending_source(value) for value in inputs)
+            target = pending_source(target)
             mathematical_sources = (*root._state, *(value._data for _, value in grads if value is not None))
             if mathematical_sources:
                 _check_storage(mathematical_sources)

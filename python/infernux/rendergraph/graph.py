@@ -54,6 +54,35 @@ from infernux.lib import (
 )
 _SOURCE_REVISION_COUNTER = count(1)
 
+_PASS_TYPES = {
+    "raster": (GraphPassType.RASTER, {
+        "none": None,
+        "custom": None,
+        "draw_renderers": GraphCommandType.DRAW_RENDERERS,
+        "draw_skybox": GraphCommandType.DRAW_SKYBOX,
+        "draw_shadow_casters": GraphCommandType.DRAW_SHADOW_CASTERS,
+        "draw_world_ui": GraphCommandType.DRAW_WORLD_UI,
+        "draw_screen_ui": GraphCommandType.DRAW_SCREEN_UI,
+        "fullscreen_quad": GraphCommandType.FULLSCREEN_QUAD,
+    }),
+    "copy": (GraphPassType.COPY, {
+        "copy_texture": GraphCommandType.COPY_TEXTURE,
+        "copy_buffer": GraphCommandType.COPY_BUFFER,
+        "copy_texture_to_buffer": GraphCommandType.COPY_TEXTURE_TO_BUFFER,
+        "copy_buffer_to_texture": GraphCommandType.COPY_BUFFER_TO_TEXTURE,
+    }),
+    "compute": (GraphPassType.COMPUTE, {"compute_work": GraphCommandType.COMPUTE_WORK}),
+    "present": (GraphPassType.PRESENT, {"present": GraphCommandType.PRESENT}),
+}
+_BUFFER_ACCESSES = {
+    "storage_read": (GraphBufferAccessType.STORAGE_READ, GraphBufferUsage.STORAGE),
+    "uniform_read": (GraphBufferAccessType.UNIFORM_READ, GraphBufferUsage.UNIFORM),
+    "storage_write": (GraphBufferAccessType.STORAGE_WRITE, GraphBufferUsage.STORAGE),
+    "indirect_read": (GraphBufferAccessType.INDIRECT_READ, GraphBufferUsage.INDIRECT),
+    "transfer_read": (GraphBufferAccessType.TRANSFER_READ, GraphBufferUsage.TRANSFER_SOURCE),
+    "transfer_write": (GraphBufferAccessType.TRANSFER_WRITE, GraphBufferUsage.TRANSFER_DESTINATION),
+}
+
 
 # ============================================================================
 # Public format type
@@ -282,8 +311,10 @@ class BufferHandle:
 # ============================================================================
 
 def _validate_texture_buffer_copy(texture, buffer, to_buffer, size, buffer_offset):
-    texel_bytes = texture.format.buffer_copy_texel_bytes
-    if (not texel_bytes or texture.is_volume or texture.samples not in (0, 1)
+    # A camera depth declaration selects the attachment, while the native
+    # view supplies its pixel format and verifies the complete copy range.
+    texel_bytes = None if texture.is_camera_target else texture.format.buffer_copy_texel_bytes
+    if (texel_bytes == 0 or texture.is_volume or texture.samples not in (0, 1)
             or (texture.is_camera_target and not texture.is_depth)
             or texture.temporal_role == GraphTextureRole.ASSET):
         raise ValueError("texture-buffer copy requires a single-sample 2D texture with a packed color or depth layout")
@@ -297,9 +328,9 @@ def _validate_texture_buffer_copy(texture, buffer, to_buffer, size, buffer_offse
     if to_buffer and extent is not None and (size[0] > extent[0] or size[1] > extent[1]):
         raise ValueError("texture-to-buffer copy exceeds the source rectangle")
     region = size if to_buffer else extent
-    alignment = max(4, texel_bytes)
+    alignment = max(4, texel_bytes or 0)
     if (buffer_offset < 0 or (buffer.byte_offset + buffer_offset) % alignment or buffer_offset >= buffer.byte_size
-            or region[0] * region[1] * texel_bytes > buffer.byte_size - buffer_offset):
+            or (texel_bytes is not None and region[0] * region[1] * texel_bytes > buffer.byte_size - buffer_offset)):
         raise ValueError(f"texture-buffer copy requires a {alignment}-byte-aligned, sufficiently large buffer")
 
 
@@ -476,13 +507,8 @@ class RenderPassBuilder:
     def read_buffer(self, buffer, usage: str = "storage") -> "RenderPassBuilder":
         """Declare a storage, uniform, indirect, or transfer buffer read."""
         handle = self._resolve_buffer(buffer)
-        access = {
-            "storage": "storage_read",
-            "uniform": "uniform_read",
-            "indirect": "indirect_read",
-            "transfer": "transfer_read",
-        }.get(str(usage).strip().lower())
-        if access is None:
+        access = f"{str(usage).strip().lower()}_read"
+        if access not in _BUFFER_ACCESSES:
             raise ValueError(f"Unknown buffer read usage '{usage}'")
         self._buffer_accesses.append((handle.name, access))
         return self
@@ -492,11 +518,8 @@ class RenderPassBuilder:
         handle = self._resolve_buffer(buffer)
         if handle._read_only:
             raise ValueError(f"Imported buffer '{handle.name}' is read-only in the render graph")
-        access = {
-            "storage": "storage_write",
-            "transfer": "transfer_write",
-        }.get(str(usage).strip().lower())
-        if access is None:
+        access = f"{str(usage).strip().lower()}_write"
+        if access not in _BUFFER_ACCESSES:
             raise ValueError(f"Unknown buffer write usage '{usage}'")
         self._buffer_accesses.append((handle.name, access))
         return self
@@ -1887,11 +1910,7 @@ class RenderGraph:
 
         The pass is appended to the topology sequence automatically.
         """
-        pass_name = self._scoped_name(name)
-        builder = RenderPassBuilder(pass_name, graph=self, pass_type="raster")
-        self._passes.append(builder)
-        self._topology.append(("pass", pass_name))
-        return builder
+        return self._add_typed_pass(name, "raster")
 
     def _add_typed_pass(self, name: str, pass_type: str) -> RenderPassBuilder:
         pass_name = self._scoped_name(name)
@@ -2029,17 +2048,8 @@ class RenderGraph:
         texture_map: Dict[str, TextureHandle],
         buffer_map: Dict[str, BufferHandle],
     ) -> None:
-        raster_actions = {
-            "none", "draw_renderers", "draw_skybox", "custom",
-            "draw_shadow_casters", "draw_world_ui", "draw_screen_ui", "fullscreen_quad",
-        }
-        allowed_actions = {
-            "raster": raster_actions,
-            "copy": {"copy_texture", "copy_buffer", "copy_texture_to_buffer", "copy_buffer_to_texture"},
-            "compute": {"compute_work"},
-            "present": {"present"},
-        }
-        if p._pass_type not in allowed_actions or p._action not in allowed_actions[p._pass_type]:
+        pass_type = _PASS_TYPES.get(p._pass_type)
+        if pass_type is None or p._action not in pass_type[1]:
             raise ValueError(
                 f"Pass '{p._name}' action '{p._action}' is invalid for {p._pass_type} pass"
             )
@@ -2118,15 +2128,8 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' references unknown buffer '{buffer_name}'"
                 )
-            required_usage = {
-                "storage_read": int(GraphBufferUsage.STORAGE),
-                "uniform_read": int(GraphBufferUsage.UNIFORM),
-                "storage_write": int(GraphBufferUsage.STORAGE),
-                "indirect_read": int(GraphBufferUsage.INDIRECT),
-                "transfer_read": int(GraphBufferUsage.TRANSFER_SOURCE),
-                "transfer_write": int(GraphBufferUsage.TRANSFER_DESTINATION),
-            }[_access]
-            if not buffer.usage & required_usage:
+            _, required_usage = _BUFFER_ACCESSES[_access]
+            if not buffer.usage & int(required_usage):
                 raise ValueError(
                     f"Pass '{p._name}' buffer '{buffer_name}' does not declare "
                     f"the usage required by '{_access}'"
@@ -2365,34 +2368,6 @@ class RenderGraph:
         desc.work_bindings = work_list
 
         # Build pass list
-        _command_map = {
-            "draw_renderers": GraphCommandType.DRAW_RENDERERS,
-            "draw_skybox": GraphCommandType.DRAW_SKYBOX,
-            "draw_shadow_casters": GraphCommandType.DRAW_SHADOW_CASTERS,
-            "draw_world_ui": GraphCommandType.DRAW_WORLD_UI,
-            "draw_screen_ui": GraphCommandType.DRAW_SCREEN_UI,
-            "fullscreen_quad": GraphCommandType.FULLSCREEN_QUAD,
-            "copy_texture": GraphCommandType.COPY_TEXTURE,
-            "copy_buffer": GraphCommandType.COPY_BUFFER,
-            "copy_texture_to_buffer": GraphCommandType.COPY_TEXTURE_TO_BUFFER,
-            "copy_buffer_to_texture": GraphCommandType.COPY_BUFFER_TO_TEXTURE,
-            "compute_work": GraphCommandType.COMPUTE_WORK,
-            "present": GraphCommandType.PRESENT,
-        }
-        _pass_type_map = {
-            "raster": GraphPassType.RASTER,
-            "compute": GraphPassType.COMPUTE,
-            "copy": GraphPassType.COPY,
-            "present": GraphPassType.PRESENT,
-        }
-        _buffer_access_map = {
-            "storage_read": GraphBufferAccessType.STORAGE_READ,
-            "uniform_read": GraphBufferAccessType.UNIFORM_READ,
-            "storage_write": GraphBufferAccessType.STORAGE_WRITE,
-            "indirect_read": GraphBufferAccessType.INDIRECT_READ,
-            "transfer_read": GraphBufferAccessType.TRANSFER_READ,
-            "transfer_write": GraphBufferAccessType.TRANSFER_WRITE,
-        }
         _material_pass_map = {
             "forward": MaterialPassType.FORWARD,
             "forward_plus": MaterialPassType.FORWARD_PLUS,
@@ -2414,7 +2389,7 @@ class RenderGraph:
         for p in self._passes:
             pd = GraphPassDesc()
             pd.name = p._name
-            pd.type = _pass_type_map[p._pass_type]
+            pd.type, commands = _PASS_TYPES[p._pass_type]
             pd.read_textures = list(p._reads)
             # MRT support: serialize write_colors as list of (slot, name) pairs
             pd.write_colors = list(p._write_colors.items())
@@ -2424,7 +2399,7 @@ class RenderGraph:
             for resource, access_type in p._buffer_accesses:
                 access = GraphBufferAccessDesc()
                 access.resource = resource
-                access.type = _buffer_access_map[access_type]
+                access.type, _ = _BUFFER_ACCESSES[access_type]
                 accesses.append(access)
             pd.buffer_accesses = accesses
             pd.side_effect = p._side_effect
@@ -2445,7 +2420,7 @@ class RenderGraph:
             else:
                 pd.clear_depth = False
 
-            command_type = _command_map.get(p._action)
+            command_type = commands[p._action]
             if command_type is not None:
                 command = GraphCommandDesc()
                 command.type = command_type

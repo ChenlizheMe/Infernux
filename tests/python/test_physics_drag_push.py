@@ -129,14 +129,10 @@ def test_kinematic_collider_drag_pushes_sphere(scene):
 
 
 def test_gizmo_style_drag_imparts_cross_velocity(scene):
-    """Mimic the editor gizmo exactly: dragging a dynamic-Rigidbody cube.
+    """The editor gizmo drive gives a dynamic body contact velocity during a drag."""
+    from types import SimpleNamespace
 
-    The gizmo temporarily flips the dragged Rigidbody to kinematic and calls
-    Physics.sync_transforms() after every transform write. Historically
-    SyncTransforms used dt = 0, degrading every move into a zero-velocity
-    teleport: a sphere crossing the cube's path was pushed aside positionally
-    but gained no velocity along the impact axis.
-    """
+    from infernux.engine.ui._scene_view_gizmo import SceneViewGizmoMixin
     from infernux.lib import Physics
 
     Physics.set_gravity(Vector3(0, -9.81, 0))
@@ -160,16 +156,14 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     # Sphere is rolling along +X; cube is dragged along +Z across its path.
     srb.velocity = Vector3(2.0, 0.0, 0.0)
 
-    # Gizmo drag start: flip the dynamic rigidbody to kinematic.
-    crb.is_kinematic = True
-    crb.wake_up()
+    drive = SimpleNamespace()
+    SceneViewGizmoMixin._begin_gizmo_rigidbody_drive(drive, cube)
 
     steps = 70
     z0, z1 = -2.0, 2.2
     for i in range(steps):
         t = (i + 1) / steps
-        cube.transform.position = Vector3(1.5, 0.5, z0 + (z1 - z0) * t)
-        Physics.sync_transforms()  # the gizmo does this every drag frame
+        SceneViewGizmoMixin._apply_gizmo_position(drive, cube, (1.5, 0.5, z0 + (z1 - z0) * t))
         _step(1)
 
     # Gizmo drag end: restore dynamics on the dragged body.

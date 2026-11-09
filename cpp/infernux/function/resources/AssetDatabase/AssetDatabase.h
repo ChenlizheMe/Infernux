@@ -22,6 +22,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -209,6 +210,13 @@ class AssetDatabase : public NativeLifetimeOwner
     /// Preserves the existing GUID and returns false for missing or unregistered paths.
     [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path, const nlohmann::json &settings = nullptr,
                                                     const PathWriteScope &writeScope = {});
+    using WatcherImportReady = std::function<bool(const AssetMutationResult &, bool beforeWrite)>;
+    using WatcherImportFinished =
+        std::function<void(std::string_view, const AssetMutationResult &, uint64_t, std::optional<float>)>;
+    /// Prepare one external revision on the catalog worker and commit at the owner safe point.
+    bool BeginWatcherImport(const std::string &path, WatcherImportReady ready, WatcherImportFinished finished);
+    void CompletePendingWatcherImport();
+    [[nodiscard]] bool IsWatcherImportPending() const noexcept;
     using ModelReimportPublished = std::function<void(const AssetMutationResult &, uint64_t, std::optional<float>)>;
     /// Explicit model Apply: cook, persist, then publish from the owner thread.
     void BeginModelReimport(const std::string &path, const nlohmann::json &settings,
@@ -595,6 +603,22 @@ class AssetDatabase : public NativeLifetimeOwner
         std::thread::id producerThread;
     };
 
+    struct PendingWatcherImport
+    {
+        WorkerMetadataPrepare metadata;
+        WorkerImport worker;
+        AssetMutationResult result;
+        std::optional<AtomicFileState> committedMetadata;
+        CachedFileState committedFiles;
+        PathWriteScope writeScope;
+        WatcherImportReady ready;
+        WatcherImportFinished finished;
+        std::unordered_set<std::string> artifactGuids;
+        std::string outcome;
+        bool writing = false;
+        bool persisted = false;
+    };
+
     struct PendingModelReimport
     {
         enum class Phase
@@ -839,6 +863,11 @@ class AssetDatabase : public NativeLifetimeOwner
     void ObserveCatalogWork(CatalogWork &work) noexcept;
     void WaitForCatalogWork(CatalogWork &work) noexcept;
     bool AdvanceRefresh(bool managed);
+    [[nodiscard]] bool CanAdvanceWatcherImport() const;
+    bool AdvanceWatcherImport(bool managed);
+    void CompleteWatcherWriteForExplicitImport(const PathWriteScope &scope);
+    void WriteWatcherImport(PendingWatcherImport &pending);
+    void PublishWatcherImport(PendingWatcherImport &pending);
     [[nodiscard]] bool CanAdvanceModelReimport() const;
     bool AdvanceModelReimport(bool managed);
     void WriteModelReimport(PendingModelReimport &pending);
@@ -864,15 +893,17 @@ class AssetDatabase : public NativeLifetimeOwner
                                     const InxResourceMeta &metadata) const;
     ImportRequest MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
                                         const InxResourceMeta &metadata) const;
-    void ValidateImportPublication(const ImportRequest &request, ImportArtifact &artifact) const;
+    void ValidateImportPublication(const ImportRequest &request, ImportArtifact &artifact, bool creating = false) const;
     static std::vector<DocumentTransactionEntry>
     BuildImportWrites(const ImportRequest &request, ImportArtifact &artifact, const AtomicFileState *expectedMetadata);
     std::vector<DocumentTransactionFileState> PersistImportWrites(const ImportRequest &request,
                                                                   std::vector<DocumentTransactionEntry> writes,
                                                                   const PathWriteScope &writeScope) const;
     void InstallImportArtifact(const std::string &guid, ImportArtifact artifact);
+    void FinishImport(AssetMutationResult &result, bool imported, const CachedFileState *committedFiles = nullptr,
+                      bool notify = true);
     void FinishReimport(AssetMutationResult &result, const CachedFileState *committedFiles = nullptr,
-                        const std::shared_ptr<AssetLoadTicket> &repairTicket = {});
+                        const std::shared_ptr<AssetLoadTicket> &repairTicket = {}, bool notify = true);
     void StartModelReimport(const std::string &sourcePath, const std::string &textureGuid,
                             const nlohmann::json &settings, ModelReimportPublished onPublished,
                             std::shared_ptr<AssetLoadTicket> repairTicket = {});
@@ -895,6 +926,7 @@ class AssetDatabase : public NativeLifetimeOwner
     std::string m_blenderExecutable;
     std::string m_blenderExportScript;
     std::shared_ptr<PendingModelReimport> m_pendingModelReimport;
+    std::shared_ptr<PendingWatcherImport> m_pendingWatcherImport;
     std::optional<FinishedModelApply> m_finishedModelApply;
     std::string m_assetsRoot;
     std::vector<std::string> m_extraScanRoots;
@@ -975,6 +1007,7 @@ class AssetDatabase : public NativeLifetimeOwner
     FrameWorkOwner *m_frameWork = nullptr;
     CatalogWork m_refreshWork;
     CatalogWork m_applyWork;
+    CatalogWork m_watcherWork;
     CatalogWork m_runtimeCatalogWork;
     std::shared_ptr<RuntimeCatalogPreparation> m_runtimeCatalog;
     bool m_cookedRuntimeCatalogInstalled = false;
