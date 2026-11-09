@@ -174,6 +174,14 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "_prepare_player_runtime"
             )
+            from infernux.resources import engine_font_path
+
+            fonts = []
+            monkeypatch.setitem(
+                sys.modules,
+                "_InfernuxWebHost",
+                types.SimpleNamespace(screen_ui_set_default_font=fonts.append),
+            )
             namespace = {
                 "_player_session": None,
                 "_prepare_player_asset_contract": lambda: None,
@@ -193,6 +201,8 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
             run = namespace["_prepare_player_runtime"]
         with pytest.raises(PreloadObserved):
             run()
+        if host == "web":
+            assert fonts == [engine_font_path]
     finally:
         from infernux.core.assets import AssetManager
 
@@ -261,7 +271,6 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
     bootstrap._register_player_gui = lambda: calls.append("gui")
     bootstrap._load_initial_scene = lambda: calls.append("scene")
     bootstrap._enter_play_mode = lambda: calls.append("play")
-    bootstrap._prewarm_first_frame = lambda: calls.append("first_gpu_frame")
     bootstrap._pump_startup_events = lambda: calls.append("pump")
     bootstrap.runtime_session = object()
     bootstrap.splash_items = []
@@ -289,8 +298,6 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
         "play",
         "pump",
         "finish_warmup",
-        "first_gpu_frame",
-        "pump",
     ]
     assert compiler_preloads == []
     warmup = startup_warmup.PlayerStartupWarmup(str(tmp_path), (), scope="test")
@@ -300,62 +307,53 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
 
 
 def test_player_first_frame_prewarm_builds_target_before_composition(monkeypatch):
-    from infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine import player_gui
+    from infernux.input import Input
 
-    deltas = []
-    pumps = []
-    simulated_frames = []
+    events = []
+    native = types.SimpleNamespace(game_presentation_ready=False)
 
-    class SceneManager:
-        paused = False
+    def resize(width, height, *, point_filter):
+        events.append(("target", width, height, point_filter))
 
-        def is_paused(self):
-            return self.paused
+    engine = types.SimpleNamespace(
+        resize_game_render_target=resize,
+        get_game_texture_id=lambda: 17,
+        get_native_engine=lambda: native,
+    )
+    ctx = types.SimpleNamespace(
+        label=lambda message: events.append(("label", message)),
+        image=lambda *args: events.append(("image", *args)),
+        get_cursor_pos_x=lambda: 0.0,
+        get_cursor_pos_y=lambda: 0.0,
+        set_cursor_pos_x=lambda _x: None,
+        set_cursor_pos_y=lambda _y: None,
+    )
+    monkeypatch.setattr(Input, "set_game_viewport_size", lambda *_args: None)
+    monkeypatch.setattr(Input, "set_game_viewport_origin", lambda *_args: None)
+    monkeypatch.setattr(Input, "get_game_mouse_frame_state", lambda _index: (0, 0))
+    monkeypatch.setattr(
+        player_gui,
+        "capture_viewport_info",
+        lambda _ctx: types.SimpleNamespace(image_min_x=0.0, image_min_y=0.0),
+    )
+    gui = player_gui.PlayerGUI.__new__(player_gui.PlayerGUI)
+    gui._engine = engine
+    gui._last_w = gui._last_h = 0
+    gui._render_scale = 1.0
+    gui._render_output = {"width": 0, "filter": "linear"}
+    gui._process_ui_events = lambda *_args, **_kwargs: None
+    gui._process_mouse_events = lambda *_args, **_kwargs: None
 
-        def pause(self):
-            self.paused = not self.paused
+    gui._render_game(ctx, 640, 360)
+    assert events == [
+        ("target", 640, 360, False),
+        ("label", "Preparing game view..."),
+    ]
 
-    scene_manager = SceneManager()
-    monkeypatch.setattr("infernux.lib.SceneManager", types.SimpleNamespace(instance=lambda: scene_manager))
-
-    class Native:
-        @property
-        def game_presentation_ready(self):
-            return len(deltas) >= 4
-
-    class Engine:
-        def tick(self, delta):
-            deltas.append(delta)
-            if not scene_manager.is_paused():
-                simulated_frames.append(True)
-
-        def get_native_engine(self):
-            return Native()
-
-    bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
-    bootstrap.engine = Engine()
-    bootstrap._pump_startup_events = lambda: pumps.append(True)
-
-    bootstrap._prewarm_first_frame()
-
-    assert deltas == [0.0, 0.0, 0.0, 0.0]
-    assert pumps == [True, True]
-    assert len(simulated_frames) == 2 and not scene_manager.is_paused()
-
-    deltas.clear()
-    scene_manager.paused = True
-    bootstrap._prewarm_first_frame()
-    assert scene_manager.is_paused() and len(simulated_frames) == 2
-
-    deltas.clear()
-    scene_manager.paused = False
-    def cancel():
-        raise RuntimeError("Player startup cancelled")
-    bootstrap._pump_startup_events = cancel
-    with pytest.raises(RuntimeError, match="startup cancelled"):
-        bootstrap._prewarm_first_frame()
-    assert deltas == [0.0, 0.0]
-    assert not scene_manager.is_paused()
+    native.game_presentation_ready = True
+    gui._render_game(ctx, 640, 360)
+    assert events[2:] == [("image", 17, 640.0, 360.0, 0.0, 0.0, 1.0, 1.0)]
 
 
 def test_player_release_policy_rejects_debug_control_environment(monkeypatch, tmp_path):

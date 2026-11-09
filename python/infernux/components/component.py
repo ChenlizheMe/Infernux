@@ -606,6 +606,10 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         """
         pass
 
+    def on_script_reload(self):
+        """Refresh owned runtime state after a script update is published."""
+        pass
+
     # ========================================================================
     # Physics collision / trigger callbacks (Unity-style)
     # ========================================================================

@@ -156,6 +156,9 @@ class InxComponent:
     def on_before_serialize(self) -> None:
         """Called before serialization (scene save)."""
         ...
+    def on_script_reload(self) -> None:
+        """Refresh owned runtime state after a script update is published."""
+        ...
 
     # =========================================================================
     # Physics collision / trigger callbacks

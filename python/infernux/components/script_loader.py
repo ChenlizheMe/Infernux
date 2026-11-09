@@ -328,6 +328,22 @@ class ComponentBodyReloadTransaction:
         self._instance_defaults = ()
         self._inserted_instance_defaults.clear()
         self._finalized = True
+        for migration in self.schema_migrations:
+            component_type = migration.target_type
+            if component_type.on_script_reload is InxComponent.on_script_reload:
+                continue
+            for instance in _transaction_instances(self, component_type):
+                if not instance._awake_called or instance._is_destroyed:
+                    continue
+                try:
+                    instance.on_script_reload()
+                except Exception as exc:
+                    from infernux.debug import Debug
+
+                    Debug.log_error(
+                        f"{component_type.__qualname__}.on_script_reload failed: {exc}",
+                        source_file=instance._script_path,
+                    )
 
     def rollback(self) -> None:
         """Restore the complete pre-stage/pre-commit state; idempotent."""

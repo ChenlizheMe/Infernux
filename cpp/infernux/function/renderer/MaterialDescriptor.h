@@ -188,6 +188,7 @@ struct TextureResolveResult
 {
     TextureResolveStatus status = TextureResolveStatus::Failed;
     MaterialDescriptorSet::TextureBinding binding;
+    uint64_t contentGeneration = 0;
 };
 
 /**

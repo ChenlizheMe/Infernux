@@ -74,11 +74,7 @@ class ExternalDocumentConflictService:
             if self._active is not None:
                 known.add(self._active.document_id)
             for document in self._registry.documents:
-                if (
-                    document.state is DocumentState.CONFLICT
-                    and document.kind is DocumentKind.SCENE
-                    and document.document_id not in known
-                ):
+                if document.document_id not in known and self._needs_choice(document):
                     self._queue.append(self._snapshot(document))
                     known.add(document.document_id)
             self._queue = [
@@ -94,7 +90,7 @@ class ExternalDocumentConflictService:
                     self._active.document_id
                 )
                 if result is None:
-                    if document is None or document.state is not DocumentState.CONFLICT:
+                    if not self._needs_choice(document):
                         self._finish_active()
                     return
                 self._waiting_for_reload = False
@@ -109,12 +105,12 @@ class ExternalDocumentConflictService:
                 ):
                     return
                 self._waiting_for_save_copy = False
-                if document is None or document.state is not DocumentState.CONFLICT:
+                if not self._needs_choice(document):
                     self._finish_active()
                     return
                 self._error = "save_copy_failed"
                 return
-            if document is None or document.state is not DocumentState.CONFLICT:
+            if not self._needs_choice(document):
                 self._finish_active()
                 return
             if document.external_revision != self._active.external_revision:
@@ -185,11 +181,15 @@ class ExternalDocumentConflictService:
         )
 
     def _matches_live_conflict(self, conflict: ExternalDocumentConflict) -> bool:
-        document = self._registry.get(conflict.document_id)
+        return self._needs_choice(self._registry.get(conflict.document_id))
+
+    @staticmethod
+    def _needs_choice(document) -> bool:
         return bool(
             document is not None
             and document.kind is DocumentKind.SCENE
             and document.state is DocumentState.CONFLICT
+            and document.is_dirty
         )
 
     def _require_active(
@@ -201,8 +201,7 @@ class ExternalDocumentConflictService:
             return None
         document = self._registry.get(conflict.document_id)
         if (
-            document is None
-            or document.state is not DocumentState.CONFLICT
+            not self._needs_choice(document)
             or document.external_revision != conflict.external_revision
         ):
             return None

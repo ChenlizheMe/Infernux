@@ -2385,27 +2385,32 @@ void SceneRenderGraph::EnsureGraphBuilt()
     if (!RefreshComputeBufferBindings(buffersPrepared))
         return;
 
-    // Asset publication is asynchronous. Do not reset a working graph while a
-    // cold or reimported texture revision is still uploading; keep executing
-    // the last compiled graph and retry the rebuild on the next frame. A
-    // resolved error is handled by the ordinary rebuild path so invalid graph
-    // state still fails visibly instead of silently retaining stale content.
-    if (m_needsRebuild) {
+    // Request all asset imports together and build from those exact publications.
+    // A pending upload can leave a compatible compiled graph running.
+    std::vector<GraphAssetTexture> assetTextures;
+    const auto resolveAssetTextures = [&] {
+        bool allResolved = true;
         for (const auto &texture : m_pythonGraphDesc.textures) {
             if (texture.role != GraphTextureRole::Asset)
                 continue;
-            const auto resolved = m_vkCore->ResolveTextureForGraph(texture.assetGuid, texture.isVolume, false);
+            auto resolved = m_vkCore->ResolveTextureForGraph(texture.assetGuid, texture.isVolume, false);
             if (resolved.status == TextureResolveStatus::Pending)
-                return;
+                allResolved = false;
+            else
+                assetTextures.push_back({&texture, std::move(resolved.binding.gpuView), resolved.contentGeneration});
         }
+        return allResolved;
+    };
+    const bool rebuildBeforeLighting = m_needsRebuild;
+    if (rebuildBeforeLighting) {
+        if (!resolveAssetTextures())
+            return;
         if (persistentImportsChanged && !ValidateRenderGraphDescription(m_pythonGraphDesc, m_renderView)) {
             m_graphBuilt = false;
             return;
         }
-    }
-
-    if (m_needsRebuild)
         RefreshForwardPlusParticleRequirement();
+    }
 
     if (UsesForwardPlus() && !PrepareForwardPlusFrame()) {
         INXLOG_ERROR("SceneRenderGraph: Forward+ resources are unavailable for the current view");
@@ -2414,13 +2419,18 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
 
     if (m_needsRebuild) {
+        if (!rebuildBeforeLighting && !resolveAssetTextures()) {
+            // Forward+ replaced a buffer used by the previous graph.
+            m_graphBuilt = false;
+            return;
+        }
         // RenderGraph rebuilds can retire and recreate the transient shadow
         // image view. Vulkan may reuse the same raw handle value, so cached
         // handle equality cannot prove an existing descriptor still refers
         // to the new object. Force every frame-local descriptor generation
         // to be republished after the rebuild.
         InvalidatePerViewShadowBindings();
-        BuildRenderGraph(buffersPrepared);
+        BuildRenderGraph(buffersPrepared, assetTextures);
         if (!m_graphBuilt)
             return;
         m_needsRebuild = false;
@@ -3205,6 +3215,7 @@ std::optional<GraphPassDesc> SceneRenderGraph::ResolveCameraClearOverride() cons
 // ---------------------------------------------------------------------------
 
 bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
+                                             const std::vector<GraphAssetTexture> &assetTextures,
                                              std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
     // Camera post processing uses viewport-local images. Overlay UI and its
@@ -3248,16 +3259,10 @@ bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
                                                           generation->revision, 0, image});
     }
     const auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
-    for (const auto &tex : m_pythonGraphDesc.textures) {
-        if (tex.role != GraphTextureRole::Asset)
-            continue;
-        const auto resolved = m_vkCore->ResolveTextureForGraph(tex.assetGuid, tex.isVolume, false);
-        if (resolved.status == TextureResolveStatus::Pending) {
-            m_needsRebuild = true;
-            return false;
-        }
-        const auto &publication = resolved.binding.gpuView;
-        if (resolved.status != TextureResolveStatus::Ready || !publication || !publication->IsValid()) {
+    m_graphTexturePublications.reserve(assetTextures.size());
+    for (const auto &[descriptor, publication, contentGeneration] : assetTextures) {
+        const auto &tex = *descriptor;
+        if (!publication || !publication->IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' (GUID ", tex.assetGuid,
                          ") could not be resolved");
             return false;
@@ -3281,14 +3286,13 @@ bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
             INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' could not be imported");
             return false;
         }
+        m_graphTexturePublications.push_back(publication);
         m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
                                                rhi::PipelineStage::FragmentShader);
         customRTHandles[tex.name] = handle;
         bindings.emplace(tex.name,
                          ImportedTextureBinding{publication->GetTexture(), publication->GetSampler(),
-                                                publication->GetFormat(), publication->GetRevision(),
-                                                AssetRegistry::Instance().GetAssetContentGeneration(tex.assetGuid)});
-        m_graphTexturePublications.push_back(publication);
+                                                publication->GetFormat(), publication->GetRevision(), contentGeneration});
     }
     const bool sourceReplaced = std::any_of(bindings.begin(), bindings.end(), [&](const auto &entry) {
         const auto previous = m_importedTextureBindings.find(entry.first);
@@ -3498,7 +3502,7 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
         m_renderGraph->SetOutput(graphOutput);
 }
 
-void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared)
+void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<GraphAssetTexture> &assetTextures)
 {
     if (m_hasPythonGraph && !m_pythonGraphValid) {
         m_graphBuilt = false;
@@ -3738,7 +3742,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared)
             viewLightListByteSize = std::max(viewLightListByteSize, lights.capacityBytes);
         }
     }
-    if (!m_pythonGraphDesc.passes.empty() && !RegisterGraphTextures(m_width, m_height, customRTHandles))
+    if (!m_pythonGraphDesc.passes.empty() && !RegisterGraphTextures(m_width, m_height, assetTextures, customRTHandles))
         return;
     ImportTemporalHistoryResources(customRTHandles);
     if (!m_pythonGraphDesc.passes.empty()) {

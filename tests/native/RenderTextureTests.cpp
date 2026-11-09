@@ -266,7 +266,8 @@ int main()
         sampledDesc.depthFormat = PixelFormat::D32SFloat;
         sampledDesc.samples = SampleCount::Four;
         RenderTexture target(sampled, "sampled-depth", sampledDesc);
-        assert(HasTextureUsage(sampled.images[1].usage, TextureUsageFlags::TransferSource));
+        assert(!HasTextureUsage(sampled.images[1].usage, TextureUsageFlags::TransferSource));
+        assert(HasTextureUsage(sampled.images[2].usage, TextureUsageFlags::TransferSource));
         assert(HasTextureUsage(sampled.images[1].usage, TextureUsageFlags::Sampled));
         assert(HasTextureUsage(sampled.images[2].usage, TextureUsageFlags::Sampled));
         assert(!target.Acquire()->depth->GetSampler().IsValid());

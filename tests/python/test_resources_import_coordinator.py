@@ -1121,9 +1121,8 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
     assert handler._script_change_collector.last_known_good(str(first)) is None
     assert handler._script_change_collector.last_known_good(str(second)) is None
 
-    assert len(errors) == int(raises), errors
-    if raises:
-        assert "second Edit member rejected" in errors[0]
+    assert len(errors) == 1, errors
+    assert "second Edit member rejected" in errors[0]
     assert handler._script_transactions == {}
     assert handler._script_change_collector.current_result(str(first)) is None
     assert handler._script_change_collector.current_result(str(second)) is None

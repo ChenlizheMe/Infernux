@@ -87,6 +87,8 @@ Ordinary standard-library declarations are allowed too: for example, `threading.
 
 Saving a script compiles its source and stages its project dependencies before publishing the new revision to existing components. Syntax or import failure keeps the previously published revision running and reports the rejected source. Correcting the source allows the next save to publish; restarting the editor is unnecessary. The transaction protects script publication, not arbitrary external library side effects. Keep scene changes, file writes, and process or thread startup in lifecycle callbacks rather than module declarations.
 
+After a successful reload, initialized components can implement `on_script_reload()` to refresh their own runtime state, such as caches or rewind snapshots. The callback runs after the new code is published. It can migrate or clear state the component owns. `awake()` and `start()` keep their normal lifecycle.
+
 ## Lifecycle at a glance {#lifecycle}
 
 When a scene starts, Infernux first runs `awake` and `on_enable` across active objects, then runs `start` on enabled components. Per-frame execution follows with `update(delta_time)` and then `late_update(delta_time)`. `fixed_update(fixed_delta_time)` runs on the fixed simulation step and belongs to physics work.
@@ -210,6 +212,8 @@ class HelloComponent(inx.InxComponent):
 普通标准库声明也允许使用，例如 `threading.Lock()`、`asyncio.iscoroutine(value)` 和 `subprocess.list2cmdline(arguments)`。重载检查会诊断导入期间明确发生的启动进程、建立网络连接、写文件或修改解释器全局状态等操作。应把这些操作放到合适的生命周期方法里，并在组件停止时释放资源。静态检查不是沙箱，不能证明任意第三方库都没有副作用。
 
 保存脚本后，引擎会先编译源码并准备项目依赖，再把新修订发布给已有组件。语法或导入失败时，上一份已发布修订继续运行，并报告被拒绝的源码；修正后再次保存即可发布，无需重启编辑器。事务保护的是脚本发布，不能回滚任意外部库的副作用。场景修改、文件写入、进程或线程启动应放在生命周期回调中，而不是模块声明阶段。
+
+已经初始化的组件可以实现 `on_script_reload()`，在新代码发布成功后迁移或清空自己管理的状态，例如缓存和回溯快照。`awake()` 和 `start()` 仍按组件的正常生命周期运行。
 
 ## 生命周期速览 {#lifecycle_1}
 

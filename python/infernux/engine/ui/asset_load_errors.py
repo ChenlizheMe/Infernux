@@ -31,7 +31,9 @@ class AssetLoadErrors:
         key = lexical_path_key(path)
         entry = dict(self.errors.get(key, {}))
         entry.update(guid=guid, path=path, error=error)
-        self.errors[key] = self._pending[guid] = entry
+        self.errors[key] = entry
+        if not path.casefold().endswith(".scene"):
+            self._pending[guid] = entry
         Debug.log_error(f"Asset load failed for '{path}': {error}")
 
     def error(self, path: str) -> str:
@@ -55,7 +57,7 @@ class AssetLoadErrors:
             self._seen = {guid: stamp for guid, stamp in self._seen.items() if guid in current}
             for entry in entries:
                 stamp = (entry["modified_ns"], entry["size"], entry["error"])
-                if self._seen.get(entry["guid"]) != stamp:
+                if not entry["path"].casefold().endswith(".scene") and self._seen.get(entry["guid"]) != stamp:
                     self._pending[entry["guid"]] = entry
         if not self._pending:
             return

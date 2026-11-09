@@ -1896,11 +1896,13 @@ class PlayModeManager(PlayModeSerializationMixin):
         active_backup = None
         for backup in self._scene_backups:
             if backup.document_id:
+                document = registry.require(backup.document_id)
                 registry.restore_revision_state(
                     backup.document_id,
                     revision=backup.revision,
                     saved_revision=backup.saved_revision,
-                    state=backup.document_state or DocumentState.READY,
+                    state=(document.state if DocumentState.CONFLICT in (document.state, backup.document_state)
+                           else backup.document_state or DocumentState.READY),
                 )
             if backup.was_active:
                 active_backup = backup
@@ -1941,7 +1943,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             document.document_id,
             revision=self._scene_revision_backup,
             saved_revision=self._scene_saved_revision_backup,
-            state=self._scene_document_state_backup or DocumentState.READY,
+            state=(document.state if DocumentState.CONFLICT in (document.state, self._scene_document_state_backup)
+                   else self._scene_document_state_backup or DocumentState.READY),
         )
         if path_changed:
             if sfm.current_scene_path:

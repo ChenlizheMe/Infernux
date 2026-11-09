@@ -95,6 +95,7 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     dispatched: list[tuple[int, int]] = []
     viewport_origins: list[tuple[float, float]] = []
     images = []
+    labels = []
 
     class _PlayerEngine:
         game_presentation_ready = False
@@ -112,6 +113,9 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
             return 17
 
     class _Context:
+        def label(self, value):
+            labels.append(value)
+
         def image(self, *args):
             w, h = (960.0, 540.0) if fixed else (1280.0, 720.0)
             assert args == (17, w, h, 0.0, 0.0, 1.0, 1.0)
@@ -155,7 +159,6 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     player._render_scale = 1.0
     if fixed:
         player._render_output = {"width": 480, "height": 270, "filter": "nearest"}
-    player._initial_image_pending = True
     mouse_frame = (32.0, 48.0, 0.0, 0.0, True, True, False)
     samples = []
     routed = []
@@ -183,12 +186,15 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
         player._engine.game_presentation_ready = True
         player._render_game(_Context(), 1280.0, 720.0)
         player._render_game(_Context(), 1280.0, 720.0)
+        player._engine.game_presentation_ready = False
+        player._render_game(_Context(), 1280.0, 720.0)
         assert native_input.is_cursor_locked
     finally:
         native_input.set_cursor_locked(False)
 
     assert len(images) == 2
-    assert player._engine.readiness_queries == 2
+    assert player._engine.readiness_queries == 4
+    assert labels == ["Preparing game view..."] * 2
     assert viewport_origins == [(8.0, 12.0)] * 2
     assert dispatched == [((480, 270) if fixed else (1280, 720))] * 2
     assert samples == [0, 0]

@@ -78,6 +78,10 @@ class _AssetLocalWritePending(_AssetImportNotReady):
     pass
 
 
+class _ScriptSourceChanged(RuntimeError):
+    """A newer disk revision superseded the compiled source snapshot."""
+
+
 def _is_plugin_editor_translation_catalog(path: str, project_root: str) -> bool:
     return (
         os.path.basename(path).casefold() == "translations.json"
@@ -112,6 +116,9 @@ class _ScriptPublicationTransaction:
         self.capture_incomplete = False
         self.results: dict[str, ScriptChangeResult] = {}
         self.failed = False
+        self.error = None
+        self.read_retry_at = 0.0
+        self.read_deadline = 0.0
         self.initial_scan = bool(initial_scan)
         self.closure_seeded = bool(initial_scan)
         self.rebuild_helpers = False
@@ -318,12 +325,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
             deadline = time.monotonic() + timeout
             while transaction_id in self._script_transactions:
                 self.process_pending_reloads(force=True)
-                if any(not self._script_source_matches_disk(change) for change in changes):
-                    raise RuntimeError("Script source changed during publication")
-                if time.monotonic() >= deadline:
+                if transaction_id not in self._script_transactions:
+                    break
+                now = time.monotonic()
+                if now >= deadline:
                     raise RuntimeError("Script publication did not finish")
-                if transaction_id in self._script_transactions:
-                    time.sleep(0)
+                time.sleep(max(0., min(state.read_retry_at, deadline) - now))
+            if state.error is not None:
+                if isinstance(state.error, (OSError, _ScriptSourceChanged)):
+                    raise state.error
+                raise RuntimeError(f"Script publication failed: {state.error}") from state.error
             from infernux.components.script_loader import get_script_error_by_path
 
             unpublished = [change for change in changes
@@ -343,23 +354,50 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def publish_saved_play_scripts(self, paths) -> None:
         """Reconcile disk with the published script graph before entering Play."""
+        paths = tuple(paths)
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                self._publish_play_snapshot(paths)
+                return
+            except (PermissionError, _ScriptSourceChanged):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+
+    def _publish_play_snapshot(self, paths) -> None:
         from infernux.components.script_loader import get_script_error_by_path
 
         graph = self._dependency_graph
         snapshots = {}
         changed = {}
+        missing = {}
         for path in paths:
-            with open(path, "rb") as stream:
-                source = stream.read()
-            snapshots[path_key(path)] = (path, source)
+            key = path_key(path)
+            try:
+                with open(path, "rb") as stream:
+                    source = stream.read()
+            except FileNotFoundError:
+                missing[key] = path
+                continue
+            snapshots[key] = (path, source)
             if graph.published_source(path) != source or get_script_error_by_path(path):
                 changed[path] = source
+        # A replacement may briefly remove the file while opening the snapshot.
+        for path in missing.values():
+            try:
+                os.stat(path)
+            except FileNotFoundError:
+                continue
+            raise _ScriptSourceChanged(f"Script source changed during publication: {path}")
         for module in graph.snapshot().modules:
             path = module.source_path
             if (module.id.path_key not in snapshots and graph.owns_path(path)
-                    and not os.path.isfile(path)):
+                    and (module.id.path_key in missing or not os.path.isfile(path))):
                 self._commit_deleted(path)
                 if graph.module_for_path(path) is not None:
+                    if module.id.path_key in missing and os.path.isfile(path):
+                        raise _ScriptSourceChanged(f"Script source changed during publication: {path}")
                     raise RuntimeError(f"Deleted script is still published: {path}")
         if changed:
             affected = graph.stage_transaction(changed).affected
@@ -628,13 +666,27 @@ class ResourceChangeHandler(FileSystemEventHandler):
         )
 
     @staticmethod
-    def _script_source_matches_disk(result: ScriptChangeResult) -> bool:
+    def _require_current_script_source(result: ScriptChangeResult) -> None:
         try:
             with open(result.path, "rb") as source_file:
-                current = source_file.read()
-        except OSError:
-            return False
-        return current == result.source
+                if source_file.read() == result.source:
+                    return
+        except FileNotFoundError:
+            pass
+        raise _ScriptSourceChanged(f"Script source changed during publication: {result.path}")
+
+    @staticmethod
+    def _defer_locked_script(state: _ScriptPublicationTransaction, error: PermissionError) -> bool:
+        now = time.monotonic()
+        if not state.read_deadline:
+            state.read_deadline = now + 0.5
+        if now < state.read_deadline:
+            state.read_retry_at = now + 0.01
+            return True
+        state.error = error
+        state.failed = True
+        Debug.log_error(f"Could not read script for reload: {error}", source_file=error.filename or "")
+        return False
 
     def _transaction_for_result(self, result: ScriptChangeResult):
         transaction_id = result.change.transaction_id
@@ -772,6 +824,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             or result.change.origin == "dependency"
         ):
             return
+        if state.read_retry_at and time.monotonic() < state.read_retry_at:
+            return
         graph = self._dependency_graph
         graph_upserts = {
             result.path: result.source
@@ -790,14 +844,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 removals=graph_removals,
             )
         except Exception as exc:
+            state.error = exc
             state.failed = True
             Debug.log_error(
                 f"Script dependency transaction staging failed for {result.path}: {exc}"
             )
             return
 
-        state.graph_stage = stage
-        state.closure_seeded = True
         retired_keys = {path_key(path) for path in state.retire_paths}
         dependent_paths = []
         for module_id in stage.affected:
@@ -814,15 +867,25 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 continue
             if not state.has_path(dependent_path):
                 dependent_paths.append(dependent_path)
-        state.add_paths(dependent_paths)
-
+        sources = {}
         for dependent_path in dependent_paths:
-            if not os.path.isfile(dependent_path):
+            try:
+                with open(dependent_path, "rb") as stream:
+                    sources[dependent_path] = stream.read()
+            except PermissionError as exc:
+                self._defer_locked_script(state, exc)
+                return
+            except FileNotFoundError as exc:
+                state.error = exc
                 state.failed = True
                 Debug.log_error(
                     f"Script dependency transaction member disappeared: {dependent_path}"
                 )
-                continue
+                return
+        state.graph_stage = stage
+        state.closure_seeded = True
+        state.add_paths(dependent_paths)
+        for dependent_path, source in sources.items():
             self._check_script(
                 dependent_path,
                 catalog_event=None,
@@ -830,6 +893,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 change_kind="dependency",
                 transaction_id=state.transaction_id,
                 force=True,
+                source=source,
             )
 
     def _publish_script_registry_member(self, result: ScriptChangeResult) -> None:
@@ -999,20 +1063,11 @@ class ResourceChangeHandler(FileSystemEventHandler):
         from infernux.components.registry import (
             snapshot_component_registry_state,
         )
+        from infernux.components.script_loader import ScriptHelperLayoutChanged, ScriptLoadError, set_script_error
         from infernux.engine.play_mode import (
             PlayModeManager,
             ScriptReloadBatchInput,
         )
-
-        # This is intentionally inside the collector publication callback:
-        # the source/hash check is repeated after claim and immediately before
-        # any live, registry, or graph mutation.
-        if any(not self._script_source_matches_disk(result) for result in ready):
-            # Initial scan owns a complete baseline. A vanished/changed member
-            # requires recapturing its surviving peers, not discarding them.
-            if state.initial_scan:
-                state.capture_incomplete = True
-            return False
 
         graph = self._dependency_graph
         ready_stage = None
@@ -1074,11 +1129,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 token.play_batch = play_batch
                 outcome = play_mode.commit_script_reload_batch(play_batch)
                 if not outcome.success:
-                    play_mode.rollback_script_reload_batch(play_batch)
-                    token.play_batch = None
-                    if replacing_scene is not None:
-                        raise RuntimeError(outcome.error or "scene script publication was rejected")
-                    return False
+                    raise ScriptLoadError(outcome.error or "Script publication rejected", source_file=ordered[0].path)
                 for result in ordered:
                     self._publish_script_registry_member(result)
             else:
@@ -1105,12 +1156,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             return token
         except Exception as exc:
             self._rollback_script_publication(token)
+            state.error = exc
             if replacing_scene is not None:
                 raise
-            from infernux.components.script_loader import (
-                ScriptHelperLayoutChanged, ScriptLoadError, set_script_error,
-            )
-
             source_file = exc.source_file if isinstance(exc, ScriptLoadError) else ""
             source_line = exc.source_line if isinstance(exc, ScriptLoadError) else 0
             if isinstance(exc, ScriptHelperLayoutChanged) and not state.rebuild_helpers:
@@ -1186,6 +1234,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if not result.succeeded:
                 detail = result.diagnostic.message if result.diagnostic else "script source could not be compiled"
                 raise RuntimeError(f"{result.path}: {detail}")
+            self._require_current_script_source(result)
             state.results[result.change.identity_key] = result
         token = self._publish_script_transaction(state, results, replacing_scene=scene)
         if not token:
@@ -1249,19 +1298,37 @@ class ResourceChangeHandler(FileSystemEventHandler):
             return self._complete_durable_script_publication(state)
         if state.failed:
             return self._discard_failed_script_transaction(state)
-        if not state.complete():
+        if not state.complete() or (self._dependency_graph is not None and not state.closure_seeded):
+            return False
+        if state.read_retry_at and time.monotonic() < state.read_retry_at:
             return False
         if any(not result.succeeded for result in state.results.values()):
             state.failed = True
             return self._discard_failed_script_transaction(state)
         try:
+            # Reading may need to wait for the writer. Keep the completed
+            # artifacts unclaimed until their disk snapshots can be checked.
+            for result in state.results.values():
+                self._require_current_script_source(result)
             published = self._script_change_collector.publish_ready_batch(
                 state.expected_paths,
                 state.transaction_id,
                 lambda ready: self._publish_script_transaction(state, ready),
                 rollback=self._rollback_script_publication,
             )
+        except PermissionError as exc:
+            if self._defer_locked_script(state, exc):
+                return False
+            return self._discard_failed_script_transaction(state)
+        except _ScriptSourceChanged as exc:
+            if state.initial_scan:
+                self._restart_initial_scan_transaction(state)
+                return False
+            state.error = exc
+            state.failed = True
+            return self._discard_failed_script_transaction(state)
         except Exception as exc:
+            state.error = exc
             state.failed = True
             Debug.log_error(
                 f"Script transaction publication raised "
@@ -1620,29 +1687,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetLocalWritePending(
                 f"local document write is still pending: {path}"
             )
-        durable_change = True if metadata_only else documents.durable_resource_content_changed(
-            path,
-            guid=asset_guid,
+        accepted = documents.preflight_external_resource_change(
+            path, guid=asset_guid, metadata_only=metadata_only,
+            baseline_only=local_write_state == "ack",
         )
-        if durable_change is None:
+        if accepted is None:
             raise _AssetImportNotReady(
                 f"durable resource identity is not ready: {path}"
             )
-        if local_write_state == "ack" and durable_change is not False:
-            # This echo still names the rejected candidate, rather than a
-            # return to the valid baseline. It cannot acknowledge publication.
-            return
-        if durable_change is False:
-            # Returning to the last valid document still retires a rejected
-            # runtime candidate. Process this new save once without claiming
-            # a document content change or retrying the failed source.
-            if path_key(path) not in self._rejected_compiled_assets:
-                return
-        if not documents.preflight_external_resource_change(
-            path, guid=asset_guid, metadata_only=metadata_only,
-        ):
-            return
-        return documents, asset_guid
+        if accepted:
+            return documents, asset_guid
 
     def _commit_modified(self, path: str, *, metadata_only: bool = False) -> None:
         from infernux.core.assets import AssetManager
@@ -1742,20 +1796,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         asset_guid = str(
             guid_hint or self._asset_database.get_guid_from_path(path) or ""
         ).strip()
-        durable_change = documents.durable_resource_content_changed(
-            path,
-            guid=asset_guid,
-            deleted=True,
+        accepted = documents.preflight_external_resource_change(
+            path, guid=asset_guid, deleted=True,
         )
-        if durable_change is None:
+        if accepted is None:
             raise _AssetImportNotReady(
                 f"durable resource identity is not ready: {path}"
             )
-        if not durable_change or not documents.preflight_external_resource_change(
-            path,
-            guid=asset_guid,
-            deleted=True,
-        ):
+        if not accepted:
             return
         if not AssetManager.delete_asset(
             path,

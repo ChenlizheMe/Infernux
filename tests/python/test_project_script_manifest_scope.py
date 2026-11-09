@@ -210,7 +210,7 @@ def exercise_native_cook(project):
             database.flush_derived_index()
             output = project / "Builds" / revision
             builder = GameBuilder(str(project), str(output), game_name="ManifestScope")
-            builder.freeze_asset_index_entries(load_asset_index(project))
+            builder.freeze_asset_index_entries(load_asset_index(project), runtime_type_records=[])
             builder._copy_game_data(str(output))
             builder._compile_user_scripts(str(output))
             data = output / "Data"

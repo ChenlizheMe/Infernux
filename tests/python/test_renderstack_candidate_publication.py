@@ -1,13 +1,12 @@
 """Rejected pipeline generations retain their graph without becoming a retry loop."""
 from datetime import datetime
 import inspect
-from types import SimpleNamespace
 
 import pytest
 
 from infernux.core.assets import AssetManager
 from infernux.debug import DebugConsole, LogEntry, LogType
-from infernux.lib import ConsolePanel
+from infernux.lib import ConsolePanel, RenderGraphDescription
 from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
 from infernux.renderstack.render_stack import RenderStack
 
@@ -17,6 +16,8 @@ class PublicationContext:
         self.output_samples = samples
         self.applied = []
         self.reject = None
+        self.current_revision = None
+        self.submitted = 0
 
     def setup_camera_properties(self, camera):
         pass
@@ -27,13 +28,29 @@ class PublicationContext:
     def apply_graph(self, graph):
         self.applied.append(graph)
         if graph is self.reject:
-            raise ValueError("native graph rejected")
+            self.current_revision = None
+            return False
+        self.current_revision = graph.source_revision
+        return True
 
     def submit_culling(self, culling):
-        pass
+        self.submitted += 1
 
     def render_compiled(self, camera, revision):
+        return self.current_revision == revision
+
+    def render_with_graph(self, camera, graph):
+        if not self.apply_graph(graph):
+            return False
+        self.submit_culling(None)
         return True
+
+
+def description(name, revision):
+    result = RenderGraphDescription()
+    result.name = name
+    result.source_revision = revision
+    return result
 
 
 @pytest.fixture
@@ -59,7 +76,7 @@ def publication(monkeypatch):
 def retain_graph(stack, samples=0):
     stack._select_graph_state(samples)
     state = stack._graph_state
-    state.last_valid_description = SimpleNamespace(source_revision=1)
+    state.last_valid_description = description("previous", 1)
     state.artifact_generation = 9
     return state
 
@@ -92,7 +109,7 @@ def test_rejected_effect_generation_waits_for_an_actual_change(publication, monk
 def test_initial_rejection_recovers_when_the_effect_generation_changes(publication, monkeypatch):
     stack, generation, console, panel = publication
     calls = []
-    candidate = SimpleNamespace(source_revision=2)
+    candidate = description("candidate", 2)
 
     def build(**kwargs):
         calls.append(kwargs)
@@ -148,7 +165,7 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
 
     def valid(**kwargs):
         stack._graph_state.artifact_generation = generation[0]
-        return SimpleNamespace(source_revision=2)
+        return description("candidate", 2)
 
     monkeypatch.setattr(stack, "build_graph", valid)
     stack.invalidate_graph()
@@ -163,9 +180,12 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
 def test_valid_probe_does_not_hide_native_publication_rejection(publication, monkeypatch):
     stack, generation, console, panel = publication
     state = retain_graph(stack)
-    candidate = SimpleNamespace(source_revision=2)
+    previous = state.last_valid_description
+    candidate = description("candidate", 2)
+    builds = []
 
     def build(**kwargs):
+        builds.append(kwargs)
         stack._graph_state.artifact_generation = generation[0]
         return candidate
 
@@ -173,13 +193,17 @@ def test_valid_probe_does_not_hide_native_publication_rejection(publication, mon
     context = PublicationContext()
     context.reject = candidate
     stack.render(context, object())
-    assert state.description is state.last_valid_description
+    assert state.description is candidate
+    assert state.last_valid_description is previous
+    assert context.submitted == 0
     stack._build_full_topology_probe()
     assert "native graph rejected" in " ".join(stack.effect_compile_errors)
     assert panel.get_error_count() == 1
     for _ in range(3):
         stack.render(context, object())
-    assert len(context.applied) == 2
+    assert len(builds) == 1
+    assert all(graph is candidate for graph in context.applied)
+    assert context.submitted == 0
     context.reject = None
     stack.invalidate_graph()
     stack.render(context, object())

@@ -215,7 +215,9 @@ def test_particle_editor_pending_save_stays_dirty_when_public_save_supersedes_it
 
     monkeypatch.setattr(document_store, "submit_document_text", paused_write)
     try:
-        assert panel._save_to(str(path), ticket_id=save_ticket.ticket_id)
+        assert panel._authoring_document_controller.continue_save_to_resource(
+            save_ticket.ticket_id, str(path),
+        ).accepted
         assert entered.wait(timeout=5)
         pending = next(iter(panel._authoring_document_controller._pending_writes.values()))
         assert save_ticket.is_pending

@@ -8,13 +8,12 @@ import pytest
 from infernux.application import Application
 from infernux.core.asset_ref import TextureRef, create_asset_ref
 from infernux.core.assets import AssetManager
-from infernux.engine.game_builder import GameBuilder
 from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 from infernux.engine.project_context import (
     resolve_runtime_asset_guid,
     set_runtime_asset_resolver,
 )
-from infernux.engine.runtime_artifact_catalog import build_catalog, runtime_artifact_id
+from infernux.engine.runtime_artifact_catalog import _asset_refs, build_catalog, runtime_artifact_id
 from infernux.ui import UIButton, UIText
 from infernux.ui.ui_render_dispatch import _extract_text_attrs
 
@@ -241,8 +240,8 @@ def test_cook_dependency_scanner_ignores_path_only_font_fields():
         "guid": "font-guid",
     }
 
-    assert list(GameBuilder._asset_reference_values(stale)) == []
-    assert list(GameBuilder._asset_reference_values(current)) == [
+    assert list(_asset_refs(stale)) == []
+    assert list(_asset_refs(current)) == [
         ("font-guid", "")
     ]
 

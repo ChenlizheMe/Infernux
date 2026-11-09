@@ -792,10 +792,13 @@ class SceneRenderGraph : public NativeLifetimeOwner
         std::unordered_map<uint64_t, particle::GpuParticleViewDiagnosticSnapshot> snapshots;
     };
 
-    /**
-     * @brief Build the vk::RenderGraph from configured passes
-     */
-    void BuildRenderGraph(bool buffersPrepared);
+    struct GraphAssetTexture
+    {
+        const GraphTextureDesc *descriptor;
+        std::shared_ptr<const rhi::TextureGpuView> publication;
+        uint64_t contentGeneration;
+    };
+    void BuildRenderGraph(bool buffersPrepared, const std::vector<GraphAssetTexture> &assetTextures);
     void CacheLiveAuthorPasses();
     [[nodiscard]] bool EnsureViewGpuResources();
     void ReleaseViewGpuResources() noexcept;
@@ -804,6 +807,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     /// Register graph texture allocations and publish the imported bindings before adding the author passes.
     bool RegisterGraphTextures(uint32_t width, uint32_t height,
+                               const std::vector<GraphAssetTexture> &assetTextures,
                                std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
     void RetireImportedTextureAssets();
     void RetireWorkInstances();

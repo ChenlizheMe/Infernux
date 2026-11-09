@@ -302,7 +302,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             auto &rhiDevice = m_backend.Device().GetRhiDevice();
             return {TextureResolveStatus::Ready,
                     {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()),
-                     std::move(cachedSlot), std::move(cached)}};
+                     std::move(cachedSlot), std::move(cached)},
+                    contentGeneration};
         }
     }
 
@@ -448,7 +449,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             auto &rhiDevice = m_backend.Device().GetRhiDevice();
             return {TextureResolveStatus::Ready,
                     {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()),
-                     std::move(cachedSlot), std::move(cached)}};
+                     std::move(cachedSlot), std::move(cached)},
+                    contentGeneration};
         }
     }
 
@@ -503,7 +505,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         auto &device = m_backend.Device().GetRhiDevice();
         return {TextureResolveStatus::Ready,
                 {device.Resolve(resident->GetView()), device.Resolve(resident->GetSampler()), std::move(slot),
-                 std::move(resident)}};
+                 std::move(resident)},
+                contentGeneration};
     } catch (const std::exception &error) {
         m_failedTextureUploads[cacheKey] = {textureGuid, runtimeVersion, contentGeneration};
         m_pendingTextureUploads.erase(cacheKey);

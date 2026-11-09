@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from enum import Enum, IntFlag, auto
+from functools import partial
 import hashlib
 import json
 import os
@@ -1667,6 +1668,7 @@ class DocumentRegistry:
                 document.external_file_state = observed
                 document.external_revision += 1
                 document.state = DocumentState.CONFLICT
+                self._defer_clean_scene_reload(document)
         self._touch()
         return revision
 
@@ -1778,6 +1780,8 @@ class DocumentRegistry:
         if target == document.saved_revision:
             document.dirty_view_ids.clear()
             document._dirty_view_ids_by_revision[target] = frozenset()
+            if document.state is DocumentState.CONFLICT:
+                self._defer_clean_scene_reload(document)
         if (
             document.state is not DocumentState.CONFLICT
             and self.active_save_ticket(document_id) is None
@@ -1858,7 +1862,15 @@ class DocumentRegistry:
         )
 
     @staticmethod
-    def _reload_callback(document: EditorDocument):
+    def _defer_clean_scene_reload(document: EditorDocument) -> None:
+        if document.kind is DocumentKind.SCENE and document.external_file_state and document.external_file_state.exists:
+            from infernux.engine.scene_manager import SceneFileManager
+
+            if isinstance(document.controller, SceneFileManager):
+                document.controller._defer_external_reload(document.document_id)
+
+    @staticmethod
+    def _reload_callback(document: EditorDocument, *, automatic: bool = False):
         """Resolve the durable reload hook without weakening document identity.
 
         Scene documents can briefly outlive their view/controller during scene
@@ -1876,34 +1888,16 @@ class DocumentRegistry:
                 manager = None
             if manager is not None and manager.owns_document(document.document_id):
                 document.controller = manager
-                return getattr(manager, "reload_from_resource", None)
+                if automatic:
+                    return partial(manager.request_external_reload, automatic=True)
+                return manager.request_external_reload
             if manager is not None and isinstance(document.controller, SceneFileManager):
                 # Never send a scene reload through a retired manager binding.
                 return None
-        callback = getattr(document.controller, "reload_from_resource", None)
-        return callback if callable(callback) else None
-
-    @staticmethod
-    def _external_reload_callback(document: EditorDocument):
-        """Resolve the explicit user-confirmed durable reload entry point."""
-        if document.kind is DocumentKind.SCENE:
-            try:
-                from infernux.engine.scene_manager import SceneFileManager
-
-                manager = SceneFileManager.instance()
-            except (ImportError, RuntimeError):
-                manager = None
-            if manager is not None and manager.owns_document(document.document_id):
-                document.controller = manager
-                callback = getattr(manager, "request_external_reload", None)
-                if callable(callback):
-                    return callback
-            if manager is not None and isinstance(document.controller, SceneFileManager):
-                return None
-        callback = getattr(document.controller, "request_external_reload", None)
-        if callable(callback):
-            return callback
-        return DocumentRegistry._reload_callback(document)
+        controller = document.controller
+        if not automatic and (request := getattr(controller, "request_external_reload", None)):
+            return request
+        return getattr(controller, "reload_from_resource", None)
 
     def durable_resource_content_changed(
         self,
@@ -1923,7 +1917,10 @@ class DocumentRegistry:
         affected = self.documents_for_resource(resource_path, guid=guid)
         if not affected:
             return True
-        current = _capture_durable_file_state(resource_path)
+        return self._resource_content_changed(affected, _capture_durable_file_state(resource_path))
+
+    @staticmethod
+    def _resource_content_changed(affected, current) -> Optional[bool]:
         current_identity = _durable_file_identity(current)
         if current_identity is None:
             return None
@@ -1933,12 +1930,7 @@ class DocumentRegistry:
         )
         if any(identity is None for identity in baselines):
             return None
-        changed = any(identity != current_identity for identity in baselines)
-        if deleted and current_identity[0]:
-            # A delete notification followed by an atomic replacement is a
-            # stale delete, not a deletion of the durable resource.
-            return changed
-        return changed
+        return any(identity != current_identity for identity in baselines)
 
     def preflight_external_resource_change(
         self,
@@ -1947,7 +1939,8 @@ class DocumentRegistry:
         guid: str = "",
         deleted: bool = False,
         metadata_only: bool = False,
-    ) -> bool:
+        baseline_only: bool = False,
+    ) -> Optional[bool]:
         """Reserve one real content change before AssetManager mutates resources.
 
         Scene documents preserve conflict arbitration because a scene owns a
@@ -1955,7 +1948,7 @@ class DocumentRegistry:
         file automatically: local drafts/pending saves are cancelled before
         reimport and the current disk content becomes the new clean baseline.
         A watcher event whose durable identity still matches every live
-        baseline is a no-op.
+        baseline is a no-op. Return None while a durable identity is unavailable.
         """
         identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
         affected = self.documents_for_resource(resource_path, guid=guid)
@@ -1970,30 +1963,25 @@ class DocumentRegistry:
                 # An empty metadata projection is still an approved preflight.
                 # Publication must not reinterpret it as a source-file edit.
                 self._external_change_preflights[identity] = ()
-            return True
+            return not baseline_only
         if identity in self._external_change_preflights:
             return True
-
-        content_changed = True if metadata_only else self.durable_resource_content_changed(
-            resource_path,
-            guid=guid,
-            deleted=deleted,
-        )
-        if content_changed is False and not any(
-            document.kind is not DocumentKind.SCENE
-            and document.state is DocumentState.CONFLICT
-            for document in affected
-        ):
-            # An asset compiler may have rejected the external candidate.
-            # Returning to the valid baseline still needs publication to
-            # retire that conflict; unchanged scene conflicts stay explicit.
-            return False
-        if content_changed is None:
-            return False
 
         observed_file_state = _capture_durable_file_state(
             resource_path + ".meta" if metadata_only else resource_path
         )
+        content_changed = True if metadata_only else self._resource_content_changed(affected, observed_file_state)
+        if content_changed is None:
+            return None
+        if baseline_only and content_changed:
+            return False
+        if content_changed is False and not any(
+            document.state is DocumentState.CONFLICT
+            and (document.kind is not DocumentKind.SCENE or not document.is_dirty)
+            for document in affected
+        ):
+            self._clear_restored_scene_conflicts(affected)
+            return False
         for document in affected:
             if (_durable_file_identity(document.external_file_state)
                     != _durable_file_identity(observed_file_state)):
@@ -2009,7 +1997,6 @@ class DocumentRegistry:
             bool(deleted)
             or document.is_dirty
             or self.active_save_ticket(document.document_id) is not None
-            or not callable(self._reload_callback(document))
             for document in scene_documents
         )
         if blocked_scene:
@@ -2042,6 +2029,17 @@ class DocumentRegistry:
         )
         self._touch()
         return True
+
+    def _clear_restored_scene_conflicts(self, documents) -> None:
+        # Identical bytes are already loaded. Retire a rejected disk revision
+        # without replacing the world or touching the local edit history.
+        restored = [document for document in documents
+                    if document.kind is DocumentKind.SCENE and document.state is DocumentState.CONFLICT]
+        for document in restored:
+            document.state = DocumentState.READY
+            document.external_file_state = None
+        if restored:
+            self._touch()
 
     def has_pending_external_change_preflight(
         self,
@@ -2128,7 +2126,7 @@ class DocumentRegistry:
                     )
                     document.external_file_state = None
                 continue
-            reload_from_disk = self._reload_callback(document)
+            reload_from_disk = self._reload_callback(document, automatic=True)
             if not callable(reload_from_disk):
                 document.state = DocumentState.CONFLICT
                 continue
@@ -2141,6 +2139,9 @@ class DocumentRegistry:
                 document.state = DocumentState.CONFLICT
                 continue
             if isinstance(result, DocumentActionResult):
+                if result.status is DocumentActionStatus.PENDING:
+                    document.state = DocumentState.CONFLICT
+                    continue
                 reloaded = result.status in {
                     DocumentActionStatus.APPLIED,
                     DocumentActionStatus.NO_OP,
@@ -2176,7 +2177,7 @@ class DocumentRegistry:
         if document.document_id in self._pending_external_reloads:
             return DocumentActionResult(DocumentActionStatus.PENDING)
         self._external_reload_results.pop(document.document_id, None)
-        reload_from_disk = self._external_reload_callback(document)
+        reload_from_disk = self._reload_callback(document)
         if not callable(reload_from_disk):
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
@@ -2228,6 +2229,7 @@ class DocumentRegistry:
     ) -> DocumentActionResult:
         """Complete a controller-owned asynchronous durable reload."""
         identifier = str(document_id or "")
+        requested = identifier in self._pending_external_reloads
         self._pending_external_reloads.discard(identifier)
         document = self.get(identifier)
         if document is None:
@@ -2256,7 +2258,8 @@ class DocumentRegistry:
                 message or "the document controller rejected the durable reload",
             )
             self._touch()
-        self._external_reload_results[identifier] = result
+        if requested:
+            self._external_reload_results[identifier] = result
         return result
 
     def take_external_reload_result(
@@ -2345,6 +2348,11 @@ class DocumentRegistry:
         if not document.capabilities & capability:
             return DocumentActionResult(DocumentActionStatus.REJECTED, "save is not supported")
         if document.state is DocumentState.CONFLICT and not save_as:
+            if document.kind is DocumentKind.SCENE and not document.is_dirty:
+                return DocumentActionResult(
+                    DocumentActionStatus.REJECTED,
+                    "the scene changed on disk; let it reload, repair or restore the file, or save a copy",
+                )
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
                 "the document changed outside the Editor; reload it, keep the local draft, or save a copy",
