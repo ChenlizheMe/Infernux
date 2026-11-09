@@ -7,7 +7,7 @@ import numpy as np
 
 from infernux.core.assets import AssetManager
 from infernux.core.material import Material
-from infernux.lib import LightShadows, SceneManager, Vector3
+from infernux.lib import CameraClearFlags, LightShadows, SceneManager, Vector3
 from infernux.rendergraph import Format
 from infernux.renderstack import RenderPipeline, DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline
 
@@ -126,6 +126,7 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); s.albedo = vec3(.5); s.
 
         self.camera = obj('Surface Discard Camera', (0,0,-6)).add_component('Camera')
         self.camera.culling_mask = 1 << 18
+        self.camera.clear_flags = CameraClearFlags.SolidColor
         sun = obj('Surface Discard Sun')
         sun.transform.euler_angles = Vector3(0,45,0)
         light = sun.add_component('Light')

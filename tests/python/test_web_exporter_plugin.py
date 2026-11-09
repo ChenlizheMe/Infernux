@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from infernux.engine.build import BuildProfile, BuildRequest
+from infernux.plugins.platform_releases import PLAYER_SOURCE_REVISION
 from infernux.version import ENGINE_RELEASE, ENGINE_VERSION
 
 
@@ -287,6 +288,7 @@ def _installed_web_payload(tmp_path):
         "$schema": "infernux.web_player",
         "engine": ENGINE_VERSION,
         "engine_release": ENGINE_RELEASE,
+        "engine_source_revision": PLAYER_SOURCE_REVISION,
         "platform": "web",
         "architecture": "wasm32",
         "python_abi": "cp313",
