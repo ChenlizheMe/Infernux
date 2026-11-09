@@ -502,7 +502,6 @@ struct ParticleGpuSystemManager::Impl
     bool requiresCollisionScene = false;
     std::shared_ptr<GraphState> graphState;
     mutable uint64_t nextGraphGeneration = 1;
-    mutable bool resourceUploadPending = false;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
     FrameWorkOwner *meshUploadOwner = nullptr;
     FrameWorkOwner::SourceId meshUploadSource = 0;
@@ -1313,9 +1312,13 @@ struct ParticleGpuSystemManager::Impl
     }
 
     [[nodiscard]] std::shared_ptr<MeshResources> ResolveMeshResources(const std::shared_ptr<InxMesh> &mesh,
-                                                                      std::string *error) const
+                                                                      bool &uploadPending, std::string *error) const
     {
-        if (!resources || !mesh) {
+        if (!mesh) {
+            SetError(error, "GPU particle Mesh resource binding requires a loaded Mesh asset");
+            return {};
+        }
+        if (!resources) {
             SetError(error, "GPU particle Mesh resource service is unavailable");
             return {};
         }
@@ -1368,7 +1371,7 @@ struct ParticleGpuSystemManager::Impl
             if (upload.source || !std::all_of(upload.tickets.begin(), upload.tickets.end(), [this](const auto &ticket) {
                     return !ticket || resources->TryPublishBufferUpload(ticket);
                 })) {
-                resourceUploadPending = true;
+                uploadPending = true;
                 SetError(error, "GPU particle Mesh upload is pending");
                 return {};
             }
@@ -1395,6 +1398,27 @@ struct ParticleGpuSystemManager::Impl
         }
     }
 
+    [[nodiscard]] bool PrepareMeshUploads(const GpuParticleEmitterProgram &program, bool &waiting,
+                                          std::string *error) const
+    {
+        const auto prepare = [&](const std::shared_ptr<InxMesh> &mesh) {
+            bool pending = false;
+            if (ResolveMeshResources(mesh, pending, error))
+                return true;
+            waiting = pending;
+            return pending;
+        };
+        for (const auto &interface : program.meshInterfaces) {
+            if (!prepare(interface.mesh))
+                return false;
+        }
+        for (const auto &output : program.outputs) {
+            if (output.type == GpuParticleOutputType::Mesh && !prepare(output.mesh))
+                return false;
+        }
+        return true;
+    }
+
     static void CaptureMeshRevisions(const GpuParticleEmitterProgram &program,
                                      std::vector<std::shared_ptr<InxMesh>> &meshes, std::vector<uint64_t> &generations)
     {
@@ -1415,8 +1439,8 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
                                         std::vector<std::shared_ptr<InxTexture>> &vectorFields,
-                                        std::vector<uint64_t> &vectorFieldGenerations, std::string *error,
-                                        GpuParticleTextureRequest request) const
+                                        std::vector<uint64_t> &vectorFieldGenerations, bool &uploadPending,
+                                        std::string *error, GpuParticleTextureRequest request) const
     {
         runtimeDesc.capacity = program.capacity;
         runtimeDesc.stateStride = program.stateStride;
@@ -1458,11 +1482,7 @@ struct ParticleGpuSystemManager::Impl
         }
         runtimeDesc.meshInterfaces.reserve(program.meshInterfaces.size());
         for (const auto &mesh : program.meshInterfaces) {
-            if (!mesh.mesh) {
-                SetError(error, "GPU particle Mesh resource binding requires a loaded Mesh asset");
-                return false;
-            }
-            const auto meshResources = ResolveMeshResources(mesh.mesh, error);
+            const auto meshResources = ResolveMeshResources(mesh.mesh, uploadPending, error);
             if (!meshResources)
                 return false;
             GpuMeshInterfaceDesc runtimeMesh;
@@ -1531,10 +1551,9 @@ struct ParticleGpuSystemManager::Impl
                 vectorFieldTextureResolver(field.texture->GetGuid(), field.linearFiltering, field.repeat, request);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.gpuView || !lease.gpuView->IsValid()) {
-                resourceUploadPending = lease.status == GpuBillboardTextureStatus::Pending;
-                SetError(error, lease.status == GpuBillboardTextureStatus::Pending
-                                    ? "GPU particle volume texture upload is pending"
-                                    : "GPU particle volume texture upload failed");
+                uploadPending = lease.status == GpuBillboardTextureStatus::Pending;
+                SetError(error, uploadPending ? "GPU particle volume texture upload is pending"
+                                              : "GPU particle volume texture upload failed");
                 return false;
             }
             GpuVectorFieldDesc runtimeField;
@@ -1562,10 +1581,9 @@ struct ParticleGpuSystemManager::Impl
             auto lease = textureResolver(parameter.textureGuid, parameter.stableId, request);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.gpuView || !lease.gpuView->IsValid()) {
-                resourceUploadPending = lease.status == GpuBillboardTextureStatus::Pending;
-                SetError(error, lease.status == GpuBillboardTextureStatus::Pending
-                                    ? "GPU particle sampled texture upload is pending"
-                                    : "GPU particle Texture2D parameter upload failed");
+                uploadPending = lease.status == GpuBillboardTextureStatus::Pending;
+                SetError(error, uploadPending ? "GPU particle sampled texture upload is pending"
+                                              : "GPU particle Texture2D parameter upload failed");
                 return false;
             }
             GpuTexture2DParameterDesc runtimeParameter;
@@ -1583,7 +1601,8 @@ struct ParticleGpuSystemManager::Impl
     }
 
     [[nodiscard]] std::shared_ptr<ParticleGpuOutputRenderer>
-    CreateOutputRenderer(const Emitter &emitter, const GpuParticleOutputProgram &output, std::string *error) const
+    CreateOutputRenderer(const Emitter &emitter, const GpuParticleOutputProgram &output, bool &uploadPending,
+                         std::string *error) const
     {
         if (output.type == GpuParticleOutputType::Ribbon) {
             if (!emitter.ribbonTopology || !ribbonRenderProgram || !ribbonRenderProgram->IsValid()) {
@@ -1605,7 +1624,7 @@ struct ParticleGpuSystemManager::Impl
             return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
         }
         if (output.type == GpuParticleOutputType::Mesh) {
-            const auto meshResources = ResolveMeshResources(output.mesh, error);
+            const auto meshResources = ResolveMeshResources(output.mesh, uploadPending, error);
             if (!meshResources)
                 return {};
             auto renderer = std::make_shared<ParticleGpuMeshRenderer>();
@@ -1782,7 +1801,7 @@ struct ParticleGpuSystemManager::Impl
     }
 
     [[nodiscard]] std::shared_ptr<Emitter> CreateEmitter(const GpuParticleEmitterProgram &program,
-                                                         const std::shared_ptr<Emitter> &previous,
+                                                         const std::shared_ptr<Emitter> &previous, bool &uploadPending,
                                                          std::string *error) const
     {
         // ApplyGraphs preflights every candidate before any private runtime is
@@ -1809,8 +1828,8 @@ struct ParticleGpuSystemManager::Impl
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
-        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations, error,
-                              GpuParticleTextureRequest::Prepare))
+        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations,
+                              uploadPending, error, GpuParticleTextureRequest::Prepare))
             return {};
         emitter->observedVectorFieldGenerations = emitter->vectorFieldGenerations;
         CaptureMeshRevisions(program, emitter->meshes, emitter->observedMeshGenerations);
@@ -1900,7 +1919,7 @@ struct ParticleGpuSystemManager::Impl
 
         emitter->outputs.reserve(program.outputs.size());
         for (const auto &output : program.outputs) {
-            auto renderer = CreateOutputRenderer(*emitter, output, error);
+            auto renderer = CreateOutputRenderer(*emitter, output, uploadPending, error);
             if (!renderer) {
                 if (!error || error->empty())
                     SetError(error,
@@ -1958,21 +1977,24 @@ struct ParticleGpuSystemManager::Impl
         std::vector<std::shared_ptr<InxTexture>> vectorFields;
         std::vector<uint64_t> vectorFieldGenerations;
         auto replacement = std::make_unique<ParticleGpuRuntime>();
-        const bool descriptorValid = BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields,
-                                                      vectorFieldGenerations, &error, GpuParticleTextureRequest::Poll);
+        bool uploadPending = false;
+        const bool meshesReady =
+            !meshChanged || (PrepareMeshUploads(emitter.sourceProgram, uploadPending, &error) && !uploadPending);
+        const bool descriptorValid =
+            meshesReady && BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields, vectorFieldGenerations,
+                                            uploadPending, &error, GpuParticleTextureRequest::Poll);
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
         const auto rememberHardFailure = [&]() {
             emitter.observedVectorFieldGenerations = currentVectorFieldGenerations;
             emitter.observedMeshGenerations = currentMeshGenerations;
         };
-        const auto uploadPending = [&]() { return error.find("upload is pending") != std::string::npos; };
         if (!replacementCreated || !deletionQueue) {
-            if (!uploadPending())
+            if (!uploadPending) {
                 rememberHardFailure();
-            if (!uploadPending())
                 INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
                             "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
+            }
             return false;
         }
 
@@ -2001,13 +2023,13 @@ struct ParticleGpuSystemManager::Impl
                 candidate.ribbonUvScale = output.ribbonUvScale;
                 candidate.flipbookColumns = output.flipbookColumns;
                 candidate.flipbookRows = output.flipbookRows;
-                auto next = CreateOutputRenderer(emitter, candidate, &error);
+                auto next = CreateOutputRenderer(emitter, candidate, uploadPending, &error);
                 if (!next) {
-                    if (!uploadPending())
+                    if (!uploadPending) {
                         rememberHardFailure();
-                    if (!uploadPending())
                         INXLOG_WARN("GPU particle Mesh output refresh kept last-known-good emitter '", emitter.stableId,
                                     "': ", error.empty() ? "renderer creation failed" : error);
+                    }
                     return false;
                 }
                 renderers.push_back({index, output.renderer, std::move(next)});
@@ -2542,7 +2564,6 @@ GpuParticlePublicationStatus ParticleGpuSystemManager::ApplyGraphs(const std::ve
         SetError(error, "GPU particle manager is not initialized");
         return GpuParticlePublicationStatus::Failed;
     }
-    m_impl->resourceUploadPending = false;
     if (programs.empty()) {
         SetError(error, "GPU particle graph publication batch cannot be empty");
         return GpuParticlePublicationStatus::Failed;
@@ -2599,15 +2620,28 @@ GpuParticlePublicationStatus ParticleGpuSystemManager::ApplyGraphs(const std::ve
         }
     }
 
+    // Admit all mesh dependencies before constructing any candidate runtimes.
+    // The next host opportunity can advance both uploads while the live graph remains intact.
+    bool waitingForMesh = false;
+    for (const auto &program : programs) {
+        for (const auto &emitterProgram : program.emitters) {
+            if (!m_impl->PrepareMeshUploads(emitterProgram, waitingForMesh, error))
+                return GpuParticlePublicationStatus::Failed;
+        }
+    }
+    if (waitingForMesh)
+        return GpuParticlePublicationStatus::Pending;
+
     for (const auto &program : programs) {
         for (const auto &emitterProgram : program.emitters) {
             const auto previous = m_impl->emitters.find(emitterProgram.id);
-            auto emitter = m_impl->CreateEmitter(
-                emitterProgram,
-                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error);
+            bool uploadPending = false;
+            auto emitter = m_impl->CreateEmitter(emitterProgram,
+                                                 previous != m_impl->emitters.end() ? previous->second
+                                                                                    : std::shared_ptr<Impl::Emitter>{},
+                                                 uploadPending, error);
             if (!emitter)
-                return m_impl->resourceUploadPending ? GpuParticlePublicationStatus::Pending
-                                                     : GpuParticlePublicationStatus::Failed;
+                return uploadPending ? GpuParticlePublicationStatus::Pending : GpuParticlePublicationStatus::Failed;
             candidates[emitterProgram.id] = std::move(emitter);
         }
     }
@@ -2829,7 +2863,8 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
             candidate.flipbookRows = output.flipbookRows;
             candidate.ribbonUvMode = output.ribbonUvMode;
             candidate.ribbonUvScale = output.ribbonUvScale;
-            auto renderer = m_impl->CreateOutputRenderer(*emitter, candidate, error);
+            bool uploadPending = false;
+            auto renderer = m_impl->CreateOutputRenderer(*emitter, candidate, uploadPending, error);
             if (!renderer) {
                 SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
                 return false;
