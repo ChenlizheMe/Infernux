@@ -41,9 +41,15 @@ template<class T> T Sentinel(uintptr_t n) {
 // Same recording-device boundary as ParticleGpuRuntimeTests, with buffers
 // additionally registered in the real VulkanRhiDevice CPU handle registry.
 struct RecordingDevice final : rhi::Device {
+    rhi::DeviceCaps capabilities;
     vk::VulkanRhiDevice registry;
     uint32_t next = 1, buffersCreated = 0, buffersReleased = 0;
     uint32_t objectsCreated = 0, objectsReleased = 0;
+    RecordingDevice() {
+        capabilities.limits.minStorageBufferOffsetAlignment = 256;
+        capabilities.portable.maxStorageBufferBinding = 1u << 30;
+    }
+    const rhi::DeviceCaps& GetCapabilities() const noexcept override { return capabilities; }
     rhi::BufferHandle CreateBuffer(const rhi::BufferDesc& d) override {
         ++buffersCreated;
         return registry.RegisterBuffer(Sentinel<VkBuffer>(0x1000 + next++), d.byteSize);
