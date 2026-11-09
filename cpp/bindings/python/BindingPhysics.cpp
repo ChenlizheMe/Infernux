@@ -1276,11 +1276,6 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     NativeClass<Rigidbody, Component>(m, "Rigidbody")
         .def(py::init<>())
-        .def_property_readonly("_result_target_epoch", &Rigidbody::GetResultTargetEpoch)
-        .def_property_readonly("_result_target_ready",
-                               [](const Rigidbody &body) {
-                                   return PhysicsWorld::Instance().IsBodyInBroadphase(body.GetParticipatingBodyId());
-                               })
         // ---- Serialized properties ----
         .def_property("mass", &Rigidbody::GetMass, &Rigidbody::SetMass, "Mass in kilograms (default 1)")
         .def("set_mass_properties", &Rigidbody::SetMassProperties, "mass"_a, "center"_a, "moments"_a,

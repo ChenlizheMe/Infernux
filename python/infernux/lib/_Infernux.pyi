@@ -53,7 +53,7 @@ class Random:
     def range(min_inclusive: float, max_inclusive: float) -> float: ...
     @staticmethod
     def range_many(bounds: Sequence[tuple[float, float]]) -> list[float]: ...
-from enum import IntEnum
+from enum import Enum, IntEnum
 import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
@@ -2031,6 +2031,21 @@ class NativeRuntimeFrameBarrier(IntEnum):
     PENDING_DESTROY: ClassVar[NativeRuntimeFrameBarrier]
     RENDER_SUBMITTED: ClassVar[NativeRuntimeFrameBarrier]
     RENDER_PRESENTED: ClassVar[NativeRuntimeFrameBarrier]
+
+
+class _ResultTargetStatus(Enum):
+    Ready: ClassVar[_ResultTargetStatus]
+    Waiting: ClassVar[_ResultTargetStatus]
+    Stale: ClassVar[_ResultTargetStatus]
+    Changed: ClassVar[_ResultTargetStatus]
+
+
+class _ResultTargetBatch:
+    def __init__(self, components: Sequence[Component]) -> None: ...
+    @property
+    def handles(self) -> tuple[ObjectHandle, ...]: ...
+    def inspect(self, manager: SceneManager, require_body_ready: bool = False,
+                collect: bool = False) -> tuple[_ResultTargetStatus, tuple[Component, ...]]: ...
 
 
 class SceneManager:

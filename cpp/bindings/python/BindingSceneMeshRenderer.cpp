@@ -398,7 +398,6 @@ static void BindRendererMeshQueries(NativeClass<MeshRenderer, Component> &cls)
             "Number of indices in the mesh")
         .def_property_readonly("inline_mesh_version", &MeshRenderer::GetInlineMeshVersion,
                                "Monotonic generation of the authored/runtime inline geometry")
-        .def_property_readonly("_result_target_epoch", &MeshRenderer::GetInlineMeshVersion)
         .def(
             "get_positions",
             [](const MeshRenderer &mr) -> py::list {

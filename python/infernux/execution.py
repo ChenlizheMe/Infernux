@@ -249,16 +249,15 @@ class ResultConsumer:
         self.boundary = boundary
         self.required = required
         self._input = targets[0] if boundary == 'render_input' else None
-        self._targets = []
+        self._targets = None
         if self._input is None:
-            for target in targets:
-                component = target._require_cpp_component()
-                epoch = getattr(component, '_result_target_epoch', 0)
-                if epoch is None:
-                    raise ValueError('result target has no bound state')
-                self._targets.append((component.handle, epoch))
-        self._target_keys = frozenset((int(handle.world_id), int(handle.id), int(handle.generation))
-                                      for handle, _ in self._targets)
+            from infernux.lib import _Infernux
+
+            self._targets = _Infernux._ResultTargetBatch(tuple(target._require_cpp_component() for target in targets))
+        self._target_keys = frozenset(
+            (handle.world_id, handle.id, handle.generation)
+            for handle in (self._targets.handles if self._targets is not None else ())
+        )
         self._apply = apply
         self._scope = capture_execution_scope()
         self._epoch = int(manager.simulation_epoch)
@@ -302,7 +301,7 @@ class ResultConsumer:
         self._detach()
         return True
 
-    def _resolve(self, manager):
+    def _resolve(self, manager, *, require_body_ready=False, collect=False):
         if not self._attached:
             return None
         frame = self.request._owner()._frame
@@ -315,20 +314,19 @@ class ResultConsumer:
                 self.cancel()
                 return None
             if self._input is not None:
-                return (self._input,)
-            targets = []
-            for handle, epoch in self._targets:
-                world = manager.get_scene_by_world_id(handle.world_id)
-                native = None if world is None else world.resolve_component(handle)
-                if native is None or world.is_pending_destroy(native.game_object):
-                    self.cancel()
-                    return None
-                if epoch and native._result_target_epoch != epoch:
-                    self.reason = 'result target changed after binding'
-                    self.cancel()
-                    return None
-                targets.append(native)
-            return tuple(targets)
+                return True, (self._input,)
+            from infernux.lib import _Infernux
+
+            states = _Infernux._ResultTargetStatus
+            status, targets = self._targets.inspect(manager, require_body_ready, collect)
+            if status == states.Ready:
+                return True, targets
+            if status == states.Waiting:
+                return False, targets
+            if status == states.Changed:
+                self.reason = 'result target changed after binding'
+            self.cancel()
+            return None
         finally:
             if active:
                 frame.end_scope()

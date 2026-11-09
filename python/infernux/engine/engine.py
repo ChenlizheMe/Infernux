@@ -489,15 +489,20 @@ class Engine():
                 consumer = engine._result_consumers[index]
                 index += 1
                 if consumer.boundary == 'render_input' and boundary == 'render':
-                    targets = consumer._resolve(scene_manager)
-                    if targets is not None:
-                        consumer._consume(scene_manager, targets)
+                    resolution = consumer._resolve(scene_manager)
+                    if resolution is not None:
+                        consumer._consume(scene_manager, resolution[1])
                     continue
                 if consumer.boundary != boundary:
                     continue
-                targets = consumer._resolve(scene_manager)
-                if targets is None:
+                resolution = consumer._resolve(
+                    scene_manager,
+                    require_body_ready=boundary == 'physics' and (consumer.required or consumer.request.done),
+                    collect=consumer.request.status == 'published',
+                )
+                if resolution is None:
                     continue
+                targets_ready, targets = resolution
                 if not consumer.required and not consumer.request.done:
                     waiting.update(consumer._target_keys)
                     continue
@@ -505,8 +510,7 @@ class Engine():
                     continue
                 # The control phase publishes newly created bodies after this
                 # gate. Preserve target order without waiting on that phase.
-                if consumer._suspended() or (boundary == 'physics' and
-                        any(not getattr(target, '_result_target_ready', True) for target in targets)):
+                if consumer._suspended() or not targets_ready:
                     (suspended if consumer.required else waiting).update(consumer._target_keys)
                     continue
                 if suspended.intersection(consumer._target_keys):

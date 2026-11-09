@@ -17,7 +17,6 @@ void BindSkeletonInstance(py::module_ &m)
         .def_property_readonly("parent_indices", &SkeletonInstance::GetParentIndices)
         .def_property_readonly("physics_controls_pose", &SkeletonInstance::PhysicsControlsPose)
         .def_property_readonly("has_animation_pose", &SkeletonInstance::HasAnimationPose)
-        .def_property_readonly("_result_target_epoch", &SkeletonInstance::GetResultTargetEpoch)
         .def("capture_animation_pose", &SkeletonInstance::CaptureAnimationPose)
         .def("apply_animation_pose", &SkeletonInstance::ApplyAnimationPose)
         .def("get_animation_world_matrices",

@@ -6,17 +6,128 @@
 #include "function/scene/ComponentFactory.h"
 #include "function/scene/ComponentRecord.h"
 #include "function/scene/GameObject.h"
+#include "function/scene/MeshRenderer.h"
 #include "function/scene/PyComponentProxy.h"
+#include "function/scene/Rigidbody.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
+#include "function/scene/SkeletonInstance.h"
 #include "function/scene/Transform.h"
+#include "function/scene/physics/PhysicsWorld.h"
 #include <algorithm>
+#include <optional>
 #include <pybind11/functional.h>
+#include <stdexcept>
+#include <tuple>
+#include <variant>
 
 namespace py = pybind11;
 
 namespace infernux::scene_binding
 {
+
+namespace
+{
+
+enum class ResultTargetStatus
+{
+    Ready,
+    Waiting,
+    Stale,
+    Changed
+};
+
+using RigidbodyEpoch = std::tuple<uint32_t, uint32_t, uint64_t, uint64_t>;
+using ResultTargetEpoch = std::variant<std::monostate, uint64_t, RigidbodyEpoch>;
+
+std::optional<ResultTargetEpoch> ReadResultTargetEpoch(const Component &component, const Rigidbody *body)
+{
+    if (body) {
+        if (auto epoch = body->GetResultTargetEpoch())
+            return *epoch;
+        return std::nullopt;
+    }
+    if (const auto *mesh = dynamic_cast<const MeshRenderer *>(&component))
+        return mesh->GetInlineMeshVersion();
+    if (const auto *skeleton = dynamic_cast<const SkeletonInstance *>(&component)) {
+        if (auto epoch = skeleton->GetResultTargetEpoch())
+            return *epoch;
+        return std::nullopt;
+    }
+    return std::monostate{};
+}
+
+class ResultTargetBatch
+{
+  public:
+    explicit ResultTargetBatch(const std::vector<Component *> &components)
+    {
+        m_targets.reserve(components.size());
+        for (const Component *component : components) {
+            if (!component)
+                throw std::invalid_argument("result target requires a native component");
+            auto epoch = ReadResultTargetEpoch(*component, dynamic_cast<const Rigidbody *>(component));
+            if (!epoch)
+                throw std::invalid_argument("result target has no bound state");
+            m_targets.push_back({component->GetHandle(), *epoch});
+        }
+    }
+
+    py::tuple Handles() const
+    {
+        py::tuple handles(m_targets.size());
+        for (size_t index = 0; index < m_targets.size(); ++index)
+            handles[index] = py::cast(m_targets[index].handle, py::return_value_policy::copy);
+        return handles;
+    }
+
+    py::tuple Inspect(const SceneManager &manager, bool requireBodyReady, bool collect) const
+    {
+        std::vector<Component *> resolved;
+        if (collect)
+            resolved.reserve(m_targets.size());
+        bool waiting = false;
+        uint64_t worldId = 0;
+        Scene *world = nullptr;
+        for (const auto &target : m_targets) {
+            if (worldId != target.handle.worldId) {
+                worldId = target.handle.worldId;
+                world = manager.GetSceneByWorldId(worldId);
+            }
+            Component *component = world ? world->ResolveComponent(target.handle) : nullptr;
+            if (!component || world->IsPendingDestroy(component->GetGameObject()))
+                return py::make_tuple(ResultTargetStatus::Stale, py::tuple());
+
+            const auto *body = dynamic_cast<const Rigidbody *>(component);
+            if (!std::holds_alternative<std::monostate>(target.epoch) &&
+                ReadResultTargetEpoch(*component, body) != target.epoch)
+                return py::make_tuple(ResultTargetStatus::Changed, py::tuple());
+            if (requireBodyReady && body &&
+                !PhysicsWorld::Instance().IsBodyInBroadphase(body->GetParticipatingBodyId()))
+                waiting = true;
+            if (collect)
+                resolved.push_back(component);
+        }
+        if (waiting)
+            return py::make_tuple(ResultTargetStatus::Waiting, py::tuple());
+
+        py::tuple targets(resolved.size());
+        for (size_t index = 0; index < resolved.size(); ++index)
+            targets[index] = ComponentBindingRegistry::Instance().CastToPython(resolved[index]);
+        return py::make_tuple(ResultTargetStatus::Ready, targets);
+    }
+
+  private:
+    struct Target
+    {
+        ObjectHandle handle;
+        ResultTargetEpoch epoch;
+    };
+
+    std::vector<Target> m_targets;
+};
+
+} // namespace
 
 static void ValidatePrefabNativeRecords(const nlohmann::json &node)
 {
@@ -444,6 +555,17 @@ void BindSceneManager(py::module_ &m)
             "Return normalized timing and candidate counters for the most recent frame")
         .def("dont_destroy_on_load", &SceneManager::DontDestroyOnLoad, py::arg("game_object"),
              "Mark a root GameObject so it survives scene switches. Unity: DontDestroyOnLoad()");
+
+    py::enum_<ResultTargetStatus>(m, "_ResultTargetStatus")
+        .value("Ready", ResultTargetStatus::Ready)
+        .value("Waiting", ResultTargetStatus::Waiting)
+        .value("Stale", ResultTargetStatus::Stale)
+        .value("Changed", ResultTargetStatus::Changed);
+    py::class_<ResultTargetBatch>(m, "_ResultTargetBatch")
+        .def(py::init<const std::vector<Component *> &>(), py::arg("components"))
+        .def_property_readonly("handles", &ResultTargetBatch::Handles)
+        .def("inspect", &ResultTargetBatch::Inspect, py::arg("manager"), py::arg("require_body_ready") = false,
+             py::arg("collect") = false);
 
     // ComponentFactory — query registered native component types
     m.def("get_registered_component_types", &ComponentFactory::GetUserAddableTypeNames,
