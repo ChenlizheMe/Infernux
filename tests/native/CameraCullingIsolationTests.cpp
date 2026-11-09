@@ -96,7 +96,7 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
         return std::any_of(draws.begin(), draws.end(),
                            [object](const DrawCall &draw) { return draw.objectId == object->GetID(); });
     };
-    auto check = [&](bool near) {
+    auto check = [&](bool visibleFromNear) {
         glm::vec3 localMin, localMax, repeatedMin, repeatedMax, translatedMin, translatedMax;
         renderer->ComputeWorldBounds(glm::mat4(1), localMin, localMax);
         renderer->ComputeWorldBounds(glm::mat4(1), repeatedMin, repeatedMax);
@@ -108,12 +108,12 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
         bridge.PrepareFrame(false);
         const auto nearResult = bridge.CullAndBuildForCamera(nearCamera, false);
         const auto farResult = bridge.CullAndBuildForCamera(farCamera, false);
-        assert(contains(nearResult) == near);
-        assert(contains(farResult) == !near);
-        assert(contains(nearResult) == near); // The second camera does not modify the first list.
+        assert(contains(nearResult) == visibleFromNear);
+        assert(contains(farResult) == !visibleFromNear);
+        assert(contains(nearResult) == visibleFromNear); // The second camera does not modify the first list.
         const auto cached = bridge.CullAndBuildForCamera(nearCamera, false);
         assert(cached.visibleListRevision == nearResult.visibleListRevision);
-        assert(contains(cached) == near);
+        assert(contains(cached) == visibleFromNear);
     };
     renderer->SubmitAnimationPose("Move", 0, 0, "", 0, 0, false);
     check(false);
