@@ -209,13 +209,14 @@ def test_shader_rename_preflights_every_dependent_pair(engine, rename_assets):
         assert engine.refresh_material_pipeline(value._native)
 
 
-def test_guid_shader_material_loads_on_worker_without_runtime_registration(rename_assets):
+def test_guid_shader_material_loads_on_worker_without_runtime_registration(rename_assets, engine):
     registry = AssetRegistry.instance()
     guid = rename_assets["material_guid"]
     registry.invalidate_asset(guid)
     ticket = registry.begin_load_material_by_guid(guid)
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline and not registry.try_commit_asset_load(ticket):
+        engine.tick(.016)
         time.sleep(0.001)
     assert ticket.committed
     assert ticket.produced_on_worker

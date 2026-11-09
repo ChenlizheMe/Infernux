@@ -130,7 +130,7 @@ def test_instance_addition_identity_and_internal_reference_survive_apply_history
     assert {child.name for child in second.get_children()} == {"Private", "Published"}
 
 
-def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene, tmp_path, monkeypatch):
+def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene, tmp_path, monkeypatch, engine):
     from infernux.core.assets import AssetManager
     from infernux.engine.scene_manager import SceneFileManager
     from infernux.engine.interaction import EditorInteractionCore, DocumentRegistry, SelectionDomain
@@ -156,6 +156,7 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
     manager = SceneFileManager()
     database = SimpleNamespace(
         get_guid_from_path=lambda candidate: "structural-guid" if str(candidate).casefold() == path.casefold() else "",
+        dependency_graph=engine.get_asset_database().dependency_graph,
         get_path_from_guid=lambda guid: path if guid == "structural-guid" else "",
     )
     manager._asset_database = database

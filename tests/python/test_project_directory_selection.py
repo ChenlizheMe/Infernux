@@ -99,7 +99,10 @@ def test_empty_directory_move_and_delete_publish_selection_changes(tmp_path):
     bus = AssetMutationService(DocumentRegistry(), selection)
     bus.add_observer(bridge.BootstrapSelectionMixin()._on_asset_selection_source_changed)
     selection.select(SelectionTarget.project_directory(str(folder)), owner_id="project")
-    database = SimpleNamespace(get_guid_from_path=lambda _path: "")
+    database = SimpleNamespace(
+        get_guid_from_path=lambda _path: "",
+        get_deletion_write_paths=lambda paths: [target for path in paths for target in (path, path + ".meta")],
+    )
     assert move_paths_batch(((str(folder), str(destination)),), database) == (str(destination),)
     assert selection.snapshot.primary == SelectionTarget.project_directory(str(destination))
     assert move_paths_batch(((str(destination), str(folder)),), database) == (str(folder),)

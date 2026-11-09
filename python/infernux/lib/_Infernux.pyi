@@ -2030,6 +2030,7 @@ class NativeRuntimeFrameBarrier(IntEnum):
     SNAPSHOT_PUBLICATION: ClassVar[NativeRuntimeFrameBarrier]
     PENDING_DESTROY: ClassVar[NativeRuntimeFrameBarrier]
     RENDER_SUBMITTED: ClassVar[NativeRuntimeFrameBarrier]
+    RENDER_PRESENTED: ClassVar[NativeRuntimeFrameBarrier]
 
 
 class SceneManager:
@@ -4555,6 +4556,8 @@ class Infernux:
     def gpu_residency_snapshot(self) -> dict[str, int]: ...
     @property
     def submitted_render_frames(self) -> int: ...
+    @property
+    def _last_presentation(self) -> tuple[int, int, int]: ...
     @property
     def renderer_frame_snapshot(self) -> dict[str, Any]: ...
     def begin_renderer_performance_window(self, sample_count: int = 240) -> int: ...

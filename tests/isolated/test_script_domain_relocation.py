@@ -96,6 +96,18 @@ def exercise(project, origin, suffix):
             moved = AssetManager.move_assets_batch([(str(source), str(target))], database=database)
             assert len(moved) == 1 and moved[0]
             drain()
+        if suffix == ".mat":
+            # The watcher cannot reinterpret a registered script as a material.
+            assert database.get_guid_from_path(str(source)) == guid
+            assert not database.get_guid_from_path(str(target))
+            assert sys.modules[module_name].RelocationProbe is component_type
+            assert instance.marker() == "preserved"
+            target.rename(source)
+            handler.on_moved(FileMovedEvent(str(target), str(source)))
+            drain()
+            assert database.get_guid_from_path(str(source)) == guid
+            assert current_runtime_epoch().has_phase(component_type, "update")
+            return
         assert database.get_guid_from_path(str(target)) == guid
         assert not source.exists() and target.is_file()
         assert module_name not in sys.modules
@@ -117,7 +129,7 @@ def exercise(project, origin, suffix):
             missing = reopened.find("Witness").get_py_components()[0]
             assert missing._is_broken and missing._script_guid == guid
             assert missing._get_type_guid() == type_guid
-            if suffix in (".txt", ".mat"):
+            if suffix == ".txt":
                 target.rename(source)
                 handler.on_moved(FileMovedEvent(str(target), str(source)))
                 drain()

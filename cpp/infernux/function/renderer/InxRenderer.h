@@ -264,11 +264,11 @@ struct RendererFramePerformanceSnapshot
 
 /// A foreground fact for the Engine's shared execution owner, not a neural
 /// scheduling policy. Offscreen compute does not need a Renderer to advance.
-enum class RenderFrameResult
+struct RenderFrameResult
 {
-    Submitted,
-    NoPresentation,
-    Deferred,
+    bool foregroundReady = false;
+    bool submitted = false;
+    uint64_t presentationAcceptedNs = 0;
 };
 
 class InxRenderer

@@ -1372,6 +1372,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                })
         .def_property_readonly("submitted_render_frames", &Infernux::GetSubmittedRenderFrameCount,
                                "Successful foreground frame submissions; excludes attempts, Deferred and Headless ticks")
+        .def_property_readonly("_last_presentation", [](const Infernux &self) {
+            const auto &receipt = self.GetLastPresentation();
+            return py::make_tuple(receipt.sequence, receipt.hostOpportunity, receipt.acceptedNs);
+        })
         .def_property_readonly("renderer_frame_snapshot",
                                [](Infernux &self) {
                                    auto *renderer = self.GetRenderer();

@@ -92,6 +92,8 @@ def exercise(project, group, kind, action, world='active'):
                 assert panel._selected_element_comp is component
                 assert panel._element_object_id(component) == owner.id
             if action == 'stable':
+                # Resolve the independent layout ancestry before measuring selection.
+                assert component.get_canvas().game_object.id == canvas.id
                 # Count the real enumeration boundary, without replacing the
                 # selected object, its components or the projection itself.
                 owner_type = type(owner)

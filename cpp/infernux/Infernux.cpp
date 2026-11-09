@@ -938,8 +938,7 @@ void Infernux::Run()
             m_renderer->OverrideNextFrameDeltaTime(sceneManager.IsPaused() ? 0.0f : acceptanceClock.fixedDeltaSeconds);
         }
         FrameOpportunityScope workFrame(m_frameWork);
-        const auto result = m_renderer->DrawFrame(/*pace=*/true);
-        FinishFrame(result != RenderFrameResult::Deferred, result == RenderFrameResult::Submitted);
+        FinishFrame(m_renderer->DrawFrame(/*pace=*/true));
         auto &sceneManager = SceneManager::Instance();
         if (acceptanceClock.enabled && !acceptancePauseApplied && sceneManager.IsPlaying() &&
             !sceneManager.IsPaused() && sceneManager.GetRuntimeFrameCount() >= acceptanceClock.pauseAfterFrame) {
@@ -997,8 +996,7 @@ void Infernux::TickFrame(float deltaTime)
             return;
         }
         m_renderer->OverrideNextFrameDeltaTime(deltaTime);
-        const auto result = m_renderer->DrawFrame(/*pace=*/false);
-        FinishFrame(result != RenderFrameResult::Deferred, result == RenderFrameResult::Submitted);
+        FinishFrame(m_renderer->DrawFrame(/*pace=*/false));
         return;
     }
 
@@ -1023,7 +1021,7 @@ void Infernux::TickFrame(float deltaTime)
         sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::AnimationTimeline);
     }
     sceneManager.EndFrame();
-    FinishFrame(true, false);
+    FinishFrame({true});
 }
 
 void Infernux::SetEndFrameCallback(std::function<void(bool)> callback)
@@ -1031,15 +1029,21 @@ void Infernux::SetEndFrameCallback(std::function<void(bool)> callback)
     m_endFrameCallback = std::move(callback);
 }
 
-void Infernux::FinishFrame(bool foregroundReady, bool renderSubmitted)
+void Infernux::FinishFrame(const RenderFrameResult &result)
 {
     // Run() is outside Tick's guard, and Renderer has already returned. Keep
     // this owner callback inside the same no-reentry/no-cleanup frame boundary.
     ActiveFrameScope frameScope(m_tickActive);
-    if (renderSubmitted) {
+    if (result.submitted) {
         ++m_submittedRenderFrames;
         SceneManager::Instance().EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderSubmitted);
     }
+    if (result.presentationAcceptedNs) {
+        m_lastPresentation = {m_lastPresentation.sequence + 1, m_frameWork.Opportunity(),
+                              result.presentationAcceptedNs};
+        SceneManager::Instance().EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderPresented);
+    }
+    const bool foregroundReady = result.foregroundReady;
     if (m_frameWork.AdvanceLate([this, foregroundReady] { return BackgroundGpuAvailability(foregroundReady); }))
         if (m_renderer)
             m_renderer->RequestFullSpeedFrame();

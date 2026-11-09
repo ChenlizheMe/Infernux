@@ -12,8 +12,8 @@ LABELS = 1 << 30
 def make_graph():
     graph = rg.RenderGraph("World UI stages")
     graph.create_texture("color", format=rg.Format.RGBA16_SFLOAT)
-    graph.create_texture("depth", format=rg.Format.D32_SFLOAT)
-    graph.add_pass("Opaque").write_color("color").write_depth("depth").set_clear(
+    graph.create_texture("view_z", format=rg.Format.D32_SFLOAT, camera_target=True)
+    graph.add_pass("Opaque").write_color("color").write_depth("view_z").set_clear(
         color=(0.0, 0.0, 0.0, 1.0), depth=0.0
     ).draw_renderers()
     graph.set_output("color")
@@ -23,10 +23,10 @@ def make_graph():
 @pytest.mark.parametrize("mask", [1 << 31, np.uint32(LABELS)])
 def test_mask_projects_to_native_without_signed_truncation(mask):
     graph = make_graph()
-    graph.add_pass("Labels").write_color("color").write_depth("depth").draw_world_ui(layer_mask=mask)
+    graph.add_pass("Labels").write_color("color").write_depth("view_z").draw_world_ui(layer_mask=mask)
     desc = graph.build().passes[-1]
     assert desc.commands[0].world_ui_layer_mask == int(mask)
-    assert desc.write_depth == "depth"
+    assert desc.write_depth == "view_z"
     assert not desc.clear_color and not desc.clear_depth
 
 
@@ -42,7 +42,7 @@ def test_section_filters_only_world_ui(helper):
 
 def test_predeclared_world_pass_keeps_its_authored_filter():
     graph = make_graph()
-    graph.add_pass("_WorldUI").write_color("color").write_depth("depth").draw_world_ui(layer_mask=1)
+    graph.add_pass("_WorldUI").write_color("color").write_depth("view_z").draw_world_ui(layer_mask=1)
     graph.screen_ui_section(world_ui_layer_mask=LABELS)
     world = [p for p in graph.build().passes if p.name == "_WorldUI"]
     assert len(world) == 1 and world[0].commands[0].world_ui_layer_mask == 1
@@ -51,7 +51,7 @@ def test_predeclared_world_pass_keeps_its_authored_filter():
 def test_late_ui_uses_authored_depth_after_effects_and_before_display_encoding():
     graph = make_graph()
     snapshot = graph.create_texture("label_depth", format=rg.Format.D32_SFLOAT)
-    graph.add_copy_pass("DepthSnapshot").copy_texture("depth", snapshot)
+    graph.add_copy_pass("DepthSnapshot").copy_texture("view_z", snapshot)
     graph.camera_ui_section(world_ui_layer_mask=ALL ^ LABELS)
     graph.add_pass("ProjectGrade").write_color("color").fullscreen_quad("Grade")
     graph.add_pass("LateLabels").write_color("color").write_depth(snapshot).draw_world_ui(layer_mask=LABELS)
@@ -63,7 +63,7 @@ def test_late_ui_uses_authored_depth_after_effects_and_before_display_encoding()
     early = desc.passes[names.index("_WorldUI")]
     late = desc.passes[names.index("LateLabels")]
     assert early.commands[0].world_ui_layer_mask & late.commands[0].world_ui_layer_mask == 0
-    assert early.write_depth == "depth" and late.write_depth == "label_depth"
+    assert early.write_depth == "view_z" and late.write_depth == "label_depth"
     assert not late.clear_depth and not late.clear_color
 
 

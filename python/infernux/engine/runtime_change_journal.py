@@ -57,6 +57,7 @@ class RuntimeFrameBarrier(str, Enum):
     RENDER_GRAPH = "render_graph"
     SNAPSHOT_PUBLICATION = "snapshot_publication"
     RENDER_SUBMITTED = "render_submitted"
+    RENDER_PRESENTED = "render_presented"
     PENDING_DESTROY = "pending_destroy"
     RETIREMENT = "retirement"
 

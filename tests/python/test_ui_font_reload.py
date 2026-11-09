@@ -1,6 +1,7 @@
 """Committed font assets must refresh both native faces and text layout."""
 from pathlib import Path
 import shutil
+import time
 
 import pytest
 
@@ -147,17 +148,22 @@ def test_filesystem_watcher_publishes_font_revision(font_assets, engine, monkeyp
     handler = Handler(engine, project_path=str(root.parent.parent))
     observer = Observer()
     observer.schedule(handler, str(root), recursive=False)
+    expected = renderer.measure_text(SAMPLE, 24, 0, str(FONTS / "Cousine-Regular.ttf"))[0]
     observer.start()
     try:
         shutil.copyfile(FONTS / "Cousine-Regular.ttf", path)
         assert observed.wait(5), "Native filesystem watcher did not observe the committed font write"
-        handler.process_pending_reloads(force=True)
+        deadline = time.monotonic() + 5
+        while text.get_resolved_size()[0] != pytest.approx(expected):
+            assert time.monotonic() < deadline, "The watched font revision did not publish"
+            handler.process_pending_reloads()
+            engine.tick(0.016)
+            text.resolve_text_layout(renderer.measure_text)
+            time.sleep(0.001)
     finally:
         observer.stop()
         observer.join(5)
     assert not observer.is_alive()
-    text.resolve_text_layout(renderer.measure_text)
-    expected = renderer.measure_text(SAMPLE, 24, 0, str(FONTS / "Cousine-Regular.ttf"))[0]
     assert text.get_resolved_size()[0] == pytest.approx(expected)
     # Warm text layout does not resolve or stat the font again.
     import infernux.ui.ui_font_asset as fonts

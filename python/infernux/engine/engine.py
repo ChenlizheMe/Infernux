@@ -528,15 +528,17 @@ class Engine():
     def _consume_runtime_frame_barrier(self, barrier):
         if not isinstance(barrier, RuntimeFrameBarrier):
             barrier = RuntimeFrameBarrier(barrier)
-        if barrier == RuntimeFrameBarrier.RENDER_SUBMITTED:
+        if barrier in (RuntimeFrameBarrier.RENDER_SUBMITTED, RuntimeFrameBarrier.RENDER_PRESENTED):
             from infernux.runtime_services import _dispatch_updates
-            changes = self._runtime_scheduler.consume_runtime_changes(barrier)
-            if self._graph_event_signals is not None:
-                from infernux.rendergraph.events import _dispatch_graph_events
-                _dispatch_graph_events(self)
-            if self._clock_callbacks['render_submitted']:
-                _dispatch_updates(self._clock_callbacks['render_submitted'], self._clock_delta, self._clock_delta,
-                                  gameplay_phase=False)
+            changes = None
+            if barrier == RuntimeFrameBarrier.RENDER_SUBMITTED:
+                changes = self._runtime_scheduler.consume_runtime_changes(barrier)
+                if self._graph_event_signals is not None:
+                    from infernux.rendergraph.events import _dispatch_graph_events
+                    _dispatch_graph_events(self)
+            callbacks = self._clock_callbacks[barrier.value]
+            if callbacks:
+                _dispatch_updates(callbacks, self._clock_delta, self._clock_delta, gameplay_phase=False)
             return changes
         if barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
             scene_manager = getattr(self, "_runtime_scene_manager", None)

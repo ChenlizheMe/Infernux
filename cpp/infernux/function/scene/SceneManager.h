@@ -470,6 +470,7 @@ class SceneManager
         SnapshotPublication,
         PendingDestroy,
         RenderSubmitted,
+        RenderPresented,
     };
     using RuntimeFrameBarrierCallback = std::function<void(RuntimeFrameBarrier)>;
     using RuntimeResultConsumerCallback = std::function<bool(RuntimeFrameBarrier)>;

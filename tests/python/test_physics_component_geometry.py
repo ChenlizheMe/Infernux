@@ -7,7 +7,6 @@ import pytest
 from infernux.components.builtin import Rigidbody, SphereCollider
 from infernux.gizmos import Gizmos
 from infernux.lib import Physics, SceneManager, Vector3, quatf
-from infernux.math.coerce import quat_rotate
 
 
 def rotation_value(values, form):
@@ -53,8 +52,10 @@ def test_move_rotation_keeps_native_body_preconditions(scene, form, missing_body
     body.is_kinematic = missing_body
     if not missing_body:
         owner.add_component("BoxCollider")
+    else:
+        owner.active = False  # A body that has not been admitted, independent of shapes.
     Physics.sync_transforms()
-    message = "enabled Collider body" if missing_body else "kinematic Rigidbody"
+    message = "resident Rigidbody" if missing_body else "kinematic Rigidbody"
     with pytest.raises(RuntimeError, match=message):
         body.move_rotation(rotation_value((0, 0, 0, 1), form))
 
@@ -83,8 +84,7 @@ def test_selected_sphere_outline_matches_scaled_physics(scene, monkeypatch, loca
     sphere.center = Vector3(*center)
     Physics.sync_transforms()
     scale = tuple(owner.transform.lossy_scale)
-    rotated_center = quat_rotate(owner.transform.rotation, tuple(a * b for a, b in zip(center, scale)))
-    expected_center = np.array(tuple(owner.transform.position)) + rotated_center
+    expected_center = np.array(tuple(owner.transform.transform_point(Vector3(*center))))
     radius = sphere.radius * max(abs(value) for value in scale)
     # Compare with six real Jolt surface hits, not only a duplicated transform formula.
     for axis in np.eye(3):

@@ -5,10 +5,13 @@ from time import perf_counter_ns
 import weakref
 
 from infernux.application import Application
-from infernux.execution import Clock, ClockStamp, capture_execution_scope, component_execution
+from infernux.execution import Clock, ClockStamp, PresentationStamp, capture_execution_scope, component_execution
 from infernux.runtime_services import Signal, register_update
 
-_CLOCK_PHASES = {'physics': 'physics_post_step', 'render': 'render_submitted', 'host': 'service_update'}
+_CLOCK_PHASES = {
+    'physics': 'physics_post_step', 'render': 'render_submitted',
+    'presentation': 'render_presented', 'host': 'service_update',
+}
 
 
 @dataclass
@@ -146,8 +149,15 @@ class ProgramBinding:
         stamp = self.clock.now
         if self._next_tick <= stamp.tick:
             count = (stamp.tick-self._next_tick)//self._period+1
-            due = ClockStamp(stamp.kind, stamp.epoch, self._next_tick)
+            due_tick = self._next_tick
             self._next_tick += count*self._period
+            if isinstance(stamp, PresentationStamp):
+                # A callback registered during a frame joins the next
+                # snapshot. Only the observed occurrence has a receipt.
+                if stamp.tick == self._next_tick-self._period:
+                    self._receive((stamp,), stamp)
+                return
+            due = ClockStamp(stamp.kind, stamp.epoch, due_tick)
             self._receive((due,), due, count=count, period=self._period)
 
     def _on_signal(self, *values):
@@ -157,7 +167,8 @@ class ProgramBinding:
     def _receive(self, values, stamp, *, count=1, period=0):
         sequence = self.received_events+1
         self.received_events += count
-        self.last_trigger = ClockStamp(stamp.kind, stamp.epoch, stamp.tick+(count-1)*period)
+        self.last_trigger = (stamp if isinstance(stamp, PresentationStamp)
+                             else ClockStamp(stamp.kind, stamp.epoch, stamp.tick+(count-1)*period))
         busy = self._staged is not None or bool(self._pending) or self.request is not None and not self.request.done
         if busy and self.overlap == 'skip':
             self.skipped_triggers += count
@@ -257,6 +268,8 @@ class ProgramBinding:
                 trigger_epoch=event.stamp.epoch, trigger_tick=event.stamp.tick,
                 trigger_host_frame=event.host_frame, trigger_observed_ns=event.observed_ns,
                 queued_host_frames=request.release_opportunity-event.host_frame)
+            if self._period is not None and isinstance(event.stamp, PresentationStamp):
+                request.metrics['trigger_accepted_ns'] = event.stamp.accepted_ns
         except BaseException as error:
             self.error = str(error)
             self.close()

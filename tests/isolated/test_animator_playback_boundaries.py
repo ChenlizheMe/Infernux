@@ -94,18 +94,19 @@ def exercise(project, case):
             owner, actor = attach(AnimStateMachine(
                 mode="2d" if kind == "sprite" else "3d", default_state="A", states=[first, second],
             ), kind)
+            advance = actor.animation_update if kind == "skeletal" else actor.update
             if mode == "clear":
                 actor.controller = None
                 actor.reload_controller()
                 assert actor.current_state == "" and not actor.is_playing
                 assert actor.normalized_time == 0.0
-                actor.update(2.0)
+                advance(2.0)
                 assert owner.transform.local_position.x == 0.0
                 return
-            actor.update(0.5)
+            advance(0.5)
             assert actor.normalized_time == pytest.approx(0.5)
             assert owner.transform.local_position.x == pytest.approx(4.0)
-            actor.update(0.5)
+            advance(0.5)
             if mode == "transition":
                 assert actor.current_state == "B" and actor.is_playing
                 assert actor.normalized_time == 0.0

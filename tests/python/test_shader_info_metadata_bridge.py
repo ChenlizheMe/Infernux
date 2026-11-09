@@ -43,6 +43,12 @@ class _RangePropertyContext:
     def field_label(self, _label, _width):
         pass
 
+    def get_cursor_pos_x(self):
+        return 0.0
+
+    def same_line(self, *_args):
+        pass
+
     def float_slider(self, label, value, minimum, maximum):
         self.calls.append(("float_slider", label, value, minimum, maximum))
         return 0.75

@@ -875,7 +875,7 @@ ShaderInfo {
     Name "Tests/BindlessCutout"
     Capabilities [BindlessTextures]
     ShadingModel Unlit
-    AlphaClip on
+    AlphaClip 0.5
     Properties {
         Color baseColor = [1.0, 1.0, 1.0, 1.0]
         Texture2D texSampler = white

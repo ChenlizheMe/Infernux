@@ -24,16 +24,26 @@ class ClockStamp:
     tick: int
 
 
+@dataclass(frozen=True)
+class PresentationStamp(ClockStamp):
+    """Host opportunity and native monotonic time of window queue acceptance."""
+
+    host_frame: int | None
+    accepted_ns: int | None
+
+
 class Clock:
     """A logical reference, never a worker, budget or simulation driver.
 
     physics counts completed fixed integrations in the current Play world;
-    render counts submitted foreground frames; host counts main-loop service cycles.
+    render counts submitted foreground frames; presentation counts accepted
+    window presentations; host counts main-loop service cycles.
+    The presentation stamp has no host frame or time before the first acceptance.
     Explicit work may run while its reference clock is stationary.
     """
     def __init__(self, kind):
-        if kind not in ('physics', 'render', 'host'):
-            raise ValueError("clock must be 'physics', 'render' or 'host'")
+        if kind not in ('physics', 'render', 'presentation', 'host'):
+            raise ValueError("clock must be 'physics', 'render', 'presentation' or 'host'")
         from infernux.application import Application
         engine = Application._current_engine()
         if engine is None:
@@ -55,6 +65,9 @@ class Clock:
             from infernux.lib import SceneManager
             manager = SceneManager.instance()
             return ClockStamp(self.kind, int(manager.simulation_epoch), int(manager.completed_fixed_step_index))
+        if self.kind == 'presentation':
+            sequence, host_frame, accepted_ns = engine.get_native_engine()._last_presentation
+            return PresentationStamp(self.kind, id(engine), sequence, host_frame or None, accepted_ns or None)
         tick = (engine.get_native_engine().submitted_render_frames if self.kind == 'render'
                 else engine._frame_work.opportunity)
         return ClockStamp(self.kind, id(engine), int(tick))

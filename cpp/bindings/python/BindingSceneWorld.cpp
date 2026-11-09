@@ -304,6 +304,7 @@ void BindSceneManager(py::module_ &m)
         .value("RENDER_GRAPH", SceneManager::RuntimeFrameBarrier::RenderGraph)
         .value("SNAPSHOT_PUBLICATION", SceneManager::RuntimeFrameBarrier::SnapshotPublication)
         .value("RENDER_SUBMITTED", SceneManager::RuntimeFrameBarrier::RenderSubmitted)
+        .value("RENDER_PRESENTED", SceneManager::RuntimeFrameBarrier::RenderPresented)
         .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
 
     py::class_<SceneManager, std::unique_ptr<SceneManager, py::nodelete>>(m, "SceneManager")

@@ -9,7 +9,8 @@ from infernux.execution import capture_execution_scope, component_execution, exe
 _lock = RLock()
 _services: dict[str, Any] = {}
 UpdatePhase = Literal["update", "late_update", "fixed_update", "editor_update",
-                      "physics_pre_step", "physics_post_step", "service_update", "render_submitted"]
+                      "physics_pre_step", "physics_post_step", "service_update", "render_submitted",
+                      "render_presented"]
 _update_callbacks: dict[str, tuple[UpdateRegistration, ...]] = {
     phase: () for phase in get_args(UpdatePhase)
 }
@@ -53,7 +54,8 @@ class UpdateRegistration:
         previous = _update_callbacks[self._phase]
         current = previous + (self,) if enabled else tuple(item for item in previous if item is not self)
         _update_callbacks = {**_update_callbacks, self._phase: current}
-        if bool(previous) != bool(current) and self._phase not in ('service_update', 'render_submitted'):
+        if bool(previous) != bool(current) and self._phase not in (
+                'service_update', 'render_submitted', 'render_presented'):
             from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
             RuntimeExecutionScheduler.set_runtime_service_phase_active(
@@ -80,7 +82,9 @@ def register_update(
     Editor callbacks only run in Edit mode and receive the editor frame duration.
     Physics pre/post callbacks follow real fixed steps. service_update follows
     owner opportunities in all modes; render_submitted follows actual foreground
-    submissions. Neither external phase grants a component permission to run.
+    submissions. render_presented follows accepted window presentations.
+    Read Clock("presentation").now in that callback for the occurrence receipt.
+    These external phases preserve the component's execution permission.
     Independent Fixed callbacks still follow physics steps and pause at timeScale=0.
     Preload code should use ``context.add_update()`` to own cleanup automatically.
     """

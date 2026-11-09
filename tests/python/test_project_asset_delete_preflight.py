@@ -100,7 +100,7 @@ def test_delete_command_restores_asset_and_meta_for_undo(tmp_path):
     asset.write_text("material\n", encoding="utf-8")
     meta.write_text("guid: undo\n", encoding="utf-8")
 
-    def delete(path, _database):
+    def delete(path, _database, *, write_scope=None):
         asset_path = str(path)
         __import__("os").remove(asset_path)
         if __import__("os").path.exists(asset_path + ".meta"):
@@ -112,7 +112,7 @@ def test_delete_command_restores_asset_and_meta_for_undo(tmp_path):
         project_root=str(tmp_path),
         backup_root=str(tmp_path / "Library" / "EditorUndo"),
         delete_fn=delete,
-        import_fn=lambda _path, _database: True,
+        import_fn=lambda _path, _database, *, write_scope=None: True,
     )
     command.execute()
     assert not asset.exists()
@@ -135,7 +135,7 @@ def test_asset_delete_registers_deleted_watcher_echo(monkeypatch, tmp_path):
             return "echo-guid" if str(path) == str(asset) else ""
 
         @staticmethod
-        def delete_asset(_path):
+        def delete_asset(_path, *, write_scope=None):
             return SimpleNamespace(guid="echo-guid")
 
     monkeypatch.setattr(AssetManager, "_get_registry", classmethod(lambda _cls: None))

@@ -52,6 +52,13 @@ enum class RuntimeMode
     Headless,
 };
 
+struct PresentationReceipt
+{
+    uint64_t sequence = 0;
+    uint64_t hostOpportunity = 0;
+    uint64_t acceptedNs = 0;
+};
+
 /// Two-phase linked-program preload. Worker jobs only produce CPU artifacts;
 /// TryCommitLinkedShaderPrograms performs every renderer mutation on the
 /// engine owner thread.
@@ -95,6 +102,10 @@ class Infernux
     [[nodiscard]] uint64_t GetSubmittedRenderFrameCount() const noexcept
     {
         return m_submittedRenderFrames;
+    }
+    [[nodiscard]] const PresentationReceipt &GetLastPresentation() const noexcept
+    {
+        return m_lastPresentation;
     }
     void Exit();
     [[nodiscard]] bool IsExitRequested() const
@@ -680,7 +691,7 @@ class Infernux
     void StartRuntimeServices();
     void ReleaseRuntimeServices() noexcept;
     void CreateRenderer();
-    void FinishFrame(bool foregroundReady, bool renderSubmitted);
+    void FinishFrame(const RenderFrameResult &result);
     void BeginRuntimeFrame(float deltaTime);
     [[nodiscard]] FrameGpuAvailability BackgroundGpuAvailability(bool foregroundReady);
 
@@ -710,6 +721,7 @@ class Infernux
     std::function<void()> m_runtimeAfterWork;
     FrameWorkOwner m_frameWork;
     uint64_t m_submittedRenderFrames = 0;
+    PresentationReceipt m_lastPresentation;
 
     // Selection tracking for outline updates
     uint64_t m_selectedObjectId = 0;

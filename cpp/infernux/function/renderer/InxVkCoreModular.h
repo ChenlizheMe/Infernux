@@ -282,7 +282,7 @@ class InxVkCoreModular
         Display,
         DisplayAndCapture
     };
-    void DrawFrame(WindowOutput output = WindowOutput::Display, std::array<double, 6> *phaseTimings = nullptr);
+    uint64_t DrawFrame(WindowOutput output = WindowOutput::Display, std::array<double, 6> *phaseTimings = nullptr);
 
     /// Consume a platform-surface loss reported by acquire or present. A
     /// surface loss is stronger than an out-of-date swapchain: Android may

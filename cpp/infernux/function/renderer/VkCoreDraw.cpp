@@ -78,7 +78,7 @@ bool IsPackagedPlayerRuntime()
 // Rendering
 // ============================================================================
 
-void InxVkCoreModular::DrawFrame(WindowOutput output, std::array<double, 6> *phaseTimings)
+uint64_t InxVkCoreModular::DrawFrame(WindowOutput output, std::array<double, 6> *phaseTimings)
 try {
     struct DrawBufferBindingsScope
     {
@@ -253,7 +253,7 @@ try {
     // Without a window image, skip empty plans while keeping any admitted
     // view, particle, initialization or capture work on the same frame slot.
     if (!presenting && m_frameSubmission.WorkCount() == 1)
-        return;
+        return 0;
 
 #if INFERNUX_FRAME_PROFILE
     const auto finishTimings = [this](VkCommandBuffer commandBuffer) {
@@ -458,12 +458,18 @@ try {
         (*phaseTimings)[1] = std::chrono::duration<double, std::milli>(now - phaseStart).count();
         phaseStart = now;
     }
+    uint64_t presentationAcceptedNs = 0;
     if (presenting) {
         const auto result = presentation.Present(m_backend.Queues(), imageIndex);
-        if (result == vk::SwapchainResult::Success && m_firstVisiblePresentationPending) {
-            m_firstVisiblePresentationPending = false;
-            m_firstVisiblePresentationCompleted = true;
-            SDL_Log("INFERNUX_FIRST_REVEAL_PRESENT");
+        if (result == vk::SwapchainResult::Success) {
+            const auto acceptedAt = std::chrono::steady_clock::now().time_since_epoch();
+            presentationAcceptedNs =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt).count());
+            if (m_firstVisiblePresentationPending) {
+                m_firstVisiblePresentationPending = false;
+                m_firstVisiblePresentationCompleted = true;
+                SDL_Log("INFERNUX_FIRST_REVEAL_PRESENT");
+            }
         }
         if (result == vk::SwapchainResult::SurfaceLost) {
             m_presentationSurfaceLost = true;
@@ -486,6 +492,7 @@ try {
     if (phaseTimings && presenting)
         (*phaseTimings)[2] =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phaseStart).count();
+    return presentationAcceptedNs;
 } catch (...) {
     m_frameSubmission.DiscardPublications();
     if (!m_frameFailure)

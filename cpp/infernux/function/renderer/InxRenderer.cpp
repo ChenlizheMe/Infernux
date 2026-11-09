@@ -1359,7 +1359,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         RequestFullSpeedFrame();
         if (pace)
             SDL_Delay(1);
-        return RenderFrameResult::Deferred;
+        return {};
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [2] after scene update and GPU frame preparation
@@ -1390,7 +1390,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         RequestFullSpeedFrame();
         // No command recording or acquire has begun. The same GPU services
         // must remain available to the request this rendering is waiting for.
-        return RenderFrameResult::NoPresentation;
+        return {true};
     }
     m_waitingRenderResults = false;
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderExtraction);
@@ -1510,7 +1510,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     if (CheckAndApplyMsaaRequest()) {
         sceneManager.EndFrame(false);
         runDeferredTasks();
-        return RenderFrameResult::Deferred;
+        return {};
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [4] after RenderPipeline::Render (Python SRP)
@@ -1582,7 +1582,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     const auto drawStart =
         samplePerformanceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto previousCompletionEpoch = m_vkCore->GetLastSubmittedCompletionEpoch();
-    m_vkCore->DrawFrame(windowOutput, samplePerformanceFrame ? &performanceSample.drawPhases : nullptr);
+    const auto presentationAcceptedNs =
+        m_vkCore->DrawFrame(windowOutput, samplePerformanceFrame ? &performanceSample.drawPhases : nullptr);
     if (samplePerformanceFrame)
         performanceSample.drawMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count();
@@ -2060,7 +2061,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 #endif
     if (pace && (windowSuspended || !renderSubmitted))
         SDL_Delay(windowSuspended ? 16 : 1);
-    return renderSubmitted ? RenderFrameResult::Submitted : RenderFrameResult::NoPresentation;
+    return {true, renderSubmitted, presentationAcceptedNs};
 }
 
 // ============================================================================

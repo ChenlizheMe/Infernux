@@ -5,7 +5,7 @@ ShaderInfo {
     ShadingModel Unlit
     Queue 2000
     Cull None
-    AlphaClip on
+    AlphaClip 0.5
     Properties {
         Color baseColor = [1.0, 1.0, 1.0, 1.0]
         Texture2D texSampler = white
