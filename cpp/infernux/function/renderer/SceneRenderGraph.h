@@ -806,8 +806,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     void RefreshMaterialTextureReads();
 
     /// Register graph texture allocations and publish the imported bindings before adding the author passes.
-    bool RegisterGraphTextures(uint32_t width, uint32_t height,
-                               const std::vector<GraphAssetTexture> &assetTextures,
+    bool RegisterGraphTextures(uint32_t width, uint32_t height, const std::vector<GraphAssetTexture> &assetTextures,
                                std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
     void RetireImportedTextureAssets();
     void RetireWorkInstances();

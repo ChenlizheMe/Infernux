@@ -3292,9 +3292,9 @@ bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
         m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
                                                rhi::PipelineStage::FragmentShader);
         customRTHandles[tex.name] = handle;
-        bindings.emplace(tex.name,
-                         ImportedTextureBinding{publication->GetTexture(), publication->GetSampler(),
-                                                publication->GetFormat(), publication->GetRevision(), contentGeneration});
+        bindings.emplace(tex.name, ImportedTextureBinding{publication->GetTexture(), publication->GetSampler(),
+                                                          publication->GetFormat(), publication->GetRevision(),
+                                                          contentGeneration});
     }
     const bool sourceReplaced = std::any_of(bindings.begin(), bindings.end(), [&](const auto &entry) {
         const auto previous = m_importedTextureBindings.find(entry.first);
@@ -5156,7 +5156,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 auto resource = input.handle;
                                 auto byteSize = input.byteSize;
                                 if (input.frameLocal) {
-                                    const auto slot = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
+                                    const auto slot =
+                                        m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
                                     resource = input.frameHandles[slot];
                                     byteSize = m_cameraCanonicalLights.Frame(slot).capacityBytes;
                                 }
