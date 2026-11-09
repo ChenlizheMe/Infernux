@@ -1,6 +1,7 @@
 """Real Vulkan regression for GPU-resident component Gizmo line geometry."""
 from pathlib import Path
 import tempfile
+from time import monotonic
 
 import numpy as np
 
@@ -8,6 +9,8 @@ import infernux as inx
 from infernux import Engine
 from infernux.engine.cpu_continuation import CpuWorkBudget
 from infernux.gizmos import Gizmos
+from infernux.lib import _Infernux
+from infernux.renderstack import DefaultForwardPipeline
 
 
 @inx.compute.kernel
@@ -46,10 +49,12 @@ def main():
         try:
             frontend.init_renderer(64, 64, str(project))
             engine.resize_scene_render_target(64, 64)
-            engine.set_editor_fps_cap(240.0)
-            engine.set_editor_idle_fps(0.0)
-            # Software Vulkan needs credit for both Gizmo expansion and topology uploads.
-            frontend._cpu_work(CpuWorkBudget(gpu_frame_ns=10_000_000))
+            engine.set_scene_view_visible(True)
+            engine.set_show_grid(False)
+            engine.set_play_fps_cap(30.0)
+            frontend.set_render_pipeline(DefaultForwardPipeline())
+            # Leave host preparation and device time for both expansion and topology.
+            frontend._cpu_work(CpuWorkBudget(owner_ns=10_000_000, gpu_frame_ns=20_000_000))
             initial = np.array(
                 [[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.75, 0.0]],
                 dtype=np.float32,
@@ -98,28 +103,42 @@ def main():
             probe = ResidentGizmoProbe()
             probe._positions, probe._edges, probe._matrix = positions, edges, translated
             scene = inx.SceneManager.get_active_scene()
+            for sample_object in scene.get_root_objects():
+                scene.destroy_game_object(sample_object)
             scene.create_game_object('Resident Gizmo Probe').add_py_component(probe)
+            deadline = monotonic() + 40.0
 
-            def after_draw():
+            def after_frame(_foreground_ready):
                 nonlocal frames, verified
                 try:
                     frames += 1
-                    # Deferred callbacks also run when no GPU frame slot is ready.
                     resident_count = engine.resident_mesh_vertex_buffer_count
                     if frames >= 64 and resident_count >= 4:
+                        assert engine.renderer_frame_snapshot['scene_render_graph_execution_count'] > 0
                         assert len(positions._gizmo_line_pool.states) == 2
                         assert len(positions._gizmo_wire_sphere_pool.states) == 2
                         values = positions.get_data().numpy(copy=False)
                         np.testing.assert_allclose(values[:, 1], initial[:, 1] + 0.75, atol=1.0e-5)
                         verified = True
                         engine.exit()
-                    elif engine.submitted_render_frames >= 64:
-                        raise AssertionError(f"Only {resident_count} resident Gizmo buffers after 64 render submissions")
+                    elif monotonic() >= deadline:
+                        owner = engine.frame_work
+                        scene_frames = engine.renderer_frame_snapshot['scene_render_graph_execution_count']
+                        raise AssertionError(
+                            f"Gizmo publication timed out after {frames} host frames, "
+                            f"{engine.submitted_render_frames} submissions, and {scene_frames} Scene executions. "
+                            f"Descriptors={len(Gizmos._get_resident_data())}, resident={resident_count}, "
+                            f"mesh pending/submitted/completed={engine.pending_mesh_gpu_upload_count}/"
+                            f"{engine.submitted_mesh_gpu_upload_count}/{engine.completed_mesh_gpu_upload_count}, "
+                            f"remaining host ns={owner.remaining(True)}, "
+                            f"remaining GPU ns={owner.resource_remaining(_Infernux._FrameWorkResource.GPU)}, "
+                            f"GPU queue gate={owner.gpu_unavailable_reason!r}"
+                        )
                 except BaseException as exc:
                     failures.append(exc)
                     engine.exit()
 
-            engine.set_post_draw_callback(after_draw)
+            engine.set_end_frame_callback(after_frame)
             engine.set_play_mode_rendering(True)
             engine.run()
             if failures:

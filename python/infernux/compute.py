@@ -2065,12 +2065,11 @@ def _transform_pose(transform) -> TransformPose:
 
 
 def _pose_changed(left: TransformPose, right: TransformPose) -> bool:
-    return not np.allclose(
-        (*left.position, *left.rotation, *left.scale),
-        (*right.position, *right.rotation, *right.scale),
-        rtol=0.0,
-        atol=1.0e-5,
-    )
+    left_values = (*left.position, *left.rotation, *left.scale)
+    right_values = (*right.position, *right.rotation, *right.scale)
+    if len(left_values) != len(right_values):
+        raise ValueError("Transform poses must have the same channel count")
+    return any(not math.isclose(a, b, rel_tol=0.0, abs_tol=1.0e-5) for a, b in zip(left_values, right_values))
 
 
 def _pose_array(value: TransformPose) -> np.ndarray:
@@ -2085,12 +2084,8 @@ def _pose_array(value: TransformPose) -> np.ndarray:
 
 
 def _buffer_pose(value: Buffer) -> TransformPose:
-    rows = value.numpy(copy=False)
-    return TransformPose(
-        position=tuple(float(item) for item in rows[0, :3]),
-        rotation=tuple(float(item) for item in rows[1, :4]),
-        scale=tuple(float(item) for item in rows[2, :3]),
-    )
+    position, rotation, scale = value.numpy(copy=False).reshape(3, 4).tolist()
+    return TransformPose(tuple(position[:3]), tuple(rotation), tuple(scale[:3]))
 
 
 def _publish_transform_pose(transform, value: TransformPose) -> None:
@@ -2189,20 +2184,19 @@ class TransformBinding:
         return self._closed
 
     def _request_readback(self) -> None:
-        if self._pose.device == "gpu" and not self._pose._cpu_mapped:
-            stream = _command_streams().get(int(self._pose._host.identity))
-            version = tuple(self._pose._native.last_write_submission)
-            # An unaccepted writer has no native write serial yet. Preserve
-            # its FIFO position instead of mistaking the old serial for it.
-            if version == self._readback_source and (
-                stream is None or not _has_pending_write(stream, self._pose._native)
-            ):
-                return
-            self._readback = self._pose.get_data_async()
-        else:
-            # CPU buffers expose writable NumPy views, so a queue serial cannot
-            # represent their mutations.
-            self._readback = self._pose.get_data_async()
+        if self._pose.device == "cpu":
+            # Capture the current values for the next Transform barrier.
+            self._pending_cpu_pose = _buffer_pose(self._pose)
+            return
+        stream = _command_streams().get(int(self._pose._host.identity))
+        version = tuple(self._pose._native.last_write_submission)
+        # An unaccepted writer has no native write serial yet. Preserve
+        # its FIFO position instead of mistaking the old serial for it.
+        if version == self._readback_source and (
+            stream is None or not _has_pending_write(stream, self._pose._native)
+        ):
+            return
+        self._readback = self._pose.get_data_async()
 
     def _apply_authored_pose(self, previous_pose, current_pose) -> None:
         if self._readback is not None:
@@ -2299,7 +2293,7 @@ class TransformBinding:
             self._apply_authored_pose(self._published_pose, current_pose)
             self._request_readback()
             return
-        snapshot = None
+        snapshot, self._pending_cpu_pose = self._pending_cpu_pose, None
         if self._readback is not None:
             if self._readback.cancelled:
                 self._readback = None
@@ -2309,10 +2303,11 @@ class TransformBinding:
                     self._readback_source = source_write_submission
                 if not self._readback.done:
                     return
-                snapshot = self._readback.get_data()
+                buffer_snapshot = self._readback.get_data()
                 self._readback = None
+                snapshot = _buffer_pose(buffer_snapshot)
         if snapshot is not None:
-            self._publish_simulated_pose(transform, _buffer_pose(snapshot))
+            self._publish_simulated_pose(transform, snapshot)
         self._request_readback()
 
     @_automatic_cost
