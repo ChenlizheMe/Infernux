@@ -64,9 +64,15 @@ class _Scene:
 
 
 class _SceneManager:
+    simulation_epoch = 1
+    fixed_step_pending = False
+
     def __init__(self, scene):
         self.scene = scene
         self.calls = []
+        self.fixed_step_index = 0
+        self.published_fixed_step_index = 0
+        self.runtime_frame_count = 0
 
     def get_active_scene(self):
         return self.scene
@@ -77,8 +83,14 @@ class _SceneManager:
     def pause(self):
         self.calls.append("pause")
 
+    def is_stepping(self):
+        return False
+
     def step(self, _delta_time):
         self.calls.append("step")
+        self.fixed_step_index += 1
+        self.published_fixed_step_index = self.fixed_step_index
+        self.runtime_frame_count += 1
 
 
 class _AssetDatabase:

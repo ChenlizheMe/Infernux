@@ -19,7 +19,7 @@ def test_headless_prepares_resources_before_plugin_startup(tmp_path, monkeypatch
         def __init__(self, *_args):
             events.append("engine.create")
 
-        def init_headless(self, project):
+        def init_headless(self, project, *, gpu=False):
             events.append(("engine.init", project))
 
         def get_native_engine(self):

@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from infernux.core.assets import AssetManager
-from infernux.lib import AssetRegistry
+from infernux.lib import AssetLoadSuperseded, AssetRegistry
 
 
 def triangle(width):
@@ -61,8 +61,7 @@ class MeshLoadRetirementCase:
         rejected = False
         try:
             committed = self.registry.try_commit_asset_load(self.ticket, allow_stale_if_unloaded=allow_stale)
-        except RuntimeError as error:
-            assert 'stale' in str(error), str(error)
+        except AssetLoadSuperseded:
             rejected, committed = True, False
         if mutation == 'unchanged':
             assert committed and not rejected and self.ticket.committed

@@ -287,7 +287,8 @@ def test_player_runtime_tick_advances_pending_scene_load_before_time(scene, monk
     assert session.is_paused
     assert session.tick(1.0) == 0.0
     assert calls == ["process", "time", "process"]
-    native.pause()
+    native.play()
+    assert not session.is_paused
     session.tick(1.0 / 60.0)
     assert calls == ["process", "time", "process", "process", "time"]
 

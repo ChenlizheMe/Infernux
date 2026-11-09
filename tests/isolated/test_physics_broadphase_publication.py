@@ -111,8 +111,11 @@ def exercise(project, mode, repeats, motion):
             manager.pause()
             for _ in range(repeats):
                 collider.enabled = False
+                body.enabled = False
                 Physics.sync_transforms()
+                assert len(hits()) == 0
                 collider.enabled = True
+                body.enabled = True
                 body.add_force(Vector3(0, 4, 0), ForceMode.Impulse)
                 assert body.velocity.y == 0
                 scene.destroy_game_object(owner)
@@ -127,8 +130,11 @@ def exercise(project, mode, repeats, motion):
         if mode.startswith("pending_force_"):
             from infernux.lib import ForceMode
             collider.enabled = False
+            body.enabled = False
             Physics.sync_transforms()
+            assert len(hits()) == 0
             collider.enabled = True
+            body.enabled = True
             angular = mode.endswith("angular")
             if angular:
                 body.add_torque(Vector3(0, 0, 2 / 3), ForceMode.Impulse)

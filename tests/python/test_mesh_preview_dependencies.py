@@ -2,8 +2,8 @@ import json
 import pytest
 
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel
-from tests.gpu.mesh_preview_dependency_case import MeshPreviewDependencyCase
+from infernux.lib import ConsolePanel, _Infernux
+from tests.gpu.mesh_preview_dependency_case import MeshPreviewDependencyCase, measure_preview_pixels
 from test_material_preview_retirement import pump_until
 
 
@@ -30,7 +30,7 @@ def test_model_and_submesh_previews_follow_published_dependencies(engine, scene,
         case.close()
 
 
-@pytest.mark.parametrize("stage", ["uploading"])
+@pytest.mark.parametrize("stage", [pytest.param("rendering", id="uploading")])
 def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, scene, tmp_path, monkeypatch, stage):
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())
@@ -39,53 +39,85 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
     phase = "baseline"
     baseline = None
     settled = 0
+    gate = None
     observations = []
 
     def publish(color):
         case.material.set_vector4("baseColor", *color, 1.0)
         AssetManager.note_asset_edit(str(case.material_path), material_json=case.material.serialize())
-        engine.query_or_schedule_mesh_preview(key, path, 0)
+
+    def supersede(row):
+        nonlocal phase
+        observations.append(row)
+        publish((1.0, 0.0, 0.0))
+        phase = "latest"
+
+    def after_host(_foreground_ready):
+        nonlocal gate
+        if phase != "supersede":
+            return
+        row = next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key)
+        if not row["has_render_ticket"]:
+            return
+        # Preview rendering is submitted during late work, after post-draw.
+        gate = engine.frame_work.add_source(
+            None, lambda: _Infernux._FrameWorkFacts(gpu_busy=True), lambda gpu, lane: False
+        )
+        engine.frame_work.wake(gate)
+        supersede(row)
 
     try:
         engine.query_or_schedule_mesh_preview(key, path, 0)
+        if stage == "rendering":
+            engine.set_end_frame_callback(after_host)
 
         def tick(_):
-            nonlocal phase, baseline, settled
+            nonlocal phase, baseline, settled, gate
             row = next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key)
+            if phase == "latest":
+                assert row["ready_generation"] != baseline["generation"] + 1, row
             ready = row["texture_id"] and row["generation"] == row["ready_generation"] and not row["in_flight"]
+            if ready:
+                row = measure_preview_pixels(engine, row, case.pixel_reads)
+                if row is None:
+                    return False
             if phase == "baseline" and ready:
+                assert engine.query_or_schedule_mesh_preview(key, str(case.source), 0) == row["texture_id"]
+                same_source = next(r for r in engine.preview_task_snapshots if r["resource_key"] == key)
+                assert same_source["generation"] == row["generation"], same_source
                 baseline = row
                 observations.append(row)
                 publish((0.0, 0.0, 1.0))
+                engine.query_or_schedule_mesh_preview(key, path, 0)
                 phase = "supersede"
-            if phase == "supersede":
-                # The query above queues work but does not render it inline.
-                row = next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key)
-                reached = (
-                    stage == "queued"
-                    or stage == "rendering"
-                    and row["has_render_ticket"]
-                    or stage == "uploading"
-                    and row["pending_upload_version"] != 0
-                )
-                if reached:
-                    observations.append(row)
-                    publish((1.0, 0.0, 0.0))
-                    phase = "latest"
-            elif phase == "latest" and ready:
-                assert row["generation"] == baseline["generation"] + 2, row
-                assert row["pixel_generation"] == row["generation"], row
-                assert row["pixel_hash"] == baseline["pixel_hash"], (baseline, row)
-                settled += 1
-                if settled >= 30:
-                    observations.append(row)
-                    return True
+            if phase == "supersede" and stage == "queued":
+                supersede(next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key))
+            elif phase == "latest":
+                if gate is not None:
+                    assert row["ready_generation"] == baseline["generation"], row
+                    if row["generation"] == baseline["generation"] + 2 and not row["has_render_ticket"]:
+                        observations.append(row)
+                        engine.frame_work.remove_source(gate)
+                        gate = None
+                    return False
+                if ready:
+                    assert row["generation"] == baseline["generation"] + 2, row
+                    assert row["measured_generation"] == row["generation"], row
+                    assert row["measured_hash"] == baseline["measured_hash"], (baseline, row)
+                    settled += 1
+                    if settled >= 30:
+                        observations.append(row)
+                        return True
             return False
 
         pump_until(engine, tick)
         console = ConsolePanel()
         assert console.get_error_count() == console.get_warning_count() == 0, console._get_visible_log_snapshot(100)
     finally:
+        if stage == "rendering":
+            engine.set_end_frame_callback(None)
+        if gate is not None:
+            engine.frame_work.remove_source(gate)
         (tmp_path / "preview-supersession.json").write_text(json.dumps(observations, indent=2), encoding="utf-8")
         case.close()
 

@@ -9,7 +9,7 @@ from threading import Thread
 import pytest
 
 from infernux.plugins import InxPackage
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_COMPATIBILITY_VERSION
 from test_plugin_preload_failures import package_project as package_project
 
 
@@ -49,7 +49,7 @@ def archive_at(tmp_path, reference, version, marker, *, requirements=""):
             {
                 "reference": reference,
                 "version": version,
-                "engine": "==" + ENGINE_VERSION,
+                "engine": "==" + ENGINE_COMPATIBILITY_VERSION,
             }
         ),
         encoding="utf-8",
@@ -81,7 +81,7 @@ def register_source(manager, reference, archive, source_folder, mode, url):
         source = {"type": "local", "location": str(source_folder if mode == "builtin" else archive)}
         if mode == "builtin":
             source["builtin"] = True
-    manager.registry.add_package(reference, version="1.0.0", engine="==" + ENGINE_VERSION, source=source)
+    manager.registry.add_package(reference, version="1.0.0", engine="==" + ENGINE_COMPATIBILITY_VERSION, source=source)
     if mode == "cached":
         path = Path(manager._package_cache().path(reference, "1.0.0"))
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,8 +100,8 @@ def test_matching_pin_installs_and_then_reloads_without_acquisition(package_proj
         assert state.loaded and marker.read_text() == "executed"
         record = manager.registry.installed_record(reference)
         assert record["version"] == "1.0.0"
-        # A refreshed catalog is discovery, not an upgrade request.
-        manager.registry.add_package(reference, version="2.0.0", source={"type": "url", "location": url})
+        # Importing the already selected release does not download it again.
+        manager.registry.add_package(reference, version="1.0.0", source={"type": "url", "location": url})
         state = manager.install_reference(reference, install_dependencies=False)
         assert state.loaded and manager.registry.installed_record(reference)["version"] == "1.0.0"
         assert requests == (["/plugin.inxpkg"] if mode == "url" else [])
@@ -137,6 +137,7 @@ def test_builtin_release_updates_with_an_empty_original_cache(package_project, t
     with local_archive_server(archive) as (url, requests):
         published = url.replace("/plugin.inxpkg", "/2.0.0/plugin.inxpkg")
         catalog = {"$schema": "infernux.official_plugin_registry", "packages": [
+            {"reference": reference, "version": "1.0.0", "source": {"type": "url", "location": url.replace('/plugin.inxpkg', '/1.0.0/plugin.inxpkg')}},
             {"reference": reference, "version": "2.0.0", "source": {"type": "url", "location": published}},
         ]}
         (resources / "official_packages/official-registry.json").write_text(json.dumps(catalog), encoding="utf-8")
@@ -207,7 +208,7 @@ def test_default_library_install_respects_catalog_identity(package_project, tmp_
                         {
                             "reference": reference,
                             "version": "1.0.0",
-                            "engine": "==" + ENGINE_VERSION,
+                            "engine": "==" + ENGINE_COMPATIBILITY_VERSION,
                             "artifact": "default.inxpkg",
                             "source": {"type": "url", "location": url},
                         }
@@ -311,7 +312,7 @@ def test_offline_catalog_keeps_newest_discovery_without_upgrading_installed_pack
 
     def document(version):
         return json.dumps({"$schema": "infernux.official_plugin_registry", "packages": [{
-            "reference": reference, "version": version, "engine": ">=" + ENGINE_VERSION,
+            "reference": reference, "version": version, "engine": ">=" + ENGINE_COMPATIBILITY_VERSION,
             "artifact": "test.inxpkg", "source": {"type": "url", "location": f"https://example.invalid/{version}"},
         }]})
 

@@ -26,7 +26,7 @@ def _filesystem_move(source: str, destination: str, _database):
     return destination
 
 
-def _filesystem_delete(path: str, _database):
+def _filesystem_delete(path: str, _database, *, write_scope=None):
     if os.path.isdir(path):
         shutil.rmtree(path)
     else:
@@ -37,7 +37,7 @@ def _filesystem_delete(path: str, _database):
     return True
 
 
-def _successful_import(_path: str, _database):
+def _successful_import(_path: str, _database, *, write_scope=None):
     return True
 
 
@@ -184,10 +184,10 @@ def test_project_asset_delete_rolls_back_batch_failure(tmp_path):
     first.write_text("A", encoding="utf-8")
     second.write_text("B", encoding="utf-8")
 
-    def _fail_after_one(path: str, database):
+    def _fail_after_one(path: str, database, *, write_scope=None):
         if os.path.basename(path) == "A.mat":
             return False
-        return _filesystem_delete(path, database)
+        return _filesystem_delete(path, database, write_scope=write_scope)
 
     command = ProjectAssetDeleteCommand(
         [str(first), str(second)],

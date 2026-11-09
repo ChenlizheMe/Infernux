@@ -107,7 +107,8 @@ def test_init_rejection_preserves_free_alive_partition(
             return struct.pack("<6If5I", capacity, capacity, step * capacity, 1, 17, step,
                                dt, flags, read, read ^ 1, int(alive), int(not native_schedule))
         def dispatch(name, push, count):
-            return (kernels[name], buffers, accesses, push, (count + 255) // 256, 1, 1)
+            # These generated GLSL stages do not supply compiler range proofs.
+            return (kernels[name], buffers, accesses, push, (count + 255) // 256, 1, 1, None)
         stages = [dispatch("bootstrap", constants(), capacity)]
         host.dispatch_batch(stages)
         read_slot = 0
