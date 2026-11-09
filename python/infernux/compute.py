@@ -2239,6 +2239,23 @@ class TransformBinding:
         self._pending_cpu_pose = None
         _cpu_dirty_transform_bindings.discard(self)
 
+    def _resolve_live_transform(self, owner):
+        # A replacement component can retain the same GameObject handle.
+        if owner is not None and not getattr(owner, "_is_destroyed", False) and not self._pose.closed:
+            transform = _resolve_bound_transform(self._object_id, self._object_handle)
+            if transform is not None:
+                return transform
+        self.close()
+        return None
+
+    def _publish_simulated_pose(self, transform, value: TransformPose) -> None:
+        try:
+            _publish_transform_pose(transform, value)
+        except (AttributeError, ReferenceError, RuntimeError):
+            self.close()
+            raise
+        self._published_pose = value
+
     @_automatic_cost
     def _poll(self) -> None:
         if self._closed:
@@ -2248,18 +2265,8 @@ class TransformBinding:
             self.close()
             return
         owner = self._owner()
-        # Play-domain replacement preserves the GameObject handle but retires
-        # its old Python component. That component must not keep publishing a
-        # second pose into the replacement's still-live Transform.
-        if owner is None or getattr(owner, "_is_destroyed", False):
-            self.close()
-            return
-        if self._pose.closed:
-            self.close()
-            return
-        transform = _resolve_bound_transform(self._object_id, self._object_handle)
+        transform = self._resolve_live_transform(owner)
         if transform is None:
-            self.close()
             return
         current_pose = _transform_pose(transform)
         if scope is not None and scope.state == 'paused':
@@ -2305,13 +2312,7 @@ class TransformBinding:
                 snapshot = self._readback.get_data()
                 self._readback = None
         if snapshot is not None:
-            value = _buffer_pose(snapshot)
-            try:
-                _publish_transform_pose(transform, value)
-            except (AttributeError, ReferenceError, RuntimeError):
-                self.close()
-                raise
-            self._published_pose = value
+            self._publish_simulated_pose(transform, _buffer_pose(snapshot))
         self._request_readback()
 
     @_automatic_cost
@@ -2326,12 +2327,8 @@ class TransformBinding:
         if scope is not None and scope.state == 'paused':
             return
         owner = self._owner()
-        if owner is None or getattr(owner, "_is_destroyed", False) or self._pose.closed:
-            self.close()
-            return
-        transform = _resolve_bound_transform(self._object_id, self._object_handle)
+        transform = self._resolve_live_transform(owner)
         if transform is None:
-            self.close()
             return
         current_pose = _transform_pose(transform)
         if self._published_pose is not None and _pose_changed(
@@ -2341,12 +2338,7 @@ class TransformBinding:
             return
         value = self._pending_cpu_pose
         self._pending_cpu_pose = None
-        try:
-            _publish_transform_pose(transform, value)
-        except (AttributeError, ReferenceError, RuntimeError):
-            self.close()
-            raise
-        self._published_pose = value
+        self._publish_simulated_pose(transform, value)
 
     def close(self) -> None:
         if self._closed:
