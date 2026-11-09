@@ -69,6 +69,7 @@ bool NearlyEqual(float left, float right)
 
 struct FakeDevice final : rhi::Device
 {
+    rhi::DeviceCaps capabilities;
     std::vector<rhi::BufferDesc> buffers;
     std::vector<rhi::TextureDesc> textures;
     std::vector<rhi::TextureViewDesc> textureViews;
@@ -109,6 +110,11 @@ struct FakeDevice final : rhi::Device
     std::vector<uint64_t> writtenOffsets;
     std::vector<rhi::BufferHandle> writtenBuffers;
     uint32_t nextIndex = 1;
+
+    const rhi::DeviceCaps &GetCapabilities() const noexcept override
+    {
+        return capabilities;
+    }
 
     [[nodiscard]] rhi::BindlessTextureTableBinding GetBindlessTextureTableBinding() const noexcept override
     {
@@ -1033,6 +1039,8 @@ int main()
     VerifyParticlePassBindings();
     {
         FakeDevice device;
+        device.capabilities.limits.minStorageBufferOffsetAlignment = 256;
+        device.capabilities.portable.maxStorageBufferBinding = 1u << 30;
         const std::array<uint32_t, 5> code = {0x07230203u, 0u, 0u, 0u, 0u};
         const particle::GpuParticleSpawnProgram program{{code.data(), code.size()}, {code.data(), code.size()}};
         particle::ParticleGpuGraphSpawnDomain domain;
