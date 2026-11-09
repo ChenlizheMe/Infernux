@@ -114,7 +114,7 @@ int main(int argc, char **argv)
     assert(defaultMaterial.SerializeDocument()["properties"]["texSampler"]["guid"] == "");
     auto *defaultDescriptor = descriptors.GetOrCreateDescriptorSet(defaultMaterial, program);
     assert(defaultDescriptor && defaultDescriptor->isValid);
-    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(descriptors.UpdateMaterialProperties(defaultMaterial, program));
     const bool declaredDefaultCorrect =
         defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1];
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[0]);
@@ -123,7 +123,7 @@ int main(int argc, char **argv)
     defaults.properties[1].textureDefault = "Black";
     assert(defaultMaterial.SynchronizeShaderPropertyDefaults(defaults));
     assert(defaultMaterial.GetAuthoredVersion() == defaultAuthoredVersion);
-    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(descriptors.UpdateMaterialProperties(defaultMaterial, program));
     assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     auto defaultClone = defaultMaterial.Clone();
@@ -142,7 +142,7 @@ int main(int argc, char **argv)
         assert(created && created->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[initialView]);
         for (const auto &[token, view] : builtins) {
             tokens.SetTextureGuid("texSampler", token);
-            descriptors.ResolveTextureProperties(tokens.GetMaterialKey(), tokens, program);
+            assert(descriptors.UpdateMaterialProperties(tokens, program));
             auto *updated = descriptors.GetOrCreateDescriptorSet(tokens, program);
             assert(updated && updated->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[view]);
             auto overrides = std::make_shared<RendererParameterBlock>();
@@ -182,10 +182,10 @@ int main(int argc, char **argv)
     assignedDocument["properties"]["detailTex"]["guid"] = "detail-guid";
     assert(defaultMaterial.DeserializeDocument(assignedDocument));
     defaultMaterial.SynchronizeShaderPropertyDefaults(defaults);
-    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(descriptors.UpdateMaterialProperties(defaultMaterial, program));
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[2]);
     defaultMaterial.SetTextureGuid("detailTex", "");
-    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(descriptors.UpdateMaterialProperties(defaultMaterial, program));
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     assert(defaultMaterial.SerializeDocument()["properties"]["detailTex"]["guid"] == "");
     auto parameters = std::make_shared<RendererParameterBlock>();
@@ -253,6 +253,9 @@ int main(int argc, char **argv)
             rejected = true;
         }
         assert(rejected && left.GetParameterBlock() == stable);
+        assert(shared->SerializeDocument() == authored);
+        shared->SynchronizeShaderPropertyDefaults(defaults);
+        const auto linkedDocument = shared->SerializeDocument();
         auto *leftDescriptor = descriptors.GetOrCreateRendererDescriptorSet(*shared, program, stable);
         auto *rightDescriptor =
             descriptors.GetOrCreateRendererDescriptorSet(*shared, program, right.GetParameterBlock());
@@ -262,11 +265,12 @@ int main(int argc, char **argv)
         assert(leftDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
         assert(rightDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
         assert(sharedDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
-        assert(shared->SerializeDocument() == authored);
+        assert(shared->SerializeDocument() == linkedDocument);
         assert(!left.SerializeDocument().contains("parameterOverrides"));
     }
 
     InxMaterial material("texture-readiness", "Gizmo Icon");
+    material.SetFloat("gain", 1.0f);
     auto document = material.SerializeDocument();
     document["properties"]["texSampler"] = {{"type", static_cast<int>(MaterialPropertyType::Texture2D)},
                                             {"guid", "icon-guid"}};
@@ -301,17 +305,17 @@ int main(int argc, char **argv)
     assert(failedDescriptor->textureBindings.at(detailSlot).gpuView == gpuViews[2]);
 
     statuses["detail-guid"] = TextureResolveStatus::Pending;
-    descriptors.ResolveTextureProperties(materialKey, material, program);
+    assert(descriptors.UpdateMaterialProperties(material, program));
     check(true, true, 0, 2); // A bad icon cannot demote the other good texture.
 
     statuses["icon-guid"] = TextureResolveStatus::Ready;
     statuses["detail-guid"] = TextureResolveStatus::Ready;
-    descriptors.ResolveTextureProperties(materialKey, material, program);
+    assert(descriptors.UpdateMaterialProperties(material, program));
     check(false, false, 1, 2);
 
     statuses["icon-guid"] = TextureResolveStatus::Pending;
     statuses["detail-guid"] = TextureResolveStatus::Failed;
-    descriptors.ResolveTextureProperties(materialKey, material, program);
+    assert(descriptors.UpdateMaterialProperties(material, program));
     check(false, true, 1, 2); // Hot replacement retains both published GPU views.
 
     descriptors.Shutdown();

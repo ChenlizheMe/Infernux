@@ -46,7 +46,7 @@ void ReferenceDraw(ImDrawList &draw, const infernux::textlayout::TextLayoutResul
         const std::string normalized = infernux::text::NormalizeTextNFC(
             std::string_view(layout.text).substr(line.startOffset, line.endOffset - line.startOffset));
         const char *base = normalized.data(), *end = base + normalized.size();
-        float x = 7.25f + (220.f - line.width) * alignX;
+        const float x = 7.25f + (220.f - line.width) * alignX;
         const float y =
             9.75f + (180.f - (layout.inkMaxY - layout.inkMinY)) * alignY - layout.inkMinY + index * layout.lineAdvance;
         const auto *baseBaked = layout.font->GetFontBaked(layout.fontSize);
@@ -63,7 +63,7 @@ void ReferenceDraw(ImDrawList &draw, const infernux::textlayout::TextLayoutResul
             baseline = std::max(baseline, baked->Ascent * size / baked->Size);
         }
         int count = 0;
-        float width = 0;
+        double width = 0;
         for (const char *cursor = base; cursor < end;) {
             const char *start = cursor;
             unsigned int codepoint = 0;
@@ -76,14 +76,12 @@ void ReferenceDraw(ImDrawList &draw, const infernux::textlayout::TextLayoutResul
             auto *font = infernux::textlayout::ResolveGlyphFont(layout, static_cast<ImWchar>(codepoint));
             const float size = layout.logicalFontSize * infernux::textlayout::ResolveEmRasterScale(font);
             const float advance = font->CalcTextSizeA(size, FLT_MAX, 0, start, cursor).x;
-            if (count++) {
-                x += spacing;
+            if (count++)
                 width += spacing;
-            }
             const auto *baked = font->GetFontBaked(size);
-            font->RenderChar(&draw, size, ImVec2(x, y + baseline - baked->Ascent * size / baked->Size), IM_COL32_WHITE,
+            font->RenderChar(&draw, size, ImVec2(x + static_cast<float>(width), y + baseline - baked->Ascent * size / baked->Size),
+                             IM_COL32_WHITE,
                              static_cast<ImWchar>(codepoint));
-            x += advance;
             width += advance;
         }
         assert(std::abs(width - line.width) < .002f);
@@ -112,8 +110,7 @@ void CheckVisibleVerticalAlignment(const infernux::textlayout::TextLayoutParams 
         draw._ResetForNewFrame();
         draw.PushTextureID(ImGui::GetIO().Fonts->TexRef);
         draw.PushClipRectFullScreen();
-        infernux::textlayout::RenderTextBox(&draw, 0, 40, 240, 120, layout, IM_COL32_WHITE, .5f, alignment,
-                                            params.letterSpacing);
+        infernux::textlayout::RenderTextBox(&draw, 0, 40, 240, 120, layout, IM_COL32_WHITE, .5f, alignment);
         assert(draw.VtxBuffer.Size > 0);
         float minY = FLT_MAX;
         float maxY = -FLT_MAX;
@@ -233,7 +230,7 @@ int main()
     const std::string latinFont =
         infernux::FromFsPath(repositoryRoot / "external/imgui_for_infernux/misc/fonts/Roboto-Medium.ttf");
     const std::string cjkFont =
-        infernux::FromFsPath(repositoryRoot / "python/infernux/resources/fonts/PingFangSC-Regular.ttf");
+        infernux::FromFsPath(repositoryRoot / "python/infernux/resources/fonts/MapleMono-CN-Regular.ttf");
     assert(std::filesystem::exists(latinFont));
     assert(std::filesystem::exists(cjkFont));
     infernux::textlayout::TextLayoutParams explicitChain{};
@@ -317,8 +314,7 @@ int main()
                 auto start = std::chrono::steady_clock::now();
                 for (int label = 0; label < 1000; ++label) {
                     const auto layout = infernux::textlayout::LayoutText(params);
-                    infernux::textlayout::RenderTextBox(&drawList, 0, 0, 220, 80, layout, IM_COL32_WHITE, .5f, .5f,
-                                                        params.letterSpacing);
+                    infernux::textlayout::RenderTextBox(&drawList, 0, 0, 220, 80, layout, IM_COL32_WHITE, .5f, .5f);
                 }
                 if (frame >= 4)
                     samples.push_back(
@@ -387,7 +383,7 @@ int main()
                         ReferenceDraw(reference, layout, alignment, 1 - alignment, spacing); // warm atlas
                         resetDraw();
                         infernux::textlayout::RenderTextBox(&drawList, 7.25f, 9.75f, 227.25f, 189.75f, layout,
-                                                            IM_COL32_WHITE, alignment, 1 - alignment, spacing);
+                                                            IM_COL32_WHITE, alignment, 1 - alignment);
                         resetReference();
                         ReferenceDraw(reference, layout, alignment, 1 - alignment, spacing);
                         assert(drawList.VtxBuffer.Size == reference.VtxBuffer.Size);
@@ -421,7 +417,7 @@ int main()
     assert(infernux::textlayout::ResolveFont("./Roboto-Medium.ttf") == chainedLayout.font);
     std::filesystem::current_path(infernux::ToFsPath(cjkFont).parent_path());
     assert(infernux::textlayout::ResolveFont("Roboto-Medium.ttf") == nullptr);
-    assert(infernux::textlayout::ResolveFont("PingFangSC-Regular.ttf") == chainedLayout.fallbackFonts[0]);
+    assert(infernux::textlayout::ResolveFont("MapleMono-CN-Regular.ttf") == chainedLayout.fallbackFonts[0]);
     std::filesystem::current_path(oldDirectory);
     assert(io.Fonts->Fonts.Size == fontCount);
     ImGui::EndFrame();

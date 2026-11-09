@@ -70,7 +70,8 @@ void TestRecoveryReplaysInterruptedTransaction(const std::filesystem::path &root
     const auto blocker = root / "Assets" / "blocked";
     const auto target = blocker / "recovered.meta";
     const auto index = root / "Library" / "RecoveryIndex.json";
-    WriteText(blocker, "not a directory");
+    // Allow sibling staging to complete, then block publication at the target.
+    std::filesystem::create_directories(target);
     WriteText(index, "stale index");
 
     bool failed = false;
@@ -94,11 +95,10 @@ void TestRecoveryReplaysInterruptedTransaction(const std::filesystem::path &root
     } catch (const std::invalid_argument &) {
         checksumRejected = true;
     }
-    Require(checksumRejected, "corrupt compressed journal payload was accepted");
+    Require(checksumRejected, "corrupt prepared-file journal was accepted");
     WriteText(journal, validJournal);
 
-    std::filesystem::remove(blocker);
-    std::filesystem::create_directories(blocker);
+    std::filesystem::remove(target);
     Require(DocumentTransaction::Recover(root.u8string(), journal.u8string()), "journal recovery was not detected");
     Require(ReadText(target) == "recovered", "journal recovery wrote the wrong payload");
     Require(!std::filesystem::exists(index), "journal recovery did not invalidate the stale index");
@@ -115,9 +115,8 @@ void TestRecoveryUsesProjectRelativePathsAfterMove(const std::filesystem::path &
     const auto target = blocker / "moved.meta";
     const auto journal = originalRoot / "Library" / "Move.transaction";
     const auto index = originalRoot / "Library" / "AssetIndex.json";
-    std::filesystem::create_directories(blocker.parent_path());
+    std::filesystem::create_directories(target);
     std::filesystem::create_directories(journal.parent_path());
-    WriteText(blocker, "not a directory");
     WriteText(index, "stale index");
 
     bool failed = false;
@@ -135,8 +134,7 @@ void TestRecoveryUsesProjectRelativePathsAfterMove(const std::filesystem::path &
     const auto movedTarget = movedBlocker / "moved.meta";
     const auto movedJournal = movedRoot / "Library" / "Move.transaction";
     const auto movedIndex = movedRoot / "Library" / "AssetIndex.json";
-    std::filesystem::remove(movedBlocker);
-    std::filesystem::create_directories(movedBlocker);
+    std::filesystem::remove(movedTarget);
     Require(DocumentTransaction::Recover(movedRoot.u8string(), movedJournal.u8string()),
             "moved project journal was not recovered");
     Require(ReadText(movedTarget) == "moved", "moved project recovery used the original absolute path");
@@ -248,7 +246,7 @@ void TestGuardedRecoveryRetainsLaterAuthorEdit(const std::filesystem::path &root
     if (!createNew)
         WriteText(first, "before import");
     const auto baseline = infernux::CaptureAtomicFileState(first.u8string());
-    WriteText(blocker, "not a directory");
+    std::filesystem::create_directories(second);
     WriteText(index, "old index");
     bool failed = false;
     try {
@@ -260,8 +258,7 @@ void TestGuardedRecoveryRetainsLaterAuthorEdit(const std::filesystem::path &root
     }
     Require(failed && std::filesystem::exists(journal), "interrupted guarded transaction did not retain journal");
     Require(ReadText(first) == "after import", "partial transaction did not finish its submitted guarded write");
-    std::filesystem::remove(blocker);
-    std::filesystem::create_directory(blocker);
+    std::filesystem::remove(second);
     WriteText(first, "external author after failure");
     failed = false;
     try {

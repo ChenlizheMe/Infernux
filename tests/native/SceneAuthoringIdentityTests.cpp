@@ -1,5 +1,7 @@
 #include <core/types/Guid.h>
 #include <function/scene/SceneAuthoringIdentity.h>
+#include <function/scene/ComponentFactory.h>
+#include <function/scene/HingeJoint.h>
 
 #include <array>
 #include <iostream>
@@ -209,6 +211,10 @@ void TestAllocatedGuids()
 int main()
 {
     try {
+        // Exercise the actual registered component contract used by the codec.
+        // Constructing the fixture's type also links its native registration.
+        HingeJoint registeredJoint;
+        Require(ComponentFactory::IsRegistered(registeredJoint.GetTypeName()), "missing real joint declaration");
         TestRoundTripAndMissingReferences();
         TestRejectInvalidIdentityBeforePublishing();
         TestIndependentAuthorsDoNotPersistRuntimeCollisions();

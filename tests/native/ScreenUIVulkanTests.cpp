@@ -805,7 +805,8 @@ int main(int argc, char **argv)
         // Core owns a program across UI renderer generations. Only the last
         // renderer owner may evict its artifact and Forward program.
         {
-            auto batchCore = std::make_unique<InxVkCoreModular>();
+            vk::VulkanBackendContext batchBackend;
+            auto batchCore = std::make_unique<InxVkCoreModular>(batchBackend);
             batchCore->GetRetirementQueue().BindSerialSource([&] { return epoch; });
             auto &cache = batchCore->GetShaderCache();
             cache.GetProgramCache().Initialize(context.GetDevice());
@@ -838,7 +839,8 @@ int main(int argc, char **argv)
             cache.GetProgramCache().Shutdown();
             cache.Clear();
         }
-        auto ownerCore = std::make_unique<InxVkCoreModular>();
+        vk::VulkanBackendContext ownerBackend;
+        auto ownerCore = std::make_unique<InxVkCoreModular>(ownerBackend);
         ownerCore->GetRetirementQueue().BindSerialSource([&] { return epoch; });
         auto &coreShaderCache = ownerCore->GetShaderCache();
         coreShaderCache.GetProgramCache().Initialize(context.GetDevice());

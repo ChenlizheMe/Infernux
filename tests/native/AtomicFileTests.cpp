@@ -1,4 +1,5 @@
 #include <platform/filesystem/AtomicFile.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <chrono>
 #include <filesystem>
@@ -136,7 +137,7 @@ bool RunTransientReplaceLockGate(const std::filesystem::path &target)
     bool written = false;
     std::string writeError;
     std::thread writer(
-        [&] { written = infernux::WriteTextFileAtomically(target.u8string(), "after-lock", writeError); });
+        [&] { written = infernux::WriteTextFileAtomically(target.u8string(), "after-lock", writeError).has_value(); });
     ::Sleep(40);
     ::CloseHandle(lock);
     writer.join();
@@ -163,35 +164,33 @@ int main(int argc, char **argv)
         std::filesystem::temp_directory_path() / ("infernux_atomic_file_" + std::to_string(suffix));
     std::filesystem::create_directory(directory);
 
-    const std::filesystem::path target = directory / std::filesystem::path(u8"可靠写入.txt");
+    const std::filesystem::path target = directory / infernux::ToFsPath(u8"可靠写入.txt");
     std::string error;
     bool passed = true;
 
-    passed &= Expect(infernux::WriteTextFileAtomically(target.u8string(), "first", error), error.c_str());
+    passed &= Expect(infernux::WriteTextFileAtomically(target.u8string(), "first", error).has_value(), error.c_str());
     passed &= Expect(ReadText(target) == "first", "initial atomic write content mismatch");
     const auto snapshot = infernux::ReadTextFileSnapshot(target.u8string());
     passed &= Expect(snapshot.content == "first", "snapshot bytes differ from loaded content");
     passed &= Expect(snapshot.state == infernux::CaptureAtomicFileState(target.u8string()),
                      "snapshot identity differs from an unchanged file");
-    passed &= Expect(infernux::WriteTextFileAtomically(target.u8string(), "second", error), error.c_str());
+    passed &= Expect(infernux::WriteTextFileAtomically(target.u8string(), "second", error).has_value(), error.c_str());
     passed &= Expect(ReadText(target) == "second", "replacement atomic write content mismatch");
     passed &= Expect(snapshot.content == "first", "retained snapshot changed after external replace");
     passed &= Expect(!infernux::WriteTextFileAtomically(target.u8string(), "stale", error,
-                                                        infernux::AtomicWriteOptions{false, snapshot.state}),
+                                                        infernux::AtomicWriteOptions{infernux::FileWriteMode::Replace, snapshot.state}),
                      "snapshot from old bytes allowed overwriting a newer document");
     passed &= Expect(ReadText(target) == "second", "rejected snapshot write changed disk content");
-    passed &=
-        Expect(infernux::WriteTextFileAtomically(target.u8string(), "third", error, infernux::AtomicWriteOptions{true}),
-               error.c_str());
-    passed &= Expect(ReadText(target) == "third", "backup-enabled atomic write content mismatch");
-    std::filesystem::path backup = target;
-    backup += ".bak";
-    passed &= Expect(ReadText(backup) == "second", "backup does not contain the previous complete document");
-    passed &= Expect(
-        infernux::WriteTextFileAtomically(target.u8string(), "fourth", error, infernux::AtomicWriteOptions{true}),
-        error.c_str());
-    passed &= Expect(ReadText(target) == "fourth", "second backup-enabled write content mismatch");
-    passed &= Expect(ReadText(backup) == "third", "backup was not advanced to the previous generation");
+    // Pinned inputs expose the previous complete generation across replacement.
+    for (const auto &generations : {std::pair{"second", "third"}, std::pair{"third", "fourth"}}) {
+        infernux::FileInput previous(target);
+        const auto result = infernux::WriteTextFileAtomically(target.u8string(), generations.second, error);
+        passed &= Expect(result.has_value(), error.c_str());
+        passed &= Expect(ReadText(target) == generations.second, "atomic replacement published incorrect content");
+        std::string previousBytes(static_cast<size_t>(previous.Size()), '\0');
+        previous.Read(previousBytes.data(), previousBytes.size());
+        passed &= Expect(previousBytes == generations.first, "previous generation changed across replacement");
+    }
     passed &= Expect(RunTransientReplaceLockGate(target), "transient destination lock was not tolerated");
     passed &= Expect(infernux::RemoveFileDurably(target.u8string(), error), error.c_str());
     passed &= Expect(!std::filesystem::exists(target), "durable removal left the target behind");
@@ -199,7 +198,7 @@ int main(int argc, char **argv)
 
     size_t temporaryCount = 0;
     for (const auto &entry : std::filesystem::directory_iterator(directory)) {
-        if (entry.path().filename().u8string().find(".tmp.") != std::string::npos)
+        if (infernux::IsAtomicTemporaryPath(entry.path()))
             ++temporaryCount;
     }
     passed &= Expect(temporaryCount == 0, "successful writes left temporary files behind");

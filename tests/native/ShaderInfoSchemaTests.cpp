@@ -36,7 +36,8 @@ void RequireCompiles(infernux::InxShaderLoader &compiler, const std::string &sou
     // entire build tree, including unrelated caches and junctions.
     const auto sourcePath =
         (std::filesystem::u8path(INFERNUX_TEST_SHADER_ROOT) / std::filesystem::u8path(path)).generic_u8string();
-    compiler.CreateMeta(source.data(), source.size(), sourcePath, metadata);
+    infernux::AssetSource metadataSource(sourcePath, source);
+    compiler.CreateMeta(metadataSource, metadata);
     const auto compiled = compiler.Compile(source.c_str(), source.size(), metadata);
     if (!compiled || compiled->empty()) {
         std::cerr << "Structured shader compilation failed for " << path << '\n';
@@ -550,8 +551,8 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); }
     assert(transparent.surfaceOptions.blendMode == "alpha");
     assert(transparent.passTag == "transparent");
     infernux::InxResourceMeta transparentMetadata;
-    compiler.CreateMeta(transparentSource.data(), transparentSource.size(), "TransparentDefaults.frag",
-                        transparentMetadata);
+    infernux::AssetSource transparentMetadataSource("TransparentDefaults.frag", transparentSource);
+    compiler.CreateMeta(transparentMetadataSource, transparentMetadata);
     assert(transparentMetadata.GetDataAs<int>("shader_queue") == transparent.renderQueue);
     assert(transparentMetadata.GetDataAs<std::string>("shader_depth_write") == transparent.depthWrite);
     assert(transparentMetadata.GetDataAs<std::string>("shader_blend") == transparent.surfaceOptions.blendMode);
@@ -579,7 +580,8 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); }
     assert(opaque.passTag == "opaque");
 
     infernux::InxResourceMeta richMetadata;
-    compiler.CreateMeta(richSource.data(), richSource.size(), "WaveSurface.frag", richMetadata);
+    infernux::AssetSource richMetadataSource("WaveSurface.frag", richSource);
+    compiler.CreateMeta(richMetadataSource, richMetadata);
     assert(richMetadata.GetDataAs<std::string>("shader_schema_format") == "ShaderInfo");
     const nlohmann::json propertySchema = nlohmann::json::parse(richMetadata.GetDataAs<std::string>("properties"));
     assert(propertySchema.size() == 3);

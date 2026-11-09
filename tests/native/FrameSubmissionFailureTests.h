@@ -7,6 +7,7 @@ bool VerifyFrameSubmissionFailureIsTerminal()
         struct Owner
         {
             SDL_Window *window = nullptr;
+            vk::VulkanBackendContext backend;
             std::unique_ptr<InxVkCoreModular> core;
             ~Owner()
             {
@@ -19,7 +20,7 @@ bool VerifyFrameSubmissionFailureIsTerminal()
             SDL_CreateWindow("Frame submission failure regression", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
         if (!Require(owner.window != nullptr, SDL_GetError()))
             return false;
-        owner.core = std::make_unique<InxVkCoreModular>(2);
+        owner.core = std::make_unique<InxVkCoreModular>(owner.backend, 2);
         auto &core = *owner.core;
         Uint32 extensionCount = 0;
         const auto nativeExtensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
@@ -33,7 +34,8 @@ bool VerifyFrameSubmissionFailureIsTerminal()
                      "Frame failure fixture initialization failed"))
             return false;
         core.SetFrameComputeSubmissionCallback([&](bool submitted) { notifications.push_back(submitted); });
-        core.SetFrameSubmissionBuilder([&](vk::VulkanFrameSubmission &submission, uint32_t setup, uint32_t) {
+        core.SetFrameSubmissionBuilder([&](vk::VulkanFrameSubmission &submission, uint32_t setup, uint32_t,
+                                           std::vector<uint32_t> &presentationDependencies) {
             if (mode == 2)
                 return false;
             const auto work = submission.AddWork(
@@ -46,15 +48,23 @@ bool VerifyFrameSubmissionFailureIsTerminal()
                     return mode != 0;
                 },
                 "Tests/FrameFailure");
+            presentationDependencies.push_back(work);
             return work != 0;
         });
-        const float position[] = {0, 0, 3};
-        const float target[] = {0, 0, 0};
-        const float up[] = {0, 1, 0};
+        const auto prepareFrame = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!core.TryPrepareCurrentFrame()) {
+                if (std::chrono::steady_clock::now() >= deadline)
+                    return false;
+                SDL_Delay(1);
+            }
+            return true;
+        };
         std::string failure;
-        core.WaitForCurrentFrame();
+        if (!Require(prepareFrame(), "Initial frame slot did not become ready"))
+            return false;
         try {
-            core.DrawFrame(position, target, up);
+            core.DrawFrame();
         } catch (const std::exception &error) {
             failure = error.what();
         }
@@ -62,8 +72,9 @@ bool VerifyFrameSubmissionFailureIsTerminal()
             if (!Require(failure.empty() && recordings == 1 && notifications == std::vector<bool>{true},
                          "New renderer session failed to submit a valid frame"))
                 return false;
-            core.WaitForCurrentFrame();
-            core.DrawFrame(position, target, up);
+            if (!Require(prepareFrame(), "Second frame slot did not become ready"))
+                return false;
+            core.DrawFrame();
             if (!Require(recordings == 2 && notifications == std::vector<bool>({true, true}),
                          "Successful renderer session did not continue normally"))
                 return false;
@@ -79,10 +90,10 @@ bool VerifyFrameSubmissionFailureIsTerminal()
         const uint32_t recordedBeforeRetry = recordings;
         // Removing the faulty callback cannot make an unconsumed acquired
         // image or partially recorded simulation safe for another frame.
-        core.SetFrameSubmissionBuilder([](vk::VulkanFrameSubmission &, uint32_t, uint32_t) { return true; });
+        core.SetFrameSubmissionBuilder({});
         std::string waitFailure;
         try {
-            core.WaitForCurrentFrame();
+            (void)core.TryPrepareCurrentFrame();
         } catch (const std::exception &error) {
             waitFailure = error.what();
         }
@@ -90,7 +101,7 @@ bool VerifyFrameSubmissionFailureIsTerminal()
             return false;
         std::string repeatedFailure;
         try {
-            core.DrawFrame(position, target, up);
+            core.DrawFrame();
         } catch (const std::exception &error) {
             repeatedFailure = error.what();
         }

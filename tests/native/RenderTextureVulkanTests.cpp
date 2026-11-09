@@ -68,50 +68,42 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     RenderGraphDescription description;
     GraphTextureDesc texture;
     texture.name = "target";
-    texture.format = generation->description.colorFormat;
-    texture.width = generation->width;
-    texture.height = generation->height;
-    texture.role = GraphTextureRole::Persistent;
-    texture.renderTexture = target;
-    texture.samples = static_cast<uint32_t>(generation->description.samples);
+    texture.BindRenderTexture(target, GraphTextureAttachment::Color);
     description.textures.push_back(texture);
     GraphPassDesc clear;
     clear.name = "clear";
     clear.writeColors.emplace_back(0, texture.name);
     clear.clearColor = true;
     if (generation->multisampleColor) {
-        auto resolve = texture;
+        GraphTextureDesc resolve;
         resolve.name = "resolved";
-        resolve.samples = 1;
-        resolve.attachment = GraphTextureAttachment::Resolve;
+        resolve.BindRenderTexture(target, GraphTextureAttachment::Resolve);
         description.textures.push_back(resolve);
         clear.resolveColor = resolve.name;
     }
-    auto depth = texture;
+    GraphTextureDesc depth;
     depth.name = "depth";
-    depth.isDepth = true;
-    depth.format = generation->description.depthFormat;
-    depth.attachment = GraphTextureAttachment::Depth;
+    depth.BindRenderTexture(target, GraphTextureAttachment::Depth);
     description.textures.push_back(depth);
     clear.writeDepth = depth.name;
     clear.clearDepth = true;
     description.passes.push_back(clear);
     description.outputTexture = generation->multisampleColor ? "resolved" : texture.name;
-    assert(SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes[0].clearDepth = false;
-    assert(!SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(!ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes[0].clearDepth = true;
     description.passes[0].clearColor = false;
-    assert(!SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(!ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes[0].clearColor = true;
     description.passes[0].readTextures.push_back(texture.name);
-    assert(!SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(!ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes[0].readTextures.clear();
     GraphPassDesc reader;
     reader.name = "reader";
     reader.readTextures.push_back(texture.name);
     description.passes.insert(description.passes.begin(), reader);
-    assert(!SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(!ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes.erase(description.passes.begin());
     // An input-only import is resolved by the frame scheduler, not by a
     // fabricated local clear which would erase the producer camera's image.
@@ -119,7 +111,7 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     incoming.passes.clear();
     reader.readTextures = {incoming.outputTexture};
     incoming.passes.push_back(reader);
-    assert(SceneRenderGraph::ValidateGraphDescription(incoming, 1));
+    assert(ValidateRenderGraphDescription(incoming, rhi::RenderViewContext{}));
     // Implicit material/UI reads obey the same local producer contract. An
     // MSAA consumer reads resolve, never the multisampled color attachment.
     const SceneRenderGraph::MaterialTextureRead implicitRead{"reader", target, generation};
@@ -193,12 +185,12 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     copy.commands[0].destinationResource = destination.name;
     copied.passes.push_back(copy);
     copied.outputTexture = destination.name;
-    assert(SceneRenderGraph::ValidateGraphDescription(copied, 1));
+    assert(ValidateRenderGraphDescription(copied, rhi::RenderViewContext{}));
     reader.readTextures = {destination.name};
     copied.passes.insert(copied.passes.begin(), reader);
-    assert(!SceneRenderGraph::ValidateGraphDescription(copied, 1));
+    assert(!ValidateRenderGraphDescription(copied, rhi::RenderViewContext{}));
     description.textures[0].samples = texture.samples == 1 ? 4 : 1;
-    assert(!SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(!ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.textures[0].samples = texture.samples;
     // Shader reads may consume resolved color; raw MSAA color/depth must not
     // be bound as a regular sampler2D. A depth attachment read is separate.
@@ -206,16 +198,16 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     reader.readTextures = {description.outputTexture};
     reader.commands[0].inputBindings = {{"color", description.outputTexture}};
     description.passes.push_back(reader);
-    assert(SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes.back().readTextures = {"depth"};
     description.passes.back().commands[0].inputBindings = {{"depth", "depth"}};
-    assert(SceneRenderGraph::ValidateGraphDescription(description, 1) ==
+    assert(ValidateRenderGraphDescription(description, rhi::RenderViewContext{}) ==
            (texture.samples == 1 && generation->description.sampledDepth));
     description.passes.back().commands[0].inputBindings.clear();
-    assert(SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
     description.passes.pop_back();
     description.textures[0].renderTexture.reset();
-    assert(!SceneRenderGraph::ValidateGraphDescription(description, 1));
+    assert(!ValidateRenderGraphDescription(description, rhi::RenderViewContext{}));
 }
 
 class FullscreenTestHost final : public FullscreenRendererHost
@@ -1085,12 +1077,16 @@ static int RunTests(int argc, char **argv)
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         assert(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS);
-        assert(graph.NeedsPersistentImageInitialization());
-        assert(readerGraph.NeedsPersistentImageInitialization());
+        vk::RenderGraph::PersistentImageInitializations images;
+        graph.CollectPersistentImageInitializations(images);
+        readerGraph.CollectPersistentImageInitializations(images);
+        assert(images.size() == 1 && images.front() == generation);
+        images.clear();
         graph.Execute(command);
         assert(generation->graphLayoutsInitialized);
-        assert(!overlayGraph.NeedsPersistentImageInitialization());
-        assert(!readerGraph.NeedsPersistentImageInitialization());
+        overlayGraph.CollectPersistentImageInitializations(images);
+        readerGraph.CollectPersistentImageInitializations(images);
+        assert(images.empty());
         overlayGraph.Execute(command);
         readerGraph.Execute(command);
         VkBufferMemoryBarrier hostBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};

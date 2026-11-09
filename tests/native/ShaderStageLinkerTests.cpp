@@ -1,4 +1,5 @@
 #include <function/renderer/InxRenderer.h>
+#include <function/renderer/vk/VulkanBackendContext.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
@@ -64,7 +65,8 @@ std::string ReadText(const std::string &path)
 int main()
 {
     {
-        infernux::InxRenderer renderer;
+        infernux::vk::VulkanBackendContext backend;
+        infernux::InxRenderer renderer(backend);
         auto material = std::make_shared<infernux::InxMaterial>("UI thumbnail", "Unlit");
         renderer.SetMaterialShaderDomainInspector([](const auto &) {
             return std::optional<infernux::ShaderProgramDomain>{infernux::ShaderProgramDomain::ScreenUI};
@@ -73,7 +75,9 @@ int main()
             throw std::runtime_error("UI shader must not be published for a mesh thumbnail");
         });
         assert(!renderer.CanPreviewMaterialOnMesh(material));
-        assert(!renderer.BeginMaterialPreviewGPU(material, 64));
+        bool progressed = false;
+        assert(!renderer.BeginMaterialPreviewGPU(material, 64, progressed));
+        assert(!progressed);
         renderer.SetMaterialShaderDomainInspector([](const auto &) {
             return std::optional<infernux::ShaderProgramDomain>{infernux::ShaderProgramDomain::Mesh};
         });
@@ -812,7 +816,7 @@ void main() {
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") ==
            std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
-               "vec4 texColor = sampleAlbedoAlpha(texSampler);") != std::string::npos);
+               "vec4 texColor = sampleAlbedoAlpha(texSampler, transformTextureUV(v_TexCoord, material.texSampler_ST));") != std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
                "s.alpha = texColor.a * material.baseColor.a;") != std::string::npos);
 

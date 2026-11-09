@@ -123,7 +123,7 @@ void TestNonGuidRenderEffectFieldsDoNotCreateDependenciesOnInitialRefresh()
             registry.Initialize(std::move(database));
             registry.RegisterLoader(
                 infernux::ResourceType::RenderEffect,
-                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::RenderEffect));
+                std::make_unique<infernux::InxDefaultLoader>(infernux::ResourceType::RenderEffect));
             registry.PopulateAssetDatabaseLoaders();
             auto *assetDatabase = registry.GetAssetDatabase();
             assetDatabase->Refresh();
@@ -204,8 +204,7 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
         Require(rebuiltMetadata != nullptr, "script reimport removed its metadata");
         Require(rebuiltMetadata->GetDataAs<std::string>("content_hash") != originalHash,
                 "script reimport retained the stale source hash");
-        Require(rebuiltMetadata->GetDataAs<size_t>("file_size") == std::string("VALUE = 2\n").size(),
-                "script reimport retained the stale source size");
+        Require(!rebuiltMetadata->HasKey("file_size"), "script reimport duplicated indexed source size in metadata");
 
         assetDatabase->FlushDerivedIndex();
         infernux::AssetIndex index;
@@ -216,6 +215,8 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
         Require(entry != nullptr && entry->guid == originalGuid, "script reimport index lost the original identity");
         Require(entry->contentHash == rebuiltMetadata->GetDataAs<std::string>("content_hash"),
                 "script reimport index did not publish the rebuilt source hash");
+        Require(entry->source.size == std::string("VALUE = 2\n").size(),
+                "script reimport index retained the stale source size");
         const auto readMetadata = [](const std::filesystem::path &path) {
             std::ifstream stream(path);
             return nlohmann::json::parse(stream);
@@ -290,11 +291,19 @@ void TestValidButStaleSidecarIsRebuiltFromCurrentSource()
         Require(metadata != nullptr, "stale sidecar rebuild did not publish metadata");
         Require(metadata->GetDataAs<std::string>("content_hash") != "0123456789abcdef",
                 "stale sidecar rebuild retained the old content hash");
-        Require(metadata->GetDataAs<size_t>("file_size") == std::filesystem::file_size(script),
-                "stale sidecar rebuild retained the old source size");
+        Require(!metadata->HasKey("file_size") && !metadata->HasKey("language"),
+                "stale sidecar rebuild inherited obsolete source observations");
         Require(metadata->GetDataAs<std::string>("file_path") ==
                     infernux::InxResourceMeta::NormalizeFilePath(scriptPath),
                 "stale sidecar rebuild retained the old source path");
+        assetDatabase->FlushDerivedIndex();
+        infernux::AssetIndex index;
+        Require(index.Load(infernux::FromFsPath(root / "Library" / "AssetIndex.json"),
+                           infernux::FilesystemPathKey(infernux::FromFsPath(root))),
+                "stale sidecar rebuild did not persist the derived index");
+        const auto *entry = index.Find(infernux::FilesystemPathKey(scriptPath));
+        Require(entry != nullptr && entry->source.size == std::filesystem::file_size(script),
+                "stale sidecar rebuild index retained the old source size");
 
         registry.Shutdown();
         infernux::JobSystem::Shutdown();
@@ -749,7 +758,6 @@ void TestCompositeModelPublishesExternalTextureGuidDependencies()
                                    std::filesystem::copy_options::overwrite_existing);
     }
 
-    infernux::AssetDependencyGraph::Instance().Clear();
     infernux::JobSystem::Initialize(2);
     try {
         auto database = std::make_unique<infernux::AssetDatabase>();
@@ -757,7 +765,7 @@ void TestCompositeModelPublishesExternalTextureGuidDependencies()
         auto &registry = infernux::AssetRegistry::Instance();
         registry.Initialize(std::move(database));
         registry.RegisterLoader(infernux::ResourceType::DefaultText,
-                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+                                std::make_unique<infernux::InxDefaultLoader>(infernux::ResourceType::DefaultText));
         registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
         registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
         registry.PopulateAssetDatabaseLoaders();
@@ -766,7 +774,7 @@ void TestCompositeModelPublishesExternalTextureGuidDependencies()
 
         const auto modelGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(model));
         Require(!modelGuid.empty(), "composite model fixture was not registered");
-        const auto dependencies = infernux::AssetDependencyGraph::Instance().GetDependencies(modelGuid);
+        const auto dependencies = assetDatabase->GetDependencyGraph()->GetDependencies(modelGuid);
         Require(dependencies.size() == 5, "composite model did not publish five texture GUID dependencies");
         for (const char *name :
              {"wal67ar_small.jpg", "wal69ar_small.jpg", "SpiderTex.jpg", "drkwood2.jpg", "engineflare1.jpg"}) {
@@ -780,11 +788,9 @@ void TestCompositeModelPublishesExternalTextureGuidDependencies()
         if (infernux::AssetRegistry::Instance().IsInitialized())
             infernux::AssetRegistry::Instance().Shutdown();
         infernux::JobSystem::Shutdown();
-        infernux::AssetDependencyGraph::Instance().Clear();
         std::filesystem::remove_all(root);
         throw;
     }
-    infernux::AssetDependencyGraph::Instance().Clear();
     std::filesystem::remove_all(root);
 }
 
@@ -806,16 +812,16 @@ void TestModelSubAssetsPublishOnlyTheirOwner()
     WriteText(textured, texturedSource.dump());
     JobSystem::Initialize(2);
     auto &registry = AssetRegistry::Instance();
-    auto &graph = AssetDependencyGraph::Instance();
-    graph.Clear();
+    auto database = std::make_unique<AssetDatabase>();
+    const auto graphOwner = database->GetDependencyGraph();
+    auto &graph = *graphOwner;
     try {
-        auto database = std::make_unique<AssetDatabase>();
         database->Initialize(FromFsPath(root));
         registry.Initialize(std::move(database));
         registry.RegisterLoader(ResourceType::Mesh, std::make_unique<MeshLoader>());
         registry.RegisterLoader(ResourceType::Texture, std::make_unique<TextureLoader>());
         registry.RegisterLoader(ResourceType::DefaultText,
-                                std::make_unique<InxDefaultTextLoader>(ResourceType::DefaultText));
+                                std::make_unique<InxDefaultLoader>(ResourceType::DefaultText));
         registry.PopulateAssetDatabaseLoaders();
         auto *db = registry.GetAssetDatabase();
         db->Refresh();
@@ -1282,7 +1288,7 @@ void TestBlenderNumberedBackupsAreNotAssets()
         auto &registry = infernux::AssetRegistry::Instance();
         registry.Initialize(std::move(database));
         registry.RegisterLoader(infernux::ResourceType::DefaultText,
-                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+                                std::make_unique<infernux::InxDefaultLoader>(infernux::ResourceType::DefaultText));
         registry.PopulateAssetDatabaseLoaders();
         auto *assetDatabase = registry.GetAssetDatabase();
         assetDatabase->Refresh();
@@ -1318,14 +1324,14 @@ void TestRefreshPublishesDeterministicAssetEvents()
     WriteText(second, "second");
     JobSystem::Initialize(2);
     auto &registry = AssetRegistry::Instance();
-    auto &graph = AssetDependencyGraph::Instance();
-    graph.Clear();
+    auto database = std::make_unique<AssetDatabase>();
+    const auto graphOwner = database->GetDependencyGraph();
+    auto &graph = *graphOwner;
     try {
-        auto database = std::make_unique<AssetDatabase>();
         database->Initialize(FromFsPath(root));
         registry.Initialize(std::move(database));
         registry.RegisterLoader(ResourceType::DefaultText,
-                                std::make_unique<InxDefaultTextLoader>(ResourceType::DefaultText));
+                                std::make_unique<InxDefaultLoader>(ResourceType::DefaultText));
         registry.PopulateAssetDatabaseLoaders();
         auto *db = registry.GetAssetDatabase();
         db->Refresh();
@@ -1422,7 +1428,7 @@ void TestVersionControlFilesAreNotAssets()
         auto &registry = infernux::AssetRegistry::Instance();
         registry.Initialize(std::move(database));
         registry.RegisterLoader(infernux::ResourceType::DefaultText,
-                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+                                std::make_unique<infernux::InxDefaultLoader>(infernux::ResourceType::DefaultText));
         registry.PopulateAssetDatabaseLoaders();
         auto *assetDatabase = registry.GetAssetDatabase();
         assetDatabase->Refresh();

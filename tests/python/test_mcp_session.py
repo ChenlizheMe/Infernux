@@ -9,58 +9,23 @@ from infernux_mcp import session
 from infernux_mcp import trace
 
 
-def _config(mode: str = "developer_assist", **session_overrides):
-    policy = {
+def _config(**session_overrides):
+    options = {
         "build_profile": "debug_feedback",
         "recording_enabled": False,
-        "allowed_project_roots": [],
-        "whl_readonly_source": [],
-        "workaround_allowlist": [],
     }
-    policy.update(session_overrides)
-    return {"profile": mode, "session": policy}
-
-
-def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_path, monkeypatch):
-    lease = "private-supervisor-lease"
-    monkeypatch.setenv("INFERNUX_MCP_EDITOR_INSTANCE_ID", "editor-instance-for-test")
-    monkeypatch.setenv("INFERNUX_MCP_SUPERVISOR_LEASE", lease)
-    configured = session.configure(str(tmp_path), _config("global_validation"))
-
-    status = session.status()
-    assert status["editor_instance_id"] == "editor-instance-for-test"
-    assert status["supervisor_lease_configured"] is True
-    assert status["supervisor_lease_fingerprint"]
-    assert lease not in json.dumps(status)
-    assert session.require_supervisor_lease(lease) is configured
-    with pytest.raises(session.McpPolicyError, match="invalid"):
-        session.require_supervisor_lease("wrong-lease")
-
-    session.start_attempt("lease trace redaction", "before-normal-shutdown")
-
-    trace.record_operation(
-        "infernux.mcp.supervisor.shutdown",
-        ok=True,
-        arguments={"lease_token": lease},
-        result={"close_requested": True},
-    )
-    stopped = session.stop_attempt()
-
-    with open(tmp_path / stopped["trace_path"], "r", encoding="utf-8") as f:
-        trace_payload = json.load(f)
-    assert lease not in json.dumps(trace_payload)
-    assert trace_payload["steps"][0]["arguments"] == {"lease_token": "<redacted>"}
+    options.update(session_overrides)
+    return {"session": options}
 
 
 def test_developer_assist_attempt_persists_mode_and_checkpoint(tmp_path):
-    configured = session.configure(str(tmp_path), _config("developer_assist"))
+    configured = session.configure(str(tmp_path), _config())
 
     attempt = session.start_attempt("author public HUD script", "before-hud-script")
     stopped = session.stop_attempt()
 
     with open(tmp_path / stopped["trace_path"], "r", encoding="utf-8") as f:
         trace = json.load(f)
-    assert trace["context"]["mode"] == "developer_assist"
     assert trace["context"]["session_id"] == configured.session_id
     assert attempt["checkpoint"] == "before-hud-script"
 
@@ -75,7 +40,6 @@ def test_managed_attempt_requires_exact_checkpoint_and_writes_persistence_delta(
     configured = session.configure(
         str(tmp_path),
         _config(
-            "global_validation",
             session_id="managed-attempt-session",
             managed_checkpoints_required=True,
         ),
@@ -102,7 +66,7 @@ def test_managed_attempt_requires_exact_checkpoint_and_writes_persistence_delta(
     assert proof["delta"]["modified"] == ["Assets/Race.scene"]
     assert proof["delta"]["deleted"] == []
 
-    with pytest.raises(session.McpPolicyError, match="does not match"):
+    with pytest.raises(session.McpSessionError, match="does not match"):
         session.start_attempt("must restore first", "clean-race-001")
 
 
@@ -115,7 +79,7 @@ def test_checkpoint_list_returns_payload_verified_choices_without_project_scan(t
     (settings / "BuildSettings.json").write_text("{}\n", encoding="utf-8")
     configured = session.configure(
         str(tmp_path),
-        _config("global_validation", session_id="checkpoint-list-session", managed_checkpoints_required=True),
+        _config(session_id="checkpoint-list-session", managed_checkpoints_required=True),
     )
     checkpoint_store.create_checkpoint(
         str(tmp_path),
@@ -135,7 +99,7 @@ def test_checkpoint_list_returns_payload_verified_choices_without_project_scan(t
 
 
 def test_global_validation_writes_logic_backed_blocker(tmp_path):
-    session.configure(str(tmp_path), _config("global_validation"))
+    session.configure(str(tmp_path), _config())
     attempt = session.start_attempt("physics contact validation", "clean-physics-001")
     stopped = session.stop_attempt()
 
@@ -154,7 +118,6 @@ def test_global_validation_writes_logic_backed_blocker(tmp_path):
     report_path = result["path"]
     with open(report_path, "r", encoding="utf-8") as f:
         report = json.load(f)
-    assert report["mode"] == "global_validation"
     assert report["build_profile"] == "debug_feedback"
     assert report["category"] == "engine_bug"
     assert report["attempt_id"] == attempt["attempt_id"]
@@ -163,7 +126,7 @@ def test_global_validation_writes_logic_backed_blocker(tmp_path):
 
 
 def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
-    configured = session.configure(str(tmp_path), _config("global_validation", recording_enabled=True))
+    configured = session.configure(str(tmp_path), _config(recording_enabled=True))
 
     attempt = session.start_attempt("save persistence validation", "before-scene-save")
     stopped = session.stop_attempt()
@@ -178,16 +141,15 @@ def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
         "attempt_id": attempt["attempt_id"],
         "checkpoint": "before-scene-save",
         "session_id": configured.session_id,
-        "mode": "global_validation",
         "build_profile": "debug_feedback",
         "recording_enabled": True,
     }
 
 
 def test_global_validation_trace_persists_compact_operation_results(tmp_path, monkeypatch):
-    session.configure(str(tmp_path), _config("global_validation"))
+    session.configure(str(tmp_path), _config())
     monkeypatch.setattr(
-        "infernux_mcp.capabilities.limit",
+        "infernux_mcp.settings.limit",
         lambda name, default=None: 12 if name == "trace_result_max_string" else default,
     )
 
@@ -211,12 +173,12 @@ def test_global_validation_trace_persists_compact_operation_results(tmp_path, mo
 
 
 def test_global_validation_attempt_stop_is_idempotent_and_tracks_activity(tmp_path):
-    session.configure(str(tmp_path), _config("global_validation"))
+    session.configure(str(tmp_path), _config())
 
     attempt = session.start_attempt("menu state validation", "before-menu-open")
     assert attempt["attempt_active"] is True
     assert session.status()["attempt_active"] is True
-    with pytest.raises(session.McpPolicyError, match="already active"):
+    with pytest.raises(session.McpSessionError, match="already active"):
         session.start_attempt("another validation", "another-checkpoint")
 
     stopped = session.stop_attempt()

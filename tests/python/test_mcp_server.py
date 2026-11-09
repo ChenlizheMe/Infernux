@@ -14,7 +14,6 @@ import pytest
 
 from infernux.host import OperationRegistry
 from infernux_mcp import server
-from infernux_mcp import capabilities
 from infernux_mcp.adapter import (
     adapter_status,
     register_gateways,
@@ -65,55 +64,15 @@ def test_default_grants_cover_every_operation_and_diff_is_machine_readable(tmp_p
     (tmp_path / "ProjectSettings").mkdir()
     mcp = _FakeMCP()
     try:
-        # Omitting granted_capabilities keeps the default: every capability.
         register_gateways(mcp, str(tmp_path), {})
-        config = capabilities.current_config()
-        assert config["granted_capabilities"] == ["*"]
-
         snapshot = mcp.tools["host_capabilities"]()
         assert snapshot["ok"] is True
         data = snapshot["data"]
-        assert data["blocked_operation_count"] == 0
-        assert data["blocked_operations"] == []
+        assert data["operation_count"] > 0
+        assert data["operation_revision"] > 0
         assert data["capabilities"]
-        assert all(row["granted"] for row in data["capabilities"])
-        assert str(data["config_path"]).endswith("mcp_capabilities.json")
-    finally:
-        shutdown_adapter()
-
-
-def test_read_only_grants_block_writes_with_grant_remediation(tmp_path):
-    (tmp_path / "Assets").mkdir()
-    (tmp_path / "ProjectSettings").mkdir()
-    mcp = _FakeMCP()
-    try:
-        register_gateways(mcp, str(tmp_path), {"granted_capabilities": ["*.read"]})
-
-        snapshot = mcp.tools["host_capabilities"]()
-        assert snapshot["ok"] is True
-        data = snapshot["data"]
-        assert data["blocked_operation_count"] > 0
-        blocked_ids = {entry["operation"] for entry in data["blocked_operations"]}
-        assert "infernux.scene.object.create" in blocked_ids
-        rows = {row["capability"]: row for row in data["capabilities"]}
-        assert rows["scene.read"]["granted"] is True
-        assert rows["scene.write"]["granted"] is False
-
-        # Pattern grants keep read operations available.
-        allowed = mcp.tools["operation_query_execute"]("infernux.mcp.checkpoint.list", {})
-        assert allowed["ok"] is True
-
-        denied = mcp.tools["operation_command_execute"](
-            "infernux.scene.object.create", {"kind": "empty", "name": "Blocked"}
-        )
-        assert denied["ok"] is False
-        assert denied["error"]["code"] == "operation.permission_denied"
-        details = denied["error"]["details"]
-        assert details["required"] == ["scene.write"]
-        assert "*.read" in details["granted"]
-        remediation = details["grant_remediation"]
-        assert remediation["config_pointer"] == "/granted_capabilities"
-        assert str(remediation["config_path"]).endswith("mcp_capabilities.json")
+        assert all(row["capability"] and row["operations"] > 0 for row in data["capabilities"])
+        assert Path(data["config_path"]).name == "mcp_settings.json"
     finally:
         shutdown_adapter()
 
@@ -123,7 +82,7 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
     (tmp_path / "ProjectSettings").mkdir()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
+        register_gateways(mcp, str(tmp_path), {})
         expected = {
             "project": "infernux.project.info",
             "checkpoint": "infernux.mcp.checkpoint.list",
@@ -150,10 +109,10 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
         assert mismatch["error"]["code"] == "operation.kind_mismatch"
         rejected = mcp.tools["operation_command_execute"](
             "infernux.mcp.supervisor.shutdown",
-            {"lease_token": "not-a-live-lease"},
+            {"editor_instance_id": "retired-editor-instance"},
         )
         assert rejected["ok"] is False
-        assert rejected["error"]["code"] == "mcp.supervisor_lease"
+        assert rejected["error"]["code"] == "mcp.editor_instance_mismatch"
         host_status = mcp.tools["host_session_status"]()
         assert host_status["ok"] is True
         assert host_status["data"]["session"]["project_root"] == str(tmp_path)
@@ -183,7 +142,7 @@ def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, sce
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
+        register_gateways(mcp, str(tmp_path), {})
         created = mcp.tools["operation_command_execute"](
             "infernux.scene.object.create",
             {"kind": "empty", "name": "SchemaCreated"},
@@ -239,7 +198,7 @@ def test_schema_gateway_transform_rejection_does_not_masquerade_as_no_change(sce
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
+        register_gateways(mcp, str(tmp_path), {})
         before = owner.serialize_document()
         if not invalid:
             undo.enabled = False
@@ -295,7 +254,7 @@ def test_schema_gateway_component_field_rejection_is_not_no_change(scene, tmp_pa
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
+        register_gateways(mcp, str(tmp_path), {})
         before = owner.serialize_document()
         revision = core.action_journal.revision
         if not invalid:
@@ -336,7 +295,7 @@ def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(scen
     queue.drain()
     mcp = _FakeMCP()
     try:
-        register_gateways(mcp, str(tmp_path), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)})
+        register_gateways(mcp, str(tmp_path), {})
 
         native_schema = mcp.tools["operation_query_execute"](
             "infernux.scene.component.schema",
@@ -439,7 +398,7 @@ def test_schema_gateway_can_edit_real_material_document(engine):
     mcp = _FakeMCP()
     try:
         register_gateways(
-            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+            mcp, str(project_root), {}
         )
         changed = mcp.tools["operation_command_execute"](
             "infernux.material.property.set",
@@ -456,20 +415,8 @@ def test_schema_gateway_can_edit_real_material_document(engine):
             0.75,
             1.0,
         ]
-        document = None
-        for _ in range(100):
-            AssetManager.poll_pending_asset_writes()
-            try:
-                document = json.loads(path.read_text(encoding="utf-8"))
-            except PermissionError:
-                # Windows may briefly deny readers while the asynchronous
-                # atomic publication replaces the destination file.
-                time.sleep(0.01)
-                continue
-            if document["properties"]["baseColor"]["value"] == pytest.approx([0.25, 0.5, 0.75, 1.0]):
-                break
-            time.sleep(0.01)
-        assert document is not None
+        AssetManager.flush_all_asset_writes()
+        document = json.loads(path.read_text(encoding="utf-8"))
         assert document["properties"]["baseColor"]["value"] == pytest.approx([0.25, 0.5, 0.75, 1.0])
         assert len(undo.action_journal.applied_entries()) == 1
         repeated = mcp.tools["operation_command_execute"](
@@ -544,7 +491,7 @@ def test_schema_gateway_can_edit_real_data_asset_document(engine):
         source.save_to(str(path), database=database)
         guid = source.guid
         register_gateways(
-            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+            mcp, str(project_root), {}
         )
 
         schema = mcp.tools["operation_query_execute"]("infernux.data_asset.schema", {"asset_guid": guid})
@@ -643,7 +590,7 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
     mcp = _FakeMCP()
     try:
         register_gateways(
-            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+            mcp, str(project_root), {}
         )
         changed = mcp.tools["operation_command_execute"](
             "infernux.particle.graph.property.set",
@@ -703,7 +650,7 @@ def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine, new
     mcp = _FakeMCP()
     try:
         register_gateways(
-            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+            mcp, str(project_root), {}
         )
         read = mcp.tools["operation_query_execute"]("infernux.asset.text.read", {"asset_guid": guid})
         assert read["ok"] is True
@@ -776,7 +723,7 @@ def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
     mcp = _FakeMCP()
     try:
         register_gateways(
-            mcp, str(project_root), {"granted_capabilities": list(capabilities.DEFAULT_GRANTED_CAPABILITIES)}
+            mcp, str(project_root), {}
         )
         kinds = mcp.tools["operation_query_execute"]("infernux.asset.create.kinds", {})
         assert kinds["ok"] is True

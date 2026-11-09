@@ -7,7 +7,8 @@ import sys
 import zipfile
 from pathlib import Path
 
-from infernux.version import ENGINE_VERSION
+from infernux.plugins.platform_releases import PLAYER_SOURCE_REVISION
+from infernux.version import ENGINE_RELEASE, ENGINE_VERSION
 
 from infernux.engine.build import (
     BuildConfiguration,
@@ -121,6 +122,8 @@ def _write_native_payload(root: Path, *, abi: str) -> Path:
         json.dumps(
             {
                 "engine_version": ENGINE_VERSION,
+                "engine_release": ENGINE_RELEASE,
+                "engine_source_revision": PLAYER_SOURCE_REVISION,
                 "platform": "android",
                 "abi": abi,
                 "python_abi": "cp313",

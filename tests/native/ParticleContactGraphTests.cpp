@@ -31,8 +31,6 @@ AUDIT_MEMBER(PassesTag, m_passes, std::vector<vk::RenderPassData> vk::RenderGrap
 AUDIT_MEMBER(BarrierTag, m_cmdPipelineBarrier2, PFN_vkCmdPipelineBarrier2 vk::RenderGraph::*);
 AUDIT_MEMBER(InsertTag, InsertBarriers, void (vk::RenderGraph::*)(VkCommandBuffer, uint32_t));
 AUDIT_MEMBER(PrepareTag, PrepareExecutionResourceStates, void (vk::RenderGraph::*)());
-AUDIT_MEMBER(CullTag, CullPasses, void (vk::RenderGraph::*)());
-AUDIT_MEMBER(SortTag, TopologicalSort, bool (vk::RenderGraph::*)());
 #undef AUDIT_MEMBER
 
 template<class T> T Sentinel(uintptr_t n) {
@@ -164,8 +162,8 @@ int main() {
             record("dispatch_declares_particle_state_read", Declares(graph, dispatch.reads, states, rhi::Access::ShaderRead));
             record("solve_reads_particle_generation", Declares(graph, solve.reads, particleStates, rhi::Access::ShaderRead));
             record("dispatch_reads_transforms", Declares(graph, dispatch.reads, transforms, rhi::Access::UniformRead));
-            (graph.*audit_member(CullTag{}))();
-            if (!(graph.*audit_member(SortTag{}))()) throw std::runtime_error("graph TopologicalSort");
+            if (!graph.CompileExecutionOrder())
+                throw std::runtime_error("graph execution order failed to compile");
             const auto order = graph.GetExecutionPassNames();
             result["production_execution_order"] = order;
             (graph.*audit_member(PrepareTag{}))();

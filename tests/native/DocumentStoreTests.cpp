@@ -1,3 +1,4 @@
+#include "core/threading/JobSystem.h"
 #include "platform/filesystem/DocumentStore.h"
 
 #include <chrono>
@@ -33,14 +34,15 @@ void TestCoalescesQueuedGenerations()
     bool releaseFirst = false;
     std::vector<std::string> writes;
 
-    DocumentStore store([&](const std::string &, const std::string &content, const infernux::DocumentWriteOptions &) {
+    DocumentStore store([&](const std::string &, std::string_view content, const infernux::DocumentWriteOptions &) {
         std::unique_lock lock(mutex);
-        writes.push_back(content);
+        writes.emplace_back(content);
         if (content == "first") {
             firstStarted = true;
             condition.notify_all();
             condition.wait(lock, [&] { return releaseFirst; });
         }
+        return infernux::AtomicWriteReceipt{};
     });
 
     auto first = store.Submit("coalesced.scene", "first");
@@ -78,8 +80,9 @@ void TestCoalescesQueuedGenerations()
 void TestShutdownDrainsAndRestarts()
 {
     std::vector<std::string> writes;
-    DocumentStore store([&](const std::string &, const std::string &content, const infernux::DocumentWriteOptions &) {
-        writes.push_back(content);
+    DocumentStore store([&](const std::string &, std::string_view content, const infernux::DocumentWriteOptions &) {
+        writes.emplace_back(content);
+        return infernux::AtomicWriteReceipt{};
     });
     auto accepted = store.Submit("drain.scene", "accepted");
     store.Shutdown();
@@ -99,13 +102,13 @@ void TestDifferentPathsRunConcurrently()
     int started = 0;
     bool release = false;
     DocumentStore store(
-        [&](const std::string &, const std::string &, const infernux::DocumentWriteOptions &) {
+        [&](const std::string &, std::string_view, const infernux::DocumentWriteOptions &) {
             std::unique_lock lock(mutex);
             ++started;
             condition.notify_all();
             condition.wait(lock, [&] { return release; });
-        },
-        2);
+            return infernux::AtomicWriteReceipt{};
+        });
 
     auto first = store.Submit("parallel-a.scene", "a");
     auto second = store.Submit("parallel-b.scene", "b");
@@ -123,7 +126,7 @@ void TestDifferentPathsRunConcurrently()
 
 void TestWriterFailurePropagates()
 {
-    DocumentStore store([](const std::string &, const std::string &, const infernux::DocumentWriteOptions &) {
+    DocumentStore store([](const std::string &, std::string_view, const infernux::DocumentWriteOptions &) -> infernux::AtomicWriteReceipt {
         throw std::runtime_error("disk full");
     });
     auto failed = store.Submit("failed.scene", "content");
@@ -143,7 +146,9 @@ void TestWriterFailurePropagates()
 
 void TestFlushPublishesTerminalTicketState()
 {
-    DocumentStore store([](const std::string &, const std::string &, const infernux::DocumentWriteOptions &) {});
+    DocumentStore store([](const std::string &, std::string_view, const infernux::DocumentWriteOptions &) {
+        return infernux::AtomicWriteReceipt{};
+    });
     for (int index = 0; index < 256; ++index) {
         const std::string path = "flush-ticket-" + std::to_string(index) + ".scene";
         auto ticket = store.Submit(path, "content");
@@ -157,8 +162,9 @@ void TestFlushPublishesTerminalTicketState()
 void TestWriterPreservesPathCasing()
 {
     std::string writtenPath;
-    DocumentStore store([&](const std::string &path, const std::string &, const infernux::DocumentWriteOptions &) {
+    DocumentStore store([&](const std::string &path, std::string_view, const infernux::DocumentWriteOptions &) {
         writtenPath = path;
+        return infernux::AtomicWriteReceipt{};
     });
     auto ticket = store.Submit("ResultsLightLift.animtimeline", "content");
     ticket->Wait();
@@ -172,22 +178,23 @@ void TestWriterPreservesPathCasing()
 
 void TestQueuedCancellationAndGenerationMetrics()
 {
+    infernux::JobSystem::Get().SetDomainConcurrency(infernux::JobDomain::IO, 1);
     std::mutex mutex;
     std::condition_variable condition;
     bool blockerStarted = false;
     bool releaseBlocker = false;
     std::vector<std::string> writes;
     DocumentStore store(
-        [&](const std::string &, const std::string &content, const infernux::DocumentWriteOptions &) {
+        [&](const std::string &, std::string_view content, const infernux::DocumentWriteOptions &) {
             std::unique_lock lock(mutex);
-            writes.push_back(content);
+            writes.emplace_back(content);
             if (content == "blocker") {
                 blockerStarted = true;
                 condition.notify_all();
                 condition.wait(lock, [&] { return releaseBlocker; });
             }
-        },
-        1);
+            return infernux::AtomicWriteReceipt{};
+        });
 
     auto blocker = store.Submit("cancel-blocker.scene", "blocker");
     {
@@ -383,6 +390,7 @@ void TestCommitChainRejectsAnInterveningExternalEdit()
 
 int main()
 {
+    infernux::JobSystem::Initialize(2);
     try {
         TestCoalescesQueuedGenerations();
         TestShutdownDrainsAndRestarts();
@@ -391,13 +399,16 @@ int main()
         TestFlushPublishesTerminalTicketState();
         TestWriterPreservesPathCasing();
         TestQueuedCancellationAndGenerationMetrics();
+        infernux::JobSystem::Get().SetDomainConcurrency(infernux::JobDomain::IO, 0);
         TestConditionalWriteRejectsAChangedTarget();
         TestExplicitCommitChainAdvancesItsCasBaseline();
         TestDifferentCommitChainsDoNotShareCasBaseline();
         TestCommitChainRejectsAnInterveningExternalEdit();
+        infernux::JobSystem::Shutdown();
         std::cout << "DocumentStore tests passed\n";
         return 0;
     } catch (const std::exception &error) {
+        infernux::JobSystem::Shutdown();
         std::cerr << "DocumentStore test failure: " << error.what() << '\n';
         return 1;
     }

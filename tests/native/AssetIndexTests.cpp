@@ -118,7 +118,7 @@ void TestSpriteFramesStructuredMetadata()
     Require(metadata.SerializeDocument() == current, "Structured sprite_frames failed strict round-trip");
 
     infernux::InxResourceMeta rebuilt;
-    rebuilt.CopyMetadataIfMissing(metadata, "sprite_frames");
+    rebuilt.InheritSettings(metadata);
     Require(rebuilt.SerializeDocument() == current, "Metadata rebuild changed the structured sprite_frames type tag");
 }
 

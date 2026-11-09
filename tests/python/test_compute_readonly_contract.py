@@ -140,13 +140,13 @@ def test_native_gpu_kernel_preserves_readonly_binding_contract(engine, monkeypat
             inputs = stack.enter_context(values.view(readonly=True))
             output = stack.enter_context(inx.buffer(shape=3, dtype=np.int32, device="gpu"))
             readonly = stack.enter_context(output.view(readonly=True))
-            with pytest.raises(ValueError, match="read-only"):
+            with pytest.raises(RuntimeError, match="read-only"):
                 inx.compute.launch(_copy_readonly_input, (inputs, readonly))
             inx.compute.launch(_copy_readonly_input, (inputs, output))
             with output.get_data() as result:
                 np.testing.assert_array_equal(result.numpy(), [2, 3, 4])
             # A cached writable launch must not authorize a different wrapper.
-            with pytest.raises(ValueError, match="read-only"):
+            with pytest.raises(RuntimeError, match="read-only"):
                 inx.compute.launch(_copy_readonly_input, (inputs, readonly))
     finally:
         # Public declarations retain retired native bindings until the normal

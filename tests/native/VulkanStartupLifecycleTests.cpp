@@ -22,7 +22,8 @@ int main(int argc, char **argv)
 #endif
     assert(argc == 2);
     const std::string scenario = argv[1];
-    auto core = std::make_unique<infernux::InxVkCoreModular>(2);
+    auto backend = std::make_unique<infernux::vk::VulkanBackendContext>();
+    auto core = std::make_unique<infernux::InxVkCoreModular>(*backend, 2);
     const infernux::InxAppMetadata metadata("VulkanStartupLifecycle", 1, 0, 0, "tests.local");
     SDL_Window *window = nullptr;
     if (scenario == "rejected_init") {
@@ -113,6 +114,7 @@ int main(int argc, char **argv)
     }
     std::cout << "before_destroy " << scenario << std::endl;
     core.reset();
+    backend.reset();
     if (window) {
         SDL_DestroyWindow(window);
         SDL_Quit();

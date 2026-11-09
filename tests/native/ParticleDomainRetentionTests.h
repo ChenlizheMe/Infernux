@@ -119,9 +119,11 @@ void main() { result = snapshot; }
     b.outputs.front().id = 996021;
     std::string error;
     const auto publish = [&](const GpuParticleEmitterProgram &program) {
-        return owner.manager.ApplyGraph({program.graphInstanceId, {program}, {}}, &error);
+        return resources.PublishParticleGraph(owner.manager, {program.graphInstanceId, {program}, {}}, &error);
     };
-    const auto removeB = [&] { return owner.manager.ApplyGraph({b.graphInstanceId, {}, {b.id}}, &error); };
+    const auto removeB = [&] {
+        return resources.PublishParticleGraph(owner.manager, {b.graphInstanceId, {}, {b.id}}, &error);
+    };
     if (!Require(publish(a), error.c_str()))
         return false;
     const auto entries = owner.draws.SnapshotShared(0, 5000);

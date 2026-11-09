@@ -70,7 +70,8 @@ bool VerifyTransientBufferIsolation(TestResources &resources)
                         builder.SetQueueRole(role);
                         buffers[branch] = builder.TransferWrite(
                             builder.CreateBuffer("Branch" + suffix, bytes,
-                                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+                                                 rhi::BufferUsageFlags::TransferSource |
+                                                     rhi::BufferUsageFlags::TransferDestination));
                         return [&, branch, patternBase](RenderContext &context) {
                             if (!context.GetTransferCommandEncoder().FillBuffer(
                                     context.GetBufferHandle(buffers[branch]), 0, bytes, patternBase + branch))
@@ -92,7 +93,7 @@ bool VerifyTransientBufferIsolation(TestResources &resources)
                 ResourceHandle unused;
                 owner.graph.AddTransferPass("Unreachable", [&](PassBuilder &builder) {
                     unused =
-                        builder.TransferWrite(builder.CreateBuffer("Unused", bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+                        builder.TransferWrite(builder.CreateBuffer("Unused", bytes, rhi::BufferUsageFlags::TransferDestination));
                     return [](RenderContext &) { throw std::runtime_error("Culled branch executed"); };
                 });
                 if (!Require(owner.graph.Compile() && owner.graph.GetExecutionPassNames() == expectedOrder,

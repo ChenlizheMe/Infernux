@@ -119,7 +119,8 @@ int main()
     infernux::InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
     const std::string source = "#version 450\nvoid main() { gl_Position = vec4(0.0); }\n";
     infernux::InxResourceMeta metadata;
-    compiler.CreateMeta(source.data(), source.size(), "Tests/CacheReset.vert", metadata);
+    infernux::AssetSource metadataSource("Tests/CacheReset.vert", source);
+    compiler.CreateMeta(metadataSource, metadata);
     const std::string cachePath = metadata.GetDataAs<std::string>("file_path");
     const auto compiled = compiler.CompileVertexGlsl(source, cachePath);
     assert(!compiled.empty());

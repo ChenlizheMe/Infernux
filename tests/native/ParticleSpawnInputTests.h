@@ -174,8 +174,7 @@ void main() {
             vk::VulkanSubmissionExecutor::ExternalSync sync;
             sync.completionEpoch = epochs[frame] = owner.queues.ReserveCompletionEpoch();
             sync.completionFence = owner.fences[frame];
-            sync.uploadTimeline = owner.gate;
-            sync.uploadTimelineValue = cycle + 1;
+            sync.producers = {{owner.gate, cycle + 1}};
             const auto submitted = owner.executor.Execute(
                 frame, plan,
                 [&](uint32_t, VkCommandBuffer command) {

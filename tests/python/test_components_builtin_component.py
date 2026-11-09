@@ -205,19 +205,23 @@ class TestBuiltinComponent:
         game_object = type("FakeGO", (), {"id": 1})()
         first_cpp = DemoCpp()
         first_cpp.component_id = 42
-        first_cpp.handle = 1001
+        first_cpp.handle = lib.ObjectHandle(42, 7, 2)
         first_cpp.intensity = 1.0
         wrapper = DemoBuiltin._get_or_create_wrapper(first_cpp, game_object)
 
         replacement = DemoCpp()
         replacement.component_id = 42
-        replacement.handle = 2002
+        replacement.handle = lib.ObjectHandle(42, 8, 2)
         replacement.intensity = 1.0
-        rebound = DemoBuiltin._get_or_create_wrapper(replacement, game_object)
+        fresh = DemoBuiltin._get_or_create_wrapper(replacement, game_object)
 
-        assert rebound is wrapper
-        assert rebound._get_bound_native_component() is replacement
-        rebound.intensity = 8.0
+        assert fresh is not wrapper
+        assert wrapper._is_destroyed
+        with pytest.raises(ReferenceError):
+            wrapper._require_cpp_component()
+        assert fresh._get_bound_native_component() is replacement
+        assert BuiltinComponent._wrapper_cache[42] is fresh
+        fresh.intensity = 8.0
         assert replacement.intensity == 8.0
         assert first_cpp.intensity == 1.0
 
@@ -226,12 +230,12 @@ class TestBuiltinComponent:
         game_object = type("FakeGO", (), {"id": 1})()
         first_cpp = DemoCpp()
         first_cpp.component_id = 42
-        first_cpp.handle = 1001
+        first_cpp.handle = lib.ObjectHandle(42, 7, 2)
         wrapper = DemoBuiltin._get_or_create_wrapper(first_cpp, game_object)
 
         same_native = DemoCpp()
         same_native.component_id = 42
-        same_native.handle = 1001
+        same_native.handle = lib.ObjectHandle(42, 7, 2)
         same_native.intensity = 3.0
         again = DemoBuiltin._get_or_create_wrapper(same_native, game_object)
 

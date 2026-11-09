@@ -30,9 +30,18 @@ class PreparationQueue final : public ComputeQueue
     explicit PreparationQueue(DeviceId id) : device(id)
     {
     }
-    SubmissionTicket Submit(const Recorder &, std::shared_ptr<void> = {}) override
+    SubmissionTicket Submit(const Recorder &, ComputeSubmissionResources resources = {}) override
     {
+        if (resources.receipt)
+            resources.receipt->complete = true;
         return {device, QueueRole::Compute, ++submissions};
+    }
+    std::optional<SubmissionTicket> TrySubmit(const Recorder &record, const ComputeSubmissionResources &resources = {},
+                                              const Admission &admit = {}) override
+    {
+        if (admit && !admit())
+            return std::nullopt;
+        return Submit(record, resources);
     }
     void Wait(SubmissionTicket) override
     {
@@ -56,6 +65,7 @@ class PreparationQueue final : public ComputeQueue
     {
         return 0;
     }
+    uint64_t GetRetainedUploadBytes() const noexcept override { return 0; }
 };
 
 static void Dispatch(ComputeHost &host, const std::shared_ptr<ComputeKernel> &kernel,

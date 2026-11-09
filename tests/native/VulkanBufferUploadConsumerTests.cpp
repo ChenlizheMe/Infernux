@@ -31,12 +31,11 @@ static bool Run(vk::VkDeviceContext &context, vk::VulkanQueueManager &queues, vk
     const auto family = queues.GetSnapshot(role).family;
     const auto graphicsFamily = queues.GetSnapshot(rhi::QueueRole::Graphics).family;
     const auto transferFamily = uploads.GetQueueFamily();
-    const bool transferUpload = async && uploads.IsAsyncCapable();
-    const bool concurrent = family != graphicsFamily || (transferUpload && transferFamily != graphicsFamily);
+    const bool concurrent = family != graphicsFamily || (async && transferFamily != graphicsFamily);
     std::array<uint32_t, 256> input{};
     for (uint32_t index = 0; index < input.size(); ++index)
         input[index] = index * 123 + 9;
-    rhi::BufferUploadRequest request{input.data(), sizeof(input), rhi::BufferUsage::Storage};
+    rhi::BufferUploadRequest request{input.data(), sizeof(input), rhi::BufferUsageFlags::Storage};
     if (compute)
         request.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
     if (scenario.rfind("invalid", 0) == 0) {
@@ -53,6 +52,8 @@ static bool Run(vk::VkDeviceContext &context, vk::VulkanQueueManager &queues, vk
         return true;
     }
     const auto upload = resources.BeginBufferUpload(request);
+    if (!resources.IsUploadTimelineEnabled())
+        resources.DrainBufferUploads();
     assert(resources.TryPublishBufferUpload(upload));
     const auto source = resources.GetPublishedRhiBuffer(upload);
     assert(source && source->GetBuffer().IsValid());
@@ -134,15 +135,18 @@ static bool Run(vk::VkDeviceContext &context, vk::VulkanQueueManager &queues, vk
                          &barrier, 0, nullptr);
     assert(vkEndCommandBuffer(commands) == VK_SUCCESS);
 
-    const uint64_t uploadValue = resources.GetRequiredUploadTimelineValue();
-    const auto uploadSemaphore = resources.GetUploadTimelineSemaphore();
+    const auto producer = device.GetUploadSubmission(source->GetBuffer());
+    assert(producer.IsValid());
+    const auto dependency = queues.DependencyFor(producer, role);
+    const auto uploadValue = dependency.value;
+    const auto uploadSemaphore = dependency.semaphore;
     VkTimelineSemaphoreSubmitInfo timeline{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-    timeline.waitSemaphoreValueCount = uploadValue ? 1 : 0;
+    timeline.waitSemaphoreValueCount = uploadSemaphore ? 1 : 0;
     timeline.pWaitSemaphoreValues = &uploadValue;
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.pNext = &timeline;
-    submit.waitSemaphoreCount = uploadValue ? 1 : 0;
+    submit.waitSemaphoreCount = uploadSemaphore ? 1 : 0;
     submit.pWaitSemaphores = &uploadSemaphore;
     submit.pWaitDstStageMask = &waitStage;
     submit.commandBufferCount = 1;
@@ -196,10 +200,9 @@ int main(int argc, char **argv)
     vk::VulkanQueueManager queues;
     assert(queues.Initialize(context, 2));
     vk::AsyncTransferContext uploads;
-    const auto family = context.GetQueueIndices().transferFamily.value();
-    assert(uploads.Initialize(
-        context.GetDevice(), family, context.HasDedicatedTransferQueue(), context.IsTimelineSemaphoreEnabled(), queues,
-        context.HasDedicatedTransferQueue() ? rhi::QueueRole::Transfer : rhi::QueueRole::Graphics));
+    const bool dedicated = context.IsTimelineSemaphoreEnabled() && context.HasDedicatedTransferQueue();
+    const auto uploadRole = dedicated ? rhi::QueueRole::Transfer : rhi::QueueRole::Graphics;
+    assert(uploads.Initialize(context.GetDevice(), queues, uploadRole));
     const bool passed = Run(context, queues, uploads, spirv, scenario);
     uploads.Destroy();
     queues.Destroy();

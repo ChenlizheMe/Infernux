@@ -116,6 +116,8 @@ def test_new_invalid_assets_remain_visible_as_failed_catalog_entries(engine, tmp
 
 
 def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_path: Path):
+    from infernux.lib import AssetLoadSuperseded
+
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
     source = tmp_path / "editable.obj"
@@ -142,9 +144,10 @@ def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_pat
         assert source.read_text(encoding="ascii") == document
         deadline = time.monotonic() + 10.0
         while not pending.complete and time.monotonic() < deadline:
+            engine.tick(.016)
             time.sleep(0.001)
         assert pending.complete
-        with pytest.raises(RuntimeError, match="stale"):
+        with pytest.raises(AssetLoadSuperseded):
             registry.try_commit_asset_load(pending)
         registry.update_mesh_positions(guid, mesh.vertex_count, np.empty((0, 3), np.float32))
         for first, values, message in (
@@ -377,9 +380,15 @@ def test_copying_then_assigning_a_mesh_replays_file_guid_and_renderer_source_tog
 
 
 def test_audio_import_rejects_mismatched_metadata_resource_type(engine, tmp_path: Path):
+    import wave
+
     asset_db = engine.get_asset_database()
-    source = tmp_path / "incomplete_audio.wav"
-    source.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+    source = tmp_path / "source_audio.wav"
+    with wave.open(str(source), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8000)
+        stream.writeframes(bytes(32))
     meta_path = Path(f"{source}.meta")
     asset_guid = "a" * 32
     meta_path.write_text(
@@ -396,9 +405,11 @@ def test_audio_import_rejects_mismatched_metadata_resource_type(engine, tmp_path
     )
 
     try:
-        with pytest.raises(RuntimeError, match="resource_type"):
-            asset_db.import_asset(str(source))
-        assert not asset_db.contains_path(str(source))
+        imported = asset_db.import_asset(str(source))
+        assert imported, imported.error
+        assert imported.guid == asset_guid and imported.resource_type == ResourceType.Audio
+        assert asset_db.get_meta_by_guid(asset_guid).get_resource_type() == ResourceType.Audio
+        assert json.loads(meta_path.read_text())["metadata"]["resource_type"]["value"] == "Audio"
     finally:
         if asset_db.contains_path(str(source)):
             asset_db.delete_asset(str(source))
@@ -1068,10 +1079,10 @@ def test_metadata_creation_uses_the_submitted_source_bytes(engine, tmp_path: Pat
         texture_meta = asset_db.get_meta_by_guid(texture_guid)
         text_document = text_meta.serialize_document()
         texture_document = texture_meta.serialize_document()
-        assert text_document["metadata"]["file_size"] == {
-            "type": "size_t",
-            "value": len(text_bytes),
-        }
+        assert "file_size" not in text_document["metadata"]
+        # Exact FNV-1a of the submitted CRLF text and binary PPM, without a sentinel byte.
+        assert text_meta.get_string("content_hash") == "881b38a0535ac931"
+        assert texture_meta.get_string("content_hash") == "b344b3ef838aa770"
         assert texture_document["metadata"]["file_size"] == {
             "type": "size_t",
             "value": len(texture_bytes),
@@ -1257,16 +1268,46 @@ def test_delete_removes_reverse_mapping_after_short_path_source_disappears(engin
         pytest.skip("8.3 short paths are unavailable on this volume")
 
     result = asset_db.import_asset(buffer.value)
-    assert result
+    assert result, result.error
     guid = result.guid
     assert guid
     assert asset_db.get_guid_from_path(str(source)) == guid
+    sidecar = Path(str(source) + ".meta")
+    assert sidecar.is_file()
+    source.write_text("updated through the short alias", encoding="utf-8")
+    reimported = asset_db.reimport_asset(buffer.value)
+    assert reimported and reimported.guid == guid, reimported.error
 
     source.unlink()
     assert asset_db.delete_asset(str(source))
+    assert not sidecar.exists()
     assert not asset_db.contains_guid(guid)
     assert not asset_db.contains_path(str(source))
     assert all(entry["guid"] != guid for entry in asset_db.get_directory_catalog(str(tmp_path)))
+
+    model = tmp_path / "short-path-model-apply-regression.obj"
+    model.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
+    assert ctypes.windll.kernel32.GetShortPathNameW(str(model), buffer, len(buffer))
+    imported = asset_db.import_asset(buffer.value)
+    assert imported, imported.error
+    asset_db.begin_model_reimport(buffer.value, {})
+    deadline = time.monotonic() + 10
+    applied = None
+    while applied is None:
+        assert time.monotonic() < deadline
+        applied = asset_db.try_commit_model_reimport()
+        time.sleep(.001)
+    assert applied and applied.guid == imported.guid, applied.error
+    assert Path(str(model) + ".meta").is_file()
+    moved = model.with_name("short-path-relocated-model-regression.obj")
+    model.rename(moved)
+    assert ctypes.windll.kernel32.GetShortPathNameW(str(moved), buffer, len(buffer))
+    relocated = asset_db.move_asset(str(model), buffer.value)
+    assert relocated and relocated.guid == imported.guid, relocated.error
+    assert not Path(str(model) + ".meta").exists()
+    assert Path(str(moved) + ".meta").is_file()
+    assert asset_db.delete_asset(buffer.value)
+    assert not Path(str(moved) + ".meta").exists()
 
 
 def test_refresh_builds_import_artifacts_only_on_workers(engine):
@@ -1430,6 +1471,7 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
     fixture = Path(asset_db.assets_root) / "pending-import-visibility"
     fixture.mkdir(parents=True, exist_ok=True)
     model = fixture / "pending.obj"
+    sidecar = Path(f"{model}.meta")
     model.write_text(
         "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
         encoding="ascii",
@@ -1446,7 +1488,7 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             assert asset_db.try_commit_refresh() is False
-            if asset_db.last_refresh_importer_task_count > 0:
+            if sidecar.is_file() and asset_db.last_refresh_importer_task_count > 0:
                 break
             time.sleep(0.001)
         else:
@@ -1457,7 +1499,10 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
         assert asset_db.asset_count == count_before
         assert asset_db.contains_path(str(model)) is False
         assert asset_db.get_meta_by_path(str(model)) is None
-        assert Path(f"{model}.meta").exists() is False
+        # Author identity is elected before import; the live catalog and
+        # runtime payload remain hidden until the complete refresh publishes.
+        prepared_guid = json.loads(sidecar.read_text())["metadata"]["guid"]["value"]
+        assert prepared_guid
         with pytest.raises(RuntimeError, match="refresh commit is pending"):
             asset_db.import_asset(str(blocked_mutation))
 
@@ -1473,6 +1518,7 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
         assert asset_db.asset_count == count_before + 1
         assert asset_db.contains_path(str(model)) is True
         assert asset_db.get_meta_by_path(str(model)).get_int("mesh_count") == 1
+        assert asset_db.get_guid_from_path(str(model)) == prepared_guid
         assert Path(f"{model}.meta").is_file()
         assert asset_db.last_refresh_scan_on_worker is True
         assert asset_db.last_refresh_query_build_on_worker is True

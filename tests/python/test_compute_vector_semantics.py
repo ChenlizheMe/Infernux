@@ -8,7 +8,6 @@ import infernux as inx
 from infernux._compiler.source_metadata import embed_compute_sources
 from infernux.engine.game_builder import GameBuilder
 from infernux._compiler.taichi import frontend
-from infernux.engine.build.compute_aot import _gpu_buffer_descriptor
 from infernux.engine.project_context import using_project_root
 
 
@@ -72,18 +71,15 @@ def test_web_batches_match_real_native_dispatch(tmp_path, engine, monkeypatch, c
     source = kernel_source(body)
     namespace = {'__name__': 'VectorNativeProbe'}
     exec(compile(embed_compute_sources(source), '<vector-native-probe>', 'exec'), namespace)
-    descriptors = tuple(_gpu_buffer_descriptor((4,), np.int32) for _ in range(4)) + (enabled,)
-    with using_project_root(tmp_path):
-        artifact = frontend.compile_kernel(namespace['solve'].function, descriptors)
     host = engine._acquire_compute_host()
     monkeypatch.setattr(inx.compute, '_native_compute_host', lambda: host)
     buffers = [inx.buffer(shape=4, dtype=np.int32, device='gpu'),
                inx.buffer(shape=4, dtype=np.int32, device='gpu', data=[10, 20, 30, 40]),
                inx.buffer(shape=4, dtype=np.int32, device='gpu', data=[1, 2, 3, 4]),
                inx.buffer(shape=4, dtype=np.int32, device='gpu', data=[0, 1, 99, 99])]
-    executable = inx.compute._KernelExecutable(artifact, host, (*buffers, enabled))
     try:
-        executable.launch((*buffers, enabled))
+        with using_project_root(tmp_path):
+            inx.compute.launch(namespace['solve'], (*buffers, enabled))
         readback = buffers[1].get_data()
         try:
             native = readback.numpy().copy()
@@ -91,7 +87,7 @@ def test_web_batches_match_real_native_dispatch(tmp_path, engine, monkeypatch, c
         finally:
             readback.close()
     finally:
-        executable.close()
+        namespace['solve']._release_engine_resources()
         for buffer in buffers:
             buffer.close()
         host._release_lease()
@@ -116,11 +112,6 @@ def test_vector_lanes_and_scalar_broadcast_match_gpu(tmp_path, engine, monkeypat
               '    i = inx.compute.index(domain)\n' + textwrap.indent(body, '    ') + '\n')
     namespace = {'__name__': 'VectorLaneProbe'}
     exec(compile(embed_compute_sources(source), '<vector-lane-native>', 'exec'), namespace)
-    descriptors = (_gpu_buffer_descriptor((5,), np.int32),
-                   _gpu_buffer_descriptor((5,), inx.vector3), _gpu_buffer_descriptor((5,), inx.vector3),
-                   _gpu_buffer_descriptor((5,), np.float32))
-    with using_project_root(tmp_path):
-        artifact = frontend.compile_kernel(namespace['solve'].function, descriptors)
     values = np.arange(15, dtype=np.float32).reshape(5, 3)
     host = engine._acquire_compute_host()
     monkeypatch.setattr(inx.compute, '_native_compute_host', lambda: host)
@@ -131,11 +122,10 @@ def test_vector_lanes_and_scalar_broadcast_match_gpu(tmp_path, engine, monkeypat
                    inx.buffer(shape=5, dtype=inx.vector3, device='gpu'),
                    inx.buffer(shape=5, dtype=inx.vector3, device='gpu', data=values),
                    inx.buffer(shape=5, dtype=np.float32, device='gpu', data=[1, 2, 3, 4, 5])]
-        executable = None
         try:
             if backend == 'gpu':
-                executable = inx.compute._KernelExecutable(artifact, host, tuple(buffers))
-                executable.launch(tuple(buffers))
+                with using_project_root(tmp_path):
+                    inx.compute.launch(namespace['solve'], tuple(buffers))
             else:
                 builder = GameBuilder(str(tmp_path), str(tmp_path / 'output'), game_name='VectorLaneProbe')
                 builder._runtime_platform = 'web'
@@ -149,8 +139,7 @@ def test_vector_lanes_and_scalar_broadcast_match_gpu(tmp_path, engine, monkeypat
                 finally:
                     snapshot.close()
         finally:
-            if executable is not None:
-                executable.close()
+            namespace['solve']._release_engine_resources()
             for buffer in buffers:
                 buffer.close()
             if backend == 'gpu':

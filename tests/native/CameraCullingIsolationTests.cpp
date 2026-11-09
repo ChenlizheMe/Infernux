@@ -15,6 +15,7 @@
 #include <function/scene/SceneManager.h>
 #include <function/scene/SceneRenderBridge.h>
 #include <function/scene/SceneRenderExtractor.h>
+#include <function/scene/SkeletonInstance.h>
 #include <function/scene/SkinnedMeshRenderer.h>
 
 #include <algorithm>
@@ -769,18 +770,26 @@ int main()
         assert(contains(additiveObjectId));
     }
 
-    // Each imported skinned child draws only its node group. Its selection
-    // bound must follow that same group after import scaling and the full
-    // parent/child affine transform, including rotation and negative scale.
+    // Each imported skinned child uses its group's deformed bounds in the
+    // shared skeleton's frame, including the root's full parent transform.
     auto importedMesh = registry.CreateRuntimeMesh("ImportedSkinnedBounds");
     const std::string importedGuid = importedMesh->GetGuid();
     auto skin = std::make_shared<InxSkinnedMesh>();
+    skin->guid = importedGuid;
     skin->scaleFactor = 0.1f;
+    skin->skeleton.nodes = {{"Root"}, {"NearJoint", 0}, {"FarJoint", 0}};
+    skin->skeleton.nodeByName = {{"Root", 0}, {"NearJoint", 1}, {"FarJoint", 2}};
+    skin->skeleton.bones = {{"NearJoint", 1}, {"FarJoint", 2}};
+    skin->skeleton.boneByName = {{"NearJoint", 0}, {"FarJoint", 1}};
     const glm::vec3 authoredPositions[] = {{-1.0f, -2.0f, 0.0f},  {1.0f, -2.0f, 0.0f},   {0.0f, 2.0f, 0.0f},
                                            {100.0f, -2.0f, 0.0f}, {102.0f, -2.0f, 0.0f}, {101.0f, 2.0f, 0.0f}};
     std::vector<Vertex> scaledVertices(6);
     for (size_t index = 0; index < scaledVertices.size(); ++index) {
         skin->baseVertices.push_back(Vertex::Create(authoredPositions[index], {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}));
+        SkinInfluence influence;
+        influence.boneIndex[0] = index < 3 ? 0 : 1;
+        influence.weight[0] = 1.0f;
+        skin->influences.push_back(influence);
         scaledVertices[index] = skin->baseVertices.back();
         scaledVertices[index].pos *= skin->scaleFactor;
     }
@@ -796,6 +805,7 @@ int main()
     farGroup.boundsMin = {10.0f, -0.2f, 0.0f};
     farGroup.boundsMax = {10.2f, 0.2f, 0.0f};
     skin->subMeshes = {nearGroup, farGroup};
+    skin->NormalizeInfluences();
     InxMesh importedReplacement("ImportedSkinnedBounds");
     importedReplacement.SetData(std::move(scaledVertices), skin->indices, skin->subMeshes);
     importedReplacement.SetSkinnedData(skin);
@@ -806,35 +816,42 @@ int main()
     importParent->GetTransform()->SetLocalRotation(
         glm::angleAxis(glm::radians(37.0f), glm::normalize(glm::vec3(0.0f, 1.0f, 1.0f))));
     importParent->GetTransform()->SetLocalScale({-2.0f, 3.0f, 0.5f});
+    GameObject *importRoot = scene->CreateGameObject("ImportedCharacter");
+    importRoot->SetParent(importParent, false);
+    importRoot->GetTransform()->SetLocalPosition({1.0f, 0.5f, -0.25f});
+    importRoot->GetTransform()->SetLocalRotation(
+        glm::angleAxis(glm::radians(-21.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
+    auto *skeleton = importRoot->AddComponent<SkeletonInstance>();
+    skeleton->SetSourceModelGuid(importedGuid);
     GameObject *importChild = scene->CreateGameObject("ImportedNearNode");
-    importChild->SetParent(importParent, false);
-    importChild->GetTransform()->SetLocalPosition({1.0f, 0.5f, -0.25f});
-    importChild->GetTransform()->SetLocalRotation(glm::angleAxis(glm::radians(-21.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
+    importChild->SetParent(importRoot, false);
+    importChild->GetTransform()->SetLocalPosition({0.75f, 0.25f, 1.0f});
     auto *skinnedRenderer = importChild->AddComponent<SkinnedMeshRenderer>();
     skinnedRenderer->SetSourceModelGuid(importedGuid);
     skinnedRenderer->SetNodeGroup(0);
-    glm::vec3 nearMin, nearMax;
-    skinnedRenderer->GetWorldBounds(nearMin, nearMax);
-    glm::vec3 expectedMin(std::numeric_limits<float>::max());
-    glm::vec3 expectedMax(std::numeric_limits<float>::lowest());
-    for (int x = 0; x < 2; ++x)
-        for (int y = 0; y < 2; ++y)
-            for (int z = 0; z < 2; ++z) {
-                const glm::vec3 corner(x ? nearGroup.boundsMax.x : nearGroup.boundsMin.x,
-                                       y ? nearGroup.boundsMax.y : nearGroup.boundsMin.y,
-                                       z ? nearGroup.boundsMax.z : nearGroup.boundsMin.z);
-                const glm::vec3 position =
-                    glm::vec3(importChild->GetTransform()->GetWorldMatrix() * glm::vec4(corner, 1.0f));
-                expectedMin = glm::min(expectedMin, position);
-                expectedMax = glm::max(expectedMax, position);
-            }
-    assert(glm::length(nearMin - expectedMin) < 1.0e-4f);
-    assert(glm::length(nearMax - expectedMax) < 1.0e-4f);
+    assert(skinnedRenderer->GetSkeletonInstance() == skeleton && skinnedRenderer->HasRuntimeSkinnedMesh());
+    const glm::mat4 world = importRoot->GetTransform()->GetWorldMatrix();
+    const auto checkGroupBounds = [&](const SubMesh &group) {
+        glm::vec3 minimum, maximum;
+        skinnedRenderer->GetWorldBounds(minimum, maximum);
+        glm::vec3 expectedMin(std::numeric_limits<float>::max());
+        glm::vec3 expectedMax(std::numeric_limits<float>::lowest());
+        for (int x = 0; x < 2; ++x)
+            for (int y = 0; y < 2; ++y)
+                for (int z = 0; z < 2; ++z) {
+                    const glm::vec3 corner(x ? group.boundsMax.x : group.boundsMin.x,
+                                           y ? group.boundsMax.y : group.boundsMin.y,
+                                           z ? group.boundsMax.z : group.boundsMin.z);
+                    const glm::vec3 position(world * glm::vec4(corner, 1.0f));
+                    expectedMin = glm::min(expectedMin, position);
+                    expectedMax = glm::max(expectedMax, position);
+                }
+        assert(glm::length(minimum - expectedMin) < 1.0e-4f);
+        assert(glm::length(maximum - expectedMax) < 1.0e-4f);
+    };
+    checkGroupBounds(nearGroup);
     skinnedRenderer->SetSubmeshIndex(1);
-    glm::vec3 farMin, farMax;
-    skinnedRenderer->GetWorldBounds(farMin, farMax);
-    assert(glm::length(farMin - nearMin) > 1.0f);
-    assert(glm::length(farMax - nearMax) > 1.0f);
+    checkGroupBounds(farGroup);
 
     // A camera-masked, offscreen caster must remain available to the light's
     // shadow frustum, including when the camera's visible list is cached.

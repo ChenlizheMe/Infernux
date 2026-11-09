@@ -41,6 +41,11 @@ namespace
 
 using namespace infernux;
 
+bool CanRecordCompute(void *, rhi::ComputePipelineHandle pipeline, rhi::BindGroupHandle group)
+{
+    return pipeline.IsValid() && group.IsValid();
+}
+
 constexpr size_t RequiredGpuKernelStageCount = static_cast<size_t>(particle::GpuKernelStage::Count) - 1u;
 constexpr size_t FusedGpuKernelStageCount = static_cast<size_t>(particle::GpuKernelStage::Count);
 
@@ -1035,7 +1040,7 @@ int main()
         EventTransferTrace trace;
         const rhi::TransferCommandEncoder::DispatchTable dispatch{
             &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
-            nullptr, &EventTransferTrace::UpdateBuffer};
+            nullptr, &EventTransferTrace::UpdateBuffer, nullptr};
         const rhi::TransferCommandEncoder transfer(&trace, &dispatch);
         assert(domain.HasPendingUploads() && domain.RecordPendingUploads(transfer));
         assert(trace.updates.size() == 4 && device.writes == 0);
@@ -1177,7 +1182,7 @@ int main()
         ContinuationTrace continuationTrace;
         const rhi::ComputeCommandEncoder::DispatchTable continuationDispatch = {
             &ContinuationTrace::BindPipeline, &ContinuationTrace::BindGroup, &ContinuationTrace::PushConstants,
-            &ContinuationTrace::Dispatch, &ContinuationTrace::DispatchIndirect};
+            &ContinuationTrace::Dispatch, &ContinuationTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder continuationEncoder(&continuationTrace, &continuationDispatch);
         current->RequestReset();
         assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 && current->Telemetry().resetPending);
@@ -1326,18 +1331,19 @@ int main()
                                                           rhi::SamplerHandle{base + 2, 1}, bytes);
         };
 
-        auto slot = cache.Insert("asset::linear", makeTexture(100, 100), 1, false, "texture-guid", 1);
+        auto slot = cache.Insert("asset::linear", makeTexture(100, 100), 1, false, "texture-guid", 1, 7);
         assert(slot && slot->Acquire() && slot->Acquire()->GetRevision() == 1 && cache.GetEntryCount() == 1 &&
                cache.GetResidentBytes() == 100);
         auto retainedRevisionOne = slot->Acquire();
         assert(cache.RequestAssetRevision("texture-guid", 2) == 1 && slot->GetRequestedRevision() == 2 &&
                slot->NeedsRefresh());
-        auto replacementSlot = cache.Insert("asset::linear", makeTexture(200, 200), 2, false, "texture-guid", 2);
+        auto replacementSlot = cache.Insert("asset::linear", makeTexture(200, 200), 2, false, "texture-guid", 2, 8);
         assert(replacementSlot == slot && replacementSlot->Acquire()->GetRevision() == 2 &&
                !replacementSlot->NeedsRefresh() && cache.GetResidentBytes() == 300 &&
                cache.GetRetiredLeaseCount() == 1 && cache.GetRetiredLeaseBytes() == 100);
-        assert(!cache.FindAsset("asset::linear", "texture-guid", 1, 3));
-        assert(cache.FindAsset("asset::linear", "texture-guid", 2, 3) == slot);
+        assert(!cache.FindAsset("asset::linear", "texture-guid", 1, 8, 3));
+        assert(!cache.FindAsset("asset::linear", "texture-guid", 2, 9, 3));
+        assert(cache.FindAsset("asset::linear", "texture-guid", 2, 8, 3) == slot);
 
         retainedRevisionOne.reset();
         assert(cache.GetResidentBytes() == 200 && cache.GetRetiredLeaseCount() == 0 &&
@@ -1365,7 +1371,7 @@ int main()
         DepthResolveTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
             &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup, &DepthResolveTrace::PushConstants,
-            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect};
+            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         const rhi::TextureViewHandle source{101, 1};
         const rhi::TextureViewHandle destination{102, 1};
@@ -1391,7 +1397,7 @@ int main()
         DepthResolveTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
             &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup, &DepthResolveTrace::PushConstants,
-            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect};
+            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         SceneDepthResolver retained;
         assert(retained.Initialize(program));
@@ -1427,6 +1433,8 @@ int main()
         migrationDesc.destinationStates = {902, 1};
         migrationDesc.destinationFreeList = {903, 1};
         migrationDesc.destinationCounters = {904, 1};
+        migrationDesc.destinationAliveIndices = {905, 1};
+        migrationDesc.destinationAliveControl = {906, 1};
         migrationDesc.copyRanges = {{4, 4, 3, 0}, {8, 12, 4, 0}};
         migrationDesc.defaultStateWords.resize(20, 0u);
         migrationDesc.defaultStateWords[16] = 0x3f800000u;
@@ -1449,7 +1457,7 @@ int main()
         MigrationTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
             &MigrationTrace::BindPipeline, &MigrationTrace::BindGroup, &MigrationTrace::PushConstants,
-            &MigrationTrace::Dispatch, &MigrationTrace::DispatchIndirect};
+            &MigrationTrace::Dispatch, &MigrationTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         migrator.RecordMigrate(encoder);
         assert(!migrator.WasRecorded() && trace.pipelines.empty());
@@ -1508,6 +1516,7 @@ int main()
             &EventTransferTrace::CopyBuffer,     &EventTransferTrace::CopyTexture,
             &EventTransferTrace::ResolveTexture, nullptr,
             &EventTransferTrace::UpdateBuffer,
+            nullptr,
         };
         const rhi::TransferCommandEncoder collisionTransferEncoder(&collisionTransferTrace, &collisionTransferDispatch);
         assert(collisionScene.RecordPendingUpload(collisionTransferEncoder));
@@ -1749,7 +1758,7 @@ int main()
         CommandTrace sharingTrace;
         const rhi::ComputeCommandEncoder::DispatchTable sharingDispatch = {
             &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
-            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect};
+            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder sharingEncoder(&sharingTrace, &sharingDispatch);
         const rhi::BindGroupHandle sharingSpawnGroup{0xffe2u, 1};
         assert(previous.RecordBootstrap(sharingEncoder, 13, sharingSpawnGroup));
@@ -1819,7 +1828,7 @@ int main()
         CommandTrace contactTrace;
         const rhi::ComputeCommandEncoder::DispatchTable contactDispatch = {
             &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
-            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect};
+            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder contactEncoder(&contactTrace, &contactDispatch);
         const rhi::BindGroupHandle contactSpawnGroup{0xffcfu, 1};
         collisionRuntime.RecordContactPrepare(contactEncoder, 17u, contactSpawnGroup);
@@ -1943,7 +1952,7 @@ int main()
         EventTransferTrace uploadTrace;
         const rhi::TransferCommandEncoder::DispatchTable uploadDispatch{
             &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
-            nullptr, &EventTransferTrace::UpdateBuffer};
+            nullptr, &EventTransferTrace::UpdateBuffer, nullptr};
         const rhi::TransferCommandEncoder uploadEncoder(&uploadTrace, &uploadDispatch);
         const auto flush = [&] {
             assert(meshInterfaceRuntime.RecordPendingUploads(uploadEncoder));
@@ -2144,7 +2153,7 @@ int main()
     {
         const rhi::TransferCommandEncoder::DispatchTable uploads{
             &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
-            nullptr, &EventTransferTrace::UpdateBuffer};
+            nullptr, &EventTransferTrace::UpdateBuffer, nullptr};
         EventTransferTrace first;
         assert(runtime.RecordPendingUploads({&first, &uploads}) && first.updates.size() == 1);
         assert(runtime.HasPendingUploads());
@@ -2213,7 +2222,7 @@ int main()
     CommandTrace trace;
     const rhi::ComputeCommandEncoder::DispatchTable dispatch = {&CommandTrace::BindPipeline, &CommandTrace::BindGroup,
                                                                 &CommandTrace::PushConstants, &CommandTrace::Dispatch,
-                                                                &CommandTrace::DispatchIndirect};
+                                                                &CommandTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
     const rhi::BindGroupHandle graphSpawnGroup{0xffe3u, 1};
     const rhi::BufferHandle spawnMetadata{0xffe4u, 1};
@@ -2342,7 +2351,7 @@ int main()
     BoundsTrace boundsTrace;
     const rhi::ComputeCommandEncoder::DispatchTable boundsDispatch = {
         &BoundsTrace::BindPipeline, &BoundsTrace::BindGroup, &BoundsTrace::PushConstants, &BoundsTrace::Dispatch,
-        &BoundsTrace::DispatchIndirect};
+        &BoundsTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder boundsEncoder(&boundsTrace, &boundsDispatch);
     bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen, false);
     bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, false);
@@ -2461,7 +2470,7 @@ int main()
     CullTrace cullTrace;
     const rhi::ComputeCommandEncoder::DispatchTable cullDispatch = {&CullTrace::BindPipeline, &CullTrace::BindGroup,
                                                                     &CullTrace::PushConstants, &CullTrace::Dispatch,
-                                                                    &CullTrace::DispatchIndirect};
+                                                                    &CullTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder cullEncoder(&cullTrace, &cullDispatch);
     std::array<float, particle::ParticleGpuCuller::PlaneCount * 4> frustumPlanes{};
     for (size_t index = 0; index < frustumPlanes.size(); ++index)
@@ -2527,7 +2536,7 @@ int main()
     SortTrace sortTrace;
     const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline, &SortTrace::BindGroup,
                                                                     &SortTrace::PushConstants, &SortTrace::Dispatch,
-                                                                    &SortTrace::DispatchIndirect};
+                                                                    &SortTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder sortEncoder(&sortTrace, &sortDispatch);
     std::array<float, 16> sortView{};
     sortView[0] = sortView[5] = sortView[10] = sortView[15] = 1.0f;
@@ -2648,7 +2657,7 @@ int main()
     RibbonTrace ribbonTrace;
     const rhi::ComputeCommandEncoder::DispatchTable ribbonDispatch = {
         &RibbonTrace::BindPipeline, &RibbonTrace::BindGroup, &RibbonTrace::PushConstants, &RibbonTrace::Dispatch,
-        &RibbonTrace::DispatchIndirect};
+        &RibbonTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder ribbonEncoder(&ribbonTrace, &ribbonDispatch);
     ribbonTopology->RecordReset(ribbonEncoder);
     ribbonTopology->RecordInitialize(ribbonEncoder);

@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import struct
 
 import pytest
 import numpy as np
@@ -19,21 +18,23 @@ from infernux.engine.player_package_native import read_manifest
 
 
 def _write_artifact(path: Path, function: str) -> None:
-    header = json.dumps(
-        {
-            "task_sizes": [4],
-            "task_metadata": [{"entry_point": "main"}],
-            "domain_parameter": 0,
-            "argument_layout": {"size": 0, "parameters": []},
-            "required_capabilities": {"spirv_version": 0x10500},
-            "diagnostic_locations": [{"function": function}],
-            "specialization": "[]",
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"INXGPU\x01" + struct.pack("<I", len(header)) + header + b"SPV0")
+    from infernux._compiler.source_metadata import embed_compute_sources
+    from infernux.engine.project_context import using_project_root
+
+    module, name = function.rsplit(".", 1)
+    project = path.parents[3]
+    source = project / "Assets/Scripts" / (module.rsplit(".", 1)[-1] + ".py")
+    source.parent.mkdir(parents=True, exist_ok=True)
+    text = ("import infernux as inx\n@inx.compute.kernel\n" + f"def {name}(domain):\n"
+            "    i=inx.compute.index(domain)\n    domain[i]+=1\n")
+    source.write_text(text, encoding="utf-8")
+    namespace = {"__name__": module, "__file__": str(source)}
+    exec(compile(embed_compute_sources(text), str(source), "exec"), namespace)
+    params = (compute_aot._gpu_buffer_descriptor((1,), np.int32),)
+    with using_project_root(project):
+        frontend.compile_kernel(namespace[name].function, params)
+        plan = frontend.prepare_kernel(namespace[name].function, params)
+    (path.parent / (plan.artifact_key + ".inxgpu")).replace(path)
 
 
 def _write_kernel(project: Path) -> Path:
@@ -143,7 +144,9 @@ def test_compute_aot_is_sealed_inside_content_package(tmp_path):
     (project / "ProjectSettings").mkdir()
     final = tmp_path / "player"
     compute_root = final / "TestGame_Data/Library/Artifacts/Compute"
-    _write_artifact(compute_root / "kernel.inxgpu", "Scripts.Jelly.step")
+    compute_root.mkdir(parents=True)
+    # Packaging copies opaque sealed content; compilation is exercised above.
+    (compute_root / "kernel.inxgpu").write_bytes(b"sealed kernel payload")
     (compute_root / "AotOnly").write_text("sealed\n", encoding="utf-8")
     builder = GameBuilder(str(project), str(tmp_path / "output"), game_name="TestGame")
 

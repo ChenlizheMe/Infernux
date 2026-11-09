@@ -187,7 +187,7 @@ def test_new_signature_does_not_publish_or_require_historical_arities(tmp_path):
     data = tmp_path / "build/Data"
     stage_compute_artifacts(tmp_path, (path,), data)
     row, = project_records(data)
-    assert json.loads(row["specialization"])[-1] == ["int32"]
+    assert json.loads(row["specialization"])["parameters"][-1] == ["int32"]
 
 
 def test_imported_helper_edit_is_read_from_current_private_closure(tmp_path, monkeypatch):

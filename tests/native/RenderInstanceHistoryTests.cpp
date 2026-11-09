@@ -3,7 +3,6 @@
 #include <cassert>
 #include <cstdint>
 
-using infernux::kGPUInstanceAuxFlagValidHistory;
 using infernux::PackGPUObjectId;
 using infernux::RenderDomain;
 using infernux::RenderDrawIdentity;
@@ -36,47 +35,43 @@ int main()
     modelC[3].x = 9.0f;
 
     RenderInstanceHistory history;
-    history.BeginFrame(1);
-    const auto firstAppearance = history.Resolve(first, modelA, objectId, 1u << 3u);
-    assert(MatrixEquals(firstAppearance.previousModel, modelA));
-    assert(firstAppearance.flags == 0);
-    assert(firstAppearance.layerMask == 1u << 3u);
+    history.BeginFrame();
+    assert(!history.Previous(first, 0));
+    history.Record(first, modelA, {}, 0);
+    history.CommitFrame();
 
-    history.BeginFrame(2);
-    const auto continuous = history.Resolve(first, modelB, objectId, 1u << 3u);
-    assert(MatrixEquals(continuous.previousModel, modelA));
-    assert(continuous.flags == kGPUInstanceAuxFlagValidHistory);
+    history.BeginFrame();
+    const auto *continuous = history.Previous(first, 0);
+    assert(continuous && MatrixEquals(continuous->model, modelA));
+    history.Record(first, modelB, {}, 0);
 
-    // A second camera/pass in the same logical frame sees the same history.
-    const auto repeated = history.Resolve(first, modelC, objectId, 1u << 3u);
-    assert(MatrixEquals(repeated.previousModel, modelA));
-    assert(repeated.flags == kGPUInstanceAuxFlagValidHistory);
+    // A second pass in the same logical frame sees the same accepted history.
+    const auto *repeated = history.Previous(first, 0);
+    assert(repeated && MatrixEquals(repeated->model, modelA));
+    history.Record(first, modelC, {}, 0);
 
     // Independent identities never share transform history.
-    const auto independent = history.Resolve(second, modelC, 7, 1u << 5u);
-    assert(MatrixEquals(independent.previousModel, modelC));
-    assert(independent.flags == 0);
-    assert(independent.layerMask == 1u << 5u);
-    assert(history.Size() == 2);
+    assert(!history.Previous(second, 0));
+    history.Record(second, modelC, {}, 0);
+    history.CommitFrame();
 
     // Missing a frame suppresses stale motion when the primitive reappears.
-    history.BeginFrame(3);
-    const auto secondFrame = history.Resolve(second, modelC, 7, 1u << 5u);
-    assert(secondFrame.flags == kGPUInstanceAuxFlagValidHistory);
-    history.BeginFrame(4);
-    const auto reappeared = history.Resolve(first, modelC, objectId, 1u << 3u);
-    assert(MatrixEquals(reappeared.previousModel, modelC));
-    assert(reappeared.flags == 0);
+    history.BeginFrame();
+    const auto *secondFrame = history.Previous(second, 0);
+    assert(secondFrame && MatrixEquals(secondFrame->model, modelC));
+    history.Record(second, modelC, {}, 0);
+    history.CommitFrame();
+    history.BeginFrame();
+    assert(!history.Previous(first, 0));
+    history.Record(first, modelC, {}, 0);
 
-    // Invalid identities remain usable for picking but are never retained.
-    const size_t retained = history.Size();
-    const auto invalid = history.Resolve({}, modelB, objectId, 1u << 3u);
-    assert(MatrixEquals(invalid.previousModel, modelB));
-    assert(UnpackGPUObjectId(invalid.objectId) == objectId);
-    assert(history.Size() == retained);
+    // Invalid identities do not enter the accepted history.
+    history.Record({}, modelB, {}, 0);
+    history.CommitFrame();
+    assert(!history.Previous({}, 0));
 
     history.Clear();
-    assert(history.Size() == 0);
+    assert(!history.Previous(first, 0) && !history.Previous(second, 0));
 
     return 0;
 }

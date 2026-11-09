@@ -1419,6 +1419,8 @@ size_t PhysicsWorld::DispatchContactEvents()
     };
 
     auto wantsEvent = [](const Component &comp, ContactEventType type) {
+        if (!comp.IsEnabled())
+            return false;
         switch (type) {
         case ContactEventType::CollisionEnter:
             return comp.WantsCollisionEnterCallbacks();
