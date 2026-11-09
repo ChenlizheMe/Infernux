@@ -28,22 +28,24 @@ def test_button_top_center_bottom_align_visible_text(engine, scene, capfd, label
     engine.resize_game_render_target(256, 128)
     submission = RuntimeScreenUISubmission(engine)
     submission.set_target_size(256, 128)
-    state = {'frames': 0, 'phase': 0, 'ticket': None}
+    state = {'frames': 0, 'phase': 0, 'ticket': None, 'phase_execution': None}
     observations, errors = [], []
 
     def after_draw():
         try:
             state['frames'] += 1
             assert state['frames'] <= 60
-            if state['ticket'] is None:
-                # Owner maintenance callbacks also run during MSAA rebuilds,
-                # before the new target has received its first rendered frame.
-                if not engine.renderer_frame_snapshot['game_render_graph_current_executed']:
+            ticket = state['ticket']
+            if ticket is not None and not ticket.done:
+                return
+            if ticket is None and not engine.game_presentation_ready:
+                return
+            frame = engine.renderer_frame_snapshot
+            execution = (frame['game_render_view_id'], frame['game_render_graph_execution_count'])
+            if ticket is None:
+                if not frame['game_render_graph_current_executed'] or execution == state['phase_execution']:
                     return
                 state['ticket'] = engine.request_render_target_readback(True)
-                return
-            ticket = state['ticket']
-            if not ticket.done:
                 return
             assert not ticket.error, ticket.error
             pixels = ticket.result_numpy()
@@ -65,6 +67,7 @@ def test_button_top_center_bottom_align_visible_text(engine, scene, capfd, label
             if state['phase'] == len(alignments):
                 engine.exit()
             else:
+                state['phase_execution'] = execution
                 button.text_align_v = alignments[state['phase']]
         except BaseException as error:
             errors.append(error)

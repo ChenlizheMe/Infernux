@@ -116,18 +116,29 @@ def test_uv0_normal_mapping_matches_cpu_baked_geometry(
         manager.play()
         manager.pause()
         engine.set_play_mode_rendering(True)
-        phase = frame = changed = 0
+        phase = frame = 0
+        mesh_ready_execution = None
         ticket = None
         failures = []
 
         def after_draw():
-            nonlocal phase, frame, changed, ticket
+            nonlocal phase, frame, mesh_ready_execution, ticket
             try:
                 frame += 1
                 assert frame < 400, case.results
-                if ticket is None and frame >= changed + 8:
-                    ticket = engine.request_render_target_readback(True)
-                elif ticket is not None and ticket.done:
+                if ticket is None:
+                    execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                    if engine.pending_mesh_gpu_upload_count or engine.pending_texture_gpu_upload_count:
+                        mesh_ready_execution = None
+                    elif mesh_ready_execution is None:
+                        try:
+                            engine.get_object_mesh_index_gpu_info(case.owner.id)
+                        except IndexError:
+                            return
+                        mesh_ready_execution = execution
+                    elif engine.game_presentation_ready and execution > mesh_ready_execution:
+                        ticket = engine.request_render_target_readback(True)
+                elif ticket.done:
                     case.observe(ticket.result_numpy())
                     (tmp_path / "normal-map-results.json").write_text(json.dumps(case.results), encoding="utf-8")
                     issues = [
@@ -141,7 +152,7 @@ def test_uv0_normal_mapping_matches_cpu_baked_geometry(
                         engine.exit()
                     else:
                         case.change(phase)
-                        ticket, changed = None, frame
+                        mesh_ready_execution, ticket = None, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

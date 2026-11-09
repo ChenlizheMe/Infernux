@@ -88,7 +88,8 @@ def test_published_skybox_draws_authored_material(engine, scene, skybox_asset, s
             try:
                 frame += 1
                 assert frame < 120
-                if ticket is None and frame >= changed + 8:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 8:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy().copy()
@@ -113,7 +114,7 @@ def test_published_skybox_draws_authored_material(engine, scene, skybox_asset, s
                         import numpy as np
                         np.testing.assert_array_equal(pixels, images[0])
                         engine.exit()
-                    ticket, changed = None, frame
+                    ticket, changed = None, execution
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

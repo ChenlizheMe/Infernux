@@ -144,7 +144,7 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
     previous_samples = engine.get_msaa_samples()
     engine.set_msaa_samples(4)
     engine.resize_game_render_target(64, 64)
-    state = {'phase': 0, 'ticket': None, 'frames': 0}
+    state = {'phase': 0, 'ticket': None, 'frames': 0, 'phase_execution': None}
     errors = []
 
     class Submission:
@@ -167,17 +167,24 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
         try:
             state['frames'] += 1
             assert state['frames'] <= 100, 'UI shader recovery readback never completed'
-            if state['ticket'] is None:
-                state['ticket'] = engine.request_render_target_readback(True)
-                return
             ticket = state['ticket']
-            if not ticket.done:
+            if ticket is not None and not ticket.done:
+                return
+            if ticket is None and not engine.game_presentation_ready:
+                return
+            frame = engine.renderer_frame_snapshot
+            execution = (frame['game_render_view_id'], frame['game_render_graph_execution_count'])
+            if ticket is None:
+                if not frame['game_render_graph_current_executed'] or execution == state['phase_execution']:
+                    return
+                state['ticket'] = engine.request_render_target_readback(True)
                 return
             assert not ticket.error, ticket.error
             pixels = ticket.result_numpy()
             assert min(pixels[8, 8, :3]) >= .95, 'A rejected material suppressed healthy UI'
             sample = pixels[42, 42, :3].tolist()
             draws = engine.get_screen_ui_renderer().last_submitted_draw_count(ScreenUIList.Overlay)
+            state['phase_execution'] = execution
             if state['phase'] % 2 == 0:
                 assert draws == 1, 'Missing UI shader was rendered using a default material'
                 restore_shader()
@@ -266,7 +273,7 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
     engine.resize_game_render_target(64, 64)
     renderer = engine.get_screen_ui_renderer()
     renderer_samples = engine.get_msaa_samples()
-    state = {'frames': 0, 'phase': 0, 'ticket': None, 'submissions': 0, 'msaa_rebuilds': 0}
+    state = {'frames': 0, 'phase': 0, 'ticket': None, 'submissions': 0, 'msaa_rebuilds': 0, 'phase_execution': None}
     samples, errors = [], []
 
     class Submission:
@@ -309,6 +316,15 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
                 renderer = current_renderer
                 renderer_samples = engine.get_msaa_samples()
                 return
+            ticket = state['ticket']
+            if ticket is None and not engine.game_presentation_ready:
+                return
+            frame = engine.renderer_frame_snapshot
+            execution = (frame['game_render_view_id'], frame['game_render_graph_execution_count'])
+            if ticket is None and (
+                not frame['game_render_graph_current_executed'] or execution == state['phase_execution']
+            ):
+                return
             observation = {
                 'frames': state['frames'], 'phase': state['phase'], 'submissions': state['submissions'],
                 'commands': renderer.has_commands(draw_list), 'enabled': renderer.is_enabled(),
@@ -317,17 +333,16 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
                 'submitted_textures': engine.submitted_imgui_texture_upload_count,
                 'completed_textures': engine.completed_imgui_texture_upload_count,
                 'msaa_samples': engine.get_msaa_samples(),
-                'native_frame': {key: value for key, value in engine.renderer_frame_snapshot.items()
+                'native_frame': {key: value for key, value in frame.items()
                                  if key in ('frame', 'game_camera_enabled', 'game_camera_available',
                                             'game_target_ready', 'scene_view_visible', 'game_draw_call_count',
                                             'game_render_graph_name', 'game_render_graph_pass_names')}}
             assert renderer.last_submitted_draw_count(draw_list) >= 1, json.dumps(observation)
             assert engine.is_shader_loaded(vertex_name, 'vertex')
             assert all(path.read_bytes() == contents for path, contents in roots.items())
-            if state['ticket'] is None:
+            if ticket is None:
                 state['ticket'] = engine.request_render_target_readback(True)
                 return
-            ticket = state['ticket']
             if not ticket.done:
                 return
             assert not ticket.error, ticket.error
@@ -338,6 +353,7 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
             assert sample[expected] >= .95 and sample[1-expected] <= .02 and sample[2] <= .02, sample
             samples.append(sample)
             state['ticket'] = None
+            state['phase_execution'] = execution
             if state['phase'] == 0:
                 library.write_text(green, encoding='utf-8')
                 prepared = AssetManager.reimport_asset(str(library))

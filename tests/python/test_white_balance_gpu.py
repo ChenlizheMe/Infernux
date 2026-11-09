@@ -104,7 +104,8 @@ def test_white_balance_fullscreen_parameter_domain(engine, scene, tmp_path, monk
             try:
                 frame += 1
                 assert frame < 500, samples
-                if ticket is None and frame >= changed + 6:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 6:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy()
@@ -121,7 +122,7 @@ def test_white_balance_fullscreen_parameter_domain(engine, scene, tmp_path, monk
                         engine.exit()
                     else:
                         pipeline.change(PHASES[phase])
-                        changed, ticket = frame, None
+                        changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

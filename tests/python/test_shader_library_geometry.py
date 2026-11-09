@@ -103,7 +103,8 @@ def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch
             try:
                 frame += 1
                 assert frame < 400, case.results
-                if ticket is None and frame >= changed + 6:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 6:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     case.observe(ticket.result_numpy())
@@ -119,7 +120,7 @@ def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch
                         engine.exit()
                     else:
                         case.change(phase)
-                        ticket, changed = None, frame
+                        ticket, changed = None, execution
             except BaseException as error:
                 failures.append(error)
                 engine.exit()
@@ -162,7 +163,8 @@ def test_standalone_material_draws_use_resident_program_until_explicit_reload(en
             assert frame < 100
             # Keep submitting changed camera data instead of reusing a static list.
             case.camera.game_object.transform.position = Vector3(0.001 * (frame % 2), 0, -3)
-            if ticket is None and frame >= changed + 6:
+            execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+            if ticket is None and engine.game_presentation_ready and execution >= changed + 6:
                 ticket = engine.request_render_target_readback(True)
             elif ticket is not None and ticket.done:
                 pixel = ticket.result_numpy()[64, 64]
@@ -176,7 +178,7 @@ def test_standalone_material_draws_use_resident_program_until_explicit_reload(en
                 else:
                     engine.exit()
                 phase += 1
-                ticket, changed = None, frame
+                ticket, changed = None, execution
         except BaseException as error:
             failures.append(error)
             engine.exit()

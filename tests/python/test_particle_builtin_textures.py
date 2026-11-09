@@ -176,7 +176,8 @@ def test_particle_builtin_texture_values_and_live_changes(
             try:
                 frame += 1
                 assert frame < 200, colors
-                if ticket is None and frame >= changed + 12:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 12:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy()
@@ -204,7 +205,7 @@ def test_particle_builtin_texture_values_and_live_changes(
                             assert component.reset_parameter("surface")
                         else:
                             component.set_parameter("surface", AssetReference(guid=next_token))
-                        changed, ticket = frame, None
+                        changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

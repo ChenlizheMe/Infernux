@@ -111,7 +111,8 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
             try:
                 frame += 1
                 assert frame < 1200, results
-                if ticket is None and frame >= changed + 12:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 12:
                     ticket = engine.request_render_target_readback(True)
                     request = component.request_gpu_view_diagnostics('game', retained.component_id)
                 elif ticket is not None and ticket.done:
@@ -150,7 +151,7 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
                         transient_owner, transient = camera(1)
                         assert transient.component_id not in seen_cameras
                         seen_cameras.add(transient.component_id)
-                    changed, ticket = frame, None
+                    changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

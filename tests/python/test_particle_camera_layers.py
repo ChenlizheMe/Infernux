@@ -169,7 +169,8 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
             try:
                 frame += 1
                 assert frame < 250, results
-                if ticket is None and frame >= changed + 16:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 16:
                     ticket = engine.request_render_target_readback(True)
                     view_tickets[:] = [
                         component.request_gpu_view_diagnostics('game', camera.component_id)
@@ -225,7 +226,7 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
                         engine.exit()
                         return
                     apply_phase(len(results))
-                    changed, ticket = frame, None
+                    changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()
