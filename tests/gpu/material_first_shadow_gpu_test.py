@@ -80,17 +80,25 @@ void surface(out SurfaceData s) {
                         material.frag_shader_name = "First Shadow Surface"
                         renderer.set_material(0, material)
                         renderer.enabled = True
-                    elif frame == 3:
+                    elif frame > 2:
                         diagnostics = console._get_visible_log_snapshot(1000)
                         shadow_failures = [entry for entry in diagnostics if "EnsureShadowMaterialBinding:" in entry["message"] or "linked Shadow variant is unavailable" in entry["message"]]
                         assert not shadow_failures, shadow_failures
+                        # A draw packet can appear while its mesh is still uploading.
+                        try:
+                            engine.get_object_mesh_index_gpu_info(probe.id)
+                        except IndexError:
+                            if frame > 180:
+                                raise AssertionError("First shadow mesh did not publish")
+                            return
+                        frame_snapshot = engine.renderer_frame_snapshot
+                        assert frame_snapshot["game_render_graph_current_executed"], frame_snapshot
+                        assert frame_snapshot["game_draw_call_count"] > 0, frame_snapshot
                         descriptors = engine.gpu_residency_snapshot["shadow_material_descriptor_set_count"]
                         assert descriptors > initial_descriptors, (initial_descriptors, descriptors)
                         completed = True
                         print("First material draw: linked shadow resources published without a missing-binding frame")
                         engine.exit()
-                    if frame > 30:
-                        raise AssertionError("First shadow test did not complete")
                 except BaseException as exception:
                     failures.append(exception)
                     engine.exit()

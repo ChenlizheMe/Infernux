@@ -90,7 +90,7 @@ bool AssetIndex::Load(const std::string &path, const std::string &normalizedProj
 void AssetIndex::Save(const std::string &path, const PathWriteScope &parentScope) const
 {
     DocumentWriteOptions options;
-    options.writeScope = PathWriteScope::BeginWrite({path}, parentScope);
+    options.writeScope = parentScope;
     DocumentStore::Instance().WriteAndWait(path, SerializeDocument().dump(2) + "\n", options);
 }
 

@@ -65,10 +65,12 @@ def main():
             camera = scene.create_game_object("Camera")
             camera.transform.position = Vector3(0, 0, -4)
             camera.add_component("Camera")
+            probe_object_ids = []
             for name, x, queue, color in [("Forward Red", -.85, 50, (1., 0., 0., 1.)), ("Deferred Green", .85, 150, (0., 1., 0., 1.))]:
                 obj = scene.create_game_object(name)
                 obj.transform.position = Vector3(x, 0, 0)
                 obj.transform.local_scale = Vector3(.6, .6, .6)
+                probe_object_ids.append(obj.id)
                 renderer = obj.add_component("MeshRenderer")
                 renderer.set_mesh_asset_guid(imported.guid)
                 material = InxMaterial.create_default_unlit()
@@ -80,11 +82,19 @@ def main():
             frame, switched_frame = 0, 0
             stage, ticket = "baseline", None
 
+            def probe_geometry_published():
+                try:
+                    for object_id in probe_object_ids:
+                        engine.get_object_mesh_index_gpu_info(object_id)
+                except IndexError:
+                    return False
+                return True
+
             def after_draw():
                 nonlocal frame, switched_frame, stage, ticket, completed
                 try:
                     frame += 1
-                    if stage == "baseline" and frame >= 8:
+                    if stage == "baseline" and frame >= 8 and probe_geometry_published():
                         ticket = frontend.request_render_target_readback(True)
                         stage = "baseline_readback"
                     elif stage == "baseline_readback" and ticket.done:

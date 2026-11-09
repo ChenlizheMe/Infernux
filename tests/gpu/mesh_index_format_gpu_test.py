@@ -15,7 +15,7 @@ import numpy as np
 from infernux import Engine
 from infernux.core.asset_types import read_mesh_import_settings
 from infernux.core.assets import AssetManager
-from infernux.lib import InxMaterial, SceneManager, Vector3
+from infernux.lib import CameraClearFlags, InxMaterial, SceneManager, Vector3
 
 
 def main() -> int:
@@ -66,7 +66,8 @@ def main() -> int:
             assert scene is not None
             camera_owner = scene.create_game_object("IndexFormatCamera")
             camera_owner.transform.position = Vector3(0.0, 0.0, -4.0)
-            camera_owner.add_component("Camera")
+            camera = camera_owner.add_component("Camera")
+            camera.clear_flags = CameraClearFlags.SolidColor
             engine.set_game_camera_enabled(True)
 
             light_owner = scene.create_game_object("IndexFormatLight")
@@ -75,7 +76,7 @@ def main() -> int:
             probe = scene.create_game_object("IndexFormatProbe")
             renderer = probe.add_component("MeshRenderer")
             renderer.set_mesh_asset_guid(imported.guid)
-            renderer.set_material(0, InxMaterial.create_default_lit())
+            renderer.set_material(0, InxMaterial.create_default_unlit())
 
             frames = 0
             stage = "wait16"
@@ -84,16 +85,23 @@ def main() -> int:
             first_pixels = None
             switched_frame = 0
 
+            def published_index_info():
+                try:
+                    return engine.get_object_mesh_index_gpu_info(probe.id)
+                except IndexError:
+                    return None
+
             def after_draw() -> None:
                 nonlocal frames, stage, first_ticket, second_ticket
                 nonlocal first_pixels, switched_frame, completed
                 try:
                     frames += 1
                     if stage == "wait16" and frames >= 8:
-                        info = engine.get_object_mesh_index_gpu_info(probe.id)
-                        assert info == {"format": "uint16", "bytes": 12}, info
-                        first_ticket = frontend.request_render_target_readback(True)
-                        stage = "capture16"
+                        info = published_index_info()
+                        if info is not None:
+                            assert info == {"format": "uint16", "bytes": 12}, info
+                            first_ticket = frontend.request_render_target_readback(True)
+                            stage = "capture16"
                     elif stage == "capture16" and first_ticket.done:
                         first_pixels = first_ticket.result_numpy().copy()
                         assert np.isfinite(first_pixels).all()
@@ -105,8 +113,8 @@ def main() -> int:
                         switched_frame = frames
                         stage = "wait32"
                     elif stage == "wait32" and frames >= switched_frame + 4:
-                        info = engine.get_object_mesh_index_gpu_info(probe.id)
-                        if info["format"] == "uint32":
+                        info = published_index_info()
+                        if info is not None and info["format"] == "uint32":
                             assert info["bytes"] == 24, info
                             second_ticket = frontend.request_render_target_readback(True)
                             stage = "capture32"

@@ -131,6 +131,7 @@ def main():
             camera = scene.create_game_object("Camera")
             camera.transform.position = Vector3(0, 0, -4)
             camera.add_component("Camera")
+            probe_object_ids = []
             for name, x, z, scale, queue, color in [
                 ("Bright Red", -.3, 0, 1.0, 1000, (8., 0., 0., 1.)),
                 ("Near Blue", .4, -1, .45, 1200, (0., 0., 1., 1.)),
@@ -138,6 +139,7 @@ def main():
                 obj = scene.create_game_object(name)
                 obj.transform.position = Vector3(x, 0, z)
                 obj.transform.local_scale = Vector3(scale, scale, scale)
+                probe_object_ids.append(obj.id)
                 renderer = obj.add_component("MeshRenderer")
                 renderer.set_mesh_asset_guid(imported.guid)
                 material = InxMaterial.create_default_unlit()
@@ -153,20 +155,44 @@ def main():
             sample_roundtrip = (4, 1, 4, 1)
             stage, ticket, baseline, blue, first_order = "baseline", None, None, None, None
 
+            def probe_geometry_published():
+                try:
+                    for object_id in probe_object_ids:
+                        engine.get_object_mesh_index_gpu_info(object_id)
+                except IndexError:
+                    return False
+                return True
+
             def after_draw():
                 nonlocal frame, changed_frame, stage, ticket, baseline, blue, completed, sample_index, first_order
                 try:
                     frame += 1
-                    if stage in ("baseline", "zero_bloom", "zero_chain", "active_bloom", "bloom_then_edge", "edge_then_bloom", "msaa_roundtrip") and frame >= changed_frame + 8:
+                    if (
+                        stage in ("baseline", "zero_bloom", "zero_chain", "active_bloom",
+                                  "bloom_then_edge", "edge_then_bloom", "msaa_roundtrip")
+                        and frame >= changed_frame + 8
+                        and (stage != "baseline" or probe_geometry_published())
+                    ):
                         ticket = frontend.request_render_target_readback(True)
                         stage += "_readback"
                     elif stage.endswith("_readback") and ticket.done:
                         pixels = ticket.result_numpy().copy()
                         rgb = pixels[..., :3].astype(np.float32)
                         if stage == "baseline_readback":
-                            baseline = pixels
                             blue = (rgb[..., 2] > .9) & (rgb[..., 0] < .05)
+                            red = (rgb[..., 0] > .9) & (rgb[..., 1] < .05) & (rgb[..., 2] < .05)
+                            if frame <= 160 and (blue.sum() <= 100 or red.sum() <= 100):
+                                # Mesh residency can precede the material pass that draws it.
+                                stage, ticket = "baseline", None
+                                return
                             assert blue.sum() > 100, int(blue.sum())
+                            assert red.sum() > 100, int(red.sum())
+                            if frame <= 160 and (baseline is None or not np.array_equal(pixels, baseline)):
+                                # Establish an unchanged scene before comparing an effect transition.
+                                baseline, changed_frame = pixels, frame
+                                stage, ticket = "baseline", None
+                                return
+                            np.testing.assert_array_equal(pixels, baseline, err_msg="Bloom baseline did not settle")
                             pipeline.stack.add_effect_slot("bright_route", RenderEffectRef(effect=bloom))
                             stage = "zero_bloom"
                         elif stage == "zero_bloom_readback":

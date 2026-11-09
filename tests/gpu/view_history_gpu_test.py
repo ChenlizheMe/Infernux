@@ -90,7 +90,8 @@ def main():
                 imported=AssetManager.import_asset(str(path),database=db);assert imported,imported.error
                 target=inx.RenderTexture.load_by_guid(imported.guid);targets.append(target)
                 owner=scene.create_game_object('History'+str(i));owner.transform.position=Vector3(0,0,-5)
-                camera=owner.add_component(inx.Camera);camera.depth=i+1;camera.target_texture=target;cameras.append(camera)
+                camera=owner.add_component(inx.Camera);camera.depth=i+1
+                camera.render_to_texture=True;camera.target_texture=target;cameras.append(camera)
             router.shared.left_id=cameras[0].component_id
             owner=scene.create_game_object('Monitor');owner.transform.position=Vector3(0,0,-5);monitor=owner.add_component(inx.Camera);monitor.culling_mask=0;monitor.depth=-1;scene.main_camera=monitor
             router.monitor_id=monitor.component_id;router.monitor.targets=targets

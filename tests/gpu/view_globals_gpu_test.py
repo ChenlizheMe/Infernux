@@ -70,7 +70,7 @@ class ProbePipeline(RenderPipeline):
     def define_topology(self, graph):
         graph.set_msaa_samples(1)
         source = graph.create_texture('source', format=Format.RGBA16_SFLOAT)
-        depth = graph.create_texture('depth', format=Format.D32_SFLOAT)
+        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, camera_target=True)
         color = graph.create_texture('color', camera_target=True)
         graph.add_pass('Geometry').write_color(source).write_depth(depth).set_clear(
             color=(0, 0, 0, 1), depth=0).draw_renderers(material_pass='forward')
@@ -105,6 +105,7 @@ def main():
             native.set_editor_idle_fps(0)
             native.set_scene_view_visible(True)
             native.set_show_grid(False)
+            engine.set_show_gizmos(False)
             editor = native.editor_camera
             editor.restore_state(0, 0, -12, 0, 0, 0, 12, 0, 0)
             editor.near_clip, editor.far_clip = .3, 700
@@ -136,6 +137,7 @@ def main():
                 owner.transform.position = Vector3(0, 0, z)
                 camera = owner.add_component(inx.Camera)
                 camera.set_clip_planes(near, far)
+                camera.render_to_texture = True
                 camera.target_texture = target
                 camera.depth = index
                 cameras.append(camera)
@@ -154,11 +156,18 @@ def main():
             tickets = None
             initial_images = None
 
+            def probe_geometry_published():
+                try:
+                    native.get_object_mesh_index_gpu_info(surface.id)
+                except IndexError:
+                    return False
+                return True
+
             def after_draw():
                 nonlocal phase, frame, changed, tickets, complete, initial_images
                 try:
                     frame += 1
-                    if tickets is None and frame >= changed + 8:
+                    if tickets is None and frame >= changed + 8 and (phase != 0 or probe_geometry_published()):
                         tickets = [engine.request_render_target_readback(False), engine.request_render_target_readback(True)]
                     elif tickets is not None and all(ticket.done for ticket in tickets):
                         images = [ticket.result_numpy().copy()[..., :3].astype(float) for ticket in tickets]

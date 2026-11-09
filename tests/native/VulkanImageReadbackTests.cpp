@@ -1,3 +1,4 @@
+#include <core/threading/FrameWorkOwner.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
@@ -23,10 +24,15 @@ static bool HasNoData(const std::shared_ptr<vk::ImageReadbackTicket> &ticket)
 }
 
 static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues,
-                vk::VkResourceManager &resources, const std::string &scenario)
+                vk::VkResourceManager &resources, FrameWorkOwner &owner, const std::string &scenario)
 {
     using Status = vk::ImageReadbackStatus;
     const std::vector<uint8_t> blue{0, 0, 255, 255};
+    const auto publish = [&] {
+        owner.BeginOpportunity();
+        owner.AdvanceEarly();
+        owner.EndOpportunity();
+    };
     if (scenario == "recorder_abandon") {
         {
             auto recorder = resources.BeginGraphicsImageReadback(1, 1, VK_FORMAT_R8G8B8A8_UNORM);
@@ -53,6 +59,10 @@ static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues,
         } else {
             resources.DrainAsyncGraphicsSubmissions();
             resources.PollImageReadbacks();
+            if (!cancelled) {
+                assert(ticket->IsGpuComplete() && HasNoData(ticket));
+                publish();
+            }
         }
         assert(released == 1 && resources.GetPendingImageReadbackCount() == 0);
         assert(resources.GetStagingPoolBufferCount() == 1);
@@ -122,14 +132,20 @@ static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues,
     submit.pCommandBuffers = &allocation.cmdBuffer;
     const auto submission = queues.Reserve(rhi::QueueRole::Graphics);
     assert(queues.SubmitReserved(submission, submit, fence) == VK_SUCCESS);
+    resources.AcceptFrameImageReadback(*ticket, epoch);
     assert(vkWaitForFences(device.GetDevice(), 1, &fence, VK_TRUE, 10'000'000'000ULL) == VK_SUCCESS);
     queues.MarkCompleted(submission);
     queues.CompleteCompletionEpoch(epoch);
     const bool drain = scenario == "frame_drain";
     if (drain)
         resources.DrainImageReadbacks();
-    else
+    else {
         resources.PollImageReadbacks();
+        if (!cancelled) {
+            assert(ticket->IsGpuComplete() && HasNoData(ticket));
+            publish();
+        }
+    }
     assert(ticket->GetStatus() == (cancelled || drain ? Status::Cancelled : Status::Completed));
     assert(cancelled || drain ? HasNoData(ticket) : ticket->GetData() == blue);
     assert(resources.GetPendingImageReadbackCount() == 0 && resources.GetPendingImageReadbackBytes() == 0);
@@ -155,9 +171,11 @@ int main(int argc, char **argv)
     assert(queues.Initialize(device, 2));
     bool passed;
     {
+        FrameWorkOwner owner([] { return uint64_t{0}; });
         vk::VkResourceManager resources;
         assert(resources.Initialize(device, &queues));
-        passed = Run(device, queues, resources, argv[1]);
+        resources.RegisterImageReadbackWork(owner);
+        passed = Run(device, queues, resources, owner, argv[1]);
     }
     queues.Destroy();
     device.Destroy();

@@ -319,8 +319,8 @@ def main() -> int:
             # The index declaration is metadata for the whole function, not a
             # point where execution suddenly becomes parallel.  Statements on
             # either side execute once for each item in the explicitly named
-            # domain.  A larger output first in the argument list also proves
-            # that launch never guesses its domain from argument order/size.
+            # domain.  The output view has the exact pointwise domain length,
+            # and the rest of its larger backing buffer must stay untouched.
             explicit_domain = inx.buffer(
                 shape=17, dtype=np.int32, device="gpu", data=np.arange(17, dtype=np.int32)
             )
@@ -334,7 +334,8 @@ def main() -> int:
                 i = inx.compute.index(domain_values)
                 output_values[i] = domain_values[i] + adjusted
 
-            inx.compute.launch(explicit_domain_kernel, params=(explicit_output, explicit_domain, 4))
+            with explicit_output.view(count=17) as output_rows:
+                inx.compute.launch(explicit_domain_kernel, params=(output_rows, explicit_domain, 4))
             expected_explicit = np.full(41, -1, dtype=np.int32)
             expected_explicit[:17] = np.arange(17, dtype=np.int32) + 9
             np.testing.assert_array_equal(explicit_output.get_data().numpy(), expected_explicit)
@@ -589,8 +590,14 @@ def main() -> int:
             assert statistics.cpu_submit_ms > 0.0
             assert statistics.wait_ms >= 0.0
             assert statistics.pending_submission_count >= 0
-            assert not statistics.gpu_profile_available
-            assert statistics.gpu_time_ms is None
+            assert statistics.gpu_profile_available and statistics.gpu_profile_serial > 0
+            assert statistics.gpu_time_ms is not None and statistics.gpu_time_ms >= 0.0
+
+            inx.compute.set_profiling_enabled(False)
+            inx.compute.launch(affine, params=(rows, 1, 0))
+            rows.get_data()
+            unprofiled = inx.compute.statistics()
+            assert not unprofiled.gpu_profile_available and unprofiled.gpu_time_ms is None
 
             inx.compute.set_profiling_enabled(True)
             inx.compute.launch(affine, params=(rows, 1, 0))

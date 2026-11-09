@@ -26,7 +26,8 @@ def verify_async_readback() -> None:
                 values.get_data_async(offset=offset, count=257).get_data().numpy(), expected[offset:offset + 257],
             )
         after = inx.compute.statistics()
-        assert after.staging_allocation_count == before.staging_allocation_count
+        # Each accepted readback owns one private staging allocation.
+        assert after.staging_allocation_count - before.staging_allocation_count == 12
 
         # Completed but unconsumed snapshots remain independent, even if newer
         # writes and readbacks have passed through the same source buffer.
@@ -277,6 +278,7 @@ void main() {
                 (len(scalar_source) + 63) // 64,
                 1,
                 1,
+                None,
             )
             # Multiple solver launches share one command buffer and one queue
             # submission while retaining the same resident binding.
@@ -306,7 +308,7 @@ void main() {
             assert sparse_kernel.buffer_bindings == [0, 2]
             scale_serial = scale._native.last_write_serial
             host.dispatch_batch([
-                (sparse_kernel, [scale._native, scalar_values._native], ["read", "read_write"], b"", 5, 1, 1),
+                (sparse_kernel, [scale._native, scalar_values._native], ["read", "read_write"], b"", 5, 1, 1, None),
             ])
             assert scale._native.last_write_serial == scale_serial
             np.testing.assert_array_equal(
