@@ -42,6 +42,22 @@ class AssetSource
     /// Consume this input, moving owned bytes or copying a borrowed authoring view.
     INFERNUX_ASSET_RUNTIME_API std::string TakeBytes() &&;
     INFERNUX_ASSET_RUNTIME_API const std::string &ContentHash();
+    [[nodiscard]] FileInput *OpenedFile() const noexcept
+    {
+        return m_input.get();
+    }
+    INFERNUX_ASSET_RUNTIME_API void BeginSequentialRead(uint64_t storageLimit);
+    INFERNUX_ASSET_RUNTIME_API void OpenSequentialRead();
+    INFERNUX_ASSET_RUNTIME_API void CloseFile();
+    INFERNUX_ASSET_RUNTIME_API void ReadSequential(void *destination, size_t bytes);
+    [[nodiscard]] bool IsSequential() const noexcept
+    {
+        return m_sequentialHash.has_value();
+    }
+    [[nodiscard]] uint64_t SequentialStorageLimit() const noexcept
+    {
+        return m_sequentialStorageLimit;
+    }
 
   private:
     friend class InxDefaultLoader;
@@ -55,5 +71,8 @@ class AssetSource
     std::optional<std::string> m_bytes;
     std::string_view m_view;
     std::optional<std::string> m_hash;
+    std::optional<uint64_t> m_sequentialHash;
+    uint64_t m_sequentialOffset = 0;
+    uint64_t m_sequentialStorageLimit = 0;
 };
 } // namespace infernux

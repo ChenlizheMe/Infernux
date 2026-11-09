@@ -318,10 +318,12 @@ std::shared_ptr<DocumentWriteTicket> DocumentStore::SubmitPrepared(const std::st
 }
 
 std::shared_ptr<DocumentWriteTicket> DocumentStore::SubmitStaged(const std::string &path, std::string content,
-                                                                 const PathWriteScope &parent)
+                                                                 const PathWriteScope &parent,
+                                                                 std::shared_ptr<FrameCpuStorageClaim> storage)
 {
     DocumentWriteOptions options;
     options.writeScope = parent;
+    options.preclaimedStorage = std::move(storage);
     std::shared_ptr<DocumentWriteTicket> accepted;
     SubmitContent(path, std::move(content), std::move(options), accepted, true);
     return accepted;
@@ -354,7 +356,11 @@ void DocumentStore::SubmitContent(const std::string &path, Content content, Docu
         const auto *owned = std::get_if<std::string>(&content);
         const auto *borrowed = std::get_if<std::string_view>(&content);
         const auto bytes = owned ? owned->capacity() : borrowed ? borrowed->size() : 0;
-        auto storage = managed && bytes ? m_frameOwner->TrackOwnedCpuStorage(bytes) : nullptr;
+        auto storage = options.preclaimedStorage;
+        if (storage && (!owned || bytes > storage->Bytes()))
+            throw std::logic_error("document output exceeds its producer's CPU reservation");
+        if (!storage && managed && bytes)
+            storage = m_frameOwner->TrackOwnedCpuStorage(bytes);
         auto &history = m_history[normalizedPath];
         const uint64_t generation = history.submitted + 1;
         auto ticket = std::shared_ptr<DocumentWriteTicket>(
@@ -369,11 +375,11 @@ void DocumentStore::SubmitContent(const std::string &path, Content content, Docu
         const bool blocking = !owned && !std::holds_alternative<DocumentWriteBuffer>(content);
         Request request{normalizedPath,
                         resolvedPath,
+                        std::move(storage),
                         std::move(content),
                         std::move(options),
                         ticket,
                         std::move(writeScope),
-                        std::move(storage),
                         m_nextSequence++,
                         cold,
                         blocking,
@@ -667,7 +673,7 @@ void DocumentStore::RunPath(const std::string &key, uint64_t scheduledGeneration
                         std::filesystem::create_directories(NativeFilePath(parent));
                     request->writer = std::make_unique<AtomicFileWriter>(
                         request->path, AtomicWriteOptions{request->options.mode, request->options.expectedFileState},
-                        step ? 0 : request->Bytes().size(), request->staged);
+                        step || request->options.preclaimedStorage ? 0 : request->Bytes().size(), request->staged);
                 }
                 auto &writer = *request->writer;
                 if (step && step->range == WriteStep::Range::ExpectedInput) {

@@ -10,6 +10,8 @@ namespace infernux
 {
 namespace
 {
+constexpr uint64_t InitialHash = 14695981039346656037ULL;
+
 uint64_t HashBytes(std::string_view bytes, uint64_t hash)
 {
     for (const unsigned char value : bytes) {
@@ -40,8 +42,41 @@ AssetSource::~AssetSource() = default;
 
 std::string_view AssetSource::Bytes()
 {
+    if (IsSequential())
+        throw std::logic_error("A sequential asset source cannot be materialized");
     ReadNext((std::numeric_limits<size_t>::max)());
     return m_view;
+}
+
+void AssetSource::BeginSequentialRead(uint64_t storageLimit)
+{
+    if (!m_input || m_bytes || m_hash || IsSequential() || !storageLimit)
+        throw std::logic_error("A sequential asset source requires an unconsumed file");
+    m_sequentialHash = InitialHash;
+    m_sequentialStorageLimit = storageLimit;
+}
+
+void AssetSource::OpenSequentialRead()
+{
+    if (!IsSequential() || m_input || m_sequentialOffset)
+        throw std::logic_error("Sequential asset source cannot be reopened after reading");
+    m_input = std::make_unique<FileInput>(ToFsPath(m_path));
+}
+
+void AssetSource::CloseFile()
+{
+    if (!IsSequential() && m_view.size() != m_size)
+        throw std::logic_error("Cannot close a partially materialized asset source");
+    m_input.reset();
+}
+
+void AssetSource::ReadSequential(void *destination, size_t bytes)
+{
+    if (!IsSequential() || !m_input || bytes > m_size - m_sequentialOffset)
+        throw std::logic_error("Sequential asset read exceeds the source");
+    m_input->ReadAt(m_sequentialOffset, destination, bytes);
+    *m_sequentialHash = HashBytes({static_cast<const char *>(destination), bytes}, *m_sequentialHash);
+    m_sequentialOffset += bytes;
 }
 
 bool AssetSource::ReadNext(size_t maximum)
@@ -97,8 +132,12 @@ std::string AssetSource::TakeBytes() &&
 const std::string &AssetSource::ContentHash()
 {
     if (!m_hash) {
-        uint64_t hash = 14695981039346656037ULL;
-        if (!m_input || m_view.size() == m_size) {
+        uint64_t hash = InitialHash;
+        if (IsSequential()) {
+            if (m_sequentialOffset != m_size)
+                throw std::logic_error("Sequential asset source has not reached the end of the file");
+            hash = *m_sequentialHash;
+        } else if (!m_input || m_view.size() == m_size) {
             hash = HashBytes(m_view, hash);
         } else {
             std::array<char, 64 * 1024> block;

@@ -77,16 +77,17 @@ class ExecutionScope:
     def __init__(self):
         self._closed = False
         self._paused = False
-        self._state_provider = None
+        self._component_state = None
         self._requests = weakref.WeakSet()
         self._resources = weakref.WeakSet()
 
     @property
     def state(self):
+        if self._component_state is not None:
+            return self._component_state.state(self, _active_step.get())
         if self._closed:
             return 'closed'
-        state = 'active' if self._state_provider is None else self._state_provider()
-        return 'paused' if self._paused and state in ('active', 'stepping') else state
+        return 'paused' if self._paused else 'active'
 
     @contextmanager
     def activate(self):
@@ -136,7 +137,7 @@ def component_execution(component):
 
 
 def component_scope(component):
-    from infernux.lib import SceneManager
+    from infernux.lib import SceneManager, _Infernux
     manager = SceneManager.instance()
     playing = bool(manager.is_playing())
     domain = (int(manager.simulation_epoch), playing)
@@ -145,23 +146,8 @@ def component_scope(component):
         return stored[1]
     if stored is not None:
         stored[1].close()
-    reference = weakref.ref(component)
-    def state():
-        owner = reference()
-        if (owner is None or owner._is_destroyed or owner.__dict__.get('_is_destroying', False)
-                or owner.__dict__.get('_play_domain_destroy_finalized', False)
-                or int(manager.simulation_epoch) != domain[0]
-                or bool(manager.is_playing()) != playing):
-            return 'closed'
-        if not owner._runtime_active_in_hierarchy or not owner._enabled:
-            return 'paused'
-        if playing and manager.is_paused():
-            permitted = manager.is_stepping() and _active_step.get() == (
-                int(manager.simulation_epoch), int(manager._step_permission_index))
-            return 'stepping' if permitted else 'paused'
-        return 'active'
     scope = ExecutionScope()
-    scope._state_provider = state
+    scope._component_state = _Infernux._ComponentExecutionState(component, manager, *domain)
     component.__dict__['_runtime_execution_scope'] = domain, scope
     return scope
 
@@ -170,7 +156,7 @@ def capture_execution_scope(default_owner=None):
     owner = _current_owner.get()
     # A callback's receiver supplies its ordinary lifetime; an explicitly
     # activated caller scope can choose a different lifetime for the registration.
-    explicit = isinstance(owner, ExecutionScope) and owner._state_provider is None
+    explicit = isinstance(owner, ExecutionScope) and owner._component_state is None
     if default_owner is not None and not explicit:
         owner = default_owner
     phase = _active_phase.get()

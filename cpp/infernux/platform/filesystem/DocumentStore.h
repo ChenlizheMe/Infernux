@@ -52,6 +52,9 @@ struct DocumentWriteOptions
     // only a lookup key; it must never make independent writers share CAS.
     std::string commitChainToken;
     PathWriteScope writeScope;
+    // The producer already reserved this immutable output. The queue borrows
+    // that claim rather than admitting or accounting the same bytes again.
+    std::shared_ptr<FrameCpuStorageClaim> preclaimedStorage;
 };
 
 /// The producer's allocation and capacity claim move into the path queue.
@@ -149,7 +152,8 @@ class DocumentStore final
     INFERNUX_FOUNDATION_API std::shared_ptr<DocumentWriteTicket>
     SubmitBuffer(const std::string &path, DocumentWriteBuffer content, DocumentWriteOptions options = {});
     std::shared_ptr<DocumentWriteTicket> SubmitStaged(const std::string &path, std::string content,
-                                                      const PathWriteScope &parent);
+                                                      const PathWriteScope &parent,
+                                                      std::shared_ptr<FrameCpuStorageClaim> storage = {});
     /// Enqueue the journal's already-flushed file for the same path publication.
     /// The transaction persists the destination directory after the group.
     std::shared_ptr<DocumentWriteTicket> SubmitPrepared(const std::string &path, AtomicPreparedFile prepared,
@@ -183,11 +187,11 @@ class DocumentStore final
     {
         std::string key;
         std::string path;
+        std::shared_ptr<FrameCpuStorageClaim> storage;
         Content content;
         DocumentWriteOptions options;
         std::shared_ptr<DocumentWriteTicket> ticket;
         PathWriteScope writeScope;
-        std::shared_ptr<FrameCpuStorageClaim> storage;
         uint64_t sequence = 0;
         bool cold = false;
         bool blocking = false;

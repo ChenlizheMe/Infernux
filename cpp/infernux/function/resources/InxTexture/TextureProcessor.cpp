@@ -323,6 +323,11 @@ TextureCpuData CompressTexture(const TextureCpuData &source, TextureCompression 
     result.valueMax = source.valueMax;
     const int dxtMode = quality == TextureCompressionQuality::Fast ? STB_DXT_NORMAL : STB_DXT_HIGHQUAL;
     const auto layout = GetTextureFormatLayout(result.format);
+    uint64_t bytes = 0;
+    for (const auto &mip : source.mipLevels)
+        bytes += MakeCompressedMip(mip.width, mip.height, mip.depth, 0, layout).byteSize;
+    result.bytes.reserve(static_cast<size_t>(bytes));
+    result.mipLevels.reserve(source.mipLevels.size());
 
     for (const TextureMipLevel &sourceMip : source.mipLevels) {
         const TextureMipLevel destinationMip =

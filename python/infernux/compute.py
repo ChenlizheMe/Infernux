@@ -2177,6 +2177,14 @@ class TransformBinding:
         self._pending_cpu_pose = None
         self._readback_source = None
         self._closed = False
+        self._native_cpu_exchange = None
+        if (type(pose) is Buffer and pose.device == "cpu" and not pose._cpu_mapped
+                and not _web_cpu_compute_enabled()
+                and isinstance(owner, InxComponent) and self._execution_scope is not None
+                and self._execution_scope._component_state is not None):
+            from infernux.lib import GameObject, _Infernux
+            if type(game_object) is GameObject:
+                self._native_cpu_exchange = _Infernux._CpuTransformExchange(object_handle)
         _transform_bindings.add(self)
 
     @property
@@ -2233,6 +2241,19 @@ class TransformBinding:
         self._pending_cpu_pose = None
         _cpu_dirty_transform_bindings.discard(self)
 
+    def _apply_native_cpu_authoring(self, previous_pose, current_pose, paused: bool) -> None:
+        self._apply_authored_pose(previous_pose, current_pose)
+        self._finish_transform_authoring(paused)
+
+    def _finish_transform_authoring(self, paused: bool) -> None:
+        try:
+            if not paused:
+                self._request_readback()
+        finally:
+            if self._native_cpu_exchange is not None:
+                # Authority changed even if sampling the next pose failed.
+                self._native_cpu_exchange.adopt_python_state(self)
+
     def _resolve_live_transform(self, owner):
         # A replacement component can retain the same GameObject handle.
         if owner is not None and not getattr(owner, "_is_destroyed", False) and not self._pose.closed:
@@ -2254,6 +2275,9 @@ class TransformBinding:
     def _poll(self) -> None:
         if self._closed:
             return
+        if self._native_cpu_exchange is not None and self._initial_pose is None:
+            _advance_transform_bindings((self,), 0)
+            return
         scope = self._execution_scope
         if scope is not None and scope.state == 'closed':
             self.close()
@@ -2274,7 +2298,7 @@ class TransformBinding:
             if self._pose._cpu_mapped:
                 self._readback = None
                 return
-            self._request_readback()
+            self._finish_transform_authoring(False)
             return
         if self._pose._cpu_mapped:
             if self._published_pose is not None and _pose_changed(
@@ -2355,6 +2379,7 @@ class TransformBinding:
         self._initial_pose = None
         self._published_pose = None
         self._pending_cpu_pose = None
+        self._native_cpu_exchange = None
 
 
 def bind_transform(owner, *, pose: Buffer, initial_pose: TransformPose | None = None,
@@ -2396,8 +2421,23 @@ def _resolve_bound_transform(object_id: int, object_handle):
 def _poll_transform_bindings() -> None:
     """Exchange authored/simulated poses at the physics Transform barrier."""
     with _record_commands():
-        for binding in tuple(_transform_bindings):
-            binding._poll()
+        bindings = tuple(_transform_bindings)
+        index = 0
+        while index < len(bindings):
+            binding = bindings[index]
+            if binding._native_cpu_exchange is None or binding._initial_pose is not None:
+                binding._poll()
+                index += 1
+            else:
+                index = _advance_transform_bindings(bindings, index)
+
+
+@_automatic_cost
+def _advance_transform_bindings(bindings, index: int) -> int:
+    from infernux.execution import capture_step_permission
+    from infernux.lib import _Infernux
+
+    return _Infernux._advance_transform_bindings(bindings, index, TransformPose, capture_step_permission())
 
 
 def buffer(*, shape, dtype=float, device: Literal["cpu", "gpu"], data=None) -> Buffer:

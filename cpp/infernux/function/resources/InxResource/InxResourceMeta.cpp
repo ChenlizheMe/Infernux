@@ -183,13 +183,16 @@ void InxResourceMeta::Init(const char *content, size_t contentSize, const std::s
 
 void InxResourceMeta::InitFromSource(AssetSource &source, ResourceType type)
 {
+    InitSourceIdentity(source.Path(), type);
+    AddMetadata("content_hash", source.ContentHash());
+}
+
+void InxResourceMeta::InitSourceIdentity(const std::string &path, ResourceType type)
+{
     // Store resource path in metadata (always forward-slash UTF-8 for stable lookups)
-    AddMetadata("file_path", NormalizeFilePath(source.Path()));
+    AddMetadata("file_path", NormalizeFilePath(path));
     // Set resource type
     AddMetadata("resource_type", type);
-
-    // Calculate content hash (for change detection)
-    AddMetadata("content_hash", source.ContentHash());
 
     // Generate a random GUID (stable once stored in .meta)
     // This remains unchanged across moves/renames because the meta is preserved.

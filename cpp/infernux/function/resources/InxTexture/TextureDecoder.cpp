@@ -12,11 +12,14 @@
 
 #include <stb_image.h>
 #include <stb_image_resize2.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -24,10 +27,19 @@
 
 namespace infernux
 {
+namespace detail
+{
+size_t MeasureTextureResize(STBIR_RESIZE &resize);
+bool RunTextureResize(STBIR_RESIZE &resize, size_t maximum);
+} // namespace detail
+
 namespace
 {
 constexpr uint32_t MaximumDimension = 65'536;
 constexpr uint64_t MaximumDecodedBytes = 1ULL << 30;
+constexpr size_t PngWindowBytes = 64 * 1024;
+// zlib uses a 32 KiB history window plus its inflate state and tables.
+constexpr size_t PngInflateBytes = 64 * 1024;
 
 uint32_t ReadMaxSize(const InxResourceMeta &metadata)
 {
@@ -204,7 +216,362 @@ void ExpandRgba16(const stbi_us *pixels, size_t byteCount, bool srgb, void *dest
     }
 }
 
+uint32_t PngU32(const unsigned char *bytes)
+{
+    return uint32_t(bytes[0]) << 24 | uint32_t(bytes[1]) << 16 | uint32_t(bytes[2]) << 8 | bytes[3];
+}
+
+std::pair<uint32_t, uint32_t> PngDimensions(const std::array<unsigned char, 33> &header)
+{
+    constexpr std::array<unsigned char, 16> prefix{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+    if (!std::equal(prefix.begin(), prefix.end(), header.begin()) || header[24] != 8 || header[25] != 6 ||
+        header[26] != 0 || header[27] != 0 || header[28] != 0)
+        return {};
+    const auto width = PngU32(header.data() + 16);
+    const auto height = PngU32(header.data() + 20);
+    if (!width || !height || width > MaximumDimension || height > MaximumDimension)
+        throw std::invalid_argument("RGBA PNG source dimensions exceed texture decoder limits");
+    return {width, height};
+}
+
+class PngRows
+{
+  public:
+    PngRows(AssetSource &source, uint32_t width, uint32_t height)
+        : m_source(source), m_width(width), m_height(height), m_rowBytes(size_t(width) * 4 + 1), m_rows(m_rowBytes * 2)
+    {
+        std::array<unsigned char, 33> header{};
+        Read(header.data(), header.size());
+        if (PngDimensions(header) != std::pair{width, height} ||
+            crc32(0, header.data() + 12, 17) != PngU32(header.data() + 29))
+            throw std::invalid_argument("invalid RGBA PNG header");
+        m_inflate.zalloc = &Allocate;
+        m_inflate.zfree = &Free;
+        m_inflate.opaque = this;
+        if (inflateInit(&m_inflate) != Z_OK)
+            throw std::runtime_error("could not initialize PNG decompression");
+    }
+
+    ~PngRows()
+    {
+        inflateEnd(&m_inflate);
+    }
+
+    PngRows(const PngRows &) = delete;
+    PngRows &operator=(const PngRows &) = delete;
+
+    static const void *ReadRow(void *, const void *, int pixels, int x, int y, void *context) noexcept
+    {
+        auto &self = *static_cast<PngRows *>(context);
+        if (!self.m_error) {
+            try {
+                if (x < 0 || y < 0 || uint32_t(x) > self.m_width || uint32_t(y) >= self.m_height || pixels < 0 ||
+                    uint32_t(pixels) > self.m_width - uint32_t(x) || y < self.m_lastRow - 1)
+                    throw std::runtime_error("PNG resize requested a scanline outside its window");
+                while (self.m_lastRow < y)
+                    self.Advance();
+                return self.m_rows.data() + size_t(y % 2) * self.m_rowBytes + 1 + size_t(x) * 4;
+            } catch (...) {
+                self.m_error = std::current_exception();
+            }
+        }
+        // The C resize callback has no failure return. Retire its scratch
+        // normally, then discard this unpublished output and report the error.
+        return self.m_rows.data() + 1;
+    }
+
+    void Finish()
+    {
+        if (m_error)
+            std::rethrow_exception(m_error);
+        while (uint32_t(m_lastRow + 1) < m_height)
+            Advance();
+        unsigned char excess = 0;
+        m_inflate.next_out = &excess;
+        m_inflate.avail_out = 1;
+        Inflate();
+        if (!m_streamEnded || !m_inflate.avail_out || m_inflate.avail_in || m_chunkBytes)
+            throw std::invalid_argument("PNG data does not end at its last scanline");
+        FinishChunk();
+        for (;;) {
+            OpenChunk();
+            if (ChunkIs("IEND")) {
+                if (m_chunkBytes)
+                    throw std::invalid_argument("invalid PNG end chunk");
+                FinishChunk();
+                break;
+            }
+            if (ChunkIs("IDAT") ? m_chunkBytes != 0 : !(m_chunkType[0] & 32))
+                throw std::invalid_argument("unexpected PNG chunk after image data");
+            SkipChunk();
+        }
+        while (m_cursor != m_source.Size()) {
+            size_t bytes = m_window.size();
+            (void)ReadSpan(bytes);
+        }
+    }
+
+  private:
+    struct alignas(std::max_align_t) Allocation
+    {
+        size_t size;
+    };
+
+    static voidpf Allocate(voidpf opaque, uInt items, uInt size)
+    {
+        auto &self = *static_cast<PngRows *>(opaque);
+        const auto remaining = PngInflateBytes - self.m_allocated;
+        if (remaining < sizeof(Allocation) || (size && items > (remaining - sizeof(Allocation)) / size))
+            return nullptr;
+        const auto bytes = size_t(items) * size + sizeof(Allocation);
+        auto *allocation = static_cast<Allocation *>(std::malloc(bytes));
+        if (!allocation)
+            return nullptr;
+        allocation->size = bytes;
+        self.m_allocated += bytes;
+        return allocation + 1;
+    }
+
+    static void Free(voidpf opaque, voidpf address)
+    {
+        if (!address)
+            return;
+        auto &self = *static_cast<PngRows *>(opaque);
+        auto *allocation = static_cast<Allocation *>(address) - 1;
+        self.m_allocated -= allocation->size;
+        std::free(allocation);
+    }
+
+    const unsigned char *ReadSpan(size_t &bytes)
+    {
+        if (m_cursor == m_source.Size())
+            throw std::invalid_argument("truncated PNG");
+        if (m_cursor == m_windowEnd) {
+            m_windowBegin = m_cursor;
+            const auto count = size_t(std::min<uint64_t>(m_window.size(), m_source.Size() - m_cursor));
+            m_source.ReadSequential(m_window.data(), count);
+            m_windowEnd += count;
+        }
+        const auto *span = m_window.data() + (m_cursor - m_windowBegin);
+        bytes = size_t(std::min<uint64_t>(bytes, m_windowEnd - m_cursor));
+        m_cursor += bytes;
+        return span;
+    }
+
+    void Read(unsigned char *output, size_t bytes)
+    {
+        while (bytes) {
+            auto count = bytes;
+            const auto *input = ReadSpan(count);
+            std::memcpy(output, input, count);
+            output += count;
+            bytes -= count;
+        }
+    }
+
+    bool ChunkIs(const char *type) const
+    {
+        return std::memcmp(m_chunkType.data(), type, 4) == 0;
+    }
+
+    void OpenChunk()
+    {
+        std::array<unsigned char, 8> header{};
+        Read(header.data(), header.size());
+        m_chunkBytes = PngU32(header.data());
+        if (m_chunkBytes > 0x7fffffff || uint64_t(m_chunkBytes) + 4 > m_source.Size() - m_cursor)
+            throw std::invalid_argument("truncated PNG chunk");
+        std::copy_n(header.data() + 4, m_chunkType.size(), m_chunkType.begin());
+        m_chunkCrc = crc32(0, m_chunkType.data(), static_cast<uInt>(m_chunkType.size()));
+        m_chunkOpen = true;
+    }
+
+    const unsigned char *ReadChunk(size_t &bytes)
+    {
+        bytes = std::min<size_t>(bytes, m_chunkBytes);
+        const auto *span = ReadSpan(bytes);
+        m_chunkCrc = crc32(m_chunkCrc, span, static_cast<uInt>(bytes));
+        m_chunkBytes -= static_cast<uint32_t>(bytes);
+        return span;
+    }
+
+    void FinishChunk()
+    {
+        std::array<unsigned char, 4> crc{};
+        Read(crc.data(), crc.size());
+        if (PngU32(crc.data()) != m_chunkCrc)
+            throw std::invalid_argument("invalid PNG chunk checksum");
+        m_chunkOpen = false;
+    }
+
+    void SkipChunk()
+    {
+        while (m_chunkBytes) {
+            size_t bytes = m_chunkBytes;
+            (void)ReadChunk(bytes);
+        }
+        FinishChunk();
+    }
+
+    void SupplyInput()
+    {
+        while (!m_chunkBytes) {
+            if (m_chunkOpen)
+                FinishChunk();
+            OpenChunk();
+            if (ChunkIs("IDAT"))
+                m_startedImage = true;
+            else if (!m_startedImage && ((m_chunkType[0] & 32) || ChunkIs("PLTE")))
+                SkipChunk();
+            else
+                throw std::invalid_argument("missing or incomplete PNG image data");
+        }
+        size_t bytes = m_chunkBytes;
+        m_inflate.next_in = const_cast<Bytef *>(ReadChunk(bytes));
+        m_inflate.avail_in = static_cast<uInt>(bytes);
+    }
+
+    void Inflate()
+    {
+        while (m_inflate.avail_out && !m_streamEnded) {
+            // inflate can still emit buffered output with no encoded input.
+            auto result = inflate(&m_inflate, Z_NO_FLUSH);
+            if (result == Z_BUF_ERROR && !m_inflate.avail_in) {
+                SupplyInput();
+                result = inflate(&m_inflate, Z_NO_FLUSH);
+            }
+            if (result == Z_STREAM_END)
+                m_streamEnded = true;
+            else if (result != Z_OK)
+                throw std::invalid_argument("invalid PNG deflate stream");
+        }
+    }
+
+    void Advance()
+    {
+        const auto index = size_t(++m_lastRow % 2);
+        auto *row = m_rows.data() + index * m_rowBytes;
+        const auto *previous = m_rows.data() + (1 - index) * m_rowBytes;
+        m_inflate.next_out = row;
+        m_inflate.avail_out = static_cast<uInt>(m_rowBytes);
+        Inflate();
+        if (m_inflate.avail_out || row[0] > 4)
+            throw std::invalid_argument("invalid PNG scanline");
+        if (!row[0])
+            return;
+        for (size_t i = 1; i < m_rowBytes; ++i) {
+            const int left = i > 4 ? row[i - 4] : 0;
+            const int above = previous[i];
+            const int diagonal = i > 4 ? previous[i - 4] : 0;
+            int prediction = 0;
+            switch (row[0]) {
+            case 1:
+                prediction = left;
+                break;
+            case 2:
+                prediction = above;
+                break;
+            case 3:
+                prediction = (left + above) / 2;
+                break;
+            case 4: {
+                const int point = left + above - diagonal;
+                const int l = std::abs(point - left), a = std::abs(point - above), d = std::abs(point - diagonal);
+                prediction = l <= a && l <= d ? left : a <= d ? above : diagonal;
+                break;
+            }
+            }
+            row[i] = static_cast<unsigned char>(row[i] + prediction);
+        }
+    }
+
+    AssetSource &m_source;
+    uint32_t m_width;
+    uint32_t m_height;
+    size_t m_rowBytes;
+    std::vector<unsigned char> m_rows;
+    std::array<unsigned char, PngWindowBytes> m_window;
+    std::array<unsigned char, 4> m_chunkType{};
+    uint64_t m_cursor = 0;
+    uint64_t m_windowBegin = 0;
+    uint64_t m_windowEnd = 0;
+    uint32_t m_chunkBytes = 0;
+    uLong m_chunkCrc = 0;
+    size_t m_allocated = 0;
+    z_stream m_inflate{};
+    std::exception_ptr m_error;
+    int m_lastRow = -1;
+    bool m_chunkOpen = false;
+    bool m_startedImage = false;
+    bool m_streamEnded = false;
+};
+
+bool UsesSrgbResize(const InxResourceMeta &metadata)
+{
+    const auto semantic = ReadSemantic(metadata);
+    return ReadSrgb(metadata) && (semantic == TextureSemantic::Color || semantic == TextureSemantic::UserInterface ||
+                                  semantic == TextureSemantic::Sprite);
+}
+
+void InitPngResize(STBIR_RESIZE &resize, uint32_t width, uint32_t height, uint32_t targetWidth, uint32_t targetHeight,
+                   const InxResourceMeta &metadata, void *output = nullptr)
+{
+    stbir_resize_init(&resize, nullptr, static_cast<int>(width), static_cast<int>(height), 0, output,
+                      static_cast<int>(targetWidth), static_cast<int>(targetHeight), 0, STBIR_RGBA,
+                      UsesSrgbResize(metadata) ? STBIR_TYPE_UINT8_SRGB : STBIR_TYPE_UINT8);
+    stbir_set_pixel_callbacks(&resize, &PngRows::ReadRow, nullptr);
+}
+
 } // namespace
+
+std::pair<uint32_t, uint32_t> TextureDecoder::ReadPngDimensions(AssetSource &source)
+{
+    std::array<unsigned char, 33> header{};
+    if (!source.OpenedFile() || source.Size() < header.size() ||
+        source.Size() > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+        return {};
+    source.OpenedFile()->ReadAt(0, header.data(), header.size());
+    return PngDimensions(header);
+}
+
+TextureDecoder::PngPlan TextureDecoder::PlanPng(AssetSource &source, const InxResourceMeta &metadata)
+{
+    const auto [width, height] = ReadPngDimensions(source);
+    if (!width || ReadTargetFormat(metadata) != TextureTargetFormat::Automatic ||
+        ReadSemantic(metadata) == TextureSemantic::VectorField ||
+        ReadSemantic(metadata) == TextureSemantic::SignedDistanceField)
+        return {};
+    const auto [targetWidth, targetHeight] = FitDimensions(width, height, ReadMaxSize(metadata));
+    if (width == targetWidth && height == targetHeight)
+        return {};
+
+    STBIR_RESIZE resize;
+    InitPngResize(resize, width, height, targetWidth, targetHeight, metadata);
+    const auto resizeScratch = detail::MeasureTextureResize(resize);
+    if (!resizeScratch)
+        throw std::invalid_argument("cannot plan the RGBA PNG resize workspace");
+
+    uint64_t mipBytes = 0;
+    uint64_t blockBytes = 0;
+    auto w = targetWidth;
+    auto h = targetHeight;
+    for (;;) {
+        mipBytes += LevelByteSize(w, h, TextureFormat::Rgba8UNorm);
+        blockBytes += uint64_t((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
+        if (!ReadGenerateMipmaps(metadata) || (w == 1 && h == 1))
+            break;
+        w = std::max(1u, w / 2u);
+        h = std::max(1u, h / 2u);
+    }
+    const uint64_t outputBytes = std::max(mipBytes, blockBytes);
+    const uint64_t decodeBytes = sizeof(PngRows) + uint64_t(width) * 8 + 2 + PngInflateBytes + resizeScratch;
+    // The mip vector is reserved once. BC encoding uses a second planned vector;
+    // serialization holds the final output and its string at the same time.
+    constexpr uint64_t artifactHeaderAndControlBytes = 64 * 1024;
+    const uint64_t bytes =
+        std::max({mipBytes + decodeBytes, mipBytes + blockBytes, 2 * outputBytes}) + artifactHeaderAndControlBytes;
+    return {width, height, bytes, resizeScratch, static_cast<size_t>(mipBytes)};
+}
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &sourcePath,
                                                              const InxResourceMeta &metadata, bool preserveSvgViewport)
@@ -218,6 +585,38 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source
 {
     if (!source.Size() || source.Size() > static_cast<uint64_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("texture source is empty or exceeds decoder limits: " + source.Path());
+    if (source.IsSequential()) {
+        auto *file = source.OpenedFile();
+        if (!file)
+            throw std::logic_error("PNG source must be opened for its admitted decode");
+        const auto revision = file->InspectRevision();
+        const auto plan = PlanPng(source, metadata);
+        if (!plan.bytes || plan.bytes > source.SequentialStorageLimit())
+            throw std::logic_error("PNG options changed after bounded admission");
+        const auto [width, height] = FitDimensions(plan.width, plan.height, ReadMaxSize(metadata));
+        TextureCpuData texture;
+        texture.semantic = ReadSemantic(metadata);
+        texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+        const auto level = DescribeBaseLevel(width, height, texture.format);
+        texture.bytes.reserve(plan.mipBytes);
+        texture.bytes.resize(static_cast<size_t>(level.byteSize));
+        texture.mipLevels.push_back(level);
+        {
+            PngRows rows(source, plan.width, plan.height);
+            STBIR_RESIZE resize;
+            InitPngResize(resize, plan.width, plan.height, width, height, metadata, texture.bytes.data());
+            stbir_set_user_data(&resize, &rows);
+            if (!detail::RunTextureResize(resize, plan.resizeScratch))
+                throw std::runtime_error("failed to resize PNG texture");
+            rows.Finish();
+        }
+        if (!(file->InspectRevision() == revision))
+            throw std::runtime_error("PNG source changed during decode: " + source.Path());
+        source.CloseFile();
+        return TextureProcessor::Process(
+            std::move(texture), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
+                                                      ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
+    }
     return DecodeBytes(source.Bytes(), metadata, source.Path(), preserveSvgViewport);
 }
 

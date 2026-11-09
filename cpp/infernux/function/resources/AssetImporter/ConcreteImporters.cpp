@@ -380,14 +380,16 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     } else if (artifact.metadata.GetDataAs<std::string>("texture_type") == "sdf") {
         throw std::invalid_argument("SignedDistanceField textures must use the .inxsdf source format");
     }
-    if (!artifact.metadata.HasKey("content_hash"))
-        throw std::logic_error("TextureImporter metadata has no source content hash");
     std::optional<AssetSource> source;
     auto &input = request.source ? *request.source : source.emplace(request.sourcePath);
+    if (!input.IsSequential() && !artifact.metadata.HasKey("content_hash"))
+        throw std::logic_error("TextureImporter metadata has no source content hash");
     const auto cpuData = TextureDecoder::Decode(
         input, artifact.metadata, IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
+    if (input.IsSequential())
+        artifact.metadata.AddMetadata("content_hash", input.ContentHash());
     if (extension == ".svg") {
         // Publish the raster dimensions without a second decode for metadata.
         artifact.metadata.AddMetadata("width", static_cast<int>(cpuData->mipLevels.front().width));

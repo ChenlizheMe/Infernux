@@ -29,6 +29,7 @@ class InxResourceMeta
     INFERNUX_ASSET_RUNTIME_API void Init(const char *content, size_t contentSize, const std::string &filePath,
                                          ResourceType type);
     INFERNUX_ASSET_RUNTIME_API void InitFromSource(AssetSource &source, ResourceType type);
+    INFERNUX_ASSET_RUNTIME_API void InitSourceIdentity(const std::string &path, ResourceType type);
 
     // Copy constructor and assignment operator
     InxResourceMeta(const InxResourceMeta &other) = default;

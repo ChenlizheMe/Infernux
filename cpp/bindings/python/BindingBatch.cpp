@@ -1,9 +1,14 @@
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
 #include <function/scene/ComponentDataStore.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Scene.h>
+#include <function/scene/SceneManager.h>
 #include <function/scene/Transform.h>
 #include <function/scene/TransformECSStore.h>
+#include <optional>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -13,6 +18,255 @@
 
 namespace py = pybind11;
 using namespace infernux;
+
+namespace
+{
+
+using StepPermission = std::optional<std::pair<uint64_t, uint64_t>>;
+
+bool PythonTruth(py::handle value)
+{
+    const int truth = PyObject_IsTrue(value.ptr());
+    if (truth < 0)
+        throw py::error_already_set();
+    return truth != 0;
+}
+
+class ComponentExecutionState
+{
+  public:
+    enum class Status
+    {
+        Active,
+        Paused,
+        Stepping,
+        Closed
+    };
+
+    ComponentExecutionState(py::handle owner, SceneManager &manager, uint64_t epoch, bool playing)
+        : m_owner(owner), m_manager(manager), m_epoch(epoch), m_playing(playing)
+    {
+    }
+
+    Status Read(py::handle scope, const StepPermission &permission) const
+    {
+        if (PythonTruth(scope.attr("_closed")))
+            return Status::Closed;
+        const py::object owner = m_owner();
+        if (owner.is_none() || PythonTruth(owner.attr("_is_destroyed")))
+            return Status::Closed;
+        const auto fieldIsTrue = [&owner](const char *key) {
+            const py::object fields = owner.attr("__dict__");
+            if (!PyDict_CheckExact(fields.ptr()))
+                return PythonTruth(fields.attr("get")(key));
+            const py::str name(key);
+            PyObject *value = PyDict_GetItemWithError(fields.ptr(), name.ptr());
+            if (!value && PyErr_Occurred())
+                throw py::error_already_set();
+            return value && PythonTruth(py::reinterpret_borrow<py::object>(value));
+        };
+        if (fieldIsTrue("_is_destroying") || fieldIsTrue("_play_domain_destroy_finalized") ||
+            m_manager.GetSimulationEpoch() != m_epoch || m_manager.IsPlaying() != m_playing)
+            return Status::Closed;
+        if (!PythonTruth(owner.attr("_runtime_active_in_hierarchy")) || !PythonTruth(owner.attr("_enabled")))
+            return Status::Paused;
+        if (m_playing && m_manager.IsPaused()) {
+            if (!m_manager.IsStepping() ||
+                permission != std::pair(m_manager.GetSimulationEpoch(), m_manager.GetStepPermissionIndex()))
+                return Status::Paused;
+            return PythonTruth(scope.attr("_paused")) ? Status::Paused : Status::Stepping;
+        }
+        return PythonTruth(scope.attr("_paused")) ? Status::Paused : Status::Active;
+    }
+
+    const char *State(py::handle scope, const StepPermission &permission) const
+    {
+        switch (Read(scope, permission)) {
+        case Status::Active:
+            return "active";
+        case Status::Paused:
+            return "paused";
+        case Status::Stepping:
+            return "stepping";
+        case Status::Closed:
+            return "closed";
+        }
+        return "closed";
+    }
+
+  private:
+    py::weakref m_owner;
+    const SceneManager &m_manager;
+    uint64_t m_epoch;
+    bool m_playing;
+};
+
+struct CpuTransformPose
+{
+    std::array<float, 3> position;
+    std::array<float, 4> rotation;
+    std::array<float, 3> scale;
+
+    static CpuTransformPose Read(Transform &target)
+    {
+        const auto position = target.GetWorldPosition();
+        const auto rotation = target.GetWorldRotation();
+        const auto scale = target.GetLocalScale();
+        return {{position.x, position.y, position.z},
+                {rotation.x, rotation.y, rotation.z, rotation.w},
+                {scale.x, scale.y, scale.z}};
+    }
+
+    static CpuTransformPose FromPython(py::handle pose)
+    {
+        return {pose.attr("position").cast<std::array<float, 3>>(), pose.attr("rotation").cast<std::array<float, 4>>(),
+                pose.attr("scale").cast<std::array<float, 3>>()};
+    }
+
+    static CpuTransformPose Sample(const py::array &array)
+    {
+        std::array<float, 12> values;
+        std::memcpy(values.data(), array.data(), sizeof(values));
+        return {{values[0], values[1], values[2]},
+                {values[4], values[5], values[6], values[7]},
+                {values[8], values[9], values[10]}};
+    }
+
+    py::object ToPython(const py::object &factory) const
+    {
+        return factory(py::make_tuple(position[0], position[1], position[2]),
+                       py::make_tuple(rotation[0], rotation[1], rotation[2], rotation[3]),
+                       py::make_tuple(scale[0], scale[1], scale[2]));
+    }
+
+    void Publish(Transform &target) const
+    {
+        target.SetWorldPosition(position[0], position[1], position[2]);
+        target.SetWorldRotation(glm::quat(rotation[3], rotation[0], rotation[1], rotation[2]));
+        target.SetLocalScale(scale[0], scale[1], scale[2]);
+    }
+
+    bool ChangedFrom(const CpuTransformPose &other) const
+    {
+        const auto close = [](double a, double b) {
+            return a == b || (std::isfinite(a) && std::isfinite(b) && std::abs(a - b) <= 1.0e-5);
+        };
+        return !std::equal(position.begin(), position.end(), other.position.begin(), close) ||
+               !std::equal(rotation.begin(), rotation.end(), other.rotation.begin(), close) ||
+               !std::equal(scale.begin(), scale.end(), other.scale.begin(), close);
+    }
+};
+
+std::optional<py::array> CpuPoseArray(py::handle buffer)
+{
+    const py::object storage = buffer.attr("_array");
+    if (!py::isinstance<py::array>(storage))
+        return std::nullopt;
+    auto array = py::reinterpret_borrow<py::array>(storage);
+    if (array.size() != 12 || !array.dtype().is(py::dtype::of<float>()) || !(array.flags() & py::array::c_style))
+        return std::nullopt;
+    return array;
+}
+
+class CpuTransformExchange
+{
+  public:
+    explicit CpuTransformExchange(ObjectHandle target) : m_target(target)
+    {
+    }
+
+    void AdoptPythonState(py::handle binding)
+    {
+        const py::object pending = binding.attr("_pending_cpu_pose");
+        if (!pending.is_none() && !CpuPoseArray(binding.attr("_pose"))) {
+            binding.attr("_native_cpu_exchange") = py::none();
+            return;
+        }
+        m_published = CpuTransformPose::FromPython(binding.attr("_published_pose"));
+        m_pending = pending.is_none() ? std::nullopt : std::optional(CpuTransformPose::FromPython(pending));
+        ClearPythonPoses(binding);
+    }
+
+    // True means Python code ran and the caller must refresh the context-local Step permit.
+    bool Advance(py::handle binding, const StepPermission &permission, const py::object &factory)
+    {
+        using Status = ComponentExecutionState::Status;
+        const py::object scope = binding.attr("_execution_scope");
+        const py::object state = scope.attr("_component_state");
+        const auto &componentScope = state.cast<const ComponentExecutionState &>();
+        if (componentScope.Read(scope, permission) == Status::Closed) {
+            binding.attr("close")();
+            return true;
+        }
+        const py::object owner = binding.attr("_owner")();
+        const py::object buffer = binding.attr("_pose");
+        auto *object = owner.is_none() || PythonTruth(py::getattr(owner, "_is_destroyed", py::bool_(false))) ||
+                               PythonTruth(buffer.attr("_closed"))
+                           ? nullptr
+                           : SceneManager::Instance().FindRuntimeObjectByID(m_target.id);
+        if (!object || object->GetHandle() != m_target) {
+            binding.attr("close")();
+            return true;
+        }
+        auto &transform = *object->GetTransform();
+        const auto current = CpuTransformPose::Read(transform);
+        const bool paused = componentScope.Read(scope, permission) == Status::Paused;
+        if (m_published && current.ChangedFrom(*m_published)) {
+            binding.attr("_apply_native_cpu_authoring")(m_published->ToPython(factory), current.ToPython(factory),
+                                                        paused);
+            return true;
+        }
+        if (paused)
+            return false;
+
+        const auto array = CpuPoseArray(buffer);
+        if (!array) {
+            binding.attr("_published_pose") = m_published ? m_published->ToPython(factory) : py::none();
+            binding.attr("_pending_cpu_pose") = m_pending ? m_pending->ToPython(factory) : py::none();
+            binding.attr("_native_cpu_exchange") = py::none();
+            binding.attr("_poll")();
+            return true;
+        }
+        if (m_pending) {
+            try {
+                m_pending->Publish(transform);
+            } catch (const std::runtime_error &) {
+                binding.attr("close")();
+                throw;
+            }
+            m_published = m_pending;
+        }
+        m_pending = CpuTransformPose::Sample(*array);
+        return false;
+    }
+
+  private:
+    static void ClearPythonPoses(py::handle binding)
+    {
+        binding.attr("_published_pose") = py::none();
+        binding.attr("_pending_cpu_pose") = py::none();
+    }
+
+    ObjectHandle m_target;
+    std::optional<CpuTransformPose> m_published;
+    std::optional<CpuTransformPose> m_pending;
+};
+
+size_t AdvanceTransformBindings(const py::tuple &bindings, size_t first, const py::object &factory,
+                                const StepPermission &permission)
+{
+    for (size_t index = first; index < bindings.size(); ++index) {
+        const py::handle binding = bindings[index];
+        const py::object exchange = binding.attr("_native_cpu_exchange");
+        if (exchange.is_none() || !binding.attr("_initial_pose").is_none())
+            return index;
+        if (exchange.cast<CpuTransformExchange &>().Advance(binding, permission, factory))
+            return index + 1;
+    }
+    return bindings.size();
+}
+
+} // namespace
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -659,6 +913,14 @@ namespace infernux
 
 void RegisterBatchBindings(py::module_ &m)
 {
+    py::class_<ComponentExecutionState>(m, "_ComponentExecutionState")
+        .def(py::init<py::handle, SceneManager &, uint64_t, bool>())
+        .def("state", &ComponentExecutionState::State);
+    py::class_<CpuTransformExchange>(m, "_CpuTransformExchange")
+        .def(py::init<ObjectHandle>())
+        .def("adopt_python_state", &CpuTransformExchange::AdoptPythonState);
+    m.def("_advance_transform_bindings", &AdvanceTransformBindings);
+
     m.def("_transform_batch_read", &TransformBatchRead, py::arg("targets"), py::arg("property"),
           "Read a Transform property from all targets into a numpy array.\n"
           "Supported properties: 'position', 'local_position', 'local_scale',\n"

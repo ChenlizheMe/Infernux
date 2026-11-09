@@ -6,14 +6,25 @@
 #include "PathWriteScope.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace infernux
 {
 
+class FrameCpuStorageClaim;
+
 struct DocumentTransactionEntry
 {
+    DocumentTransactionEntry(std::string path, std::string content,
+                             std::optional<AtomicFileState> expectedFileState = {})
+        : path(std::move(path)), content(std::move(content)), expectedFileState(std::move(expectedFileState))
+    {
+    }
+
+    std::shared_ptr<FrameCpuStorageClaim> preclaimedStorage;
     std::string path;
     std::string content;
     // Identity of the exact authored input consumed by this transaction.

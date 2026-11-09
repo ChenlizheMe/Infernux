@@ -13,6 +13,7 @@
 #include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
+#include <function/resources/InxTexture/TextureDecoder.h>
 #include <function/resources/RenderTexture/RenderTextureArtifact.h>
 
 #include <core/log/InxLog.h>
@@ -45,6 +46,14 @@ namespace
 {
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
+
+bool IsPngPath(const std::filesystem::path &path)
+{
+    auto extension = FromFsPath(path.extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return extension == ".png";
+}
 
 std::string Utf8Diagnostic(const char *message)
 {
@@ -541,6 +550,22 @@ TakeRuntimeArtifactWrites(std::vector<ImportArtifact::RuntimeCpuArtifact> &artif
     return writes;
 }
 
+void ClaimImportWrites(std::vector<DocumentTransactionEntry> &writes, bool hasMetadata,
+                       const std::shared_ptr<FrameCpuStorageClaim> &storage)
+{
+    if (!storage)
+        return;
+    uint64_t remaining = storage->Bytes();
+    // The sidecar, when present, is first and keeps its normal document accounting.
+    for (auto it = writes.begin() + hasMetadata; it != writes.end(); ++it) {
+        auto &write = *it;
+        if (write.content.capacity() > remaining)
+            throw std::logic_error("PNG import output exceeded its admitted CPU storage");
+        remaining -= write.content.capacity();
+        write.preclaimedStorage = storage;
+    }
+}
+
 bool HasOwnerMergeBudget(const FrameWorkOwner *owner, const std::chrono::steady_clock::time_point started,
                          size_t processed)
 {
@@ -652,33 +677,85 @@ void RequireFileRevisionCurrent(const std::string &path, const FileInput::Revisi
 
 struct AssetDatabase::TextureSourceSnapshot
 {
+    std::shared_ptr<FrameCpuStorageClaim> storage;
     std::optional<FileInput::Revision> revision;
-    std::string bytes;
+    std::unique_ptr<AssetSource> source;
+    const std::string *boundedProjectRoot = nullptr;
+    uint64_t workingBytes = 0;
+    std::string error;
 
-    void Capture(const std::string &path, const FileInput::Revision *expected = nullptr)
+    bool Reserve(FrameWorkOwner *owner)
     {
-        // The file handle retires after the read so replacement can proceed during decode.
+        if (!workingBytes)
+            return true;
+        if (workingBytes > owner->CpuStorageLimit()) {
+            error = "PNG import requires " + std::to_string(workingBytes) +
+                    " CPU bytes, exceeding the configured capacity of " + std::to_string(owner->CpuStorageLimit());
+            return false;
+        }
+        if (!storage)
+            storage = owner->TryReserveCpuStorage(workingBytes);
+        if (storage && owner->TryGrowCpuStorage(*storage, workingBytes))
+            return true;
+        error = "PNG import is waiting for " + std::to_string(workingBytes) +
+                " CPU bytes; retry when capacity is available";
+        return false;
+    }
+
+    void Capture(const std::string &path, const FileInput::Revision *expected = nullptr,
+                 const InxResourceMeta *settings = nullptr)
+    {
         revision.reset();
-        FileInput input(ToFsPath(path));
+        workingBytes = 0;
+        source = std::make_unique<AssetSource>(path);
+        auto &input = *source->OpenedFile();
         revision = input.InspectRevision();
         if (expected && !(*revision == *expected))
             throw std::runtime_error("texture source changed before cook: " + path);
-        if (revision->data.size > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+        if (revision->data.size != source->Size() ||
+            revision->data.size > static_cast<uint64_t>(std::numeric_limits<int>::max()))
             throw std::invalid_argument("texture source exceeds decoder limits: " + path);
-        bytes.resize(static_cast<size_t>(revision->data.size));
-        input.ReadAt(0, bytes.data(), bytes.size());
+        if (settings && boundedProjectRoot && IsPngPath(ToFsPath(path))) {
+            auto options = *settings;
+            options.AddMetadata("resource_type", ResourceType::Texture);
+            TextureImporter{}.EnsureDefaultSettings(options);
+            ApplyPluginPageTextureMetadata(options, path, *boundedProjectRoot);
+            workingBytes = TextureDecoder::PlanPng(*source, options).bytes;
+        }
+        if (workingBytes)
+            source->BeginSequentialRead(workingBytes);
+        else if (!storage)
+            (void)source->Bytes();
+        else
+            throw std::runtime_error("PNG import options changed after storage admission");
         if (!(input.InspectRevision() == *revision))
             throw std::runtime_error("texture source changed during capture: " + path);
+        if (!workingBytes)
+            source->CloseFile();
+    }
+
+    void OpenForCook(const std::string &path)
+    {
+        if (workingBytes) {
+            source->OpenSequentialRead();
+            if (!(source->OpenedFile()->InspectRevision() == revision.value()))
+                throw std::runtime_error("texture source changed before cook: " + path);
+        } else {
+            RequireCurrent(path);
+        }
     }
 
     void RequireCurrent(const std::string &path) const
     {
+        if (source && source->OpenedFile() && !(source->OpenedFile()->InspectRevision() == revision.value()))
+            throw std::runtime_error("texture source changed during capture: " + path);
         RequireFileRevisionCurrent(path, revision.value());
     }
 };
 
 struct AssetDatabase::PendingWatcherImport
 {
+    TextureSourceSnapshot textureSource;
     WorkerMetadataPrepare metadata;
     WorkerImport worker;
     AssetMutationResult result;
@@ -690,6 +767,7 @@ struct AssetDatabase::PendingWatcherImport
     std::unordered_set<std::string> artifactGuids;
     std::string outcome;
     bool writing = false;
+    bool preparing = false;
     bool persisted = false;
 };
 
@@ -2187,13 +2265,14 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
         }
 
         std::optional<AssetSource> source;
-        if (textureSource) {
-            textureSource->Capture(item.file.path);
-            source.emplace(item.file.path, textureSource->bytes);
-        } else {
+        if (textureSource)
+            textureSource->Capture(item.file.path, nullptr, &previousMetadata);
+        else
             source.emplace(item.file.path);
-        }
-        item.loader->CreateMeta(*source, metadata);
+        item.loader->CreateMeta(textureSource ? *textureSource->source : *source, metadata);
+        if (textureSource && textureSource->workingBytes &&
+            !(textureSource->source->OpenedFile()->InspectRevision() == textureSource->revision.value()))
+            throw std::runtime_error("texture source changed during metadata preparation: " + item.file.path);
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
         item.createdGuid = metadata.GetGuid();
         item.inheritedGuid = !previousMetadataLoaded && !item.file.readOnly && !preservedGuid.empty();
@@ -2221,8 +2300,15 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
     } catch (...) {
         item.error = "metadata preparation raised a non-standard exception";
     }
-    if (textureSource)
+    if (textureSource) {
+        if (!item.error.empty()) {
+            textureSource->error = item.error;
+            textureSource->source.reset();
+        } else if (textureSource->workingBytes) {
+            textureSource->source->CloseFile();
+        }
         item.textureRevision = textureSource->revision;
+    }
 }
 
 void AssetDatabase::PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot,
@@ -2750,12 +2836,11 @@ bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshComm
                                  // Metadata and pending imports are merged in the same order.
                                  const auto &revision = state->workerMetadata[item.assetIndex].textureRevision;
                                  TextureSourceSnapshot capture;
-                                 std::optional<AssetSource> source;
                                  if (item.request.resourceType == ResourceType::Texture) {
                                      if (!revision)
                                          throw std::logic_error("texture importer has no prepared source revision");
                                      capture.Capture(item.request.sourcePath, &*revision);
-                                     item.request.source = &source.emplace(item.request.sourcePath, capture.bytes);
+                                     item.request.source = capture.source.get();
                                  }
                                  const auto releaseSource = MakeScopeExit([&item] { item.request.source = nullptr; });
                                  item.artifact = item.importer->Import(item.request);
@@ -3286,6 +3371,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &requestedPath,
     const bool readOnly = IsReadOnlyPath(normalizedPath);
     std::optional<AtomicFileState> expectedMetadata;
     TextureSourceSnapshot capture;
+    capture.boundedProjectRoot = m_frameWork ? &m_projectRoot : nullptr;
     auto *textureSource = type == ResourceType::Texture ? &capture : nullptr;
     const auto writeScope = PathWriteScope::BeginWrite({path, InxResourceMeta::GetMetaFilePath(path)}, parentScope);
     const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
@@ -3293,7 +3379,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &requestedPath,
                                             authorization, textureSource);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = "asset metadata could not be created or loaded";
+        result.error = capture.error.empty() ? "asset metadata could not be created or loaded" : capture.error;
         return result;
     }
     result.guid = guid;
@@ -3371,9 +3457,15 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     if (!PrepareReimportInput(sourcePath, candidate, result))
         return result;
     TextureSourceSnapshot capture;
+    capture.boundedProjectRoot = m_frameWork ? &m_projectRoot : nullptr;
     auto *textureSource = result.resourceType == ResourceType::Texture ? &capture : nullptr;
     if (!PrepareReimportMetadata(candidate, ownedTexture ? nlohmann::json{} : settings, result, textureSource))
         return result;
+    if (textureSource && !textureSource->Reserve(m_frameWork)) {
+        result.errorCode = AssetMutationErrorCode::ImportFailed;
+        result.error = textureSource->error;
+        return result;
+    }
     if (ownedTexture)
         ApplyModelTextureSettings(*candidate.metadata, selected->GetGuid(), settings);
     if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source,
@@ -3525,19 +3617,39 @@ bool AssetDatabase::BeginWatcherImport(const std::string &requestedPath, Watcher
     const auto snapshot = LoadQuerySnapshot();
     if (result.resourceType == ResourceType::Mesh)
         worker.request.resolveTextureGuid = ModelTextureResolver(snapshot);
-    QueueCatalogJob(m_watcherWork, CatalogIoStage::Cook, [pending, snapshot] {
+    pending->preparing = m_frameWork && result.resourceType == ResourceType::Texture && IsPngPath(path);
+    if (pending->preparing) {
+        pending->textureSource.boundedProjectRoot = &m_projectRoot;
+        QueueCatalogJob(m_watcherWork, CatalogIoStage::Metadata,
+                        [pending] { PrepareMetadata(pending->metadata, &pending->textureSource); });
+    } else {
+        QueueWatcherCook(pending, snapshot);
+    }
+    m_pendingWatcherImport = std::move(pending);
+    return true;
+}
+
+void AssetDatabase::QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending,
+                                     std::shared_ptr<const QuerySnapshot> snapshot)
+{
+    QueueCatalogJob(m_watcherWork, CatalogIoStage::Cook, [pending, snapshot = std::move(snapshot)] {
         auto &metadata = pending->metadata;
         auto &worker = pending->worker;
         auto &request = worker.request;
+        auto &capture = pending->textureSource;
+        const auto releaseSource = MakeScopeExit([&] {
+            request.source = nullptr;
+            capture.source.reset();
+        });
         try {
-            TextureSourceSnapshot capture;
-            PrepareMetadata(metadata, request.resourceType == ResourceType::Texture ? &capture : nullptr);
+            if (!metadata.metadata)
+                PrepareMetadata(metadata, request.resourceType == ResourceType::Texture ? &capture : nullptr);
             if (!metadata.metadata)
                 throw std::runtime_error(metadata.error);
-            std::optional<AssetSource> source;
-            if (capture.revision)
-                request.source = &source.emplace(request.sourcePath, capture.bytes);
-            const auto releaseSource = MakeScopeExit([&request] { request.source = nullptr; });
+            if (capture.revision) {
+                capture.OpenForCook(request.sourcePath);
+                request.source = capture.source.get();
+            }
             request.guid = metadata.metadata->GetGuid();
             if (request.isReimport && request.guid != metadata.fallbackGuid)
                 throw std::runtime_error("metadata preparation did not preserve the registered GUID");
@@ -3558,15 +3670,17 @@ bool AssetDatabase::BeginWatcherImport(const std::string &requestedPath, Watcher
                 (!worker.importer || request.resourceType == ResourceType::Script)
                     ? ImportArtifact(request.metadata)
                     : (request.isReimport ? worker.importer->Reimport(request) : worker.importer->Import(request));
+            if (capture.revision)
+                capture.RequireCurrent(request.sourcePath);
         } catch (const std::exception &exception) {
             worker.error = Utf8Diagnostic(exception.what());
+            worker.artifact.reset();
         } catch (...) {
             worker.error = "Importer raised a non-standard exception";
+            worker.artifact.reset();
         }
         request.skeletonDefinition = {};
     });
-    m_pendingWatcherImport = std::move(pending);
-    return true;
 }
 
 bool AssetDatabase::CanAdvanceWatcherImport() const
@@ -3575,6 +3689,13 @@ bool AssetDatabase::CanAdvanceWatcherImport() const
         return false;
     if (!m_watcherWork.Complete())
         return CanSubmitCatalogWork(m_watcherWork);
+    if (m_pendingWatcherImport->preparing) {
+        const auto &pending = *m_pendingWatcherImport;
+        const auto bytes = pending.textureSource.workingBytes;
+        return !m_frameWork->IsLate() &&
+               (!pending.metadata.metadata || bytes > m_frameWork->CpuStorageLimit() ||
+                (CanSubmitCatalogStage(CatalogIoStage::Cook) && (!bytes || m_frameWork->CanReserveCpuStorage(bytes))));
+    }
     return !m_frameWork->IsLate() &&
            (m_pendingWatcherImport->writing ||
             (!IsRefreshPending() && !IsModelReimportPublishing() && CanSubmitCatalogStage(CatalogIoStage::Persist)));
@@ -3629,7 +3750,31 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
     uint64_t previousVersion = 0;
     std::optional<float> previousScale;
     try {
-        if (pending->writing) {
+        if (pending->preparing) {
+            auto &capture = pending->textureSource;
+            if (!pending->metadata.metadata && !IsWatcherSourceCurrent(*pending)) {
+                pending->outcome = "superseded";
+            } else if (!pending->metadata.metadata || capture.workingBytes > m_frameWork->CpuStorageLimit()) {
+                result.errorCode = AssetMutationErrorCode::ImportFailed;
+                result.error = !pending->metadata.metadata
+                                   ? pending->metadata.error
+                                   : "PNG import requires " + std::to_string(capture.workingBytes) +
+                                         " CPU bytes, exceeding the configured capacity of " +
+                                         std::to_string(m_frameWork->CpuStorageLimit());
+            } else {
+                if (managed && !CanSubmitCatalogStage(CatalogIoStage::Cook))
+                    return false;
+                if (capture.Reserve(m_frameWork)) {
+                    pending->preparing = false;
+                    QueueWatcherCook(pending, {});
+                    return SubmitCatalogWork(m_watcherWork, managed);
+                }
+                if (managed)
+                    return false;
+                result.errorCode = AssetMutationErrorCode::ImportFailed;
+                result.error = capture.error;
+            }
+        } else if (pending->writing) {
             if (pending->persisted && reimport && result.resourceType == ResourceType::Mesh) {
                 if (const auto *registry = BoundRegistry()) {
                     if (const auto mesh = registry->GetAsset<InxMesh>(result.guid)) {
@@ -3701,6 +3846,9 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
     if (pending->outcome == "failed")
         INXLOG_ERROR("External asset import failed for '", result.path, "': ", result.error);
     pending->writeScope.Close();
+    pending->worker.artifact.reset();
+    pending->textureSource.source.reset();
+    pending->textureSource.storage.reset();
     m_pendingWatcherImport.reset();
     try {
         pending->finished(pending->outcome, result, previousVersion, previousScale);
@@ -3740,6 +3888,7 @@ void AssetDatabase::WriteWatcherImport(PendingWatcherImport &pending)
                               *expectedMetadata});
         }
         const auto metadataOutput = expectedMetadata ? writes.front().content : std::string{};
+        ClaimImportWrites(writes, expectedMetadata != nullptr, pending.textureSource.storage);
         const auto files = PersistImportWrites(request, std::move(writes), pending.writeScope);
         pending.persisted = true;
         const auto key = LexicalFilesystemPathKey(metaPath);
@@ -4696,10 +4845,9 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     try {
         ImportRequest request =
             MakeImportRequest(guid, path, isReimport, candidateMetadata ? *candidateMetadata : *metaIt->second);
-        std::optional<AssetSource> source;
         if (textureSource) {
-            textureSource->RequireCurrent(path);
-            request.source = &source.emplace(path, textureSource->bytes);
+            textureSource->OpenForCook(path);
+            request.source = textureSource->source.get();
         }
         // Ordinary scripts publish only their source metadata here; their
         // compiler and dependency transaction are owned by Python.
@@ -4708,8 +4856,8 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
                                       : (isReimport ? importer->Reimport(request) : importer->Import(request));
         if (textureSource) {
             request.source = nullptr;
-            source.reset();
-            std::string{}.swap(textureSource->bytes);
+            textureSource->RequireCurrent(path);
+            textureSource->source.reset();
         } else if (expectedSource) {
             RequireUnchangedFingerprint(path, *expectedSource);
         }
@@ -4717,6 +4865,8 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
             throw std::logic_error("Author metadata publication requires its captured input state");
         ValidateImportPublication(request, artifact);
         auto writes = BuildImportWrites(request, artifact, persistMetadata ? expectedMetadata : nullptr);
+        if (textureSource)
+            ClaimImportWrites(writes, persistMetadata, textureSource->storage);
         if (textureSource)
             textureSource->RequireCurrent(path);
         PersistImportWrites(request, std::move(writes), writeScope);
@@ -4826,6 +4976,7 @@ AssetDatabase::PersistImportWrites(const ImportRequest &request, std::vector<Doc
         }
         DocumentWriteOptions options;
         options.expectedFileState = write.expectedFileState;
+        options.preclaimedStorage = std::move(write.preclaimedStorage);
         if (writeScope.Covers(write.path))
             options.writeScope = writeScope;
         auto ticket = DocumentStore::Instance().Submit(write.path, std::move(write.content), options);
@@ -5000,12 +5151,16 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
             throw std::runtime_error("Asset metadata changed the registered GUID at path: " + filePath);
     };
     validateIdentity(candidate.metadata->GetGuid());
+    if (textureSource && !textureSource->Reserve(m_frameWork))
+        return "";
     if (!readOnly && persistMetadata) {
         PublishMissingMetadata(candidate, m_projectRoot, textureSource);
         if (!candidate.error.empty()) {
             INXLOG_ERROR("Failed to publish resource metadata: ", filePath, ": ", candidate.error);
             return "";
         }
+        if (textureSource && !textureSource->Reserve(m_frameWork))
+            return "";
     }
     const auto &metaFile = *candidate.metadata;
     const std::string guid = metaFile.GetGuid();

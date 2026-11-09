@@ -860,6 +860,8 @@ class AssetDatabase : public NativeLifetimeOwner
     void CompleteWatcherWriteForExplicitImport(const PathWriteScope &scope);
     void WriteWatcherImport(PendingWatcherImport &pending);
     void PublishWatcherImport(PendingWatcherImport &pending);
+    void QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending,
+                          std::shared_ptr<const QuerySnapshot> snapshot);
     [[nodiscard]] bool CanAdvanceModelReimport() const;
     bool AdvanceModelReimport(bool managed);
     void WriteModelReimport(PendingModelReimport &pending);

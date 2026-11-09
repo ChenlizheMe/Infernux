@@ -368,7 +368,8 @@ void StageWrites(Journal &journal, std::vector<DocumentTransactionEntry> &entrie
         [&](size_t index) {
             const auto &path = journal.entries[index].prepared.path;
             const auto &owner = parent.Covers(path) ? parent : preparedOwnership;
-            return DocumentStore::Instance().SubmitStaged(path, std::move(entries[index].content), owner);
+            return DocumentStore::Instance().SubmitStaged(path, std::move(entries[index].content), owner,
+                                                          std::move(entries[index].preclaimedStorage));
         },
         [&](size_t index, const AtomicFileState &state) { journal.entries[index].prepared.state = state; });
 }
