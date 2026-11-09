@@ -6,18 +6,22 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace infernux
 {
 
 class InxResourceMeta;
+class AssetSource;
 
 class TextureDecoder final
 {
   public:
     [[nodiscard]] static std::shared_ptr<const TextureCpuData>
     Decode(const std::string &sourcePath, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData>
+    Decode(AssetSource &source, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> DecodeMemory(const std::vector<unsigned char> &source,
                                                                             const InxResourceMeta &metadata,
                                                                             const std::string &sourceName,
@@ -27,6 +31,12 @@ class TextureDecoder final
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> DecodeRgba8(const std::vector<unsigned char> &pixels,
                                                                            uint32_t width, uint32_t height,
                                                                            const InxResourceMeta &metadata);
+
+  private:
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData> DecodeBytes(std::string_view source,
+                                                                           const InxResourceMeta &metadata,
+                                                                           const std::string &sourceName,
+                                                                           bool preserveSvgViewport);
 };
 
 } // namespace infernux

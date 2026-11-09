@@ -305,25 +305,33 @@ class ResultConsumer:
     def _resolve(self, manager):
         if not self._attached:
             return None
-        if self._epoch != int(manager.simulation_epoch) or self._playing != bool(manager.is_playing()) or (
-                self._scope is not None and self._scope.state == 'closed'):
-            self.cancel()
-            return None
-        if self._input is not None:
-            return (self._input,)
-        targets = []
-        for handle, epoch in self._targets:
-            world = manager.get_scene_by_world_id(handle.world_id)
-            native = None if world is None else world.resolve_component(handle)
-            if native is None or world.is_pending_destroy(native.game_object):
+        frame = self.request._owner()._frame
+        active = frame.active
+        if active:
+            frame.begin_scope()
+        try:
+            if self._epoch != int(manager.simulation_epoch) or self._playing != bool(manager.is_playing()) or (
+                    self._scope is not None and self._scope.state == 'closed'):
                 self.cancel()
                 return None
-            if epoch and native._result_target_epoch != epoch:
-                self.reason = 'result target changed after binding'
-                self.cancel()
-                return None
-            targets.append(native)
-        return tuple(targets)
+            if self._input is not None:
+                return (self._input,)
+            targets = []
+            for handle, epoch in self._targets:
+                world = manager.get_scene_by_world_id(handle.world_id)
+                native = None if world is None else world.resolve_component(handle)
+                if native is None or world.is_pending_destroy(native.game_object):
+                    self.cancel()
+                    return None
+                if epoch and native._result_target_epoch != epoch:
+                    self.reason = 'result target changed after binding'
+                    self.cancel()
+                    return None
+                targets.append(native)
+            return tuple(targets)
+        finally:
+            if active:
+                frame.end_scope()
 
     def _current(self, manager):
         return self._resolve(manager) is not None
@@ -385,9 +393,6 @@ class ResultConsumer:
             if not self.required:
                 self._detach()
             return not self.required
-        if self._input is None:
-            from infernux.lib import _wrap_native_builtin_component
-            targets = tuple(_wrap_native_builtin_component(target) for target in targets)
         try:
             from contextlib import nullcontext
             permission_scope = step_execution() if stepping else nullcontext()
@@ -403,6 +408,10 @@ class ResultConsumer:
                 started = perf_counter_ns()
                 token = _active_result_boundary.set(self.boundary)
                 try:
+                    if self._input is None:
+                        from infernux.lib import _wrap_native_builtin_component
+
+                        targets = tuple(_wrap_native_builtin_component(target) for target in targets)
                     self._apply(targets, self.request.result)
                     applied = perf_counter_ns()
                 finally:

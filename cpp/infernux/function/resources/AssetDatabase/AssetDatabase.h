@@ -603,21 +603,7 @@ class AssetDatabase : public NativeLifetimeOwner
         std::thread::id producerThread;
     };
 
-    struct PendingWatcherImport
-    {
-        WorkerMetadataPrepare metadata;
-        WorkerImport worker;
-        AssetMutationResult result;
-        std::optional<AtomicFileState> committedMetadata;
-        CachedFileState committedFiles;
-        PathWriteScope writeScope;
-        WatcherImportReady ready;
-        WatcherImportFinished finished;
-        std::unordered_set<std::string> artifactGuids;
-        std::string outcome;
-        bool writing = false;
-        bool persisted = false;
-    };
+    struct PendingWatcherImport;
 
     struct PendingModelReimport
     {
@@ -833,7 +819,7 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
-    static void PrepareMetadata(WorkerMetadataPrepare &item);
+    static void PrepareMetadata(WorkerMetadataPrepare &item, AssetSource *capturedSource = nullptr);
     static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot);
     [[nodiscard]] static AssetIndex
     BuildDerivedIndexArtifact(const WorkingSet &workingSet,
@@ -864,6 +850,7 @@ class AssetDatabase : public NativeLifetimeOwner
     void WaitForCatalogWork(CatalogWork &work) noexcept;
     bool AdvanceRefresh(bool managed);
     [[nodiscard]] bool CanAdvanceWatcherImport() const;
+    [[nodiscard]] static bool IsWatcherSourceCurrent(const PendingWatcherImport &pending);
     bool AdvanceWatcherImport(bool managed);
     void CompleteWatcherWriteForExplicitImport(const PathWriteScope &scope);
     void WriteWatcherImport(PendingWatcherImport &pending);

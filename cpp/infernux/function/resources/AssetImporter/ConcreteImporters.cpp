@@ -3,6 +3,7 @@
 #include <function/resources/InxMesh/InxMesh.h>
 
 #include <core/log/InxLog.h>
+#include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
@@ -381,9 +382,10 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
-    const auto cpuData =
-        TextureDecoder::Decode(request.sourcePath, artifact.metadata,
-                               IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
+    std::optional<AssetSource> source;
+    auto &input = request.source ? *request.source : source.emplace(request.sourcePath);
+    const auto cpuData = TextureDecoder::Decode(
+        input, artifact.metadata, IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
     if (extension == ".svg") {

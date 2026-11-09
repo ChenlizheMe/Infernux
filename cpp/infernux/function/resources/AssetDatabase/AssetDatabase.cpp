@@ -635,6 +635,23 @@ void RequireUnchangedFingerprint(const std::string &path, const AssetFileFingerp
 
 } // namespace
 
+struct AssetDatabase::PendingWatcherImport
+{
+    WorkerMetadataPrepare metadata;
+    WorkerImport worker;
+    AssetMutationResult result;
+    std::optional<FileInput::Revision> sourceRevision;
+    std::optional<AtomicFileState> committedMetadata;
+    CachedFileState committedFiles;
+    PathWriteScope writeScope;
+    WatcherImportReady ready;
+    WatcherImportFinished finished;
+    std::unordered_set<std::string> artifactGuids;
+    std::string outcome;
+    bool writing = false;
+    bool persisted = false;
+};
+
 const std::vector<AssetCatalogEntry> &AssetCatalogSnapshot::GetDirectory(const std::string &normalizedDirectory) const
 {
     static const std::vector<AssetCatalogEntry> empty;
@@ -2097,7 +2114,7 @@ void AssetDatabase::CompletePendingRefresh()
     }
 }
 
-void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
+void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, AssetSource *capturedSource)
 {
     item.producerThread = std::this_thread::get_id();
     try {
@@ -2125,8 +2142,8 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
                 throw std::runtime_error("asset metadata sidecar has no GUID: " + metaPath);
         }
 
-        AssetSource source(item.file.path);
-        item.loader->CreateMeta(source, metadata);
+        std::optional<AssetSource> source;
+        item.loader->CreateMeta(capturedSource ? *capturedSource : source.emplace(item.file.path), metadata);
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
         item.createdGuid = metadata.GetGuid();
         item.inheritedGuid = !previousMetadataLoaded && !item.file.readOnly && !preservedGuid.empty();
@@ -3429,7 +3446,19 @@ bool AssetDatabase::BeginWatcherImport(const std::string &requestedPath, Watcher
         auto &worker = pending->worker;
         auto &request = worker.request;
         try {
-            PrepareMetadata(metadata);
+            std::string capturedBytes;
+            std::optional<AssetSource> source;
+            if (request.resourceType == ResourceType::Texture) {
+                pending->sourceRevision = FileInput(ToFsPath(request.sourcePath)).InspectRevision();
+                // Close the file after capture so an external replacement can proceed during decode.
+                AssetSource input(request.sourcePath);
+                if (input.Size() > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+                    throw std::invalid_argument("texture source exceeds decoder limits: " + request.sourcePath);
+                capturedBytes = std::move(input).TakeBytes();
+                request.source = &source.emplace(request.sourcePath, capturedBytes);
+            }
+            const auto releaseSource = MakeScopeExit([&request] { request.source = nullptr; });
+            PrepareMetadata(metadata, request.source);
             if (!metadata.metadata)
                 throw std::runtime_error(metadata.error);
             request.guid = metadata.metadata->GetGuid();
@@ -3472,6 +3501,21 @@ bool AssetDatabase::CanAdvanceWatcherImport() const
     return !m_frameWork->IsLate() &&
            (m_pendingWatcherImport->writing ||
             (!IsRefreshPending() && !IsModelReimportPublishing() && CanSubmitCatalogStage(CatalogIoStage::Persist)));
+}
+
+bool AssetDatabase::IsWatcherSourceCurrent(const PendingWatcherImport &pending)
+{
+    const auto path = ToFsPath(pending.result.path);
+    AssetFileFingerprint current;
+    if (!ReadFingerprint(path, current) || current != pending.worker.expectedSource)
+        return false;
+    if (!pending.sourceRevision)
+        return true;
+    try {
+        return FileInput(path).InspectRevision() == *pending.sourceRevision;
+    } catch (const std::system_error &) {
+        return false;
+    }
 }
 
 void AssetDatabase::CompletePendingWatcherImport()
@@ -3530,9 +3574,8 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
             if (IsRefreshPending() || IsModelReimportPublishing() ||
                 (managed && !CanSubmitCatalogStage(CatalogIoStage::Persist)))
                 return false;
-            AssetFileFingerprint current;
             if (GetGuidFromCatalogPath(result.path) != pending->metadata.fallbackGuid ||
-                !ReadFingerprint(ToFsPath(result.path), current) || current != worker.expectedSource) {
+                !IsWatcherSourceCurrent(*pending)) {
                 pending->outcome = "superseded";
             } else if (!pending->ready(result, true)) {
                 pending->outcome = "skipped";
@@ -3601,8 +3644,7 @@ void AssetDatabase::WriteWatcherImport(PendingWatcherImport &pending)
     const auto &request = worker.request;
     const auto metaPath = InxResourceMeta::GetMetaFilePath(request.sourcePath);
     try {
-        AssetFileFingerprint current;
-        if (!ReadFingerprint(ToFsPath(request.sourcePath), current) || current != worker.expectedSource) {
+        if (!IsWatcherSourceCurrent(pending)) {
             pending.outcome = "superseded";
             return;
         }
@@ -3664,9 +3706,7 @@ void AssetDatabase::PublishWatcherImport(PendingWatcherImport &pending)
 {
     auto &result = pending.result;
     auto &worker = pending.worker;
-    AssetFileFingerprint current;
-    bool notify = pending.outcome.empty() && ReadFingerprint(ToFsPath(result.path), current) &&
-                  current == worker.expectedSource && pending.ready(result, false);
+    bool notify = pending.outcome.empty() && IsWatcherSourceCurrent(pending) && pending.ready(result, false);
     if (notify && pending.committedMetadata) {
         try {
             notify =

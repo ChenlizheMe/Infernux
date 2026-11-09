@@ -15,6 +15,7 @@ namespace infernux
 {
 
 class InxSkinnedMesh;
+class AssetSource;
 
 /**
  * @brief Immutable input captured before importer execution.
@@ -26,6 +27,8 @@ struct ImportRequest
     ResourceType resourceType = ResourceType::DefaultText;
     InxResourceMeta metadata;
     bool isReimport = false;
+    // Borrowed for an immediate cook that also prepared metadata from this source.
+    AssetSource *source = nullptr;
     // Editor-owned tool configuration is captured on the owner thread; worker
     // imports never call Python or read mutable editor preferences.
     std::string projectRoot;

@@ -1494,9 +1494,15 @@ bool SceneRenderGraph::UploadCameraLighting()
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local LightingUBO");
         return false;
     }
+    const auto previous = m_cameraCanonicalLights.Frame(frameIndex).buffer;
     if (!m_cameraCanonicalLights.Update(frameIndex, m_cameraLightCollector.GetCanonicalLightSnapshot())) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local canonical lights");
         return false;
+    }
+    if (m_cameraCanonicalLights.Frame(frameIndex).buffer != previous) {
+        // Both Forward+ and authored light-list passes can import this slot.
+        m_needsRebuild = true;
+        m_graphBuilt = false;
     }
     return true;
 }
@@ -2526,27 +2532,23 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
 
     const auto previousHeaders = m_forwardPlusGeometryGrid.Frame(frameIndex).headers;
     const auto previousMasks = m_forwardPlusGeometryGrid.Frame(frameIndex).lightMasks;
-    const auto previousLights = m_forwardPlusGeometryGrid.Frame(frameIndex).canonicalLights;
     if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
                                                 CanonicalLightAffectsGeometry, lights.buffer)) {
         return false;
     }
     const auto &frame = m_forwardPlusGeometryGrid.Frame(frameIndex);
-    if (frame.headers != previousHeaders || frame.lightMasks != previousMasks ||
-        frame.canonicalLights != previousLights)
+    if (frame.headers != previousHeaders || frame.lightMasks != previousMasks)
         m_needsRebuild = true;
 
     if (m_forwardPlusParticlesRequired) {
         const auto previousParticleHeaders = m_forwardPlusParticleGrid.Frame(frameIndex).headers;
         const auto previousParticleMasks = m_forwardPlusParticleGrid.Frame(frameIndex).lightMasks;
-        const auto previousParticleLights = m_forwardPlusParticleGrid.Frame(frameIndex).canonicalLights;
         if (!m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
                                                     CanonicalLightAffectsParticles, lights.buffer)) {
             return false;
         }
         const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-        if (particleFrame.headers != previousParticleHeaders || particleFrame.lightMasks != previousParticleMasks ||
-            particleFrame.canonicalLights != previousParticleLights) {
+        if (particleFrame.headers != previousParticleHeaders || particleFrame.lightMasks != previousParticleMasks) {
             m_needsRebuild = true;
         }
     }
@@ -5149,15 +5151,18 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         }
                         const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
                         for (uint32_t i = 0; i < inputCount; ++i) {
-                            if (fsReadInputs[i].storageBuffer) {
-                                const auto resource =
-                                    fsReadInputs[i].frameLocal
-                                        ? fsReadInputs[i].frameHandles[m_vkCore->GetCurrentFrameSlot() %
-                                                                       EngineConfig::kFrameSlotCapacity]
-                                        : fsReadInputs[i].handle;
+                            const auto &input = fsReadInputs[i];
+                            if (input.storageBuffer) {
+                                auto resource = input.handle;
+                                auto byteSize = input.byteSize;
+                                if (input.frameLocal) {
+                                    const auto slot = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
+                                    resource = input.frameHandles[slot];
+                                    byteSize = m_cameraCanonicalLights.Frame(slot).capacityBytes;
+                                }
                                 inputs[i].buffer = ctx.GetBufferHandle(resource);
-                                inputs[i].byteOffset = fsReadInputs[i].byteOffset;
-                                inputs[i].byteSize = fsReadInputs[i].byteSize;
+                                inputs[i].byteOffset = input.byteOffset;
+                                inputs[i].byteSize = byteSize;
                                 if (!inputs[i].buffer.IsValid()) {
                                     INXLOG_ERROR("FullscreenQuad '", shaderName,
                                                  "': input buffer is unavailable at binding ", i);
@@ -5165,10 +5170,10 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 }
                                 continue;
                             }
-                            inputs[i].view = ctx.GetTextureView(fsReadInputs[i].handle);
-                            inputs[i].sampler = fsReadInputs[i].sampler;
-                            inputs[i].format = fsReadInputs[i].format;
-                            inputs[i].depthRead = fsReadInputs[i].depthRead;
+                            inputs[i].view = ctx.GetTextureView(input.handle);
+                            inputs[i].sampler = input.sampler;
+                            inputs[i].format = input.format;
+                            inputs[i].depthRead = input.depthRead;
                             if (!inputs[i].view.IsValid()) {
                                 INXLOG_ERROR("FullscreenQuad '", shaderName,
                                              "': input texture view is unavailable at binding ", i);
