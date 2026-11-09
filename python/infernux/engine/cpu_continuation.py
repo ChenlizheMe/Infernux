@@ -1561,6 +1561,7 @@ class CpuWorkOwner:
             known.pop(request)
         required = any(request in demands and request.paused_at is None for request in self._required_requests())
         required |= any(request.deadline_ns is not None and request.paused_at is None for request in demands)
+        candidate_calendar = None
         if required:
             # Required consumers change service order. Withdraw the conditional
             # background forecast instead of pretending unprofiled work reserved it.
@@ -1570,29 +1571,39 @@ class CpuWorkOwner:
         else:
             credit = max(0, self._remaining_credit(background=True)) if active else self._max_background_credit()
             planning = credit // 2
-            calendar = ServiceCalendar(known, {request: request.deadline for request in known}, now,
-                budget_ns=max(1, planning),
+            service_limits = dict(
                 earliest={'gpu': now + 1} if active and self._frame.gpu_foreground_blocked else None,
                 owner_ns=self._max_background_credit() - (self._costs.host(("owner", "service_planning")) or 0),
                 owner_now_ns=credit,
-                occupied=tuple(lane for request, demand in demands.items()
-                               if request not in known for lane in demand.occupied),
                 resource_limits={"cpu": self.budget.cpu_frame_ns, "gpu": self.budget.gpu_frame_ns,
                                  "io": self.budget._io_frame_allowance_ns, "transfer": self.budget.transfer_frame_bytes},
                 resource_remaining=({name: self._frame.resource_remaining(self._resource(name))
                                      for name in ('cpu','gpu','io','transfer')} if active else None),
                 resource_admitted=({name: self._frame.resource_state(self._resource(name))['admitted']
                                     for name in ('cpu','gpu','io','transfer')} if active else None))
+            planning_started = perf_counter_ns()
+            calendar = ServiceCalendar(known, {request: request.deadline for request in known}, now,
+                budget_ns=max(1, planning), occupied=tuple(lane for request, demand in demands.items()
+                    if request not in known for lane in demand.occupied), **service_limits)
+            if (extra in known and calendar.failed_request is not None and calendar.failed_request is not extra
+                    and extra not in calendar.scheduled_before_failure and not known[extra].prerequisites):
+                # Check the candidate's own window with the same resource
+                # facts. An earlier miss cannot reject it or hide its own miss.
+                candidate_calendar = ServiceCalendar({extra: known[extra]}, {extra: extra.deadline}, now,
+                    budget_ns=max(1, planning - (perf_counter_ns() - planning_started)),
+                    occupied=tuple(lane for request, demand in demands.items()
+                                   if request is not extra for lane in demand.occupied), **service_limits)
             self._costs.observe_host(("owner", "service_planning"), perf_counter_ns()-started)
             future_credit = self._max_background_credit() - self._costs.host(("owner", "service_planning"))
             calendar.validate_host_supply(now, max(0, self._remaining_credit(background=True)) if active else future_credit,
                 future_credit)
             reason = calendar.reason
-        # Planning and historical host costs are estimates. Leave the request
-        # queued for normal admission when they cannot support a reservation.
+        # Preserve existing reservations until actual service invalidates them.
+        # The candidate may still enter the normal queue without a forecast.
         if extra in known and reason and calendar is not None:
-            if calendar.failure not in ("planning_budget", "host_supply", "host_target"):
-                raise ValueError(reason)
+            admission = candidate_calendar if candidate_calendar is not None else calendar
+            if admission.failure not in ("", "planning_budget", "host_supply", "host_target"):
+                raise ValueError(admission.reason)
             extra._forecast_deferred = True
         if extra is not None and reason and self._reserved_service():
             # A candidate outside complete planning must not revoke an older

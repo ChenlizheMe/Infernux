@@ -9,6 +9,7 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/scene/NativeLifetime.h>
 #include <platform/filesystem/DocumentTransaction.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <array>
 #include <atomic>
@@ -598,11 +599,13 @@ class AssetDatabase : public NativeLifetimeOwner
         bool inheritedGuid = false;
         std::shared_ptr<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
+        std::optional<FileInput::Revision> textureRevision;
         std::string metadataSource;
         std::string error;
         std::thread::id producerThread;
     };
 
+    struct TextureSourceSnapshot;
     struct PendingWatcherImport;
 
     struct PendingModelReimport
@@ -788,6 +791,7 @@ class AssetDatabase : public NativeLifetimeOwner
         size_t dependencyMergeCursor = 0;
         size_t fileStateMergeCursor = 0;
         bool importMergeInitialized = false;
+        bool hasTextureRevisions = false;
         double ownerFinalizeMilliseconds = 0.0;
         double ownerMergeMaxSliceMilliseconds = 0.0;
         size_t ownerMergeSliceCount = 0;
@@ -819,8 +823,9 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
-    static void PrepareMetadata(WorkerMetadataPrepare &item, AssetSource *capturedSource = nullptr);
-    static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot);
+    static void PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource = nullptr);
+    static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot,
+                                       TextureSourceSnapshot *textureSource = nullptr);
     [[nodiscard]] static AssetIndex
     BuildDerivedIndexArtifact(const WorkingSet &workingSet,
                               const std::unordered_map<std::string, std::vector<std::string>> &dependenciesByGuid,
@@ -872,10 +877,11 @@ class AssetDatabase : public NativeLifetimeOwner
     bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
                      const InxResourceMeta *candidateMetadata = nullptr,
                      const AssetFileFingerprint *expectedSource = nullptr,
-                     const AtomicFileState *expectedMetadata = nullptr, const PathWriteScope &writeScope = {});
+                     const AtomicFileState *expectedMetadata = nullptr, const PathWriteScope &writeScope = {},
+                     TextureSourceSnapshot *textureSource = nullptr);
     bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
     static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
-                                        AssetMutationResult &result);
+                                        AssetMutationResult &result, TextureSourceSnapshot *textureSource = nullptr);
     ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                     const InxResourceMeta &metadata) const;
     ImportRequest MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
@@ -902,7 +908,8 @@ class AssetDatabase : public NativeLifetimeOwner
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                      bool persistMetadata, const std::string &identityKey,
                                      std::optional<AtomicFileState> *expectedMetadata = nullptr,
-                                     const PathWriteScope &writeScope = {});
+                                     const PathWriteScope &writeScope = {},
+                                     TextureSourceSnapshot *textureSource = nullptr);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath, const PathWriteScope &writeScope,
                       const InxResourceMeta *replacement = nullptr);

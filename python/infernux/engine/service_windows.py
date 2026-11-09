@@ -955,6 +955,8 @@ class ServiceCalendar:
                  owner_ns=float("inf"), owner_now_ns=float("inf"), occupied=(),
                  resource_limits=None, resource_remaining=None, resource_admitted=None):
         self.slots, self.completions, self.slot_owner_ns, self.reason, self.failure = {}, {}, {}, "", ""
+        self.failed_request = None
+        self.scheduled_before_failure = frozenset()
         self.demands = demands
         self.slot_resources = {}
         if not demands:
@@ -1000,6 +1002,7 @@ class ServiceCalendar:
                 if group is None:
                     if ready > deadlines[request]:
                         self.failure = "window"
+                        self.failed_request = request
                         self.reason = "accepted service retires beyond its completion window"
                         break
                     if ready <= current:
@@ -1062,11 +1065,13 @@ class ServiceCalendar:
             units, group, _ = pending[request]
             if current == deadlines[request] and group.domain != "host":
                 self.failure = "window"
+                self.failed_request = request
                 self.reason = "new service cannot start at its completion window's final observation opportunity"
                 break
             ready = current + group.lag
             if ready > deadlines[request]:
                 self.failure = "window"
+                self.failed_request = request
                 self.reason = "joint service demand cannot be reserved by this scheduling policy"
                 break
             self.slots.setdefault(current, []).append(ServiceSlot(request, group))
@@ -1085,6 +1090,8 @@ class ServiceCalendar:
                 self.completions[request] = ready
                 del pending[request]
         if self.reason:
+            if self.failed_request is not None:
+                self.scheduled_before_failure = frozenset(slot.request for slots in self.slots.values() for slot in slots)
             self.slots.clear()
             self.completions.clear()
             self.slot_owner_ns.clear()
