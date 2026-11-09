@@ -132,7 +132,7 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     """The editor gizmo drive gives a dynamic body contact velocity during a drag."""
     from types import SimpleNamespace
 
-    from infernux.engine.ui._scene_view_gizmo import SceneViewGizmoMixin
+    from infernux.engine.ui.scene_view_panel import SceneViewGizmoMixin
     from infernux.lib import Physics
 
     Physics.set_gravity(Vector3(0, -9.81, 0))
