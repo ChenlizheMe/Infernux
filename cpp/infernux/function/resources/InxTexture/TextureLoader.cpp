@@ -76,12 +76,13 @@ void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) c
     int width = 0, height = 0, channels = 0;
     const auto *fileBytes = reinterpret_cast<const unsigned char *>(content.data());
     if (sequential) {
-        const auto [pngWidth, pngHeight] = TextureDecoder::ReadPngDimensions(source);
+        const auto [pngWidth, pngHeight, pngChannels] = TextureDecoder::ReadPngSourceInfo(source);
         if (!pngWidth)
             throw std::runtime_error("PNG source changed during metadata preparation");
         metaData.AddMetadata("width", static_cast<int>(pngWidth));
         metaData.AddMetadata("height", static_cast<int>(pngHeight));
-        metaData.AddMetadata("channels", 4);
+        if (pngChannels == 4)
+            metaData.AddMetadata("channels", 4);
     } else if (!isTextVolume && !isSvg && fileBytes && contentSize > 0 &&
                contentSize <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
                stbi_info_from_memory(fileBytes, static_cast<int>(contentSize), &width, &height, &channels)) {

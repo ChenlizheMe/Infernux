@@ -384,12 +384,16 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     auto &input = request.source ? *request.source : source.emplace(request.sourcePath);
     if (!input.IsSequential() && !artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
+    int sequentialChannels = 0;
     const auto cpuData = TextureDecoder::Decode(
-        input, artifact.metadata, IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
+        input, artifact.metadata, IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot),
+        &sequentialChannels);
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
-    if (input.IsSequential())
+    if (input.IsSequential()) {
         artifact.metadata.AddMetadata("content_hash", input.ContentHash());
+        artifact.metadata.AddMetadata("channels", sequentialChannels);
+    }
     if (extension == ".svg") {
         // Publish the raster dimensions without a second decode for metadata.
         artifact.metadata.AddMetadata("width", static_cast<int>(cpuData->mipLevels.front().width));

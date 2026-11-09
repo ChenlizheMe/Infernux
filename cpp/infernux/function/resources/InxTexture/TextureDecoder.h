@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace infernux
@@ -21,10 +20,16 @@ struct InxTextureData;
 class TextureDecoder final
 {
   public:
-    struct PngPlan
+    struct PngSourceInfo
     {
         uint32_t width = 0;
         uint32_t height = 0;
+        uint8_t channels = 0;
+    };
+
+    struct PngPlan
+    {
+        PngSourceInfo source;
         uint64_t bytes = 0;
         size_t resizeScratch = 0;
         size_t mipBytes = 0;
@@ -32,15 +37,14 @@ class TextureDecoder final
 
     struct PngPreviewPlan
     {
-        uint32_t width = 0;
-        uint32_t height = 0;
+        PngSourceInfo source;
         uint32_t previewWidth = 0;
         uint32_t previewHeight = 0;
         uint64_t bytes = 0;
     };
 
     [[nodiscard]] static PngPlan PlanPng(AssetSource &source, const InxResourceMeta &metadata);
-    [[nodiscard]] static std::pair<uint32_t, uint32_t> ReadPngDimensions(AssetSource &source);
+    [[nodiscard]] static PngSourceInfo ReadPngSourceInfo(AssetSource &source);
     [[nodiscard]] static PngPreviewPlan PlanPngPreview(AssetSource &source, uint32_t maxSize);
     [[nodiscard]] static InxTextureData DecodePngPreview(AssetSource &source, const PngPreviewPlan &plan,
                                                          const std::function<bool()> &retired);
@@ -48,8 +52,10 @@ class TextureDecoder final
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> TakeRgba8Preview(InxTextureData image, bool srgb);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData>
     Decode(const std::string &sourcePath, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
-    [[nodiscard]] static std::shared_ptr<const TextureCpuData>
-    Decode(AssetSource &source, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData> Decode(AssetSource &source,
+                                                                      const InxResourceMeta &metadata,
+                                                                      bool preserveSvgViewport = false,
+                                                                      int *sequentialChannels = nullptr);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> DecodeMemory(const std::vector<unsigned char> &source,
                                                                             const InxResourceMeta &metadata,
                                                                             const std::string &sourceName,

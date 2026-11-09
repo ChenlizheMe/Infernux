@@ -21,6 +21,7 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -242,31 +243,46 @@ uint32_t PngU32(const unsigned char *bytes)
     return uint32_t(bytes[0]) << 24 | uint32_t(bytes[1]) << 16 | uint32_t(bytes[2]) << 8 | bytes[3];
 }
 
-std::pair<uint32_t, uint32_t> PngDimensions(const std::array<unsigned char, 33> &header)
+using PngHeader = TextureDecoder::PngSourceInfo;
+
+size_t PngScanlineBytes(PngHeader header)
+{
+    return size_t(header.width) * header.channels + 1;
+}
+
+size_t PngExpansionBytes(PngHeader header)
+{
+    return header.channels == 3 ? size_t(header.width) * 4 : 0;
+}
+
+PngHeader ParsePngHeader(const std::array<unsigned char, 33> &header)
 {
     constexpr std::array<unsigned char, 16> prefix{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
-    if (!std::equal(prefix.begin(), prefix.end(), header.begin()) || header[24] != 8 || header[25] != 6 ||
-        header[26] != 0 || header[27] != 0 || header[28] != 0)
+    const auto colorType = header[25];
+    if (!std::equal(prefix.begin(), prefix.end(), header.begin()) || header[24] != 8 ||
+        (colorType != 2 && colorType != 6) || header[26] != 0 || header[27] != 0 || header[28] != 0)
         return {};
     const auto width = PngU32(header.data() + 16);
     const auto height = PngU32(header.data() + 20);
     if (!width || !height || width > MaximumDimension || height > MaximumDimension)
-        throw std::invalid_argument("RGBA PNG source dimensions exceed texture decoder limits");
-    return {width, height};
+        throw std::invalid_argument("PNG source dimensions exceed texture decoder limits");
+    return {width, height, colorType == 2 ? uint8_t{3} : uint8_t{4}};
 }
 
 class PngRows
 {
   public:
-    PngRows(AssetSource &source, uint32_t width, uint32_t height, const std::function<bool()> *retired = nullptr)
-        : m_source(source), m_retired(retired), m_width(width), m_height(height), m_rowBytes(size_t(width) * 4 + 1),
-          m_rows(m_rowBytes * 2)
+    PngRows(AssetSource &source, PngHeader expected, const std::function<bool()> *retired = nullptr)
+        : m_source(source), m_retired(retired), m_header(expected)
     {
         std::array<unsigned char, 33> header{};
         Read(header.data(), header.size());
-        if (PngDimensions(header) != std::pair{width, height} ||
-            crc32(0, header.data() + 12, 17) != PngU32(header.data() + 29))
-            throw std::invalid_argument("invalid RGBA PNG header");
+        const auto actual = ParsePngHeader(header);
+        if (actual.width != expected.width || actual.height != expected.height ||
+            actual.channels != expected.channels || crc32(0, header.data() + 12, 17) != PngU32(header.data() + 29))
+            throw std::invalid_argument("invalid PNG header");
+        m_rows.resize(PngScanlineBytes(m_header) * 2);
+        m_expanded.resize(PngExpansionBytes(m_header));
         m_inflate.zalloc = &Allocate;
         m_inflate.zfree = &Free;
         m_inflate.opaque = this;
@@ -286,7 +302,22 @@ class PngRows
     {
         while (m_lastRow < y)
             Advance();
-        return m_rows.data() + size_t(y % 2) * m_rowBytes + 1;
+        const auto *input = m_rows.data() + size_t(y % 2) * PngScanlineBytes(m_header) + 1;
+        if (m_expanded.empty())
+            return input;
+        // The PNG filter needs the original RGB row. Each consumer reads
+        // the expanded pixels before requesting another row.
+        auto *output = m_expanded.data();
+        for (uint32_t x = 0; x < m_header.width; ++x, input += 3, output += 4) {
+            std::copy_n(input, 3, output);
+            output[3] = m_transparent && std::equal(m_transparent->begin(), m_transparent->end(), input) ? 0 : 255;
+        }
+        return m_expanded.data();
+    }
+
+    int SourceChannels() const
+    {
+        return m_header.channels + m_transparent.has_value();
     }
 
     static const void *ReadRow(void *, const void *, int pixels, int x, int y, void *context) noexcept
@@ -294,8 +325,8 @@ class PngRows
         auto &self = *static_cast<PngRows *>(context);
         if (!self.m_error) {
             try {
-                if (x < 0 || y < 0 || uint32_t(x) > self.m_width || uint32_t(y) >= self.m_height || pixels < 0 ||
-                    uint32_t(pixels) > self.m_width - uint32_t(x) || y < self.m_lastRow - 1)
+                if (x < 0 || y < 0 || uint32_t(x) > self.m_header.width || uint32_t(y) >= self.m_header.height ||
+                    pixels < 0 || uint32_t(pixels) > self.m_header.width - uint32_t(x) || y < self.m_lastRow - 1)
                     throw std::runtime_error("PNG resize requested a scanline outside its window");
                 return self.Row(y) + size_t(x) * 4;
             } catch (...) {
@@ -304,14 +335,14 @@ class PngRows
         }
         // The C resize callback has no failure return. Retire its scratch
         // normally, then discard this unpublished output and report the error.
-        return self.m_rows.data() + 1;
+        return self.m_expanded.empty() ? self.m_rows.data() + 1 : self.m_expanded.data();
     }
 
     void Finish()
     {
         if (m_error)
             std::rethrow_exception(m_error);
-        while (uint32_t(m_lastRow + 1) < m_height)
+        while (uint32_t(m_lastRow + 1) < m_header.height)
             Advance();
         unsigned char excess = 0;
         m_inflate.next_out = &excess;
@@ -328,7 +359,7 @@ class PngRows
                 FinishChunk();
                 break;
             }
-            if (ChunkIs("IDAT") ? m_chunkBytes != 0 : !(m_chunkType[0] & 32))
+            if (ChunkIs("IDAT") ? m_chunkBytes != 0 : (!(m_chunkType[0] & 32) || ChunkIs("tRNS")))
                 throw std::invalid_argument("unexpected PNG chunk after image data");
             SkipChunk();
         }
@@ -444,6 +475,20 @@ class PngRows
         FinishChunk();
     }
 
+    void ReadTransparency()
+    {
+        std::array<unsigned char, 6> key{};
+        if (m_header.channels != 3 || m_chunkBytes != key.size())
+            throw std::invalid_argument("invalid PNG transparent color");
+        for (auto &value : key) {
+            size_t bytes = 1;
+            value = *ReadChunk(bytes);
+        }
+        FinishChunk();
+        // The color key stores the eight-bit samples in 16-bit fields.
+        m_transparent = std::array{key[1], key[3], key[5]};
+    }
+
     void SupplyInput()
     {
         while (!m_chunkBytes) {
@@ -452,6 +497,8 @@ class PngRows
             OpenChunk();
             if (ChunkIs("IDAT"))
                 m_startedImage = true;
+            else if (!m_startedImage && ChunkIs("tRNS"))
+                ReadTransparency();
             else if (!m_startedImage && ((m_chunkType[0] & 32) || ChunkIs("PLTE")))
                 SkipChunk();
             else
@@ -483,19 +530,21 @@ class PngRows
         if (m_retired && (*m_retired)())
             throw std::runtime_error("PNG preview was retired");
         const auto index = size_t(++m_lastRow % 2);
-        auto *row = m_rows.data() + index * m_rowBytes;
-        const auto *previous = m_rows.data() + (1 - index) * m_rowBytes;
+        const auto rowBytes = PngScanlineBytes(m_header);
+        auto *row = m_rows.data() + index * rowBytes;
+        const auto *previous = m_rows.data() + (1 - index) * rowBytes;
         m_inflate.next_out = row;
-        m_inflate.avail_out = static_cast<uInt>(m_rowBytes);
+        m_inflate.avail_out = static_cast<uInt>(rowBytes);
         Inflate();
         if (m_inflate.avail_out || row[0] > 4)
             throw std::invalid_argument("invalid PNG scanline");
         if (!row[0])
             return;
-        for (size_t i = 1; i < m_rowBytes; ++i) {
-            const int left = i > 4 ? row[i - 4] : 0;
+        const auto stride = m_header.channels;
+        for (size_t i = 1; i < rowBytes; ++i) {
+            const int left = i > stride ? row[i - stride] : 0;
             const int above = previous[i];
-            const int diagonal = i > 4 ? previous[i - 4] : 0;
+            const int diagonal = i > stride ? previous[i - stride] : 0;
             int prediction = 0;
             switch (row[0]) {
             case 1:
@@ -520,10 +569,10 @@ class PngRows
 
     AssetSource &m_source;
     const std::function<bool()> *m_retired;
-    uint32_t m_width;
-    uint32_t m_height;
-    size_t m_rowBytes;
+    PngHeader m_header;
     std::vector<unsigned char> m_rows;
+    std::vector<unsigned char> m_expanded;
+    std::optional<std::array<unsigned char, 3>> m_transparent;
     std::array<unsigned char, PngWindowBytes> m_window;
     std::array<unsigned char, 4> m_chunkType{};
     uint64_t m_cursor = 0;
@@ -539,6 +588,11 @@ class PngRows
     bool m_startedImage = false;
     bool m_streamEnded = false;
 };
+
+uint64_t PngRowStorage(PngHeader header)
+{
+    return sizeof(PngRows) + 2 * PngScanlineBytes(header) + PngExpansionBytes(header) + PngInflateBytes;
+}
 
 bool UsesSrgbResize(const InxResourceMeta &metadata)
 {
@@ -558,35 +612,34 @@ void InitPngResize(STBIR_RESIZE &resize, uint32_t width, uint32_t height, uint32
 
 } // namespace
 
-std::pair<uint32_t, uint32_t> TextureDecoder::ReadPngDimensions(AssetSource &source)
+TextureDecoder::PngSourceInfo TextureDecoder::ReadPngSourceInfo(AssetSource &source)
 {
     std::array<unsigned char, 33> header{};
     if (!source.OpenedFile() || source.Size() < header.size() ||
         source.Size() > static_cast<uint64_t>(std::numeric_limits<int>::max()))
         return {};
     source.OpenedFile()->ReadAt(0, header.data(), header.size());
-    return PngDimensions(header);
+    return ParsePngHeader(header);
 }
 
 TextureDecoder::PngPreviewPlan TextureDecoder::PlanPngPreview(AssetSource &source, uint32_t maxSize)
 {
-    const auto [width, height] = ReadPngDimensions(source);
-    if (!width)
+    const auto header = ReadPngSourceInfo(source);
+    if (!header.width)
         return {};
-    const auto [outWidth, outHeight] = FitDimensions(width, height, maxSize ? maxSize : MaximumDimension);
+    const auto [outWidth, outHeight] = FitDimensions(header.width, header.height, maxSize ? maxSize : MaximumDimension);
     const auto pixels = LevelByteSize(outWidth, outHeight, TextureFormat::Rgba8UNorm);
-    const uint64_t scanlines = sizeof(PngRows) + uint64_t(width) * 8 + 2 + PngInflateBytes;
-    return {width, height, outWidth, outHeight, pixels + scanlines};
+    return {header, outWidth, outHeight, pixels + PngRowStorage(header)};
 }
 
 InxTextureData TextureDecoder::DecodePngPreview(AssetSource &source, const PngPreviewPlan &plan,
                                                 const std::function<bool()> &retired)
 {
-    PngRows rows(source, plan.width, plan.height, &retired);
+    PngRows rows(source, plan.source, &retired);
     InxTextureData image;
     image.width = static_cast<int>(plan.previewWidth);
     image.height = static_cast<int>(plan.previewHeight);
-    image.pixels = SamplePreview(plan.width, plan.height, plan.previewWidth, plan.previewHeight,
+    image.pixels = SamplePreview(plan.source.width, plan.source.height, plan.previewWidth, plan.previewHeight,
                                  [&](uint32_t row) { return rows.Row(static_cast<int>(row)); });
     rows.Finish();
     return image;
@@ -621,7 +674,9 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::TakeRgba8Preview(InxTextur
 
 TextureDecoder::PngPlan TextureDecoder::PlanPng(AssetSource &source, const InxResourceMeta &metadata)
 {
-    const auto [width, height] = ReadPngDimensions(source);
+    const auto header = ReadPngSourceInfo(source);
+    const auto width = header.width;
+    const auto height = header.height;
     if (!width || ReadTargetFormat(metadata) != TextureTargetFormat::Automatic ||
         ReadSemantic(metadata) == TextureSemantic::VectorField ||
         ReadSemantic(metadata) == TextureSemantic::SignedDistanceField)
@@ -634,7 +689,7 @@ TextureDecoder::PngPlan TextureDecoder::PlanPng(AssetSource &source, const InxRe
     InitPngResize(resize, width, height, targetWidth, targetHeight, metadata);
     const auto resizeScratch = detail::MeasureTextureResize(resize);
     if (!resizeScratch)
-        throw std::invalid_argument("cannot plan the RGBA PNG resize workspace");
+        throw std::invalid_argument("cannot plan the PNG resize workspace");
 
     uint64_t mipBytes = 0;
     uint64_t blockBytes = 0;
@@ -649,13 +704,13 @@ TextureDecoder::PngPlan TextureDecoder::PlanPng(AssetSource &source, const InxRe
         h = std::max(1u, h / 2u);
     }
     const uint64_t outputBytes = std::max(mipBytes, blockBytes);
-    const uint64_t decodeBytes = sizeof(PngRows) + uint64_t(width) * 8 + 2 + PngInflateBytes + resizeScratch;
+    const uint64_t decodeBytes = PngRowStorage(header) + resizeScratch;
     // The mip vector is reserved once. BC encoding uses a second planned vector;
     // serialization holds the final output and its string at the same time.
     constexpr uint64_t artifactHeaderAndControlBytes = 64 * 1024;
     const uint64_t bytes =
         std::max({mipBytes + decodeBytes, mipBytes + blockBytes, 2 * outputBytes}) + artifactHeaderAndControlBytes;
-    return {width, height, bytes, resizeScratch, static_cast<size_t>(mipBytes)};
+    return {header, bytes, resizeScratch, static_cast<size_t>(mipBytes)};
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &sourcePath,
@@ -666,7 +721,7 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source, const InxResourceMeta &metadata,
-                                                             bool preserveSvgViewport)
+                                                             bool preserveSvgViewport, int *sequentialChannels)
 {
     if (!source.Size() || source.Size() > static_cast<uint64_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("texture source is empty or exceeds decoder limits: " + source.Path());
@@ -678,7 +733,7 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source
         const auto plan = PlanPng(source, metadata);
         if (!plan.bytes || plan.bytes > source.SequentialStorageLimit())
             throw std::logic_error("PNG options changed after bounded admission");
-        const auto [width, height] = FitDimensions(plan.width, plan.height, ReadMaxSize(metadata));
+        const auto [width, height] = FitDimensions(plan.source.width, plan.source.height, ReadMaxSize(metadata));
         TextureCpuData texture;
         texture.semantic = ReadSemantic(metadata);
         texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
@@ -687,13 +742,15 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source
         texture.bytes.resize(static_cast<size_t>(level.byteSize));
         texture.mipLevels.push_back(level);
         {
-            PngRows rows(source, plan.width, plan.height);
+            PngRows rows(source, plan.source);
             STBIR_RESIZE resize;
-            InitPngResize(resize, plan.width, plan.height, width, height, metadata, texture.bytes.data());
+            InitPngResize(resize, plan.source.width, plan.source.height, width, height, metadata, texture.bytes.data());
             stbir_set_user_data(&resize, &rows);
             if (!detail::RunTextureResize(resize, plan.resizeScratch))
                 throw std::runtime_error("failed to resize PNG texture");
             rows.Finish();
+            if (sequentialChannels)
+                *sequentialChannels = rows.SourceChannels();
         }
         if (!(file->InspectRevision() == revision))
             throw std::runtime_error("PNG source changed during decode: " + source.Path());
