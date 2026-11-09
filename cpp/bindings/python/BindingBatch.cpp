@@ -269,6 +269,18 @@ class TransformExchange
             if (paused)
                 return false;
             const py::object observed = binding.attr("_readback_source");
+            const py::object readback = binding.attr("_readback");
+            if (!readback.is_none()) {
+                const py::object task = readback.attr("_task");
+                const py::object source = readback.attr("_source_write_submission");
+                // The binding must observe the accepted source before the batch can wait on it.
+                if (!task.is_none() && !observed.is_none() && source.is(observed)) {
+                    auto &native = task.cast<rhi::ComputeReadback &>();
+                    if (native.GetSubmission().IsValid() && !native.IsCancelled() && !native.IsComplete())
+                        return false;
+                }
+                return Poll(binding);
+            }
             const py::object wrapper = buffer.attr("_native");
             const auto &native = wrapper.cast<const rhi::ComputeBuffer &>();
             const auto ticket = native.GetLastWriteSubmission();
@@ -335,8 +347,7 @@ size_t AdvanceTransformBindings(const py::tuple &bindings, size_t first, const p
     for (size_t index = first; index < bindings.size(); ++index) {
         const py::handle binding = bindings[index];
         const py::object exchange = binding.attr("_native_transform_exchange");
-        // The existing owner observes, cancels and materializes active readbacks.
-        if (exchange.is_none() || !binding.attr("_initial_pose").is_none() || !binding.attr("_readback").is_none())
+        if (exchange.is_none() || !binding.attr("_initial_pose").is_none())
             return index;
         if (exchange.cast<TransformExchange &>().Advance(binding, permission, factory, writers))
             return index + 1;

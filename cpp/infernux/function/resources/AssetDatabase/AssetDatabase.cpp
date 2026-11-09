@@ -47,12 +47,18 @@ namespace
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
 
-bool IsPngPath(const std::filesystem::path &path)
+std::string TextureSourceExtension(const std::filesystem::path &path)
 {
     auto extension = FromFsPath(path.extension());
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char c) { return std::tolower(c); });
-    return extension == ".png";
+    return extension;
+}
+
+bool IsPlannedTextureSource(const std::filesystem::path &path)
+{
+    const auto extension = TextureSourceExtension(path);
+    return extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".jpe";
 }
 
 std::string Utf8Diagnostic(const char *message)
@@ -560,7 +566,7 @@ void ClaimImportWrites(std::vector<DocumentTransactionEntry> &writes, bool hasMe
     for (auto it = writes.begin() + hasMetadata; it != writes.end(); ++it) {
         auto &write = *it;
         if (write.content.capacity() > remaining)
-            throw std::logic_error("PNG import output exceeded its admitted CPU storage");
+            throw std::logic_error("texture import output exceeded its admitted CPU storage");
         remaining -= write.content.capacity();
         write.preclaimedStorage = storage;
     }
@@ -691,7 +697,7 @@ struct AssetDatabase::TextureSourceSnapshot
         if (!workingBytes)
             return true;
         if (workingBytes > owner->CpuStorageLimit()) {
-            error = "PNG import requires " + std::to_string(workingBytes) +
+            error = "texture import requires " + std::to_string(workingBytes) +
                     " CPU bytes, exceeding the configured capacity of " + std::to_string(owner->CpuStorageLimit());
             return false;
         }
@@ -699,7 +705,7 @@ struct AssetDatabase::TextureSourceSnapshot
             storage = owner->TryReserveCpuStorage(workingBytes);
         if (storage && owner->TryGrowCpuStorage(*storage, workingBytes))
             return true;
-        error = "PNG import is waiting for " + std::to_string(workingBytes) +
+        error = "texture import is waiting for " + std::to_string(workingBytes) +
                 " CPU bytes; retry when capacity is available";
         return false;
     }
@@ -718,13 +724,13 @@ struct AssetDatabase::TextureSourceSnapshot
         if (revision->data.size != source->Size() ||
             revision->data.size > static_cast<uint64_t>(std::numeric_limits<int>::max()))
             throw std::invalid_argument("texture source exceeds decoder limits: " + path);
-        if (!workingBytes && settings && boundedProjectRoot && IsPngPath(ToFsPath(path))) {
+        if (!workingBytes && settings && boundedProjectRoot && IsPlannedTextureSource(ToFsPath(path))) {
             try {
                 auto options = *settings;
                 options.AddMetadata("resource_type", ResourceType::Texture);
                 TextureImporter::ApplyDefaultSettings(options);
                 ApplyPluginPageTextureMetadata(options, path, *boundedProjectRoot);
-                workingBytes = TextureDecoder::PlanPng(*source, options).bytes;
+                workingBytes = TextureDecoder::PlanSourceStorage(*source, options);
             } catch (const std::invalid_argument &exception) {
                 if (!deferPlanningError)
                     throw;
@@ -737,7 +743,7 @@ struct AssetDatabase::TextureSourceSnapshot
             else if (!storage)
                 (void)source->Bytes();
             else
-                throw std::runtime_error("PNG import options changed after storage admission");
+                throw std::runtime_error("texture import options changed after storage admission");
         }
         if (!(input.InspectRevision() == *revision))
             throw std::runtime_error("texture source changed during capture: " + path);
@@ -2294,11 +2300,12 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
             source.emplace(item.file.path);
         if (textureSource && !textureSource->planningError.empty()) {
             // Preserve the failed import's authored identity without loading
-            // the whole PNG solely to report an invalid cook configuration.
+            // the whole image solely to report an invalid cook configuration.
+            const auto extension = TextureSourceExtension(ToFsPath(item.file.path));
             metadata.InitFromSource(*textureSource->source, ResourceType::Texture);
             metadata.AddMetadata("file_type", "texture");
-            metadata.AddMetadata("file_extension", ".png");
-            metadata.AddMetadata("source_container", "PNG");
+            metadata.AddMetadata("file_extension", extension);
+            metadata.AddMetadata("source_container", extension == ".png" ? "PNG" : "JPEG");
             metadata.AddMetadata("is_binary", true);
             metadata.AddMetadata("file_size", static_cast<size_t>(textureSource->source->Size()));
         } else {
@@ -2962,7 +2969,7 @@ bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshComm
                     auto writes = TakeRuntimeArtifactWrites(item.artifact->runtimeCpuArtifacts, item.request.guid,
                                                             item.request.resourceType, state->projectRoot);
                     if (writes.size() != 1 || writes.front().content.capacity() > storage->Bytes())
-                        throw std::logic_error("PNG import output exceeded its admitted CPU storage");
+                        throw std::logic_error("texture import output exceeded its admitted CPU storage");
                     item.stagedTexture.emplace(std::move(writes.front()));
                     storage->ReduceTo(item.stagedTexture->content.capacity());
                     item.stagedTexture->preclaimedStorage = std::move(storage);
@@ -3749,7 +3756,7 @@ bool AssetDatabase::BeginWatcherImport(const std::string &requestedPath, Watcher
     const auto snapshot = LoadQuerySnapshot();
     if (result.resourceType == ResourceType::Mesh)
         worker.request.resolveTextureGuid = ModelTextureResolver(snapshot);
-    pending->preparing = m_frameWork && result.resourceType == ResourceType::Texture && IsPngPath(path);
+    pending->preparing = m_frameWork && result.resourceType == ResourceType::Texture && IsPlannedTextureSource(path);
     if (pending->preparing) {
         pending->textureSource.boundedProjectRoot = &m_projectRoot;
         QueueCatalogJob(m_watcherWork, CatalogIoStage::Metadata,
@@ -3890,7 +3897,7 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
                 result.errorCode = AssetMutationErrorCode::ImportFailed;
                 result.error = !pending->metadata.metadata
                                    ? pending->metadata.error
-                                   : "PNG import requires " + std::to_string(capture.workingBytes) +
+                                   : "texture import requires " + std::to_string(capture.workingBytes) +
                                          " CPU bytes, exceeding the configured capacity of " +
                                          std::to_string(m_frameWork->CpuStorageLimit());
             } else {

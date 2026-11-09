@@ -243,7 +243,7 @@ uint32_t PngU32(const unsigned char *bytes)
     return uint32_t(bytes[0]) << 24 | uint32_t(bytes[1]) << 16 | uint32_t(bytes[2]) << 8 | bytes[3];
 }
 
-using PngHeader = TextureDecoder::PngSourceInfo;
+using PngHeader = TextureDecoder::SourceInfo;
 
 size_t PngScanlineBytes(PngHeader header)
 {
@@ -601,18 +601,90 @@ bool UsesSrgbResize(const InxResourceMeta &metadata)
                                   semantic == TextureSemantic::Sprite);
 }
 
-void InitPngResize(STBIR_RESIZE &resize, uint32_t width, uint32_t height, uint32_t targetWidth, uint32_t targetHeight,
-                   const InxResourceMeta &metadata, void *output = nullptr)
+void InitRgbaResize(STBIR_RESIZE &resize, uint32_t width, uint32_t height, uint32_t targetWidth, uint32_t targetHeight,
+                    const InxResourceMeta &metadata, void *output = nullptr)
 {
     stbir_resize_init(&resize, nullptr, static_cast<int>(width), static_cast<int>(height), 0, output,
                       static_cast<int>(targetWidth), static_cast<int>(targetHeight), 0, STBIR_RGBA,
                       UsesSrgbResize(metadata) ? STBIR_TYPE_UINT8_SRGB : STBIR_TYPE_UINT8);
-    stbir_set_pixel_callbacks(&resize, &PngRows::ReadRow, nullptr);
+}
+
+struct RgbaCookStorage
+{
+    uint64_t mipBytes = 0;
+    uint64_t processingBytes = 0;
+};
+
+RgbaCookStorage PlanRgbaCook(uint32_t width, uint32_t height, const InxResourceMeta &metadata)
+{
+    const auto target = ReadTargetFormat(metadata);
+    const bool mipmaps = ReadGenerateMipmaps(metadata);
+    uint64_t mipBytes = 0;
+    uint64_t blockBytes = 0;
+    for (auto w = width, h = height;; w = std::max(1u, w / 2u), h = std::max(1u, h / 2u)) {
+        mipBytes += LevelByteSize(w, h, TextureFormat::Rgba8UNorm);
+        blockBytes += uint64_t((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
+        if (!mipmaps || (w == 1 && h == 1))
+            break;
+    }
+    if (mipBytes > MaximumDecodedBytes)
+        throw std::overflow_error("texture mip chain exceeds the payload limit");
+    uint64_t outputBytes = std::max(mipBytes, blockBytes);
+    switch (target) {
+    case TextureTargetFormat::Automatic:
+        break;
+    case TextureTargetFormat::Rgba4UNorm:
+        outputBytes = mipBytes / 2;
+        break;
+    case TextureTargetFormat::Rgba8:
+        outputBytes = mipBytes;
+        break;
+    case TextureTargetFormat::Rgba16UNorm:
+    case TextureTargetFormat::Rgba16Float:
+        outputBytes = mipBytes * 2;
+        break;
+    case TextureTargetFormat::Rgba32Float:
+        outputBytes = mipBytes * 4;
+        break;
+    }
+    if (target != TextureTargetFormat::Automatic && outputBytes > MaximumDecodedBytes)
+        throw std::overflow_error("texture mip chain exceeds the payload limit");
+    const uint64_t mipScratch =
+        mipmaps ? uint64_t(std::max(1u, width / 2u)) * sizeof(std::pair<uint32_t, uint32_t>) : 0;
+    // Compression/conversion retains the source. Serialization retains the
+    // final texture alongside the artifact string.
+    return {mipBytes, std::max({mipBytes + mipScratch, mipBytes + outputBytes, 2 * outputBytes})};
+}
+
+constexpr uint64_t ArtifactControlBytes = 64 * 1024;
+
+struct JpegPlan
+{
+    uint64_t bytes;
+    size_t mipBytes;
+};
+
+JpegPlan PlanJpeg(const detail::JpegInfo &jpeg, uint64_t sourceBytes, const InxResourceMeta &metadata)
+{
+    const auto [width, height] = FitDimensions(jpeg.source.width, jpeg.source.height, ReadMaxSize(metadata));
+    const auto cook = PlanRgbaCook(width, height, metadata);
+    size_t resizeScratch = 0;
+    if (width != jpeg.source.width || height != jpeg.source.height) {
+        STBIR_RESIZE resize;
+        InitRgbaResize(resize, jpeg.source.width, jpeg.source.height, width, height, metadata);
+        resizeScratch = detail::MeasureTextureResize(resize);
+        if (!resizeScratch)
+            throw std::invalid_argument("cannot plan the JPEG resize workspace");
+    }
+    const auto rgbaBytes = uint64_t(jpeg.source.width) * jpeg.source.height * 4;
+    const auto workingBytes =
+        std::max({jpeg.decodeBytes, rgbaBytes + cook.mipBytes + resizeScratch, cook.processingBytes});
+    return {sourceBytes + workingBytes + ArtifactControlBytes, static_cast<size_t>(cook.mipBytes)};
 }
 
 } // namespace
 
-TextureDecoder::PngSourceInfo TextureDecoder::ReadPngSourceInfo(AssetSource &source)
+TextureDecoder::SourceInfo TextureDecoder::ReadPngSourceInfo(AssetSource &source)
 {
     std::array<unsigned char, 33> header{};
     if (!source.OpenedFile() || source.Size() < header.size() ||
@@ -620,6 +692,23 @@ TextureDecoder::PngSourceInfo TextureDecoder::ReadPngSourceInfo(AssetSource &sou
         return {};
     source.OpenedFile()->ReadAt(0, header.data(), header.size());
     return ParsePngHeader(header);
+}
+
+TextureDecoder::SourceInfo TextureDecoder::ReadSequentialSourceInfo(AssetSource &source)
+{
+    if (const auto jpeg = detail::ReadJpegInfo(source); jpeg.source.width)
+        return jpeg.source;
+    auto png = ReadPngSourceInfo(source);
+    if (png.channels == 3)
+        png.channels = 0; // Truecolor PNG may gain a channel from tRNS.
+    return png;
+}
+
+uint64_t TextureDecoder::PlanSourceStorage(AssetSource &source, const InxResourceMeta &metadata)
+{
+    if (const auto jpeg = detail::ReadJpegInfo(source); jpeg.source.width)
+        return PlanJpeg(jpeg, source.Size(), metadata).bytes;
+    return PlanPng(source, metadata).bytes;
 }
 
 TextureDecoder::PngPreviewPlan TextureDecoder::PlanPngPreview(AssetSource &source, uint32_t maxSize)
@@ -686,31 +775,16 @@ TextureDecoder::PngPlan TextureDecoder::PlanPng(AssetSource &source, const InxRe
         return {};
 
     STBIR_RESIZE resize;
-    InitPngResize(resize, width, height, targetWidth, targetHeight, metadata);
+    InitRgbaResize(resize, width, height, targetWidth, targetHeight, metadata);
+    stbir_set_pixel_callbacks(&resize, &PngRows::ReadRow, nullptr);
     const auto resizeScratch = detail::MeasureTextureResize(resize);
     if (!resizeScratch)
         throw std::invalid_argument("cannot plan the PNG resize workspace");
 
-    uint64_t mipBytes = 0;
-    uint64_t blockBytes = 0;
-    auto w = targetWidth;
-    auto h = targetHeight;
-    for (;;) {
-        mipBytes += LevelByteSize(w, h, TextureFormat::Rgba8UNorm);
-        blockBytes += uint64_t((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
-        if (!ReadGenerateMipmaps(metadata) || (w == 1 && h == 1))
-            break;
-        w = std::max(1u, w / 2u);
-        h = std::max(1u, h / 2u);
-    }
-    const uint64_t outputBytes = std::max(mipBytes, blockBytes);
-    const uint64_t decodeBytes = PngRowStorage(header) + resizeScratch;
-    // The mip vector is reserved once. BC encoding uses a second planned vector;
-    // serialization holds the final output and its string at the same time.
-    constexpr uint64_t artifactHeaderAndControlBytes = 64 * 1024;
+    const auto cook = PlanRgbaCook(targetWidth, targetHeight, metadata);
     const uint64_t bytes =
-        std::max({mipBytes + decodeBytes, mipBytes + blockBytes, 2 * outputBytes}) + artifactHeaderAndControlBytes;
-    return {header, bytes, resizeScratch, static_cast<size_t>(mipBytes)};
+        std::max(cook.mipBytes + PngRowStorage(header) + resizeScratch, cook.processingBytes) + ArtifactControlBytes;
+    return {header, bytes, resizeScratch, static_cast<size_t>(cook.mipBytes)};
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &sourcePath,
@@ -728,8 +802,28 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source
     if (source.IsSequential()) {
         auto *file = source.OpenedFile();
         if (!file)
-            throw std::logic_error("PNG source must be opened for its admitted decode");
+            throw std::logic_error("texture source must be opened for its admitted decode");
         const auto revision = file->InspectRevision();
+        if (detail::ReadJpegInfo(source).source.width) {
+            if (source.Size() > source.SequentialStorageLimit())
+                throw std::logic_error("JPEG source exceeded its admitted storage");
+            std::string encoded(static_cast<size_t>(source.Size()), '\0');
+            source.ReadSequential(encoded.data(), encoded.size());
+            if (!(file->InspectRevision() == revision))
+                throw std::runtime_error("JPEG source changed during capture: " + source.Path());
+            source.CloseFile();
+            // The decoder sees these exact bytes, even if the file changes
+            // between admission, capture and the caller's publication check.
+            const auto jpeg = detail::ReadJpegInfo(encoded);
+            if (!jpeg.source.width)
+                throw std::runtime_error("JPEG source changed before decode: " + source.Path());
+            const auto plan = PlanJpeg(jpeg, encoded.size(), metadata);
+            if (plan.bytes > source.SequentialStorageLimit())
+                throw std::logic_error("JPEG options changed after bounded admission");
+            if (sequentialChannels)
+                *sequentialChannels = jpeg.source.channels;
+            return DecodeBytes(encoded, metadata, source.Path(), preserveSvgViewport, plan.mipBytes);
+        }
         const auto plan = PlanPng(source, metadata);
         if (!plan.bytes || plan.bytes > source.SequentialStorageLimit())
             throw std::logic_error("PNG options changed after bounded admission");
@@ -744,7 +838,9 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source
         {
             PngRows rows(source, plan.source);
             STBIR_RESIZE resize;
-            InitPngResize(resize, plan.source.width, plan.source.height, width, height, metadata, texture.bytes.data());
+            InitRgbaResize(resize, plan.source.width, plan.source.height, width, height, metadata,
+                           texture.bytes.data());
+            stbir_set_pixel_callbacks(&resize, &PngRows::ReadRow, nullptr);
             stbir_set_user_data(&resize, &rows);
             if (!detail::RunTextureResize(resize, plan.resizeScratch))
                 throw std::runtime_error("failed to resize PNG texture");
@@ -774,7 +870,7 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
 std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeBytes(std::string_view source,
                                                                   const InxResourceMeta &metadata,
                                                                   const std::string &sourcePath,
-                                                                  bool preserveSvgViewport)
+                                                                  bool preserveSvgViewport, size_t plannedMipBytes)
 {
     if (source.empty() || source.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         throw std::invalid_argument("texture source is empty or exceeds decoder limits");
@@ -880,6 +976,8 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeBytes(std::string_vi
                 throw std::runtime_error("failed to decode texture: " + sourcePath);
         }
         auto release = std::unique_ptr<stbi_uc, decltype(&stbi_image_free)>(decoded, &stbi_image_free);
+        if (plannedMipBytes)
+            texture.bytes.reserve(plannedMipBytes);
         SetRgba8BaseLevel(texture, decoded ? decoded : pnmPixels.data(), sourceWidth, sourceHeight, maxSize);
     }
 

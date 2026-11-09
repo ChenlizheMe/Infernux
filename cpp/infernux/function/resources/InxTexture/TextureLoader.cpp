@@ -76,13 +76,13 @@ void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) c
     int width = 0, height = 0, channels = 0;
     const auto *fileBytes = reinterpret_cast<const unsigned char *>(content.data());
     if (sequential) {
-        const auto [pngWidth, pngHeight, pngChannels] = TextureDecoder::ReadPngSourceInfo(source);
-        if (!pngWidth)
-            throw std::runtime_error("PNG source changed during metadata preparation");
-        metaData.AddMetadata("width", static_cast<int>(pngWidth));
-        metaData.AddMetadata("height", static_cast<int>(pngHeight));
-        if (pngChannels == 4)
-            metaData.AddMetadata("channels", 4);
+        const auto info = TextureDecoder::ReadSequentialSourceInfo(source);
+        if (!info.width)
+            throw std::runtime_error("texture source changed during metadata preparation");
+        metaData.AddMetadata("width", static_cast<int>(info.width));
+        metaData.AddMetadata("height", static_cast<int>(info.height));
+        if (info.channels)
+            metaData.AddMetadata("channels", static_cast<int>(info.channels));
     } else if (!isTextVolume && !isSvg && fileBytes && contentSize > 0 &&
                contentSize <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
                stbi_info_from_memory(fileBytes, static_cast<int>(contentSize), &width, &height, &channels)) {
@@ -106,6 +106,7 @@ void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) c
         {".svg", "SVG"},
         {".jpg", "JPEG"},
         {".jpeg", "JPEG"},
+        {".jpe", "JPEG"},
         {".bmp", "BMP"},
         {".tga", "TGA"},
         {".gif", "GIF"},

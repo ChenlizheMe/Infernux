@@ -20,31 +20,23 @@ struct InxTextureData;
 class TextureDecoder final
 {
   public:
-    struct PngSourceInfo
+    struct SourceInfo
     {
         uint32_t width = 0;
         uint32_t height = 0;
         uint8_t channels = 0;
     };
 
-    struct PngPlan
-    {
-        PngSourceInfo source;
-        uint64_t bytes = 0;
-        size_t resizeScratch = 0;
-        size_t mipBytes = 0;
-    };
-
     struct PngPreviewPlan
     {
-        PngSourceInfo source;
+        SourceInfo source;
         uint32_t previewWidth = 0;
         uint32_t previewHeight = 0;
         uint64_t bytes = 0;
     };
 
-    [[nodiscard]] static PngPlan PlanPng(AssetSource &source, const InxResourceMeta &metadata);
-    [[nodiscard]] static PngSourceInfo ReadPngSourceInfo(AssetSource &source);
+    [[nodiscard]] static uint64_t PlanSourceStorage(AssetSource &source, const InxResourceMeta &metadata);
+    [[nodiscard]] static SourceInfo ReadSequentialSourceInfo(AssetSource &source);
     [[nodiscard]] static PngPreviewPlan PlanPngPreview(AssetSource &source, uint32_t maxSize);
     [[nodiscard]] static InxTextureData DecodePngPreview(AssetSource &source, const PngPreviewPlan &plan,
                                                          const std::function<bool()> &retired);
@@ -67,10 +59,31 @@ class TextureDecoder final
                                                                            const InxResourceMeta &metadata);
 
   private:
-    [[nodiscard]] static std::shared_ptr<const TextureCpuData> DecodeBytes(std::string_view source,
-                                                                           const InxResourceMeta &metadata,
-                                                                           const std::string &sourceName,
-                                                                           bool preserveSvgViewport);
+    struct PngPlan
+    {
+        SourceInfo source;
+        uint64_t bytes = 0;
+        size_t resizeScratch = 0;
+        size_t mipBytes = 0;
+    };
+
+    [[nodiscard]] static PngPlan PlanPng(AssetSource &source, const InxResourceMeta &metadata);
+    [[nodiscard]] static SourceInfo ReadPngSourceInfo(AssetSource &source);
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData>
+    DecodeBytes(std::string_view source, const InxResourceMeta &metadata, const std::string &sourceName,
+                bool preserveSvgViewport, size_t plannedMipBytes = 0);
 };
+
+namespace detail
+{
+struct JpegInfo
+{
+    TextureDecoder::SourceInfo source;
+    uint64_t decodeBytes = 0;
+};
+
+[[nodiscard]] JpegInfo ReadJpegInfo(AssetSource &source);
+[[nodiscard]] JpegInfo ReadJpegInfo(std::string_view bytes);
+} // namespace detail
 
 } // namespace infernux

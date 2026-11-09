@@ -412,6 +412,12 @@ TextureCpuData ConvertTexture(const TextureCpuData &source, TextureTargetFormat 
     result.valueMin = source.valueMin;
     result.valueMax = source.valueMax;
 
+    const auto sourceTexels = source.bytes.size() / TextureFormatBytesPerTexel(source.format);
+    const auto targetBytes = TextureFormatBytesPerTexel(result.format);
+    if (sourceTexels > MaximumProcessedBytes / targetBytes)
+        throw std::overflow_error("texture mip chain exceeds the payload limit");
+    result.bytes.reserve(sourceTexels * targetBytes);
+    result.mipLevels.reserve(source.mipLevels.size());
     for (const TextureMipLevel &sourceMip : source.mipLevels) {
         const TextureMipLevel destinationMip =
             MakeUncompressedMip(sourceMip.width, sourceMip.height, sourceMip.depth, result.bytes.size(), result.format);

@@ -2432,8 +2432,7 @@ def _poll_transform_bindings() -> None:
         index = 0
         while index < len(bindings):
             binding = bindings[index]
-            if (binding._native_transform_exchange is None or binding._initial_pose is not None
-                    or binding._readback is not None):
+            if binding._native_transform_exchange is None or binding._initial_pose is not None:
                 binding._poll()
                 index += 1
             else:
