@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infernux"
-version = "0.5.0"
+version = "0.4.8"
 description = "Infernux (熔炉) — a Python-first game engine advancing toward Neural Network-Native Engine (3N), powered by C++, Vulkan and WebGPU."
 authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
 readme = "README.md"

@@ -1,10 +1,10 @@
-# Infernux v0.5.0 · Native Neural Execution
+# Infernux v0.4.8 · Native Neural Execution
 
-Infernux 0.5.0 brings model authoring, native execution, and checkpoint export into the engine. Projects can connect neural inputs and outputs to their own game systems through the same resource and lifecycle boundaries used by rendering and physics.
+Infernux 0.4.8 brings model authoring, native execution, and checkpoint export into the engine. Projects can connect neural inputs and outputs to their own game systems through the same resource and lifecycle boundaries used by rendering and physics.
 
 [中文更新日志](UpdateLog-zh.md)
 
-[Compare with v0.4.3-v8](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.5.0)
+[Compare with v0.4.3-v8](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8)
 
 ### Neural runtime
 
@@ -17,7 +17,7 @@ Infernux 0.5.0 brings model authoring, native execution, and checkpoint export i
 - Capture camera views continuously or on request. Cameras can publish to a RenderTexture asset or to memory, and consumers can keep using the latest completed image.
 - Expose editable skeleton hierarchies and Jolt joints and ragdolls. Model results can be applied at explicit physics and rendering boundaries.
 - Improve asset preparation and preview publication with shared IO and transfer budgets. Native PNG and JPEG paths reserve their decoding workspace. Asset refresh, watching, and model Apply use the native sidecar parser and preserve the revision they consumed.
-- Update the Hub and platform packaging for engine 0.5.0. Install platform packages built for this exact engine release before exporting a Player.
+- Update the Hub and platform packaging for engine 0.4.8. Install platform packages built for this exact engine release before exporting a Player.
 
 ---
 

@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="Infernux logo"></a>
 </p>
 
-**0.5.0** adds native CPU and Vulkan training and inference, model checkpoints, and engine interfaces that connect neural computation to rendering and physics. See the [changelog](UpdateLog.md).
+**0.4.8** adds native CPU and Vulkan training and inference, model checkpoints, and engine interfaces that connect neural computation to rendering and physics. See the [changelog](UpdateLog.md).
 
 <h1 align="center">Infernux · 熔炉</h1>
 
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ChenlizheMe/Infernux/releases"><img src="https://img.shields.io/badge/version-0.5.0-orange.svg" alt="Infernux 0.5.0"></a>
+  <a href="https://github.com/ChenlizheMe/Infernux/releases"><img src="https://img.shields.io/badge/version-0.4.8-orange.svg" alt="Infernux 0.4.8"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/python-3.13-3776AB.svg" alt="Python 3.13">
   <img src="https://img.shields.io/badge/graphics-Vulkan%20%C2%B7%20WebGPU-c8444b.svg" alt="Vulkan and WebGPU">
@@ -127,7 +127,7 @@ Infernux is released under the [MIT license](LICENSE): free to use, no royalties
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.5.0},
+  version = {0.4.8},
   url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```

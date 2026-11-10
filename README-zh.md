@@ -2,7 +2,7 @@
   <a href="https://infernux-engine.com/"><img src="docs/assets/logo.svg" width="96" alt="熔炉标志"></a>
 </p>
 
-**0.5.0** 加入原生 CPU 与 Vulkan 训练和推理、模型检查点，以及连接神经计算与渲染、物理的引擎接口。详见[更新日志](UpdateLog-zh.md)。
+**0.4.8** 加入原生 CPU 与 Vulkan 训练和推理、模型检查点，以及连接神经计算与渲染、物理的引擎接口。详见[更新日志](UpdateLog-zh.md)。
 
 <h1 align="center">熔炉 · Infernux</h1>
 
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ChenlizheMe/Infernux/releases"><img src="https://img.shields.io/badge/version-0.5.0-orange.svg" alt="Infernux 0.5.0"></a>
+  <a href="https://github.com/ChenlizheMe/Infernux/releases"><img src="https://img.shields.io/badge/version-0.4.8-orange.svg" alt="Infernux 0.4.8"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 协议"></a>
   <img src="https://img.shields.io/badge/python-3.13-3776AB.svg" alt="Python 3.13">
   <img src="https://img.shields.io/badge/graphics-Vulkan%20%C2%B7%20WebGPU-c8444b.svg" alt="Vulkan 与 WebGPU">
@@ -125,7 +125,7 @@ Linux 上先运行 `scripts/setup/install_linux_dependencies.sh` 与 `bash scrip
   author  = {Chen, Lizhe},
   title   = {Infernux},
   year    = {2026},
-  version = {0.5.0},
+  version = {0.4.8},
   url     = {https://github.com/ChenlizheMe/Infernux}
 }
 ```
