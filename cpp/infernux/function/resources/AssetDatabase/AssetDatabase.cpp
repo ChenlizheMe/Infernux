@@ -693,7 +693,7 @@ bool SameMetadataValue(const nlohmann::json &left, const nlohmann::json &right)
 InxResourceMeta DecodeMetadataDocument(const nlohmann::json &document, const std::string &path, MetadataMatch *match)
 {
     if (document.is_discarded())
-        throw std::invalid_argument("invalid metadata JSON: " + path);
+        throw std::invalid_argument("metadata JSON parse error: " + path);
     InxResourceMeta metadata;
     metadata.DeserializeDocument(document);
     if (match)
@@ -1176,7 +1176,6 @@ struct AssetDatabase::TextureSourceSnapshot
     const std::string *boundedProjectRoot = nullptr;
     uint64_t workingBytes = 0;
     std::string error;
-    bool deferPlanningError = false;
     std::string planningError;
 
     bool Reserve(FrameWorkOwner *owner)
@@ -1219,8 +1218,6 @@ struct AssetDatabase::TextureSourceSnapshot
                 ApplyPluginPageTextureMetadata(options, path, *boundedProjectRoot);
                 workingBytes = TextureDecoder::PlanSourceStorage(*source, options);
             } catch (const std::invalid_argument &exception) {
-                if (!deferPlanningError)
-                    throw;
                 planningError = Utf8Diagnostic(exception.what());
             }
         }
@@ -1240,6 +1237,8 @@ struct AssetDatabase::TextureSourceSnapshot
 
     void OpenForCook(const std::string &path)
     {
+        if (!planningError.empty())
+            throw std::invalid_argument(planningError);
         if (workingBytes) {
             source->OpenSequentialRead();
             if (!(source->OpenedFile()->InspectRevision() == revision.value()))
@@ -2768,9 +2767,9 @@ bool AssetDatabase::AdvanceRefresh(bool managed, bool drain)
 {
     ObserveCatalogWork(m_refreshWork);
     if (!m_refreshWork.Complete()) {
-        if (drain && m_refreshWork.active.empty() && m_pendingRefreshCommit &&
+        if (!managed && m_refreshWork.active.empty() && m_pendingRefreshCommit &&
             m_pendingRefreshCommit->phase == PendingRefreshCommit::Phase::MetadataOutputStage)
-            DrainMetadataOutputs(*m_pendingRefreshCommit);
+            ServiceMetadataOutputs(*m_pendingRefreshCommit, drain);
         return SubmitCatalogWork(m_refreshWork, managed, drain);
     }
     if (!m_pendingAssetScan && !m_pendingRefreshCommit)
@@ -2831,7 +2830,7 @@ bool AssetDatabase::CommitReadyRefresh(bool managed, bool drain)
                 return false;
             }
             if (state->phase == PendingRefreshCommit::Phase::Import) {
-                if (!FinishImportWave(*state, drain) || BeginNextImportWave(state, managed, drain))
+                if (!FinishImportWave(*state, managed, drain) || BeginNextImportWave(state, drain))
                     return false;
                 state->phase = PendingRefreshCommit::Phase::ImportMerge;
             }
@@ -2858,9 +2857,12 @@ bool AssetDatabase::CommitReadyRefresh(bool managed, bool drain)
                 return false;
             }
             if (state->phase == PendingRefreshCommit::Phase::MetadataOutputStage) {
-                if (!drain && !AreMetadataOutputsComplete(*state))
+                if (!drain && !AreMetadataOutputsComplete(*state)) {
+                    if (!managed)
+                        ServiceMetadataOutputs(*state, false);
                     return false;
-                DrainMetadataOutputs(*state);
+                }
+                ServiceMetadataOutputs(*state, true);
                 for (auto &output : state->metadataOutputs) {
                     if (output.failure)
                         std::rethrow_exception(output.failure);
@@ -3132,7 +3134,7 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
         if (textureSource && !textureSource->planningError.empty()) {
             // Preserve the failed import's authored identity without loading
             // the whole image solely to report an invalid cook configuration.
-            TextureLoader::CreateSourceMeta(*textureSource->source, metadata);
+            TextureLoader::CreateSourceMeta(*textureSource->source, metadata, true);
         } else {
             item.loader->CreateMeta(textureSource ? *textureSource->source : *source, metadata);
         }
@@ -3168,12 +3170,14 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
         if (!item.error.empty()) {
             textureSource->error = item.error;
             textureSource->source.reset();
+        } else if (!textureSource->planningError.empty()) {
+            textureSource->source.reset();
         } else if (textureSource->workingBytes) {
             textureSource->source->CloseFile();
         }
         item.textureRevision = textureSource->revision;
         item.textureWorkingBytes = textureSource->workingBytes;
-        item.texturePlanningError = std::move(textureSource->planningError);
+        item.texturePlanningError = textureSource->planningError;
     }
 }
 
@@ -3482,7 +3486,6 @@ void AssetDatabase::QueueRefreshMetadata(const std::shared_ptr<PendingRefreshCom
                 auto &item = itemAt(index);
                 TextureSourceSnapshot capture;
                 capture.boundedProjectRoot = bounded ? &state->projectRoot : nullptr;
-                capture.deferPlanningError = bounded;
                 auto *texture = item.resourceType == ResourceType::Texture ? &capture : nullptr;
                 if (adopting)
                     FinishMetadataAdoption(item, texture);
@@ -3585,7 +3588,6 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
                              auto &item = state->workerMetadata[state->metadataPublications[index]];
                              TextureSourceSnapshot capture;
                              capture.boundedProjectRoot = bounded ? &state->projectRoot : nullptr;
-                             capture.deferPlanningError = bounded;
                              PublishMissingMetadata(item, state->projectRoot,
                                                     item.resourceType == ResourceType::Texture ? &capture : nullptr,
                                                     bounded);
@@ -3752,10 +3754,15 @@ bool AssetDatabase::AreImportWaveWritesComplete(const PendingRefreshCommit &stat
     });
 }
 
-bool AssetDatabase::FinishImportWave(PendingRefreshCommit &state, bool drain)
+bool AssetDatabase::FinishImportWave(PendingRefreshCommit &state, bool managed, bool drain)
 {
-    if (!drain && !AreImportWaveWritesComplete(state))
+    if (!drain && !AreImportWaveWritesComplete(state)) {
+        if (!managed)
+            for (const auto index : state.importWave)
+                if (const auto &write = state.workerImports[index].stageWrite)
+                    write->Expedite();
         return false;
+    }
     for (const auto index : state.importWave) {
         auto &item = state.workerImports[index];
         if (item.stageFailure)
@@ -3770,7 +3777,7 @@ bool AssetDatabase::FinishImportWave(PendingRefreshCommit &state, bool drain)
     return true;
 }
 
-bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state, bool managed, bool drain)
+bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state, bool drain)
 {
     state->importStorageWaitBytes = 0;
     std::string waitError;
@@ -3817,9 +3824,9 @@ bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshComm
         return false;
     }
     QueueCatalogWork(m_refreshWork, CatalogIoStage::Cook, static_cast<uint32_t>(state->importWave.size()),
-                     [state, managed](uint32_t waveIndex, auto) {
+                     [state](uint32_t waveIndex, auto) {
                          const auto index = state->importWave[waveIndex];
-                         return [state, index, managed] {
+                         return [state, index] {
                              auto &item = state->workerImports[index];
                              auto storage = std::move(item.storage);
                              item.producerThread = std::this_thread::get_id();
@@ -3865,8 +3872,6 @@ bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshComm
                              }
                              try {
                                  StageTextureArtifact(item, std::move(storage));
-                                 if (!managed)
-                                     item.stageWrite->Wait();
                              } catch (...) {
                                  item.stagedTexture.reset();
                                  item.artifact.reset();
@@ -4058,17 +4063,21 @@ bool AssetDatabase::AreMetadataOutputsComplete(const PendingRefreshCommit &state
                        [](const auto &output) { return !output.write || output.write->IsComplete(); });
 }
 
-void AssetDatabase::DrainMetadataOutputs(PendingRefreshCommit &state)
+void AssetDatabase::ServiceMetadataOutputs(PendingRefreshCommit &state, bool drain)
 {
     for (auto &output : state.metadataOutputs) {
-        if (output.write) {
-            try {
-                output.write->Wait();
-            } catch (...) {
-                output.failure = std::current_exception();
-            }
-            output.write.reset();
+        if (!output.write)
+            continue;
+        if (!drain) {
+            output.write->Expedite();
+            continue;
         }
+        try {
+            output.write->Wait();
+        } catch (...) {
+            output.failure = std::current_exception();
+        }
+        output.write.reset();
     }
 }
 
@@ -4583,7 +4592,8 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
     if (!PrepareReimportInput(sourcePath, candidate, result))
         return result;
-    if (!settings.is_null() && !IsFilesystemPathWithin(sourcePath, m_projectRoot)) {
+    if (!settings.is_null() && result.resourceType != ResourceType::Mesh &&
+        !IsFilesystemPathWithin(sourcePath, m_projectRoot)) {
         result.errorCode = AssetMutationErrorCode::InvalidPath;
         result.error = "import settings Apply requires a project asset";
         return result;
@@ -4799,15 +4809,15 @@ void AssetDatabase::QueueWatcherCook(const std::shared_ptr<PendingWatcherImport>
                 return;
             if (!metadata.metadata)
                 throw std::runtime_error(metadata.error);
-            if (capture.revision) {
-                capture.OpenForCook(request.sourcePath);
-                request.source = capture.source.get();
-            }
             request.guid = metadata.metadata->GetGuid();
             if (request.isReimport && request.guid != metadata.fallbackGuid)
                 throw std::runtime_error("metadata preparation did not preserve the registered GUID");
             pending->result.guid = request.guid;
             request.metadata = *metadata.metadata;
+            if (capture.revision) {
+                capture.OpenForCook(request.sourcePath);
+                request.source = capture.source.get();
+            }
             if (const auto owner = CopiedSkeletonOwner(request); !owner.empty()) {
                 const auto definition = snapshot->metas.find(owner);
                 const auto hash =
@@ -4961,7 +4971,8 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
                 QueueWatcherCook(pending);
             }
             return true;
-        } else if ((pending->metadata.skipSidecarChange || !pending->metadata.error.empty() ||
+        } else if (!pending->writing &&
+                   (pending->metadata.skipSidecarChange || !pending->metadata.error.empty() ||
                     !result.authoredMetadataGuid.empty()) &&
                    pending->metadata.sidecarRevision &&
                    !IsFileRevisionCurrent(ToFsPath(InxResourceMeta::GetMetaFilePath(result.path)),
@@ -5205,7 +5216,7 @@ void AssetDatabase::BeginModelReimport(const std::string &path, const nlohmann::
     if (!settings.is_object() ||
         (type != ResourceType::Mesh && type != ResourceType::Texture && type != ResourceType::Audio))
         throw std::invalid_argument("Apply requires a model, texture or audio asset and settings object");
-    if (!IsFilesystemPathWithin(sourcePath, m_projectRoot))
+    if (type != ResourceType::Mesh && !IsFilesystemPathWithin(sourcePath, m_projectRoot))
         throw std::invalid_argument("import settings Apply requires a project asset");
 
     if (type == ResourceType::Mesh) {
@@ -5425,8 +5436,11 @@ bool AssetDatabase::AdvanceModelReimport(bool managed, bool drain)
         if (worker.stageFailure)
             std::rethrow_exception(worker.stageFailure);
         if (worker.stageWrite) {
-            if (!drain && !worker.stageWrite->IsComplete())
+            if (!drain && !worker.stageWrite->IsComplete()) {
+                if (!managed)
+                    worker.stageWrite->Expedite();
                 return false;
+            }
             worker.stageWrite->Wait();
             worker.stageWrite.reset();
         }

@@ -96,9 +96,9 @@ void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) c
     }
 }
 
-void TextureLoader::CreateSourceMeta(AssetSource &source, InxResourceMeta &metaData)
+void TextureLoader::CreateSourceMeta(AssetSource &source, InxResourceMeta &metaData, bool identityOnly)
 {
-    if (source.IsSequential())
+    if (identityOnly || source.IsSequential())
         metaData.InitSourceIdentity(source.Path(), ResourceType::Texture);
     else
         metaData.InitFromSource(source, ResourceType::Texture);

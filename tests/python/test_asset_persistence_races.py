@@ -262,10 +262,11 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
 
     class _Documents:
         def preflight_external_resource_change(
-            self, value, *, guid="", metadata_only=False, baseline_only=False
+            self, value, *, guid="", metadata_only=False, baseline_only=False, metadata_file_state=None
         ):
             del guid
             assert not metadata_only and not baseline_only
+            assert metadata_file_state is None
             return value == resolved
 
         def has_pending_external_change_preflight(self, value, *, guid=""):

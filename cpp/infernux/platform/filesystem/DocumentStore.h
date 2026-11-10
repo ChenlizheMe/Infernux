@@ -93,6 +93,8 @@ class DocumentWriteTicket final
 
     INFERNUX_FOUNDATION_API void Wait() const;
     INFERNUX_FOUNDATION_API bool WaitFor(std::chrono::milliseconds timeout) const;
+    /// Allow an explicit caller to drive an accepted write outside the host loop without waiting.
+    INFERNUX_FOUNDATION_API void Expedite() const;
     [[nodiscard]] INFERNUX_FOUNDATION_API std::optional<DocumentFileState> GetCommittedFileState() const;
     [[nodiscard]] INFERNUX_FOUNDATION_API std::optional<FilePublication> GetPublication() const;
 
@@ -113,7 +115,6 @@ class DocumentWriteTicket final
     {
     }
 
-    void Expedite() const;
     void Complete(Status status, std::string error = {}, std::optional<AtomicWriteReceipt> receipt = std::nullopt,
                   std::exception_ptr failure = {});
     void ThrowIfFailed() const;

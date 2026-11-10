@@ -914,15 +914,14 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingMetadataPublish(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportPrepare(const std::shared_ptr<PendingRefreshCommit> &state);
-    [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state, bool managed,
-                                           bool drain);
+    [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state, bool drain);
     [[nodiscard]] static bool AreImportWaveWritesComplete(const PendingRefreshCommit &state);
-    [[nodiscard]] static bool FinishImportWave(PendingRefreshCommit &state, bool drain);
+    [[nodiscard]] static bool FinishImportWave(PendingRefreshCommit &state, bool managed, bool drain);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void QueueRefreshMetadataOutput(const std::shared_ptr<PendingRefreshCommit> &state,
                                     PendingRefreshCommit::Phase phase);
     [[nodiscard]] static bool AreMetadataOutputsComplete(const PendingRefreshCommit &state);
-    static void DrainMetadataOutputs(PendingRefreshCommit &state);
+    static void ServiceMetadataOutputs(PendingRefreshCommit &state, bool drain);
     void BeginRefreshMetadataTransaction(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
