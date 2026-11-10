@@ -55,11 +55,13 @@ jobs:
     - name: Package the exact engine release plugin
       run: |
         conda activate infernux
-        python scripts/release/build_platform_plugins.py package --targets windows --payload external/plugins/infernux_windows/package/editor/infernux_windows/player
+        python scripts/release/build_platform_plugins.py package --targets windows \
+          --payload external/plugins/infernux_windows/package/editor/infernux_windows/player \
+          --output out/platform-plugins
     - uses: actions/upload-artifact@v4
       with:
         name: engine-platform-windows-${{ github.run_id }}-${{ github.run_attempt }}
-        path: engine/dist/platform-plugins/*/*
+        path: engine/out/platform-plugins/
         if-no-files-found: error
         compression-level: 0
   linux:
@@ -94,11 +96,13 @@ jobs:
     - name: Package the exact engine release plugin
       run: |
         conda activate infernux
-        python scripts/release/build_platform_plugins.py package --targets linux --payload external/plugins/infernux_linux/package/editor/infernux_linux/player
+        python scripts/release/build_platform_plugins.py package --targets linux \
+          --payload external/plugins/infernux_linux/package/editor/infernux_linux/player \
+          --output out/platform-plugins
     - uses: actions/upload-artifact@v4
       with:
         name: engine-platform-linux-${{ github.run_id }}-${{ github.run_attempt }}
-        path: engine/dist/platform-plugins/*/*
+        path: engine/out/platform-plugins/
         if-no-files-found: error
         compression-level: 0
   android:
@@ -157,11 +161,13 @@ jobs:
     - name: Package the exact engine release plugin
       run: |
         conda activate infernux
-        python scripts/release/build_platform_plugins.py package --targets android --payload external/plugins/infernux_android/package/editor/infernux_android/player
+        python scripts/release/build_platform_plugins.py package --targets android \
+          --payload external/plugins/infernux_android/package/editor/infernux_android/player \
+          --output out/platform-plugins
     - uses: actions/upload-artifact@v4
       with:
         name: engine-platform-android-${{ github.run_id }}-${{ github.run_attempt }}
-        path: engine/dist/platform-plugins/*/*
+        path: engine/out/platform-plugins/
         if-no-files-found: error
         compression-level: 0
   web-runtime:
@@ -294,11 +300,14 @@ jobs:
         merge-multiple: true
         path: out/platform-web/tools
     - name: Package the exact engine release plugin
-      run: python scripts/release/build_platform_plugins.py package --targets web --payload out/platform-web/player --tools out/platform-web/tools
+      run: >-
+        python scripts/release/build_platform_plugins.py package --targets web
+        --payload out/platform-web/player --tools out/platform-web/tools
+        --output out/platform-plugins
     - uses: actions/upload-artifact@v4
       with:
         name: engine-platform-web-${{ github.run_id }}-${{ github.run_attempt }}
-        path: dist/platform-plugins/*/*
+        path: out/platform-plugins/
         if-no-files-found: error
         compression-level: 0
   collect:
@@ -323,6 +332,6 @@ jobs:
     - uses: actions/upload-artifact@v4
       with:
         name: engine-platform-plugins-${{ github.run_id }}-${{ github.run_attempt }}
-        path: out/platform-plugins/*
+        path: out/platform-plugins/
         if-no-files-found: error
         compression-level: 0
