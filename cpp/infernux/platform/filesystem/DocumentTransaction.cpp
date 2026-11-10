@@ -493,8 +493,7 @@ std::vector<DocumentTransactionFileState> ApplyJournal(const std::string &journa
     std::vector<DocumentTransactionFileState> files;
     files.reserve(journal.entries.size());
     for (const auto &entry : journal.entries)
-        files.push_back(
-            {LexicalFilesystemPathKey(entry.target.absolute), entry.published->size, entry.published->modifiedNs});
+        files.push_back({LexicalFilesystemPathKey(entry.target.absolute), *entry.published});
     for (const auto &path : journal.invalidated)
         RemoveTransactionFile(path.absolute);
     RemoveTransactionFile(journalPath);

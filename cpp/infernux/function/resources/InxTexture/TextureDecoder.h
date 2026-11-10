@@ -27,21 +27,30 @@ class TextureDecoder final
         uint8_t channels = 0;
     };
 
-    struct PngPreviewPlan
+    struct SourcePreviewPlan
     {
+        enum class Codec
+        {
+            Png,
+            Jpeg
+        };
+
         SourceInfo source;
         uint32_t previewWidth = 0;
         uint32_t previewHeight = 0;
         uint64_t bytes = 0;
+        Codec codec = Codec::Png;
+        TextureFormat format = TextureFormat::Rgba8UNorm;
     };
 
     [[nodiscard]] static uint64_t PlanSourceStorage(AssetSource &source, const InxResourceMeta &metadata);
     [[nodiscard]] static SourceInfo ReadSequentialSourceInfo(AssetSource &source);
-    [[nodiscard]] static PngPreviewPlan PlanPngPreview(AssetSource &source, uint32_t maxSize);
-    [[nodiscard]] static InxTextureData DecodePngPreview(AssetSource &source, const PngPreviewPlan &plan,
-                                                         const std::function<bool()> &retired);
+    [[nodiscard]] static SourcePreviewPlan PlanSourcePreview(AssetSource &source, uint32_t maxSize, bool document);
+    [[nodiscard]] static InxTextureData DecodeSourcePreview(AssetSource &source, const SourcePreviewPlan &plan,
+                                                            const std::function<bool()> &retired);
     static void ResizeRgba8Preview(InxTextureData &image, uint32_t maxSize);
-    [[nodiscard]] static std::shared_ptr<const TextureCpuData> TakeRgba8Preview(InxTextureData image, bool srgb);
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData>
+    TakePreview(InxTextureData image, bool srgb, TextureFormat format = TextureFormat::Rgba8UNorm);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData>
     Decode(const std::string &sourcePath, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> Decode(AssetSource &source,
@@ -59,16 +68,6 @@ class TextureDecoder final
                                                                            const InxResourceMeta &metadata);
 
   private:
-    struct PngPlan
-    {
-        SourceInfo source;
-        uint64_t bytes = 0;
-        size_t resizeScratch = 0;
-        size_t mipBytes = 0;
-    };
-
-    [[nodiscard]] static PngPlan PlanPng(AssetSource &source, const InxResourceMeta &metadata);
-    [[nodiscard]] static SourceInfo ReadPngSourceInfo(AssetSource &source);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData>
     DecodeBytes(std::string_view source, const InxResourceMeta &metadata, const std::string &sourceName,
                 bool preserveSvgViewport, size_t plannedMipBytes = 0);

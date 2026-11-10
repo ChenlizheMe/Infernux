@@ -258,19 +258,8 @@ TextureCompression ResolveCompression(const TextureCpuData &texture, TextureComp
         return requested;
     if (!IsRgba8(texture.format) || texture.dimension != TextureDimension::Texture2D)
         return TextureCompression::None;
-    switch (texture.semantic) {
-    case TextureSemantic::Color:
-        return HasNonOpaqueAlpha(texture) ? TextureCompression::BC3 : TextureCompression::BC1;
-    case TextureSemantic::Normal:
-        return TextureCompression::BC5;
-    case TextureSemantic::Data:
-    case TextureSemantic::UserInterface:
-    case TextureSemantic::Sprite:
-    case TextureSemantic::VectorField:
-    case TextureSemantic::SignedDistanceField:
-        return TextureCompression::None;
-    }
-    return TextureCompression::None;
+    const bool hasAlpha = texture.semantic == TextureSemantic::Color && HasNonOpaqueAlpha(texture);
+    return TextureProcessor::AutomaticRgba8Compression(texture.semantic, hasAlpha);
 }
 
 TextureFormat CompressedFormat(TextureFormat source, TextureCompression compression)
@@ -482,6 +471,15 @@ TextureCpuData ConvertTexture(const TextureCpuData &source, TextureTargetFormat 
     return result;
 }
 } // namespace
+
+TextureCompression TextureProcessor::AutomaticRgba8Compression(TextureSemantic semantic, bool hasAlpha)
+{
+    if (semantic == TextureSemantic::Color)
+        return hasAlpha ? TextureCompression::BC3 : TextureCompression::BC1;
+    if (semantic == TextureSemantic::Normal)
+        return TextureCompression::BC5;
+    return TextureCompression::None;
+}
 
 std::shared_ptr<const TextureCpuData> TextureProcessor::Process(TextureCpuData source,
                                                                 const TextureProcessOptions &options)

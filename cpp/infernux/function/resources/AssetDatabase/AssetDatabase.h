@@ -215,7 +215,8 @@ class AssetDatabase : public NativeLifetimeOwner
     using WatcherImportFinished =
         std::function<void(std::string_view, const AssetMutationResult &, uint64_t, std::optional<float>)>;
     /// Prepare one external revision on the catalog worker and commit at the owner safe point.
-    bool BeginWatcherImport(const std::string &path, WatcherImportReady ready, WatcherImportFinished finished);
+    bool BeginWatcherImport(const std::string &path, WatcherImportReady ready, WatcherImportFinished finished,
+                            bool metadataOnly = false);
     void CompletePendingWatcherImport();
     [[nodiscard]] bool IsWatcherImportPending() const noexcept;
     using ModelReimportPublished = std::function<void(const AssetMutationResult &, uint64_t, std::optional<float>)>;
@@ -571,7 +572,6 @@ class AssetDatabase : public NativeLifetimeOwner
         bool readOnly = false;
         bool persistMetadata = true;
         std::optional<AtomicFileState> expectedMetadata;
-        std::string metadataSource;
     };
 
     struct WorkerImport
@@ -603,12 +603,24 @@ class AssetDatabase : public NativeLifetimeOwner
         bool inheritedGuid = false;
         std::shared_ptr<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
+        std::optional<FileInput::Revision> sidecarRevision;
+        uint64_t sidecarWorkingBytes = 0;
+        std::shared_ptr<const InxResourceMeta> publishedSidecar;
+        const std::string *sidecarProjectRoot = nullptr;
+        uint64_t sidecarComparisonBytes = 0;
+        bool sidecarPlanned = false;
+        bool adoptingSidecar = false;
+        bool skipSidecarChange = false;
         std::optional<FileInput::Revision> textureRevision;
         uint64_t textureWorkingBytes = 0;
         std::string texturePlanningError;
-        std::string metadataSource;
         std::string error;
         std::thread::id producerThread;
+
+        [[nodiscard]] uint64_t SidecarWorkspace() const noexcept
+        {
+            return sidecarWorkingBytes + sidecarComparisonBytes;
+        }
     };
 
     struct TextureSourceSnapshot;
@@ -618,6 +630,7 @@ class AssetDatabase : public NativeLifetimeOwner
     {
         enum class Phase
         {
+            MetadataPlan,
             Cook,
             Write,
             Publish,
@@ -627,6 +640,7 @@ class AssetDatabase : public NativeLifetimeOwner
         PathWriteScope writeScope;
         WorkerImport worker;
         WorkerMetadataPrepare metadata;
+        std::string textureGuid;
         nlohmann::json settings;
         AssetMutationResult result;
         ModelReimportPublished onPublished;
@@ -673,6 +687,7 @@ class AssetDatabase : public NativeLifetimeOwner
     enum class CatalogIoStage : uint8_t
     {
         Scan,
+        MetadataPlan,
         Metadata,
         Sidecar,
         Cook,
@@ -685,7 +700,8 @@ class AssetDatabase : public NativeLifetimeOwner
 
     struct CatalogWork
     {
-        using Factory = std::function<JobSystem::JobFn(uint32_t)>;
+        using StoragePlan = std::function<uint64_t(uint32_t)>;
+        using Factory = std::function<JobSystem::JobFn(uint32_t, std::shared_ptr<FrameCpuStorageClaim>)>;
         struct Receipt
         {
             JobHandle job;
@@ -701,12 +717,14 @@ class AssetDatabase : public NativeLifetimeOwner
         {
             submitted = count;
             make = {};
+            waiting.clear();
         }
 
         CatalogIoStage stage = CatalogIoStage::Scan;
         uint32_t count = 0;
         uint32_t submitted = 0;
         Factory make;
+        std::vector<std::pair<uint64_t, uint32_t>> waiting;
         std::vector<Receipt> active;
     };
 
@@ -739,8 +757,10 @@ class AssetDatabase : public NativeLifetimeOwner
         std::vector<PathWriteScope> artifactWriteScopes;
         enum class Phase : uint8_t
         {
+            MetadataPlan,
             MetadataPrepare,
             MetadataMerge,
+            SidecarCreate,
             MetadataPublish,
             ImportPrepare,
             Import,
@@ -757,6 +777,7 @@ class AssetDatabase : public NativeLifetimeOwner
         std::vector<WorkerMetadataPrepare> workerMetadata;
         std::vector<PendingAsset> pendingImports;
         std::vector<size_t> metadataPublications;
+        std::vector<size_t> metadataAdoptions;
         std::vector<WorkerImport> workerImports;
         std::unordered_map<std::string, std::vector<std::string>> restoredDependencies;
         WorkingSet stagedWorkingSet;
@@ -832,7 +853,12 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
+    static void PlanMetadataRead(WorkerMetadataPrepare &item);
+    void RequireMetadataStorage(WorkerMetadataPrepare &item,
+                                const std::shared_ptr<FrameCpuStorageClaim> &storage) const;
+    [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> ReserveMetadataRead(WorkerMetadataPrepare &item) const;
     static void PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource = nullptr);
+    static void FinishMetadataAdoption(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource);
     static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot,
                                        TextureSourceSnapshot *textureSource = nullptr);
     [[nodiscard]] static AssetIndex
@@ -847,6 +873,7 @@ class AssetDatabase : public NativeLifetimeOwner
                                const std::unordered_map<std::string, ImportResultState> &importResults,
                                uint64_t generation, bool includeCatalog = true);
     [[nodiscard]] bool CommitScanArtifact(AssetScanArtifact artifact, uint64_t expectedQueryGeneration);
+    void QueueRefreshMetadata(const std::shared_ptr<PendingRefreshCommit> &state, bool adopting);
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingMetadataPublish(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportPrepare(const std::shared_ptr<PendingRefreshCommit> &state);
@@ -858,24 +885,28 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
     void FinalizePendingRefreshCommit(const std::shared_ptr<PendingRefreshCommit> &state);
-    void QueueCatalogWork(CatalogWork &work, CatalogIoStage stage, uint32_t count, CatalogWork::Factory make);
+    void QueueCatalogWork(CatalogWork &work, CatalogIoStage stage, uint32_t count, CatalogWork::Factory make,
+                          CatalogWork::StoragePlan storagePlan = {});
     void QueueCatalogJob(CatalogWork &work, CatalogIoStage stage, JobSystem::JobFn job);
+    void QueueMetadataRead(CatalogWork &work, CatalogIoStage stage, WorkerMetadataPrepare &item,
+                           std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> read);
     [[nodiscard]] bool CanSubmitCatalogStage(CatalogIoStage stage) const;
     [[nodiscard]] bool CanSubmitCatalogWork(const CatalogWork &work) const;
-    bool SubmitCatalogWork(CatalogWork &work, bool managed);
+    bool SubmitCatalogWork(CatalogWork &work, bool managed, bool drain = false);
     void ObserveCatalogWork(CatalogWork &work) noexcept;
     void WaitForCatalogWork(CatalogWork &work) noexcept;
     bool AdvanceRefresh(bool managed, bool drain = false);
     [[nodiscard]] bool CanAdvanceWatcherImport() const;
+    [[nodiscard]] bool IsWatcherMetadataWaiting() const;
     [[nodiscard]] static bool IsWatcherSourceCurrent(const PendingWatcherImport &pending);
     bool AdvanceWatcherImport(bool managed);
     void CompleteWatcherWriteForExplicitImport(const PathWriteScope &scope);
     void WriteWatcherImport(PendingWatcherImport &pending);
     void PublishWatcherImport(PendingWatcherImport &pending);
-    void QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending,
-                          std::shared_ptr<const QuerySnapshot> snapshot);
+    void QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending);
+    void QueueModelCook(const std::shared_ptr<PendingModelReimport> &pending);
     [[nodiscard]] bool CanAdvanceModelReimport() const;
-    bool AdvanceModelReimport(bool managed);
+    bool AdvanceModelReimport(bool managed, bool drain = false);
     void WriteModelReimport(PendingModelReimport &pending);
     void PublishModelReimport(PendingModelReimport &pending);
     bool CommitReadyRefresh(bool managed, bool drain);

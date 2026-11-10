@@ -1,3 +1,26 @@
+# Infernux v0.5.0 · Native Neural Execution
+
+Infernux 0.5.0 brings model authoring, native execution, and checkpoint export into the engine. Projects can connect neural inputs and outputs to their own game systems through the same resource and lifecycle boundaries used by rendering and physics.
+
+[中文更新日志](UpdateLog-zh.md)
+
+[Compare with v0.4.3-v8](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.5.0)
+
+### Neural runtime
+
+- Define models with `infernux.nn` and run supported training and inference on native CPU or Vulkan. Managed requests keep their intermediate state across host frames and publish results at the consumer boundary.
+- Use a shared host-frame budget for ready work, including headless execution. RenderGraph and NeuralGraph keep independent dependencies and share device submission and completion infrastructure.
+- Save a published model in an `.inm` checkpoint with a readable structure header and binary weights. Projects can reload it for inference or continued training in the Editor or a matching packaged Player.
+
+### Rendering, scenes, and authoring
+
+- Capture camera views continuously or on request. Cameras can publish to a RenderTexture asset or to memory, and consumers can keep using the latest completed image.
+- Expose editable skeleton hierarchies and Jolt joints and ragdolls. Model results can be applied at explicit physics and rendering boundaries.
+- Improve asset preparation and preview publication with shared IO and transfer budgets. Native PNG and JPEG paths reserve their decoding workspace. Asset refresh, watching, and model Apply use the native sidecar parser and preserve the revision they consumed.
+- Update the Hub and platform packaging for engine 0.5.0. Install platform packages built for this exact engine release before exporting a Player.
+
+---
+
 # Infernux v0.4.3-v8 · Hotfix 8: Camera Rendering and Hub Windows
 
 This hotfix adopts reversed-Z depth rendering, isolates camera state between render views, and fixes custom skies, directional shadows and Hub window behavior. The base engine version remains 0.4.3; wheels use build 8, with Hub 0.4.3-9.

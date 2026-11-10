@@ -157,15 +157,6 @@ void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRo
                     fields->erase(entry);
             }
         }
-        // Model tables contain serialized metadata documents inside strings.
-        for (const auto *key : {"model_textures", "model_animations"}) {
-            auto entry = fields->find(key);
-            if (entry != fields->end()) {
-                auto table = nlohmann::json::parse(entry->at("value").get<std::string>());
-                MakeMetadataPortable(table, projectRoot);
-                (*entry)["value"] = table.dump();
-            }
-        }
     }
     for (auto &value : document)
         MakeMetadataPortable(value, projectRoot);
@@ -421,6 +412,18 @@ nlohmann::json InxResourceMeta::SerializeDocumentPortable(const std::string &pro
         throw std::invalid_argument("portable metadata requires a project root");
     auto root = SerializeDocument();
     MakeMetadataPortable(root, projectRoot);
+    // Only the owning model has encoded sub-asset tables. Their child
+    // metadata uses the normal portable projection within the decoded table.
+    auto &fields = root["metadata"];
+    for (const auto *key : {"model_textures", "model_animations"}) {
+        auto entry = fields.find(key);
+        if (entry != fields.end()) {
+            auto &value = (*entry)["value"];
+            auto table = nlohmann::json::parse(value.get_ref<const std::string &>());
+            MakeMetadataPortable(table, projectRoot);
+            value = table.dump();
+        }
+    }
     return root;
 }
 

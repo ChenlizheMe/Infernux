@@ -96,9 +96,9 @@ struct TimelineCubePreviewCandidate
     uint64_t hash = 0;
 };
 
-struct Infernux::PngTexturePreviewSource
+struct Infernux::TexturePreviewSource
 {
-    TextureDecoder::PngPreviewPlan plan;
+    TextureDecoder::SourcePreviewPlan plan;
     FileInput::Revision revision;
 };
 
@@ -1918,7 +1918,7 @@ int Infernux::AdvanceMaterialPreview(bool gpu, int uploadBudget, bool &progresse
                                     MaterialPreviewer::RenderCpuPreview(*material, kMaterialPreviewSize, image.pixels,
                                                                         database);
                                     if (image.IsValid()) {
-                                        work->pixels = TextureDecoder::TakeRgba8Preview(std::move(image), false);
+                                        work->pixels = TextureDecoder::TakePreview(std::move(image), false);
                                         work->summary = SummarizePreviewPixels(*work->pixels);
                                     }
                                 } catch (...) {
@@ -2816,33 +2816,39 @@ void Infernux::QueueTextureFilePreview(const std::shared_ptr<const TexturePrevie
     const auto &key = request->resourceKey;
     const int decodeSize =
         key.compare(0, 9, "compicon|") == 0 ? (std::min)(componentIconSize, request->maxSize) : request->maxSize;
-    const bool fullImage = key.compare(0, 9, "document|") == 0 || key.compare(0, 11, "spriteedit|") == 0;
+    const bool document = key.compare(0, 9, "document|") == 0;
+    const bool fullImage = document || key.compare(0, 11, "spriteedit|") == 0;
+    const bool normalMap = !document && request->textureType == "normal_map";
     const std::weak_ptr weak(request);
     EnqueuePreviewTask(
-        [this, weak, decodeSize, fullImage] {
+        [this, weak, decodeSize, document, fullImage, normalMap] {
             const auto req = weak.lock();
             if (!req)
                 return;
             try {
-                PngTexturePreviewSource png;
+                TexturePreviewSource preview;
                 {
                     AssetSource source(req->textureFilePath);
                     if (source.Size() > static_cast<uint64_t>((std::numeric_limits<int>::max)()))
                         throw std::length_error("texture preview source exceeds decoder limits");
-                    png.revision = source.OpenedFile()->InspectRevision();
-                    png.plan = TextureDecoder::PlanPngPreview(source, fullImage ? 0 : decodeSize);
+                    preview.revision = source.OpenedFile()->InspectRevision();
+                    if (preview.revision.data.size != source.Size())
+                        throw std::runtime_error("texture preview source changed before planning");
+                    preview.plan = TextureDecoder::PlanSourcePreview(source, fullImage ? 0 : decodeSize, document);
                 }
-                if (png.plan.bytes) {
+                if (preview.plan.bytes) {
+                    const auto transformBytes =
+                        normalMap ? uint64_t(preview.plan.previewWidth) * preview.plan.previewHeight * 8 : 0;
                     EnqueuePreviewTask(
-                        [this, weak, decodeSize, png](std::shared_ptr<FrameCpuStorageClaim> storage) {
+                        [this, weak, decodeSize, preview](std::shared_ptr<FrameCpuStorageClaim> storage) {
                             if (auto request = weak.lock()) {
                                 const auto input = *request;
                                 request.reset();
-                                DecodeTextureFilePreview(input, decodeSize, &png, std::move(storage),
+                                DecodeTextureFilePreview(input, decodeSize, &preview, std::move(storage),
                                                          [&weak] { return weak.expired(); });
                             }
                         },
-                        png.plan.bytes, weak);
+                        std::max(preview.plan.bytes, transformBytes), weak);
                 } else {
                     DecodeTextureFilePreview(*req, decodeSize);
                 }
@@ -2858,7 +2864,7 @@ void Infernux::QueueTextureFilePreview(const std::shared_ptr<const TexturePrevie
 }
 
 void Infernux::DecodeTextureFilePreview(const TexturePreviewRequest &req, int decodeSize,
-                                        const PngTexturePreviewSource *png,
+                                        const TexturePreviewSource *source,
                                         std::shared_ptr<FrameCpuStorageClaim> storage,
                                         const std::function<bool()> &retired)
 {
@@ -2870,19 +2876,19 @@ void Infernux::DecodeTextureFilePreview(const TexturePreviewRequest &req, int de
     completed.storage = std::move(storage);
     try {
         InxTextureData pixels;
-        if (png) {
+        if (source) {
             if (!completed.storage)
-                throw std::length_error("PNG preview exceeds host CPU storage capacity");
-            AssetSource source(req.textureFilePath);
-            auto &file = *source.OpenedFile();
-            if (!(file.InspectRevision() == png->revision))
-                throw std::runtime_error("PNG preview source changed before decode");
-            pixels = TextureDecoder::DecodePngPreview(source, png->plan, retired);
-            if (!(file.InspectRevision() == png->revision) ||
-                !(FileInput(ToFsPath(req.textureFilePath)).InspectRevision() == png->revision))
-                throw std::runtime_error("PNG preview source changed during decode");
+                throw std::length_error("texture preview exceeds host CPU storage capacity");
+            AssetSource input(req.textureFilePath);
+            auto &file = *input.OpenedFile();
+            if (input.Size() != source->revision.data.size || !(file.InspectRevision() == source->revision))
+                throw std::runtime_error("texture preview source changed before decode");
+            pixels = TextureDecoder::DecodeSourcePreview(input, source->plan, retired);
+            if (!(file.InspectRevision() == source->revision) ||
+                !(FileInput(ToFsPath(req.textureFilePath)).InspectRevision() == source->revision))
+                throw std::runtime_error("texture preview source changed during decode");
         }
-        if (completed.displayEncoding && !png) {
+        if (completed.displayEncoding && !source) {
             InxResourceMeta settings;
             settings.AddMetadata("texture_type", std::string("ui"));
             settings.AddMetadata("texture_compression", std::string("none"));
@@ -2892,9 +2898,9 @@ void Infernux::DecodeTextureFilePreview(const TexturePreviewRequest &req, int de
             settings.AddMetadata("generate_mipmaps", false);
             completed.pixels = TextureDecoder::Decode(req.textureFilePath, settings, true);
         } else if (completed.displayEncoding) {
-            completed.pixels = TextureDecoder::TakeRgba8Preview(std::move(pixels), true);
+            completed.pixels = TextureDecoder::TakePreview(std::move(pixels), true, source->plan.format);
         } else {
-            if (!png) {
+            if (!source) {
                 pixels = InxTextureLoader::LoadFromFile(req.textureFilePath, "", decodeSize);
                 if (pixels.IsValid() && req.resourceKey.compare(0, 11, "spriteedit|") != 0)
                     TextureDecoder::ResizeRgba8Preview(pixels, static_cast<uint32_t>(decodeSize));
@@ -2905,7 +2911,7 @@ void Infernux::DecodeTextureFilePreview(const TexturePreviewRequest &req, int de
                 else if (!req.srgb)
                     ApplyLinearToSrgbPreviewInPlace(pixels.pixels);
                 ApplyTextureFormatPreviewInPlace(pixels.pixels, req.textureFormat);
-                completed.pixels = TextureDecoder::TakeRgba8Preview(std::move(pixels), false);
+                completed.pixels = TextureDecoder::TakePreview(std::move(pixels), false);
             }
         }
         if (completed.pixels) {
@@ -2994,7 +3000,7 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
         try {
             auto texData = InxTextureLoader::LoadFromMemory(dataCopy->data(), dataCopy->size());
             if (texData.IsValid()) {
-                completed.pixels = TextureDecoder::TakeRgba8Preview(std::move(texData), false);
+                completed.pixels = TextureDecoder::TakePreview(std::move(texData), false);
                 completed.summary = SummarizePreviewPixels(*completed.pixels);
             }
         } catch (const std::exception &error) {

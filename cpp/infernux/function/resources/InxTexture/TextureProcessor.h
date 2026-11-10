@@ -48,6 +48,7 @@ struct TextureProcessOptions
 class TextureProcessor final
 {
   public:
+    [[nodiscard]] static TextureCompression AutomaticRgba8Compression(TextureSemantic semantic, bool hasAlpha);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> Process(TextureCpuData source,
                                                                        const TextureProcessOptions &options);
 };

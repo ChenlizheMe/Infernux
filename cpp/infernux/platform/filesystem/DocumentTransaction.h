@@ -38,8 +38,7 @@ struct DocumentTransactionEntry
 struct DocumentTransactionFileState
 {
     std::string path;
-    uint64_t size = 0;
-    int64_t modifiedNs = 0;
+    AtomicFileState state;
 };
 
 struct DocumentTransactionStats

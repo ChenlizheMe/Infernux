@@ -568,7 +568,7 @@ class Infernux
         std::string textureType = "default";
     };
 
-    struct PngTexturePreviewSource;
+    struct TexturePreviewSource;
 
     struct MeshPreviewRequest
     {
@@ -682,7 +682,7 @@ class Infernux
                             std::optional<std::weak_ptr<const void>> owner);
     void QueueTextureFilePreview(const std::shared_ptr<const TexturePreviewRequest> &request);
     void DecodeTextureFilePreview(const TexturePreviewRequest &request, int decodeSize,
-                                  const PngTexturePreviewSource *png = nullptr,
+                                  const TexturePreviewSource *source = nullptr,
                                   std::shared_ptr<FrameCpuStorageClaim> storage = {},
                                   const std::function<bool()> &retired = {});
     void CompleteTexturePreview(TexturePreviewCompleted completed);

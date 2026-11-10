@@ -125,7 +125,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
             "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
         .def(
             "_begin_watcher_import",
-            [](AssetDatabase &database, const std::string &path, py::function onReady, py::function onFinished) {
+            [](AssetDatabase &database, const std::string &path, py::function onReady, py::function onFinished,
+               bool metadataOnly) {
                 auto ready = std::make_shared<PythonCallback>(std::move(onReady));
                 auto finished = std::make_shared<PythonCallback>(std::move(onFinished));
                 return database.BeginWatcherImport(
@@ -146,9 +147,11 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
                         } catch (const py::error_already_set &error) {
                             throw std::runtime_error(error.what());
                         }
-                    });
+                    },
+                    metadataOnly);
             },
-            py::arg("path"), py::arg("on_ready"), py::arg("on_finished"))
+            py::arg("path"), py::arg("on_ready"), py::arg("on_finished"), py::kw_only(),
+            py::arg("metadata_only") = false)
         .def("_complete_pending_watcher_import", &AssetDatabase::CompletePendingWatcherImport,
              py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("_watcher_import_pending", &AssetDatabase::IsWatcherImportPending)

@@ -1,4 +1,3 @@
-import json
 import os
 import stat
 import re
@@ -1550,12 +1549,15 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 try:
                     if rejected is not None:
                         raise rejected
-                    if successor or outcome in {"superseded", "busy"}:
+                    has_successor = successor or (
+                        outcome in {"superseded", "busy"} and self._coordinator.has_source_successor(event)
+                    )
+                    if has_successor or outcome in {"superseded", "busy"}:
                         if documents is not None:
                             documents._cancel_external_resource_change_preflight(path, guid=asset_guid)
                         # The queued source import reads the sidecar too. A
                         # deferred older sidecar event would block that source.
-                        if not (successor and metadata_only):
+                        if not (has_successor and metadata_only):
                             self._reschedule_asset_event(event, retry=False)
                         return
                     if outcome == "skipped":
@@ -1590,7 +1592,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     self._wake_editor()
 
         try:
-            started = database._begin_watcher_import(path, ready, finished)
+            started = database._begin_watcher_import(path, ready, finished, metadata_only=metadata_only)
         except RuntimeError as exc:
             raise _AssetImportNotReady(str(exc)) from exc
         if not started:
@@ -1659,15 +1661,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         path = event.path
         if not os.path.isfile(path) or not os.path.isfile(path + ".meta"):
             return False
-        metadata = self._asset_database.get_meta_by_path(path)
-        if metadata is None:
-            return False
-        with open(path + ".meta", encoding="utf-8") as stream:
-            candidate = json.load(stream)
-        # Compare the same authored representation that native import writes.
-        # Runtime observations and absolute paths never enter this comparison.
-        # No time window: an immediate collaborator edit must remain visible.
-        if candidate == metadata.serialize_document_portable(self._asset_database.project_root):
+        if not self._asset_database.get_guid_from_path(path):
             return False
         return self._begin_watcher_import(event, metadata_only=True)
 
