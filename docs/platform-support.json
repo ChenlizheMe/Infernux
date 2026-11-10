@@ -1,6 +1,6 @@
 {
   "$schema": "infernux.platform_support",
-  "development_version": "0.4.3",
+  "development_version": "0.4.8",
   "released_version": "0.4.3",
   "python_abi": "cp313",
   "evidence": {

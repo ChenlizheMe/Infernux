@@ -121,6 +121,9 @@ def build_prebuilt_runtime(
             "engine_version": ENGINE_VERSION,
             "engine_release": ENGINE_RELEASE,
         })
+        provenance = Path(get_package_resources_path()) / "player-build-source.json"
+        if provenance.is_file():
+            manifest["engine_source_revision"] = json.loads(provenance.read_text(encoding="utf-8"))["revision"]
         temporary = manifest_path + f".{os.getpid()}.tmp"
         with open(temporary, "w", encoding="utf-8") as manifest_file:
             json.dump(manifest, manifest_file, indent=2, sort_keys=True)
@@ -137,6 +140,8 @@ def build_prebuilt_runtime(
             "engine_version": ENGINE_VERSION,
             "engine_release": ENGINE_RELEASE,
         })
+        if provenance.is_file():
+            module_manifest["engine_source_revision"] = manifest["engine_source_revision"]
         temporary = module_manifest_path + f".{os.getpid()}.tmp"
         with open(temporary, "w", encoding="utf-8") as manifest_file:
             json.dump(module_manifest, manifest_file, indent=2, sort_keys=True)
@@ -195,6 +200,8 @@ def export_platform_player(result: dict[str, object], destination: str) -> str:
     module_root = Path(str(result["parallel_module_path"]))
     module_manifest = json.loads((module_root / "Player.inxmanifest").read_text(encoding="utf-8"))
     identity = ("engine_version", "engine_release", "python_abi", "platform", "machine")
+    if "engine_source_revision" in manifest:
+        identity += ("engine_source_revision",)
     if not isinstance(module_manifest, dict) or any(
         module_manifest.get(key) != manifest[key] for key in identity
     ):

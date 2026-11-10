@@ -73,6 +73,11 @@ def test_warmup_visits_every_file_type_after_initial_discovery(script, entry, pr
             return run_script_warmup(str(script), project_path=root, scope="test-whole-file")
         return run_project_script_warmups(project_path=root, scope="test-whole-file")
 
+    if entry == "script" and not preloaded:
+        assert run() == 0
+        assert not component_types_for_script_path(str(script))
+        load_all_components_from_file(str(script), source_only=True)
+
     assert run() == 3
     registered = component_types_for_script_path(str(script))
     assert len(registered) == 3

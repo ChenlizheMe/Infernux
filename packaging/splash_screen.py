@@ -448,6 +448,8 @@ class EngineSplashScreen(QWidget):
         env["_INFERNUX_PROJECT_LOCK_PATH"] = get_project_lock_path(project_path)
         env["_INFERNUX_PROJECT_LOCK_TOKEN"] = self._lock_token
         env = merge_child_env_utf8(env)
+        if runtime is None:
+            env.pop("_INFERNUX_EDITOR_RUNTIME", None)
 
         popen_kwargs: dict = {"cwd": runtime.working_directory if runtime else project_path, "env": env}
         executable = runtime.executable if runtime else python_executable_path(python_exe)

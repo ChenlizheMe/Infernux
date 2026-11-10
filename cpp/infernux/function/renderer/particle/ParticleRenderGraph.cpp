@@ -69,7 +69,7 @@ layout(push_constant) uniform SpawnDomainConstants {
     uint spawnBaseId;
     uint spawnGeneration;
     uint reset;
-    uint reserved;
+    uint metadataStrideWords;
 } pc;
 
 void saturatingAtomicAdd(uint slot, uint amount) {
@@ -88,7 +88,7 @@ void main() {
     if (pc.reset != 0u) {
         burstRequestCounts[slot] = 0u;
         consumingCounts[slot] = 0u;
-        uint base = slot * 8u;
+        uint base = slot * pc.metadataStrideWords;
         for (uint word = 0u; word < 8u; ++word) metadata[base + word] = 0u;
         metadata[base + 5u] = 1u;
         metadata[base + 6u] = 1u;
@@ -125,11 +125,11 @@ layout(push_constant) uniform SpawnDomainConstants {
     uint spawnBaseId;
     uint spawnGeneration;
     uint reset;
-    uint reserved;
+    uint metadataStrideWords;
 } pc;
 
 void main() {
-    uint base = pc.targetSlot * 8u;
+    uint base = pc.targetSlot * pc.metadataStrideWords;
     if (pc.reset != 0u) {
         atomicExchange(consumingCounts[pc.targetSlot], 0u);
         bool playing = playingStates[pc.targetSlot] != 0u;
@@ -175,14 +175,23 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
                                          const std::vector<uint32_t> &parameterWords)
 {
     Destroy();
-    if (graphInstanceId == 0 || slotCount == 0 || !program.IsValid() ||
-        uint64_t(slotCount) > std::numeric_limits<uint64_t>::max() / MetadataStride || parameterWords.size() % 4 != 0 ||
-        parameterWords.size() > std::numeric_limits<uint32_t>::max())
+    const auto &capabilities = device.GetCapabilities();
+    const auto alignment = capabilities.limits.minStorageBufferOffsetAlignment;
+    if (graphInstanceId == 0 || slotCount == 0 || !program.IsValid() || alignment == 0 ||
+        parameterWords.size() % 4 != 0 || parameterWords.size() > std::numeric_limits<uint32_t>::max())
+        return false;
+
+    // Vulkan storage offsets use power-of-two alignment. The record itself stays dense for emitter kernels.
+    const uint64_t metadataStride = std::max<uint64_t>(sizeof(GpuParticleSpawnMetadata), alignment);
+    const uint64_t maxMetadataBytes = std::min(capabilities.portable.maxStorageBufferBinding,
+                                               uint64_t(std::numeric_limits<uint32_t>::max()) * sizeof(uint32_t));
+    if (slotCount > maxMetadataBytes / metadataStride)
         return false;
 
     m_device = &device;
     m_graphInstanceId = graphInstanceId;
     m_slotCount = slotCount;
+    m_metadataStrideWords = static_cast<uint32_t>(metadataStride / sizeof(uint32_t));
     const std::vector<uint32_t> zeroCounts(slotCount, 0u);
     const std::vector<uint32_t> playingStates(slotCount, 1u);
     const auto storage = rhi::BufferUsageFlags::Storage;
@@ -209,9 +218,8 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
         rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
     m_acceptingRequestSlots = device.CreateBuffer(activeDesc);
     m_emitterPlayingStates = device.CreateBuffer(activeDesc);
-    m_spawnMetadata =
-        createDeviceLocal(uint64_t(slotCount) * MetadataStride,
-                          storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource);
+    m_spawnMetadata = createDeviceLocal(MetadataOffset(slotCount), storage | rhi::BufferUsageFlags::Indirect |
+                                                                       rhi::BufferUsageFlags::TransferSource);
     const std::array<uint32_t, 4> emptyParameterBlock{};
     const uint32_t *parameterData = parameterWords.empty() ? emptyParameterBlock.data() : parameterWords.data();
     const size_t parameterWordCount = parameterWords.empty() ? emptyParameterBlock.size() : parameterWords.size();
@@ -312,6 +320,7 @@ void ParticleGpuGraphSpawnDomain::Destroy() noexcept
     m_device = nullptr;
     m_graphInstanceId = 0;
     m_slotCount = 0;
+    m_metadataStrideWords = 0;
     m_burstRequestCounts = {};
     m_consumingCounts = {};
     m_spawnMetadata = {};
@@ -343,7 +352,8 @@ bool ParticleGpuGraphSpawnDomain::RegisterEmitter(uint32_t targetSlot, const Par
     desc.layout = runtime.GraphSpawnLayout();
     desc.buffers[0] = {0, rhi::BindingType::StorageBuffer, m_burstRequestCounts, 0,
                        uint64_t(m_slotCount) * sizeof(uint32_t)};
-    desc.buffers[1] = {1, rhi::BindingType::StorageBuffer, m_spawnMetadata, MetadataOffset(targetSlot), MetadataStride};
+    desc.buffers[1] = {1, rhi::BindingType::StorageBuffer, m_spawnMetadata, MetadataOffset(targetSlot),
+                       sizeof(GpuParticleSpawnMetadata)};
     desc.buffers[2] = {2, rhi::BindingType::StorageBuffer, m_parameterBuffer, 0,
                        uint64_t(m_parameterWordCount) * sizeof(uint32_t)};
     desc.buffers[3] = {3, rhi::BindingType::StorageBuffer, m_emitterPlayingRequests, 0,
@@ -503,8 +513,8 @@ bool ParticleGpuGraphSpawnDomain::Attach(vk::RenderGraph &graph, const std::stri
             builder.ImportBuffer(StageName(namePrefix, "SpawnConsuming"), m_consumingCounts, countBytes);
         const auto acceptanceResource =
             builder.ImportBuffer(StageName(namePrefix, "BurstRequestAcceptance"), m_acceptingRequestSlots, countBytes);
-        resources.metadata = builder.ImportBuffer(StageName(namePrefix, "SpawnMetadata"), m_spawnMetadata,
-                                                  uint64_t(m_slotCount) * MetadataStride);
+        resources.metadata =
+            builder.ImportBuffer(StageName(namePrefix, "SpawnMetadata"), m_spawnMetadata, MetadataOffset(m_slotCount));
         resources.parameters = builder.ImportBuffer(StageName(namePrefix, "GraphParameters"), m_parameterBuffer,
                                                     uint64_t(m_parameterWordCount) * sizeof(uint32_t));
         resources.playingRequests =
@@ -525,6 +535,7 @@ bool ParticleGpuGraphSpawnDomain::Attach(vk::RenderGraph &graph, const std::stri
             GpuParticleSpawnDomainConstants constants;
             constants.slotCount = m_slotCount;
             constants.reset = m_resetPending ? 1u : 0u;
+            constants.metadataStrideWords = m_metadataStrideWords;
             const auto encoder = context.GetComputeCommandEncoder();
             encoder.BindPipeline(m_advancePipeline);
             encoder.BindGroup(m_advancePipeline, 0, m_advanceGroup);
@@ -586,6 +597,7 @@ void ParticleGpuGraphSpawnDomain::RecordPrepare(const rhi::ComputeCommandEncoder
     constants.spawnBaseId = request.spawnBaseId;
     constants.spawnGeneration = request.spawnGeneration;
     constants.reset = resetPreviousState ? 1u : 0u;
+    constants.metadataStrideWords = m_metadataStrideWords;
     encoder.BindPipeline(m_preparePipeline);
     encoder.BindGroup(m_preparePipeline, 0, m_prepareRuntimeGroups[targetSlot]);
     encoder.PushConstants(m_preparePipeline, sizeof(constants), &constants);
@@ -867,6 +879,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                 return vk::PassExecuteCallback{};
             builder.ReadStorageBuffer(migrationSourceCounters);
             counters = builder.WriteStorageBuffer(counters);
+            aliveControl = builder.WriteStorageBuffer(aliveControl);
             return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
                 if (m_framePending && m_migrationPending && m_migrator)
                     m_migrator->RecordReset(context.GetComputeCommandEncoder());
@@ -888,6 +901,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             states = builder.WriteStorageBuffer(states);
             freeList = builder.WriteStorageBuffer(freeList);
             counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            aliveIndices[0] = builder.WriteStorageBuffer(aliveIndices[0]);
+            aliveControl = builder.ReadWrite(aliveControl, rhi::PipelineStage::ComputeShader);
             return [this](vk::RenderContext &context) {
                 if (!m_framePending || !m_migrationPending || !m_migrator || !m_runtime)
                     return;

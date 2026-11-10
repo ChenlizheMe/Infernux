@@ -1,7 +1,9 @@
 """Imported model/submesh previews with real material and texture publications."""
 from pathlib import Path
 import copy
+import hashlib
 import os
+import numpy as np
 
 from PIL import Image
 
@@ -13,12 +15,41 @@ from infernux.lib import AssetRegistry, InxMaterial
 from infernux.lib._Infernux import make_model_mesh_reference
 
 
+def measure_preview_pixels(native, row, readings):
+    """Opt in to a real GPU read only at a verification checkpoint.
+
+    Production snapshots intentionally contain no automatic GPU pixel hash.
+    Keep measurements separate so tests cannot mistake metadata for pixels.
+    """
+    key = row['resource_key']
+    identity = row['generation'], row['texture_id']
+    saved = readings.get(key)
+    if saved is None or saved['identity'] != identity:
+        if saved is not None and not saved['ticket'].done:
+            saved['ticket'].cancel()
+        saved = dict(identity=identity, ticket=native.request_imgui_texture_readback(row['texture_name']), summary=None)
+        readings[key] = saved
+    ticket = saved['ticket']
+    if not ticket.done:
+        return None
+    assert ticket.status.name == 'Completed', ticket.error
+    if saved['summary'] is None:
+        assert ticket.element_type == 'uint8' and ticket.channel_count == 4
+        raw = ticket.result_bytes()
+        assert len(raw) == ticket.width * ticket.height * 4
+        pixels = np.frombuffer(raw, np.uint8).reshape(ticket.height, ticket.width, 4)
+        saved['summary'] = dict(measured_hash=hashlib.sha256(raw).hexdigest(),
+            measured_generation=identity[0], measured_nontransparent_pixels=int(np.count_nonzero(pixels[..., 3])))
+    return dict(row, **saved['summary'])
+
+
 class MeshPreviewDependencyCase:
     modes = ('edit', 'history', 'material_import', 'texture_import', 'unrelated', 'snapshot')
 
     def __init__(self, native, directory, mode, consumer='python'):
         assert mode in self.modes and consumer in ('python', 'native', 'project')
         self.native, self.mode, self.consumer = native, mode, consumer
+        self.pixel_reads = {}
         self.directory = Path(directory)
         self.directory.mkdir(parents=True)
         self.material_path = self.directory / 'Paint.mat'
@@ -113,22 +144,25 @@ class MeshPreviewDependencyCase:
         rows = {name: snapshots.get(key) for name,key in self.keys.items()}
         if not all(r and r['texture_id'] and r['generation'] == r['ready_generation'] and not r['in_flight'] for r in rows.values()):
             return dict(done=False, step=self.step)
+        rows = {name: measure_preview_pixels(self.native, row, self.pixel_reads) for name, row in rows.items()}
+        if any(row is None for row in rows.values()):
+            return dict(done=False, step='explicit-pixel-measurement')
         self.frames += 1
         if self.step == 'baseline' and self.frames >= 5:
-            assert all(r['non_transparent_pixel_count'] > 100 for r in rows.values())
-            assert rows['model']['pixel_hash'] == rows['submesh']['pixel_hash'], rows
+            assert all(r['measured_nontransparent_pixels'] > 100 for r in rows.values())
+            assert rows['model']['measured_hash'] == rows['submesh']['measured_hash'], rows
             self.before = rows
             self.observations.append(rows)
             self.change()
             self.frames, self.step = 0, 'changed'
         elif self.step == 'changed' and self.frames >= 25:
-            assert rows['model']['pixel_hash'] == rows['submesh']['pixel_hash'], rows
+            assert rows['model']['measured_hash'] == rows['submesh']['measured_hash'], rows
             for name,row in rows.items():
                 before = self.before[name]
                 if self.mode == 'unrelated':
-                    assert (row['generation'],row['pixel_hash']) == (before['generation'],before['pixel_hash']), (name,rows,self.before)
+                    assert (row['generation'],row['measured_hash']) == (before['generation'],before['measured_hash']), (name,rows,self.before)
                 else:
-                    assert row['generation'] > before['generation'] and row['pixel_hash'] != before['pixel_hash'], (name,rows,self.before)
+                    assert row['generation'] > before['generation'] and row['measured_hash'] != before['measured_hash'], (name,rows,self.before)
             assert self.registry.load_mesh(str(self.source)).generation == self.geometry_generation
             self.observations.append(rows)
             self.before = rows
@@ -143,15 +177,18 @@ class MeshPreviewDependencyCase:
                 return dict(done=False,step='waiting-for-document-write')
             if self.write_ticket is not None:
                 assert self.write_ticket.status == 'succeeded', self.write_ticket.error
-            assert all(rows[n]['generation'] == self.before[n]['generation'] and rows[n]['pixel_hash'] == self.before[n]['pixel_hash'] for n in rows)
+            assert all(rows[n]['generation'] == self.before[n]['generation'] and rows[n]['measured_hash'] == self.before[n]['measured_hash'] for n in rows)
             if self.mode == 'history':
                 for n in rows:
-                    assert self.observations[0][n]['pixel_hash'] == self.observations[2][n]['pixel_hash']
-                    assert self.observations[1][n]['pixel_hash'] == self.observations[3][n]['pixel_hash']
+                    assert self.observations[0][n]['measured_hash'] == self.observations[2][n]['measured_hash']
+                    assert self.observations[1][n]['measured_hash'] == self.observations[3][n]['measured_hash']
             return dict(done=True, mode=self.mode, consumer=self.consumer, observations=self.observations)
         return dict(done=False, step=self.step)
 
     def close(self):
+        for reading in self.pixel_reads.values():
+            if not reading['ticket'].done:
+                reading['ticket'].cancel()
         if self.write_ticket is not None:
             self.write_ticket.wait()
             AssetManager.poll_pending_asset_writes()

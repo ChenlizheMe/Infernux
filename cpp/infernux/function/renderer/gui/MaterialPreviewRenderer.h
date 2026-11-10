@@ -63,7 +63,8 @@ ShaderPreviewMapping ParseShaderPreviewMapping(const std::string &shaderSource);
 
 /// Get (or parse + cache) the preview mapping for a given shader ID.
 /// Returns an empty mapping if the shader cannot be found.
-ShaderPreviewMapping GetShaderPreviewMapping(const std::string &fragShaderId, AssetDatabase *adb);
+struct ShaderAssetReference;
+ShaderPreviewMapping GetShaderPreviewMapping(const ShaderAssetReference &fragment, const AssetDatabase *adb);
 
 // ============================================================================
 

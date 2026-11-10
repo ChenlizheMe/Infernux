@@ -125,12 +125,13 @@ def exercise(project, kind, case):
             actor.controller = TimelineFSMRef(guid=guid) if kind == "action" else AnimStateMachineRef(guid=guid)
             actor.awake()
             actor.start()
+        advance = actor.animation_update if kind == "skeletal" else actor.update
         assert actor.current_state == "A"
         if case == "restart":
-            actor.update(1.0)
+            advance(1.0)
             assert actor.current_state == "A" and actor.is_playing
             assert actor.normalized_time == 0.0
-            actor.update(0.25)
+            advance(0.25)
             assert actor.normalized_time == pytest.approx(0.25)
             return
         if case in {"trigger", "overwrite-bool", "overwrite-value", "reset", "hot-trigger"}:
@@ -153,12 +154,12 @@ def exercise(project, kind, case):
             assert fsm.save(str(path))
             assert actor._reload_controller_asset(str(path))
         assert actor.get_bool("powered")
-        actor.update(0.1)
+        advance(0.1)
         assert actor.current_state == "B"
         assert actor.get_bool("powered") is (case not in {"trigger", "hot-trigger"}), (kind, case)
         if case == "unrelated":
             assert actor.get_bool("spare")
-            actor.update(0.1)
+            advance(0.1)
             assert actor.current_state == "C"
             assert actor.get_bool("spare") is False
             assert actor.get_bool("powered") is True

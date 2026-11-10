@@ -26,11 +26,13 @@ from .inx_ui_component import InxUIComponent as InxUIComponent
 from .inx_ui_screen_component import InxUIScreenComponent as InxUIScreenComponent
 from .ui_canvas import UICanvas as UICanvas
 from .ui_frame import UIFrame as UIFrame
+from .ui_layout_element import UILayoutElement as UILayoutElement
 from .ui_group import UIGroup as UIGroup
 from .ui_progress_bar import UIProgressBar as UIProgressBar
 from .ui_slider import UISlider as UISlider
 from .ui_text import UIText as UIText
 from .ui_image import UIImage as UIImage
+from .ui_image import ImageType as ImageType, ImageFillMethod as ImageFillMethod
 UIRawImage = UIImage
 from .ui_selectable import UISelectable as UISelectable
 from .ui_button import UIButton as UIButton
@@ -62,11 +64,13 @@ __all__ = [
     "InxUIScreenComponent",
     "UICanvas",
     "UIFrame",
+    "UILayoutElement",
     "UIGroup",
     "UIProgressBar",
     "UISlider",
     "UIText",
     "UIImage",
+    "ImageType", "ImageFillMethod",
     "UIRawImage",
     "UISelectable",
     "UIButton",

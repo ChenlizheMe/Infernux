@@ -59,7 +59,8 @@ void main() {}
     assert(!InxShaderLoader::AreSourceDiagnosticsCaptured());
     auto compile = [&] {
         infernux::InxResourceMeta metadata;
-        compiler.CreateMeta(rootSource.data(), rootSource.size(), FromFsPath(root), metadata);
+        infernux::AssetSource metadataSource(FromFsPath(root), rootSource);
+        compiler.CreateMeta(metadataSource, metadata);
         return compiler.Compile(rootSource.data(), rootSource.size(), metadata);
     };
     assert(compile());

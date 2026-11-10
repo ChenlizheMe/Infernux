@@ -2275,11 +2275,14 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
         assert "RenamedSnapshotProbe" in str(scene.serialize_document())
         assert canonical_guid in str(scene.serialize_document())
         assert sys.modules[component_type.__module__].RenamedSnapshotProbe is component_type
-        records = GameBuilder._runtime_component_type_records(
+        from infernux.engine.player_script_catalog import (
+            runtime_component_type_records, cook_runtime_component_semantics,
+        )
+        records = runtime_component_type_records(
             batch.transaction.requests[0].source,
             script_guid=guid, runtime_path="Assets/SnapshotRenameProbe.pyc",
         )
-        GameBuilder._cook_runtime_component_semantics(records)
+        cook_runtime_component_semantics(records)
         assert records[0]["type_guid"] == canonical_guid
         if rollback:
             manager.rollback_script_reload_batch(batch)

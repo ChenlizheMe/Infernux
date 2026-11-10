@@ -36,6 +36,7 @@ from infernux.lib import (
     LightColorMode,
     Physics,
     AssetRegistry,
+    AssetLoadSuperseded,
     ResourceType,
 )
 
@@ -80,6 +81,7 @@ def test_mesh_cpu_payload_prepares_on_worker_and_rejects_stale_publish(engine):
         ticket = registry.begin_load_mesh_by_guid(guid)
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline and not registry.try_commit_asset_load(ticket):
+            engine.tick(.016)
             time.sleep(0.001)
         assert ticket.committed is True
         assert ticket.produced_on_worker is True
@@ -104,6 +106,7 @@ def test_mesh_cpu_payload_prepares_on_worker_and_rejects_stale_publish(engine):
         fallback = registry.begin_load_mesh_by_guid(guid)
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline and not registry.try_commit_asset_load(fallback):
+            engine.tick(.016)
             time.sleep(0.001)
         assert fallback.committed is True
         assert registry.get_mesh(guid).vertex_count == 3
@@ -118,13 +121,14 @@ def test_mesh_cpu_payload_prepares_on_worker_and_rejects_stale_publish(engine):
         assert source.resolve() in {Path(path).resolve() for path in asset_database.last_refresh_imported_paths}
 
         stale = registry.begin_load_mesh_by_guid(guid)
+        assert registry.try_submit_asset_load(stale)
         registry.invalidate_asset(guid)
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline and not stale.complete:
             time.sleep(0.001)
         assert stale.complete is True
         assert stale.produced_on_worker is True
-        with pytest.raises(RuntimeError, match="stale"):
+        with pytest.raises(AssetLoadSuperseded):
             registry.try_commit_asset_load(stale)
         assert registry.is_loaded(guid) is False
         assert registry.get_asset_version(guid) == 2
@@ -173,6 +177,7 @@ def test_skinned_mesh_companion_artifact_is_atomic_worker_loaded_and_rebuilt(eng
         ticket = registry.begin_load_mesh_by_guid(guid)
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and not registry.try_commit_asset_load(ticket):
+            engine.tick(.016)
             time.sleep(0.001)
         assert ticket.committed is True
         assert ticket.produced_on_worker is True
@@ -275,10 +280,18 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
 
     try:
         source.write_bytes(b"invalid texture source")
+        baseline_cpu_bytes = registry.total_cpu_bytes
         ticket = registry.begin_load_texture_by_guid(guid)
         deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not registry.try_commit_asset_load(ticket):
+        while time.monotonic() < deadline and not ticket.complete:
+            engine.tick(.016)
             time.sleep(0.001)
+        assert ticket.complete and not ticket.committed
+        ticket.wait()
+        private_cpu_bytes = registry.total_cpu_bytes
+        assert not registry.is_loaded(guid) and private_cpu_bytes > baseline_cpu_bytes
+        assert registry.try_commit_asset_load(ticket)
+        assert registry.total_cpu_bytes == private_cpu_bytes
         assert ticket.committed is True
         assert ticket.produced_on_worker is True
         texture = registry.get_texture_asset(guid)
@@ -297,6 +310,7 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         deadline = time.monotonic() + 10.0
         with pytest.raises((RuntimeError, ValueError), match="texture artifact"):
             while time.monotonic() < deadline and not registry.try_commit_asset_load(rejected):
+                engine.tick(.016)
                 time.sleep(0.001)
     finally:
         registry.invalidate_asset(guid)
@@ -747,10 +761,9 @@ class TestComponentLifecycle:
         sm.step(1.0 / 60.0)
 
         counters = runtime_scheduler.profiler_snapshot()
-        # One native fixed step enters the shared frame through the fixed,
-        # physics_pre, and physics_post contracts.  Only the authored update
-        # phase has an invoker in this probe, so phase_dispatches remains one.
-        assert counters["native_phase_dispatches"] == 3
+        # Update and the physics-pre/post and animation boundaries enter the
+        # shared frame. Only Update has an authored invoker in this probe.
+        assert counters["native_phase_dispatches"] == 4
         assert counters["phase_dispatches"] == 1
         assert component.last_delta_time == pytest.approx(1.0 / 60.0)
 

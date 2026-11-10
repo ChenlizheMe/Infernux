@@ -51,6 +51,7 @@
 *.ogg binary
 *.flac binary
 *.inxpkg binary
+*.inm binary
 *.dll binary
 *.pyd binary
 *.so binary

@@ -61,7 +61,6 @@ def test_only_latest_material_write_callback_can_publish_a_to_b_to_c(monkeypatch
                 edit_revision=index,
                 requested_write_revision=index,
                 commit_token=f"commit-{token}",
-                snapshot=token,
                 content_token=token,
                 callback=lambda status, token=token: callbacks.append((token, status)),
             )
@@ -85,7 +84,6 @@ def test_self_write_watcher_is_acknowledged_by_committed_fingerprint(monkeypatch
         edit_revision=1,
         requested_write_revision=1,
         commit_token="self-commit",
-        snapshot="B",
         content_token="B",
     )
     AssetManager._pending_document_write_records[normalized] = [record]
@@ -263,13 +261,12 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
     published = []
 
     class _Documents:
-        def durable_resource_content_changed(self, value, *, guid=""):
+        def preflight_external_resource_change(
+            self, value, *, guid="", metadata_only=False, baseline_only=False, metadata_file_state=None
+        ):
             del guid
-            return True
-
-        def preflight_external_resource_change(self, value, *, guid="", metadata_only=False):
-            del guid
-            assert not metadata_only
+            assert not metadata_only and not baseline_only
+            assert metadata_file_state is None
             return value == resolved
 
         def has_pending_external_change_preflight(self, value, *, guid=""):

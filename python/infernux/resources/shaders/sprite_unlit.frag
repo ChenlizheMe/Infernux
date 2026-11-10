@@ -5,10 +5,11 @@ ShaderInfo {
     ShadingModel Unlit
     Queue 2000
     Cull None
-    AlphaClip on
+    AlphaClip 0.5
     Properties {
         Color baseColor = [1.0, 1.0, 1.0, 1.0]
         Texture2D texSampler = white
+        Float4 texSampler_ST = [1.0, 1.0, 0.0, 0.0]
         Float4 uvRect = [0.0, 0.0, 1.0, 1.0]
         Float4 displayScale = [1.0, 1.0, 0.0, 0.0]
     }
@@ -26,7 +27,7 @@ void surface(out SurfaceData s) {
     }
     // uvRect: xy = offset, zw = scale (sub-rect in UV space)
     vec2 uv = material.uvRect.xy + tc * material.uvRect.zw;
-    vec4 texColor = texture(texSampler, uv);
+    vec4 texColor = texture(texSampler, transformTextureUV(uv, material.texSampler_ST));
     s.albedo = texColor.rgb * material.baseColor.rgb;
     s.alpha  = texColor.a * material.baseColor.a;
 }

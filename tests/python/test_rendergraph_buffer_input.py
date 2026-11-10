@@ -1,6 +1,7 @@
 """Fullscreen graph storage-buffer input contract."""
 
 import weakref
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,56 +29,45 @@ def test_fullscreen_buffer_binding_declares_read_and_serializes_resource_order()
     ]
 
 
-def test_import_buffer_rejects_non_gpu_or_wrong_scalar_type():
-    class Buffer:
-        device = "cpu"
-        dtype = "uint32"
-        closed = False
-        _native = object()
+class _ComputeStorage:
+    byte_size = 64
+    last_write_serial = 1
 
+    def has_initialized_range(self, offset, size):
+        return 0 <= offset < self.byte_size and 0 < size <= self.byte_size - offset
+
+
+def _gpu_buffer(*, device="gpu", scalar="uint32", lanes=1, offset=0, size=64):
+    return SimpleNamespace(
+        device=device, closed=False, nbytes=size, _native=_ComputeStorage(),
+        description=SimpleNamespace(scalar_dtype=scalar, lanes=lanes, byte_offset=offset),
+    )
+
+
+def test_import_buffer_rejects_non_gpu_or_wrong_scalar_type():
     graph = RenderGraph("Import")
-    with pytest.raises(ValueError, match="uint32 GPU"):
-        graph.import_buffer("values", Buffer())
-    Buffer.device = "gpu"
-    Buffer.dtype = "float32"
-    with pytest.raises(ValueError, match="uint32 GPU"):
-        graph.import_buffer("values", Buffer())
+    with pytest.raises(ValueError, match="scalar float32 or uint32 GPU"):
+        graph.import_buffer("values", _gpu_buffer(device="cpu"))
+    with pytest.raises(ValueError, match="scalar float32 or uint32 GPU"):
+        graph.import_buffer("values", _gpu_buffer(scalar="int32"))
 
 
 def test_import_buffer_requires_full_allocation():
-    class Native:
-        byte_size = 64
-
-    class Buffer:
-        device = "gpu"
-        dtype = "uint32"
-        closed = False
-        _native = Native()
-        _byte_offset = 4
-        nbytes = 60
-
+    # The existing case now exercises full initialization of the imported
+    # logical range. A view may cover part of an allocation.
     graph = RenderGraph("Import")
-    with pytest.raises(ValueError, match="complete GPU allocation"):
-        graph.import_buffer("view", Buffer())
-    Buffer._byte_offset = 0
-    Buffer.nbytes = 64
-    assert graph.import_buffer("values", Buffer()).byte_size == 64
+    with pytest.raises(ValueError, match="initialized logical range"):
+        graph.import_buffer("invalid", _gpu_buffer(offset=32, size=64))
+    source = _gpu_buffer(offset=32, size=32)
+    view = graph.import_buffer("view", source)
+    assert (view.byte_offset, view.byte_size) == (32, 32)
+    assert view.compute_buffer is source._native
+    assert graph.import_buffer("values", _gpu_buffer()).byte_size == 64
 
 
 def test_imported_buffer_is_read_only_in_graph():
-    class Native:
-        byte_size = 64
-
-    class Buffer:
-        device = "gpu"
-        dtype = "uint32"
-        closed = False
-        _native = Native()
-        _byte_offset = 0
-        nbytes = 64
-
     graph = RenderGraph("ImportedReadOnly")
-    imported = graph.import_buffer("values", Buffer())
+    imported = graph.import_buffer("values", _gpu_buffer())
     scratch = graph.create_buffer("scratch", 64)
     with graph.add_pass("TryWrite") as render_pass:
         with pytest.raises(ValueError, match="read-only"):
@@ -88,18 +78,7 @@ def test_imported_buffer_is_read_only_in_graph():
 
 
 def test_logical_import_does_not_keep_native_allocation_alive_after_owner_close():
-    class Native:
-        byte_size = 64
-
-    class Buffer:
-        device = "gpu"
-        dtype = "uint32"
-        closed = False
-        _byte_offset = 0
-        nbytes = 64
-
-    owner = Buffer()
-    owner._native = Native()
+    owner = _gpu_buffer()
     allocation = weakref.ref(owner._native)
     graph = RenderGraph("ImportedLifetime")
     handle = graph.import_buffer("values", owner)

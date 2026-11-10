@@ -73,6 +73,13 @@ class _ParticleGraphGuidDatabase:
         resolver = getattr(self._base, "get_guid_from_path", None)
         return str(resolver(path) or "") if callable(resolver) else ""
 
+    @property
+    def query_generation(self):
+        return self._base.query_generation if self._base is not None else 0
+
+    def get_all_asset_paths(self):
+        return self._base.get_all_asset_paths() if self._base is not None else ()
+
     def __getattr__(self, name: str):
         if self._base is None:
             raise AttributeError(name)
@@ -228,12 +235,17 @@ class _GpuParticleNative:
         self.accept_batches = True
 
     def _replace_gpu_particle_graph(self, graph_instance_id, programs, removed):
+        from infernux.lib import GpuParticlePublicationStatus
         self.program_batches.append((programs, removed, graph_instance_id))
-        return ""
+        return GpuParticlePublicationStatus.Published, ""
 
     def _replace_gpu_particle_graphs(self, graphs):
+        from infernux.lib import GpuParticlePublicationStatus
+        if len(graphs) == 1:
+            item = graphs[0]
+            return self._replace_gpu_particle_graph(item['graph_instance_id'], item['programs'], item['remove_ids'])
         self.program_batches.append(("graphs", graphs))
-        return ""
+        return GpuParticlePublicationStatus.Published, ""
 
     def _begin_gpu_particle_batch(self, graph_instance_id, items):
         self.frames.append((graph_instance_id, items))
@@ -673,7 +685,7 @@ def test_particle_system_curve_and_gradient_parameters_hot_update_fixed_gpu_bloc
     assert component.get_gradient("Color Over Life") == gradient
     assert len(native_runtime.parameter_updates) == 2
     # The compiled ABI sorts stable IDs: color precedes size.
-    assert [(offset, len(words)) for offset, words in native_runtime.parameter_updates[0][1]] == [(33 * 4, 17 * 4)]
+    assert [(offset, len(words)) for offset, words in native_runtime.parameter_updates[0][1]] == [(33 * 4, 33 * 4)]
     assert [(offset, len(words)) for offset, words in native_runtime.parameter_updates[1][1]] == [(0, 33 * 4)]
     assert component._artifact_revision > 0
 
@@ -875,11 +887,11 @@ def test_particle_system_runs_gpu_emitters_by_active_index(scene, monkeypatch, t
     assert {runtime.simulation_time_ticks for runtime in component._gpu_controllers} == {125_000_000}
     native.accept_batches = True
     component.update(0.5)
-    assert component._graph_simulation_time_ticks == 625_000_000
-    assert {runtime.simulation_time_ticks for runtime in component._gpu_controllers} == {625_000_000}
+    assert component._graph_simulation_time_ticks == 1_125_000_000
+    assert {runtime.simulation_time_ticks for runtime in component._gpu_controllers} == {1_125_000_000}
     component.pause()
     component.update(0.5)
-    assert all(item["simulation_time_ticks"] == 625_000_000 for item in native.frames[-1][1])
+    assert all(item["simulation_time_ticks"] == 1_125_000_000 for item in native.frames[-1][1])
     component.play()
     component.offscreen_policy = ParticleOffscreenPolicy.PAUSE_WHEN_OFFSCREEN
     component.update(0.0)
@@ -892,14 +904,14 @@ def test_particle_system_runs_gpu_emitters_by_active_index(scene, monkeypatch, t
     assert component.editor_preview_set_emitter_muted(1, False) is True
     component._editor_preview_active = False
     diagnostics = component.runtime_diagnostics()
-    assert diagnostics["graph_simulation_time_ticks"] == 625_000_000
-    assert {emitter["simulation_time_ticks"] for emitter in diagnostics["emitters"]} == {625_000_000}
+    assert diagnostics["graph_simulation_time_ticks"] == 1_125_000_000
+    assert {emitter["simulation_time_ticks"] for emitter in diagnostics["emitters"]} == {1_125_000_000}
     assert diagnostics["play_requested"] is True
     assert diagnostics["resident"] is True
     assert diagnostics["playing"] is True
     assert component.is_resident is True
     assert component.is_playing is True
-    assert component.time == pytest.approx(0.625)
+    assert component.time == pytest.approx(1.125)
     assert component.last_compile_error == ""
     assert "runtime_target" not in diagnostics
     assert all("target" not in emitter for emitter in diagnostics["emitters"])
@@ -1285,6 +1297,20 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(scene, engine, 
     assert engine._gpu_particle_output_count(emitter_id) == 0
 
 
+def _start_particle_with_volume(component, engine):
+    component.awake()
+    component.start()
+    # A cold volume becomes usable only after its GPU upload completes.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        engine.tick(0.0)
+        component.update(0.0)
+        if component._gpu_emitter_ids:
+            return
+        time.sleep(0.001)
+    pytest.fail(f"Particle publication did not finish: {component.runtime_diagnostics()}")
+
+
 @pytest.mark.skipif(
     _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
     reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
@@ -1400,9 +1426,7 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(scene
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
 
-    component.awake()
-    component.start()
-    component.update(0.0)
+    _start_particle_with_volume(component, engine)
 
     emitter_id = component._gpu_emitter_ids[0]
     initial_artifact_revision = component._artifact_revision
@@ -1418,6 +1442,7 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(scene
     assert reimported, reimported.error
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
+        engine.tick(0.0)
         component.update(0.0)
         if engine._gpu_particle_vector_field_generation(emitter_id, 0) > initial_generation:
             break
@@ -1524,9 +1549,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(scene, engine,
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
 
-    component.awake()
-    component.start()
-    component.update(0.0)
+    _start_particle_with_volume(component, engine)
 
     assert not component._last_compile_error
     emitter_id = component._gpu_emitter_ids[0]

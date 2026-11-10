@@ -129,9 +129,7 @@ def dependent_variant_updates(source_path, updated, database):
 
 def dependent_variant_guids(source_guid, database):
     """The importer owns durable base edges; never scan the project on save."""
-    from infernux.lib import AssetDependencyGraph
-
-    graph = AssetDependencyGraph.instance()
+    graph = database.dependency_graph
     seen, pending, result = {source_guid}, [source_guid], []
     while pending:
         for guid in sorted(graph.get_dependents(pending.pop())):

@@ -49,9 +49,9 @@ int ScriptableRenderContext::GetOutputSamples() const noexcept
     return m_graph && m_graph->HasOutputTexture() ? static_cast<int>(m_graph->GetRenderViewContext().samples) : 0;
 }
 
-ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph,
+ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                                                  const EditorGizmosContext &gizmoCtx)
-    : m_vkCore(vkCore), m_graph(graph), m_gizmoCtx(gizmoCtx)
+    : m_vkCore(vkCore), m_graph(graph), m_draw(draw), m_gizmoCtx(gizmoCtx)
 {
     // Resolve the scene pointer: prefer the gizmo context's activeScene,
     // fall back to SceneManager's active scene.
@@ -113,7 +113,7 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     // Lighting is staged after RenderPipeline::Render, so the graph's shadow
     // views here belong to the previous frame. Collect the scene-owned caster
     // list independently; the current light views filter it during recording.
-    const bool needsShadowDrawCalls = m_graph != nullptr;
+    const bool needsShadowDrawCalls = m_graph && m_graph->GetRenderViewContext().kind != rhi::RenderViewKind::Preview;
     CameraDrawCallResult ownedResult;
     CullingResults results;
 
@@ -173,7 +173,7 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
 // RenderGraph-driven API
 // ============================================================================
 
-void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
+bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
@@ -181,11 +181,11 @@ void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 #endif
     if (!m_graph)
         throw std::runtime_error("Render graph publication requires an available render context graph");
-    if (!m_graph->ApplyPythonGraph(desc))
-        throw std::runtime_error("Render graph '" + desc.name + "' publication rejected by native validation");
+    const bool applied = m_graph->ApplyPythonGraph(desc);
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.applyGraphMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
+    return applied;
 }
 
 void ScriptableRenderContext::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
@@ -246,20 +246,17 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     const bool shadowListReusable = culling.shadowCasters.Empty() || culling.shadowCasters.IsBorrowed();
     const bool visibleListReusable = culling.visibleRenderers.IsBorrowed();
     const bool graphAvailable = m_graph != nullptr;
-    const bool uploadsSettled = m_vkCore->GetPendingMeshUploadCount() == 0;
     const uint64_t objectBufferRevision = m_vkCore->GetObjectBufferRevision();
     const bool signatureReusable =
         graphAvailable && m_graph->CanReuseCachedSubmission(submissionSignature, objectBufferRevision);
-    if (!hasEditorAppenders && visibleListReusable && shadowListReusable && graphAvailable && uploadsSettled &&
-        signatureReusable) {
-        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner, objectBufferRevision);
+    if (!hasEditorAppenders && visibleListReusable && shadowListReusable && signatureReusable) {
+        // The cached shadow list borrows storage from the same retained world snapshot.
         if (m_activeCamera)
             m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
         m_vkCore->SetShadowDrawCalls(m_graph->HasCachedShadowDrawCalls() ? &m_graph->GetCachedShadowDrawCalls()
                                                                          : nullptr);
-        m_vkCore->ReuseObjectBufferBindingsThisFrame();
-        m_submitted = true;
+        MarkSubmitted(m_graph->GetObjectBindingIdentity(), true);
 #if INFERNUX_FRAME_PROFILE
         g_srcProfileSnapshot.cachedSubmissionReuses += 1.0;
         g_srcProfileSnapshot.submitMs += std::chrono::duration<double, std::milli>(Clock::now() - submitStart).count();
@@ -273,7 +270,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     g_srcProfileSnapshot.submissionRejectOwnedVisibleList += visibleListReusable ? 0.0 : 1.0;
     g_srcProfileSnapshot.submissionRejectOwnedShadowList += shadowListReusable ? 0.0 : 1.0;
     g_srcProfileSnapshot.submissionRejectMissingGraph += graphAvailable ? 0.0 : 1.0;
-    g_srcProfileSnapshot.submissionRejectPendingUploads += uploadsSettled ? 0.0 : 1.0;
     g_srcProfileSnapshot.submissionRejectSignature += signatureReusable ? 0.0 : 1.0;
     if (baseRendererListBorrowed) {
         g_srcProfileSnapshot.borrowedRendererListSubmits += 1.0;
@@ -441,8 +437,11 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshVertices)));
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshIndices)));
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshVertexBuffer.get())));
+        mix(std::hash<std::string>{}(dc.meshAssetGuid));
         mix(dc.meshRuntimeVersion);
+        mix(dc.meshUsesDetachedStorage);
         mix(static_cast<uint64_t>(dc.meshIndexFormat));
+        mix(static_cast<uint64_t>(dc.meshGeometryView));
         hasForcedBufferUpdate = hasForcedBufferUpdate || dc.forceBufferUpdate;
     };
     if (shadowSource) {
@@ -452,76 +451,31 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     for (const DrawCall &dc : m_orderedDrawCalls)
         accumulateBufferIdentity(dc);
 
-    const size_t bufferIdentityDrawCallCount = m_orderedDrawCalls.size() + (shadowSource ? shadowSource->size() : 0);
-    const bool reuseObjectBuffers =
-        !hasForcedBufferUpdate && m_vkCore->CanReuseObjectBufferBindings(bufferIdentity, bufferIdentityDrawCallCount);
+    const bool reuseObjectBuffers = m_graph && !hasForcedBufferUpdate &&
+                                    m_graph->HasReadyObjectBindings(objectBufferRevision) &&
+                                    m_graph->GetObjectBindingIdentity() == bufferIdentity;
 
-    // Ensure per-object GPU buffers
 #if INFERNUX_FRAME_PROFILE
     t0 = Clock::now();
 #endif
-    if (reuseObjectBuffers) {
-        m_vkCore->ReuseObjectBufferBindingsThisFrame();
-    } else if (shadowSource) {
-        // Consecutive-objectId dedup: draw calls for multi-submesh objects
-        // share the same objectId and are adjacent in the array.  Skip
-        // redundant hash-map lookups inside EnsureObjectBuffers.
+    bool objectBuffersReady = true;
+    if (!reuseObjectBuffers) {
         uint64_t lastEnsuredId = 0;
-        for (const DrawCall &dc : *shadowSource) {
-            if (dc.objectId == lastEnsuredId)
-                continue;
-            lastEnsuredId = dc.objectId;
-            if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
-                                              dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
-                                              dc.meshGeometryView);
-                if (dc.meshVertexBuffer)
-                    m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
+        const auto ensure = [&](const std::vector<DrawCall> &draws, size_t start) {
+            for (size_t index = start; index < draws.size(); ++index) {
+                const auto &draw = draws[index];
+                if (draw.objectId == lastEnsuredId || !draw.meshVertices || !draw.meshIndices)
+                    continue;
+                lastEnsuredId = draw.objectId;
+                objectBuffersReady &= m_vkCore->PrepareObjectBuffers(draw);
             }
-        }
-
-        for (size_t drawCallIndex = baseOrderedDrawCallCount; drawCallIndex < m_orderedDrawCalls.size();
-             ++drawCallIndex) {
-            const DrawCall &dc = m_orderedDrawCalls[drawCallIndex];
-            if (dc.objectId == lastEnsuredId)
-                continue;
-            lastEnsuredId = dc.objectId;
-            if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
-                                              dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
-                                              dc.meshGeometryView);
-                if (dc.meshVertexBuffer)
-                    m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
-            }
-        }
+        };
+        // The scene's shadow list already contains all scene geometry. Only
+        // explicit draws, skybox and editor additions need a second traversal.
+        if (shadowSource)
+            ensure(*shadowSource, 0);
+        ensure(m_orderedDrawCalls, shadowSource ? baseOrderedDrawCallCount : 0);
     }
-
-    // Build the forward-render list.
-    // Game camera path already has a compact visible-only list (move it).
-    // Editor camera path: skip visibility pre-filter — DrawSceneFiltered
-    // already checks frustumVisible per draw call, so pre-filtering is
-    // redundant memcpy of ~2.7k DrawCalls.
-    std::vector<DrawCall> forwardDrawCalls = std::move(m_orderedDrawCalls);
-
-    if (!shadowSource) {
-        if (!reuseObjectBuffers) {
-            for (const DrawCall &dc : forwardDrawCalls) {
-                if (dc.meshVertices && dc.meshIndices) {
-                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
-                                                  dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
-                                                  dc.meshGeometryView);
-                    if (dc.meshVertexBuffer)
-                        m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
-                }
-            }
-        }
-    }
-
-    if (!reuseObjectBuffers)
-        m_vkCore->PrimeObjectBufferBindingCache(bufferIdentity, bufferIdentityDrawCallCount);
-
-    DrawCallResult result;
-    result.drawCalls = std::move(forwardDrawCalls);
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.ensureBuffersMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
@@ -535,14 +489,14 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         t0 = Clock::now();
 #endif
         m_graph->SetCachedRendererList(
-            RendererList::Own(std::move(result.drawCalls), RendererListPurpose::CameraVisible, submittedDomains));
+            RendererList::Own(std::move(m_orderedDrawCalls), RendererListPurpose::CameraVisible, submittedDomains));
         if (shadowSource) {
             m_graph->SetCachedShadowRendererList(std::move(culling.shadowCasters));
         } else {
             m_graph->ClearCachedShadowDrawCalls();
         }
         m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner,
-                                              m_vkCore->GetObjectBufferRevision());
+                                              objectBuffersReady ? m_vkCore->GetObjectBufferRevision() : 0);
         if (m_activeCamera) {
             m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         }
@@ -555,11 +509,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
     }
 
-    // NOTE: CleanupUnusedBuffers is called by InxRenderer::DrawFrame() after
-    // all pipeline renders, using the union of all graphs' draw calls.
-    // This prevents one graph's cleanup from removing buffers another graph needs.
-
-    m_submitted = true;
+    MarkSubmitted(bufferIdentity, reuseObjectBuffers);
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.submitMs += std::chrono::duration<double, std::milli>(Clock::now() - submitStart).count();
     g_srcProfileSnapshot.submitCalls += 1.0;
@@ -568,12 +518,21 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
 }
 
-void ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphDescription &desc)
+void ScriptableRenderContext::MarkSubmitted(uint64_t objectBindingIdentity, bool reusesObjectBindings)
+{
+    m_submitted = true;
+    if (m_graph)
+        m_graph->RequestView(m_draw, objectBindingIdentity, reusesObjectBindings);
+}
+
+bool ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphDescription &desc)
 {
     SetupCameraProperties(camera);
     CullingResults &culling = Cull(camera);
-    ApplyGraph(desc);
+    if (!ApplyGraph(desc))
+        return false;
     SubmitCulling(culling);
+    return true;
 }
 
 bool ScriptableRenderContext::IsGraphRevisionCurrent(uint64_t sourceRevision) const
@@ -583,9 +542,9 @@ bool ScriptableRenderContext::IsGraphRevisionCurrent(uint64_t sourceRevision) co
 
 bool ScriptableRenderContext::RenderCompiled(Camera *camera, uint64_t sourceRevision)
 {
+    SetupCameraProperties(camera);
     if (!IsGraphRevisionCurrent(sourceRevision))
         return false;
-    SetupCameraProperties(camera);
     CullingResults &culling = Cull(camera);
     SubmitCulling(culling);
     return true;
@@ -635,6 +594,7 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
             draw.meshDataOwner = params.geometry;
             draw.meshAssetGuid = params.meshGuid;
             draw.meshRuntimeVersion = params.meshGeneration;
+            draw.meshUsesDetachedStorage = params.meshGuid.empty();
             m_orderedDrawCalls.push_back(std::move(draw));
             appendedDomains |= RenderDomainBit(RenderDomain::SceneGeometry);
             break;

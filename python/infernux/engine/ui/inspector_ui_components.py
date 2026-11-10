@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import math
 import copy
+from dataclasses import replace
+from enum import IntEnum
+from functools import lru_cache
 
 from infernux.ui import UICanvas, UIFrame, UIText, UIImage, UIButton
 from infernux.ui.enums import TextResizeMode
@@ -178,9 +181,10 @@ def _apply_size_preserve_top_left(comp, width, height, canvas):
         offset_x, offset_y = comp._rotated_corner_offset(width, height, 0)
         transform = comp.game_object.transform
         position = transform.local_position
+        pivot = comp.pivot
         new_position = Vector3(
-            float(position.x) + fixed_x - offset_x + width * 0.5 - (rx + rw * 0.5),
-            float(position.y) - (fixed_y - offset_y + height * 0.5 - (ry + rh * 0.5)),
+            float(position.x) + fixed_x - offset_x + width * pivot.x - (rx + rw * pivot.x),
+            float(position.y) - (fixed_y - offset_y + height * (1 - pivot.y) - (ry + rh * (1 - pivot.y))),
             float(position.z),
         )
         changes.append((transform, "local_position", position, new_position, "Set UI Position"))
@@ -341,20 +345,9 @@ def _render_common_position(ctx, comp):
 
 
 def _sync_text_layout_from_ctx(ctx, text_comp: UIText):
-    from infernux.ui.ui_render_dispatch import resolve_text_layout
+    from infernux.ui.ui_render_dispatch import resolve_text_layout_for_context
 
-    def measure(text, font_size, wrap_width, font_path, line_height, letter_spacing, fallback_font_paths=()):
-        if wrap_width > 0.0:
-            return ctx.calc_text_size_wrapped(
-                text, font_size, wrap_width, font_path, line_height, letter_spacing,
-                fallback_font_paths,
-            )
-        return ctx.calc_text_size(
-            text, font_size, font_path, line_height, letter_spacing,
-            fallback_font_paths,
-        )
-
-    return resolve_text_layout(text_comp, measure, 1.0)
+    return resolve_text_layout_for_context(ctx, text_comp)
 
 
 def _set_text_resize_mode(ctx, text_comp: UIText, mode: TextResizeMode):
@@ -960,11 +953,23 @@ def _render_text_inspector(ctx, text_comp: UIText):
 #  UIImage inspector
 # ========================================================================
 
+@lru_cache(maxsize=5)
+def _image_origin_metadata(method):
+    labels=(('LEFT','RIGHT'),('BOTTOM','TOP'),
+            ('BOTTOM_LEFT','TOP_LEFT','TOP_RIGHT','BOTTOM_RIGHT'),
+            ('BOTTOM','LEFT','TOP','RIGHT'),('BOTTOM','RIGHT','TOP','LEFT'))[int(method)]
+    kind=IntEnum('_ImageFillOrigin',{name:i for i,name in enumerate(labels)})
+    return replace(get_serialized_fields(UIImage)['fill_origin'],field_type=FieldType.ENUM,
+                   enum_type=kind,enum_labels=['ui_comp.fill_origin.'+name for name in labels])
+
+
 def _render_image_fill(ctx, img_comp: UIImage):
     if not render_compact_section_header(ctx, t("ui_comp.fill"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.color"), "UV Rect"])
+    names=('image_type','fill_method','fill_amount','fill_origin','fill_clockwise')
+    section_lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.color"), "UV Rect"]+
+                            [t('ui_comp.'+name) for name in names])
 
     from infernux.components.fields import FieldType, get_raw_field_value
     from ._inspector_references import _render_asset_reference_field
@@ -983,6 +988,24 @@ def _render_image_fill(ctx, img_comp: UIImage):
     uv = img_comp.uv_rect
     updated = render_serialized_field(ctx, "##ui_image_uv", "UV Rect", metadata, uv, section_lw)
     _apply_if_changed(img_comp, "uv_rect", uv, updated)
+    fields=get_serialized_fields(type(img_comp))
+    for name in names:
+        if name != 'image_type' and img_comp.image_type != img_comp.Type.FILLED:
+            continue
+        if name == 'fill_clockwise' and int(img_comp.fill_method) < 2:
+            continue
+        metadata=fields[name]
+        current=getattr(img_comp,name)
+        if name == 'fill_origin':
+            metadata=_image_origin_metadata(img_comp.fill_method)
+            current=metadata.enum_type(current)
+        updated=render_serialized_field(ctx,'##ui_image_'+name,t('ui_comp.'+name),metadata,current,section_lw)
+        if name == 'fill_method' and updated != current:
+            _record_python_component_document_edit(img_comp,lambda value=updated,field=name:setattr(img_comp,field,value),
+                                                   'Set image fill method')
+        else:
+            _apply_if_changed(img_comp,name,int(current) if name=='fill_origin' else current,
+                              int(updated) if name=='fill_origin' else updated)
 
 
 def _render_image_inspector(ctx, img_comp: UIImage):

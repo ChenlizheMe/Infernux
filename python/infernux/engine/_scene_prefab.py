@@ -376,7 +376,7 @@ class ScenePrefabMixin:
         snapshots = [
             snapshot for snapshot in _snapshot_linked_instances(scene, prefab_guid, base_root=updated_root)
             if snapshot[1].get("prefab_source") != _make_prefab_baseline(
-                updated_root, outer_source_id=snapshot[1].get("prefab_source", {}).get("outer_source_id", 0),
+                updated_root, previous=snapshot[1].get("prefab_source"),
             )
         ]
         if not snapshots:
@@ -386,7 +386,7 @@ class ScenePrefabMixin:
         return True
 
     def sync_all_prefab_instances(self, scene=None):
-        """Sync every prefab instance in *scene* to its latest on-disk data.
+        """Sync every prefab instance in *scene* to its published source.
 
         Called after scene load and after exiting Prefab Mode so that all
         prefab instances reflect the most recent prefab files.  When no
@@ -403,10 +403,11 @@ class ScenePrefabMixin:
         else:
             scenes = (scene,)
         if scenes:
-            self._sync_prefab_scenes(scenes)
+            self._published_prefab_sources.update(self._sync_prefab_scenes(scenes))
 
     def sync_prefab_dependents(self, source_guid):
         """Publish an external source revision into affected open worlds only."""
+        from infernux.engine.play_mode import PlayModeManager
         from infernux.engine.prefab_variant import dependent_variant_guids
         from infernux.engine.prefab_overrides import _loaded_prefab_scenes
         from infernux.lib import SceneManager
@@ -417,45 +418,70 @@ class ScenePrefabMixin:
         editing = SceneManager.instance().get_active_scene() if self.is_prefab_mode else None
         scenes = [scene for scene in _loaded_prefab_scenes() if scene is not editing
                   and any(obj.prefab_root and obj.prefab_guid in affected for obj in scene.get_all_objects())]
-        self._sync_prefab_scenes(scenes, affected_guids=affected)
+        play = PlayModeManager.instance()
+        pending = play._prefab_sources_during_play if play and (play.is_playing or play.is_restoring) else None
+        sources = self._sync_prefab_scenes(scenes, affected_guids=affected, retain_sources=True)
+        self._published_prefab_sources.update(sources)
+        if pending is not None:
+            pending.update(sources)
 
-    def _sync_prefab_scenes(self, scenes, *, affected_guids=None):
+    def sync_restored_prefab_instance(self, root):
+        """Catch up a restored link with sources accepted during its absence."""
+        if root.prefab_guid in self._published_prefab_sources:
+            self._sync_prefab_roots([(root.scene, (root,))], self.resolve_published_prefabs)
+
+    def resolve_published_prefabs(self, document):
+        """Rebase a history snapshot against accepted assets, without disk reads."""
         from infernux.lib import GameObject
-        from infernux.engine.component_restore import (
-            serialize_game_object_document_authoritatively,
-            preflight_game_object_python_components,
-        )
-        from infernux.engine.prefab_manager import _read_resolved_prefab_document, PrefabDocumentError
-        from infernux.engine.prefab_overrides import (
-            resolve_scene_prefab_documents, _publish_applied_prefab,
+        from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+
+        sources = self._published_prefab_sources
+        if not sources:
+            return document
+        return resolve_scene_prefab_documents(
+            document, lambda guid: sources[guid]["root_object"], reserve_ids=GameObject._reserve_document_ids,
+            affected_guids=sources.keys(), follow_nested_sources=False,
         )
 
-        sources = {}
+    def _sync_prefab_scenes(self, scenes, *, affected_guids=None, source_documents=None, retain_sources=False):
+        from infernux.lib import GameObject
+        from infernux.engine.prefab_manager import _prefab_source_loader
+        from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
 
-        def load_source(guid):
-            if guid not in sources:
-                path = self._asset_database.get_path_from_guid(guid)
-                if not path:
-                    raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
-                sources[guid] = _read_resolved_prefab_document(path, self._asset_database)["root_object"]
-            return sources[guid]
+        sources = dict(source_documents or {})
+        load = _prefab_source_loader(
+            self._asset_database, sources, self._published_prefab_sources,
+            refresh=affected_guids or (),
+        )
+
+        if retain_sources:
+            # Keep accepted sources even when no instance is currently linked.
+            for guid in affected_guids:
+                load(guid)
+
+        def resolve(document):
+            return resolve_scene_prefab_documents(
+                document, lambda guid: load(guid)["root_object"], reserve_ids=GameObject._reserve_document_ids,
+                affected_guids=affected_guids,
+            )
+
+        self._sync_prefab_roots(((scene, _get_scene_root_objects(scene)) for scene in scenes), resolve)
+        return sources
+
+    def _sync_prefab_roots(self, root_batches, resolve):
+        from infernux.engine.component_restore import serialize_game_object_document_authoritatively
+        from infernux.engine.prefab_overrides import _prepare_prefab_instance_update, _publish_applied_prefab
 
         prepared_updates, originals, changed_worlds = [], [], []
         try:
-            for scene in scenes:
-                roots = _get_scene_root_objects(scene)
+            for scene, roots in root_batches:
                 before = {"objects": [serialize_game_object_document_authoritatively(root) for root in roots]}
-                after = resolve_scene_prefab_documents(
-                    before, load_source, reserve_ids=GameObject._reserve_document_ids, affected_guids=affected_guids,
-                )
+                after = resolve(before)
                 for obj, old, new in zip(roots, before["objects"], after["objects"]):
                     if old == new:
                         continue
-                    prepared = preflight_game_object_python_components(
-                        new, self._asset_database, preserve_document_ids=True, reference_scene=scene,
-                        prefer_loaded_types=True,
-                    )
-                    originals.append((obj, old, scene))
+                    prepared = _prepare_prefab_instance_update(obj, old, new, self._asset_database)
+                    originals.append((obj, old))
                     prepared_updates.append((obj, new, prepared))
                     changed_worlds.append(scene.world_id)
         except Exception:
@@ -465,11 +491,12 @@ class ScenePrefabMixin:
         if not _publish_applied_prefab(prepared_updates):
             rollback = []
             try:
-                for obj, old, scene in originals:
-                    rollback.append((obj, old, preflight_game_object_python_components(
-                        old, self._asset_database, preserve_document_ids=True, reference_scene=scene,
-                        prefer_loaded_types=True,
-                    )))
+                for obj, old in originals:
+                    current = serialize_game_object_document_authoritatively(obj)
+                    if current != old:
+                        rollback.append((obj, old, _prepare_prefab_instance_update(
+                            obj, current, old, self._asset_database,
+                        )))
             except Exception:
                 for _obj, _document, prepared in rollback:
                     prepared.discard()

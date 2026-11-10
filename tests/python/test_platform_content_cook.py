@@ -81,7 +81,7 @@ def test_platform_cook_consumes_editor_catalog_snapshot_without_rescanning(monke
         def __init__(self, *_args, **_kwargs):
             captured["builder_kwargs"] = dict(_kwargs)
 
-        def freeze_asset_index_entries(self, entries):
+        def freeze_asset_index_entries(self, entries, *, runtime_type_records):
             captured["entries"] = entries
 
         def cook_platform_content(self, package_root, **_kwargs):
@@ -136,13 +136,13 @@ def test_platform_cook_releases_headless_catalog_host_before_builder(monkeypatch
 
     def publish(_root):
         lifecycle.append("publish")
-        return {"entries": [{"guid": "b" * 32}]}
+        return {"entries": [{"guid": "b" * 32}], "runtime_type_records": []}
 
     class _Builder:
         def __init__(self, *_args, **_kwargs):
             lifecycle.append("builder")
 
-        def freeze_asset_index_entries(self, entries):
+        def freeze_asset_index_entries(self, entries, *, runtime_type_records):
             assert entries == [{"guid": "b" * 32}]
 
         def cook_platform_content(self, package_root, **_kwargs):
@@ -219,7 +219,7 @@ def test_host_player_uses_the_shared_authoritative_build_settings(monkeypatch, t
             observed["output_dir"] = output_dir
             observed.update(kwargs)
 
-        def freeze_asset_index_entries(self, entries):
+        def freeze_asset_index_entries(self, entries, *, runtime_type_records):
             observed["entries"] = entries
 
         def _validate_output_directory(self):

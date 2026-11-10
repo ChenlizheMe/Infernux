@@ -16,6 +16,9 @@ from infernux.renderstack.effect_stage import EffectScope, EffectStage
 from infernux.renderstack.pass_result import PassResult
 from infernux.core.render_texture import RenderTexture
 from .renderer_selection import RendererSelection
+from infernux.compute import Buffer, Work
+from infernux.engine.cpu_continuation import CpuRequest
+from infernux.execution import ResultConsumer
 
 Format = PixelFormat
 
@@ -25,7 +28,6 @@ class TextureHandle:
 
     name: str
     format: Format
-    is_camera_target: bool
     size: Optional[Tuple[int, int]]
     size_divisor: int
     samples: int
@@ -43,6 +45,10 @@ class TextureHandle:
         samples: int = ...,
     ) -> None: ...
     @property
+    def is_camera_target(self) -> bool:
+        """Whether this resource uses a camera attachment."""
+        ...
+    @property
     def is_depth(self) -> bool:
         """Returns True if this texture uses a depth format."""
         ...
@@ -51,11 +57,20 @@ class TextureHandle:
     def __hash__(self) -> int: ...
 
 
+class BufferInput:
+    """An imported read-only buffer slot that captures each published GPU value."""
+
+    def __init__(self, initial: Buffer) -> None: ...
+    def publish(self, value: Buffer) -> None: ...
+    def require(self, request: CpuRequest) -> ResultConsumer: ...
+
+
 class BufferHandle:
     """A handle to a buffer resource in the render graph."""
 
     name: str
     byte_size: int
+    byte_offset: int
     usage: int
     view_light_list: bool
 
@@ -70,6 +85,14 @@ class BufferHandle:
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
+
+
+class WorkBinding:
+    """Graph-local ports; private storage belongs to each rendering view."""
+
+    name: str
+    def input(self, name: str) -> BufferHandle: ...
+    def output(self, name: str) -> BufferHandle: ...
 
 
 class RenderPassBuilder:
@@ -95,7 +118,7 @@ class RenderPassBuilder:
     def read_buffer(
         self, buffer: str | BufferHandle, usage: str = ...
     ) -> RenderPassBuilder:
-        """Declare a storage, indirect, or transfer buffer read."""
+        """Declare a storage, uniform, indirect, or transfer buffer read."""
         ...
     def write_buffer(
         self, buffer: str | BufferHandle, usage: str = ...
@@ -105,11 +128,15 @@ class RenderPassBuilder:
     def set_side_effect(self, enabled: bool = ...) -> RenderPassBuilder:
         """Retain this pass for externally observable work."""
         ...
+    def emit_event(self, label: str, *, buffers: Mapping[str, str | BufferHandle] | None = ...,
+                   buffer: str | BufferHandle | None = ..., metadata: object = ...) -> RenderPassBuilder:
+        """Declare an event for each accepted execution of this pass."""
+        ...
     def set_texture(self, sampler_name: str, texture: str | TextureHandle) -> RenderPassBuilder:
         """Bind a texture to a sampler input for this pass."""
         ...
     def set_buffer(self, resource_name: str, buffer: str | BufferHandle) -> RenderPassBuilder:
-        """Bind a read-only graph buffer to a fullscreen BufferUInt resource."""
+        """Bind a read-only graph buffer to a fullscreen BufferFloat or BufferUInt resource."""
         ...
     def set_textures(self, bindings: Mapping[str, object]) -> RenderPassBuilder:
         """Bind multiple textures to sampler inputs for this pass."""
@@ -178,6 +205,19 @@ class RenderPassBuilder:
     def present(self, source: str | TextureHandle) -> RenderPassBuilder:
         """Export a graph texture from a present pass."""
         ...
+    def copy_texture_to_buffer(
+        self, source: str | TextureHandle, destination: str | BufferHandle,
+        *, size: Tuple[int, int], buffer_offset: int = 0,
+    ) -> RenderPassBuilder:
+        """Explicit GPU copy of a single-sample RGBA32F base-level rectangle."""
+        ...
+    def copy_buffer_to_texture(
+        self, source: str | BufferHandle, destination: str | TextureHandle,
+        *, buffer_offset: int = 0,
+    ) -> RenderPassBuilder:
+        """Fill a single-sample RGBA32F texture from packed buffer bytes."""
+        ...
+    def compute_work(self, binding: WorkBinding) -> RenderPassBuilder: ...
     def set_param(self, name: str, value: float) -> RenderPassBuilder:
         """Set a push-constant parameter for this pass."""
         ...
@@ -237,7 +277,7 @@ class RenderGraph:
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Get a texture handle by name, or None if not found."""
         ...
-    def import_texture(self, name: str, texture: RenderTexture | InxTexture, *, attachment: str = "color") -> TextureHandle:
+    def import_texture(self, name: str, texture: RenderTexture | InxTexture, *, attachment: str = "color", require_current_write: bool | None = None) -> TextureHandle:
         """Import a persistent target attachment or a GUID-backed sample-only Texture asset."""
         ...
     def create_temporal_history(self, name: str, *, format: Format = Format.RGBA16_SFLOAT,
@@ -267,8 +307,16 @@ class RenderGraph:
         """Declare a transient buffer resource in the render graph."""
         ...
     def create_view_light_list(self, name: str = "light_list") -> BufferHandle: ...
-    def import_buffer(self, name: str, buffer) -> BufferHandle:
-        """Import an open uint32 GPU inx.buffer into the render graph."""
+    def export_buffer(self, buffer: str | BufferHandle, *, shape=None, dtype=None) -> BufferHandle:
+        """Expose this execution's complete final buffer as a captured GPU value."""
+        ...
+    def bind_work(
+        self, name: str, work: Work, *, inputs: Optional[Mapping[str, BufferHandle]] = ...,
+    ) -> WorkBinding:
+        """Bind a common recipe without executing it or publishing ready data."""
+        ...
+    def import_buffer(self, name: str, buffer: Buffer | BufferInput) -> BufferHandle:
+        """Import an accepted scalar f32/u32 GPU Buffer view; device alignment applies."""
         ...
     def get_buffer(self, name: str) -> Optional[BufferHandle]:
         """Get a buffer handle by name, or None if not found."""
@@ -334,6 +382,7 @@ class RenderGraph:
     def add_copy_pass(self, name: str) -> RenderPassBuilder:
         """Add a transfer-domain texture or buffer copy pass."""
         ...
+    def add_compute_pass(self, name: str) -> RenderPassBuilder: ...
     def add_present_pass(self, name: str) -> RenderPassBuilder:
         """Add a final graph export pass."""
         ...

@@ -1,10 +1,13 @@
 #include "SkinnedMeshRenderer.h"
 #include "ComponentFactory.h"
+#include "GameObject.h"
 #include "SceneManager.h"
+#include "SkeletonInstance.h"
 #include "Transform.h"
 
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMesh/InxMesh.h>
 
@@ -39,6 +42,20 @@ SemanticTypeDescriptor DescribeSkinnedMeshRenderer()
                             {"storage_kind", "native_property"},
                             {"default", ""},
                             {"tooltip", "Currently selected animation take name"}}});
+    type.fields.push_back(
+        {"SkinnedMeshRenderer.skeleton",
+         "FieldType.COMPONENT",
+         false,
+         {{"field_id", "skeleton"},
+          {"serialized_name", "skeleton_component_id"},
+          {"serialized", true},
+          {"document_required", false},
+          {"hidden", false},
+          {"nullable", true},
+          {"storage_kind", "native_property"},
+          {"component_type", "SkeletonInstance"},
+          {"default", nullptr},
+          {"tooltip", "Owning skeleton; unassigned renderers bind to their character hierarchy automatically"}}});
     return type;
 }
 
@@ -68,6 +85,19 @@ const std::vector<SubMesh> &EmptySubMeshes()
     return empty;
 }
 
+std::string MapSkinNodes(const InxSkinnedMesh &skin, const InxSkinnedMesh &skeleton, std::vector<size_t> &nodes)
+{
+    nodes.reserve(skin.skeleton.bones.size());
+    for (const auto &bone : skin.skeleton.bones) {
+        const auto &name = skin.skeleton.nodes.at(bone.nodeIndex).name;
+        const auto found = skeleton.skeleton.nodeByName.find(name);
+        if (found == skeleton.skeleton.nodeByName.end())
+            return "Skin node is absent from the owning skeleton: " + name;
+        nodes.push_back(found->second);
+    }
+    return {};
+}
+
 void TransformBounds(const glm::mat4 &matrix, const glm::vec3 &localMin, const glm::vec3 &localMax, glm::vec3 &outMin,
                      glm::vec3 &outMax)
 {
@@ -88,8 +118,172 @@ void TransformBounds(const glm::mat4 &matrix, const glm::vec3 &localMin, const g
 }
 } // namespace
 
+SkinnedMeshRenderer::~SkinnedMeshRenderer()
+{
+    if (m_skeleton)
+        m_skeleton->DetachRenderer(this);
+}
+
+void SkinnedMeshRenderer::OnHierarchyPublished()
+{
+    RefreshRuntimeSkinnedMesh(false);
+}
+
+void SkinnedMeshRenderer::Awake()
+{
+    RefreshRuntimeSkinnedMesh(false);
+}
+
+void SkinnedMeshRenderer::OnEnable()
+{
+    MeshRenderer::OnEnable();
+    RefreshRuntimeSkinnedMesh(false);
+}
+
+void SkinnedMeshRenderer::SetSkeletonInstance(SkeletonInstance *skeleton)
+{
+    if (skeleton && skeleton->GetModelSnapshot() && m_runtimeModel) {
+        std::vector<size_t> nodes;
+        const auto error = MapSkinNodes(*m_runtimeModel, *skeleton->GetModelSnapshot(), nodes);
+        if (!error.empty())
+            throw std::invalid_argument(error);
+    }
+    if (m_skeleton)
+        m_skeleton->DetachRenderer(this);
+    ForgetSkeleton(m_skeleton);
+    m_skeletonComponentId = skeleton ? skeleton->GetComponentID() : 0;
+    BindSkeleton();
+}
+
+void SkinnedMeshRenderer::ForgetSkeleton(SkeletonInstance *skeleton)
+{
+    if (m_skeleton != skeleton)
+        return;
+    m_skeleton = nullptr;
+    m_boundSkeletonModel.reset();
+    m_boundSkinModel.reset();
+    m_skinBoneNodes.clear();
+    m_skinPoseHistory.Reset();
+    SceneManager::Instance().NotifyMeshRendererChanged(this);
+}
+
+void SkinnedMeshRenderer::BindSkeleton()
+{
+    auto *owner = GetGameObject();
+    auto *scene = owner ? owner->GetScene() : nullptr;
+    if (!m_runtimeModel || !scene || scene->ResolveGameObject(owner->GetHandle()) != owner)
+        return;
+    SkeletonInstance *skeleton = nullptr;
+    if (m_skeletonComponentId) {
+        skeleton = dynamic_cast<SkeletonInstance *>(Component::FindByComponentId(m_skeletonComponentId));
+    } else {
+        for (auto *node = owner; node && !skeleton; node = node->GetParent())
+            skeleton = node->GetComponent<SkeletonInstance>();
+        if (!skeleton)
+            skeleton = owner->AddComponent<SkeletonInstance>();
+        if (skeleton->GetSourceModelGuid().empty())
+            skeleton->SetSourceModelGuid(GetSourceModelGuid());
+    }
+    if (skeleton == m_skeleton)
+        return;
+    if (m_skeleton) {
+        m_skeleton->DetachRenderer(this);
+        ForgetSkeleton(m_skeleton);
+    }
+    m_skeleton = skeleton;
+    if (skeleton) {
+        m_skeletonComponentId = skeleton->GetComponentID();
+        skeleton->AttachRenderer(this);
+    }
+}
+
+void SkinnedMeshRenderer::RemapComponentReferences(const std::unordered_map<uint64_t, uint64_t> &remap)
+{
+    if (const auto found = remap.find(m_skeletonComponentId); found != remap.end())
+        m_skeletonComponentId = found->second;
+}
+
+void SkinnedMeshRenderer::EnsureFinalPose() const
+{
+    if (m_skeleton)
+        m_skeleton->PublishRenderPoses();
+}
+
+void SkinnedMeshRenderer::RebuildBoneMapping() const
+{
+    const auto skeleton = m_skeleton ? m_skeleton->GetModelSnapshot() : nullptr;
+    if (skeleton == m_boundSkeletonModel && m_runtimeModel == m_boundSkinModel)
+        return;
+    std::vector<size_t> nodes;
+    m_skinBindingError = skeleton && m_runtimeModel ? MapSkinNodes(*m_runtimeModel, *skeleton, nodes) : std::string{};
+    m_skinBoneNodes = std::move(nodes);
+    m_boundSkeletonModel = skeleton;
+    m_boundSkinModel = m_runtimeModel;
+    m_boneMappingChanged = true;
+}
+
+std::vector<Transform *> SkinnedMeshRenderer::GetBones() const
+{
+    RebuildBoneMapping();
+    if (!m_skinBindingError.empty())
+        throw std::invalid_argument(m_skinBindingError);
+    std::vector<Transform *> result;
+    if (m_skeleton) {
+        const auto bones = m_skeleton->GetBones();
+        for (auto node : m_skinBoneNodes)
+            result.push_back(bones.at(node));
+    }
+    return result;
+}
+
+glm::mat4 SkinnedMeshRenderer::ResolveRenderWorldMatrix(const glm::mat4 &) const
+{
+    return m_skeleton ? m_skeleton->GetTransform()->GetWorldMatrix() : glm::mat4(1);
+}
+
+glm::mat4 SkinnedMeshRenderer::ResolveBoundsWorldMatrix(const glm::mat4 &objectWorldMatrix) const
+{
+    return ResolveRenderWorldMatrix(objectWorldMatrix);
+}
+
+glm::mat4 SkinnedMeshRenderer::ResolveSubmeshWorldMatrix(const glm::mat4 &rendererWorldMatrix) const
+{
+    return rendererWorldMatrix;
+}
+
+void SkinnedMeshRenderer::PublishSkeletonPalette(const std::vector<glm::mat4> &matrices)
+{
+    RebuildBoneMapping();
+    const bool resetHistory = m_boneMappingChanged || !m_skinPoseHistory.Acquire()->IsValid();
+    if (!m_skinBindingError.empty() || !m_boundSkeletonModel || !m_runtimeModel) {
+        m_skinPoseHistory.Reset();
+        SceneManager::Instance().NotifyMeshRendererChanged(this);
+        return;
+    }
+    auto palette = std::make_shared<std::vector<glm::mat4>>();
+    palette->reserve(m_skinBoneNodes.size());
+    const auto scale = glm::scale(glm::mat4(1), glm::vec3(m_runtimeModel->scaleFactor));
+    for (size_t index = 0; index < m_skinBoneNodes.size(); ++index)
+        palette->push_back(matrices.at(m_skinBoneNodes[index]) * scale *
+                           m_runtimeModel->skeleton.bones[index].inverseBind);
+    m_skinPoseHistory.Publish(std::move(palette), resetHistory);
+    m_boneMappingChanged = false;
+    auto &manager = SceneManager::Instance();
+    manager.QueueSkinPoseHistoryCommit(this);
+    manager.NotifyMeshRendererGeometryChanged(this);
+    if (resetHistory)
+        manager.NotifyMeshRendererChanged(this);
+}
+
+void SkinnedMeshRenderer::InvalidateSkeletonPose()
+{
+    m_skinPoseHistory.Reset();
+    SceneManager::Instance().NotifyMeshRendererChanged(this);
+}
+
 bool SkinnedMeshRenderer::HasRuntimeSkinnedMesh() const
 {
+    EnsureFinalPose();
     const auto pose = m_skinPoseHistory.Acquire();
     return m_runtimeModel && m_runtimeModel->IsValid() && pose && pose->IsValid();
 }
@@ -111,39 +305,35 @@ const std::vector<SubMesh> &SkinnedMeshRenderer::GetRuntimeSkinnedSubMeshes() co
 
 const std::vector<glm::mat4> &SkinnedMeshRenderer::GetRuntimeSkinBoneMatrices() const
 {
+    EnsureFinalPose();
     const auto palette = m_skinPoseHistory.Current();
     return palette ? *palette : EmptySkinPalette();
 }
 
 std::vector<std::string> SkinnedMeshRenderer::GetSkeletonNodeNames() const
 {
-    const auto model = GetRuntimeModelSnapshot();
-    if (!model)
-        throw std::logic_error("SkinnedMeshRenderer has no evaluated skeleton");
-    std::vector<std::string> names;
-    names.reserve(model->skeleton.nodes.size());
-    for (const auto &node : model->skeleton.nodes)
-        names.push_back(node.name);
-    return names;
+    return m_skeleton ? m_skeleton->GetBoneNames() : std::vector<std::string>{};
 }
 
 std::vector<glm::mat4>
 SkinnedMeshRenderer::GetSkeletonNodeWorldMatrices(const std::vector<std::string> &nodeNames) const
 {
-    const auto snapshot = GetRuntimeSkinPoseSnapshot();
-    const auto model = GetRuntimeModelSnapshot();
-    const auto *transform = GetTransform();
-    if (!model || !snapshot->IsValid() || !transform)
-        throw std::logic_error("SkinnedMeshRenderer requires an evaluated pose and an owning Transform");
-    glm::mat4 drawWorld = ResolveRenderWorldMatrix(transform->GetWorldMatrix());
-    if (GetSubmeshIndex() >= 0)
-        drawWorld *= glm::translate(glm::mat4(1.0f), GetMeshPivotOffset());
-    return model->GetSkeletonNodeWorldMatrices(*snapshot->evaluated, nodeNames, drawWorld);
+    if (!m_skeleton)
+        throw std::logic_error("SkinnedMeshRenderer has no owning skeleton");
+    std::vector<glm::mat4> matrices;
+    for (const auto &name : nodeNames) {
+        auto *bone = m_skeleton->GetBoneTransform(name);
+        if (!bone)
+            throw std::invalid_argument("Skeleton node was not found: " + name);
+        matrices.push_back(bone->GetWorldMatrix());
+    }
+    return matrices;
 }
 
 void SkinnedMeshRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const
 {
     const auto model = GetOrLoadRuntimeModel();
+    EnsureFinalPose();
     const auto palette = m_skinPoseHistory.Current();
     // Camera and world-transform changes reuse the same local deformation bounds.
     if (model != m_boundsModel || palette != m_boundsPalette || GetNodeGroup() != m_boundsNodeGroup ||
@@ -160,7 +350,7 @@ void SkinnedMeshRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::
         TransformBounds(worldMatrix, m_skinnedBoundsMin, m_skinnedBoundsMax, outMin, outMax);
         return;
     }
-    MeshRenderer::ComputeWorldBounds(worldMatrix, outMin, outMax);
+    outMin = outMax = glm::vec3(worldMatrix[3]);
 }
 
 void SkinnedMeshRenderer::SetSourceModelGuid(const std::string &guid)
@@ -168,7 +358,6 @@ void SkinnedMeshRenderer::SetSourceModelGuid(const std::string &guid)
     if (GetMeshAssetGuid() == guid && m_runtimeModel)
         return;
     if (guid.empty()) {
-        ClearRuntimeSkinnedMesh();
         ClearMeshAsset();
         return;
     }
@@ -177,20 +366,16 @@ void SkinnedMeshRenderer::SetSourceModelGuid(const std::string &guid)
         throw std::invalid_argument("SkinnedMeshRenderer could not load Mesh asset GUID: " + guid);
     if (!mesh->HasSkinnedData() || !mesh->GetSkinnedData()->IsValid())
         throw std::invalid_argument("SkinnedMeshRenderer requires a renderable Mesh asset with skin data: " + guid);
-    ClearRuntimeSkinnedMesh();
     SetMeshAsset(guid, mesh);
-    m_animationSourceModel.reset();
-    m_blendAnimationSourceModel.reset();
-    RefreshRuntimeSkinnedMesh();
 }
 
 std::shared_ptr<const InxSkinnedMesh>
 SkinnedMeshRenderer::LoadCompatibleAnimationSource(const std::string &guid, const std::string &takeName) const
 {
-    auto target = GetOrLoadRuntimeModel();
-    if (!target || !target->IsValid())
-        throw std::invalid_argument("SkinnedMeshRenderer has no renderable target skeleton");
-    if (guid.empty() || guid == GetSourceModelGuid())
+    auto target = m_skeleton ? m_skeleton->GetModelSnapshot() : GetOrLoadRuntimeModel();
+    if (!target || !target->skeleton.IsValid())
+        throw std::invalid_argument("SkinnedMeshRenderer has no target skeleton");
+    if (guid.empty() || guid == (m_skeleton ? m_skeleton->GetSourceModelGuid() : GetSourceModelGuid()))
         return target;
 
     auto mesh = AssetRegistry::Instance().LoadAsset<InxMesh>(guid, ResourceType::Mesh);
@@ -390,7 +575,64 @@ void SkinnedMeshRenderer::ReloadSourceModel()
     m_blendAnimationSourceModel.reset();
     m_poseStackAnimationSources.clear();
     m_skinPoseHistory.Reset();
-    RefreshRuntimeSkinnedMesh();
+    RefreshRuntimeSkinnedMesh(false);
+}
+
+void SkinnedMeshRenderer::OnMeshSourceChanged()
+{
+    // GUID-only assignments have no resolved AssetRef yet. Resolve through the
+    // same base publication path before binding this skin's immutable model.
+    if (HasMeshAsset())
+        MeshRenderer::OnMeshAssetEvent(GetSourceModelGuid(), AssetEvent::RuntimeModified);
+    ReloadSourceModel();
+}
+
+void SkinnedMeshRenderer::OnMeshAssetEvent(const std::string &guid, AssetEvent event)
+{
+    if (const auto target = m_skeleton ? m_skeleton->GetModelSnapshot() : nullptr)
+        target->InvalidatePoseCache();
+    if (guid == GetSourceModelGuid()) {
+        MeshRenderer::OnMeshAssetEvent(guid, event);
+        if (event == AssetEvent::Deleted) {
+            ClearRuntimeSkinnedMesh();
+            if (m_skeleton)
+                m_skeleton->MarkPoseDirty();
+        } else {
+            ReloadSourceModel();
+        }
+    } else if (ReferencesModelGuid(guid)) {
+        // Source publication changes future samples, not the current authored pose.
+        if (guid == m_animationSourceGuid)
+            m_animationSourceModel.reset();
+        if (guid == m_blendAnimationSourceGuid)
+            m_blendAnimationSourceModel.reset();
+        m_poseStackAnimationSources.clear();
+    }
+}
+
+void SkinnedMeshRenderer::UpdateAnimationDependencies()
+{
+    std::unordered_set<std::string> sources;
+    const auto add = [&](const std::string &guid) {
+        if (!guid.empty())
+            sources.insert(guid);
+    };
+    add(m_animationSourceGuid);
+    add(m_blendAnimationSourceGuid);
+    for (const auto &layer : m_poseStack)
+        add(layer.sourceModelGuid);
+    const auto &geometry = GetSourceModelGuid();
+    if (sources == m_animationDependencies && geometry == m_dependencyGeometryGuid)
+        return;
+    auto &graph = AssetDependencyGraph::Instance();
+    for (const auto &guid : m_animationDependencies)
+        if (!sources.count(guid) && guid != geometry)
+            graph.RemoveRuntimeDependency(GetInstanceGuid(), guid);
+    for (const auto &guid : sources)
+        if (guid != geometry)
+            graph.AddRuntimeDependency(GetInstanceGuid(), guid);
+    m_animationDependencies = std::move(sources);
+    m_dependencyGeometryGuid = geometry;
 }
 
 bool SkinnedMeshRenderer::ReferencesModelGuid(const std::string &guid) const
@@ -431,15 +673,27 @@ std::shared_ptr<const InxSkinnedMesh> SkinnedMeshRenderer::GetOrLoadRuntimeModel
     return m_runtimeModel;
 }
 
+std::shared_ptr<const InxSkinnedMesh> SkinnedMeshRenderer::GetAnimationSourceModel() const
+{
+    if (!m_runtimeModel)
+        return nullptr;
+    if (!m_animationSourceGuid.empty()) {
+        if (!m_animationSourceModel)
+            m_animationSourceModel = LoadCompatibleAnimationSource(m_animationSourceGuid);
+        return m_animationSourceModel;
+    }
+    return m_skeleton ? m_skeleton->GetModelSnapshot() : GetOrLoadRuntimeModel();
+}
+
 size_t SkinnedMeshRenderer::GetAnimationTakeCount() const
 {
-    const auto source = m_animationSourceModel ? m_animationSourceModel : GetOrLoadRuntimeModel();
+    const auto source = GetAnimationSourceModel();
     return source ? source->animations.size() : 0;
 }
 
 std::vector<std::string> SkinnedMeshRenderer::GetAnimationTakeNames() const
 {
-    const auto source = m_animationSourceModel ? m_animationSourceModel : GetOrLoadRuntimeModel();
+    const auto source = GetAnimationSourceModel();
     std::vector<std::string> names;
     if (source) {
         names.reserve(source->animations.size());
@@ -449,8 +703,9 @@ std::vector<std::string> SkinnedMeshRenderer::GetAnimationTakeNames() const
     return names;
 }
 
-void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
+void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh(bool evaluateAnimation)
 {
+    UpdateAnimationDependencies();
     if (!HasMeshAsset()) {
         ClearRuntimeSkinnedMesh();
         return;
@@ -470,6 +725,18 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
 
     const bool modelChanged = previousModel != model.get();
     m_runtimeModel = model;
+    if (modelChanged)
+        MarkMeshBufferDirty();
+    BindSkeleton();
+    if (!m_skeleton)
+        return; // Document staging only loads immutable geometry; publication binds the instance.
+    if (!evaluateAnimation) {
+        m_skeleton->MarkPoseDirty();
+        return;
+    }
+    const auto target = m_skeleton->GetModelSnapshot();
+    if (!target)
+        return;
     if (!m_animationSourceGuid.empty() && !m_animationSourceModel)
         m_animationSourceModel = LoadCompatibleAnimationSource(m_animationSourceGuid, m_activeTakeName);
     if (!m_blendAnimationSourceGuid.empty() && !m_blendAnimationSourceModel && !m_blendTakeName.empty())
@@ -480,16 +747,14 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
         for (const auto &layer : m_poseStack)
             m_poseStackAnimationSources.push_back(LoadCompatibleAnimationSource(layer.sourceModelGuid, layer.takeName));
     }
-    if (modelChanged)
-        MarkMeshBufferDirty();
-    const auto animationSource = m_animationSourceModel ? m_animationSourceModel : model;
+    const auto animationSource = m_animationSourceModel ? m_animationSourceModel : target;
 
     std::shared_ptr<const EvaluatedSkinPose> nextPose;
     if (m_usePoseStack) {
         // AnimationTree path: N-way weighted + additive + masked blend.
         // Not cached (the stack changes most frames); built fresh each refresh.
         nextPose = std::make_shared<const EvaluatedSkinPose>(
-            model->EvaluatePoseStack(m_poseStack, m_poseStackAnimationSources));
+            target->EvaluatePoseStack(m_poseStack, m_poseStackAnimationSources));
     } else {
         SkinnedSampleRequest request;
         request.takeName = m_activeTakeName;
@@ -498,13 +763,9 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
         request.blendTakeName = m_blendTakeName;
         request.blendTimeSeconds = m_blendAnimationTime;
         request.blendWeight = m_blendWeight;
-        nextPose = model->GetOrBuildEvaluatedPose(request, animationSource.get(), m_blendAnimationSourceModel.get());
+        nextPose = target->GetOrBuildEvaluatedPose(request, animationSource.get(), m_blendAnimationSourceModel.get());
     }
-    m_skinPoseHistory.Publish(std::move(nextPose), modelChanged);
-    SceneManager::Instance().QueueSkinPoseHistoryCommit(this);
-    // Deformation changes world bounds even when the object transform stays
-    // fixed. Invalidate both coarse groups and per-camera visibility caches.
-    SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
+    m_skeleton->ApplySampledPose(*nextPose);
     if (modelChanged)
         SceneManager::Instance().NotifyMeshRendererChanged(this);
 }
@@ -520,6 +781,8 @@ nlohmann::json SkinnedMeshRenderer::SerializeDocument() const
     json j = MeshRenderer::SerializeDocument();
     if (!m_activeTakeName.empty())
         j["activeTakeName"] = m_activeTakeName;
+    if (m_skeletonComponentId)
+        j["skeleton_component_id"] = m_skeletonComponentId;
     return j;
 }
 
@@ -528,18 +791,10 @@ void SkinnedMeshRenderer::ValidateSerializedDocument(const nlohmann::json &docum
     ValidateSerializedDocumentForType(document, "SkinnedMeshRenderer");
 }
 
-bool SkinnedMeshRenderer::DeserializeDocument(const nlohmann::json &j)
+void SkinnedMeshRenderer::ApplyRendererDocumentFields(const nlohmann::json &j)
 {
-    if (!MeshRenderer::DeserializeDocument(j))
-        return false;
-
-    try {
-        m_activeTakeName = j.value("activeTakeName", std::string());
-        RefreshRuntimeSkinnedMesh();
-        return true;
-    } catch (...) {
-        return false;
-    }
+    m_activeTakeName = j.value("activeTakeName", std::string());
+    m_skeletonComponentId = j.value("skeleton_component_id", uint64_t{0});
 }
 
 std::unique_ptr<Component> SkinnedMeshRenderer::Clone() const
@@ -549,6 +804,7 @@ std::unique_ptr<Component> SkinnedMeshRenderer::Clone() const
     document.erase("component_id");
     if (!clone->DeserializeDocument(document))
         throw std::runtime_error("SkinnedMeshRenderer clone could not restore its authored state");
+    CopyMaterialBindingsTo(*clone);
     return clone;
 }
 

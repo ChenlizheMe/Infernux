@@ -4,6 +4,7 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <iostream>
@@ -20,6 +21,7 @@ namespace
 class TestDevice final : public Device
 {
   public:
+    DeviceId GetDeviceId() const noexcept override { return 1; }
     DeviceCaps caps;
     std::shared_ptr<DeviceLifetime> lifetime = std::make_shared<DeviceLifetime>();
     std::set<uint32_t> live;
@@ -135,34 +137,81 @@ class TestDevice final : public Device
     }
 };
 
-// Ownership test only: no GPU commands are executed. Vulkan tests cover data
-// correctness; this queue records which service survives the host wrapper.
+// Record through the real batch metadata path; encoders below execute no GPU
+// math. Vulkan tests cover values; this fixture covers ownership and admission.
+class TestRecordingContext final : public ComputeRecordingContext
+{
+  public:
+    ComputeCommandEncoder Compute() override
+    {
+        static const ComputeCommandEncoder::DispatchTable table{
+            [](void *, ComputePipelineHandle) {},
+            [](void *, ComputePipelineHandle, uint32_t, BindGroupHandle) {},
+            [](void *, ComputePipelineHandle, uint32_t, const void *) {},
+            [](void *, uint32_t, uint32_t, uint32_t) {},
+            [](void *, BufferHandle, uint64_t) {},
+            [](void *, ComputePipelineHandle, BindGroupHandle) { return true; }};
+        return {this, &table};
+    }
+    TransferCommandEncoder Transfer() override
+    {
+        static const TransferCommandEncoder::DispatchTable table{
+            [](void *, BufferHandle, BufferHandle, const BufferCopyRegion &) {},
+            nullptr, nullptr, nullptr,
+            [](void *, BufferHandle, uint64_t, const void *, uint64_t) { return true; }, nullptr};
+        return {this, &table};
+    }
+    void PipelineBarrier(PipelineStage, Access, PipelineStage, Access) override {}
+    void Require(SubmissionTicket) override {}
+};
+
 class TestQueue final : public ComputeQueue
 {
   public:
     uint64_t submissions = 0;
     uint64_t waits = 0;
+    uint64_t completed = 0;
     bool complete = true;
-    std::map<uint64_t, std::shared_ptr<void>> retained;
-    SubmissionTicket Submit(const Recorder &, std::shared_ptr<void> resources = {}) override
+    std::map<uint64_t, ComputeSubmissionResources> retained;
+    ~TestQueue() override
     {
+        complete = true;
+        Collect();
+    }
+    SubmissionTicket Submit(const Recorder &record, ComputeSubmissionResources resources = {}) override
+    {
+        TestRecordingContext context;
+        assert(record(context));
         retained.emplace(submissions + 1, std::move(resources));
         return {1, QueueRole::Compute, ++submissions};
+    }
+    std::optional<SubmissionTicket> TrySubmit(const Recorder &record, const ComputeSubmissionResources &resources = {},
+                                              const Admission &admit = {}) override
+    {
+        if (admit && !admit())
+            return std::nullopt;
+        return Submit(record, resources);
     }
     void Wait(SubmissionTicket ticket) override
     {
         assert(ticket.IsValid());
+        if (ticket.serial <= completed)
+            return;
         ++waits;
-        retained.erase(retained.begin(), retained.upper_bound(ticket.serial));
+        CompleteThrough(ticket.serial);
     }
-    bool IsComplete(SubmissionTicket) override
+    bool IsComplete(SubmissionTicket ticket) override
     {
-        return complete;
+        assert(ticket.IsValid());
+        if (!complete && ticket.serial > completed)
+            return false;
+        CompleteThrough(ticket.serial);
+        return true;
     }
     void Collect() override
     {
         if (complete)
-            retained.clear();
+            CompleteThrough(submissions);
     }
     bool SetProfilingEnabled(bool) override
     {
@@ -174,9 +223,31 @@ class TestQueue final : public ComputeQueue
     }
     uint64_t GetPendingSubmissionCount() const noexcept override
     {
-        return 0;
+        return retained.size();
+    }
+    uint64_t GetRetainedUploadBytes() const noexcept override { return 0; }
+
+  private:
+    void CompleteThrough(uint64_t serial)
+    {
+        completed = (std::max)(completed, serial);
+        while (!retained.empty() && retained.begin()->first <= completed) {
+            auto owner = std::move(retained.begin()->second);
+            retained.erase(retained.begin());
+            if (owner.receipt)
+                owner.receipt->complete = true;
+        }
     }
 };
+
+std::shared_ptr<ComputeReadback> SubmitReadback(const std::shared_ptr<ComputeBuffer> &source, uint64_t offset,
+                                               uint64_t byteSize)
+{
+    auto batch = PrepareComputeBatch(source->GetHost(), {}, {}, {{source, offset, byteSize}});
+    auto result = batch->Readback(0);
+    (void)batch->Submit();
+    return result;
+}
 
 bool VerifyDispatchLimits()
 {
@@ -225,6 +296,7 @@ bool VerifyDispatchLimits()
                     rejected = true;
                 }
             }
+            queue.Collect();
             const bool correct = rejected == !scenario.valid && queue.submissions == (scenario.valid ? 1u : 0u) &&
                                  device.live.empty();
             if (correct)
@@ -253,8 +325,7 @@ int main()
     auto buffer = std::make_shared<ComputeBuffer>(*wrapper, ComputeBufferDesc{4});
     const uint32_t spirv[] = {0x07230203u, 0, 0, 0, 0};
     auto kernel = std::make_shared<ComputeKernel>(*wrapper, spirv, 5, 1, 0);
-    auto readback = buffer->GetDataAsync(0, 4);
-    buffer->AttachUpload({1, QueueRole::Compute, 1});
+    auto readback = SubmitReadback(buffer, 0, 4);
 
     // Replace the complete host object at the same address. This deterministically
     // catches borrowing the wrapper instead of its services, without a UAF in the test.
@@ -266,7 +337,10 @@ int main()
 
     // Different wrappers for the same device/queue are the same compute host.
     ComputeHost otherWrapper(device, originalQueue);
-    auto otherReadback = std::make_shared<ComputeReadback>(otherWrapper, buffer, 0, 4);
+    auto otherPrepared = PrepareComputeBatch(otherWrapper, {}, {}, {{buffer, 0, 4}});
+    auto otherReadback = otherPrepared->Readback(0);
+    (void)otherPrepared->Submit();
+    otherPrepared.reset();
     auto bytes = ReadComputeBatch(otherWrapper, {{buffer, 0, 4}});
     assert(bytes.size() == 1 && bytes.front().size() == 4);
     ComputeDispatchDesc dispatch;
@@ -300,8 +374,8 @@ int main()
     pendingQueue.complete = false;
     ComputeHost pendingHost(device, pendingQueue);
     auto pendingSource = std::make_shared<ComputeBuffer>(pendingHost, ComputeBufferDesc{4});
-    auto pendingRead = pendingSource->GetDataAsync(0, 4);
-    std::weak_ptr<ComputeBuffer> sourceLifetime = pendingSource;
+    auto pendingRead = SubmitReadback(pendingSource, 0, 4);
+    std::weak_ptr<ComputeBufferAllocation> sourceLifetime = pendingSource->GetAllocation();
     pendingSource.reset();
     pendingRead.reset();
     assert(pendingQueue.waits == 0);
@@ -316,22 +390,22 @@ int main()
     TestQueue reuseQueue;
     ComputeHost reuseHost(device, reuseQueue);
     auto reuseSource = std::make_shared<ComputeBuffer>(reuseHost, ComputeBufferDesc{4});
-    auto first = reuseSource->GetDataAsync(0, 16);
+    auto first = SubmitReadback(reuseSource, 0, 16);
     first->Wait();
     first.reset();
-    assert(reuseQueue.GetStatistics().stagingAllocationCount == 1);
-    auto smaller = reuseSource->GetDataAsync(4, 8);
+    assert(device.live.size() == 1 && reuseQueue.GetStatistics().stagingAllocationCount == 1);
+    auto smaller = SubmitReadback(reuseSource, 4, 8);
     smaller->Wait();
-    assert(reuseQueue.GetStatistics().stagingAllocationCount == 1);
+    assert(device.live.size() == 2 && reuseQueue.GetStatistics().stagingAllocationCount == 2);
     const auto waits = reuseQueue.waits;
     // Completion alone is insufficient: the caller still owns this snapshot.
-    auto concurrent = reuseSource->GetDataAsync(0, 16);
-    assert(reuseQueue.GetStatistics().stagingAllocationCount == 2);
+    auto concurrent = SubmitReadback(reuseSource, 0, 16);
+    assert(device.live.size() == 3 && reuseQueue.GetStatistics().stagingAllocationCount == 3);
     assert(reuseQueue.waits == waits);
     concurrent->Wait();
     smaller.reset();
     concurrent.reset();
-    assert(device.live.size() == 2); // Source plus one cached staging allocation.
+    assert(device.live.size() == 1); // Only the source remains after both snapshots are released.
     reuseSource.reset();
     assert(device.live.empty());
 }

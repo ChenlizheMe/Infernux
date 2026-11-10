@@ -322,6 +322,11 @@ class EditorAutomationHost:
         result["editor_ui"] = {name: frame[name] for name in (
             "gui_frame", "gui_frame_consume_count", "gui_frame_approved_count",
             "gui_frame_forced_count", "gui_frame_request_count", "ui_panel_times_ms",
+            "ui_panel_sub_times_ms",
+        )}
+        result["renderer"] = {name: frame[name] for name in (
+            "frame", "scene_view_visible", "scene_target_width", "scene_target_height",
+            "game_target_width", "game_target_height", "scene_draw_call_count", "game_draw_call_count",
         )}
         result["resources"] = {
             "resident_mesh_vertex_buffers": int(native.resident_mesh_vertex_buffer_count),
@@ -1389,6 +1394,7 @@ class EditorAutomationHost:
             request = replace(
                 request,
                 asset_catalog_entries=tuple(catalog["entries"]),
+                runtime_type_records=tuple(catalog["runtime_type_records"]),
             )
             result = service.execute(request, plan)
         except BuildUnavailableError as exc:

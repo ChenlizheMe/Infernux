@@ -76,7 +76,7 @@ def test_failed_particle_texture_recovers_without_recreating_emitter(engine, sce
     install_runtime_service("gpu-particles", engine)
     failures, colors, initial_errors = [], [], []
     resident_id = None
-    frame, ticket, upload_baseline, publication_frame = 0, None, None, None
+    ticket, upload_baseline, publication_execution = None, None, None
     deadline = time.monotonic() + 20.0
     try:
         engine.set_render_pipeline(pipeline)
@@ -92,19 +92,19 @@ def test_failed_particle_texture_recovers_without_recreating_emitter(engine, sce
             component.update(1. / 120.)
 
         def after_draw():
-            nonlocal frame, ticket, resident_id, upload_baseline, publication_frame
+            nonlocal ticket, resident_id, upload_baseline, publication_execution
             try:
-                frame += 1
                 assert time.monotonic() < deadline, colors
                 AssetManager.flush_pending_gpu_texture_reloads()
-                if (
-                    upload_baseline is not None
-                    and publication_frame is None
-                    and engine.completed_texture_gpu_upload_count > upload_baseline
-                ):
-                    publication_frame = frame
-                texture_rendered = publication_frame is not None and frame > publication_frame
-                if ticket is None and (not colors or texture_rendered):
+                texture_rendered = False
+                if upload_baseline is not None and engine.completed_texture_gpu_upload_count > upload_baseline:
+                    execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                    if publication_execution is None:
+                        publication_execution = execution
+                    texture_rendered = execution > publication_execution
+                # Deferred host frames also invoke this callback. Read the
+                # current target only after this world has published a Game image.
+                if ticket is None and engine.game_presentation_ready and (not colors or texture_rendered):
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy()

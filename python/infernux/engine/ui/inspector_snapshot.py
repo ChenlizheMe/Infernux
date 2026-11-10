@@ -712,12 +712,6 @@ def invalidate_rebuilt_scene() -> int:
 
     bump_component_structure_version()
     try:
-        from infernux.components.builtin_component import BuiltinComponent
-
-        BuiltinComponent._clear_cache()
-    except ImportError:
-        pass
-    try:
         from infernux.engine.ui.inspector_components import clear_component_value_cache
 
         clear_component_value_cache()

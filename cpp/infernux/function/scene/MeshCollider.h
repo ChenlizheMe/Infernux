@@ -8,10 +8,14 @@
 #include "Collider.h"
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 
 namespace infernux
 {
+
+struct CookedGeometry;
+struct MeshCookingResult;
 
 class MeshCollider : public Collider
 {
@@ -42,7 +46,7 @@ class MeshCollider : public Collider
         return m_cookingPending;
     }
 
-    [[nodiscard]] void *CreateJoltShapeRaw() const override;
+    [[nodiscard]] JPH::RefConst<JPH::Shape> CreateJoltShape() const override;
 
     static void ClearCookingCache();
     [[nodiscard]] static std::pair<size_t, size_t> GetCookingCacheStats();
@@ -63,38 +67,22 @@ class MeshCollider : public Collider
 
     void AutoFitToMesh() override;
 
-    /// Convex hull positions (local space) cached after shape creation.
-    const std::vector<glm::vec3> &GetConvexHullPositions() const
-    {
-        return m_convexHullPositions;
-    }
-    /// Convex hull edge pairs [a0,b0, a1,b1, …] cached after shape creation.
-    const std::vector<uint32_t> &GetConvexHullEdges() const
-    {
-        return m_convexHullEdges;
-    }
-
-    /// Current cooked collision triangles in unscaled GameObject-local space.
-    /// The topology is replaced atomically only after cooking succeeds, so GPU
-    /// consumers can retain the previous revision while a replacement cooks.
-    const std::vector<glm::vec3> &GetCollisionPositions() const
-    {
-        return m_collisionPositions;
-    }
-    const std::vector<uint32_t> &GetCollisionIndices() const
-    {
-        return m_collisionIndices;
-    }
+    /// Local-space debug hull from the mesh committed to the physics body.
+    [[nodiscard]] const std::vector<glm::vec3> &GetConvexHullPositions() const;
+    [[nodiscard]] const std::vector<uint32_t> &GetConvexHullEdges() const;
     [[nodiscard]] uint64_t GetCollisionGeometryRevision() const
     {
         return m_collisionGeometryRevision;
     }
 
   private:
+    friend class PhysicsWorld;
+
     void CaptureMeshGeometry() const;
     bool CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const;
-    void CompleteCooking(uint64_t hashA, uint64_t hashB, size_t vertexCount, size_t indexCount, bool convex,
-                         uint64_t revision, const std::string &error);
+    void CompleteCooking(std::shared_ptr<const MeshCookingResult> result, uint64_t revision);
+    void PublishCookedGeometry();
+    void RequestShapeUpdate();
     void InvalidatePendingCooking() const;
 
     bool m_convex = false;
@@ -102,11 +90,8 @@ class MeshCollider : public Collider
     mutable bool m_hasGeometrySnapshot = false;
     mutable std::vector<glm::vec3> m_sourceVertices;
     mutable std::vector<uint32_t> m_sourceIndices;
-    mutable std::vector<glm::vec3> m_convexHullPositions;
-    mutable std::vector<uint32_t> m_convexHullEdges;
-    mutable std::vector<glm::vec3> m_collisionPositions;
-    mutable std::vector<uint32_t> m_collisionIndices;
-    mutable uint64_t m_collisionGeometryRevision = 0;
+    std::shared_ptr<const CookedGeometry> m_publishedGeometry;
+    uint64_t m_collisionGeometryRevision = 0;
     mutable std::string m_shapeError;
     mutable uint64_t m_cookingRevision = 0;
     mutable uint64_t m_pendingHashA = 0;
@@ -115,6 +100,9 @@ class MeshCollider : public Collider
     mutable size_t m_pendingIndexCount = 0;
     mutable bool m_pendingConvex = false;
     mutable bool m_cookingPending = false;
+    // Consumer ownership is independent of reusable cache eviction. A compound
+    // can defer publication after this child has already finished cooking.
+    mutable std::shared_ptr<const MeshCookingResult> m_cookingResult;
 };
 
 } // namespace infernux

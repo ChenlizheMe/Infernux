@@ -44,6 +44,8 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include "VkTypes.h"
 #include "VulkanRhiDevice.h"
 #include <array>
@@ -142,17 +144,6 @@ struct TextureDesc
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     bool isTransient = true; // Graph-owned transient usage; storage remains independent.
-};
-
-/**
- * @brief Description of a virtual buffer resource
- */
-struct BufferDesc
-{
-    std::string name;
-    VkDeviceSize size = 0;
-    VkBufferUsageFlags usage = 0;
-    bool isTransient = true;
 };
 
 // ============================================================================
@@ -315,10 +306,10 @@ class RenderContext
     }
 
     /// @brief Set viewport for rendering
-    void SetViewport(const VkViewport &viewport);
+    INFERNUX_VULKAN_BACKEND_API void SetViewport(const VkViewport &viewport);
 
     /// @brief Set scissor rect
-    void SetScissor(const VkRect2D &scissor);
+    INFERNUX_VULKAN_BACKEND_API void SetScissor(const VkRect2D &scissor);
 
     /// @brief Bind a graphics pipeline
     void BindPipeline(VkPipeline pipeline);
@@ -336,8 +327,8 @@ class RenderContext
     /// @brief Get resolved texture for a resource handle
     [[nodiscard]] VkImageView GetTexture(ResourceHandle handle) const;
     /// Backend-neutral texture view used by RHI draw paths.
-    [[nodiscard]] rhi::TextureViewHandle GetTextureView(ResourceHandle handle) const;
-    [[nodiscard]] rhi::TextureHandle GetTextureHandle(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureViewHandle GetTextureView(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureHandle GetTextureHandle(ResourceHandle handle) const;
 
     [[nodiscard]] rhi::GraphicsCommandEncoder &GetGraphicsCommandEncoder()
     {
@@ -355,21 +346,22 @@ class RenderContext
     }
 
     /// @brief Get resolved buffer for a resource handle
-    [[nodiscard]] VkBuffer GetBuffer(ResourceHandle handle) const;
-    [[nodiscard]] rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
-    [[nodiscard]] const RendererList *GetRendererList(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkBuffer GetBuffer(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API const RendererList *GetRendererList(ResourceHandle handle) const;
 
 #if INFERNUX_FRAME_PROFILE
     /// Record a particle draw submitted by the current graphics pass. This is
     /// CPU-side submission telemetry only; the indirect instance count is not
     /// read back from the GPU.
-    void RecordParticleDraw(bool indirect = true);
+    INFERNUX_VULKAN_BACKEND_API void RecordParticleDraw(bool indirect = true);
 
     /// Record a compute dispatch issued by the current pass for the optional
     /// particle profile. This only updates CPU-side counters; it never reads
     /// the GPU or changes the command stream.
-    void RecordComputeDispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ, uint64_t inputCount,
-                               bool indirect = false);
+    INFERNUX_VULKAN_BACKEND_API void RecordComputeDispatch(uint32_t groupCountX, uint32_t groupCountY,
+                                                           uint32_t groupCountZ, uint64_t inputCount,
+                                                           bool indirect = false);
 #else
     void RecordParticleDraw(bool = true)
     {
@@ -418,103 +410,110 @@ class PassBuilder
     PassBuilder(RenderGraph *graph, uint32_t passId);
 
     /// @brief Create a new transient texture resource
-    [[nodiscard]] ResourceHandle CreateTexture(const std::string &name, uint32_t width, uint32_t height,
-                                               VkFormat format, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ResourceHandle
+    CreateTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
+                  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
     /// @brief Create a new transient depth/stencil resource
-    [[nodiscard]] ResourceHandle CreateDepthStencil(const std::string &name, uint32_t width, uint32_t height,
-                                                    VkFormat format = VK_FORMAT_D32_SFLOAT,
-                                                    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ResourceHandle
+    CreateDepthStencil(const std::string &name, uint32_t width, uint32_t height, VkFormat format = VK_FORMAT_D32_SFLOAT,
+                       VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
     /// @brief Create a new transient buffer resource
-    [[nodiscard]] ResourceHandle CreateBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ResourceHandle CreateBuffer(const std::string &name, uint64_t size,
+                                                                          rhi::BufferUsageFlags usage);
 
     /// @brief Import an external texture (e.g., swapchain image)
-    [[nodiscard]] ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view,
-                                               VkFormat format, uint32_t width, uint32_t height);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportTexture(const std::string &name, VkImage image,
+                                                                           VkImageView view, VkFormat format,
+                                                                           uint32_t width, uint32_t height);
 
     /// @brief Import an external buffer
-    [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportBuffer(const std::string &name, VkBuffer buffer,
+                                                                          VkDeviceSize size);
 
-    /// Import a buffer owned by another RHI subsystem. The graph registers a
-    /// non-owning Vulkan alias for barriers and draw commands; the original
-    /// RHI handle remains owned by its caller.
-    [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size);
+    /// Register a non-owning Vulkan alias. The caller owns the RHI allocation.
+    /// Graph-local contents are observable through declared graph consumers.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportBuffer(const std::string &name,
+                                                                          rhi::BufferHandle buffer, uint64_t size,
+                                                                          bool graphLocal = false);
 
     /// @brief Read a texture in shader
-    ResourceHandle Read(ResourceHandle handle, rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle Read(ResourceHandle handle,
+                                                    rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
     /// @brief Read a depth texture in shader as sampler2D
-    ResourceHandle ReadSampledDepth(ResourceHandle handle,
-                                    rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle
+    ReadSampledDepth(ResourceHandle handle, rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
     /// @brief Write to a color attachment
-    ResourceHandle WriteColor(ResourceHandle handle, uint32_t attachmentIndex = 0);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle WriteColor(ResourceHandle handle, uint32_t attachmentIndex = 0);
 
     /// @brief Write to depth/stencil attachment
-    ResourceHandle WriteDepth(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle WriteDepth(ResourceHandle handle);
 
     /// @brief Read depth/stencil as a read-only attachment (for depth testing without writing)
-    ResourceHandle ReadDepth(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ReadDepth(ResourceHandle handle);
 
     /// @brief Declare MSAA resolve target (1x image that receives resolved data)
-    ResourceHandle WriteResolve(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle WriteResolve(ResourceHandle handle);
 
     /// @brief Read/Write a resource (UAV access)
-    ResourceHandle ReadWrite(ResourceHandle handle, rhi::PipelineStage stages);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ReadWrite(ResourceHandle handle, rhi::PipelineStage stages);
 
     /// Read a storage buffer from a compute shader.
-    ResourceHandle ReadStorageBuffer(ResourceHandle handle,
-                                     rhi::PipelineStage stages = rhi::PipelineStage::ComputeShader);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle
+    ReadStorageBuffer(ResourceHandle handle, rhi::PipelineStage stages = rhi::PipelineStage::ComputeShader);
 
     /// Read a uniform buffer from a compute shader.
-    ResourceHandle ReadUniformBuffer(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ReadUniformBuffer(ResourceHandle handle);
 
     /// Write a storage buffer from a compute shader.
-    ResourceHandle WriteStorageBuffer(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle WriteStorageBuffer(ResourceHandle handle);
 
     /// Write a storage texture from a compute shader.
-    ResourceHandle WriteStorageTexture(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle WriteStorageTexture(ResourceHandle handle);
 
     /// Consume a buffer as graphics indirect draw arguments.
-    ResourceHandle ReadIndirectBuffer(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ReadIndirectBuffer(ResourceHandle handle);
 
     /// Consume a host-side renderer list without creating a GPU barrier.
-    ResourceHandle ReadRendererList(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ReadRendererList(ResourceHandle handle);
 
     /// Skip only this pass's callback when all declared renderer lists are empty.
     /// Attachment clears and layout transitions still execute.
-    void SkipCallbackWhenRendererListsEmpty(bool enabled = true);
+    INFERNUX_VULKAN_BACKEND_API void SkipCallbackWhenRendererListsEmpty(bool enabled = true);
 
     /// @brief Read a resource as transfer source (for blit/copy operations)
-    ResourceHandle TransferRead(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle TransferRead(ResourceHandle handle);
 
     /// @brief Write a resource as transfer destination (for blit/copy operations)
-    ResourceHandle TransferWrite(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle TransferWrite(ResourceHandle handle,
+                                                             bool preservePreviousContents = false);
 
     /// Preserve an image while transitioning it back to color-attachment state.
     /// This is used by graph-owned export passes that prepare a persistent
     /// multisampled target for the next execution without creating a new SSA version.
-    ResourceHandle PrepareColorAttachment(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle PrepareColorAttachment(ResourceHandle handle);
 
     /// Preserve an image while transitioning it back to writable depth state.
-    ResourceHandle PrepareDepthStencilAttachment(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle PrepareDepthStencilAttachment(ResourceHandle handle);
 
     /// Declare the final presentation read and retain this pass as an external side effect.
-    ResourceHandle PresentRead(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle PresentRead(ResourceHandle handle);
 
     /// Keep this pass even when it has no path to a graph output. Use only for
     /// externally observable work such as readback, events, or debug capture.
-    void SetSideEffect(bool enabled = true);
+    INFERNUX_VULKAN_BACKEND_API void SetSideEffect(bool enabled = true);
 
     /// @brief Set the pass render area
-    void SetRenderArea(uint32_t width, uint32_t height);
+    INFERNUX_VULKAN_BACKEND_API void SetRenderArea(uint32_t width, uint32_t height);
 
     /// Override the native queue role for commands whose Vulkan capability
     /// requirements are stricter than their logical pass type. For example,
     /// vkCmdResolveImage is transfer-like work but requires a Graphics-capable
     /// command pool.
-    void SetQueueRole(rhi::QueueRole queue);
+    INFERNUX_VULKAN_BACKEND_API void SetQueueRole(rhi::QueueRole queue);
 
     /// @brief Enable/disable depth test
     void SetDepthTest(bool enable)
@@ -523,12 +522,13 @@ class PassBuilder
     }
 
     /// @brief Set clear values
-    void SetClearColor(float r, float g, float b, float a = 1.0f);
-    void SetClearDepth(float depth, uint32_t stencil = 0);
+    INFERNUX_VULKAN_BACKEND_API void SetClearColor(float r, float g, float b, float a = 1.0f);
+    INFERNUX_VULKAN_BACKEND_API void SetClearDepth(float depth, uint32_t stencil = 0);
 
   private:
     ResourceHandle AddBufferRead(ResourceHandle handle, ResourceUsage usage, rhi::PipelineStage stages,
                                  rhi::Access access);
+    void PreservePreviousVersion(ResourceHandle handle);
     RenderGraph *m_graph;
     uint32_t m_passId;
     bool m_depthTestEnabled = true;
@@ -610,10 +610,11 @@ struct ResourceData
     TextureDesc textureDesc;
 
     // Buffer info
-    BufferDesc bufferDesc;
+    rhi::BufferDesc bufferDesc;
 
     // External resource (imported)
     bool isExternal = false;
+    bool graphLocalBuffer = false;
     bool concurrentQueueSharing = false;
     VkImage externalImage = VK_NULL_HANDLE;
     VkImageView externalView = VK_NULL_HANDLE;
@@ -634,24 +635,24 @@ struct ResourceData
     std::vector<AttachmentBinding> attachmentBindings;
     rhi::TextureViewHandle rhiView;
     rhi::TextureHandle rhiTexture;
-    VkBuffer externalBuffer = VK_NULL_HANDLE;
+    VkBuffer nativeBuffer = VK_NULL_HANDLE;
     rhi::BufferHandle rhiBuffer;
+    uint32_t bufferImportCount = 0;
+    rhi::PipelineStage bufferAccessStages = rhi::PipelineStage::None;
     const RendererList *externalRendererList = nullptr;
     // Imported persistent allocations stay alive for the compiled graph.
     // Reset releases the borrow through the owning RHI retirement path.
     std::shared_ptr<const rhi::RenderTextureGeneration> externalOwner;
 
-    // Allocated resources (for transient)
-    VkImage allocatedImage = VK_NULL_HANDLE;
-    VkImageView allocatedView = VK_NULL_HANDLE;
-    VmaAllocation allocatedMemory = VK_NULL_HANDLE;
-    VkBuffer allocatedBuffer = VK_NULL_HANDLE;
+    // The generation aliases above are separate from reusable storage.
+    VulkanRhiDevice::TextureAllocation transientTexture;
     VkImageUsageFlags allocatedUsage = 0;
 
     // Lifetime tracking
     uint32_t firstPass = UINT32_MAX;
     uint32_t lastPass = 0;
     uint32_t refCount = 0;
+    rhi::TextureUsageFlags textureAccessUsage = rhi::TextureUsageFlags::None;
 
     // Layout state tracking
     VkImageLayout currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -733,14 +734,14 @@ class RenderGraph
     };
 #endif
 
-    RenderGraph();
-    ~RenderGraph();
+    INFERNUX_VULKAN_BACKEND_API RenderGraph();
+    INFERNUX_VULKAN_BACKEND_API ~RenderGraph();
 
     // Non-copyable, movable
     RenderGraph(const RenderGraph &) = delete;
     RenderGraph &operator=(const RenderGraph &) = delete;
-    RenderGraph(RenderGraph &&other) noexcept;
-    RenderGraph &operator=(RenderGraph &&other) noexcept;
+    INFERNUX_VULKAN_BACKEND_API RenderGraph(RenderGraph &&other) noexcept;
+    INFERNUX_VULKAN_BACKEND_API RenderGraph &operator=(RenderGraph &&other) noexcept;
 
     // ========================================================================
     // Initialization
@@ -752,15 +753,16 @@ class RenderGraph
      * @param context Device context for Vulkan access
      * @param pipelineManager Pipeline manager for render pass creation
      */
-    void Initialize(VkDeviceContext *context, GpuRetirementQueue *deletionQueue = nullptr,
-                    const VulkanQueueManager *queueManager = nullptr);
+    INFERNUX_VULKAN_BACKEND_API void Initialize(VkDeviceContext *context, GpuRetirementQueue *deletionQueue = nullptr,
+                                                const VulkanQueueManager *queueManager = nullptr);
 
     /// Native queue identity is copied into the graph and remains stable for a
     /// compiled generation. Backends may replace it before Compile after a
     /// device/queue topology change.
-    void SetQueueTopology(const std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> &topology);
+    INFERNUX_VULKAN_BACKEND_API void
+    SetQueueTopology(const std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> &topology);
 
-    void SetRenderView(const rhi::RenderViewContext &view);
+    INFERNUX_VULKAN_BACKEND_API void SetRenderView(const rhi::RenderViewContext &view);
     [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept
     {
         return m_deviceId;
@@ -775,12 +777,19 @@ class RenderGraph
      *
      * Clears all passes and transient resources.
      */
-    void Reset();
+    INFERNUX_VULKAN_BACKEND_API void Reset();
+
+    /// Take only reusable graphics images from a graph being replaced at an
+    /// idle scene boundary. This graph must already be initialized on the same
+    /// device/graphics lane and have no resources. Resets the previous graph,
+    /// invalidating its handles and callbacks; logical identities are not moved.
+    /// Unclaimed images follow the existing Compile/Destroy retirement path.
+    INFERNUX_VULKAN_BACKEND_API void TakeReusableImagesFrom(RenderGraph &previous);
 
     /**
      * @brief Cleanup all resources
      */
-    void Destroy();
+    INFERNUX_VULKAN_BACKEND_API void Destroy();
 
     // ========================================================================
     // Graph Building
@@ -793,14 +802,14 @@ class RenderGraph
      * @param setup Setup callback that configures resources and returns execute callback
      * @return Pass handle
      */
-    PassHandle AddPass(const std::string &name, PassSetupCallback setup);
+    INFERNUX_VULKAN_BACKEND_API PassHandle AddPass(const std::string &name, PassSetupCallback setup);
 
     /// Add a compute pass. It records commands outside a Vulkan render pass.
-    PassHandle AddComputePass(const std::string &name, PassSetupCallback setup);
+    INFERNUX_VULKAN_BACKEND_API PassHandle AddComputePass(const std::string &name, PassSetupCallback setup);
 
     /// Start a new native submission before this pass even when its queue and
     /// domain match the previous pass. Used for explicit async phase joins.
-    void SetSubmissionBoundaryBefore(PassHandle pass);
+    INFERNUX_VULKAN_BACKEND_API void SetSubmissionBoundaryBefore(PassHandle pass);
 
     /// Require `later` to run after `earlier` even when they do not share a
     /// resource version. Do not use this to force a global sim-before-export
@@ -808,39 +817,42 @@ class RenderGraph
     /// serialize Rendering before a sibling Init, and a complete bipartite
     /// Update→RenderReset cut closes a cycle once two multi-emitter graphs
     /// compile together.
-    void AddPassDependency(PassHandle later, PassHandle earlier);
+    INFERNUX_VULKAN_BACKEND_API void AddPassDependency(PassHandle later, PassHandle earlier);
 
     /**
      * @brief Add a transfer pass to the graph (copy/blit operations, no render pass)
      */
-    PassHandle AddTransferPass(const std::string &name, PassSetupCallback setup);
+    INFERNUX_VULKAN_BACKEND_API PassHandle AddTransferPass(const std::string &name, PassSetupCallback setup);
 
     /// Add a final presentation/export pass outside a Vulkan render pass.
-    PassHandle AddPresentPass(const std::string &name, PassSetupCallback setup);
+    INFERNUX_VULKAN_BACKEND_API PassHandle AddPresentPass(const std::string &name, PassSetupCallback setup);
 
     /**
      * @brief Set the backbuffer (swapchain image) for this frame
      */
-    ResourceHandle SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width, uint32_t height,
-                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                                 rhi::TextureLayout initialLayout = rhi::TextureLayout::Automatic);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle
+    SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width, uint32_t height,
+                  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                  rhi::TextureLayout initialLayout = rhi::TextureLayout::Automatic);
 
     /**
      * @brief Import an external texture as an MSAA resolve target
      */
-    ResourceHandle ImportResolveTarget(VkImage image, VkImageView view, VkFormat format, uint32_t width,
-                                       uint32_t height);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportResolveTarget(VkImage image, VkImageView view, VkFormat format,
+                                                                   uint32_t width, uint32_t height);
 
     /// Import a persistent texture owned outside the graph.
-    ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
-                                 uint32_t width, uint32_t height, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                                 uint32_t depth = 1, bool isVolume = false);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view,
+                                                             VkFormat format, uint32_t width, uint32_t height,
+                                                             VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                                                             uint32_t depth = 1, bool isVolume = false);
 
     /// Import a persistent RHI texture while preserving its queue-sharing contract.
-    ResourceHandle ImportTexture(const std::string &name, rhi::TextureHandle texture, rhi::TextureViewHandle view,
-                                 VkFormat format, uint32_t width, uint32_t height,
-                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t depth = 1,
-                                 bool isVolume = false);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportTexture(const std::string &name, rhi::TextureHandle texture,
+                                                             rhi::TextureViewHandle view, VkFormat format,
+                                                             uint32_t width, uint32_t height,
+                                                             VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                                                             uint32_t depth = 1, bool isVolume = false);
 
     struct RenderTextureResources
     {
@@ -852,21 +864,37 @@ class RenderGraph
     /// describe pass writes; they do not replace the owner's resize revision.
     /// Reimporting a generation returns the latest declared versions of the
     /// same attachments, rather than creating aliases with unrelated hazards.
-    RenderTextureResources ImportRenderTexture(const std::string &name,
-                                               const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
+    INFERNUX_VULKAN_BACKEND_API RenderTextureResources
+    ImportRenderTexture(const std::string &name, const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
 
     /// Select an already imported color attachment as this graph's output.
-    void SetBackbuffer(ResourceHandle color);
+    INFERNUX_VULKAN_BACKEND_API void SetBackbuffer(ResourceHandle color);
 
     /// Rebind an imported texture to another image with the same description.
     bool UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view);
     /// Rebind a single-sample persistent color slot without changing its graph
     /// identity or attachment contract (e.g. a history ping-pong).
-    void UpdateImportedRenderTextureColor(ResourceHandle handle,
-                                          const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
+    INFERNUX_VULKAN_BACKEND_API void
+    UpdateImportedRenderTextureColor(ResourceHandle handle,
+                                     const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
+
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportBuffer(const std::string &name, rhi::BufferHandle buffer,
+                                                            uint64_t size, bool graphLocal = false);
+    struct ImportedBufferBinding
+    {
+        ResourceHandle resource;
+        rhi::BufferHandle source;
+        rhi::QueueRole writer;
+        bool graphLocal;
+    };
+    /// Update physical storage before recording when the compiled alias, layout
+    /// and ownership contracts still hold. Supply every import of a replaced slot.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    RebindImportedBuffers(const std::vector<ImportedBufferBinding> &bindings);
 
     /// Import a stable host-side renderer list object. Its contents may change every frame.
-    ResourceHandle ImportRendererList(const std::string &name, const RendererList *rendererList);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportRendererList(const std::string &name,
+                                                                  const RendererList *rendererList);
 
     /**
      * @brief Override the initial tracked state of an imported/external resource.
@@ -876,21 +904,22 @@ class RenderGraph
      * Call this before Execute() to keep the tracked oldLayout aligned with
      * the real Vulkan image layout at frame start.
      */
-    void SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
-                                 rhi::PipelineStage stages, rhi::QueueRole ownerQueue = rhi::QueueRole::Graphics);
+    INFERNUX_VULKAN_BACKEND_API void SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout,
+                                                             rhi::Access accessMask, rhi::PipelineStage stages,
+                                                             rhi::QueueRole ownerQueue = rhi::QueueRole::Graphics);
 
     /**
      * @brief Mark a resource as the final output
      */
-    void SetOutput(ResourceHandle handle);
+    INFERNUX_VULKAN_BACKEND_API void SetOutput(ResourceHandle handle);
 
 #if INFERNUX_FRAME_PROFILE
-    static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
-    static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
-    static PassCallbackProfileEntry GetCallbackProfile(std::string_view name);
-    static std::vector<ViewPassProfileEntry> GetViewPassProfiles();
-    static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
-    static void ResetExecuteProfileSnapshot();
+    INFERNUX_VULKAN_BACKEND_API static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
+    INFERNUX_VULKAN_BACKEND_API static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
+    INFERNUX_VULKAN_BACKEND_API static PassCallbackProfileEntry GetCallbackProfile(std::string_view name);
+    INFERNUX_VULKAN_BACKEND_API static std::vector<ViewPassProfileEntry> GetViewPassProfiles();
+    INFERNUX_VULKAN_BACKEND_API static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
+    INFERNUX_VULKAN_BACKEND_API static void ResetExecuteProfileSnapshot();
 #endif
 
     /**
@@ -908,12 +937,13 @@ class RenderGraph
      * @param isTransient Transient usage hint; graph-owned storage remains independent
      * @return ResourceHandle with a valid id
      */
-    ResourceHandle RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
-                                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                                            bool isTransient = true);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle
+    RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
+                             VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, bool isTransient = true);
 
     /// Pre-register a transient buffer before pass declarations reference it.
-    ResourceHandle RegisterTransientBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage);
+    INFERNUX_VULKAN_BACKEND_API ResourceHandle RegisterTransientBuffer(const std::string &name, uint64_t size,
+                                                                       rhi::BufferUsageFlags usage);
 
     // ========================================================================
     // Compilation and Execution
@@ -930,18 +960,19 @@ class RenderGraph
      *
      * @return true if compilation succeeded
      */
-    bool Compile();
+    INFERNUX_VULKAN_BACKEND_API bool Compile();
 
     /// Cull unused passes and produce a cycle-free execution order without
     /// allocating GPU resources. Compile() uses this as its structural step.
-    [[nodiscard]] bool CompileExecutionOrder();
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool CompileExecutionOrder();
 
     /**
      * @brief Execute the render graph
      *
      * @param commandBuffer Command buffer to record into
      */
-    void Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
+    INFERNUX_VULKAN_BACKEND_API void Execute(VkCommandBuffer commandBuffer,
+                                             rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
 
     /// Record another execution into the same command buffer while preserving
     /// the resource state produced by the preceding Execute/ContinueExecution.
@@ -951,20 +982,31 @@ class RenderGraph
 
     /// Reset tracked resource state once before recording the compiled
     /// submission batches. A backend executor calls this once per graph frame.
-    void BeginExecution();
+    INFERNUX_VULKAN_BACKEND_API void BeginExecution();
 
-    /// Record first-use attachment transitions into an existing Graphics command
-    /// buffer, before cross-queue ownership releases and graph work. No submit,
-    /// wait, pixel clear or extra allocation is performed here.
-    [[nodiscard]] bool NeedsPersistentImageInitialization() const;
-    void RecordPersistentImageInitialization(VkCommandBuffer commandBuffer);
+    /// Initialize resident sampled color and attachment layouts before graph work.
+    /// The frame shares this list across views and publishes it after submission.
+    using PersistentImageInitializations = std::vector<std::shared_ptr<const rhi::RenderTextureGeneration>>;
+    INFERNUX_VULKAN_BACKEND_API void
+    CollectPersistentImageInitializations(PersistentImageInitializations &images) const;
+    INFERNUX_VULKAN_BACKEND_API static void
+    AddPersistentImageInitialization(PersistentImageInitializations &images,
+                                     const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
+    INFERNUX_VULKAN_BACKEND_API static void
+    RecordPersistentImageInitializations(VkCommandBuffer commandBuffer, VulkanRhiDevice &device,
+                                         const PersistentImageInitializations &images);
+    INFERNUX_VULKAN_BACKEND_API static void
+    PublishPersistentImageInitializations(const PersistentImageInitializations &images) noexcept;
 
     /// Record one compiler-produced submission batch into a command buffer.
     /// Batches must be recorded in SubmissionPlan order.
-    [[nodiscard]] bool RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool RecordSubmissionBatch(uint32_t batchIndex,
+                                                                         VkCommandBuffer commandBuffer);
 
-    [[nodiscard]] bool HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept;
-    [[nodiscard]] bool RecordExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue, VkCommandBuffer commandBuffer);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool RecordExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue,
+                                                                                        VkCommandBuffer commandBuffer);
 
     // ========================================================================
     // Per-Frame Clear Value Updates (no rebuild/recompile needed)
@@ -980,7 +1022,8 @@ class RenderGraph
      * @param r, g, b, a  New clear color components
      * @return true if the pass was found and updated
      */
-    bool UpdatePassClearColor(const std::string &passName, float r, float g, float b, float a);
+    INFERNUX_VULKAN_BACKEND_API bool UpdatePassClearColor(const std::string &passName, float r, float g, float b,
+                                                          float a);
 
     /**
      * @brief Update a pass's clear depth value without rebuilding the graph.
@@ -999,7 +1042,7 @@ class RenderGraph
     /**
      * @brief Get a text representation of the graph for debugging
      */
-    [[nodiscard]] std::string GetDebugString() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::string GetDebugString() const;
 
     /**
      * @brief Get pass count
@@ -1010,10 +1053,15 @@ class RenderGraph
     }
 
     /// Passes in the compiled execution order, excluding culled passes.
-    [[nodiscard]] std::vector<std::string> GetExecutionPassNames() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::vector<std::string> GetExecutionPassNames() const;
+    [[nodiscard]] const std::vector<uint32_t> &GetExecutionOrder() const noexcept
+    {
+        return m_executionOrder;
+    }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool HasLiveWriteToImage(VkImage image) const noexcept;
 
     /// Declaration-order culling report for Graph Viewer and diagnostics.
-    [[nodiscard]] std::vector<PassCompileInfo> GetPassCompileInfos() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::vector<PassCompileInfo> GetPassCompileInfos() const;
 
     /// Backend-neutral queue batches produced by the compiler. The plan is the
     /// authoritative input for backend command-buffer recording and submission.
@@ -1024,7 +1072,8 @@ class RenderGraph
 
     /// Actual access stages of live passes for an imported buffer. The compiler
     /// excludes culled passes and graph-only version dependencies.
-    [[nodiscard]] rhi::PipelineStage GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::PipelineStage
+    GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept;
 
     [[nodiscard]] const std::vector<QueueOwnershipTransferInfo> &GetQueueOwnershipTransfers() const noexcept
     {
@@ -1055,22 +1104,24 @@ class RenderGraph
         return handle.IsValid() && handle.scope == m_identity.Current();
     }
 
-    [[nodiscard]] rhi::GraphicsRenderingSignature GetPassRenderingSignature(const std::string &passName) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GraphicsRenderingSignature
+    GetPassRenderingSignature(const std::string &passName) const noexcept;
 
-    [[nodiscard]] PassRenderingContract GetPassRenderingContract(const std::string &passName) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API PassRenderingContract
+    GetPassRenderingContract(const std::string &passName) const noexcept;
 
     // ========================================================================
     // Resource Resolution (for RenderContext)
     // ========================================================================
 
-    [[nodiscard]] VkImageView ResolveTextureView(ResourceHandle handle) const;
-    [[nodiscard]] rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
-    [[nodiscard]] rhi::TextureHandle ResolveRhiTexture(ResourceHandle handle) const;
-    [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
-    [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
-    [[nodiscard]] const RendererList *ResolveRendererList(ResourceHandle handle) const;
-    [[nodiscard]] uint64_t GetTransientResidentBytes() const;
-    [[nodiscard]] size_t GetTransientAllocationCount() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkImageView ResolveTextureView(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::TextureHandle ResolveRhiTexture(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkBuffer ResolveBuffer(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API const RendererList *ResolveRendererList(ResourceHandle handle) const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetTransientResidentBytes() const;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API size_t GetTransientAllocationCount() const;
 
     /// Number of rebuilds that reused dependency analysis from an identical
     /// graph structure. Native resource handles and frame bindings are never
@@ -1096,6 +1147,12 @@ class RenderGraph
 
     /// @brief Create a new resource entry
     ResourceHandle CreateResource(const std::string &name, ResourceType type);
+
+    ResourceHandle ImportBufferAlias(const std::string &name, VkBuffer buffer, VkDeviceSize size,
+                                     rhi::BufferHandle source = {}, bool graphLocal = false);
+    ResourceHandle ImportTextureAlias(const std::string &name, VkImage image, VkImageView view, VkFormat format,
+                                      uint32_t width, uint32_t height, VkSampleCountFlagBits samples, uint32_t depth,
+                                      bool isVolume, rhi::TextureHandle source);
 
     /// Produce the next SSA-style version for a resource write. Writes must
     /// consume the latest version; reads may keep referencing older versions.
@@ -1124,6 +1181,7 @@ class RenderGraph
 
     /// Pre-compute per-pass Dynamic Rendering attachments, viewport and scissor.
     void PrecomputeExecuteData();
+    static VkClearColorValue EncodeClearColor(const VkClearColorValue &color, VkFormat format);
     void RefreshImportedAttachmentViews(uint32_t resourceId);
 
     /// Compile the topological pass order into device/queue/view batches.
@@ -1134,7 +1192,8 @@ class RenderGraph
     [[nodiscard]] bool CompileQueueOwnershipTransfers();
 
     /// @brief Insert barriers between passes using tracked resource layouts
-    void InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex);
+    /// The CPU contact graph test records these barriers without a Vulkan device.
+    INFERNUX_VULKAN_BACKEND_API void InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex);
 
     /// Emit the release half of every queue-family ownership transfer whose
     /// source work completes in this submission batch.
@@ -1154,7 +1213,7 @@ class RenderGraph
     /// owner every frame; internal images and buffers are reused across frames
     /// and therefore need their preceding access/layout as the source scope of
     /// the next frame's first barrier.
-    void PrepareExecutionResourceStates();
+    INFERNUX_VULKAN_BACKEND_API void PrepareExecutionResourceStates();
 
 #if INFERNUX_FRAME_PROFILE
     void RecordParticleDispatch(uint32_t passId, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
@@ -1171,8 +1230,7 @@ class RenderGraph
     void RetainReusableImages();
     [[nodiscard]] bool ClaimReusableImage(uint32_t resourceIndex, const VkImageCreateInfo &info);
     void RetireReusableImages();
-    void RetireNativeResources(std::vector<VkImageView> imageViews, std::vector<VkImage> images,
-                               std::vector<VkBuffer> buffers, std::vector<VmaAllocation> allocations);
+    GpuRetirementQueue *PrepareResourceRetirement(bool ownsTextures, bool ownsBuffers) const;
 
     // ========================================================================
     // Layout / barrier helpers
@@ -1209,7 +1267,7 @@ class RenderGraph
     std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
     rhi::SubmissionPlan m_submissionPlan;
-    std::unordered_map<VkBuffer, rhi::PipelineStage> m_importedBufferAccessStages;
+    std::unordered_map<VkBuffer, uint32_t> m_importedBuffers;
 
     struct QueueOwnershipTransfer
     {
@@ -1246,6 +1304,7 @@ class RenderGraph
         uint32_t firstPass = UINT32_MAX;
         uint32_t lastPass = 0;
         uint32_t refCount = 0;
+        rhi::TextureUsageFlags textureAccessUsage = rhi::TextureUsageFlags::None;
     };
 
     struct StructuralCompileCacheEntry
@@ -1281,9 +1340,7 @@ class RenderGraph
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
         VkImageUsageFlags usage = 0;
         uint32_t graphicsLane = UINT32_MAX;
-        VkImage image = VK_NULL_HANDLE;
-        VkImageView view = VK_NULL_HANDLE;
-        VmaAllocation memory = VK_NULL_HANDLE;
+        VulkanRhiDevice::TextureAllocation storage;
     };
     std::vector<ReusableImage> m_reusableImages;
 

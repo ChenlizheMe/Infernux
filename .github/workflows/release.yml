@@ -35,10 +35,8 @@ jobs:
         run: |
           node docs/tools/check-readme.mjs
           python scripts/release/build_release_notes.py --output "$RUNNER_TEMP/release-notes.md" --signed "${{ inputs.sign_windows_release }}"
-      - name: Check the published desktop Player release identities
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/release/publish_plugin_objects.py --check-player-releases
+      - name: Resolve platform plugin identities before building this release
+        run: python scripts/release/build_platform_plugins.py catalog --output out/platform-plugin-catalog.json
 
   build-test-publish:
     needs: release-identity

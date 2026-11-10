@@ -10,10 +10,13 @@ mixins; it is the single owner of revision-aware dispatch state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from types import MappingProxyType
+from functools import partial
+from types import FunctionType, MappingProxyType, MethodType
 import inspect
+import sys
 import threading
 import weakref
+from infernux.execution import capture_execution_scope, component_execution
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 
@@ -23,6 +26,11 @@ RUNTIME_PHASE_NAMES = (
     "late_update",
     "physics_pre_step",
     "physics_post_step",
+    "animation_update",
+)
+RUNTIME_SCHEDULER_PHASES = (
+    "fixed_update", "physics_pre_step", "physics_post_step",
+    "update", "animation_update", "late_update",
 )
 _MISSING = object()
 _PHASE_INDEX = {name: index for index, name in enumerate(RUNTIME_PHASE_NAMES)}
@@ -151,12 +159,9 @@ class RuntimeTypeDispatchDescriptor:
                 continue
 
             dispatch.append((method.raw, method.bind_instance))
-            if method.bind_instance:
-                invokers.append(method.raw)
-                continue
-
-            def invoke(instance: Any, value: Any, _raw=method.raw) -> Any:
-                return _raw(value)
+            def invoke(instance: Any, value: Any, _raw=method.raw, _bind=method.bind_instance) -> Any:
+                with component_execution(instance):
+                    return _raw(instance, value) if _bind else _raw(value)
 
             invokers.append(invoke)
         object.__setattr__(self, "_phase_dispatch", tuple(dispatch))
@@ -252,13 +257,106 @@ class CallbackInvocation:
 
 
 @dataclass(frozen=True, eq=False)
-class ReloadableCallbackRef:
-    """A weak, epoch-aware reference to an InxComponent bound method.
+class _PublishedPythonCallback:
+    """Look up a named project callback from its owner or published module."""
 
-    Bound method objects are deliberately not stored.  Resolution obtains the
-    current epoch descriptor and creates a short-lived bound method only for
-    the invocation. Arbitrary functions, lambdas, closures and bound methods
-    on non-component owners are direct callables outside reload semantics.
+    module_name: str
+    name: str
+    owner: object = None
+
+    @classmethod
+    def bind(cls, callback):
+        owner = getattr(callback, "__self__", None)
+        if owner is None:
+            if type(callback) is not FunctionType or callback.__qualname__ != callback.__name__:
+                return None
+            declaration = callback
+            name = callback.__name__
+        else:
+            function = getattr(callback, "__func__", None)
+            if type(function) is not FunctionType:
+                return None
+            declaration = owner if isinstance(owner, type) else type(owner)
+            if declaration.__qualname__ != declaration.__name__:
+                return None
+            name = function.__name__
+            attribute = inspect.getattr_static(owner, name, None)
+            if isinstance(attribute, classmethod):
+                attribute = attribute.__func__
+            if attribute is not function:
+                return None
+
+        module = sys.modules.get(declaration.__module__)
+        if module is None or vars(module).get(declaration.__name__) is not declaration:
+            return None
+        from infernux.engine.project_context import is_project_component_script
+
+        path = getattr(module, "__file__", None)
+        if path and is_project_component_script(path):
+            return cls(module.__name__, name, owner)
+        return None
+
+    def resolve(self):
+        module = sys.modules.get(self.module_name)
+        if self.owner is None:
+            return getattr(module, self.name, None)
+        declaration = self.owner if isinstance(self.owner, type) else type(self.owner)
+        if module is None or vars(module).get(declaration.__name__) is not declaration:
+            return None
+        return getattr(self.owner, self.name, None)
+
+    def matches(self, callback) -> bool:
+        if self.owner is None:
+            return (
+                type(callback) is FunctionType
+                and callback.__module__ == self.module_name
+                and callback.__qualname__ == self.name
+            )
+        return (
+            getattr(callback, "__self__", None) is self.owner
+            and getattr(getattr(callback, "__func__", None), "__name__", None) == self.name
+        )
+
+    def invoke_if_available(self, *args, **kwargs):
+        callback = self.resolve()
+        if callable(callback):
+            return callback(*args, **kwargs)
+        return None
+
+    def __call__(self, *args, **kwargs):
+        callback = self.resolve()
+        if not callable(callback):
+            raise RuntimeError(f"Registered script callback '{self.module_name}.{self.name}' is unavailable")
+        return callback(*args, **kwargs)
+
+
+_PartialArguments = tuple[tuple[tuple, dict], ...]
+
+
+def _partial_callback_target(callback):
+    if type(callback) is not partial:
+        return callback, ()
+    arguments = []
+    while type(callback) is partial:
+        arguments.append((callback.args, callback.keywords))
+        callback = callback.func
+    return callback, tuple(reversed(arguments))
+
+
+def _apply_partial_arguments(callback, arguments: _PartialArguments):
+    for args, keywords in arguments:
+        callback = partial(callback, *args, **keywords)
+    return callback
+
+
+@dataclass(frozen=True, eq=False)
+class ReloadableCallbackRef:
+    """A persistent reference to a registered callback.
+
+    Component methods resolve through the current epoch. Named project functions
+    and project helper methods follow their published definitions, including
+    calls with arguments bound by functools.partial. Closures,
+    lambdas and external callables keep their original identity.
     """
 
     owner_ref: Optional[weakref.ReferenceType[Any]]
@@ -268,6 +366,10 @@ class ReloadableCallbackRef:
     expected_signature: str
     registration_epoch: int
     direct_callable: Optional[Callable[..., Any]] = None
+    execution_scope: Any = None
+    python_binding: _PublishedPythonCallback | None = None
+    partial_source: weakref.ReferenceType | None = None
+    partial_arguments: _PartialArguments = ()
 
     @property
     def is_direct(self) -> bool:
@@ -283,40 +385,33 @@ class ReloadableCallbackRef:
     ) -> "ReloadableCallbackRef":
         if not callable(callback):
             raise TypeError("callback must be callable")
+        original = callback
+        callback, partial_arguments = _partial_callback_target(callback)
+        partial_source = weakref.ref(original) if partial_arguments else None
         selected_epoch = current_runtime_epoch() if epoch is None else epoch
         registration_epoch = selected_epoch.epoch_id
         owner = getattr(callback, "__self__", None)
         function = getattr(callback, "__func__", None)
-        if owner is None or function is None:
-            return cls(
-                owner_ref=None,
-                owner_identity=None,
-                owner_type=None,
-                method_name="",
-                expected_signature=str(expected_signature or _safe_signature(callback)),
-                registration_epoch=registration_epoch,
-                direct_callable=callback,
-            )
-
-        # Only InxComponent instances have a stable runtime identity and an
-        # epoch descriptor that can safely re-resolve their methods.  A plain
-        # Python object's bound method is a direct callback because its owner
-        # has no component identity or epoch-published method table.
         try:
             from infernux.components.component import InxComponent
 
-            reloadable_owner = isinstance(owner, InxComponent)
+            reloadable_owner = function is not None and isinstance(owner, InxComponent)
         except (ImportError, TypeError):
             reloadable_owner = False
         if not reloadable_owner:
+            binding = _PublishedPythonCallback.bind(callback)
             return cls(
                 owner_ref=None,
                 owner_identity=None,
                 owner_type=None,
                 method_name=str(getattr(function, "__name__", "") or ""),
-                expected_signature=str(expected_signature or _safe_signature(callback)),
+                expected_signature=str(expected_signature or _safe_signature(original)),
                 registration_epoch=registration_epoch,
-                direct_callable=callback,
+                direct_callable=original if binding is None else None,
+                python_binding=binding,
+                execution_scope=capture_execution_scope(),
+                partial_source=partial_source if binding is not None else None,
+                partial_arguments=partial_arguments if binding is not None else (),
             )
 
         try:
@@ -334,7 +429,7 @@ class ReloadableCallbackRef:
             raise ValueError(
                 f"callback method '{method_name}' is not a reloadable method"
             )
-        expected = str(expected_signature or method.signature)
+        expected = str(method.signature if partial_arguments else expected_signature or method.signature)
         if method.signature != expected:
             raise ValueError(
                 f"callback signature mismatch for '{method_name}': "
@@ -347,11 +442,21 @@ class ReloadableCallbackRef:
             method_name=method_name,
             expected_signature=expected,
             registration_epoch=registration_epoch,
+            execution_scope=capture_execution_scope(owner),
+            partial_source=partial_source,
+            partial_arguments=partial_arguments,
         )
 
     def resolve(self, epoch: Optional[RuntimeRevisionEpoch] = None) -> CallbackResolution:
         if self.is_direct:
             return CallbackResolution("direct", self.direct_callable)
+        if self.python_binding is not None:
+            callback = self.python_binding.resolve()
+            if callable(callback):
+                if self.partial_arguments:
+                    callback = _apply_partial_arguments(callback, self.partial_arguments)
+                return CallbackResolution("resolved", callback)
+            return CallbackResolution("method_missing", message=f"callback '{self.python_binding.name}' is unavailable")
         owner = self.owner_ref() if self.owner_ref is not None else None
         if owner is None:
             return CallbackResolution("owner_unavailable", message="callback owner was collected")
@@ -381,6 +486,8 @@ class ReloadableCallbackRef:
                     f"expected {self.expected_signature}, got {method.signature}"
                 ),
             )
+        if self.partial_arguments:
+            callback = _apply_partial_arguments(callback, self.partial_arguments)
         return CallbackResolution("resolved", callback)
 
     def invoke(
@@ -392,8 +499,15 @@ class ReloadableCallbackRef:
         resolution = self.resolve(epoch)
         if not resolution.resolved:
             return CallbackInvocation(self, resolution.status, resolution.message)
+        if self.execution_scope is not None:
+            state = self.execution_scope.state
+            if state == 'closed':
+                return CallbackInvocation(self, 'owner_unavailable', 'callback execution scope has closed')
+            if state == 'paused':
+                return CallbackInvocation(self, 'owner_paused', 'callback execution scope is paused')
         try:
-            resolution.callback(*args)
+            with component_execution(self.execution_scope):
+                resolution.callback(*args)
         except Exception as exc:
             if propagate_exceptions:
                 raise
@@ -403,6 +517,10 @@ class ReloadableCallbackRef:
     def matches(self, callback: Callable[..., Any]) -> bool:
         if self.is_direct:
             return self.direct_callable is callback or self.direct_callable == callback
+        if self.partial_source is not None:
+            return self.partial_source() is callback
+        if self.python_binding is not None:
+            return self.python_binding.matches(callback)
         owner = getattr(callback, "__self__", None)
         function = getattr(callback, "__func__", None)
         return (
@@ -415,6 +533,8 @@ class ReloadableCallbackRef:
     def matches_owner_method(self, owner: Any, method_name: str) -> bool:
         """Match a persistent owner/path without inspecting the current body."""
         method_name = str(method_name or "")
+        if self.python_binding is not None:
+            return self.python_binding.owner is owner and self.python_binding.name == method_name
         if self.is_direct:
             callback = getattr(owner, method_name, None)
             return callable(callback) and (
@@ -644,16 +764,21 @@ def bind_runtime_dispatch_owner() -> None:
         _owner_thread_id = current
 
 
-def assert_runtime_dispatch_safe_point() -> None:
-    """Reject publication while any scheduler still owns an execution frame."""
+def assert_runtime_owner_thread() -> None:
+    """Require the Engine/Player owner without restricting active frame work."""
     current_thread_id = threading.get_ident()
     with _EPOCH_LOCK:
         owner = _owner_thread_id if _owner_thread_id is not None else threading.main_thread().ident
         if owner != current_thread_id:
             raise RuntimeError(
-                "runtime dispatch publication requires the owner thread; "
+                "runtime operations require the owner thread; "
                 f"owner={owner}, current={current_thread_id}"
             )
+
+
+def assert_runtime_dispatch_safe_point() -> None:
+    """Reject publication while any scheduler still owns an execution frame."""
+    assert_runtime_owner_thread()
     try:
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
     except ImportError:
@@ -678,11 +803,12 @@ def build_type_dispatch_descriptor(
     epoch_id: int = 0,
 ) -> RuntimeTypeDispatchDescriptor:
     """Build a descriptor from the current stable class body, without publish."""
+    script_sources = {}
     phase_methods: list[Optional[RuntimeMethodDescriptor]] = []
     for phase in RUNTIME_PHASE_NAMES:
         raw = _find_raw_method(component_type, phase)
         phase_methods.append(
-            None if raw is _MISSING else _make_method_descriptor(component_type, phase, raw)
+            None if raw is _MISSING else _make_method_descriptor(component_type, phase, raw, script_sources)
         )
 
     methods: dict[str, RuntimeMethodDescriptor] = {}
@@ -701,7 +827,7 @@ def build_type_dispatch_descriptor(
                 raw, (staticmethod, classmethod)
             ) and not callable(raw):
                 continue
-            methods[name] = _make_method_descriptor(component_type, name, raw)
+            methods[name] = _make_method_descriptor(component_type, name, raw, script_sources)
 
     return RuntimeTypeDispatchDescriptor(
         component_type=component_type,
@@ -721,12 +847,44 @@ def _find_raw_method(component_type: type, name: str) -> Any:
     return _MISSING
 
 
-def _make_method_descriptor(component_type: type, name: str, raw: Any) -> RuntimeMethodDescriptor:
+def _copy_function_body(function: FunctionType, code=None, namespace=None) -> FunctionType:
+    code = function.__code__ if code is None else code
+    namespace = function.__globals__ if namespace is None else namespace
+    body = FunctionType(code, namespace, function.__name__,
+                        function.__defaults__, function.__closure__)
+    body.__kwdefaults__ = function.__kwdefaults__
+    body.__qualname__ = function.__qualname__
+    body.__annotations__ = function.__annotations__
+    body.__type_params__ = function.__type_params__
+    body.__doc__ = function.__doc__
+    body.__module__ = function.__module__
+    body.__dict__.update(function.__dict__)
+    return body
+
+
+def _pin_script_method(function, script_sources):
+    if type(function) is not FunctionType:
+        return function
+    path = function.__globals__.get("__file__")
+    if not path:
+        return function
+    if path not in script_sources:
+        from infernux.engine.project_context import is_project_component_script
+
+        script_sources[path] = is_project_component_script(path)
+    # A raw method retained by user code may be forwarded on reload. The frame
+    # dispatch table keeps the body selected when this epoch was published.
+    return _copy_function_body(function) if script_sources[path] else function
+
+
+def _make_method_descriptor(component_type: type, name: str, raw: Any, script_sources) -> RuntimeMethodDescriptor:
     if isinstance(raw, staticmethod):
-        return RuntimeMethodDescriptor(name, raw.__func__, "static")
+        return RuntimeMethodDescriptor(name, _pin_script_method(raw.__func__, script_sources), "static")
     if isinstance(raw, classmethod):
-        return RuntimeMethodDescriptor(name, getattr(component_type, name), "class")
-    return RuntimeMethodDescriptor(name, raw, "instance")
+        body = _pin_script_method(raw.__func__, script_sources)
+        bound = getattr(component_type, name) if body is raw.__func__ else MethodType(body, component_type)
+        return RuntimeMethodDescriptor(name, bound, "class")
+    return RuntimeMethodDescriptor(name, _pin_script_method(raw, script_sources), "instance")
 
 
 def _set_current_epoch(epoch: RuntimeRevisionEpoch) -> None:

@@ -100,10 +100,8 @@ def inspect_host_player_request(
         try:
             inspect_desktop_runtime(player_runtime_root)
         except (OSError, ValueError, RuntimeError) as exc:
-            diagnostics.append(BuildDiagnostic(
-                DiagnosticSeverity.ERROR, "host-player.runtime.unavailable", str(exc),
-                source=exporter_id,
-            ))
+            from infernux.engine.player_runtime_repair import rebuild_diagnostic
+            diagnostics.append(rebuild_diagnostic(exc, source=exporter_id))
     if not (project / "Assets").is_dir() or not (
         project / "ProjectSettings"
     ).is_dir():
@@ -116,7 +114,7 @@ def inspect_host_player_request(
             )
         )
     return CapabilityReport(
-        not diagnostics,
+        not any(item.severity is DiagnosticSeverity.ERROR for item in diagnostics),
         tuple(diagnostics),
         {
             "host_platform": sys.platform,
@@ -159,12 +157,19 @@ def execute_host_player_build(
     )
 
     started = time.perf_counter()
+    if player_runtime_root:
+        from infernux.engine.player_runtime_repair import prepare_player_runtime
+        from infernux.engine.precompiled_player import inspect_desktop_runtime
+        player_runtime_root = str(prepare_player_runtime(
+            request, player_runtime_root, inspect_desktop_runtime,
+        ))
     settings = build_settings_for_request(request)
     game_name = str(settings["game_name"]).strip()
     if not game_name:
         game_name = Path(request.project_root).name
     if request.asset_catalog_entries:
         catalog_entries = [dict(item) for item in request.asset_catalog_entries]
+        runtime_types = request.runtime_type_records
     else:
         from infernux.engine.player_build_preflight import (
             publish_player_asset_catalog_for_host,
@@ -172,6 +177,7 @@ def execute_host_player_build(
 
         catalog = publish_player_asset_catalog_for_host(request.project_root)
         catalog_entries = [dict(item) for item in catalog["entries"]]
+        runtime_types = catalog["runtime_type_records"]
     builder = GameBuilder(
         request.project_root,
         request.output_dir,
@@ -194,7 +200,7 @@ def execute_host_player_build(
         player_runtime_root=player_runtime_root,
         build_scene_guids=list(settings["scene_guids"]),
     )
-    builder.freeze_asset_index_entries(catalog_entries)
+    builder.freeze_asset_index_entries(catalog_entries, runtime_type_records=runtime_types)
     builder._validate_output_directory()
 
     def _progress(message: str, fraction: float) -> None:

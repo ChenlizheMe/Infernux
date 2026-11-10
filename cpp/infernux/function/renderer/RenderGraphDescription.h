@@ -15,12 +15,18 @@
 
 #pragma once
 
+#include "GraphEvents.h"
 #include "rhi/RhiDescriptors.h"
+#include <core/math/Intervals.h>
 #include <core/types/ShaderTypes.h>
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -29,12 +35,15 @@ namespace infernux
 namespace rhi
 {
 class RenderTexture;
-}
-class RendererSelection;
-namespace rhi
-{
+class TextureResource;
 class ComputeBuffer;
-}
+class ComputeWorkRecipe;
+struct ComputeBufferDesc;
+struct RenderTextureGeneration;
+struct RenderViewContext;
+} // namespace rhi
+class RendererSelection;
+struct MaterialPassPipelineDescriptor;
 
 /**
  * @brief Backend-neutral command recorded by a graph pass.
@@ -42,10 +51,8 @@ class ComputeBuffer;
  * Commands describe engine rendering operations
  * rather than Vulkan calls so
  * the same graph artifact can be compiled by another RHI backend later.
- * Compute work
- * is intentionally engine-owned and enters the native RHI
- * RenderGraph directly; Python pipelines do not expose raw
- * compute programs.
+ * Compute commands reference a common, already-prepared work recipe; graph
+ * descriptions never contain a second model or compiler representation.
  */
 enum class GraphCommandType
 {
@@ -57,12 +64,16 @@ enum class GraphCommandType
     FullscreenQuad,
     CopyTexture,
     CopyBuffer,
+    CopyTextureToBuffer,
+    CopyBufferToTexture,
+    ComputeWork,
     Present
 };
 
 enum class GraphPassType
 {
     Raster,
+    Compute,
     Copy,
     Present
 };
@@ -74,18 +85,12 @@ enum class GraphMaterialFilter : uint8_t
     DeferredUnsupported,
 };
 
-enum class GraphBufferUsage : uint32_t
-{
-    None = 0,
-    Storage = 1 << 0,
-    Indirect = 1 << 1,
-    TransferSource = 1 << 2,
-    TransferDestination = 1 << 3
-};
+using GraphBufferUsage = rhi::BufferUsageFlags;
 
 enum class GraphBufferAccessType
 {
     StorageRead,
+    UniformRead,
     StorageWrite,
     IndirectRead,
     TransferRead,
@@ -98,7 +103,8 @@ enum class GraphTextureRole : uint8_t
     TemporalRead,
     TemporalWrite,
     Persistent,
-    Asset
+    Asset,
+    Camera,
 };
 
 enum class GraphTextureAttachment : uint8_t
@@ -144,6 +150,16 @@ struct GraphCommandDesc
     std::string sourceResource;
     std::string destinationResource;
     uint64_t copyBytes = 0;
+    uint32_t copyWidth = 0;
+    uint32_t copyHeight = 0;
+    uint64_t copyBufferOffset = 0; ///< Relative to the logical buffer range.
+    std::string workBinding;
+
+    [[nodiscard]] bool BindsResource(const std::string &name) const;
+    [[nodiscard]] bool CopiesToTexture() const noexcept
+    {
+        return type == GraphCommandType::CopyTexture || type == GraphCommandType::CopyBufferToTexture;
+    }
 };
 
 /**
@@ -169,10 +185,11 @@ struct GraphParameterBlockUpdate
  */
 struct GraphTextureDesc
 {
+    using RenderTextureLayout =
+        std::tuple<rhi::PixelFormat, rhi::PixelFormat, rhi::SampleCount, rhi::FilterMode, bool, bool>;
+
     std::string name;                                       ///< Unique resource name
     rhi::PixelFormat format = rhi::PixelFormat::RGBA8UNorm; ///< Backend-neutral pixel format
-    bool isBackbuffer = false;                              ///< If true, refers to the scene's main MSAA color target
-    bool isDepth = false;                                   ///< If true, this is a depth/stencil texture
     uint32_t width = 0;                                     ///< Custom width (0 = use scene target size)
     uint32_t height = 0;                                    ///< Custom height (0 = use scene target size)
     uint32_t sizeDivisor = 0;                               ///< >0: actual = scene_size / divisor
@@ -181,17 +198,86 @@ struct GraphTextureDesc
     std::string temporalKey;                                ///< Stable per-view history identity for temporal resources
     std::shared_ptr<rhi::RenderTexture> renderTexture;      ///< Persistent owner; never a disk GUID
     GraphTextureAttachment attachment = GraphTextureAttachment::Color;
-    std::string assetGuid; ///< GUID of a read-only imported Texture asset
-    uint32_t depth = 1;    ///< Imported Texture3D depth; 1 for ordinary textures
-    bool isVolume = false; ///< True when the imported asset is a Texture3D
+    bool requireCurrentWrite = false; ///< Input-only import requires a producer in the same render opportunity.
+    std::string assetGuid;            ///< GUID of a read-only imported Texture asset
+    uint32_t depth = 1;               ///< Imported Texture3D depth; 1 for ordinary textures
+    bool isVolume = false;            ///< True when the imported asset is a Texture3D
+    std::optional<RenderTextureLayout> renderTextureLayout;
 
-    /// The root pipeline's conventional depth resource shares its Camera target.
-    /// Other names denote distinct images, even at the same viewport dimensions.
+    [[nodiscard]] bool operator==(const GraphTextureDesc &other) const;
+
+    void BindRenderTexture(std::shared_ptr<rhi::RenderTexture> owner, GraphTextureAttachment attachment,
+                           std::optional<bool> requireWrite = {});
+    [[nodiscard]] bool MatchesRenderTextureLayout(const rhi::RenderTextureGeneration &generation) const noexcept;
+
+    [[nodiscard]] bool IsDepth() const noexcept
+    {
+        return rhi::IsDepthFormat(format);
+    }
+    [[nodiscard]] bool IsViewAttachment() const noexcept
+    {
+        return role == GraphTextureRole::Camera;
+    }
+    [[nodiscard]] bool IsViewColor() const noexcept
+    {
+        return IsViewAttachment() && !IsDepth();
+    }
     [[nodiscard]] bool IsViewDepth() const noexcept
     {
-        return name == "depth" && isDepth && role == GraphTextureRole::Transient && width == 0 && height == 0 &&
-               sizeDivisor == 0;
+        return IsViewAttachment() && IsDepth();
     }
+    [[nodiscard]] rhi::PixelFormat EffectiveFormat(const rhi::RenderViewContext &view) const noexcept;
+    [[nodiscard]] uint32_t EffectiveSamples(uint32_t frameSamples) const noexcept;
+    [[nodiscard]] std::pair<uint32_t, uint32_t> ResolveExtent(uint32_t viewWidth, uint32_t viewHeight) const noexcept;
+};
+
+struct GraphWorkBindingDesc
+{
+    std::string name;
+    std::shared_ptr<rhi::ComputeWorkRecipe> recipe;
+    /// Input port name -> earlier graph buffer with a matching true owner.
+    std::vector<std::pair<std::string, std::string>> inputBindings;
+};
+
+struct GraphBufferCapture;
+
+/// A fixed graph input whose accepted, immutable GPU value can change between frames.
+class GraphBufferInput final
+{
+  public:
+    GraphBufferInput(const std::shared_ptr<rhi::ComputeBuffer> &value, uint64_t offset, uint64_t byteSize);
+    void Publish(const std::shared_ptr<rhi::ComputeBuffer> &value);
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetValue() const noexcept
+    {
+        return m_value;
+    }
+    void SetRequirement(bool pending, bool holdsStep, std::vector<std::shared_ptr<GraphBufferCapture>> sources);
+    [[nodiscard]] bool IsWaitingForResult() const noexcept
+    {
+        return m_waiting;
+    }
+    [[nodiscard]] bool HoldsStep() const noexcept
+    {
+        return m_holdsStep;
+    }
+    [[nodiscard]] const auto &GetResultSources() const noexcept
+    {
+        return m_sources;
+    }
+    [[nodiscard]] bool HasResultCycle() const noexcept
+    {
+        return m_cycle;
+    }
+    void MarkResultCycle() noexcept;
+
+  private:
+    std::shared_ptr<rhi::ComputeBuffer> m_value;
+    std::vector<std::shared_ptr<GraphBufferCapture>> m_sources;
+    uint64_t m_offset;
+    uint64_t m_byteSize;
+    bool m_waiting = false;
+    bool m_holdsStep = false;
+    bool m_cycle = false;
 };
 
 struct GraphBufferDesc
@@ -199,11 +285,18 @@ struct GraphBufferDesc
     std::string name;
     uint64_t byteSize = 0;
     uint32_t usage = static_cast<uint32_t>(GraphBufferUsage::None);
-    std::shared_ptr<rhi::ComputeBuffer> computeBuffer; ///< Live GPU owner for an imported buffer.
+    std::shared_ptr<rhi::ComputeBuffer> computeBuffer; ///< Imported owner captured for this execution.
+    std::shared_ptr<GraphBufferInput> input;           ///< Optional slot supplying the imported value.
     /// Bind the camera-local canonical light buffer for the active frame slot.
     /// This resource is read-only and owned by SceneRenderGraph; it is not a
     /// transient allocation or an imported author buffer.
     bool viewLightList = false;
+    uint64_t byteOffset = 0; ///< Logical imported view; physical hazards cover the complete allocation.
+    std::string workBinding;
+    uint32_t workSlot = 0;
+    /// Typed physical layout and logical tensor shape of a public final value.
+    std::optional<rhi::ComputeBufferDesc> exportLayout;
+    std::vector<uint64_t> exportShape;
 };
 
 struct GraphBufferAccessDesc
@@ -233,6 +326,7 @@ struct GraphPassDesc
     std::string resolveColor; ///< Optional 1x resolve target for color slot 0
     std::vector<GraphBufferAccessDesc> bufferAccesses;
     bool sideEffect = false;
+    std::vector<GraphEventDesc> events;
 
     // === Clear settings ===
     bool clearColor = false;
@@ -248,6 +342,11 @@ struct GraphPassDesc
     // one command while the IR is intentionally a list for the upcoming
     // raster/compute/copy command-list executor.
     std::vector<GraphCommandDesc> commands;
+
+    [[nodiscard]] const GraphCommandDesc *PrimaryCommand() const noexcept;
+    [[nodiscard]] bool WritesTexture(const std::string &name) const;
+    /// Resource reads include transfer/export sources; this does not imply sampling.
+    [[nodiscard]] bool ReadsTexture(const std::string &name) const;
 };
 
 // ============================================================================
@@ -271,8 +370,9 @@ struct RenderGraphDescription
 
     std::vector<GraphTextureDesc> textures; ///< All texture resources
     std::vector<GraphBufferDesc> buffers;   ///< All buffer resources
-    std::vector<GraphPassDesc> passes;      ///< All passes in declaration order
-    std::string outputTexture;              ///< Name of the final output texture
+    std::vector<GraphWorkBindingDesc> workBindings;
+    std::vector<GraphPassDesc> passes; ///< All passes in declaration order
+    std::string outputTexture;         ///< Name of the final output texture
     /// Terminal linear image before display encoding/overlay. Offscreen
     /// cameras consume this prefix, not a display-encoded screen image.
     std::string linearOutputTexture;
@@ -282,6 +382,34 @@ struct RenderGraphDescription
     int msaaSamples = 0;
     /// Explicit camera sampling policy, independent of double-buffered resources.
     bool temporalJitter = false;
+
+    [[nodiscard]] bool RenderTextureLayoutsCurrent() const;
 };
+
+/// Topology excludes source revisions and independently updated parameter values.
+bool RenderGraphTopologyEquals(const RenderGraphDescription &a, const RenderGraphDescription &b);
+RenderGraphDescription NormalizeRenderGraphForOutput(RenderGraphDescription desc, bool hasOutputTexture,
+                                                     rhi::SampleCount actualSamples);
+/// Final description and current imported-resource checks before publication.
+using GraphBufferContents = std::unordered_map<std::string, intervals::Set>;
+bool RequiresGraphBufferOwners(const RenderGraphDescription &desc);
+bool RequiresGraphBufferProof(const RenderGraphDescription &desc);
+bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rhi::RenderViewContext &view,
+                                    GraphBufferContents *contents = nullptr);
+std::pair<uint32_t, uint32_t> ResolveGraphPassExtent(const RenderGraphDescription &graph, const GraphPassDesc &pass,
+                                                     uint32_t viewWidth, uint32_t viewHeight);
+const rhi::TextureResource *ResolveGraphTextureAttachment(const rhi::RenderTextureGeneration &generation,
+                                                          GraphTextureAttachment attachment) noexcept;
+rhi::TextureHandle ResolveGraphTextureImport(const GraphTextureDesc &texture);
+const GraphTextureDesc *FindGraphOutputTextureAlias(const RenderGraphDescription &graph,
+                                                    const rhi::RenderTextureGeneration &output);
+const GraphWorkBindingDesc *FindGraphWorkBinding(const RenderGraphDescription &graph, const std::string &name);
+/// Actual command writes plus explicit access declarations, including every Work alias.
+std::unordered_set<std::string> FindGraphBufferWrites(const RenderGraphDescription &graph);
+const GraphBufferDesc &ResolveGraphBufferStorage(const RenderGraphDescription &graph, const GraphBufferDesc &buffer);
+const rhi::ComputeBufferDesc *ResolveGraphComputeBufferDesc(const RenderGraphDescription &graph,
+                                                            const GraphBufferDesc &buffer);
+MaterialPassPipelineDescriptor ResolveMaterialPass(const RenderGraphDescription &graph, const GraphPassDesc &pass,
+                                                   const rhi::RenderViewContext &view, bool invertCulling = false);
 
 } // namespace infernux

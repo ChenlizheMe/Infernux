@@ -19,6 +19,7 @@ Hierarchy of abstractions
 from __future__ import annotations
 
 import math
+from enum import Flag
 from dataclasses import fields as dataclass_fields, is_dataclass, replace
 from functools import lru_cache
 from typing import Any
@@ -225,17 +226,22 @@ def max_label_w(ctx: InxGUIContext, labels, *, min_width: float = 0.0) -> float:
 
 
 def field_label(ctx: InxGUIContext, label: str, width: float = 0.0):
-    """Label on the left; the next widget fills the remaining row width.
+    """Label on the left; the next widget starts at the shared value column.
 
-    If *width* is 0 the column is auto-sized to this label (but never
-    narrower than ``MIN_LABEL_WIDTH``).
+    Native vector and batch controls interpret the column as a window-local X
+    coordinate. FieldLabel takes a relative span instead, so subtract the row's
+    cursor X here. Keeping this conversion in one place also aligns references,
+    colors and scalar widgets inside indented sections and child windows.
     """
     if width <= 0.0:
         width = max(
             ctx.calc_text_width(label) + Theme.INSPECTOR_LABEL_PAD,
             Theme.INSPECTOR_MIN_LABEL_WIDTH,
         )
-    ctx.field_label(label, width)
+    ctx.field_label(label, max(1.0, width - ctx.get_cursor_pos_x()))
+    # SameLine also accounts for ImGui table/group offsets. Use the identical
+    # anchor as native batch/vector rows rather than approximating that origin.
+    ctx.same_line(width, 0.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -383,13 +389,45 @@ def _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_vis
         import infernux.lib as _lib
         enum_cls = getattr(_lib, enum_cls, None)
     if enum_cls is not None:
+        if isinstance(enum_cls, type) and issubclass(enum_cls, Flag):
+            members = list(enum_cls.__members__.values())
+            names = resolve_enum_display_labels(metadata, members)
+            labels = {member.name: name for member, name in zip(members, names)}
+            current = (
+                current_value
+                if isinstance(current_value, enum_cls)
+                else enum_cls(current_value or 0)
+            )
+            if any(
+                member.value < -(1 << 63) or member.value >= (1 << 64)
+                for member in [current, *members]
+            ):
+                ctx.label(f"{display_name}: {current}")
+                return current
+            summary = ", ".join(
+                labels.get(part, part) for part in (current.name or "0").split("|")
+            )
+            _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
+            mask64 = (1 << 64) - 1
+            updated = ctx.flags_combo(
+                wid,
+                current.value & mask64,
+                names,
+                [member.value & mask64 for member in members],
+                summary,
+            )
+            if updated & (1 << 63) and any(member.value < 0 for member in members):
+                updated -= 1 << 64
+            return enum_cls(updated)
         members = get_enum_members(enum_cls)
         if not members:
             ctx.label(f"{display_name}: {current_value}")
             return current_value
-        if (hasattr(metadata, "enum_labels")
-                and metadata.enum_labels
-                and len(metadata.enum_labels) == len(members)):
+        if (
+            hasattr(metadata, "enum_labels")
+            and metadata.enum_labels
+            and len(metadata.enum_labels) == len(members)
+        ):
             member_names = resolve_enum_display_labels(metadata, members)
         else:
             member_names = [get_enum_member_name(m) for m in members]
@@ -500,7 +538,7 @@ def render_serialized_field(
         ctx.push_id_str(str(wid))
         try:
             checkbox_label = display_name if has_visible_label else "##value"
-            return render_inspector_checkbox(ctx, checkbox_label, bool(current_value))
+            return render_inspector_checkbox(ctx, checkbox_label, bool(current_value), lw)
         finally:
             ctx.pop_id()
     if ft == FieldType.STRING:
@@ -908,14 +946,20 @@ def render_component_header(
     return header_open, new_enabled
 
 
-def render_inspector_checkbox(ctx: InxGUIContext, label: str, value: bool) -> bool:
-    """Render a compact checkbox: one fixed square size, ambient-size label."""
-    checkbox_inspector = getattr(ctx, "checkbox_inspector", None)
-    if not callable(checkbox_inspector):
+def render_inspector_checkbox(
+    ctx: InxGUIContext, label: str, value: bool, label_width: float = 0.0,
+) -> bool:
+    """Render a field label on the left and a compact square in the value column."""
+    checkbox_field = getattr(ctx, "checkbox_field", None)
+    if not callable(checkbox_field):
         raise RuntimeError(
-            "Inspector rendering requires the native checkbox_inspector binding"
+            "Inspector rendering requires the native checkbox_field binding"
         )
-    return bool(checkbox_inspector(label, value))
+    visible, separator, suffix = str(label).partition("##")
+    if visible:
+        field_label(ctx, visible, label_width)
+    widget_id = f"##{suffix}" if separator else f"##bool_{label}"
+    return bool(checkbox_field(widget_id, value))
 
 
 def render_compact_section_header(
@@ -1149,6 +1193,7 @@ def build_scalar_desc(
         desc["i"] = int(current_value) if current_value is not None else 0
     elif prop_type == PROP_BOOL:
         desc["b"] = bool(current_value) if current_value is not None else False
+        desc["fl"] = True
     elif prop_type == PROP_STRING:
         desc["s"] = str(current_value) if current_value else ""
     elif prop_type == PROP_VEC2:
@@ -1161,10 +1206,17 @@ def build_scalar_desc(
         enum_cls = metadata.enum_type
         if isinstance(enum_cls, str):
             import infernux.lib as _lib
+
             enum_cls = getattr(_lib, enum_cls, None)
         if enum_cls is not None:
+            if isinstance(enum_cls, type) and issubclass(enum_cls, Flag):
+                return None  # A single enum index cannot represent a flag mask.
             members = get_enum_members(enum_cls)
-            if hasattr(metadata, "enum_labels") and metadata.enum_labels and len(metadata.enum_labels) == len(members):
+            if (
+                hasattr(metadata, "enum_labels")
+                and metadata.enum_labels
+                and len(metadata.enum_labels) == len(members)
+            ):
                 desc["en"] = resolve_enum_display_labels(metadata, members)
             else:
                 desc["en"] = [get_enum_member_name(m) for m in members]

@@ -168,7 +168,7 @@ class Coroutine:
     __slots__ = (
         "_id", "_generator", "_owner_ref", "_current_yield", "_is_finished",
         "_phase", "_creation_epoch", "_creation_epoch_id", "_is_stale_epoch",
-        "_wait_progress", "_wait_limit",
+        "_wait_progress", "_wait_limit", "_execution_owner",
     )
 
     def __init__(
@@ -182,6 +182,9 @@ class Coroutine:
         self._id: int = Coroutine._next_id
         self._generator: Optional[Generator] = generator
         self._owner_ref: Any = owner          # component reference for error reporting
+        from infernux.execution import ExecutionScope, capture_execution_scope
+        self._execution_owner = (owner if isinstance(owner, ExecutionScope) or
+            hasattr(owner, '_runtime_active_in_hierarchy') else capture_execution_scope())
         self._current_yield: Any = None
         self._wait_progress: float | int = 0
         self._wait_limit: float | int = 0
@@ -307,7 +310,9 @@ class CoroutineScheduler:
         coroutine._generator = None
         self._notify_active_changed(was_active)
         if generator is not None:
-            generator.close()
+            from infernux.execution import component_execution
+            with component_execution(coroutine._execution_owner):
+                generator.close()
 
     def stop_all(self) -> None:
         """Stop every running coroutine."""
@@ -318,15 +323,17 @@ class CoroutineScheduler:
         for co in coroutines:
             co._is_finished = True
             if co._generator is not None:
-                generators.append(co._generator)
+                generators.append((co._execution_owner, co._generator))
                 co._generator = None
         self._stale_epoch_count = 0
         self._notify_active_changed(was_active)
 
         errors: list[Exception] = []
-        for generator in generators:
+        from infernux.execution import component_execution
+        for owner, generator in generators:
             try:
-                generator.close()
+                with component_execution(owner):
+                    generator.close()
             except Exception as exc:
                 errors.append(exc)
         if errors:
@@ -364,9 +371,9 @@ class CoroutineScheduler:
         """Process coroutines waiting in the **update** phase."""
         self._tick("update", scaled_dt, epoch=epoch)
 
-    def tick_fixed_update(self, fixed_dt: float, *, epoch: Any = None) -> None:
+    def tick_fixed_update(self, fixed_dt: float, *, epoch: Any = None, continuation=None) -> bool:
         """Process coroutines waiting in the **fixed_update** phase."""
-        self._tick("fixed_update", fixed_dt, epoch=epoch)
+        return self._tick("fixed_update", fixed_dt, epoch=epoch, continuation=continuation)
 
     def tick_late_update(self, scaled_dt: float, *, epoch: Any = None) -> None:
         """Process coroutines waiting in the **late_update** phase."""
@@ -374,9 +381,9 @@ class CoroutineScheduler:
 
     # -- Internal -----------------------------------------------------------
 
-    def _tick(self, phase: str, dt: float, *, epoch: Any = None) -> None:
+    def _tick(self, phase: str, dt: float, *, epoch: Any = None, continuation=None) -> bool:
         if not self._coroutines:
-            return
+            return True
         if epoch is not None:
             self._observe_epoch(epoch)
 
@@ -386,56 +393,78 @@ class CoroutineScheduler:
 
         # Iterate a snapshot so that coroutines started from within user code
         # during _advance don't affect the current tick.
-        for co in list(self._coroutines):
-            if co._is_finished:
-                to_remove.append(co)
-                continue
-            if co._phase != phase:
+        from infernux.execution import simulation_state
+        admitted_state = simulation_state()
+        cursor = [tuple(self._coroutines), 0, None] if continuation is None else continuation
+        if not cursor:
+            cursor.extend((tuple(self._coroutines), 0, None))
+        while cursor[1] < len(cursor[0]):
+            co = cursor[0][cursor[1]]
+            if simulation_state() != admitted_state:
+                break
+            if co._is_finished or co._phase != phase:
+                if co._is_finished:
+                    to_remove.append(co)
+                cursor[1] += 1
+                cursor[2] = None
                 continue
 
-            should_advance = False
-            current = co._current_yield
+            if cursor[2] is None:
+                should_advance = False
+                current = co._current_yield
 
-            try:
-                if current is None:
-                    # ``yield None`` / bare ``yield`` → wait one frame
-                    should_advance = True
-                elif isinstance(current, WaitForSeconds):
-                    progress = co._wait_progress + dt
-                    co._wait_progress = progress
-                    should_advance = progress >= co._wait_limit
-                elif isinstance(current, WaitForSecondsRealtime):
-                    should_advance = _time.monotonic() >= co._wait_limit
-                elif isinstance(current, WaitForEndOfFrame) or isinstance(current, WaitForFrames):
-                    co._wait_progress += 1
-                    should_advance = co._wait_progress >= co._wait_limit
-                elif isinstance(current, WaitForFixedUpdate):
-                    # Already in the correct phase (fixed_update)
-                    should_advance = True
-                elif isinstance(current, WaitUntil):
-                    should_advance = current._is_ready()
-                elif isinstance(current, WaitWhile):
-                    should_advance = current._is_ready()
-                elif isinstance(current, Coroutine):
-                    # Nested/chained coroutine — wait for it to finish
-                    should_advance = current._is_finished
-                else:
-                    raise TypeError(
-                        "unsupported coroutine yield value "
-                        f"{type(current).__name__}; yield None, a yield instruction, "
-                        "or a Coroutine handle"
-                    )
-            except Exception as exc:
                 try:
-                    self.stop(co)
-                except Exception as cleanup_error:
-                    errors.append(ExceptionGroup("coroutine wait and cleanup failed", [exc, cleanup_error]))
-                else:
-                    errors.append(exc)
-                # stop() already published any active-state transition.
-                was_active = bool(self._coroutines)
-                continue
+                    if current is None:
+                        # ``yield None`` / bare ``yield`` → wait one frame
+                        should_advance = True
+                    elif isinstance(current, WaitForSeconds):
+                        progress = co._wait_progress + dt
+                        co._wait_progress = progress
+                        should_advance = progress >= co._wait_limit
+                    elif isinstance(current, WaitForSecondsRealtime):
+                        should_advance = _time.monotonic() >= co._wait_limit
+                    elif isinstance(current, WaitForEndOfFrame) or isinstance(current, WaitForFrames):
+                        co._wait_progress += 1
+                        should_advance = co._wait_progress >= co._wait_limit
+                    elif isinstance(current, WaitForFixedUpdate):
+                        # Already in the correct phase (fixed_update)
+                        should_advance = True
+                    elif isinstance(current, WaitUntil):
+                        from infernux.execution import component_execution
+                        with component_execution(co._execution_owner):
+                            should_advance = current._is_ready()
+                    elif isinstance(current, WaitWhile):
+                        from infernux.execution import component_execution
+                        with component_execution(co._execution_owner):
+                            should_advance = current._is_ready()
+                    elif isinstance(current, Coroutine):
+                        # Nested/chained coroutine — wait for it to finish
+                        should_advance = current._is_finished
+                    else:
+                        raise TypeError(
+                            "unsupported coroutine yield value "
+                            f"{type(current).__name__}; yield None, a yield instruction, "
+                            "or a Coroutine handle"
+                        )
+                except Exception as exc:
+                    try:
+                        self.stop(co)
+                    except Exception as cleanup_error:
+                        errors.append(ExceptionGroup("coroutine wait and cleanup failed", [exc, cleanup_error]))
+                    else:
+                        errors.append(exc)
+                    # stop() already published any active-state transition.
+                    was_active = bool(self._coroutines)
+                    cursor[1] += 1
+                    cursor[2] = None
+                    continue
 
+                cursor[2] = should_advance
+            if simulation_state() != admitted_state:
+                break
+            should_advance = cursor[2]
+            cursor[1] += 1
+            cursor[2] = None
             if should_advance:
                 self._advance(co)
                 if co._is_finished:
@@ -450,6 +479,7 @@ class CoroutineScheduler:
             raise errors[0]
         if errors:
             raise ExceptionGroup("coroutine waits failed", errors)
+        return cursor[1] == len(cursor[0])
 
     def _advance(self, co: Coroutine) -> None:
         """Call ``next()`` on the generator and update the coroutine state."""
@@ -457,7 +487,9 @@ class CoroutineScheduler:
             co._is_finished = True
             return
         try:
-            value = next(co._generator)
+            from infernux.execution import component_execution
+            with component_execution(co._execution_owner):
+                value = next(co._generator)
         except StopIteration:
             co._is_finished = True
             co._generator = None

@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.25)
 
+option(INFERNUX_PLATFORM_PLUGINS_ONLY "Configure only the platform plugin release orchestrator" OFF)
+if(INFERNUX_PLATFORM_PLUGINS_ONLY)
+    project(InfernuxPlatformPlugins LANGUAGES NONE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxPlatformPlugins.cmake")
+    return()
+endif()
+
 # Minimum only, not an upper bound: newer CMake (including 4.x) is supported.
 # Preset schema 6 and workflow presets require 3.25; lowering this alone would
 # advertise a toolchain that cannot read the checked-in build entry points.

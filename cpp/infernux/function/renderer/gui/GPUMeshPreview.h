@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MeshPreviewPreparation.h"
 #include <function/renderer/rhi/RenderViewContext.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDescriptorManager.h>
@@ -16,16 +17,30 @@ namespace infernux
 namespace vk
 {
 class GraphicsSubmissionTicket;
-class ImageReadbackTicket;
+class BufferUploadTicket;
 } // namespace vk
 
 class InxVkCoreModular;
 class AssetDatabase;
+class PreviewDisplay;
+struct PreviewImage;
+
+/// An individual request retains its source and byte cursors across advances.
+/// Cancelling it drops unpublished buffers; accepted blocks retire in the RM.
+struct PreviewGeometryUpload
+{
+    std::shared_ptr<const MeshGeometry> geometry;
+    std::shared_ptr<const InxSkinnedMesh> skin;
+    MeshIndexFormat format = MeshIndexFormat::Auto;
+    VkIndexType indexType = VK_INDEX_TYPE_UINT32;
+    std::shared_ptr<vk::BufferUploadTicket> vertices;
+    std::shared_ptr<vk::BufferUploadTicket> indices;
+};
 
 /// @brief GPU-based mesh preview renderer.
 ///
 /// Renders an arbitrary InxMesh (with per-submesh materials) into a small
-/// offscreen attachment set and reads back RGBA8 pixels for editor thumbnails.
+/// offscreen attachment set and publishes independent GPU editor thumbnails.
 /// Camera is auto-fitted to the mesh AABB.
 ///
 /// Reuses the same attachment format as GPUMaterialPreview so material
@@ -39,21 +54,21 @@ class GPUMeshPreview
     GPUMeshPreview(const GPUMeshPreview &) = delete;
     GPUMeshPreview &operator=(const GPUMeshPreview &) = delete;
 
-    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginRenderToPixels(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size);
-    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginRenderToPixelsCamera(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
-                              const glm::mat4 &view, const glm::mat4 &proj, const glm::vec3 &cameraPos,
-                              bool cloneMaterials = true);
-    bool TryCompleteRenderToPixels(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
-                                   std::vector<unsigned char> &outPixels);
+    bool PrepareMaterials(const std::vector<std::shared_ptr<InxMaterial>> &sources,
+                          std::vector<std::shared_ptr<InxMaterial>> &prepared, bool &progressed);
+
+    [[nodiscard]] std::shared_ptr<PreviewImage> BeginRender(const InxMesh &mesh,
+                                                            const std::vector<std::shared_ptr<InxMaterial>> &materials,
+                                                            int size, std::shared_ptr<PreviewGeometryUpload> &geometry,
+                                                            bool &progressed, bool &materialsChanged);
 
     /// @brief Live editor preview: render directly into a GPU image and return an
     ///        ImGui texture id.  Avoids CPU readback + re-upload every frame
     ///        (same idea as SceneRenderTarget).  Uses scene MSAA/format settings.
     uint64_t RenderToImGuiTextureCamera(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
                                         int size, const glm::mat4 &view, const glm::mat4 &proj,
-                                        const glm::vec3 &cameraPos, bool cloneMaterials = false,
+                                        const glm::vec3 &cameraPos, std::shared_ptr<PreviewGeometryUpload> &geometry,
+                                        bool &progressed, bool cloneMaterials = false,
                                         const std::vector<glm::mat4> *bonePalette = nullptr);
 
     uint64_t RenderAnimation(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds, int size,
@@ -75,8 +90,12 @@ class GPUMeshPreview
     }
 
   private:
-    bool EnsureResources(int size);
-    bool EnsureViewResources();
+    PreviewAssetLoads m_animationMaterialLoads;
+    bool m_animationMaterialsReady = false;
+    bool EnsureResources(int size, bool &progressed);
+    bool PrepareGeometry(const InxMesh &mesh, std::shared_ptr<PreviewGeometryUpload> &upload, bool &progressed,
+                         const std::shared_ptr<const InxSkinnedMesh> &skin = {});
+    bool EnsureViewResources(bool &progressed);
     void DestroyViewResources();
     void EnsureImGuiDisplayDescriptor();
     void DestroyImGuiDisplayDescriptor();
@@ -111,17 +130,18 @@ class GPUMeshPreview
     VkDescriptorSet m_previewGlobalsSet = VK_NULL_HANDLE;
     vk::DescriptorLease m_previewGlobalsLease;
     std::shared_ptr<vk::GraphicsSubmissionTicket> m_activeSubmission;
-    std::shared_ptr<vk::ImageReadbackTicket> m_activeReadback;
+    uint64_t m_gpuNanoseconds = 0;
+    std::unique_ptr<PreviewDisplay> m_display;
 
     // Isolated animation preview retains one published source and GPU geometry.
     std::shared_ptr<InxMesh> m_animationMesh;
     uint64_t m_animationGeneration = 0;
     uint64_t m_animationRevision = 0;
     std::vector<std::shared_ptr<InxMaterial>> m_animationMaterials;
-    std::shared_ptr<const InxSkinnedMesh> m_uploadedSkin;
-    MeshIndexFormat m_uploadedSkinIndexFormat = MeshIndexFormat::Auto;
-    std::shared_ptr<vk::VkBufferHandle> m_skinVertices;
-    std::shared_ptr<vk::VkBufferHandle> m_skinIndices;
+    std::shared_ptr<PreviewGeometryUpload> m_animationGeometry;
+    std::string m_framedTake;
+    glm::vec3 m_animationFrameMin{0.0f};
+    glm::vec3 m_animationFrameMax{0.0f};
     std::string m_renderedTake;
     float m_renderedSeconds = -1.0f;
     int m_renderedSize = 0;

@@ -1,0 +1,46 @@
+{
+  "$schema": "infernux.platform_players",
+  "python_abi": "cp313",
+  "platforms": [
+    {
+      "id": "windows",
+      "reference": "infernux/platform-windows",
+      "repository_path": "external/plugins/infernux_windows",
+      "targets": ["windows-x64"],
+      "payload_format": "desktop",
+      "native_platform": "win32",
+      "machine": "x86_64",
+      "ci_job": "windows"
+    },
+    {
+      "id": "linux",
+      "reference": "infernux/platform-linux",
+      "repository_path": "external/plugins/infernux_linux",
+      "targets": ["linux-x64"],
+      "payload_format": "desktop",
+      "native_platform": "linux",
+      "machine": "x86_64",
+      "ci_job": "linux"
+    },
+    {
+      "id": "web",
+      "reference": "infernux/platform-web",
+      "repository_path": "external/plugins/infernux_web",
+      "targets": ["web-wasm32"],
+      "payload_format": "web",
+      "native_platform": "web",
+      "ci_job": "web-package"
+    },
+    {
+      "id": "android",
+      "reference": "infernux/platform-android",
+      "repository_path": "external/plugins/infernux_android",
+      "targets": ["android-arm64", "android-x64-emulator"],
+      "payload_format": "android",
+      "native_platform": "android",
+      "abis": ["arm64-v8a", "x86_64"],
+      "elf_machines": {"arm64-v8a": 183, "x86_64": 62},
+      "ci_job": "android"
+    }
+  ]
+}

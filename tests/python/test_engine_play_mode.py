@@ -110,11 +110,23 @@ class _FakeScriptSceneManager:
 class TestPlayModeManager:
     def test_paused_step_sequence_records_completed_commands(self):
         class _SceneManager:
+            simulation_epoch = 1
+            fixed_step_index = 0
+            published_fixed_step_index = 0
+            runtime_frame_count = 0
+            fixed_step_pending = False
+            stepping = False
             def __init__(self):
                 self.steps = []
 
             def step(self, delta_time):
                 self.steps.append(delta_time)
+                self.fixed_step_index += 1
+                self.published_fixed_step_index += 1
+                self.runtime_frame_count += 1
+
+            def is_stepping(self):
+                return self.stepping
 
         mgr = PlayModeManager()
         scene_manager = _SceneManager()
@@ -130,9 +142,20 @@ class TestPlayModeManager:
         assert mgr.step_sequence == 1
         mgr.process_pending_step()
         assert mgr.step_sequence == 2
-        assert scene_manager.steps == [pytest.approx(1.0 / 60.0)] * 2
+
+        immediate_step = scene_manager.step
+        scene_manager.step = lambda dt: setattr(scene_manager, 'stepping', True)
+        mgr.step_frame()
+        mgr.process_pending_step()
         mgr.process_pending_step()
         assert mgr.step_sequence == 2
+        immediate_step(1.0 / 60.0)
+        scene_manager.stepping = False
+        mgr.process_pending_step()
+        assert mgr.step_sequence == 3
+        assert scene_manager.steps == [pytest.approx(1.0 / 60.0)] * 3
+        mgr.process_pending_step()
+        assert mgr.step_sequence == 3
 
     def test_paused_step_runs_after_authoring_transaction(self):
         from infernux.engine.runtime_change_journal import RuntimeChangeJournal
@@ -140,7 +163,15 @@ class TestPlayModeManager:
         journal = RuntimeChangeJournal()
         mgr = PlayModeManager()
         mgr._state = PlayModeState.PAUSED
-        mgr._get_scene_manager = lambda: SimpleNamespace(step=lambda dt: journal.flush())
+        scene_manager = SimpleNamespace(simulation_epoch=1, fixed_step_index=0,
+            published_fixed_step_index=0, runtime_frame_count=0, fixed_step_pending=False, is_stepping=lambda: False)
+        def step(dt):
+            journal.flush()
+            scene_manager.fixed_step_index += 1
+            scene_manager.published_fixed_step_index += 1
+            scene_manager.runtime_frame_count += 1
+        scene_manager.step = step
+        mgr._get_scene_manager = lambda: scene_manager
         with journal.transaction():
             assert mgr.step_frame()
             assert mgr.step_sequence == 0

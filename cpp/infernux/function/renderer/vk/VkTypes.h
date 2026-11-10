@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include <core/config/InxPlatform.h>
 #ifdef INX_PLATFORM_WINDOWS
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -64,10 +66,10 @@ struct QueueFamilyIndices
      * @brief Check if all required queue families are available
      * @return true if all queue families have valid indices
      */
-    [[nodiscard]] bool IsComplete() const noexcept
+    [[nodiscard]] bool IsComplete(bool presentation = true) const noexcept
     {
-        return graphicsFamily.has_value() && computeFamily.has_value() && presentFamily.has_value() &&
-               transferFamily.has_value();
+        return graphicsFamily.has_value() && computeFamily.has_value() &&
+               (!presentation || presentFamily.has_value()) && transferFamily.has_value();
     }
 
     /**
@@ -112,6 +114,9 @@ struct QueueConfig
  */
 struct DeviceConfig
 {
+    /// Headless compute still uses a graphics/compute-capable adapter, without
+    /// requiring a window surface, presentation queue or rendering features.
+    bool presentation = true;
     const char *appName = "Infernux App"; ///< Application name
     uint32_t appVersionMajor = 1;         ///< Application major version
     uint32_t appVersionMinor = 0;         ///< Application minor version
@@ -227,7 +232,7 @@ class DeletionQueue
  * @param result The VkResult value
  * @return String representation of the result
  */
-[[nodiscard]] const char *VkResultToString(VkResult result);
+[[nodiscard]] INFERNUX_VULKAN_BACKEND_API const char *VkResultToString(VkResult result);
 
 /**
  * @brief Check if a VkResult indicates success

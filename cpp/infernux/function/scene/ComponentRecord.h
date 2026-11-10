@@ -20,6 +20,7 @@ struct DecodedComponentRecord
     ComponentRecordKind kind = ComponentRecordKind::Native;
     uint64_t componentId = 0;
     uint64_t prefabSourceId = 0;
+    std::string prefabSourceGuid;
     std::string typeId;
     bool enabled = true;
     int executionOrder = 0;

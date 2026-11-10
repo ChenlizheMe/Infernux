@@ -172,5 +172,5 @@ def test_real_fsm_update_keeps_root_motion_partition_independent(motion_model, s
         assert animator.current_state == "Move" and animator.is_playing
         expected = _world_pose(owner.transform) @ _expected_delta(0., duration, loop, angle, scale)
         for _ in range(steps):
-            animator.update(duration / steps)
+            animator.animation_update(duration / steps)
         np.testing.assert_allclose(_world_pose(owner.transform), expected, atol=3e-4, rtol=0., err_msg=f"steps={steps}")

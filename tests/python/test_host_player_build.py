@@ -84,7 +84,7 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
     registration = exporter_registry.register("test:host-build", _FixtureExporter())
     monkeypatch.setattr(
         "infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
-        lambda _root: {"entries": [{"guid": "a" * 32}]},
+        lambda _root: {"entries": [{"guid": "a" * 32}], "runtime_type_records": []},
     )
     project = _project(tmp_path)
     elsewhere = tmp_path / "UnrelatedWorkingDirectory"
@@ -147,7 +147,7 @@ def test_host_build_settings_publication_preserves_other_author(
     registration = exporter_registry.register("test:host-build-conflict", ConcurrentExporter())
     monkeypatch.setattr(
         "infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
-        lambda _root: {"entries": [{"guid": "a" * 32}]},
+        lambda _root: {"entries": [{"guid": "a" * 32}], "runtime_type_records": []},
     )
     try:
         if persist:

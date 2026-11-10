@@ -1,6 +1,11 @@
 // Python bindings for native four-component vectors and quaternions.
 
 #include "BindingRegistration.h"
+#include "PythonEase.h"
+#include "VectorBindingMath.h"
+#include "infernux/core/math/QuaternionEuler.h"
+#include "infernux/core/math/QuaternionInterpolation.h"
+#include "infernux/core/math/QuaternionLookRotation.h"
 #include <cmath>
 #include <functional>
 #include <glm/glm.hpp>
@@ -28,14 +33,6 @@ inline float Dot(const glm::vec4 &a, const glm::vec4 &b)
 {
     return glm::dot(a, b);
 }
-inline float Magnitude(const glm::vec4 &v)
-{
-    return glm::length(v);
-}
-inline float SqrMagnitude(const glm::vec4 &v)
-{
-    return glm::dot(v, v);
-}
 inline glm::vec4 Project(const glm::vec4 &a, const glm::vec4 &b)
 {
     float denom = Dot(b, b);
@@ -45,7 +42,7 @@ inline glm::vec4 Project(const glm::vec4 &a, const glm::vec4 &b)
 }
 inline float Distance(const glm::vec4 &a, const glm::vec4 &b)
 {
-    return Magnitude(a - b);
+    return glm::length(a - b);
 }
 inline glm::vec4 Lerp(const glm::vec4 &a, const glm::vec4 &b, float t)
 {
@@ -67,19 +64,11 @@ inline glm::vec4 Min(const glm::vec4 &a, const glm::vec4 &b)
 inline glm::vec4 MoveTowards(const glm::vec4 &current, const glm::vec4 &target, float maxDelta)
 {
     glm::vec4 to = target - current;
-    float dist = Magnitude(to);
+    float dist = glm::length(to);
     if (dist <= maxDelta || dist < 1e-6f)
         return target;
     return current + to * (maxDelta / dist);
 }
-inline glm::vec4 Normalize(const glm::vec4 &v)
-{
-    float mag = Magnitude(v);
-    if (mag < 1e-6f)
-        return glm::vec4(0.f);
-    return v / mag;
-}
-
 inline float RequireFiniteFloat(float value)
 {
     if (!std::isfinite(value))
@@ -109,7 +98,7 @@ inline glm::vec4 SmoothDamp(glm::vec4 current, glm::vec4 target, glm::vec4 &curr
     glm::vec4 originalTarget = target;
     glm::vec4 diff = current - target;
     float maxDist = maxSpeed * smoothTime;
-    float dist = Magnitude(diff);
+    float dist = glm::length(diff);
     if (std::isfinite(maxDist) && dist > maxDist && dist > 1e-6f)
         diff = diff * (maxDist / dist);
     glm::vec4 targetPos = current - diff;
@@ -289,20 +278,19 @@ void RegisterVec4fBindings(py::module_ &m)
             .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z, -v.w); })
             .def("__len__", [](const Vec &) { return 4; })
             .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z, v.w).attr("__iter__")(); })
-            .def("__bool__", [](const Vec &v) { return vec4_util::SqrMagnitude(v) > 1e-12f; })
+            .def("__bool__", [](const Vec &v) { return glm::dot(v, v) > 1e-12f; })
             .def("__abs__",
                  [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y), std::abs(v.z), std::abs(v.w)); })
             .def("__copy__", [](const Vec &v) { return Vec(v); })
             .def("__deepcopy__", [](const Vec &v, py::dict) { return Vec(v); })
             // ---- Instance properties ----
             .def_property_readonly(
-                "magnitude", [](const Vec &v) { return vec4_util::Magnitude(v); },
+                "magnitude", [](const Vec &v) { return glm::length(v); },
                 "Length of this vector. Unity: vector.magnitude")
+            .def_property_readonly("normalized", &vector_binding::Normalize<Vec>,
+                                   "Normalized copy of this vector. Unity: vector.normalized")
             .def_property_readonly(
-                "normalized", [](const Vec &v) { return vec4_util::Normalize(v); },
-                "Normalized copy of this vector. Unity: vector.normalized")
-            .def_property_readonly(
-                "sqr_magnitude", [](const Vec &v) { return vec4_util::SqrMagnitude(v); },
+                "sqr_magnitude", [](const Vec &v) { return glm::dot(v, v); },
                 "Squared length of this vector. Unity: vector.sqrMagnitude")
             // ---- Instance methods ----
             .def(
@@ -333,7 +321,7 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_static("negative_infinity", []() { return Vec(-std::numeric_limits<float>::infinity()); })
             .def_static("positive_infinity", []() { return Vec(std::numeric_limits<float>::infinity()); })
             // ---- Static math operations ----
-            .def_static("normalize", &vec4_util::Normalize)
+            .def_static("normalize", &vector_binding::Normalize<Vec>)
             .def_static("distance", &vec4_util::Distance)
             .def_static("project", &vec4_util::Project)
             .def_static("dot", &vec4_util::Dot)
@@ -383,7 +371,18 @@ void RegisterVec4fBindings(py::module_ &m)
                  })
             .def("__eq__", [](const Quat &a, const Quat &b) { return a == b; })
             .def("__ne__", [](const Quat &a, const Quat &b) { return a != b; })
-            .def("__mul__", [](const Quat &a, const Quat &b) { return a * b; })
+            .def("__mul__",
+                 [](const Quat &a, const Quat &b) {
+                     const auto value = rotation::MultiplyPublic({a.x, a.y, a.z, a.w}, {b.x, b.y, b.z, b.w});
+                     return Quat(value[3], value[0], value[1], value[2]);
+                 })
+            .def(
+                "__mul__",
+                [](const Quat &q, const glm::vec3 &point) {
+                    const auto value = rotation::RotatePublic({q.x, q.y, q.z, q.w}, {point.x, point.y, point.z});
+                    return glm::vec3(value[0], value[1], value[2]);
+                },
+                py::is_operator())
             .def("__getitem__",
                  [](const Quat &q, int i) -> float {
                      switch (i) {
@@ -411,55 +410,24 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_property_readonly(
                 "euler_angles",
                 [](const Quat &q) {
-                    auto toPublicAngleDegrees = [](float angle) {
-                        float positive = std::fmod(angle, 360.0f);
-                        if (positive < 0.0f) {
-                            positive += 360.0f;
-                        }
-
-                        constexpr float kUnityEulerSnapEpsilon = 0.005729578f;
-                        if (positive < kUnityEulerSnapEpsilon || positive > 360.0f - kUnityEulerSnapEpsilon) {
-                            return 0.0f;
-                        }
-
-                        return positive;
-                    };
-
-                    // YXZ intrinsic extraction (Unity convention)
-                    float sinX = 2.0f * (q.w * q.x - q.y * q.z);
-                    float x, y, z;
-                    if (std::abs(sinX) < 0.9999f) {
-                        x = std::asin(sinX);
-                        y = std::atan2(2.0f * (q.x * q.z + q.w * q.y), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
-                        z = std::atan2(2.0f * (q.x * q.y + q.w * q.z), 1.0f - 2.0f * (q.x * q.x + q.z * q.z));
-                    } else {
-                        x = std::copysign(glm::half_pi<float>(), sinX);
-                        y = std::atan2(-(2.0f * (q.x * q.z - q.w * q.y)), 1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-                        z = 0.0f;
-                    }
-                    glm::vec3 euler = glm::degrees(glm::vec3(x, y, z));
-                    return glm::vec3(toPublicAngleDegrees(euler.x), toPublicAngleDegrees(euler.y),
-                                     toPublicAngleDegrees(euler.z));
+                    const auto euler = rotation::ToPublicEulerYXZ(q.x, q.y, q.z, q.w);
+                    return glm::vec3(euler[0], euler[1], euler[2]);
                 },
                 "Convert to Euler angles (degrees, YXZ convention)")
             .def_property_readonly(
-                "normalized", [](const Quat &q) { return glm::normalize(q); }, "Normalized copy of this quaternion")
+                "normalized",
+                [](const Quat &q) {
+                    const auto value = rotation::NormalizePublic(q.x, q.y, q.z, q.w);
+                    return Quat(value[3], value[0], value[1], value[2]);
+                },
+                "Normalized copy of this quaternion")
             // ---- Static constructors ----
             .def_static("identity", []() { return Quat(1.f, 0.f, 0.f, 0.f); })
             .def_static(
                 "euler",
                 [](float x, float y, float z) {
-                    // YXZ intrinsic: q = qY * qX * qZ (Unity convention)
-                    glm::vec3 r = glm::radians(glm::vec3(x, y, z));
-                    float cx = std::cos(r.x * 0.5f), sx = std::sin(r.x * 0.5f);
-                    float cy = std::cos(r.y * 0.5f), sy = std::sin(r.y * 0.5f);
-                    float cz = std::cos(r.z * 0.5f), sz = std::sin(r.z * 0.5f);
-                    glm::quat q;
-                    q.w = cy * cx * cz + sy * sx * sz;
-                    q.x = cy * sx * cz + sy * cx * sz;
-                    q.y = sy * cx * cz - cy * sx * sz;
-                    q.z = cy * cx * sz - sy * sx * cz;
-                    return q;
+                    const auto value = rotation::FromEulerYXZ(x, y, z);
+                    return Quat(value[3], value[0], value[1], value[2]);
                 },
                 py::arg("x"), py::arg("y"), py::arg("z"),
                 "Create quaternion from Euler angles (degrees, YXZ convention)")
@@ -472,27 +440,15 @@ void RegisterVec4fBindings(py::module_ &m)
             .def_static(
                 "look_rotation",
                 [](const glm::vec3 &forward, const glm::vec3 &up) {
-                    const float forwardLength = glm::length(forward);
-                    if (forwardLength == 0.0f)
-                        return Quat(1.f, 0.f, 0.f, 0.f);
-                    const glm::vec3 direction = forward / forwardLength;
-                    const glm::vec3 right = glm::cross(up, direction);
-                    if (glm::dot(right, right) < 1e-12f) {
-                        if (direction.z == -1.0f)
-                            return Quat(0.f, 0.f, 1.f, 0.f);
-                        return glm::normalize(Quat(1.0f + direction.z, -direction.y, direction.x, 0.0f));
-                    }
-                    const glm::vec3 normalizedRight = glm::normalize(right);
-                    return glm::quat_cast(
-                        glm::mat3(normalizedRight, glm::cross(direction, normalizedRight), direction));
+                    const auto q = rotation::LookRotation({forward.x, forward.y, forward.z}, {up.x, up.y, up.z});
+                    return Quat(q[3], q[0], q[1], q[2]);
                 },
                 py::arg("forward"), py::arg("up") = glm::vec3(0.f, 1.f, 0.f),
                 "Create rotation looking in forward direction")
             // ---- Static math ----
             .def_static("dot", [](const Quat &a, const Quat &b) { return glm::dot(a, b); })
             .def_static("angle", &QuaternionAngleDegrees)
-            .def_static("slerp",
-                        [](const Quat &a, const Quat &b, float t) { return glm::slerp(a, b, std::clamp(t, 0.f, 1.f)); })
+            .def_static("slerp", [](const Quat &a, const Quat &b, float t) { return rotation::Slerp(a, b, t); })
             .def_static("lerp", [](const Quat &a, const Quat &b,
                                    float t) { return glm::normalize(glm::lerp(a, b, std::clamp(t, 0.f, 1.f))); })
             .def_static("inverse", [](const Quat &q) { return glm::inverse(q); })
@@ -506,6 +462,16 @@ void RegisterVec4fBindings(py::module_ &m)
                     return glm::slerp(from, to, t);
                 },
                 py::arg("from"), py::arg("to"), py::arg("max_degrees_delta"));
+        m.def("_sample_quaternion_ease",
+              [](Quat start, Quat end, const py::function &ease, const py::object &progress) {
+                  const float factor = static_cast<float>(bindings::SamplePythonEase(ease, progress));
+                  return rotation::Slerp(start, end, factor);
+              });
+        m.def("_sample_quaternion_ease",
+              [](Quat start, Quat end, const py::function &ease, double elapsed, double duration) {
+                  const float factor = static_cast<float>(bindings::SamplePythonEase(ease, elapsed, duration));
+                  return rotation::Slerp(start, end, factor);
+              });
     }
 }
 

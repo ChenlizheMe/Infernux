@@ -12,15 +12,18 @@ namespace infernux
 
 namespace vk
 {
-class ImageReadbackTicket;
-}
+class GraphicsSubmissionTicket;
+class BufferUploadTicket;
+} // namespace vk
 
 class InxVkCoreModular;
 class InxMaterial;
+class PreviewDisplay;
+struct PreviewImage;
 
 /// @brief GPU-based material preview renderer.
 /// Uses the real material pipeline (vertex + fragment shaders) to render a
-/// lit sphere into a small offscreen attachment set and reads back RGBA8 pixels.
+/// lit sphere into a private display texture, without a CPU pixel roundtrip.
 class GPUMaterialPreview
 {
   public:
@@ -30,10 +33,8 @@ class GPUMaterialPreview
     GPUMaterialPreview(const GPUMaterialPreview &) = delete;
     GPUMaterialPreview &operator=(const GPUMaterialPreview &) = delete;
 
-    [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> BeginRenderToPixels(InxMaterial &material, int size,
-                                                                               bool *texturePending = nullptr);
-    bool TryCompleteRenderToPixels(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
-                                   std::vector<unsigned char> &outPixels);
+    [[nodiscard]] std::shared_ptr<PreviewImage> BeginRender(InxMaterial &material, int size, bool &progressed,
+                                                            bool *texturePending = nullptr);
 
     [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
     {
@@ -41,11 +42,11 @@ class GPUMaterialPreview
     }
 
   private:
-    bool EnsureResources(int size);
-    bool EnsureViewResources();
+    bool EnsureResources(int size, bool &progressed);
+    bool EnsureViewResources(bool &progressed);
     void DestroyViewResources();
     void CreateAttachments(int size);
-    void CreateSphereBuffers();
+    bool PrepareSphereBuffers(bool &progressed);
     void DestroyAttachments();
     void PublishRenderView();
     void UnpublishRenderView();
@@ -58,7 +59,7 @@ class GPUMaterialPreview
 
     // MSAA color attachment
     vk::VkImageHandle m_msaaColor;
-    // Resolved (1x) color attachment for readback
+    // Resolved (1x) input to the display pass
     vk::VkImageHandle m_resolveColor;
     // MSAA depth attachment
     vk::VkImageHandle m_depth;
@@ -72,8 +73,9 @@ class GPUMaterialPreview
     vk::DescriptorLease m_fallbackShadowDescLease;
 
     // Sphere geometry
-    std::unique_ptr<vk::VkBufferHandle> m_sphereVBO;
-    std::unique_ptr<vk::VkBufferHandle> m_sphereIBO;
+    std::shared_ptr<vk::VkBufferHandle> m_sphereVBO;
+    std::shared_ptr<vk::BufferUploadTicket> m_sphereVertexUpload, m_sphereIndexUpload;
+    std::shared_ptr<vk::VkBufferHandle> m_sphereIBO;
     uint32_t m_sphereIndexCount = 0;
 
     std::unique_ptr<vk::VkBufferHandle> m_previewSceneUbo;
@@ -85,7 +87,9 @@ class GPUMaterialPreview
     std::unique_ptr<vk::VkBufferHandle> m_previewInstanceAuxBuffer;
     VkDescriptorSet m_previewGlobalsSet = VK_NULL_HANDLE;
     vk::DescriptorLease m_previewGlobalsLease;
-    std::shared_ptr<vk::ImageReadbackTicket> m_activeReadback;
+    std::shared_ptr<vk::GraphicsSubmissionTicket> m_activeSubmission;
+    uint64_t m_gpuNanoseconds = 0;
+    std::unique_ptr<PreviewDisplay> m_display;
 
     // Cached format info
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;

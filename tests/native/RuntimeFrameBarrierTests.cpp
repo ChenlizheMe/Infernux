@@ -67,7 +67,7 @@ int main()
     manager.SetRuntimeLifecycleWorkAvailable(true);
     // Production begin_frame publishes this immutable summary before the
     // native driver dispatches any phase callback.
-    manager.SetRuntimeLifecyclePlan(1, 1, 1, 1);
+    manager.SetRuntimeLifecyclePlan(1, 1, 1, 0, 1);
     manager.Update(0.0f);
     assert(beginCount == 1);
     assert(editorUpdateCount == 1);
@@ -106,6 +106,7 @@ int main()
                             Barrier::PhysicsSimulation,
                             Barrier::PhysicsToTransform,
                             Barrier::TransformResolve,
+                            Barrier::AnimationEvaluation,
                             Barrier::FinalTransformResolve,
                             Barrier::AnimationTimeline,
                             Barrier::RenderExtraction,
@@ -180,7 +181,9 @@ int main()
     child->SetParent(root, true);
     auto &transforms = TransformECSStore::Instance();
     std::vector<Transform *> invalidated;
-    transforms.SetInvalidationObserver([&invalidated](Transform *transform) { invalidated.push_back(transform); });
+    transforms.SetInvalidationObserver([&invalidated](Transform *transform, const Transform *) {
+        invalidated.push_back(transform);
+    });
     transforms.SyncSceneWorldMatrices(scene);
     transforms.BeginFrameCache();
     transforms.SetCachedWorldPoseFromPhysics(root->GetTransform()->GetECSHandle().index, glm::vec3(1.0f, 2.0f, 3.0f),
@@ -209,7 +212,7 @@ int main()
     assert(runtimeCreated->GetTransform()->GetPosition() == glm::vec3(7.0f, 8.0f, 9.0f));
     assert((invalidated == std::vector<Transform *>{runtimeCreated->GetTransform()}));
 
-    transforms.SetInvalidationObserver([](Transform *transform) {
+    transforms.SetInvalidationObserver([](Transform *transform, const Transform *) {
         auto *gameObject = transform ? transform->GetGameObject() : nullptr;
         if (gameObject)
             PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject);
@@ -237,7 +240,7 @@ int main()
                                              manager.ClearRuntimeLifecycleCallbacks();
                                          });
     manager.SetRuntimeLifecycleWorkAvailable(true);
-    manager.SetRuntimeLifecyclePlan(0, 0, 0, 0);
+    manager.SetRuntimeLifecyclePlan(0, 0, 0, 0, 0);
     manager.Update(0.0f);
     manager.EndFrame();
     manager.EndFrame();

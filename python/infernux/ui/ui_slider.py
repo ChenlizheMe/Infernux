@@ -95,23 +95,14 @@ class UISlider(UISelectable):
         height = float(height)
         local_rect = getattr(event_data.canvas, "element_rect", None)
         if callable(local_rect):
-            x, y, rect_width, rect_height = local_rect(self)
-            rotation = 0.0
+            from infernux.lib._Infernux import _ScreenRectGeometry
+            geometry = _ScreenRectGeometry(local_rect(self), 0.0)
         else:
-            x, y, rect_width, rect_height = self.get_rect(width, height)
-            rotation = float(self.get_layout_rotation())
+            geometry = self._resolved_rect_geometry(width, height)
+        _x, _y, rect_width, rect_height = geometry.rect
         if rect_width <= 0.0 or rect_height <= 0.0:
             return
-        px, py = event_data.position
-        center_x = x + rect_width * 0.5
-        center_y = y + rect_height * 0.5
-        radians = math.radians(-rotation)
-        cosine = math.cos(radians)
-        sine = math.sin(radians)
-        dx = float(px) - center_x
-        dy = float(py) - center_y
-        local_x = dx * cosine - dy * sine + rect_width * 0.5
-        local_y = dx * sine + dy * cosine + rect_height * 0.5
+        local_x, local_y = geometry.to_local(event_data.position)
         if self.fill_direction == UIFillDirection.LeftToRight:
             normalized = local_x / rect_width
         elif self.fill_direction == UIFillDirection.RightToLeft:

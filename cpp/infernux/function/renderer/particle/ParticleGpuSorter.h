@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuRuntime.h"
 #include "ParticleOutputSemantics.h"
 
@@ -19,7 +21,7 @@ struct GpuParticleSortProgram
     ShaderBytecode scan;
     ShaderBytecode scatter;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 /// Shared, owning representation of the four sort kernels. View render graphs
@@ -28,18 +30,18 @@ struct GpuParticleSortProgramStorage
 {
     std::array<std::vector<uint32_t>, 5> shaders;
 
-    [[nodiscard]] bool Assign(const GpuParticleSortProgram &program);
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] GpuParticleSortProgram View() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleSortProgram &program);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleSortProgram View() const noexcept;
 };
 
 struct GpuParticleSortShaderSources
 {
-    [[nodiscard]] static std::string_view Small() noexcept;
-    [[nodiscard]] static std::string_view Generate() noexcept;
-    [[nodiscard]] static std::string_view Histogram() noexcept;
-    [[nodiscard]] static std::string_view Scan() noexcept;
-    [[nodiscard]] static std::string_view Scatter() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Small() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Generate() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Histogram() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Scan() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Scatter() noexcept;
 };
 
 struct GpuParticleSorterDesc
@@ -79,17 +81,17 @@ class ParticleGpuSorter
     static constexpr uint32_t SmallSortCapacity = WorkgroupSize * 4u;
 
     ParticleGpuSorter() = default;
-    ~ParticleGpuSorter();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuSorter();
 
     ParticleGpuSorter(const ParticleGpuSorter &) = delete;
     ParticleGpuSorter &operator=(const ParticleGpuSorter &) = delete;
     ParticleGpuSorter(ParticleGpuSorter &&) = delete;
     ParticleGpuSorter &operator=(ParticleGpuSorter &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleSorterDesc &desc);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, const GpuParticleSorterDesc &desc);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
         return m_capacity;
@@ -144,13 +146,15 @@ class ParticleGpuSorter
         return m_globalOffsets;
     }
 
-    void RecordSmall(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
-                     ParticleSortMode mode) const;
-    void RecordGenerate(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
-                        ParticleSortMode mode) const;
-    void RecordHistogram(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
-    void RecordScan(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
-    void RecordScatter(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordSmall(const rhi::ComputeCommandEncoder &encoder,
+                                                   const std::array<float, 16> &view, ParticleSortMode mode) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordGenerate(const rhi::ComputeCommandEncoder &encoder,
+                                                      const std::array<float, 16> &view, ParticleSortMode mode) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordHistogram(const rhi::ComputeCommandEncoder &encoder,
+                                                       uint32_t passIndex) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordScan(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordScatter(const rhi::ComputeCommandEncoder &encoder,
+                                                     uint32_t passIndex) const;
 
   private:
     [[nodiscard]] GpuParticleSortConstants Constants(uint32_t passIndex = 0) const noexcept;

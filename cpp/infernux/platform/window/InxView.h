@@ -82,7 +82,7 @@ class InxView
     const char *const *GetVkExtensions(uint32_t *count);
 
     void Init(int width, int height);
-    void ProcessEvent();
+    void ProcessEvent(bool pace);
     void Quit();
 
     // Synthetic input is intentionally consumed through ProcessEvent(), so
@@ -247,6 +247,7 @@ class InxView
     std::atomic_int m_surfaceFramebufferWidth{0};
     std::atomic_int m_surfaceFramebufferHeight{0};
     bool m_eventWatchInstalled = false;
+    bool m_ownsMotionSensors = false;
     bool m_isPlayMode = false;
     bool m_activateWhenShown = true;
     bool m_revealAfterFirstPresentation = false;

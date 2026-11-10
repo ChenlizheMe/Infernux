@@ -9,6 +9,7 @@ from typing import Mapping
 from urllib.request import Request, urlopen
 
 from packaging.version import Version
+from packaging.specifiers import SpecifierSet
 
 from infernux.core.document_store import write_document_text
 from infernux.engine.path_utils import resolved_path
@@ -25,6 +26,7 @@ from .package import (
     validate_reference,
 )
 from .registry import PluginRegistry
+from infernux.version import ENGINE_COMPATIBILITY_VERSION
 
 
 OFFICIAL_REGISTRY_FILENAME = "official-registry.json"
@@ -100,23 +102,22 @@ def official_release_source(
     reference: str, version: str, *, resources_root: str | None = None,
 ) -> dict[str, object] | None:
     """Resolve a pinned official release using the catalog's versioned payload URL."""
-    catalog = os.path.join(_official_packages_root(resources_root), OFFICIAL_REGISTRY_FILENAME)
-    if not os.path.isfile(catalog):
-        return None
-    document = _read_document(catalog, OFFICIAL_REGISTRY_SCHEMA, "packages")
-    for entry in document["packages"]:
-        if str(entry["reference"]).casefold() != reference.casefold():
+    catalogs = (
+        os.path.join(_official_packages_root(resources_root), OFFICIAL_REGISTRY_FILENAME),
+        os.path.join(package_cache_root(), OFFICIAL_REGISTRY_FILENAME),
+    )
+    for catalog in catalogs:
+        if not os.path.isfile(catalog):
             continue
-        source = _remote_source(entry["source"], reference=reference)
-        if source["type"] != "url":
-            return None
-        parent, artifact = str(source["location"]).rsplit("/", 1)
-        base, current_version = parent.rsplit("/", 1)
-        if current_version != str(entry["version"]):
-            return None
-        source.update(location=f"{base}/{Version(version)}/{artifact}", reference=reference,
-                      repository=str(entry.get("repository", "")), release_tag=f"v{version}")
-        return source
+        document = _read_document(catalog, OFFICIAL_REGISTRY_SCHEMA, "packages")
+        for entry in document["packages"]:
+            if (str(entry["reference"]).casefold() != reference.casefold()
+                    or Version(str(entry["version"])) != Version(version)):
+                continue
+            source = _remote_source(entry["source"], reference=reference)
+            source.update(reference=reference, repository=str(entry.get("repository", "")))
+            source.setdefault("release_tag", str(entry.get("release_tag") or f"v{version}"))
+            return source
     return None
 
 
@@ -178,7 +179,10 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
         raise OfficialCatalogError(
             "Official plugin registry packages must be a list"
         )
-    validated: list[dict[str, object]] = []
+    # Discovery keeps release history; a project receives one compatible maximum
+    # per reference. Installed pins are changed only by an installation request.
+    selected = {}
+    identities = set()
     for raw in packages:
         if not isinstance(raw, Mapping):
             raise OfficialCatalogError(
@@ -186,11 +190,24 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
             )
         try:
             reference = validate_reference(str(raw.get("reference", "")).strip())
-            Version(str(raw.get("version", "")))
+            version = Version(str(raw.get("version", "")))
+            requirement = SpecifierSet(str(raw.get("engine", "")))
         except ValueError as exc:
             raise OfficialCatalogError(
                 "Official plugin registry entry has an invalid reference or version"
             ) from exc
+        identity = (reference.casefold(), version)
+        if identity in identities:
+            raise OfficialCatalogError("Official plugin catalog contains duplicate release identities")
+        identities.add(identity)
+        if Version(ENGINE_COMPATIBILITY_VERSION) not in requirement:
+            continue
+        previous = selected.get(reference.casefold())
+        if previous is None or version > Version(str(previous["version"])):
+            selected[reference.casefold()] = raw
+    validated: list[dict[str, object]] = []
+    for raw in selected.values():
+        reference = validate_reference(str(raw["reference"]))
         artifact = str(raw.get("artifact", "")).strip()
         if not artifact or os.path.basename(artifact) != artifact:
             raise OfficialCatalogError("Official plugin registry entry is invalid")
@@ -228,7 +245,7 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
         if repository:
             source["repository"] = repository
             if source.get("type") == "url":
-                source["release_tag"] = f"v{str(raw.get('version', '')).strip()}"
+                source.setdefault("release_tag", str(raw.get("release_tag") or f"v{raw['version']}"))
         dependencies = raw.get("dependencies", [])
         pages = raw.get("pages", [])
         intros = raw.get("intros", {})
@@ -271,9 +288,6 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
                 "source": source,
             }
         )
-    references = [str(item["reference"]).casefold() for item in validated]
-    if len(set(references)) != len(references):
-        raise OfficialCatalogError("Official plugin catalog contains duplicate references")
     try:
         return tuple(PluginRegistry.build_package_entry(**item) for item in validated)
     except ValueError as exc:

@@ -130,7 +130,6 @@ class ScriptableRenderContext
         double submissionRejectOwnedVisibleList = 0.0;
         double submissionRejectOwnedShadowList = 0.0;
         double submissionRejectMissingGraph = 0.0;
-        double submissionRejectPendingUploads = 0.0;
         double submissionRejectSignature = 0.0;
     };
 
@@ -138,8 +137,8 @@ class ScriptableRenderContext
     static void ResetProfileSnapshot();
 #endif
 
-    ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph,
-                            const EditorGizmosContext &gizmoCtx = {});
+    ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
+                            const EditorGizmosContext &gizmoCtx);
 
     /// @brief Set camera VP matrices for rendering
     void SetupCameraProperties(Camera *camera);
@@ -153,8 +152,9 @@ class ScriptableRenderContext
 
     /// @brief Apply a Python-defined RenderGraph topology.
     /// This sets the pass topology on the underlying SceneRenderGraph.
-    /// Must be called before Submit() or SubmitCulling().
-    void ApplyGraph(const RenderGraphDescription &desc);
+    /// Returns false when native validation rejects the graph.
+    /// Must succeed before SubmitCulling().
+    bool ApplyGraph(const RenderGraphDescription &desc);
 
     /// Upload only changed graph parameter blocks; does not rebuild topology.
     void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
@@ -177,7 +177,8 @@ class ScriptableRenderContext
 
     /// @brief Single-call render path: setup + cull + apply_graph + submit.
     /// Avoids 3 extra Python→C++ round-trips compared to calling each step separately.
-    void RenderWithGraph(Camera *camera, const RenderGraphDescription &desc);
+    /// Returns false without submitting culling when native validation rejects the graph.
+    bool RenderWithGraph(Camera *camera, const RenderGraphDescription &desc);
 
     /// Check whether the active SceneRenderGraph already owns an artifact.
     [[nodiscard]] bool IsGraphRevisionCurrent(uint64_t sourceRevision) const;
@@ -221,8 +222,11 @@ class ScriptableRenderContext
     }
 
   private:
+    void MarkSubmitted(uint64_t objectBindingIdentity, bool reusesObjectBindings);
+
     InxVkCoreModular *m_vkCore;
     SceneRenderGraph *m_graph;
+    uint64_t m_draw;
     EditorGizmosContext m_gizmoCtx;
 
     // Draw calls accumulated by DrawRenderers() (in submission order)

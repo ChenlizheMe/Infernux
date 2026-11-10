@@ -153,9 +153,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._scene_document_id: str = ""
         self._previous_scene_document_id: str = ""
         self._on_scene_changed: Optional[Callable[[], None]] = None
-        self._pending_save_path: Optional[str] = None
-        self._pending_save_ticket_id: str = ""
-        self._pending_save_document_id: str = ""
+        self._save_as_ticket_id: str = ""
         # Automation receives an editor modal it can address semantically;
         # desktop users receive the platform-native Save As dialog.
         self._save_as_popup_open: bool = False
@@ -168,6 +166,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._save_as_error: str = ""
         self._save_as_modal_service = None
         self._asset_database = None  # Set via set_asset_database()
+        self._published_prefab_sources: dict[str, dict] = {}
         self._engine = None  # set via set_engine()
 
         # Deferred scene loading — actual load runs on the NEXT frame so
@@ -190,7 +189,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._additive_scene_transaction_guid: Optional[str] = None
         self._last_scene_load = {"status": "idle", "path": "", "error": ""}
         self._last_loaded_file_state = None
-        self._pending_external_reload: Optional[str] = None
+        self._pending_external_reloads: dict[str, bool] = {}
         self._scene_restore_snapshots: dict[str, _SceneRestoreSnapshot] = {}
         self._pending_scene_before_context = None
         self._loaded_scene_documents: dict[int, _LoadedSceneDocument] = {}
@@ -228,6 +227,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def set_asset_database(self, asset_db):
         """Set the AssetDatabase for GUID→path resolution during scene load."""
+        if self._asset_database is not asset_db:
+            self._published_prefab_sources.clear()
         self._asset_database = asset_db
         if self._current_scene_path and self._scene_document_id:
             from infernux.engine.interaction import (
@@ -1332,10 +1333,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             DirtyPanelConfirmationCoordinator,
         )
 
-        DirtyPanelConfirmationCoordinator.instance().request_exit(
+        if not DirtyPanelConfirmationCoordinator.instance().request_exit(
             self._continue_close_after_dirty_panels,
             self._cancel_close_after_dirty_panels,
-        )
+        ):
+            self._cancel_close_after_dirty_panels()
 
     def _cancel_close_after_dirty_panels(self) -> None:
         native = self._native_engine_for_close()
@@ -1969,59 +1971,28 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             durable_file_state=transaction.file_state,
         )
 
-    def request_external_reload(self, *, document_id: str, resource_path: str):
-        """Reload a scene after the user resolves an external-change conflict.
-
-        Play-mode restoration and scene replacement both own deferred work. A
-        confirmed disk reload therefore waits for those transactions instead
-        of rejecting the user's choice or reading into the runtime scene.
-        """
+    def request_external_reload(self, *, document_id: str, resource_path: str, automatic: bool = False):
+        """Reload a resident authored world when it is safe to replace."""
         from infernux.engine.interaction import (
             DocumentActionResult,
             DocumentActionStatus,
         )
 
         identifier = str(document_id or "")
-        binding = self._binding_for_document(identifier)
-        target = resolved_path(resource_path or (binding.resource_path if binding else ""))
         if not self.owns_document(identifier):
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
                 "the scene document is no longer owned by the active scene manager",
             )
-        if not target or not os.path.isfile(target):
-            return DocumentActionResult(
-                DocumentActionStatus.FAILED,
-                "the scene file no longer exists on disk",
-            )
-        from infernux.engine.interaction import DocumentIdentityKind, DocumentRegistry
-
-        document = DocumentRegistry.instance().get(identifier)
-        target_guid, _current_path = self._scene_asset_from_path(target)
-        if (
-            document is None
-            or document.key.identity_kind is not DocumentIdentityKind.ASSET_GUID
-            or target_guid != document.key.identity
-        ):
-            return DocumentActionResult(
-                DocumentActionStatus.REJECTED,
-                "the scene reload target is not the registered Scene asset",
-            )
-        pending = self._pending_external_reload
-        if pending is not None and pending != identifier:
-            return DocumentActionResult(
-                DocumentActionStatus.REJECTED,
-                "another scene durable reload is already pending",
-            )
-
         if self._is_play_mode() or self.is_loading or self.is_prefab_mode:
-            self._pending_external_reload = identifier
-            self._advance_pending_external_reload()
+            self._defer_external_reload(identifier, automatic=automatic)
+            if not automatic:
+                self._advance_pending_external_reload()
             return DocumentActionResult(DocumentActionStatus.PENDING)
 
         result = self.reload_from_resource(
             document_id=identifier,
-            resource_path=target,
+            resource_path=resource_path,
         )
         if not result:
             return DocumentActionResult(
@@ -2032,16 +2003,21 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         return (result if isinstance(result, DocumentActionResult) else
                 DocumentActionResult(DocumentActionStatus.APPLIED))
 
+    def _defer_external_reload(self, document_id: str, *, automatic: bool = True) -> None:
+        pending = self._pending_external_reloads
+        pending[document_id] = automatic and pending.get(document_id, True)
+
     def _advance_pending_external_reload(self) -> int:
-        pending = self._pending_external_reload
-        if pending is None:
+        pending = self._pending_external_reloads
+        if not pending:
             return 0
 
         from infernux.engine.deferred_task import DeferredTaskRunner
 
         runner = DeferredTaskRunner.instance()
+        explicit = next((document_id for document_id, automatic in pending.items() if not automatic), None)
         if self._is_play_mode():
-            if runner.is_busy:
+            if explicit is None or runner.is_busy:
                 return 0
             from infernux.engine.play_mode import PlayModeManager
 
@@ -2052,15 +2028,20 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if runner.is_busy or self.is_loading:
             return 0
         if self.is_prefab_mode:
-            if not self._deferred_exit_prefab:
+            if explicit is not None and not self._deferred_exit_prefab:
                 self._request_prefab_exit()
             return 0
 
-        document_id = pending
-        self._pending_external_reload = None
-        from infernux.engine.interaction import DocumentIdentityKind, DocumentRegistry
+        document_id = explicit or next(iter(pending))
+        from infernux.engine.interaction import DocumentIdentityKind, DocumentRegistry, DocumentState
 
-        document = DocumentRegistry.instance().get(document_id)
+        registry = DocumentRegistry.instance()
+        if registry.active_save_ticket(document_id) is not None:
+            return 0
+        automatic = pending.pop(document_id)
+        document = registry.get(document_id)
+        if automatic and (document is None or document.is_dirty or document.state is not DocumentState.CONFLICT):
+            return 1
         target = (
             self._scene_path_for_guid(document.key.identity)
             if document is not None
@@ -2086,7 +2067,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             success = False
             message = str(exc)
 
-        DocumentRegistry.instance().complete_external_reload(
+        registry.complete_external_reload(
             document_id,
             success=success,
             message=message,

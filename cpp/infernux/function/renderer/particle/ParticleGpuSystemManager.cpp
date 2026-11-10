@@ -5,8 +5,12 @@
 #include "ParticleGpuMeshRenderer.h"
 
 #include <core/log/InxLog.h>
+#include <core/threading/FrameWorkOwner.h>
+#include <core/threading/JobSystem.h>
+#include <function/renderer/VulkanFrameSubmission.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiBuffer.h>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
@@ -17,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -24,8 +29,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <numeric>
-#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,6 +50,98 @@ bool IsSpirv(const std::vector<uint32_t> &words)
 {
     return words.size() >= 5 && words.front() == 0x07230203u;
 }
+
+struct StateGatherConstants
+{
+    uint32_t strideWords;
+    uint32_t fieldWord;
+    uint32_t fieldWords;
+    uint32_t aliveSlot;
+    uint32_t firstRow;
+    uint32_t rowCount;
+    uint32_t outputWord;
+    uint32_t identityWord;
+};
+
+class StateGatherProgram
+{
+  public:
+    static constexpr uint32_t WorkgroupSize = 64;
+    static constexpr uint32_t IdentityWords = 3;
+    static constexpr uint32_t SkipIdentities = UINT32_MAX;
+
+    StateGatherProgram(rhi::Device &device, ShaderBytecode bytecode) : m_device(device)
+    {
+        rhi::BindingLayoutDesc layout;
+        for (uint32_t binding = 0; binding < 5; ++binding)
+            layout.entries[layout.entryCount++] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute,
+                                                   1};
+        m_layout = device.CreateBindingLayout(layout);
+        const auto shader =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(bytecode.words, bytecode.wordCount));
+        if (m_layout.IsValid() && shader.IsValid()) {
+            rhi::ComputePipelineDesc pipeline;
+            pipeline.computeShader = shader;
+            pipeline.bindingLayouts[0] = m_layout;
+            pipeline.bindingLayoutCount = 1;
+            pipeline.pushConstantBytes = sizeof(StateGatherConstants);
+            m_pipeline = device.CreateComputePipeline(pipeline);
+        }
+        device.Release(shader);
+    }
+
+    ~StateGatherProgram()
+    {
+        m_device.Release(m_pipeline);
+        m_device.Release(m_layout);
+    }
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return m_pipeline.IsValid();
+    }
+
+    [[nodiscard]] rhi::BindGroupHandle Bind(const ParticleGpuRuntime &runtime, rhi::BufferHandle output,
+                                            rhi::BufferHandle identities) const
+    {
+        rhi::BindGroupDesc group;
+        group.layout = m_layout;
+        const std::array buffers = {runtime.StateBuffer(), runtime.AliveIndexBuffer(runtime.AliveReadSlot()),
+                                    runtime.AliveControlBuffer(), output, identities};
+        for (uint32_t binding = 0; binding < buffers.size(); ++binding)
+            group.buffers[group.bufferCount++] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
+        return m_device.CreateBindGroup(group);
+    }
+
+    void Record(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle group,
+                const StateGatherConstants &constants) const
+    {
+        encoder.BindPipeline(m_pipeline);
+        encoder.BindGroup(m_pipeline, 0, group);
+        encoder.PushConstants(m_pipeline, sizeof(constants), &constants);
+        encoder.Dispatch(1 + (constants.rowCount - 1) / WorkgroupSize);
+    }
+
+  private:
+    rhi::Device &m_device;
+    rhi::BindingLayoutHandle m_layout;
+    rhi::ComputePipelineHandle m_pipeline;
+};
+
+struct StateGatherBindings
+{
+    explicit StateGatherBindings(rhi::Device &device) : device(device)
+    {
+    }
+    ~StateGatherBindings()
+    {
+        for (const auto group : groups)
+            device.Release(group);
+    }
+
+    rhi::Device &device;
+    std::vector<rhi::BindGroupHandle> groups;
+};
 
 bool IsFinite(const GpuParticleTransforms &transforms) noexcept
 {
@@ -88,18 +183,55 @@ uint32_t FloatBits(float value) noexcept
     return bits;
 }
 
-uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
-{
-    constexpr uint64_t prime = 1099511628211ull;
-    const auto *bytes = static_cast<const uint8_t *>(data);
-    for (size_t index = 0; index < byteSize; ++index) {
-        hash ^= bytes[index];
-        hash *= prime;
-    }
-    return hash;
-}
-
 } // namespace
+
+std::string_view GpuParticleStateGatherShaderSource() noexcept
+{
+    return R"glsl(#version 450
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer State { uint state[]; };
+layout(std430, set = 0, binding = 1) readonly buffer LiveSlots { uint live_slots[]; };
+layout(std430, set = 0, binding = 2) readonly buffer LiveControl { uint live_counts[2]; };
+layout(std430, set = 0, binding = 3) writeonly buffer Samples { uint samples[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer Identities { uint identities[]; };
+layout(push_constant) uniform Gather {
+    uint stride_words;
+    uint field_word;
+    uint field_words;
+    uint alive_slot;
+    uint first_row;
+    uint row_count;
+    uint output_word;
+    uint identity_word;
+} pc;
+
+void main() {
+    uint row = gl_GlobalInvocationID.x;
+    if (row >= pc.row_count)
+        return;
+
+    uint source_row = pc.first_row + row;
+    uint slot = 0xffffffffu;
+    uint flags = 0u;
+    uint source = 0u;
+    if (source_row < live_counts[pc.alive_slot]) {
+        slot = live_slots[source_row];
+        source = slot * pc.stride_words;
+        flags = state[source];
+    }
+    bool live = (flags & 1u) != 0u;
+    if (pc.identity_word != 0xffffffffu) {
+        uint identity = pc.identity_word + row * 3u;
+        identities[identity] = live ? slot : 0xffffffffu;
+        identities[identity + 1u] = live ? state[source + 1u] : 0u;
+        identities[identity + 2u] = live ? flags : 0u;
+    }
+    uint dest = pc.output_word + row * pc.field_words;
+    for (uint field = 0u; field < pc.field_words; ++field)
+        samples[dest + field] = live ? state[source + pc.field_word + field] : 0u;
+}
+)glsl";
+}
 
 struct ParticleGpuSystemManager::Impl
 {
@@ -140,14 +272,75 @@ struct ParticleGpuSystemManager::Impl
 
     struct MeshUpload
     {
+        enum Part : size_t
+        {
+            Vertices,
+            Indices,
+            Sampling,
+            Skin,
+            PartCount
+        };
+
+        struct Source
+        {
+            std::shared_ptr<const MeshGeometry> geometry;
+            std::shared_ptr<const InxSkinnedMesh> skinned;
+            std::vector<PackedParticleMeshVertex> vertices;
+            std::vector<PackedParticleMeshPrimitive> samplingPrimitives;
+            std::vector<PackedParticleSkinInfluence> skinInfluences;
+            std::shared_ptr<FrameCpuStorageClaim> storage;
+            std::string failure;
+            uint64_t executionNanoseconds = 0;
+            uint32_t samplingTriangleCount = 0;
+            uint32_t samplingEdgeCount = 0;
+
+            [[nodiscard]] uint64_t WorkspaceBytes() const
+            {
+                const uint64_t indices = geometry->indices.size();
+                return uint64_t{geometry->vertices.size()} * sizeof(PackedParticleMeshVertex) +
+                       (indices + indices / 3) * sizeof(PackedParticleMeshPrimitive) +
+                       indices * sizeof(std::pair<uint32_t, uint32_t>) +
+                       (skinned ? uint64_t{skinned->influences.size()} * sizeof(PackedParticleSkinInfluence) : 0);
+            }
+        };
+
         std::weak_ptr<InxMesh> owner;
-        uint64_t contentHash = 0;
-        std::shared_ptr<vk::BufferUploadTicket> vertexTicket;
-        std::shared_ptr<vk::BufferUploadTicket> indexTicket;
-        std::shared_ptr<vk::BufferUploadTicket> samplingTriangleTicket;
-        std::shared_ptr<vk::BufferUploadTicket> skinInfluenceTicket;
+        uint64_t generation = 0;
+        uint64_t token = 0;
+        uint32_t vertexCount = 0;
+        uint32_t indexCount = 0;
+        uint32_t samplingTriangleCount = 0;
+        uint32_t samplingEdgeCount = 0;
+        std::shared_ptr<Source> source;
+        JobHandle packJob;
+        uint64_t packFrame = 0;
+        uint64_t packGrant = 0;
+        std::array<std::shared_ptr<vk::BufferUploadTicket>, PartCount> tickets;
         std::shared_ptr<MeshResources> resources;
-        bool failed = false;
+        std::string failure;
+
+        [[nodiscard]] size_t NextPart() const
+        {
+            for (size_t part = 0; part < tickets.size(); ++part) {
+                const auto &ticket = tickets[part];
+                if (ticket && ticket->GetSubmittedBytes() < ticket->GetSize())
+                    return part;
+            }
+            return PartCount;
+        }
+
+        [[nodiscard]] bool IsCurrent() const
+        {
+            const auto mesh = owner.lock();
+            return mesh && mesh->GetGeneration() == generation;
+        }
+
+        void Fail(std::string error)
+        {
+            source.reset();
+            tickets = {};
+            failure = std::move(error);
+        }
     };
 
     struct Emitter
@@ -217,6 +410,76 @@ struct ParticleGpuSystemManager::Impl
         bool asyncPhasePartitioned = false;
     };
 
+    struct StateCaptureRequest
+    {
+        std::weak_ptr<GpuParticleStateCapture> capture;
+        uint32_t firstRow;
+        uint32_t rowCount;
+        std::vector<GpuParticleStateField> fields;
+    };
+
+    struct StateCaptureOutput
+    {
+        std::shared_ptr<rhi::ComputeBuffer> buffer;
+        intervals::Set initialized;
+        intervals::Set written;
+
+        bool Prepare(rhi::ComputeHost &host, rhi::ComputeBufferDesc desc)
+        {
+            auto storage = rhi::ComputeBuffer::TryCreatePrivate(host, desc);
+            if (!storage)
+                return false;
+            buffer = storage->Freeze();
+            initialized.emplace_back(0, buffer->GetByteSize());
+            written = initialized;
+            return true;
+        }
+
+        void Publish(rhi::SubmissionTicket completion, rhi::QueueRole writer)
+        {
+            buffer->GetAllocation()->PublishGraphValue(completion, writer, std::move(initialized), std::move(written));
+            buffer->PublishStorage();
+        }
+    };
+
+    struct StateCaptureDispatch
+    {
+        StateGatherConstants constants;
+        StateCaptureOutput output;
+    };
+
+    struct StateCaptureWork
+    {
+        explicit StateCaptureWork(rhi::Device &device) : bindings(device)
+        {
+        }
+
+        StateGatherBindings bindings;
+        std::shared_ptr<GpuParticleStateCapture> capture;
+        std::shared_ptr<Emitter> emitter;
+        std::vector<StateCaptureDispatch> fields;
+        StateCaptureOutput identities;
+        rhi::QueueRole writer = rhi::QueueRole::Count;
+
+        void Publish(rhi::SubmissionTicket completion, FrameWorkOwner &owner, uint64_t estimatedNanoseconds)
+        {
+            if (writer == rhi::QueueRole::Count || capture->Done())
+                return;
+            for (size_t i = 0; i < fields.size(); ++i) {
+                auto &output = fields[i].output;
+                output.Publish(completion, writer);
+                if (auto port = capture->ports[i].lock())
+                    port->buffer = output.buffer;
+            }
+            identities.Publish(completion, writer);
+            if (auto port = capture->ports.back().lock())
+                port->buffer = identities.buffer;
+            capture->ports.clear();
+            capture->submission = completion;
+            (void)owner.RecordAcceptedResource(FrameWorkResource::Gpu, estimatedNanoseconds);
+        }
+    };
+
     using EmitterMap = std::map<uint64_t, std::shared_ptr<Emitter>>;
     vk::VkDeviceContext *context = nullptr;
     vk::VkPipelineManager *pipelines = nullptr;
@@ -233,18 +496,38 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleSpawnProgramStorage> spawnProgram;
     std::shared_ptr<const GpuParticleRibbonProgramStorage> ribbonTopologyProgram;
     std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
+    std::unique_ptr<StateGatherProgram> stateGatherProgram;
     std::unique_ptr<ParticleGpuCollisionScene> collisionScene;
     EmitterMap emitters;
     bool requiresCollisionScene = false;
     std::shared_ptr<GraphState> graphState;
     mutable uint64_t nextGraphGeneration = 1;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
+    FrameWorkOwner *meshUploadOwner = nullptr;
+    FrameWorkOwner::SourceId meshUploadSource = 0;
+    mutable uint64_t nextMeshUploadToken = 1;
+    uint64_t lastMeshUploadToken = 0;
+    uint64_t lastMeshPackToken = 0;
+    uint64_t lastMeshPackNanoseconds = 0;
     std::shared_ptr<DiagnosticState> diagnosticState = std::make_shared<DiagnosticState>();
     std::vector<PendingDiagnostic> pendingDiagnostics;
+    struct RecordedDiagnostic
+    {
+        uint64_t requestId;
+        std::function<void()> complete;
+    };
+    std::vector<RecordedDiagnostic> recordedDiagnostics;
+    std::vector<StateCaptureRequest> stateCaptures;
+    std::vector<std::shared_ptr<StateCaptureWork>> preparedStateCaptures;
     uint64_t nextDiagnosticRequestId = 1;
+    uint64_t nextCaptureRequestId = 1;
 
     void FailDiagnostics(uint64_t graphInstanceId, const char *reason) noexcept
     {
+        for (const auto &request : stateCaptures)
+            if (const auto capture = request.capture.lock();
+                capture && (graphInstanceId == 0 || capture->graphInstanceId == graphInstanceId))
+                capture->Cancel("GPU particle source changed before state capture was accepted");
         pendingDiagnostics.erase(std::remove_if(pendingDiagnostics.begin(), pendingDiagnostics.end(),
                                                 [graphInstanceId](const auto &request) {
                                                     return graphInstanceId == 0 ||
@@ -260,6 +543,52 @@ struct ParticleGpuSystemManager::Impl
                 continue;
             snapshot.status = GpuParticleDiagnosticStatus::Failed;
             snapshot.error = reason;
+        }
+    }
+
+    void RecordStateCaptures(VkCommandBuffer commandBuffer, rhi::QueueRole queue)
+    {
+        if (preparedStateCaptures.empty())
+            return;
+
+        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &barrier, 0, nullptr, 0, nullptr);
+        auto &device = context->GetRhiDevice();
+        vk::VulkanComputeCommandContext computeContext;
+        const auto encoder = device.MakeComputeCommandEncoder(computeContext, commandBuffer);
+        for (const auto &work : preparedStateCaptures) {
+            auto &capture = *work->capture;
+            const auto &runtime = *work->emitter->runtime;
+            if (capture.Done() || runtime.NeedsBootstrap())
+                continue;
+            for (const auto &field : work->fields) {
+                const auto output = field.output.buffer->GetBuffer();
+                // Later dispatches only write their own field. Keep the shared
+                // identity buffer out of their descriptor access ranges.
+                const auto identities = field.constants.identityWord == StateGatherProgram::SkipIdentities
+                                            ? output
+                                            : work->identities.buffer->GetBuffer();
+                const auto group = stateGatherProgram->Bind(runtime, output, identities);
+                if (!group.IsValid()) {
+                    capture.Cancel("GPU particle capture binding allocation failed");
+                    break;
+                }
+                work->bindings.groups.push_back(group);
+            }
+            if (capture.Done())
+                continue;
+            for (size_t index = 0; index < work->fields.size(); ++index) {
+                auto constants = work->fields[index].constants;
+                constants.aliveSlot = runtime.AliveReadSlot();
+                stateGatherProgram->Record(encoder, work->bindings.groups[index], constants);
+            }
+            const auto &scheduler = *graphState->schedulerById.at(capture.emitterId);
+            capture.sourceFrame = scheduler.LastConsumedFrame();
+            capture.sourceSubstep = scheduler.LastConsumedSubstep();
+            work->writer = queue;
         }
     }
 
@@ -430,9 +759,10 @@ struct ParticleGpuSystemManager::Impl
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
-                             &barrier, 0, nullptr, 0, nullptr);
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0,
+                             nullptr, 0, nullptr);
 
         for (const auto &request : requests) {
             struct EmitterCapture
@@ -448,12 +778,13 @@ struct ParticleGpuSystemManager::Impl
                 uint32_t contactRecordCapacity = 0;
                 uint32_t contactWorkItemCapacity = 0;
                 uint64_t stateOffset = 0;
+                uint64_t gatherOffset = 0;
                 uint64_t stateBytes = 0;
                 uint32_t stateStride = 0;
                 uint32_t stateSampleCount = 0;
             };
             std::vector<EmitterCapture> emitterCaptures;
-            bool invalidStateLayout = false;
+            uint64_t stateReadbackBytes = 0;
             for (const auto &[id, emitter] : emitters) {
                 if (!emitter || emitter->graphInstanceId != request.graphInstanceId || !emitter->runtime)
                     continue;
@@ -471,24 +802,17 @@ struct ParticleGpuSystemManager::Impl
                     capture.contactRecordCapacity = emitter->runtime->ContactTelemetry().contactRecordCapacity;
                     capture.contactWorkItemCapacity = emitter->runtime->ContactTelemetry().workItemCapacity;
                 }
-                if (request.stateSampleCount > 0) {
+                if (request.stateSampleCount > 0 && !emitter->runtime->NeedsBootstrap()) {
                     capture.stateStride = emitter->runtime->StateStride();
-                    capture.stateSampleCount = request.stateSampleCount;
-                    if (capture.stateStride == 0 || capture.stateStride % sizeof(uint32_t) != 0 ||
-                        capture.diagnostic.capacity > std::numeric_limits<uint64_t>::max() / capture.stateStride) {
-                        std::scoped_lock lock(diagnosticState->mutex);
-                        auto &snapshot = diagnosticState->snapshots[request.requestId];
-                        snapshot.status = GpuParticleDiagnosticStatus::Failed;
-                        snapshot.error = "GPU particle state layout is invalid for diagnostic sampling";
-                        invalidStateLayout = true;
-                        break;
-                    }
-                    capture.stateBytes = static_cast<uint64_t>(capture.diagnostic.capacity) * capture.stateStride;
+                    capture.stateSampleCount = std::min(request.stateSampleCount, capture.diagnostic.capacity);
+                    capture.stateBytes =
+                        capture.stateSampleCount *
+                        (uint64_t(capture.stateStride) + StateGatherProgram::IdentityWords * sizeof(uint32_t));
+                    capture.gatherOffset = stateReadbackBytes;
+                    stateReadbackBytes += capture.stateBytes;
                 }
                 emitterCaptures.push_back(capture);
             }
-            if (invalidStateLayout)
-                continue;
             std::sort(emitterCaptures.begin(), emitterCaptures.end(), [](const auto &lhs, const auto &rhs) {
                 return lhs.diagnostic.emitterIndex < rhs.diagnostic.emitterIndex;
             });
@@ -499,9 +823,6 @@ struct ParticleGpuSystemManager::Impl
                               sizeof(GpuParticleSpawnMetadata) + sizeof(uint32_t) * 4u + capture.contactCounterBytes +
                               capture.stateBytes;
             constexpr uint64_t MaxDiagnosticStateReadbackBytes = 16ull * 1024ull * 1024ull;
-            const uint64_t stateReadbackBytes =
-                std::accumulate(emitterCaptures.begin(), emitterCaptures.end(), uint64_t{0},
-                                [](uint64_t total, const auto &capture) { return total + capture.stateBytes; });
             if (stateReadbackBytes > MaxDiagnosticStateReadbackBytes) {
                 std::scoped_lock lock(diagnosticState->mutex);
                 auto &snapshot = diagnosticState->snapshots[request.requestId];
@@ -517,8 +838,11 @@ struct ParticleGpuSystemManager::Impl
                 continue;
             }
 
-            const auto readbackHandle = device.CreateBuffer(
-                {totalBytes, rhi::BufferUsageFlags::TransferDestination, rhi::BufferMemory::Readback});
+            constexpr auto queues = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+            rhi::BufferDesc readbackDesc{totalBytes, rhi::BufferUsageFlags::TransferDestination,
+                                         rhi::BufferMemory::Readback};
+            readbackDesc.queueAccess = queues;
+            const auto readbackHandle = device.CreateBuffer(readbackDesc);
             if (!readbackHandle.IsValid()) {
                 std::scoped_lock lock(diagnosticState->mutex);
                 auto &snapshot = diagnosticState->snapshots[request.requestId];
@@ -527,6 +851,53 @@ struct ParticleGpuSystemManager::Impl
                 continue;
             }
             auto readback = std::make_shared<rhi::BufferResource>(device, readbackHandle, totalBytes);
+
+            std::shared_ptr<rhi::BufferResource> gathered;
+            std::shared_ptr<StateGatherBindings> gatherBindings;
+            if (stateReadbackBytes != 0) {
+                rhi::BufferDesc gatherDesc{stateReadbackBytes,
+                                           rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource,
+                                           rhi::BufferMemory::DeviceLocal};
+                gatherDesc.queueAccess = queues;
+                const auto handle = device.CreateBuffer(gatherDesc);
+                gathered = std::make_shared<rhi::BufferResource>(device, handle, stateReadbackBytes);
+                gatherBindings = std::make_shared<StateGatherBindings>(device);
+                if (handle.IsValid() && stateGatherProgram) {
+                    for (const auto &capture : emitterCaptures) {
+                        if (capture.stateSampleCount != 0) {
+                            const auto &runtime = *emitters.at(capture.diagnostic.emitterId)->runtime;
+                            gatherBindings->groups.push_back(stateGatherProgram->Bind(runtime, handle, handle));
+                        }
+                    }
+                }
+                if (gatherBindings->groups.empty() ||
+                    std::any_of(gatherBindings->groups.begin(), gatherBindings->groups.end(),
+                                [](auto group) { return !group.IsValid(); })) {
+                    std::scoped_lock lock(diagnosticState->mutex);
+                    auto &snapshot = diagnosticState->snapshots[request.requestId];
+                    snapshot.status = GpuParticleDiagnosticStatus::Failed;
+                    snapshot.error = "Failed to prepare GPU particle state gathering";
+                    continue;
+                }
+
+                vk::VulkanComputeCommandContext computeContext;
+                const auto compute = device.MakeComputeCommandEncoder(computeContext, commandBuffer);
+                size_t groupIndex = 0;
+                for (const auto &capture : emitterCaptures) {
+                    if (capture.stateSampleCount == 0)
+                        continue;
+                    const auto &runtime = *emitters.at(capture.diagnostic.emitterId)->runtime;
+                    const auto strideWords = static_cast<uint32_t>(capture.stateStride / sizeof(uint32_t));
+                    const auto identityWord = static_cast<uint32_t>(capture.gatherOffset / sizeof(uint32_t));
+                    stateGatherProgram->Record(
+                        compute, gatherBindings->groups[groupIndex++],
+                        {strideWords, 0, strideWords, runtime.AliveReadSlot(), 0, capture.stateSampleCount,
+                         identityWord + capture.stateSampleCount * StateGatherProgram::IdentityWords, identityWord});
+                }
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+            }
 
             uint64_t offset = 0;
             const auto spawnDomain = graphState ? graphState->spawnDomains.find(request.graphInstanceId)
@@ -569,159 +940,152 @@ struct ParticleGpuSystemManager::Impl
                 }
                 if (capture.stateBytes > 0) {
                     capture.stateOffset = offset;
-                    transfer.CopyBuffer(emitter->second->runtime->StateBuffer(), readbackHandle,
-                                        {0, offset, capture.stateBytes});
+                    transfer.CopyBuffer(gathered->GetBuffer(), readbackHandle,
+                                        {capture.gatherOffset, offset, capture.stateBytes});
                     offset += capture.stateBytes;
                 }
             }
             const auto state = diagnosticState;
             auto *readbackDevice = static_cast<rhi::Device *>(&device);
-            deletionQueue->Retire([state, readback, emitterCaptures = std::move(emitterCaptures), request,
-                                   readbackDevice]() mutable {
-                std::vector<uint8_t> bytes(static_cast<size_t>(readback->GetByteSize()));
-                GpuParticleDiagnosticSnapshot result;
-                result.requestId = request.requestId;
-                result.graphInstanceId = request.graphInstanceId;
-                if (!readbackDevice->ReadBuffer(readback->GetBuffer(), 0, bytes.data(), bytes.size())) {
-                    result.status = GpuParticleDiagnosticStatus::Failed;
-                    result.error = "Failed to read completed GPU particle diagnostic buffer";
-                } else {
-                    result.status = GpuParticleDiagnosticStatus::Completed;
-                    for (auto &capture : emitterCaptures) {
-                        std::array<uint32_t, ParticleGpuRuntime::BaseCounterWordCount> counters{};
-                        std::memcpy(counters.data(), bytes.data() + capture.counterOffset, sizeof(counters));
-                        capture.diagnostic.freeCount = std::min(counters[0], capture.diagnostic.capacity);
-                        capture.diagnostic.aliveCount = capture.diagnostic.capacity - capture.diagnostic.freeCount;
-                        capture.diagnostic.visibleCount = counters[1];
-                        capture.diagnostic.droppedCount = counters[2];
-                        capture.diagnostic.initializedSpawnCount = counters[3];
-                        capture.diagnostic.collisionHitCount = counters[4];
-                        capture.diagnostic.collisionResponseCount = counters[5];
-                        capture.diagnostic.collisionTriggerCount = counters[6];
-                        capture.diagnostic.collisionEnterCount = counters[7];
-                        capture.diagnostic.collisionStayCount = counters[8];
-                        capture.diagnostic.collisionExitCount = counters[9];
-                        std::memcpy(&capture.diagnostic.collisionMaxOutwardSpeed, &counters[10], sizeof(float));
-                        std::memcpy(&capture.diagnostic.collisionMaxTangentSpeed, &counters[11], sizeof(float));
-                        capture.diagnostic.collisionCandidateOverflowCount = counters[12];
-                        if (!capture.diagnostic.eventOverflowCounts.empty()) {
-                            const size_t eventCount = capture.diagnostic.eventOverflowCounts.size();
-                            const size_t eventBytes = eventCount * sizeof(uint32_t);
-                            const auto *eventCounters = bytes.data() + capture.counterOffset +
-                                                        ParticleGpuRuntime::EventCounterWordOffset * sizeof(uint32_t);
-                            std::memcpy(capture.diagnostic.eventOverflowCounts.data(), eventCounters, eventBytes);
-                            std::memcpy(capture.diagnostic.eventEnqueueCounts.data(), eventCounters + eventBytes,
-                                        eventBytes);
-                            std::memcpy(capture.diagnostic.eventCompleteCounts.data(), eventCounters + eventBytes * 2u,
-                                        eventBytes);
-                        }
-                        std::array<uint32_t, 8> encodedBounds{};
-                        std::memcpy(encodedBounds.data(), bytes.data() + capture.boundsOffset, sizeof(encodedBounds));
-                        capture.diagnostic.boundsValid = encodedBounds[6] != 0u;
-                        if (capture.diagnostic.boundsValid) {
-                            const auto decodeOrderedFloat = [](uint32_t ordered) {
-                                const uint32_t bits =
-                                    (ordered & 0x80000000u) != 0u ? (ordered ^ 0x80000000u) : ~ordered;
-                                float value = 0.0f;
-                                std::memcpy(&value, &bits, sizeof(value));
-                                return value;
-                            };
-                            for (size_t axis = 0; axis < 3; ++axis) {
-                                capture.diagnostic.boundsLower[axis] = decodeOrderedFloat(encodedBounds[axis]);
-                                capture.diagnostic.boundsUpper[axis] = decodeOrderedFloat(encodedBounds[axis + 3]);
-                            }
-                        }
-                        GpuParticleSpawnMetadata spawnMetadata{};
-                        std::memcpy(&spawnMetadata, bytes.data() + capture.spawnMetadataOffset, sizeof(spawnMetadata));
-                        capture.diagnostic.preparedSpawnCount = spawnMetadata.count;
-                        capture.diagnostic.preparedSpawnBaseId = spawnMetadata.baseId;
-                        capture.diagnostic.preparedSpawnGeneration = spawnMetadata.generation;
-                        capture.diagnostic.spawnOverflowCount = spawnMetadata.overflowCount;
-                        capture.diagnostic.acceptedSpawnTotal = spawnMetadata.acceptedSpawnTotal;
-                        std::array<uint32_t, 4> spawnDomainState{};
-                        std::memcpy(spawnDomainState.data(), bytes.data() + capture.spawnDomainStateOffset,
-                                    sizeof(spawnDomainState));
-                        capture.diagnostic.queuedBurstCount = spawnDomainState[0];
-                        capture.diagnostic.consumingBurstCount = spawnDomainState[1];
-                        capture.diagnostic.acceptingBurstRequests = spawnDomainState[2] != 0u;
-                        capture.diagnostic.gpuEmitterPlaying = spawnDomainState[3] != 0u;
-                        if (capture.contactCounterBytes > 0) {
-                            GpuParticleContactCounters contactCounters{};
-                            std::memcpy(&contactCounters, bytes.data() + capture.contactCounterOffset,
-                                        sizeof(contactCounters));
-                            capture.diagnostic.contactOverflowCount = contactCounters.contactOverflow;
-                            capture.diagnostic.contactWorkItemOverflowCount = contactCounters.workItemOverflow;
-                            capture.diagnostic.contactCurrentSimulationStep = contactCounters.currentSimulationStep;
-                            capture.diagnostic.contactResetSerial = contactCounters.resetSerial;
-                            capture.diagnostic.contactCurrentRecordCount =
-                                std::min(contactCounters.currentRecordCount, capture.contactRecordCapacity);
-                            capture.diagnostic.contactWorkItemCount =
-                                std::min(contactCounters.workItemCount, capture.contactWorkItemCapacity);
-                            capture.diagnostic.contactMaxPerParticle = contactCounters.maxContactsPerParticle;
-                            capture.diagnostic.multiContactParticleCount = contactCounters.multiContactParticleCount;
-                            capture.diagnostic.contactRetainedOrderHash = contactCounters.retainedOrderHash;
-                            capture.diagnostic.contactDroppedOrderHash = contactCounters.droppedOrderHash;
-                            capture.diagnostic.contactMinParticleIndex = contactCounters.minParticleIndex;
-                            capture.diagnostic.contactMaxParticleIndex = contactCounters.maxParticleIndex;
-                        }
-                        if (capture.stateBytes > 0 && capture.stateSampleCount > 0) {
-                            const size_t wordsPerState = capture.stateStride / sizeof(uint32_t);
-                            for (uint32_t slot = 0; slot < capture.diagnostic.capacity &&
-                                                    capture.diagnostic.stateSamples.size() < capture.stateSampleCount;
-                                 ++slot) {
-                                const auto *stateBytes = bytes.data() + capture.stateOffset +
-                                                         static_cast<uint64_t>(slot) * capture.stateStride;
-                                uint32_t lifecycleFlags = 0;
-                                uint32_t spawnGeneration = 0;
-                                std::memcpy(&lifecycleFlags, stateBytes, sizeof(lifecycleFlags));
-                                if ((lifecycleFlags & 1u) == 0u)
-                                    continue;
-                                std::memcpy(&spawnGeneration, stateBytes + sizeof(uint32_t), sizeof(spawnGeneration));
-                                GpuParticleEmitterDiagnostic::StateSample sample;
-                                sample.slotIndex = slot;
-                                sample.lifecycleFlags = lifecycleFlags;
-                                sample.spawnGeneration = spawnGeneration;
-                                sample.words.resize(wordsPerState);
-                                std::memcpy(sample.words.data(), stateBytes, capture.stateStride);
-                                capture.diagnostic.stateSamples.push_back(std::move(sample));
-                            }
-                        }
-                        result.emitters.push_back(capture.diagnostic);
-                    }
-                }
-                std::scoped_lock lock(state->mutex);
-                const auto found = state->snapshots.find(request.requestId);
-                if (found != state->snapshots.end() && found->second.status == GpuParticleDiagnosticStatus::Pending)
-                    found->second = std::move(result);
-            });
+            recordedDiagnostics.push_back(
+                {request.requestId, [state, readback, gathered, gatherBindings,
+                                     emitterCaptures = std::move(emitterCaptures), request, readbackDevice]() mutable {
+                     std::vector<uint8_t> bytes(static_cast<size_t>(readback->GetByteSize()));
+                     GpuParticleDiagnosticSnapshot result;
+                     result.requestId = request.requestId;
+                     result.graphInstanceId = request.graphInstanceId;
+                     if (!readbackDevice->ReadBuffer(readback->GetBuffer(), 0, bytes.data(), bytes.size())) {
+                         result.status = GpuParticleDiagnosticStatus::Failed;
+                         result.error = "Failed to read completed GPU particle diagnostic buffer";
+                     } else {
+                         result.status = GpuParticleDiagnosticStatus::Completed;
+                         for (auto &capture : emitterCaptures) {
+                             std::array<uint32_t, ParticleGpuRuntime::BaseCounterWordCount> counters{};
+                             std::memcpy(counters.data(), bytes.data() + capture.counterOffset, sizeof(counters));
+                             capture.diagnostic.freeCount = std::min(counters[0], capture.diagnostic.capacity);
+                             capture.diagnostic.aliveCount = capture.diagnostic.capacity - capture.diagnostic.freeCount;
+                             capture.diagnostic.visibleCount = counters[1];
+                             capture.diagnostic.droppedCount = counters[2];
+                             capture.diagnostic.initializedSpawnCount = counters[3];
+                             capture.diagnostic.collisionHitCount = counters[4];
+                             capture.diagnostic.collisionResponseCount = counters[5];
+                             capture.diagnostic.collisionTriggerCount = counters[6];
+                             capture.diagnostic.collisionEnterCount = counters[7];
+                             capture.diagnostic.collisionStayCount = counters[8];
+                             capture.diagnostic.collisionExitCount = counters[9];
+                             std::memcpy(&capture.diagnostic.collisionMaxOutwardSpeed, &counters[10], sizeof(float));
+                             std::memcpy(&capture.diagnostic.collisionMaxTangentSpeed, &counters[11], sizeof(float));
+                             capture.diagnostic.collisionCandidateOverflowCount = counters[12];
+                             if (!capture.diagnostic.eventOverflowCounts.empty()) {
+                                 const size_t eventCount = capture.diagnostic.eventOverflowCounts.size();
+                                 const size_t eventBytes = eventCount * sizeof(uint32_t);
+                                 const auto *eventCounters =
+                                     bytes.data() + capture.counterOffset +
+                                     ParticleGpuRuntime::EventCounterWordOffset * sizeof(uint32_t);
+                                 std::memcpy(capture.diagnostic.eventOverflowCounts.data(), eventCounters, eventBytes);
+                                 std::memcpy(capture.diagnostic.eventEnqueueCounts.data(), eventCounters + eventBytes,
+                                             eventBytes);
+                                 std::memcpy(capture.diagnostic.eventCompleteCounts.data(),
+                                             eventCounters + eventBytes * 2u, eventBytes);
+                             }
+                             std::array<uint32_t, 8> encodedBounds{};
+                             std::memcpy(encodedBounds.data(), bytes.data() + capture.boundsOffset,
+                                         sizeof(encodedBounds));
+                             capture.diagnostic.boundsValid = encodedBounds[6] != 0u;
+                             if (capture.diagnostic.boundsValid) {
+                                 const auto decodeOrderedFloat = [](uint32_t ordered) {
+                                     const uint32_t bits =
+                                         (ordered & 0x80000000u) != 0u ? (ordered ^ 0x80000000u) : ~ordered;
+                                     float value = 0.0f;
+                                     std::memcpy(&value, &bits, sizeof(value));
+                                     return value;
+                                 };
+                                 for (size_t axis = 0; axis < 3; ++axis) {
+                                     capture.diagnostic.boundsLower[axis] = decodeOrderedFloat(encodedBounds[axis]);
+                                     capture.diagnostic.boundsUpper[axis] = decodeOrderedFloat(encodedBounds[axis + 3]);
+                                 }
+                             }
+                             GpuParticleSpawnMetadata spawnMetadata{};
+                             std::memcpy(&spawnMetadata, bytes.data() + capture.spawnMetadataOffset,
+                                         sizeof(spawnMetadata));
+                             capture.diagnostic.preparedSpawnCount = spawnMetadata.count;
+                             capture.diagnostic.preparedSpawnBaseId = spawnMetadata.baseId;
+                             capture.diagnostic.preparedSpawnGeneration = spawnMetadata.generation;
+                             capture.diagnostic.spawnOverflowCount = spawnMetadata.overflowCount;
+                             capture.diagnostic.acceptedSpawnTotal = spawnMetadata.acceptedSpawnTotal;
+                             std::array<uint32_t, 4> spawnDomainState{};
+                             std::memcpy(spawnDomainState.data(), bytes.data() + capture.spawnDomainStateOffset,
+                                         sizeof(spawnDomainState));
+                             capture.diagnostic.queuedBurstCount = spawnDomainState[0];
+                             capture.diagnostic.consumingBurstCount = spawnDomainState[1];
+                             capture.diagnostic.acceptingBurstRequests = spawnDomainState[2] != 0u;
+                             capture.diagnostic.gpuEmitterPlaying = spawnDomainState[3] != 0u;
+                             if (capture.contactCounterBytes > 0) {
+                                 GpuParticleContactCounters contactCounters{};
+                                 std::memcpy(&contactCounters, bytes.data() + capture.contactCounterOffset,
+                                             sizeof(contactCounters));
+                                 capture.diagnostic.contactOverflowCount = contactCounters.contactOverflow;
+                                 capture.diagnostic.contactWorkItemOverflowCount = contactCounters.workItemOverflow;
+                                 capture.diagnostic.contactCurrentSimulationStep =
+                                     contactCounters.currentSimulationStep;
+                                 capture.diagnostic.contactResetSerial = contactCounters.resetSerial;
+                                 capture.diagnostic.contactCurrentRecordCount =
+                                     std::min(contactCounters.currentRecordCount, capture.contactRecordCapacity);
+                                 capture.diagnostic.contactWorkItemCount =
+                                     std::min(contactCounters.workItemCount, capture.contactWorkItemCapacity);
+                                 capture.diagnostic.contactMaxPerParticle = contactCounters.maxContactsPerParticle;
+                                 capture.diagnostic.multiContactParticleCount =
+                                     contactCounters.multiContactParticleCount;
+                                 capture.diagnostic.contactRetainedOrderHash = contactCounters.retainedOrderHash;
+                                 capture.diagnostic.contactDroppedOrderHash = contactCounters.droppedOrderHash;
+                                 capture.diagnostic.contactMinParticleIndex = contactCounters.minParticleIndex;
+                                 capture.diagnostic.contactMaxParticleIndex = contactCounters.maxParticleIndex;
+                             }
+                             if (capture.stateBytes > 0 && capture.stateSampleCount > 0) {
+                                 const size_t wordsPerState = capture.stateStride / sizeof(uint32_t);
+                                 const auto *first = bytes.data() + capture.stateOffset;
+                                 const auto *states = first + capture.stateSampleCount *
+                                                                  StateGatherProgram::IdentityWords * sizeof(uint32_t);
+                                 for (uint32_t row = 0; row < capture.stateSampleCount; ++row) {
+                                     std::array<uint32_t, StateGatherProgram::IdentityWords> identity;
+                                     std::memcpy(identity.data(), first + row * sizeof(identity), sizeof(identity));
+                                     if ((identity[2] & 1u) == 0u)
+                                         continue;
+                                     GpuParticleEmitterDiagnostic::StateSample sample;
+                                     sample.slotIndex = identity[0];
+                                     sample.spawnGeneration = identity[1];
+                                     sample.lifecycleFlags = identity[2];
+                                     sample.words.resize(wordsPerState);
+                                     std::memcpy(sample.words.data(), states + row * capture.stateStride,
+                                                 capture.stateStride);
+                                     capture.diagnostic.stateSamples.push_back(std::move(sample));
+                                 }
+                             }
+                             result.emitters.push_back(capture.diagnostic);
+                         }
+                     }
+                     std::scoped_lock lock(state->mutex);
+                     const auto found = state->snapshots.find(request.requestId);
+                     if (found != state->snapshots.end() &&
+                         found->second.status == GpuParticleDiagnosticStatus::Pending)
+                         found->second = std::move(result);
+                 }});
         }
     }
 
-    [[nodiscard]] std::shared_ptr<MeshResources> ResolveMeshResources(const std::shared_ptr<InxMesh> &mesh,
-                                                                      std::string *error) const
+    static void PackMeshUpload(MeshUpload::Source &payload)
     {
-        if (!resources || !mesh) {
-            SetError(error, "GPU particle Mesh resource service is unavailable");
-            return {};
-        }
-        for (auto it = meshUploads.begin(); it != meshUploads.end();) {
-            if (it->second.owner.expired())
-                it = meshUploads.erase(it);
-            else
-                ++it;
-        }
-
-        const auto &sourceVertices = mesh->GetVertices();
-        const auto &sourceIndices = mesh->GetIndices();
+        const auto &sourceVertices = payload.geometry->vertices;
+        const auto &sourceIndices = payload.geometry->indices;
         if (sourceVertices.empty() || sourceIndices.empty() || sourceIndices.size() % 3 != 0 ||
             sourceIndices.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
             std::any_of(sourceIndices.begin(), sourceIndices.end(),
                         [&](uint32_t index) { return index >= sourceVertices.size(); })) {
-            SetError(error, "GPU particle Mesh output requires valid indexed geometry");
-            return {};
+            payload.failure = "GPU particle Mesh output requires valid indexed geometry";
+            return;
         }
 
-        std::vector<PackedParticleMeshVertex> vertices;
+        auto &vertices = payload.vertices;
         vertices.reserve(sourceVertices.size());
         for (const auto &source : sourceVertices) {
             PackedParticleMeshVertex vertex;
@@ -732,11 +1096,11 @@ struct ParticleGpuSystemManager::Impl
             vertex.uv = {source.texCoord.x, source.texCoord.y, 0.0f, 0.0f};
             vertices.push_back(vertex);
         }
-        std::vector<PackedParticleSkinInfluence> skinInfluences;
-        if (const auto &skinned = mesh->GetSkinnedData(); skinned) {
+        auto &skinInfluences = payload.skinInfluences;
+        if (const auto &skinned = payload.skinned; skinned) {
             if (skinned->influences.size() != sourceVertices.size()) {
-                SetError(error, "GPU particle Skinned Mesh influence count does not match its vertices");
-                return {};
+                payload.failure = "GPU particle Skinned Mesh influence count does not match its vertices";
+                return;
             }
             skinInfluences.reserve(skinned->influences.size());
             for (const auto &source : skinned->influences) {
@@ -746,8 +1110,8 @@ struct ParticleGpuSystemManager::Impl
                 skinInfluences.push_back(influence);
             }
         }
-        std::vector<PackedParticleMeshPrimitive> samplingPrimitives;
-        samplingPrimitives.reserve(sourceIndices.size());
+        auto &samplingPrimitives = payload.samplingPrimitives;
+        samplingPrimitives.reserve(sourceIndices.size() + sourceIndices.size() / 3);
         double cumulativeArea = 0.0;
         for (size_t index = 0; index < sourceIndices.size(); index += 3) {
             const uint32_t first = sourceIndices[index];
@@ -763,8 +1127,8 @@ struct ParticleGpuSystemManager::Impl
         }
         const size_t samplingTriangleCount = samplingPrimitives.size();
         if (samplingTriangleCount == 0 || !std::isfinite(cumulativeArea) || cumulativeArea <= 0.0) {
-            SetError(error, "GPU particle Mesh sampling requires non-degenerate triangles");
-            return {};
+            payload.failure = "GPU particle Mesh sampling requires non-degenerate triangles";
+            return;
         }
         const float inverseArea = static_cast<float>(1.0 / cumulativeArea);
         for (size_t index = 0; index < samplingTriangleCount; ++index) {
@@ -774,7 +1138,8 @@ struct ParticleGpuSystemManager::Impl
         }
         samplingPrimitives[samplingTriangleCount - 1].cdfOrPadding = FloatBits(1.0f);
 
-        std::set<std::pair<uint32_t, uint32_t>> uniqueEdges;
+        std::vector<std::pair<uint32_t, uint32_t>> uniqueEdges;
+        uniqueEdges.reserve(sourceIndices.size());
         for (size_t index = 0; index < sourceIndices.size(); index += 3) {
             const std::array<uint32_t, 3> triangle = {sourceIndices[index], sourceIndices[index + 1],
                                                       sourceIndices[index + 2]};
@@ -782,9 +1147,11 @@ struct ParticleGpuSystemManager::Impl
                 const uint32_t first = triangle[edge];
                 const uint32_t second = triangle[(edge + 1) % triangle.size()];
                 if (first != second)
-                    uniqueEdges.emplace(std::min(first, second), std::max(first, second));
+                    uniqueEdges.emplace_back(std::min(first, second), std::max(first, second));
             }
         }
+        std::sort(uniqueEdges.begin(), uniqueEdges.end());
+        uniqueEdges.erase(std::unique(uniqueEdges.begin(), uniqueEdges.end()), uniqueEdges.end());
         double cumulativeLength = 0.0;
         for (const auto &[first, second] : uniqueEdges) {
             const double length =
@@ -796,8 +1163,8 @@ struct ParticleGpuSystemManager::Impl
         }
         const size_t samplingEdgeCount = samplingPrimitives.size() - samplingTriangleCount;
         if (samplingEdgeCount == 0 || !std::isfinite(cumulativeLength) || cumulativeLength <= 0.0) {
-            SetError(error, "GPU particle Mesh edge sampling requires non-degenerate edges");
-            return {};
+            payload.failure = "GPU particle Mesh edge sampling requires non-degenerate edges";
+            return;
         }
         const float inverseLength = static_cast<float>(1.0 / cumulativeLength);
         for (size_t index = samplingTriangleCount; index < samplingPrimitives.size(); ++index) {
@@ -806,84 +1173,250 @@ struct ParticleGpuSystemManager::Impl
             samplingPrimitives[index].thirdOrCdf = FloatBits(cumulative * inverseLength);
         }
         samplingPrimitives.back().thirdOrCdf = FloatBits(1.0f);
-        uint64_t contentHash = 1469598103934665603ull;
-        contentHash = HashBytes(contentHash, vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex));
-        if (!skinInfluences.empty())
-            contentHash = HashBytes(contentHash, skinInfluences.data(),
-                                    skinInfluences.size() * sizeof(PackedParticleSkinInfluence));
-        contentHash = HashBytes(contentHash, sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t));
-        contentHash = HashBytes(contentHash, samplingPrimitives.data(),
-                                samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive));
+        payload.samplingTriangleCount = static_cast<uint32_t>(samplingTriangleCount);
+        payload.samplingEdgeCount = static_cast<uint32_t>(samplingEdgeCount);
+    }
 
-        auto &upload = meshUploads[mesh.get()];
-        const auto owner = upload.owner.lock();
-        if (owner.get() != mesh.get() || upload.contentHash != contentHash) {
-            upload = {};
-            upload.owner = mesh;
-            upload.contentHash = contentHash;
-            try {
-                // Inline simulation runs on Graphics; large systems can run on
-                // an independent Compute family. Declare both before allocation.
-                constexpr auto meshQueueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-                upload.vertexTicket =
-                    resources->BeginBufferUpload({vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex),
-                                                  rhi::BufferUsage::Storage, meshQueueAccess});
-                upload.indexTicket =
-                    resources->BeginBufferUpload({sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t),
-                                                  rhi::BufferUsage::Storage, meshQueueAccess});
-                upload.samplingTriangleTicket = resources->BeginBufferUpload(
-                    {samplingPrimitives.data(), samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive),
-                     rhi::BufferUsage::Storage, meshQueueAccess});
-                if (!skinInfluences.empty()) {
-                    upload.skinInfluenceTicket = resources->BeginBufferUpload(
-                        {skinInfluences.data(), skinInfluences.size() * sizeof(PackedParticleSkinInfluence),
-                         rhi::BufferUsage::Storage, meshQueueAccess});
+    static void RunMeshPack(MeshUpload::Source &payload)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        try {
+            PackMeshUpload(payload);
+        } catch (const std::exception &exception) {
+            payload.failure = std::string("GPU particle Mesh packing failed: ") + exception.what();
+        }
+        payload.skinned.reset();
+        if (payload.storage) {
+            payload.storage->ReduceTo(payload.vertices.capacity() * sizeof(PackedParticleMeshVertex) +
+                                      payload.samplingPrimitives.capacity() * sizeof(PackedParticleMeshPrimitive) +
+                                      payload.skinInfluences.capacity() * sizeof(PackedParticleSkinInfluence));
+        }
+        payload.executionNanoseconds =
+            (std::max)(uint64_t{1}, static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                              std::chrono::steady_clock::now() - start)
+                                                              .count()));
+    }
+
+    void PrepareMeshUploadTickets(MeshUpload &upload) const
+    {
+        const auto &payload = *upload.source;
+        if (!payload.failure.empty()) {
+            upload.Fail(payload.failure);
+            return;
+        }
+        upload.vertexCount = static_cast<uint32_t>(payload.vertices.size());
+        upload.indexCount = static_cast<uint32_t>(payload.geometry->indices.size());
+        upload.samplingTriangleCount = payload.samplingTriangleCount;
+        upload.samplingEdgeCount = payload.samplingEdgeCount;
+        // Inline simulation runs on Graphics while large systems may use Compute.
+        constexpr auto queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        const auto makeTicket = [this](size_t bytes) {
+            return resources->CreateBufferUpload(bytes, rhi::BufferUsageFlags::Storage, queueAccess);
+        };
+        upload.tickets[MeshUpload::Vertices] = makeTicket(payload.vertices.size() * sizeof(PackedParticleMeshVertex));
+        upload.tickets[MeshUpload::Indices] = makeTicket(payload.geometry->indices.size() * sizeof(uint32_t));
+        upload.tickets[MeshUpload::Sampling] =
+            makeTicket(payload.samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive));
+        if (!payload.skinInfluences.empty())
+            upload.tickets[MeshUpload::Skin] =
+                makeTicket(payload.skinInfluences.size() * sizeof(PackedParticleSkinInfluence));
+    }
+
+    bool AppendMeshUpload(MeshUpload &upload, size_t part, VkDeviceSize bytes) const
+    {
+        const auto &payload = *upload.source;
+        const std::array<const void *, MeshUpload::PartCount> sources{
+            payload.vertices.data(), payload.geometry->indices.data(), payload.samplingPrimitives.data(),
+            payload.skinInfluences.data()};
+        const auto &ticket = upload.tickets[part];
+        const auto offset = ticket->GetSubmittedBytes();
+        const auto *data = static_cast<const std::byte *>(sources[part]) + offset;
+        constexpr auto unit = sizeof(uint32_t);
+        const std::initializer_list<vk::BufferUploadTicket *> destinations{upload.tickets[MeshUpload::Indices].get(),
+                                                                           upload.tickets[MeshUpload::Sampling].get(),
+                                                                           upload.tickets[MeshUpload::Skin].get()};
+        if (!resources->TryAppendBufferUpload(ticket, data, bytes, meshUploadOwner, bytes == unit,
+                                              meshUploadOwner ? unit : 0,
+                                              part == MeshUpload::Vertices && offset == 0 && meshUploadOwner
+                                                  ? destinations
+                                                  : std::initializer_list<vk::BufferUploadTicket *>{}))
+            return false;
+        if (upload.NextPart() == MeshUpload::PartCount)
+            upload.source.reset();
+        return true;
+    }
+
+    void PollMeshUploads()
+    {
+        resources->PollGpuUploads();
+        for (auto it = meshUploads.begin(); it != meshUploads.end();) {
+            auto &upload = it->second;
+            const bool current = upload.IsCurrent();
+            if (upload.packJob.IsValid()) {
+                if (!upload.packJob.IsComplete()) {
+                    if (!current && !upload.packJob.IsCancellationRequested())
+                        upload.packJob.Cancel();
+                    ++it;
+                    continue;
                 }
-            } catch (const std::exception &exception) {
-                upload.failed = true;
-                SetError(error, std::string("GPU particle Mesh upload failed: ") + exception.what());
-                return {};
+                upload.packJob = {};
+                FinishMeshPack(upload, current);
+            }
+            if (current)
+                ++it;
+            else
+                it = meshUploads.erase(it);
+        }
+    }
+
+    void FinishMeshPack(MeshUpload &upload, bool current)
+    {
+        const auto elapsed = upload.source->executionNanoseconds;
+        if (elapsed) {
+            lastMeshPackNanoseconds = elapsed;
+            meshUploadOwner->ObserveResource(FrameWorkResource::Cpu, elapsed, upload.packFrame, upload.packGrant);
+        }
+        if (!current)
+            return;
+        try {
+            if (elapsed)
+                PrepareMeshUploadTickets(upload);
+            else
+                upload.Fail("GPU particle Mesh packing was canceled");
+        } catch (const std::exception &exception) {
+            upload.Fail(std::string("GPU particle Mesh upload failed: ") + exception.what());
+        }
+    }
+
+    bool StartMeshPack(MeshUpload &upload)
+    {
+        auto &owner = *meshUploadOwner;
+        if (!owner.CanAdmitResource(FrameWorkResource::Cpu, lastMeshPackNanoseconds, true))
+            return false;
+        auto &payload = upload.source;
+        payload->storage = owner.TryReserveCpuStorage(payload->WorkspaceBytes());
+        if (!payload->storage)
+            return false;
+        // The worker owns only immutable input snapshots and its private output.
+        if (JobSystem::IsAvailable() && !JobSystem::Get().IsInline()) {
+            upload.packJob = JobSystem::Get().Schedule([payload] { RunMeshPack(*payload); }, JobDomain::Render,
+                                                       JobPriority::Low, JobAffinity::WorkerOnly);
+        } else {
+            RunMeshPack(*payload);
+        }
+        upload.packFrame = owner.Opportunity();
+        upload.packGrant = owner.RecordAcceptedResource(FrameWorkResource::Cpu, lastMeshPackNanoseconds);
+        if (!upload.packJob.IsValid())
+            FinishMeshPack(upload, true);
+        return true;
+    }
+
+    [[nodiscard]] std::shared_ptr<MeshResources> ResolveMeshResources(const std::shared_ptr<InxMesh> &mesh,
+                                                                      bool &uploadPending, std::string *error) const
+    {
+        if (!mesh) {
+            SetError(error, "GPU particle Mesh resource binding requires a loaded Mesh asset");
+            return {};
+        }
+        if (!resources) {
+            SetError(error, "GPU particle Mesh resource service is unavailable");
+            return {};
+        }
+        if (!meshUploadOwner) {
+            for (auto it = meshUploads.begin(); it != meshUploads.end();) {
+                if (it->second.IsCurrent())
+                    ++it;
+                else
+                    it = meshUploads.erase(it);
             }
         }
-        if (upload.failed) {
-            SetError(error, "GPU particle Mesh upload failed");
+        auto &upload = meshUploads[mesh.get()];
+        if (!upload.IsCurrent() && !upload.packJob.IsValid()) {
+            upload = {};
+            upload.owner = mesh;
+            upload.generation = mesh->GetGeneration();
+            upload.token = nextMeshUploadToken++;
+            try {
+                upload.source = std::make_shared<MeshUpload::Source>();
+                upload.source->geometry = mesh->GetGeometrySnapshot();
+                upload.source->skinned = mesh->GetSkinnedData();
+                if (meshUploadOwner) {
+                    const auto bytes = upload.source->WorkspaceBytes();
+                    const auto limit = meshUploadOwner->CpuStorageLimit();
+                    if (bytes > limit) {
+                        upload.Fail("GPU particle Mesh packing requires " + std::to_string(bytes) +
+                                    " bytes, exceeding the CPU storage limit of " + std::to_string(limit) + " bytes");
+                    } else {
+                        meshUploadOwner->Wake(meshUploadSource);
+                    }
+                } else {
+                    RunMeshPack(*upload.source);
+                    PrepareMeshUploadTickets(upload);
+                    for (size_t part = 0; part < upload.tickets.size(); ++part) {
+                        if (const auto &ticket = upload.tickets[part]; ticket)
+                            (void)AppendMeshUpload(upload, part, ticket->GetSize());
+                    }
+                }
+            } catch (const std::exception &exception) {
+                upload.Fail(std::string("GPU particle Mesh upload failed: ") + exception.what());
+            }
+        }
+        if (!upload.failure.empty()) {
+            SetError(error, upload.failure);
             return {};
         }
         if (upload.resources)
             return upload.resources;
         try {
-            const bool verticesReady = resources->TryPublishBufferUpload(upload.vertexTicket);
-            const bool indicesReady = resources->TryPublishBufferUpload(upload.indexTicket);
-            const bool samplingReady = resources->TryPublishBufferUpload(upload.samplingTriangleTicket);
-            const bool influencesReady =
-                !upload.skinInfluenceTicket || resources->TryPublishBufferUpload(upload.skinInfluenceTicket);
-            if (!verticesReady || !indicesReady || !samplingReady || !influencesReady) {
+            if (upload.source || !std::all_of(upload.tickets.begin(), upload.tickets.end(), [this](const auto &ticket) {
+                    return !ticket || resources->TryPublishBufferUpload(ticket);
+                })) {
+                uploadPending = true;
                 SetError(error, "GPU particle Mesh upload is pending");
                 return {};
             }
             auto result = std::make_shared<MeshResources>();
-            result->vertices = resources->GetPublishedRhiBuffer(upload.vertexTicket);
-            result->indices = resources->GetPublishedRhiBuffer(upload.indexTicket);
-            result->samplingTriangles = resources->GetPublishedRhiBuffer(upload.samplingTriangleTicket);
-            if (upload.skinInfluenceTicket)
-                result->skinInfluences = resources->GetPublishedRhiBuffer(upload.skinInfluenceTicket);
-            result->vertexCount = static_cast<uint32_t>(sourceVertices.size());
-            result->indexCount = static_cast<uint32_t>(sourceIndices.size());
-            result->samplingTriangleCount = static_cast<uint32_t>(samplingTriangleCount);
-            result->samplingEdgeCount = static_cast<uint32_t>(samplingEdgeCount);
+            result->vertices = resources->GetPublishedRhiBuffer(upload.tickets[MeshUpload::Vertices]);
+            result->indices = resources->GetPublishedRhiBuffer(upload.tickets[MeshUpload::Indices]);
+            result->samplingTriangles = resources->GetPublishedRhiBuffer(upload.tickets[MeshUpload::Sampling]);
+            if (upload.tickets[MeshUpload::Skin])
+                result->skinInfluences = resources->GetPublishedRhiBuffer(upload.tickets[MeshUpload::Skin]);
+            result->vertexCount = upload.vertexCount;
+            result->indexCount = upload.indexCount;
+            result->samplingTriangleCount = upload.samplingTriangleCount;
+            result->samplingEdgeCount = upload.samplingEdgeCount;
             if (!result->vertices || !result->vertices->IsValid() || !result->indices || !result->indices->IsValid() ||
-                !result->samplingTriangles || !result->samplingTriangles->IsValid()) {
-                upload.failed = true;
-                SetError(error, "GPU particle Mesh upload produced invalid RHI buffers");
-                return {};
-            }
+                !result->samplingTriangles || !result->samplingTriangles->IsValid() ||
+                (upload.tickets[MeshUpload::Skin] && (!result->skinInfluences || !result->skinInfluences->IsValid())))
+                throw std::runtime_error("upload produced invalid RHI buffers");
             upload.resources = result;
             return result;
         } catch (const std::exception &exception) {
-            upload.failed = true;
-            SetError(error, std::string("GPU particle Mesh publication failed: ") + exception.what());
+            upload.Fail(std::string("GPU particle Mesh publication failed: ") + exception.what());
+            SetError(error, upload.failure);
             return {};
         }
+    }
+
+    [[nodiscard]] bool PrepareMeshUploads(const GpuParticleEmitterProgram &program, bool &waiting,
+                                          std::string *error) const
+    {
+        const auto prepare = [&](const std::shared_ptr<InxMesh> &mesh) {
+            bool pending = false;
+            if (ResolveMeshResources(mesh, pending, error))
+                return true;
+            waiting = pending;
+            return pending;
+        };
+        for (const auto &interface : program.meshInterfaces) {
+            if (!prepare(interface.mesh))
+                return false;
+        }
+        for (const auto &output : program.outputs) {
+            if (output.type == GpuParticleOutputType::Mesh && !prepare(output.mesh))
+                return false;
+        }
+        return true;
     }
 
     static void CaptureMeshRevisions(const GpuParticleEmitterProgram &program,
@@ -906,8 +1439,8 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
                                         std::vector<std::shared_ptr<InxTexture>> &vectorFields,
-                                        std::vector<uint64_t> &vectorFieldGenerations, std::string *error,
-                                        GpuParticleTextureRequest request) const
+                                        std::vector<uint64_t> &vectorFieldGenerations, bool &uploadPending,
+                                        std::string *error, GpuParticleTextureRequest request) const
     {
         runtimeDesc.capacity = program.capacity;
         runtimeDesc.stateStride = program.stateStride;
@@ -949,11 +1482,7 @@ struct ParticleGpuSystemManager::Impl
         }
         runtimeDesc.meshInterfaces.reserve(program.meshInterfaces.size());
         for (const auto &mesh : program.meshInterfaces) {
-            if (!mesh.mesh) {
-                SetError(error, "GPU particle Mesh resource binding requires a loaded Mesh asset");
-                return false;
-            }
-            const auto meshResources = ResolveMeshResources(mesh.mesh, error);
+            const auto meshResources = ResolveMeshResources(mesh.mesh, uploadPending, error);
             if (!meshResources)
                 return false;
             GpuMeshInterfaceDesc runtimeMesh;
@@ -1022,9 +1551,9 @@ struct ParticleGpuSystemManager::Impl
                 vectorFieldTextureResolver(field.texture->GetGuid(), field.linearFiltering, field.repeat, request);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.gpuView || !lease.gpuView->IsValid()) {
-                SetError(error, lease.status == GpuBillboardTextureStatus::Pending
-                                    ? "GPU particle volume texture upload is pending"
-                                    : "GPU particle volume texture upload failed");
+                uploadPending = lease.status == GpuBillboardTextureStatus::Pending;
+                SetError(error, uploadPending ? "GPU particle volume texture upload is pending"
+                                              : "GPU particle volume texture upload failed");
                 return false;
             }
             GpuVectorFieldDesc runtimeField;
@@ -1052,9 +1581,9 @@ struct ParticleGpuSystemManager::Impl
             auto lease = textureResolver(parameter.textureGuid, parameter.stableId, request);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.gpuView || !lease.gpuView->IsValid()) {
-                SetError(error, lease.status == GpuBillboardTextureStatus::Pending
-                                    ? "GPU particle sampled texture upload is pending"
-                                    : "GPU particle Texture2D parameter upload failed");
+                uploadPending = lease.status == GpuBillboardTextureStatus::Pending;
+                SetError(error, uploadPending ? "GPU particle sampled texture upload is pending"
+                                              : "GPU particle Texture2D parameter upload failed");
                 return false;
             }
             GpuTexture2DParameterDesc runtimeParameter;
@@ -1072,7 +1601,8 @@ struct ParticleGpuSystemManager::Impl
     }
 
     [[nodiscard]] std::shared_ptr<ParticleGpuOutputRenderer>
-    CreateOutputRenderer(const Emitter &emitter, const GpuParticleOutputProgram &output, std::string *error) const
+    CreateOutputRenderer(const Emitter &emitter, const GpuParticleOutputProgram &output, bool &uploadPending,
+                         std::string *error) const
     {
         if (output.type == GpuParticleOutputType::Ribbon) {
             if (!emitter.ribbonTopology || !ribbonRenderProgram || !ribbonRenderProgram->IsValid()) {
@@ -1094,7 +1624,7 @@ struct ParticleGpuSystemManager::Impl
             return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
         }
         if (output.type == GpuParticleOutputType::Mesh) {
-            const auto meshResources = ResolveMeshResources(output.mesh, error);
+            const auto meshResources = ResolveMeshResources(output.mesh, uploadPending, error);
             if (!meshResources)
                 return {};
             auto renderer = std::make_shared<ParticleGpuMeshRenderer>();
@@ -1271,127 +1801,14 @@ struct ParticleGpuSystemManager::Impl
     }
 
     [[nodiscard]] std::shared_ptr<Emitter> CreateEmitter(const GpuParticleEmitterProgram &program,
-                                                         const std::shared_ptr<Emitter> &previous,
+                                                         const std::shared_ptr<Emitter> &previous, bool &uploadPending,
                                                          std::string *error) const
     {
-        if (program.id == 0 || program.graphInstanceId == 0 || program.stableId.empty() ||
-            program.artifactRevision == 0 || program.capacity == 0 || program.stateStride == 0) {
-            SetError(error,
-                     "GPU particle program graph identity, emitter identity, revision, capacity, and state stride "
-                     "must be valid");
-            return {};
-        }
-        for (size_t index = 0; index < program.kernels.size(); ++index) {
-            const auto &kernel = program.kernels[index];
-            if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
-                !program.supportsFusedUpdateRendering)
-                continue;
-            if (!IsSpirv(kernel)) {
-                SetError(error, "GPU particle program contains invalid compute SPIR-V");
-                return {};
-            }
-        }
-        const bool hasContinuationKernels =
-            std::any_of(program.continuationKernels.begin(), program.continuationKernels.end(),
-                        [](const auto &kernel) { return !kernel.empty(); });
-        if ((program.continuationCapacity == 0) != !hasContinuationKernels ||
-            program.continuationCapacity > ParticleGpuContinuationRuntime::MaximumCapacity ||
-            (program.continuationCapacity > 0 &&
-             (program.continuationRecordStride < sizeof(GpuParticleContinuationRecord) ||
-              program.continuationRecordStride > ParticleGpuContinuationRuntime::MaximumRecordStride ||
-              program.continuationRecordStride % 16 != 0)) ||
-            (program.continuationCapacity > 0 &&
-             (program.continuationLaneCount == 0 ||
-              program.continuationLaneCount > ParticleGpuContinuationRuntime::MaximumLaneCount ||
-              program.continuationJoinCount > ParticleGpuContinuationRuntime::MaximumJoinCount)) ||
-            (program.continuationCapacity > 0 &&
-             !std::all_of(program.continuationKernels.begin(), program.continuationKernels.end(),
-                          [](const auto &kernel) { return IsSpirv(kernel); }))) {
-            SetError(error,
-                     "GPU particle continuation capacity, record stride, static lane/join counts and "
-                     "Prepare/Classify/Dispatch SPIR-V must be supplied together and satisfy the bounded runtime "
-                     "contract");
-            return {};
-        }
-        const bool needsSurfaceShader = !program.outputs.empty();
-        if (needsSurfaceShader) {
-            for (const auto &output : program.outputs) {
-                if (!output.shaderProgram || !output.shaderProgram->IsValid() ||
-                    output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
-                    SetError(error, "GPU particle surface outputs require a valid linked ParticleSprite shader");
-                    return {};
-                }
-            }
-        }
-        const bool needsMesh = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
-            return output.type == GpuParticleOutputType::Mesh;
-        });
+        // ApplyGraphs preflights every candidate before any private runtime is
+        // built. Keep validation in that single pass, including preserveState.
         const bool needsRibbon = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
             return output.type == GpuParticleOutputType::Ribbon;
         });
-        if (needsMesh && (!IsSpirv(program.meshVertexShader) || !IsSpirv(program.meshShadowFragmentShader) ||
-                          !IsSpirv(program.meshPickingFragmentShader) || !IsSpirv(program.meshMotionVertexShader) ||
-                          !IsSpirv(program.meshMotionFragmentShader))) {
-            SetError(error, "GPU particle program contains invalid mesh output SPIR-V");
-            return {};
-        }
-        if (needsRibbon && (!ribbonTopologyProgram || !ribbonTopologyProgram->IsValid() || !ribbonRenderProgram ||
-                            !ribbonRenderProgram->IsValid())) {
-            SetError(error, "GPU particle Ribbon topology or render shaders are unavailable");
-            return {};
-        }
-        if (program.outputs.empty()) {
-            SetError(error, "GPU particle program requires at least one rendering output");
-            return {};
-        }
-
-        std::unordered_set<uint64_t> outputIds;
-        std::unordered_set<std::string> outputStableIds;
-        outputIds.reserve(program.outputs.size());
-        outputStableIds.reserve(program.outputs.size());
-        for (const auto &output : program.outputs) {
-            if (output.id == 0 || output.stableId.empty() || !outputIds.insert(output.id).second ||
-                !outputStableIds.insert(output.stableId).second) {
-                SetError(error, "GPU particle output identity must be valid and unique per emitter");
-                return {};
-            }
-            if (output.semantics.castShadows && output.type != GpuParticleOutputType::Mesh) {
-                SetError(error, "only static mesh particle outputs can cast shadows");
-                return {};
-            }
-            if (!output.semantics.IsValid()) {
-                SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
-                return {};
-            }
-            if (output.semantics.receiveSceneLighting &&
-                !output.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
-                SetError(error, "GPU particle output '" + output.stableId +
-                                    "' requires a linked Particle Forward+ shader variant when Receive Scene "
-                                    "Lighting is enabled");
-                return {};
-            }
-            if (output.type == GpuParticleOutputType::Mesh && (!output.mesh || output.semantics.softParticles)) {
-                SetError(error, "GPU particle mesh output '" + output.stableId +
-                                    "' requires a loaded mesh and currently does not support soft fading");
-                return {};
-            }
-            if (output.type == GpuParticleOutputType::Ribbon &&
-                (output.semantics.castShadows || !std::isfinite(output.ribbonUvScale) ||
-                 output.ribbonUvScale <= 0.0f)) {
-                SetError(error, "GPU particle Ribbon output '" + output.stableId +
-                                    "' cannot cast shadows and requires a positive finite UV scale");
-                return {};
-            }
-            if (output.type != GpuParticleOutputType::Ribbon && output.semantics.sortMode != ParticleSortMode::None &&
-                (!sortProgram || !sortProgram->IsValid())) {
-                SetError(error, "GPU particle sorting kernels are unavailable");
-                return {};
-            }
-        }
-        if (!cullProgram || !cullProgram->IsValid()) {
-            SetError(error, "GPU particle view-culling kernels are unavailable");
-            return {};
-        }
 
         auto emitter = std::make_shared<Emitter>();
         emitter->id = program.id;
@@ -1411,19 +1828,13 @@ struct ParticleGpuSystemManager::Impl
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
-        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations, error,
-                              GpuParticleTextureRequest::Prepare))
+        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations,
+                              uploadPending, error, GpuParticleTextureRequest::Prepare))
             return {};
         emitter->observedVectorFieldGenerations = emitter->vectorFieldGenerations;
         CaptureMeshRevisions(program, emitter->meshes, emitter->observedMeshGenerations);
         emitter->sourceProgram = program;
         auto &device = context->GetRhiDevice();
-        if (program.preserveState &&
-            (!previous || previous->id != program.id || previous->graphInstanceId != program.graphInstanceId ||
-             previous->stableId != program.stableId)) {
-            SetError(error, "GPU particle state preservation requires the same live emitter identity");
-            return {};
-        }
         const bool requiresMigration = program.preserveState && program.migration.has_value();
         const bool runtimeCreated = requiresMigration ? emitter->runtime->Create(device, runtimeDesc)
                                     : program.preserveState
@@ -1454,6 +1865,8 @@ struct ParticleGpuSystemManager::Impl
             migrationDesc.destinationStates = emitter->runtime->StateBuffer();
             migrationDesc.destinationFreeList = emitter->runtime->FreeListBuffer();
             migrationDesc.destinationCounters = emitter->runtime->CounterBuffer();
+            migrationDesc.destinationAliveIndices = emitter->runtime->AliveIndexBuffer(0);
+            migrationDesc.destinationAliveControl = emitter->runtime->AliveControlBuffer();
             migrationDesc.copyRanges = migration.copyRanges;
             migrationDesc.defaultStateWords = migration.defaultStateWords;
             migrationDesc.program = migrationProgram->View();
@@ -1506,7 +1919,7 @@ struct ParticleGpuSystemManager::Impl
 
         emitter->outputs.reserve(program.outputs.size());
         for (const auto &output : program.outputs) {
-            auto renderer = CreateOutputRenderer(*emitter, output, error);
+            auto renderer = CreateOutputRenderer(*emitter, output, uploadPending, error);
             if (!renderer) {
                 if (!error || error->empty())
                     SetError(error,
@@ -1564,21 +1977,24 @@ struct ParticleGpuSystemManager::Impl
         std::vector<std::shared_ptr<InxTexture>> vectorFields;
         std::vector<uint64_t> vectorFieldGenerations;
         auto replacement = std::make_unique<ParticleGpuRuntime>();
-        const bool descriptorValid = BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields,
-                                                      vectorFieldGenerations, &error, GpuParticleTextureRequest::Poll);
+        bool uploadPending = false;
+        const bool meshesReady =
+            !meshChanged || (PrepareMeshUploads(emitter.sourceProgram, uploadPending, &error) && !uploadPending);
+        const bool descriptorValid =
+            meshesReady && BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields, vectorFieldGenerations,
+                                            uploadPending, &error, GpuParticleTextureRequest::Poll);
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
         const auto rememberHardFailure = [&]() {
             emitter.observedVectorFieldGenerations = currentVectorFieldGenerations;
             emitter.observedMeshGenerations = currentMeshGenerations;
         };
-        const auto uploadPending = [&]() { return error.find("upload is pending") != std::string::npos; };
         if (!replacementCreated || !deletionQueue) {
-            if (!uploadPending())
+            if (!uploadPending) {
                 rememberHardFailure();
-            if (!uploadPending())
                 INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
                             "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
+            }
             return false;
         }
 
@@ -1607,13 +2023,13 @@ struct ParticleGpuSystemManager::Impl
                 candidate.ribbonUvScale = output.ribbonUvScale;
                 candidate.flipbookColumns = output.flipbookColumns;
                 candidate.flipbookRows = output.flipbookRows;
-                auto next = CreateOutputRenderer(emitter, candidate, &error);
+                auto next = CreateOutputRenderer(emitter, candidate, uploadPending, &error);
                 if (!next) {
-                    if (!uploadPending())
+                    if (!uploadPending) {
                         rememberHardFailure();
-                    if (!uploadPending())
                         INXLOG_WARN("GPU particle Mesh output refresh kept last-known-good emitter '", emitter.stableId,
                                     "': ", error.empty() ? "renderer creation failed" : error);
+                    }
                     return false;
                 }
                 renderers.push_back({index, output.renderer, std::move(next)});
@@ -1932,7 +2348,8 @@ bool ParticleGpuSystemManager::Initialize(
     GpuParticleSkinnedMeshResolver skinnedMeshResolver, const GpuParticleSortProgram &sortProgram,
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
     const GpuParticleMigrationProgram &migrationProgram, const GpuParticleSpawnProgram &spawnProgram,
-    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram)
+    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
+    ShaderBytecode stateGatherShader)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
         !spawnProgram.IsValid() || ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
@@ -1978,6 +2395,14 @@ bool ParticleGpuSystemManager::Initialize(
         return false;
     }
     m_impl->spawnProgram = std::move(spawnStorage);
+    if (stateGatherShader.wordCount != 0) {
+        m_impl->stateGatherProgram = std::make_unique<StateGatherProgram>(context.GetRhiDevice(), stateGatherShader);
+        if (!m_impl->stateGatherProgram->IsValid()) {
+            INXLOG_ERROR("ParticleGpuSystemManager failed to create the state gather program");
+            Shutdown();
+            return false;
+        }
+    }
     if (ribbonTopologyProgram.IsValid()) {
         auto ribbonTopologyStorage = std::make_shared<GpuParticleRibbonProgramStorage>();
         auto ribbonRenderStorage = std::make_shared<GpuParticleRibbonRenderProgramStorage>();
@@ -2022,12 +2447,22 @@ void ParticleGpuSystemManager::Shutdown() noexcept
 {
     if (!m_impl)
         return;
+    if (m_impl->meshUploadOwner) {
+        m_impl->meshUploadOwner->RemoveSource(m_impl->meshUploadSource);
+        m_impl->meshUploadOwner = nullptr;
+        m_impl->meshUploadSource = 0;
+    }
     if (m_impl->drawRegistry)
         m_impl->drawRegistry->Clear();
     m_impl->FailDiagnostics(0, "GPU particle manager shut down before diagnostic recording completed");
+    m_impl->recordedDiagnostics.clear();
+    m_impl->preparedStateCaptures.clear();
+    m_impl->stateCaptures.clear();
     m_impl->graphState.reset();
     m_impl->emitters.clear();
     m_impl->requiresCollisionScene = false;
+    for (auto &[key, upload] : m_impl->meshUploads)
+        upload.packJob.Cancel();
     m_impl->meshUploads.clear();
     m_impl->collisionScene.reset();
     m_impl->drawRegistry = nullptr;
@@ -2041,28 +2476,97 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->spawnProgram.reset();
     m_impl->ribbonTopologyProgram.reset();
     m_impl->ribbonRenderProgram.reset();
+    m_impl->stateGatherProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
     m_impl->resources = nullptr;
     m_impl->context = nullptr;
 }
 
-bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program, std::string *error)
+void ParticleGpuSystemManager::RegisterMeshUploadWork(FrameWorkOwner &owner)
+{
+    auto &impl = *m_impl;
+    if (impl.meshUploadOwner)
+        return;
+
+    FrameWorkSource source;
+    source.observe = [&impl] { impl.PollMeshUploads(); };
+    source.refresh = source.observe;
+    source.describe = [&impl, &owner] {
+        FrameWorkFacts facts;
+        const auto order = [](uint64_t token, uint64_t cursor) { return std::pair(token <= cursor, token); };
+        for (const auto &[key, upload] : impl.meshUploads) {
+            if (!upload.source) {
+                facts.pending |= std::any_of(upload.tickets.begin(), upload.tickets.end(),
+                                             [](const auto &ticket) { return ticket && ticket->IsPending(); });
+                continue;
+            }
+            facts.pending = true;
+            if (upload.packJob.IsValid()) {
+                facts.workerBusy = true;
+                continue;
+            }
+            if (!upload.tickets[Impl::MeshUpload::Vertices]) {
+                if ((!facts.host.ready ||
+                     order(upload.token, impl.lastMeshPackToken) < order(facts.host.token, impl.lastMeshPackToken)) &&
+                    owner.CanAdmitResource(FrameWorkResource::Cpu, impl.lastMeshPackNanoseconds, true) &&
+                    owner.CanReserveCpuStorage(upload.source->WorkspaceBytes()))
+                    facts.host = {upload.token, 0, true, false};
+                continue;
+            }
+            const auto &ticket = upload.tickets[upload.NextPart()];
+            if (impl.resources->PlanBufferUploadBlock(*ticket, owner, sizeof(uint32_t)) &&
+                (!facts.gpu.ready ||
+                 order(upload.token, impl.lastMeshUploadToken) < order(facts.gpu.token, impl.lastMeshUploadToken)))
+                facts.gpu = {upload.token, 0, true, false};
+        }
+        if (facts.workerBusy)
+            facts.host = {};
+        return facts;
+    };
+    source.advance = [&impl, &owner](bool gpu, uint64_t token) {
+        for (auto &[key, upload] : impl.meshUploads) {
+            if (upload.token != token || !upload.source)
+                continue;
+            try {
+                if (!gpu) {
+                    impl.lastMeshPackToken = token;
+                    return impl.StartMeshPack(upload);
+                }
+                impl.lastMeshUploadToken = token;
+                const auto part = upload.NextPart();
+                const auto bytes =
+                    impl.resources->PlanBufferUploadBlock(*upload.tickets[part], owner, sizeof(uint32_t));
+                return bytes && impl.AppendMeshUpload(upload, part, bytes);
+            } catch (const std::exception &exception) {
+                upload.Fail(std::string("GPU particle Mesh upload failed: ") + exception.what());
+                return true;
+            }
+        }
+        return false;
+    };
+    impl.meshUploadSource = owner.AddSource(std::move(source));
+    impl.meshUploadOwner = &owner;
+}
+
+GpuParticlePublicationStatus ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program,
+                                                                  std::string *error)
 {
     return ApplyGraphs(std::vector<GpuParticleGraphProgram>{program}, error);
 }
 
-bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error)
+GpuParticlePublicationStatus ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs,
+                                                                   std::string *error)
 {
     if (error)
         error->clear();
     if (!m_impl || !m_impl->context || !m_impl->drawRegistry) {
         SetError(error, "GPU particle manager is not initialized");
-        return false;
+        return GpuParticlePublicationStatus::Failed;
     }
     if (programs.empty()) {
         SetError(error, "GPU particle graph publication batch cannot be empty");
-        return false;
+        return GpuParticlePublicationStatus::Failed;
     }
 
     Impl::EmitterMap candidates = m_impl->emitters;
@@ -2077,63 +2581,77 @@ bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphPro
     for (const auto &program : programs) {
         if (program.graphInstanceId == 0 || !graphInstanceIds.insert(program.graphInstanceId).second) {
             SetError(error, "GPU particle publication batch contains an invalid or duplicate graph instance id");
-            return false;
+            return GpuParticlePublicationStatus::Failed;
         }
         if (program.emitters.empty() && program.removeEmitterIds.empty()) {
             SetError(error, "GPU particle update batch cannot be empty");
-            return false;
+            return GpuParticlePublicationStatus::Failed;
         }
         for (const uint64_t id : program.removeEmitterIds) {
             if (id == 0 || !batchIds.insert(id).second) {
                 SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
-                return false;
+                return GpuParticlePublicationStatus::Failed;
             }
             const auto existing = m_impl->emitters.find(id);
             if (existing != m_impl->emitters.end() && existing->second->graphInstanceId != program.graphInstanceId) {
                 SetError(error, "GPU particle graph cannot remove another graph's emitter");
-                return false;
+                return GpuParticlePublicationStatus::Failed;
             }
             candidates.erase(id);
         }
         for (const auto &emitterProgram : program.emitters) {
             if (emitterProgram.graphInstanceId != program.graphInstanceId) {
                 SetError(error, "GPU particle update batch mixes multiple graph instances");
-                return false;
+                return GpuParticlePublicationStatus::Failed;
             }
             if (!batchIds.insert(emitterProgram.id).second) {
                 SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
-                return false;
+                return GpuParticlePublicationStatus::Failed;
             }
             const auto previous = m_impl->emitters.find(emitterProgram.id);
             if (previous != m_impl->emitters.end() && previous->second->graphInstanceId != program.graphInstanceId) {
                 SetError(error, "GPU particle emitter id is already owned by another graph");
-                return false;
+                return GpuParticlePublicationStatus::Failed;
             }
             if (!m_impl->PreflightEmitterProgram(
                     emitterProgram,
                     previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error))
-                return false;
+                return GpuParticlePublicationStatus::Failed;
         }
     }
+
+    // Admit all mesh dependencies before constructing any candidate runtimes.
+    // The next host opportunity can advance both uploads while the live graph remains intact.
+    bool waitingForMesh = false;
+    for (const auto &program : programs) {
+        for (const auto &emitterProgram : program.emitters) {
+            if (!m_impl->PrepareMeshUploads(emitterProgram, waitingForMesh, error))
+                return GpuParticlePublicationStatus::Failed;
+        }
+    }
+    if (waitingForMesh)
+        return GpuParticlePublicationStatus::Pending;
 
     for (const auto &program : programs) {
         for (const auto &emitterProgram : program.emitters) {
             const auto previous = m_impl->emitters.find(emitterProgram.id);
-            auto emitter = m_impl->CreateEmitter(
-                emitterProgram,
-                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error);
+            bool uploadPending = false;
+            auto emitter = m_impl->CreateEmitter(emitterProgram,
+                                                 previous != m_impl->emitters.end() ? previous->second
+                                                                                    : std::shared_ptr<Impl::Emitter>{},
+                                                 uploadPending, error);
             if (!emitter)
-                return false;
+                return uploadPending ? GpuParticlePublicationStatus::Pending : GpuParticlePublicationStatus::Failed;
             candidates[emitterProgram.id] = std::move(emitter);
         }
     }
 
     auto candidateGraph = m_impl->BuildGraph(candidates, error);
     if (!candidateGraph)
-        return false;
+        return GpuParticlePublicationStatus::Failed;
     if (!m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(candidates))) {
         SetError(error, "failed to publish GPU particle draw entries");
-        return false;
+        return GpuParticlePublicationStatus::Failed;
     }
 
     auto oldGraph = std::move(m_impl->graphState);
@@ -2148,7 +2666,7 @@ bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphPro
         std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
                     [](const auto &entry) { return entry.second && entry.second->sourceProgram.collisionEnabled; });
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
-    return true;
+    return GpuParticlePublicationStatus::Published;
 }
 
 bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
@@ -2202,6 +2720,21 @@ void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
 {
     if (!m_impl)
         return;
+    if (!submitted)
+        for (const auto &work : m_impl->preparedStateCaptures)
+            work->capture->Cancel("GPU particle state capture submission was not accepted");
+    m_impl->preparedStateCaptures.clear();
+    for (auto &diagnostic : m_impl->recordedDiagnostics) {
+        if (submitted) {
+            m_impl->deletionQueue->Retire(std::move(diagnostic.complete));
+        } else {
+            std::scoped_lock lock(m_impl->diagnosticState->mutex);
+            auto &snapshot = m_impl->diagnosticState->snapshots.at(diagnostic.requestId);
+            snapshot.status = GpuParticleDiagnosticStatus::Failed;
+            snapshot.error = "GPU particle diagnostic submission was not accepted";
+        }
+    }
+    m_impl->recordedDiagnostics.clear();
     if (m_impl->collisionScene)
         m_impl->collisionScene->NotifySubmission(submitted);
     for (const auto &[id, emitter] : m_impl->emitters) {
@@ -2330,7 +2863,8 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
             candidate.flipbookRows = output.flipbookRows;
             candidate.ribbonUvMode = output.ribbonUvMode;
             candidate.ribbonUvScale = output.ribbonUvScale;
-            auto renderer = m_impl->CreateOutputRenderer(*emitter, candidate, error);
+            bool uploadPending = false;
+            auto renderer = m_impl->CreateOutputRenderer(*emitter, candidate, uploadPending, error);
             if (!renderer) {
                 SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
                 return false;
@@ -2624,6 +3158,7 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
             throw std::runtime_error("GPU particle substep input upload failed");
     }
     m_impl->RecordDiagnostics(commandBuffer);
+    m_impl->RecordStateCaptures(commandBuffer, rhi::QueueRole::Graphics);
 }
 
 void ParticleGpuSystemManager::AbortAsyncRecording() noexcept
@@ -2661,7 +3196,7 @@ bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
 
     if (m_impl->requiresCollisionScene && m_impl->collisionScene && m_impl->collisionScene->HasPendingUpload())
         return true;
-    if (!m_impl->pendingDiagnostics.empty() || m_impl->HasQueuedFrameRequests())
+    if (!m_impl->pendingDiagnostics.empty() || !m_impl->stateCaptures.empty() || m_impl->HasQueuedFrameRequests())
         return true;
     if (std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
                     [](const auto &entry) { return entry.second->runtime->HasPendingUploads(); }))
@@ -2722,6 +3257,7 @@ bool ParticleGpuSystemManager::RecordAsyncExport(VkCommandBuffer commandBuffer)
     if (!recorded)
         return false;
     m_impl->RecordDiagnostics(commandBuffer);
+    m_impl->RecordStateCaptures(commandBuffer, rhi::QueueRole::Compute);
     if (m_impl->HasQueuedFrameRequests() && !m_impl->ArmNextQueuedFrameRequests()) {
         INXLOG_ERROR("GPU particle preroll sequence could not arm its next fixed step");
         m_impl->ClearQueuedFrameRequests();
@@ -2855,6 +3391,104 @@ std::optional<ParticleOutputSemantics> ParticleGpuSystemManager::ActiveOutputSem
     return output != emitter->second->outputs.end() ? std::optional{output->semantics} : std::nullopt;
 }
 
+std::vector<std::shared_ptr<GpuParticleStatePort>>
+ParticleGpuSystemManager::CaptureState(uint64_t graphInstanceId, uint64_t emitterId, uint64_t artifactRevision,
+                                       uint32_t firstRow, uint32_t rowCount, std::vector<GpuParticleStateField> fields)
+{
+    const auto found = m_impl->emitters.find(emitterId);
+    if (!m_impl->stateGatherProgram || found == m_impl->emitters.end() ||
+        found->second->graphInstanceId != graphInstanceId || found->second->artifactRevision != artifactRevision)
+        throw std::invalid_argument("GPU particle capture requires an active emitter with the requested layout");
+    const auto stride = found->second->runtime->StateStride() / sizeof(uint32_t);
+    const auto &limits = m_impl->context->GetDeviceProperties().limits;
+    const uint64_t maxDispatchRows = uint64_t(limits.maxComputeWorkGroupCount[0]) * StateGatherProgram::WorkgroupSize;
+    const uint64_t rowBytesPerWord = uint64_t(rowCount) * sizeof(uint32_t);
+    if (rowCount == 0 || rowCount > maxDispatchRows || uint64_t(firstRow) + rowCount > UINT32_MAX || fields.empty() ||
+        rowBytesPerWord * StateGatherProgram::IdentityWords > limits.maxStorageBufferRange)
+        throw std::invalid_argument("GPU particle capture range does not fit the dispatch or state layout");
+    for (const auto &field : fields) {
+        if (field.wordCount == 0 || uint64_t(field.wordOffset) + field.wordCount > stride ||
+            field.scalarType == rhi::ComputeScalarType::Int64 ||
+            rowBytesPerWord * field.wordCount > limits.maxStorageBufferRange)
+            throw std::invalid_argument("GPU particle capture field does not fit the state layout");
+    }
+
+    auto capture = std::make_shared<GpuParticleStateCapture>();
+    capture->graphInstanceId = graphInstanceId;
+    capture->emitterId = emitterId;
+    capture->artifactRevision = artifactRevision;
+    capture->requestId = m_impl->nextCaptureRequestId++;
+    std::vector<std::shared_ptr<GpuParticleStatePort>> ports;
+    ports.reserve(fields.size() + 1);
+    capture->ports.reserve(ports.capacity());
+    // Fields keep their request order, followed by the shared row identities.
+    for (size_t i = 0; i <= fields.size(); ++i) {
+        auto port = std::make_shared<GpuParticleStatePort>();
+        port->capture = capture;
+        capture->ports.push_back(port);
+        ports.push_back(std::move(port));
+    }
+    m_impl->stateCaptures.push_back({capture, firstRow, rowCount, std::move(fields)});
+    return ports;
+}
+
+void ParticleGpuSystemManager::PrepareStateCaptures(vk::VulkanFrameSubmission &frame, rhi::ComputeHost &host,
+                                                    FrameWorkOwner &owner)
+{
+    m_impl->preparedStateCaptures.clear();
+    auto &requests = m_impl->stateCaptures;
+    requests.erase(std::remove_if(requests.begin(), requests.end(),
+                                  [](const auto &request) {
+                                      const auto capture = request.capture.lock();
+                                      return !capture || capture->Done();
+                                  }),
+                   requests.end());
+    auto &device = m_impl->context->GetRhiDevice();
+    uint64_t preparedNanoseconds = 0;
+    for (const auto &request : requests) {
+        const auto capture = request.capture.lock();
+        const auto found = m_impl->emitters.find(capture->emitterId);
+        if (found == m_impl->emitters.end() || found->second->artifactRevision != capture->artifactRevision) {
+            capture->Cancel("GPU particle capture layout is no longer active");
+            continue;
+        }
+        const uint64_t identityWords = uint64_t(request.rowCount) * StateGatherProgram::IdentityWords;
+        uint64_t estimatedNanoseconds = 2 * identityWords * sizeof(uint32_t);
+        for (const auto &field : request.fields)
+            estimatedNanoseconds += 10000 + 2 * uint64_t(request.rowCount) * field.wordCount * sizeof(uint32_t);
+        if (estimatedNanoseconds > owner.ResourceState(FrameWorkResource::Gpu).limit) {
+            capture->Cancel("GPU particle capture exceeds the host GPU allowance; select fewer rows or attributes");
+            continue;
+        }
+        if (!owner.CanAdmitResource(FrameWorkResource::Gpu, preparedNanoseconds + estimatedNanoseconds))
+            continue;
+        auto work = std::make_shared<Impl::StateCaptureWork>(device);
+        work->capture = capture;
+        work->emitter = found->second;
+        work->fields.reserve(request.fields.size());
+        work->bindings.groups.reserve(request.fields.size());
+        const auto stride = static_cast<uint32_t>(work->emitter->runtime->StateStride() / sizeof(uint32_t));
+        for (const auto &field : request.fields) {
+            Impl::StateCaptureDispatch dispatch{{stride, field.wordOffset, field.wordCount, 0, request.firstRow,
+                                                 request.rowCount, 0,
+                                                 work->fields.empty() ? 0 : StateGatherProgram::SkipIdentities},
+                                                {}};
+            if (!dispatch.output.Prepare(host, {uint64_t(request.rowCount) * field.wordCount, field.scalarType}))
+                break;
+            work->fields.push_back(std::move(dispatch));
+        }
+        if (work->fields.size() != request.fields.size() ||
+            !work->identities.Prepare(host, {identityWords, rhi::ComputeScalarType::UInt32}))
+            continue;
+        frame.Retain(work);
+        frame.OnAccepted([work, &owner, estimatedNanoseconds](rhi::SubmissionTicket ticket) {
+            work->Publish(ticket, owner, estimatedNanoseconds);
+        });
+        m_impl->preparedStateCaptures.push_back(std::move(work));
+        preparedNanoseconds += estimatedNanoseconds;
+    }
+}
+
 uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId, uint32_t sampleFrames,
                                                       uint32_t stateSampleCount)
 {
@@ -2889,6 +3523,9 @@ uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId, 
     } else if (!m_impl->context || !m_impl->deletionQueue) {
         snapshot.status = GpuParticleDiagnosticStatus::Failed;
         snapshot.error = "GPU particle diagnostics are unavailable";
+    } else if (stateSampleCount != 0 && !m_impl->stateGatherProgram) {
+        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+        snapshot.error = "GPU particle state gathering is unavailable";
     } else {
         snapshot.status = GpuParticleDiagnosticStatus::Pending;
         m_impl->pendingDiagnostics.push_back({requestId, graphInstanceId, sampleFrames, stateSampleCount, true});

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RhiHandles.h"
+#include "RhiTypes.h"
 
 #include <cstdint>
 
@@ -38,6 +39,28 @@ struct SubmissionTicket
     {
         return device != InvalidDeviceId && serial != InvalidSubmissionSerial;
     }
+    [[nodiscard]] constexpr bool operator==(const SubmissionTicket &other) const noexcept
+    {
+        return device == other.device && queue == other.queue && serial == other.serial;
+    }
+};
+
+struct SubmissionDependency
+{
+    SubmissionTicket producer;
+    PipelineStage stages = PipelineStage::AllCommands;
+};
+
+/// Observed work in the original frame and compute pools, not differences
+/// between reserved/submitted serials. The newest submitted frame may belong
+/// to an earlier opportunity when presentation is suspended.
+struct GpuQueuePressure
+{
+    uint32_t frameSlots = 0;
+    uint32_t pendingFrames = 0;
+    uint32_t olderPendingFrames = 0;
+    uint32_t recordingFrames = 0;
+    uint64_t computeSubmissions = 0;
 };
 
 } // namespace infernux::rhi

@@ -6,13 +6,13 @@ import pytest
 
 from infernux.engine import player_package_native
 from infernux.plugins import InxPackage, PluginManager
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_COMPATIBILITY_VERSION
 
 
 def make_package(source, reference, *, version="1.0.0", requirements=""):
     source.mkdir(parents=True, exist_ok=True)
     (source / "inx_package.json").write_text(json.dumps({
-        "reference": reference, "version": version, "engine": "==" + ENGINE_VERSION,
+        "reference": reference, "version": version, "engine": "==" + ENGINE_COMPATIBILITY_VERSION,
     }), encoding="utf-8")
     (source / "requirements.txt").write_text(requirements, encoding="utf-8")
     runtime = source / "runtime"

@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <vk_mem_alloc.h>
@@ -56,7 +58,8 @@ struct VmaRuntimeStatistics
  */
 void DestroyVmaAllocator(VmaAllocator allocator);
 
-[[nodiscard]] VmaRuntimeStatistics QueryVmaRuntimeStatistics(VmaAllocator allocator, VkPhysicalDevice physicalDevice);
+[[nodiscard]] INFERNUX_VULKAN_BACKEND_API VmaRuntimeStatistics
+QueryVmaRuntimeStatistics(VmaAllocator allocator, VkPhysicalDevice physicalDevice);
 
 } // namespace vk
 } // namespace infernux

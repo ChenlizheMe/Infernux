@@ -97,7 +97,7 @@ def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, s
     install_runtime_service("gpu-particles", engine)
     phases = ("static", "camera_motion", "particle_motion", "stopped")
     failures, results = [], []
-    frame, changed, ticket = 0, 0, None
+    frame, phase_frame, phase_execution, ticket = 0, 0, 0, None
     try:
         engine.set_render_pipeline(pipeline)
         engine.resize_game_render_target(96, 96)
@@ -112,11 +112,12 @@ def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, s
             component.update(1. / 120.)
 
         def after_draw():
-            nonlocal frame, changed, ticket
+            nonlocal frame, phase_frame, phase_execution, ticket
             try:
                 frame += 1
                 assert frame < 150, results
-                if ticket is None and frame >= changed + 16:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= phase_execution + 16:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy()
@@ -136,9 +137,9 @@ def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, s
                         engine.exit()
                         return
                     component.set_parameter("drift", .5 if phases[len(results)] == "particle_motion" else 0.0)
-                    changed, ticket = frame, None
+                    phase_frame, phase_execution, ticket = frame, execution, None
                 if phases[len(results)] == "camera_motion":
-                    camera.transform.position = Vector3((frame - changed) * .01, 0, -5)
+                    camera.transform.position = Vector3((frame - phase_frame) * .01, 0, -5)
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

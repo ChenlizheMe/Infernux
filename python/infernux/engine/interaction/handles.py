@@ -86,6 +86,16 @@ class _FrameHandle:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _FrameLabel:
+    provider_id: str
+    position: Vec3
+    text: str
+    color: tuple[float, float, float, float]
+    offset: tuple[float, float]
+    font_size: float
+
+
 @dataclass(slots=True)
 class _Capture:
     descriptor: _FrameHandle
@@ -138,7 +148,7 @@ class EditorHandleContext:
 
     __slots__ = (
         "engine", "selection", "provider_id", "_registry", "_owner",
-        "_staged", "_ids", "_sealed",
+        "_staged", "_labels", "_ids", "_sealed",
     )
 
     def __init__(self, registry, provider_id: str, owner: str, engine, selection) -> None:
@@ -148,6 +158,7 @@ class EditorHandleContext:
         self._registry = registry
         self._owner = owner
         self._staged: list[_FrameHandle] = []
+        self._labels: list[_FrameLabel] = []
         self._ids: set[str] = set()
         self._sealed = False
 
@@ -159,17 +170,52 @@ class EditorHandleContext:
         *,
         size: float = 0.15,
         color=(0.98, 0.72, 0.24),
+        axis=None,
+        length: float = 0.8,
         on_begin: HandleCallback | None = None,
         on_commit: HandleCallback | None = None,
         on_cancel: HandleCallback | None = None,
     ) -> None:
-        """Submit a camera-plane position handle in world coordinates."""
+        """Submit a world position handle, optionally constrained to one axis."""
         point = _vec3(value, "position handle value")
+        direction = (0.0, 0.0, 0.0) if axis is None else _normalized(_vec3(axis, "position handle axis"), "position handle axis")
         descriptor = self._descriptor(
-            handle_id, EditorHandleKind.POSITION, point, point, (0.0, 0.0, 0.0),
+            handle_id, EditorHandleKind.POSITION, point, point, direction,
             size, on_changed, on_begin, on_commit, on_cancel,
         )
-        self._draw_point(descriptor, color)
+        if axis is None:
+            self._draw_point(descriptor, color)
+        else:
+            descriptor.extent = _positive(length, "position handle length")
+            self._draw_line_point(descriptor, point, _add(point, _scale(direction, descriptor.extent)), color)
+
+    def world_size(self, position, pixels: float = 10.0) -> float:
+        """Convert a screen-space handle size to world units at a Scene point."""
+        point = _vec3(position, "handle size position")
+        pixels = _positive(pixels, "handle pixel size")
+        camera = self.engine.editor_camera
+        if camera is None:
+            raise RuntimeError("Scene camera is unavailable")
+        up = tuple(float(value) for value in camera.view_matrix[1, :3])
+        a = camera.world_to_screen_point(*point)
+        b = camera.world_to_screen_point(*_add(point, up))
+        extent = math.hypot(float(b[0] - a[0]), float(b[1] - a[1]))
+        if extent <= 1e-8:
+            raise ValueError("handle position has a degenerate screen projection")
+        return pixels / extent
+
+    def label(self, position, text: str, *, color=(1.0, 1.0, 1.0, 1.0), offset=(8.0, -8.0), font_size=0.0) -> None:
+        """Submit a clipped Scene label without adding a pointer hit target."""
+        if self._sealed:
+            raise RuntimeError("EditorHandleContext is valid only during its provider callback")
+        if not isinstance(text, str):
+            raise TypeError("handle label text must be str")
+        rgba = tuple(float(value) for value in color)
+        shift = tuple(float(value) for value in offset)
+        font_size = float(font_size)
+        if len(rgba) != 4 or len(shift) != 2 or not all(math.isfinite(value) for value in (*rgba, *shift, font_size)) or font_size < 0:
+            raise ValueError("label color/offset/font size must be finite RGBA/XY/nonnegative values")
+        self._labels.append(_FrameLabel(self.provider_id, _vec3(position, "label position"), text, rgba, shift, font_size))
 
     def direction(
         self,
@@ -340,6 +386,7 @@ class EditorHandleRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, _RegistrationState] = {}
         self._frame: dict[str, _FrameHandle] = {}
+        self._labels: tuple[_FrameLabel, ...] = ()
         self._serial = 0
         self._capture: _Capture | None = None
         self._hovered = ""
@@ -440,6 +487,7 @@ class EditorHandleRegistry:
         from .selection import SelectionService
 
         published: dict[str, _FrameHandle] = {}
+        labels = []
         selection = SelectionService.instance().snapshot
         try:
             for state in tuple(self._providers.values()):
@@ -459,6 +507,7 @@ class EditorHandleRegistry:
                     if descriptor.handle_id in published:
                         raise ValueError(f"duplicate editor handle identity: {descriptor.handle_id}")
                     published[descriptor.handle_id] = descriptor
+                labels.extend(context._labels)
         except BaseException as collection_error:
             # A failed provider cannot leave the previous frame interactive.
             # Retire its callbacks and active gesture at the same failed
@@ -472,10 +521,32 @@ class EditorHandleRegistry:
                 ) from None
             raise
         self._frame = published
+        self._labels = tuple(labels)
         if self._capture is not None and self._capture.descriptor.handle_id not in published:
             self.cancel_capture()
         if self._hovered not in published:
             self._hovered = ""
+
+    def draw_labels(self, ctx, engine, viewport) -> None:
+        """Project the published label frame using the actual Scene camera."""
+        if not self._labels or viewport.width <= 0 or viewport.height <= 0:
+            return
+        camera = engine.editor_camera
+        if camera is None:
+            return
+        import numpy as np
+        matrix = np.asarray(camera.projection_matrix) @ np.asarray(camera.view_matrix)
+        ctx.push_clip_rect(viewport.image_min_x, viewport.image_min_y, viewport.image_max_x, viewport.image_max_y, True)
+        try:
+            for label in self._labels:
+                clip = matrix @ (*label.position, 1.0)
+                if clip[3] <= 1e-8 or not 0 <= clip[2] <= clip[3] or abs(clip[0]) > clip[3] or abs(clip[1]) > clip[3]:
+                    continue
+                x = viewport.image_min_x + (clip[0] / clip[3] + 1) * .5 * viewport.width + label.offset[0]
+                y = viewport.image_min_y + (clip[1] / clip[3] + 1) * .5 * viewport.height + label.offset[1]
+                ctx.draw_text(float(x), float(y), label.text, *label.color, label.font_size)
+        finally:
+            ctx.pop_clip_rect()
 
     def retire_frame(self) -> None:
         """Cancel live capture and release all frame-scoped callback references."""
@@ -483,6 +554,7 @@ class EditorHandleRegistry:
             self.cancel_capture()
         finally:
             self._frame.clear()
+            self._labels = ()
             self._hovered = ""
 
     def hit_test(self, ray_origin, ray_direction) -> str:
@@ -635,6 +707,7 @@ class EditorHandleRegistry:
             key: value for key, value in self._frame.items()
             if value.provider_id != provider_id
         }
+        self._labels = tuple(label for label in self._labels if label.provider_id != provider_id)
         if self._hovered.startswith(provider_id + ":"):
             self._hovered = ""
         callback = state.provider.on_retire
@@ -649,6 +722,8 @@ class EditorHandleRegistry:
 
     @staticmethod
     def _anchor(descriptor: _FrameHandle, endpoint: int) -> Vec3:
+        if descriptor.kind is EditorHandleKind.POSITION and descriptor.direction != (0.0, 0.0, 0.0):
+            return _add(descriptor.position, _scale(descriptor.direction, descriptor.extent))
         if descriptor.kind is EditorHandleKind.DIRECTION:
             return _add(
                 descriptor.position,
@@ -671,7 +746,7 @@ class EditorHandleRegistry:
     def _hit_score(descriptor: _FrameHandle, ray_origin: Vec3, ray_direction: Vec3) -> float | None:
         threshold = descriptor.size
         if descriptor.kind is EditorHandleKind.POSITION:
-            distance = _ray_point_distance(ray_origin, ray_direction, descriptor.position)
+            distance = _ray_point_distance(ray_origin, ray_direction, EditorHandleRegistry._anchor(descriptor, 0))
         elif descriptor.kind is EditorHandleKind.DIRECTION:
             endpoint = _add(
                 descriptor.position,
@@ -697,6 +772,9 @@ class EditorHandleRegistry:
     @staticmethod
     def _capture_value(capture: _Capture, ray_origin: Vec3, ray_direction: Vec3):
         descriptor = capture.descriptor
+        if descriptor.kind is EditorHandleKind.POSITION and descriptor.direction != (0.0, 0.0, 0.0):
+            parameter = _closest_axis_parameter(ray_origin, ray_direction, descriptor.position, descriptor.direction)
+            return _add(capture.initial_value, _scale(descriptor.direction, parameter - capture.initial_parameter))
         if descriptor.kind is EditorHandleKind.LIMIT:
             parameter = _closest_axis_parameter(
                 ray_origin, ray_direction, descriptor.position, descriptor.direction,

@@ -13,13 +13,21 @@ def test_performance_observation_includes_texture_publication_and_gpu_residency(
         "retired_material_descriptor_set_count": 3,
         "material_descriptor_set_count": 7,
     }
+    editor_ui = {
+        "gui_frame": 20, "gui_frame_consume_count": 100,
+        "gui_frame_approved_count": 20, "gui_frame_forced_count": 10,
+        "gui_frame_request_count": 50, "ui_panel_times_ms": {"Game": 0.1},
+        "ui_panel_sub_times_ms": {"Game.Draw": 0.05},
+    }
+    renderer = {
+        "frame": 25, "scene_view_visible": True,
+        "scene_target_width": 640, "scene_target_height": 480,
+        "game_target_width": 320, "game_target_height": 240,
+        "scene_draw_call_count": 12, "game_draw_call_count": 6,
+    }
     native = SimpleNamespace(
         get_renderer_performance_window=lambda: window,
-        renderer_frame_snapshot={
-            "gui_frame": 20, "gui_frame_consume_count": 100,
-            "gui_frame_approved_count": 20, "gui_frame_forced_count": 10,
-            "gui_frame_request_count": 50, "ui_panel_times_ms": {"Game": 0.1},
-        },
+        renderer_frame_snapshot={**editor_ui, **renderer},
         resident_mesh_vertex_buffer_count=1,
         pending_mesh_gpu_upload_count=0,
         submitted_mesh_gpu_upload_count=5,
@@ -41,5 +49,6 @@ def test_performance_observation_includes_texture_publication_and_gpu_residency(
     assert observed["resources"]["completed_texture_uploads"] == 3
     assert observed["gpu_residency"] == residency
     assert observed["gpu_residency"] is not residency
-    assert observed["editor_ui"] == native.renderer_frame_snapshot
+    assert observed["editor_ui"] == editor_ui
+    assert observed["renderer"] == renderer
     assert "resources" not in window  # The native timing result is not modified.

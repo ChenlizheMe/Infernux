@@ -14,6 +14,7 @@
 #include <core/log/InxLog.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/shader/ShaderProgram.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <stdexcept>
@@ -24,13 +25,6 @@ namespace infernux
 namespace
 {
 std::atomic<uint64_t> g_nextExplicitDrawId{1};
-
-bool ParameterTypeMatches(MaterialPropertyType declared, MaterialPropertyType supplied)
-{
-    return declared == supplied ||
-           ((declared == MaterialPropertyType::Color || declared == MaterialPropertyType::Float4) &&
-            (supplied == MaterialPropertyType::Color || supplied == MaterialPropertyType::Float4));
-}
 
 bool PropertyValueIsFinite(const MaterialProperty &property)
 {
@@ -239,7 +233,7 @@ std::shared_ptr<const RendererParameterBlock> DrawParameterBlock::Capture(const 
         const MaterialProperty *declared = material.GetProperty(name);
         if (!declared)
             throw std::invalid_argument("material shader has no parameter named '" + name + "'");
-        if (!ParameterTypeMatches(declared->type, supplied.type))
+        if (!MaterialPropertyTypesCompatible(declared->type, supplied.type))
             throw std::invalid_argument("draw parameter '" + name + "' does not match the reflected shader type");
         if (declared->type == MaterialPropertyType::FloatArray &&
             std::get<std::vector<float>>(declared->value).size() != std::get<std::vector<float>>(supplied.value).size())
@@ -371,7 +365,12 @@ void CommandBuffer::DrawMesh(const std::shared_ptr<InxMesh> &mesh, const glm::ma
     params.worldBounds = AABB(params.geometry->boundsMin, params.geometry->boundsMax).Transform(worldMatrix);
     params.objectId = 0xF000000000000000ULL | g_nextExplicitDrawId.fetch_add(1, std::memory_order_relaxed);
     params.meshGuid = mesh->GetGuid();
-    params.meshGeneration = mesh->GetGeneration();
+    if (params.meshGuid.empty())
+        params.meshGeneration = params.geometry->storageIdentity;
+    else if (IsBuiltinMeshGuid(params.meshGuid))
+        params.meshGeneration = 1;
+    else
+        params.meshGeneration = AssetRegistry::Instance().GetAssetVersion(params.meshGuid);
     params.meshIndexFormat = mesh->GetIndexFormat();
     params.submeshIndex = submeshIndex;
     params.pass = pass;

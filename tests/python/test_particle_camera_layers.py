@@ -1,5 +1,6 @@
 """Two real cameras must filter one resident ParticleSystem independently."""
 import json
+import time
 
 import numpy as np
 import pytest
@@ -30,7 +31,7 @@ class ParticleLayerPipeline(RenderPipeline):
         self.builds += 1
         graph.set_msaa_samples(1)
         color = graph.create_texture('color', camera_target=True)
-        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
+        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, camera_target=True)
         graph.add_pass('Particles').write_color(color).write_depth(depth).set_clear(
             color=(0, 0, 0, 0), depth=0.0,
         ).draw_renderers(material_pass='forward' if self.material_pass == 'motion' else self.material_pass)
@@ -94,6 +95,7 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
         owner = scene.create_game_object(f'Particle Camera {index}')
         owner.transform.position = Vector3(0, 0, -5)
         camera = owner.add_component('Camera')
+        camera.render_to_texture = True
         camera.target_texture = target
         camera.depth = index + 1
         camera.clear_flags = CameraClearFlags.SolidColor
@@ -150,8 +152,14 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
         engine.set_play_mode_rendering(True)
         component.graph = ParticleGraphRef(guid=graph_guid)
         component.awake()
-        assert component.play(), component.last_compile_error
         apply_phase(0)
+        if not component.play():
+            # Cold mesh publication is driven by frame opportunities.
+            deadline = time.monotonic() + 5.0
+            while component._has_unpublished_candidate() and time.monotonic() < deadline:
+                engine.tick(0.0)
+                component.update(0.0)
+            assert component.play(), component.last_compile_error or component.runtime_diagnostics()
 
         def update(_delta):
             component.update(1. / 120.)
@@ -161,7 +169,8 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
             try:
                 frame += 1
                 assert frame < 250, results
-                if ticket is None and frame >= changed + 16:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 16:
                     ticket = engine.request_render_target_readback(True)
                     view_tickets[:] = [
                         component.request_gpu_view_diagnostics('game', camera.component_id)
@@ -217,7 +226,7 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
                         engine.exit()
                         return
                     apply_phase(len(results))
-                    changed, ticket = frame, None
+                    changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()
@@ -238,6 +247,7 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
         manager.stop()
         assert remove_runtime_service('gpu-particles', engine)
         for camera in cameras:
+            camera.render_to_texture = False
             camera.target_texture = None
         for path in assets:
             assert database.delete_asset(str(path))

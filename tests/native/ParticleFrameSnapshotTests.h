@@ -261,7 +261,7 @@ void main() { outputColor = snapshot + color; }
     graph.graphInstanceId = program.graphInstanceId;
     graph.emitters = {program};
     std::string error;
-    if (!owner.manager.ApplyGraph(graph, &error)) {
+    if (!resources.PublishParticleGraph(owner.manager, graph, &error)) {
         std::cerr << error << '\n';
         return Require(false, "Particle frame snapshot publication failed");
     }
@@ -425,8 +425,7 @@ void main() { outputColor = snapshot + color; }
             vk::VulkanSubmissionExecutor::ExternalSync sync;
             sync.completionEpoch = epochs[frame] = owner.queues.ReserveCompletionEpoch();
             sync.completionFence = owner.fences[frame];
-            sync.uploadTimeline = owner.gate;
-            sync.uploadTimelineValue = cycle + 1;
+            sync.producers = {{owner.gate, cycle + 1}};
             sync.previousFrameTimeline = previous.completionTimeline;
             sync.previousFrameTimelineValue = previous.completionTimelineValue;
             sync.previousFrameWaitAtFirstBatch = cycle != 2;

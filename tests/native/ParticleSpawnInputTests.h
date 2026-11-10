@@ -28,8 +28,10 @@ void main() {
 #version 450
 layout(local_size_x=1) in;
 layout(std430, set=0, binding=0) buffer Metadata { uint metadata[]; };
+layout(push_constant) uniform MetadataLayout { uint strideWords; } layoutInfo;
 void main() {
-    for (uint word=0u; word<24u; ++word) metadata[word] = 0x12340000u + word;
+    for (uint word=0u; word<24u; ++word)
+        metadata[(word / 8u) * layoutInfo.strideWords + word % 8u] = 0x12340000u + word;
 }
 )glsl",
                                                                    "Tests/SpawnMetadataPoison.comp"));
@@ -106,6 +108,8 @@ void main() {
     poisonPipeline.computeShader = owner.poisonShader;
     poisonPipeline.bindingLayoutCount = 1;
     poisonPipeline.bindingLayouts[0] = owner.poisonLayout;
+    const auto metadataStrideWords = static_cast<uint32_t>(owner.spawn.MetadataOffset(1) / sizeof(uint32_t));
+    poisonPipeline.pushConstantBytes = sizeof(metadataStrideWords);
     owner.poisonPipeline = device.CreateComputePipeline(poisonPipeline);
     rhi::BindGroupDesc poisonGroup;
     poisonGroup.layout = owner.poisonLayout;
@@ -174,8 +178,7 @@ void main() {
             vk::VulkanSubmissionExecutor::ExternalSync sync;
             sync.completionEpoch = epochs[frame] = owner.queues.ReserveCompletionEpoch();
             sync.completionFence = owner.fences[frame];
-            sync.uploadTimeline = owner.gate;
-            sync.uploadTimelineValue = cycle + 1;
+            sync.producers = {{owner.gate, cycle + 1}};
             const auto submitted = owner.executor.Execute(
                 frame, plan,
                 [&](uint32_t, VkCommandBuffer command) {
@@ -198,6 +201,7 @@ void main() {
                     const auto poisonMetadata = [&] {
                         compute.BindPipeline(owner.poisonPipeline);
                         compute.BindGroup(owner.poisonPipeline, 0, owner.poisonGroup);
+                        compute.PushConstants(owner.poisonPipeline, sizeof(metadataStrideWords), &metadataStrideWords);
                         compute.Dispatch(1, 1, 1);
                     };
                     // Make first-use correctness independent of allocator contents.
@@ -224,8 +228,12 @@ void main() {
                                         {0, frame * bytes, 18 * sizeof(uint32_t)});
                     transfer.CopyBuffer(owner.spawn.BurstRequestAcceptanceBuffer(), owner.readback,
                                         {0, frame * bytes + 18 * sizeof(uint32_t), 3 * sizeof(uint32_t)});
-                    transfer.CopyBuffer(owner.spawn.MetadataBuffer(), owner.readback,
-                                        {0, frame * bytes + 24 * sizeof(uint32_t), 24 * sizeof(uint32_t)});
+                    constexpr uint64_t metadataBytes = sizeof(particle::GpuParticleSpawnMetadata);
+                    for (uint32_t slot = 0; slot < owner.spawn.SlotCount(); ++slot)
+                        transfer.CopyBuffer(owner.spawn.MetadataBuffer(), owner.readback,
+                                            {owner.spawn.MetadataOffset(slot),
+                                             frame * bytes + 24 * sizeof(uint32_t) + slot * metadataBytes,
+                                             metadataBytes});
                     if (step == 0) {
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
                         barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

@@ -82,7 +82,30 @@ class Physics(metaclass=_PhysicsMeta):
     """
 
     @staticmethod
-    def get_rigidbody_states(rigidbodies, out=None):
+    def apply_result(request, targets, apply, *, required=False):
+        """Apply a managed result once at a physics boundary.
+
+        ``apply(resolved_targets, result)`` receives the current component wrappers.
+        Pending work leaves physics advancing by default. Set ``required=True``
+        when the next integration depends on this result.
+        A Rigidbody binding starts blocking at the first eligible fixed step
+        with a published body. It retires if the Rigidbody is disabled, its
+        actor or published shape changes, or its motion state is reset.
+        The returned consumer exposes status/reason and can be explicitly cancelled.
+        """
+        from infernux.application import Application
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError('physics result application requires an active Engine')
+        return engine._apply_result(request, targets, apply, boundary='physics', required=required)
+
+    @staticmethod
+    def sync_transforms():
+        """Publish pending Transform edits to physics before same-frame queries."""
+        _CppPhysics.sync_transforms()
+
+    @staticmethod
+    def get_rigidbody_states(rigidbodies, out=None, *, fields=None):
         """Read current solver state for a sequence of Rigidbody components.
 
         Returns owned, C-contiguous float32 NumPy arrays in input order by
@@ -95,6 +118,14 @@ class Physics(metaclass=_PhysicsMeta):
         Reusable outputs may have a first-axis capacity greater than N; only
         the first N rows are written, so broad-phase candidate-count changes
         do not require new arrays.
+        Field overlap checks cover only these written prefixes. Capacity tails
+        are untouched and may share an arena with another field's written rows.
+        ``fields`` selects CPU fields instead of allocating/copying all seven.
+        Names follow the keys above; ``body_id`` adds uint32 (N,) Jolt index+
+        sequence, and ``shape_revision`` adds uint64 (N,) shared actor shape
+        identity. Selected CPU outputs contain exactly those keys. Selection
+        skips unrequested solver values, including inertia calculations.
+
         inverse_mass contains the three diagonal entries after translation
         locks. Kinematic/static bodies have zero inverse mass and inertia.
 
@@ -106,22 +137,50 @@ class Physics(metaclass=_PhysicsMeta):
         """
         native_bodies = [body._require_cpp_component() for body in rigidbodies]
         if out is None:
-            return _CppPhysics.get_rigidbody_states(native_bodies)
+            return _CppPhysics.get_rigidbody_states(native_bodies, fields=fields)
         if not isinstance(out, dict):
             raise TypeError("Rigidbody state output must be a dictionary")
         from infernux.compute import Buffer
         names = ("position", "center_of_mass", "linear_velocity", "angular_velocity",
                  "inverse_mass", "rotation", "inverse_inertia")
-        gpu_output = _gpu_state_output(out, names)
-        if gpu_output is not None:
-            _CppPhysics._write_rigidbody_state_buffers(native_bodies, gpu_output)
-            return out
+        if fields is None:
+            gpu_output = _gpu_state_output(out, names)
+            if gpu_output is not None:
+                _CppPhysics._write_rigidbody_state_buffers(native_bodies, gpu_output)
+                return out
+        elif any(isinstance(value, Buffer) and value.device != "cpu" for value in out.values()):
+            raise TypeError("Selected Rigidbody state fields require CPU outputs")
         native_output = {
             name: value.numpy(copy=False) if isinstance(value, Buffer) else value
             for name, value in out.items()
         }
-        _CppPhysics.get_rigidbody_states(native_bodies, native_output)
+        _CppPhysics.get_rigidbody_states(native_bodies, native_output, fields=fields)
         return out
+
+    @staticmethod
+    def reset_rigidbodies(rigidbodies, state):
+        """Reset live bodies between fixed steps, outside collision callbacks.
+
+        ``state`` has exactly position[N,3], rotation[N,4] (xyzw),
+        linear_velocity[N,3] and angular_velocity[N,3], contiguous float32 CPU
+        arrays or CPU Buffers. Read them with ``get_rigidbody_states(fields=...)``
+        or author them directly. Input is validated before any body changes.
+
+        Keeps body/shape/joint identities and collision rules; clears forces,
+        movement targets, joint warm starts and contacts for these bodies.
+        Publishes physical/display poses together without advancing time.
+        Pending ``apply_result`` bindings to these bodies retire. The caller
+        controls the lifetime of the producing request and its policy state.
+        """
+        from infernux.compute import Buffer
+        arrays = {}
+        for name, value in state.items():
+            if isinstance(value, Buffer):
+                if value.device != 'cpu':
+                    raise TypeError('body reset requires CPU state; transfer GPU results explicitly')
+                value = value.numpy(copy=False)
+            arrays[name] = value
+        _CppPhysics.reset_rigidbodies([body._require_cpp_component() for body in rigidbodies], arrays)
 
     @staticmethod
     def get_rigidbody_states_and_box_states(rigidbodies, state_out, box_out, *, query_triggers: bool = False):
@@ -303,7 +362,8 @@ class Physics(metaclass=_PhysicsMeta):
         return state_out, box_out
 
     @staticmethod
-    def apply_rigidbody_impulses(rigidbodies, linear_impulses, angular_impulses):
+    def apply_rigidbody_impulses(rigidbodies, linear_impulses, angular_impulses, *,
+                                  expected_body_ids=None, expected_shape_revisions=None):
         """Submit aggregated feedback using CPU arrays or resident GPU buffers.
 
         Rows follow the input body order. Linear impulse is in world-space
@@ -312,7 +372,11 @@ class Physics(metaclass=_PhysicsMeta):
         CPU arrays must be C-contiguous. Two GPU ``inx.buffer`` values are read
         together as float32 vector3 valid prefixes in the pending compute
         submission, with one ordered queue wait. Input validation finishes
-        before mutation.
+        before mutation. Optional ``expected_body_ids`` must be exact uint32
+        (N,) snapshots; ``expected_shape_revisions`` is uint64 (N,) and requires
+        body IDs. All identities are checked before any impulse is applied.
+        Callers retaining components must also resolve their original strict
+        ObjectHandles and simulation epoch before submitting on the owner.
 
         Uses the existing Impulse path: feedback is immediate, does not step
         physics, and is not multiplied by delta time. Submit on the engine
@@ -336,8 +400,9 @@ class Physics(metaclass=_PhysicsMeta):
                         "Rigidbody impulse buffers must be vector3 with body-count capacity"
                     )
             if count == 0:
-                return
-            if linear_impulses.device == "gpu" and not linear_impulses._cpu_mapped:
+                # Keep exact identity validation, without a zero-byte GPU read.
+                linear_impulses = angular_impulses = np.empty((0, 3), np.float32)
+            elif linear_impulses.device == "gpu" and not linear_impulses._cpu_mapped:
                 from infernux.compute import _submit_and_read
 
                 if int(linear_impulses._host.identity) != int(angular_impulses._host.identity):
@@ -346,17 +411,19 @@ class Physics(metaclass=_PhysicsMeta):
                 linear_bytes, angular_bytes = _submit_and_read(
                     linear_impulses._host,
                     (
-                        (linear_impulses, 0, byte_size),
-                        (angular_impulses, 0, byte_size),
+                        (linear_impulses, linear_impulses._byte_offset, byte_size),
+                        (angular_impulses, angular_impulses._byte_offset, byte_size),
                     ),
                 )
-                linear_values = np.frombuffer(linear_bytes, dtype=np.float32).reshape(count, 3)
-                angular_values = np.frombuffer(angular_bytes, dtype=np.float32).reshape(count, 3)
-                _CppPhysics.apply_rigidbody_impulses(native_bodies, linear_values, angular_values)
-                return
-            linear_impulses = linear_impulses.numpy(copy=False)[:count]
-            angular_impulses = angular_impulses.numpy(copy=False)[:count]
-        _CppPhysics.apply_rigidbody_impulses(native_bodies, linear_impulses, angular_impulses)
+                linear_impulses = np.frombuffer(linear_bytes, dtype=np.float32).reshape(count, 3)
+                angular_impulses = np.frombuffer(angular_bytes, dtype=np.float32).reshape(count, 3)
+            else:
+                linear_impulses = linear_impulses.numpy(copy=False)[:count]
+                angular_impulses = angular_impulses.numpy(copy=False)[:count]
+        _CppPhysics.apply_rigidbody_impulses(
+            native_bodies, linear_impulses, angular_impulses,
+            expected_body_ids=expected_body_ids, expected_shape_revisions=expected_shape_revisions,
+        )
 
     @staticmethod
     def set_contact_event_stream_enabled(enabled: bool = True, *, include_triggers: bool = False):
@@ -386,9 +453,11 @@ class Physics(metaclass=_PhysicsMeta):
     def set_contact_impulse_stream_enabled(enabled: bool = True):
         """Enable the actual Jolt velocity-solver impulse snapshot.
 
-        This is separate from contact callbacks: it reports the total solved
-        normal and friction impulse at each contact point from the most recent
-        fixed step. It is opt-in because copying solved contacts has a cost.
+        Each solver midpoint reports its normal impulse and an equal share
+        of the manifold's tangential friction impulse. These shares preserve
+        the net linear impulse and its angular impulse, but are not separately
+        solved pointwise friction forces. Independent torsional friction is
+        not included. This snapshot is opt-in and separate from callbacks.
         """
         _CppPhysics.set_contact_impulse_stream_enabled(bool(enabled))
 
@@ -397,8 +466,10 @@ class Physics(metaclass=_PhysicsMeta):
         """Return actual solved contact impulses from the latest fixed step.
 
         The result is a NumPy structure-of-arrays dictionary containing body
-        and sub-shape IDs, world contact points/normals, and the impulse on
-        body A. The snapshot is replaced by the next fixed step.
+        and sub-shape IDs, solver world midpoints/normals, and the impulse on
+        body B (its negative acts on A). Positions are frozen when velocity
+        constraints are built, before integration and position correction.
+        The snapshot is replaced by the next fixed step.
         """
         return _CppPhysics.get_contact_impulses()
 
@@ -408,15 +479,16 @@ class Physics(metaclass=_PhysicsMeta):
 
     @staticmethod
     def compute_penetration(collider_a, position_a, rotation_a, collider_b, position_b, rotation_b):
-        """Query primitive geometry at predicted world origins and rotations.
+        """Query collider geometry at predicted world origins and rotations.
 
         Returns None for no penetration; otherwise direction/distance move A
         out of B, and point_a/point_b are the two world-space surface points.
-        Poses refer to GameObject origins, not centers of mass. Authored center,
-        scale and shape-axis settings use the same shape construction as physics.
+        Poses refer to GameObject origins. Primitive colliders use their authored
+        center, scale and axis. Mesh colliders use their published convex shape
+        and center, including while a replacement shape is being prepared.
 
-        Supports Box, Sphere, Capsule, Cylinder and a ready convex MeshCollider.
-        Non-convex or not-yet-cooked meshes raise explicitly. No Transform
+        Supports Box, Sphere, Capsule, Cylinder and a published convex MeshCollider.
+        Non-convex or unpublished meshes raise explicitly. No Transform
         changes, body registration, broadphase synchronization, layer/trigger
         filtering or physics stepping.
         Disabled primitive colliders can be queried; only the specified member
@@ -609,6 +681,18 @@ class Physics(metaclass=_PhysicsMeta):
         )
 
     @staticmethod
+    def sweep_box(collider, position, rotation, displacement):
+        """Sweep a BoxCollider from a world pose and return the first blocking hit.
+
+        The query uses the collider's current size, scale and collision filtering.
+        It ignores the owning body and contacts the box can move away from.
+        """
+        return _CppPhysics.sweep_box(
+            collider._require_cpp_component(), coerce_vec3(position),
+            coerce_quat(rotation), coerce_vec3(displacement),
+        )
+
+    @staticmethod
     def capsule_cast(point0, point1, radius: float, direction, max_distance: float = 1000.0,
                      layer_mask: Optional[int] = None, query_triggers: bool = True):
         """Cast a capsule and return the closest RaycastHit, or None."""
@@ -656,4 +740,6 @@ class Physics(metaclass=_PhysicsMeta):
         return bool(_CppPhysics.get_ignore_collision(first, second))
 
 
-__all__ = ["Physics"]
+from .joint_batch import HingeJointBatch
+
+__all__ = ["Physics", "HingeJointBatch"]

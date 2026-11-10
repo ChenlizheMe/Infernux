@@ -26,7 +26,6 @@ from infernux.engine.path_utils import (
     is_path_within,
     path_key,
     resolved_path,
-    same_path,
 )
 from .scene_manager import (
     SCENE_EXTENSION,
@@ -123,7 +122,7 @@ class SceneSaveMixin:
             )
         registry = DocumentRegistry.instance()
         document = registry.get(ticket.document_id)
-        if document is None:
+        if document is None or document.controller is not self or not ticket.is_pending:
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
                 "the document is no longer open",
@@ -136,59 +135,28 @@ class SceneSaveMixin:
                 )
             return self._save_prefab(ticket_id=ticket.ticket_id)
         binding = self._binding_for_document(document.document_id)
-        if binding is not None and document.document_id != self.document_id:
-            if save_as or not binding.resource_path:
-                self._pending_save_ticket_id = ticket.ticket_id
-                self._pending_save_document_id = document.document_id
-                if self._show_save_as_dialog(document_id=document.document_id):
-                    return DocumentActionResult(DocumentActionStatus.PENDING)
-                self._pending_save_ticket_id = ""
-                self._pending_save_document_id = ""
-                return DocumentActionResult(
-                    DocumentActionStatus.REJECTED,
-                    "no project root is available",
-                )
-            return self._do_save(
-                binding.resource_path,
-                ticket_id=ticket.ticket_id,
-                document_id=document.document_id,
-            )
-        if document.document_id != self.document_id:
-            if document.document_id != self._previous_scene_document_id:
-                return DocumentActionResult(
-                    DocumentActionStatus.REJECTED,
-                    "the scene document is not active or suspended",
-                )
-            if document.resource_path and not save_as:
-                return self._save_suspended_scene(
-                    document.resource_path,
-                    ticket_id=ticket.ticket_id,
-                )
-            self._pending_save_ticket_id = ticket.ticket_id
-            self._pending_save_document_id = document.document_id
-            if self._show_save_as_dialog(document_id=document.document_id):
+        suspended = (document.document_id == self._previous_scene_document_id
+                     and isinstance(self._previous_scene_document, dict))
+        if document.kind is not DocumentKind.SCENE or (binding is None and not suspended):
+            return DocumentActionResult(DocumentActionStatus.REJECTED, "the scene document is not resident or suspended")
+        path = binding.resource_path if binding is not None else document.resource_path
+        if save_as or not path:
+            if self._save_as_ticket_id:
+                return DocumentActionResult(DocumentActionStatus.REJECTED, "another Scene Save As is already open")
+            self._save_as_ticket_id = ticket.ticket_id
+            try:
+                shown = self._show_save_as_dialog(document_id=document.document_id)
+            except Exception:
+                self._save_as_ticket_id = ""
+                raise
+            if shown:
                 return DocumentActionResult(DocumentActionStatus.PENDING)
-            self._pending_save_ticket_id = ""
-            self._pending_save_document_id = ""
+            self._save_as_ticket_id = ""
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
                 "no project root is available",
             )
-        if save_as or not self._current_scene_path:
-            self._pending_save_ticket_id = ticket.ticket_id
-            self._pending_save_document_id = document.document_id
-            if self._show_save_as_dialog(document_id=document.document_id):
-                return DocumentActionResult(DocumentActionStatus.PENDING)
-            self._pending_save_ticket_id = ""
-            self._pending_save_document_id = ""
-            return DocumentActionResult(
-                DocumentActionStatus.REJECTED,
-                "no project root is available",
-            )
-        return self._do_save(
-            self._current_scene_path,
-            ticket_id=ticket.ticket_id,
-        )
+        return self.save_to_resource(ticket=ticket, resource_path=path)
 
     def save_to_resource(self, *, ticket, resource_path: str):
         """Persist an automation-selected path under the normal save contract."""
@@ -206,10 +174,13 @@ class SceneSaveMixin:
             )
         document = DocumentRegistry.instance().get(ticket.document_id)
         binding = self._binding_for_document(ticket.document_id)
-        if document is None or binding is None:
+        suspended = (ticket.document_id == self._previous_scene_document_id
+                     and isinstance(self._previous_scene_document, dict))
+        if (document is None or document.controller is not self or not ticket.is_pending
+                or (binding is None and not suspended)):
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
-                "the scene document is not resident",
+                "the scene document is not resident or suspended",
             )
         if document.kind is not DocumentKind.SCENE:
             return DocumentActionResult(
@@ -364,254 +335,118 @@ class SceneSaveMixin:
             save_as=True,
         ).accepted
 
-    def _do_save(
-        self,
-        path: str,
-        *,
-        ticket_id: str = "",
-        document_id: str = "",
-    ) -> bool:
-        """Actually write the scene to *path*."""
-        from infernux.engine.ui.engine_status import EngineStatus
-        target_path = str(path or "")
-        if not target_path.lower().endswith(SCENE_EXTENSION):
-            target_path += SCENE_EXTENSION
-        active_ticket_id = ticket_id or self._pending_save_ticket_id
+    def _do_save(self, path: str, *, ticket_id: str, document_id: str) -> bool:
+        """Persist exactly the Scene and attempt selected by the Registry."""
         from infernux.engine.interaction import (
-            DocumentRegistry,
+            DocumentIdentityKind, DocumentKind, DocumentRegistry, SaveTicketStatus,
             document_content_token,
         )
+        from infernux.engine.ui.engine_status import EngineStatus
 
         registry = DocumentRegistry.instance()
-        target_document_id = str(document_id or self.document_id)
-        binding = self._binding_for_document(target_document_id)
-        document = registry.get(target_document_id)
-        if document is None:
-            Debug.log_error("Scene save requires a bound editor document.")
+        document = registry.get(document_id)
+        ticket = registry.get_save_ticket(ticket_id)
+        if (document is None or document.controller is not self or document.kind is not DocumentKind.SCENE
+                or ticket is None or not ticket.is_pending or ticket.document_id != document_id):
             return False
-        if not active_ticket_id:
-            current = resolved_path(self._current_scene_path) if self._current_scene_path else ""
-            target = resolved_path(target_path)
-            active_ticket_id = registry.begin_save(
-                document.document_id,
-                save_as=not current or not same_path(target, current),
-            ).ticket_id
-        scene = binding.scene if binding is not None else None
-        ok = self._do_save_inner(
-            target_path,
-            ticket_id=active_ticket_id,
-            scene=scene,
-            document_id=target_document_id,
-        )
-        if ok:
-            normalized = resolved_path(target_path)
-            key = self._document_key("scene", normalized)
-            from infernux.engine.interaction import DocumentIdentityKind
-
-            if key.identity_kind is not DocumentIdentityKind.ASSET_GUID:
-                registry.complete_save(
-                    active_ticket_id,
-                    success=False,
-                    message="saved scene was not registered",
-                )
-                self._pending_save_ticket_id = ""
-                self._pending_save_document_id = ""
-                return False
-            current_token = None
-            try:
-                from infernux.lib import SceneManager
-
-                scene = binding.scene if binding is not None else SceneManager.instance().get_active_scene()
-                if scene is not None:
-                    current_token = document_content_token(scene.serialize_asset_document())
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                Debug.log_suppressed("scene_save.current_content_token", exc)
-            registry.complete_save(
-                active_ticket_id,
-                success=True,
-                key=key,
-                resource_path=normalized,
-                title=os.path.splitext(os.path.basename(normalized))[0],
-                content_token=current_token,
-                committed_file_state=getattr(
-                    self,
-                    "_last_scene_commit_file_state",
-                    None,
-                ),
-            )
-            self._pending_save_ticket_id = ""
-            self._pending_save_document_id = ""
-            if binding is not None:
-                binding.resource_path = normalized
-                if binding.document_id == self.document_id:
-                    self._current_scene_path = normalized
-            EngineStatus.flash("保存完成 Saved", 1.0, duration=1.5)
-        else:
-            registry.complete_save(
-                active_ticket_id,
-                success=False,
-                conflict=bool(getattr(self, "_last_scene_save_conflict", False)),
-                message=f"failed to save scene: {target_path}",
-            )
-            self._pending_save_ticket_id = ""
-            self._pending_save_document_id = ""
-            EngineStatus.flash("保存失败 Save Failed", 0.0, duration=2.0)
-        return ok
-
-    def _do_save_inner(
-        self,
-        path: str,
-        *,
-        ticket_id: str = "",
-        scene=None,
-        document_id: str = "",
-    ) -> bool:
-        """Internal save implementation.
-
-        Serializes the scene on the main thread, then durably replaces the file
-        synchronously. The future DocumentStore will own background writes,
-        generation ordering, coalescing, and shutdown drain as one contract.
-        """
-        if not self._is_under_assets(path):
-            Debug.log_warning("Cannot save scene outside of Assets/ directory.")
+        binding = self._binding_for_document(document_id)
+        suspended = (document_id == self._previous_scene_document_id
+                     and isinstance(self._previous_scene_document, dict))
+        if binding is None and not suspended:
+            registry.complete_save(ticket_id, success=False, cancelled=True,
+                                   message="the scene document is no longer resident or suspended")
             return False
-
-        # Ensure .scene extension
-        if not path.lower().endswith(SCENE_EXTENSION):
-            path += SCENE_EXTENSION
-
-        from infernux.lib import SceneManager
-        sm = SceneManager.instance()
-        scene = scene or sm.get_active_scene()
-        if not scene:
-            Debug.log_warning("No active scene to save.")
-            return False
-
-        # The scene document owns its display name.  Update it before
-        # serialization so Save As survives an Editor restart, but restore it
-        # if the persistence operation fails.
-        previous_scene_name = scene.name
-        target_scene_name = os.path.splitext(os.path.basename(path))[0]
-        scene.name = target_scene_name
-
-        # Step 1 (main thread): serialize scene graph → JSON string
+        # Prefab Mode retains the binding, but its native world is empty until
+        # exit restores this snapshot. Identity does not imply live contents.
+        scene = binding.scene if binding is not None and not suspended else None
+        previous_name = scene.name if scene is not None else ""
+        target = resolved_path(path)
+        if not target.lower().endswith(SCENE_EXTENSION):
+            target += SCENE_EXTENSION
         try:
-            json_str = scene.serialize_asset()
-        except Exception as exc:
-            scene.name = previous_scene_name
-            Debug.log_error(f"Failed to serialize scene: {exc}")
-            return False
-
-        if not json_str:
-            scene.name = previous_scene_name
-            Debug.log_error("Scene serialization returned empty data.")
-            return False
-
-        from infernux.engine.interaction import (
-            DocumentRegistry,
-            document_content_token,
-        )
-
-        if ticket_id:
-            try:
-
-                DocumentRegistry.instance().capture_save_revision(
-                    ticket_id,
-                    content_token=document_content_token(json.loads(json_str)),
-                )
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                scene.name = previous_scene_name
-                Debug.log_error(f"Scene serialization produced an invalid document: {exc}")
-                return False
-
-        self._last_scene_commit_file_state = None
-        self._last_scene_save_conflict = False
-
-        # Step 2: durably replace the scene file through the shared CAS write
-        # ledger.  The exact committed fingerprint is registered before this
-        # method returns, so a queued watcher event can acknowledge it.
-        abs_path = resolved_path(path)
-        try:
-            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-            from infernux.core.assets import AssetManager
-            from infernux.core.document_store import (
-                capture_document_file_state,
-                write_document_text,
-            )
-
-            registry = DocumentRegistry.instance()
-            if ticket_id:
-                registry.capture_save_target(ticket_id, abs_path)
-                ticket = registry.get_save_ticket(ticket_id)
-                expected_file_state = ticket.expected_file_state if ticket else None
-                commit_token = ticket.commit_token if ticket else ""
+            if not self._is_under_assets(target):
+                raise ValueError("Scenes must be saved under the project's Assets directory")
+            title = os.path.splitext(os.path.basename(target))[0]
+            if scene is not None:
+                scene.name = title
+                payload = json.loads(scene.serialize_asset())
             else:
-                expected_file_state = None
-                commit_token = "scene-save"
-            content_token = document_content_token(json.loads(json_str))
-            write_document_text(
-                abs_path,
-                json_str,
-                expected_file_state=expected_file_state,
-                commit_chain_token=commit_token,
+                from infernux.engine.scene_authoring import encode_scene_document
+
+                payload = encode_scene_document(dict(self._previous_scene_document, name=title))
+            serialized_token, committed_state = self._persist_scene_document(target, payload, ticket)
+            if not ticket.is_pending:
+                return False
+            if registry.get(document_id) is not document or document.controller is not self:
+                raise RuntimeError("the Scene document changed during asset publication")
+            key = self._document_key("scene", target)
+            if key.identity_kind is not DocumentIdentityKind.ASSET_GUID:
+                raise RuntimeError("saved scene was not registered")
+            current_token = serialized_token
+            if scene is not None:
+                current_token = document_content_token(scene.serialize_asset_document())
+            completed = registry.complete_save(
+                ticket_id, success=True, key=key, resource_path=target, title=title,
+                content_token=current_token, committed_file_state=committed_state,
             )
-            committed_file_state = capture_document_file_state(abs_path)
-            self._last_scene_commit_file_state = AssetManager.register_local_commit(
-                abs_path,
-                commit_token=commit_token or "scene-save",
-                content_token=content_token,
-                file_state=committed_file_state,
-                edit_revision=(
-                    registry.get_save_ticket(ticket_id).captured_revision
-                    if ticket_id and registry.get_save_ticket(ticket_id) is not None
-                    else 0
-                ),
-                document_id=str(document_id or self.document_id),
+            if completed.status is not SaveTicketStatus.SUCCEEDED:
+                return False
+        except Exception as exc:
+            if scene is not None:
+                scene.name = previous_name
+            registry.complete_save(
+                ticket_id, success=False,
+                conflict="changed outside the editor" in str(exc).casefold(),
+                message=str(exc),
             )
-        except (OSError, RuntimeError) as exc:
-            scene.name = previous_scene_name
-            self._last_scene_save_conflict = "changed outside the editor" in str(exc).casefold()
-            Debug.log_error(f"Failed to write scene file: {exc}")
+            Debug.log_error(f"Failed to save Scene '{target}': {exc}")
+            EngineStatus.flash("保存失败 Save Failed", 0.0, duration=2.0)
             return False
 
-        target_document_id = str(document_id or self.document_id)
-        binding = self._binding_for_document(target_document_id)
         if binding is not None:
-            binding.resource_path = abs_path
-        if target_document_id == self.document_id:
-            self._current_scene_path = abs_path
-
-        # Scene persistence and AssetDatabase publication form one authoring
-        # transaction.  Waiting for the file watcher left an existing scene's
-        # sidecar/content hash stale long enough for an immediate Player build
-        # to reject it.  Publish both new and existing scenes synchronously;
-        # the watcher remains a fallback for transient database contention.
-        if self._asset_database is not None:
-            try:
-                from infernux.core.assets import AssetManager
-
-                registered = self._asset_database.contains_path(abs_path)
-                if registered:
-                    result = AssetManager.reimport_asset(
-                        abs_path,
-                        database=self._asset_database,
-                    )
-                else:
-                    result = AssetManager.import_asset(
-                        abs_path,
-                        database=self._asset_database,
-                    )
-                if not result:
-                    detail = getattr(result, "error", "") or "asset import was rejected"
-                    Debug.log_warning(f"Scene saved but asset publication is pending: {detail}")
-            except Exception as exc:
-                Debug.log_warning(f"Scene saved but asset publication is pending: {exc}")
-
-        # Persist editor camera state for this scene
-        if target_document_id == self.document_id:
-            self._save_camera_state(abs_path)
-            self._remember_last_scene(abs_path)
+            binding.resource_path = target
+            binding.asset_guid = document.key.identity
+        if suspended:
+            self._previous_scene_path = target
+            self._previous_scene_document = dict(self._previous_scene_document, name=title)
+        if document_id == self.document_id:
+            self._current_scene_path = target
+            for label, persist in (("camera state", self._save_camera_state),
+                                   ("recent Scene", self._remember_last_scene)):
+                try:
+                    persist(target)
+                except Exception as exc:
+                    Debug.log_warning(f"Scene saved, but Editor {label} was not recorded: {exc}")
+        EngineStatus.flash("保存完成 Saved", 1.0, duration=1.5)
         return True
+
+    def _persist_scene_document(self, path: str, payload: dict, ticket):
+        """Use one conditional write/commit path for resident and suspended Scenes."""
+        from infernux.core.assets import AssetManager
+        from infernux.core.document_store import capture_document_file_state, write_document_text
+        from infernux.engine.interaction import DocumentRegistry, document_content_token
+
+        registry = DocumentRegistry.instance()
+        content_token = document_content_token(payload)
+        registry.capture_save_revision(ticket.ticket_id, content_token=content_token)
+        expected_state = registry.capture_save_target(ticket.ticket_id, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_document_text(
+            path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            expected_file_state=expected_state, commit_chain_token=ticket.commit_token,
+        )
+        committed_state = AssetManager.register_local_commit(
+            path, commit_token=ticket.commit_token, content_token=content_token,
+            file_state=capture_document_file_state(path),
+            edit_revision=ticket.captured_revision, document_id=ticket.document_id,
+        )
+        if self._asset_database is not None:
+            publish = (AssetManager.reimport_asset if self._asset_database.contains_path(path)
+                       else AssetManager.import_asset)
+            result = publish(path, database=self._asset_database)
+            if not result:
+                raise RuntimeError(getattr(result, "error", "") or "Scene asset publication was rejected")
+        return content_token, committed_state
 
     def _default_scene_save_path(self) -> Optional[str]:
         """Return a unique default scene path under Assets/ for untitled saves."""
@@ -634,7 +469,7 @@ class SceneSaveMixin:
                 return candidate
             index += 1
 
-    def _show_save_as_dialog(self, *, document_id: str = "") -> bool:
+    def _show_save_as_dialog(self, *, document_id: str) -> bool:
         """Open the appropriate Save As workflow for a user or automation agent."""
         if self._save_as_popup_open or self._save_as_native_dialog_pending:
             return False
@@ -655,7 +490,7 @@ class SceneSaveMixin:
 
         from infernux.engine.interaction import DocumentRegistry
 
-        document = DocumentRegistry.instance().get(document_id or self.document_id)
+        document = DocumentRegistry.instance().get(document_id)
         document_path = document.resource_path if document is not None else ""
         if document_path:
             default_name = os.path.splitext(os.path.basename(document_path))[0]
@@ -811,125 +646,43 @@ class SceneSaveMixin:
         self._finish_save_as()
 
     def _save_as_path(self, path: str) -> bool:
-        from infernux.engine.interaction import DocumentRegistry
-
-        target_document = DocumentRegistry.instance().get(
-            self._pending_save_document_id or self.document_id
-        )
-        current_path = target_document.resource_path if target_document is not None else ""
-        if os.path.exists(path) and path_key(path) != path_key(current_path):
-            self._save_as_error = "A scene already exists at this location. Choose another name to avoid overwriting it."
-            return False
-        if (
-            target_document is not None
-            and target_document.document_id == self._previous_scene_document_id
-        ):
-            saved = self._save_suspended_scene(
-                path,
-                ticket_id=self._pending_save_ticket_id,
-            )
-        else:
-            saved = self._do_save(
-                path,
-                ticket_id=self._pending_save_ticket_id,
-                document_id=(
-                    target_document.document_id
-                    if target_document is not None
-                    else self.document_id
-                ),
-            )
-        if not saved:
-            self._save_as_error = "The scene could not be saved. Check the Console for details."
-            return False
-        return True
-
-    def _save_suspended_scene(self, path: str, *, ticket_id: str) -> bool:
-        if not isinstance(self._previous_scene_document, dict):
-            from infernux.engine.interaction import DocumentRegistry
-
-            DocumentRegistry.instance().complete_save(
-                ticket_id,
-                success=False,
-                message="the suspended scene snapshot is unavailable",
-            )
-            return False
-        if not self._is_under_assets(path):
-            return False
-        target = resolved_path(path)
-        if not target.lower().endswith(SCENE_EXTENSION):
-            target += SCENE_EXTENSION
-        from infernux.engine.interaction import (
-            DocumentRegistry,
-            document_content_token,
-        )
+        from infernux.engine.interaction import DocumentRegistry, SaveTicketStatus
 
         registry = DocumentRegistry.instance()
-        try:
-            payload = dict(self._previous_scene_document)
-            payload["name"] = os.path.splitext(os.path.basename(target))[0]
-            from infernux.engine.scene_authoring import encode_scene_document
-            payload = encode_scene_document(payload)
-            serialized_token = document_content_token(payload)
-            registry.capture_save_revision(
-                ticket_id,
-                content_token=serialized_token,
-            )
-            from infernux.core.document_store import DocumentStore
-
-            DocumentStore.instance().write_and_wait(
-                target,
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            )
-        except Exception as exc:
-            registry.complete_save(
-                ticket_id,
-                success=False,
-                message=str(exc),
-            )
+        anchor = registry.get_save_ticket(self._save_as_ticket_id)
+        document = registry.get(anchor.document_id) if anchor is not None else None
+        if document is None or document.controller is not self:
+            self._cancel_save_as(message="the Save As Scene is no longer open")
             return False
-        if self._asset_database is not None and not self._asset_database.contains_path(target):
-            try:
-                from infernux.core.assets import AssetManager
-
-                AssetManager.import_asset(target, database=self._asset_database)
-            except Exception as exc:
-                Debug.log_warning(f"Scene saved but asset registration is pending: {exc}")
-        key = self._document_key("scene", target)
-        from infernux.engine.interaction import DocumentIdentityKind
-
-        if key.identity_kind is not DocumentIdentityKind.ASSET_GUID:
-            registry.complete_save(
-                ticket_id,
-                success=False,
-                message="saved scene was not registered",
-            )
+        if os.path.exists(path) and path_key(path) != path_key(document.resource_path):
+            self._save_as_error = "A scene already exists at this location. Choose another name to avoid overwriting it."
             return False
-        registry.complete_save(
-            ticket_id,
-            success=True,
-            key=key,
-            resource_path=target,
-            title=os.path.splitext(os.path.basename(target))[0],
-            content_token=serialized_token,
-        )
-        self._previous_scene_path = target
-        self._pending_save_ticket_id = ""
-        self._pending_save_document_id = ""
+        if anchor.is_pending:
+            result = registry._invoke_save_controller(
+                anchor, lambda: self.save_to_resource(ticket=anchor, resource_path=path),
+            )
+        elif anchor.status is SaveTicketStatus.FAILED:
+            if registry.active_save_ticket(document.document_id) is not None:
+                self._save_as_error = "A Scene save is already pending."
+                return False
+            result = registry.request_save_to_resource(document.document_id, path)
+        else:
+            self._save_as_error = "The Scene Save As session has ended."
+            return False
+        if not result.accepted:
+            self._save_as_error = result.message or "The scene could not be saved. Check the Console for details."
+            return False
+        self._save_as_ticket_id = ""
         return True
 
     def _cancel_save_as(self, *, message: str = "save was cancelled") -> None:
-        ticket_id = self._pending_save_ticket_id
-        self._pending_save_ticket_id = ""
-        self._pending_save_document_id = ""
+        ticket_id = self._save_as_ticket_id
         self._reset_save_as_state()
         if ticket_id:
             from infernux.engine.interaction import DocumentRegistry
 
             DocumentRegistry.instance().complete_save(
-                ticket_id,
-                success=False,
-                cancelled=True,
-                message=message,
+                ticket_id, success=False, cancelled=True, message=message,
             )
 
     def _close_save_as_popup(self, ctx) -> None:
@@ -940,6 +693,7 @@ class SceneSaveMixin:
         self._reset_save_as_state()
 
     def _reset_save_as_state(self) -> None:
+        self._save_as_ticket_id = ""
         self._save_as_popup_open = False
         self._save_as_popup_requested = False
         self._save_as_focus_name = False

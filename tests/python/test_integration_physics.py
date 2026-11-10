@@ -195,7 +195,7 @@ class TestHingeJoint:
         assert cloned_hinge.connected_body.component_id == cloned_support_body.component_id
         assert cloned_hinge.connected_body.component_id != support_body.component_id
 
-        document_clone = scene._instantiate_document(root.serialize_document())
+        document_clone, _ = scene._instantiate_document(root.serialize_document())
         document_support_body = document_clone.find_descendant("Support").get_component("Rigidbody")
         document_hinge = document_clone.find_descendant("Door").get_component("HingeJoint")
         assert document_hinge.connected_body.component_id == document_support_body.component_id
@@ -948,10 +948,9 @@ class TestRigidbodyStateBatch:
         sm = SceneManager.instance()
         sm.play()
         sm.pause()
-        with pytest.raises(RuntimeError, match="active physics body"):
-            PublicPhysics.apply_rigidbody_impulses([valid, rb], np.ones((2, 3), np.float32),
-                                                  np.zeros((2, 3), np.float32))
-        np.testing.assert_array_equal(PublicPhysics.get_rigidbody_states([valid])["linear_velocity"], 0)
+        PublicPhysics.apply_rigidbody_impulses([valid, rb], np.ones((2, 3), np.float32),
+                                              np.zeros((2, 3), np.float32))
+        np.testing.assert_array_equal(PublicPhysics.get_rigidbody_states([valid, rb])["linear_velocity"], 1)
 
     def test_zero_feedback_preserves_sleep_and_kinematics_ignore_impulses(self, scene):
         import numpy as np
@@ -1122,7 +1121,10 @@ class TestRigidbodyPose:
         assert tuple(rb.velocity) == pytest.approx((3, 4, 5))
         assert tuple(rb.angular_velocity) == pytest.approx((0.5, 1.0, 1.5))
         assert tuple(rb.position) == pytest.approx((7, 8, 9))
-        assert tuple(ball.transform.position) == pytest.approx((7, 8, 9))
+        # During simulation the solver publishes the owner Transform at its
+        # physics-to-transform boundary, after the body pose has changed.
+        _step_frames(1)
+        assert tuple(ball.transform.position) == pytest.approx(tuple(rb.position))
 
     def test_pose_assignment_rejects_invalid_values(self, scene):
         _, rb = _make_ball(scene)
@@ -2541,6 +2543,9 @@ class TestIncrementalTransformSync:
         first = scene.create_primitive(PrimitiveType.Cube, "CachedMeshA")
         second = scene.create_primitive(PrimitiveType.Cube, "CachedMeshB")
         first_mesh = first.add_component("MeshCollider")
+        Physics.sync_transforms()
+        # This checks reuse of a completed cache entry, separate from waiting
+        # for the same in-flight cook.
         second_mesh = second.add_component("MeshCollider")
 
         Physics.sync_transforms()

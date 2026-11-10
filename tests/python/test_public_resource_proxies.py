@@ -89,21 +89,24 @@ def test_mesh_renderer_all_material_queries_share_proxy(scene):
     renderer.set_material_slot_count(2)
     renderer.materials = [material, material.native]
     other.material = material
-    assert renderer.material is material
+    assert renderer.shared_material is material
     assert renderer.sharedMaterial is material
-    assert other.material is material
+    assert other.shared_material is material
     assert renderer.get_material(0) is material
     assert renderer.get_effective_material(0) is material
-    assert all(value is material for value in renderer.materials)
     assert all(value is material for value in renderer.sharedMaterials)
     result = [None]
     assert renderer.get_materials(result) is result
-    assert len(result) == 2 and all(value is material for value in result)
+    assert len(result) == 2 and all(isinstance(value, inx.Material) and value is not material for value in result)
+    assert result[0] is not result[1]
+    assert renderer.material is result[0]
+    assert all(value is result[index] for index, value in enumerate(renderer.materials))
+    assert other.shared_material is material
     clone = material.clone()
     assert clone is not material
     renderer.set_material(0, clone)
     assert renderer.get_material(0) is clone
-    assert renderer.get_material(1) is material
+    assert renderer.get_material(1) is result[1]
     renderer.material = None
     assert renderer.material is None
     assert isinstance(renderer.get_effective_material(0), inx.Material)
@@ -113,8 +116,11 @@ def test_sprite_renderer_material_is_public_proxy(scene):
     renderer = _component(scene, "Sprite", inx.SpriteRenderer)
     material = inx.Material.create_unlit()
     renderer.material = material
-    assert renderer.material is material
     assert renderer.shared_material is material
+    instance = renderer.material
+    assert isinstance(instance, inx.Material) and instance is not material
+    assert renderer.material is instance
+    assert renderer.shared_material is instance
 
 
 def test_distinct_transient_materials_compare_and_hash_by_live_identity():
@@ -131,7 +137,7 @@ def test_clear_transient_material_releases_the_assignment(scene, assignment):
     renderer = _component(scene, "Clear material", inx.MeshRenderer)
     material = inx.Material.create_unlit()
     renderer.material = material
-    assert renderer.material is material
+    assert renderer.shared_material is material
     if assignment == "none":
         renderer.material = None
     elif assignment == "empty-guid":

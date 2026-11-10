@@ -14,10 +14,12 @@
 #include "function/scene/MeshRenderer.h"
 #include "function/scene/ObjectHandle.h"
 #include "function/scene/PyComponentProxy.h"
+#include "function/scene/RectTransformLayout.h"
 #include "function/scene/Rigidbody.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/SphereCollider.h"
+#include "function/scene/TrailRenderer.h"
 #include "function/scene/Transform.h"
 #include "function/scene/UITransformDependencies.h"
 
@@ -97,6 +99,14 @@ void BindComponent(py::module_ &m)
         .def_property_readonly("component_id", &Component::GetComponentID)
         .def_property_readonly("handle", &Component::GetHandle)
         .def_property("_prefab_source_id", &Component::GetPrefabSourceID, &Component::SetPrefabSourceID)
+        .def_property(
+            "_prefab_source",
+            [](const Component &component) {
+                return std::make_pair(component.GetPrefabSourceID(), component.GetPrefabSourceGuid());
+            },
+            [](Component &component, std::pair<uint64_t, std::string> source) {
+                component.SetPrefabSource(source.first, std::move(source.second));
+            })
         .def("_set_component_id", &Component::SetComponentID, py::arg("component_id"),
              "Internal transactional restore hook")
         .def_property("enabled", &Component::IsEnabled, &Component::SetEnabled)
@@ -126,13 +136,49 @@ void BindComponent(py::module_ &m)
             py::arg("document"), "Deserialize component from a Python document")
         .def_property_readonly("required_component_types", &Component::GetRequiredComponentTypes,
                                "List of type names this component depends on (RequireComponent)")
+        .def(
+            "apply_authoring_document",
+            [](Component &component, const PythonDocument &document) {
+                return component.ApplyAuthoringDocument(document.value);
+            },
+            py::arg("document"), "Apply authoring values without copying another instance's internal ownership")
+        .def(
+            "prepare_authoring_document",
+            [](const Component &component, const PythonDocument &document) {
+                return JsonToPython(component.PrepareAuthoringDocument(document.value));
+            },
+            py::arg("document"))
         .def("is_component_type", &Component::IsComponentType, py::arg("type_name"),
              "Check if this component matches a given type name (including base types)");
 }
 
 void BindTransform(py::module_ &m)
 {
+    BindRectLayout(m);
     NativeClass<Transform, Component>(m, "Transform")
+        .def_property_readonly("_rect_layout", [](Transform *owner) { return RectTransformLayout(owner); })
+        .def_property_readonly("_has_rect_layout",
+                               [](Transform *owner) {
+                                   return TransformECSStore::Instance().GetRectLayout(owner->GetECSHandle()) != nullptr;
+                               })
+        .def("_capture_rect_state",
+             [](Transform *owner) -> std::optional<ui::RectTransformState> {
+                 const auto *state = TransformECSStore::Instance().GetRectLayout(owner->GetECSHandle());
+                 return state ? std::optional<ui::RectTransformState>(*state) : std::nullopt;
+             })
+        .def("_restore_rect_state",
+             [](Transform *owner, const std::optional<ui::RectTransformState> &state) {
+                 auto &store = TransformECSStore::Instance();
+                 store.MarkRectLayoutInputChanged();
+                 if (state) {
+                     store.EnableRectLayout(owner->GetECSHandle()) = *state;
+                     RectTransformLayout::RefreshSubtree(owner, false);
+                 } else {
+                     store.DisableRectLayout(owner->GetECSHandle());
+                     for (size_t index = 0; index < owner->GetChildCount(); ++index)
+                         RectTransformLayout::RefreshSubtree(owner->GetChild(index), false);
+                 }
+             })
         // ---- World-space properties (Unity: transform.position) ----
         .def_property(
             "position", [](Transform *t) { return t->GetWorldPosition(); },
@@ -332,6 +378,9 @@ void RegisterSceneComponentCasters()
     });
     registry.Register("LineRenderer", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<LineRenderer *>(c), py::return_value_policy::reference);
+    });
+    registry.Register("TrailRenderer", [](Component *c) -> py::object {
+        return py::cast(dynamic_cast<TrailRenderer *>(c), py::return_value_policy::reference);
     });
     registry.Register("SkinnedMeshRenderer", [](Component *c) -> py::object {
         return py::cast(dynamic_cast<SkinnedMeshRenderer *>(c), py::return_value_policy::reference);

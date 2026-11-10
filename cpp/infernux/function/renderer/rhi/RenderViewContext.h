@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RenderCoreApi.h"
 #include "RhiHandles.h"
 #include "RhiTypes.h"
 
@@ -13,7 +14,7 @@ inline constexpr RenderViewId InvalidRenderViewId = 0;
 
 /// Allocate a process-unique render-view identity shared by Scene, Game,
 /// Preview, Capture, and future presentation surfaces.
-[[nodiscard]] RenderViewId AllocateRenderViewId() noexcept;
+[[nodiscard]] INFERNUX_RENDER_CORE_API RenderViewId AllocateRenderViewId() noexcept;
 
 enum class RenderViewKind : uint8_t
 {
@@ -50,7 +51,6 @@ struct RenderViewContext
     TextureViewHandle color;
     TextureViewHandle depth;
     TextureViewHandle motion;
-    TextureViewHandle history;
     uint64_t revision = 0;
 
     [[nodiscard]] constexpr bool IsValid() const noexcept

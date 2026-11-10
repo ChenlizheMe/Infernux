@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -27,8 +29,9 @@ enum LogLevel
     LOG_FATAL = 4
 };
 
-std::string FormatDiagnosticMessage(LogLevel level, const std::string &sourceFile, int sourceLine,
-                                    const std::string &message, const std::string &projectRoot = "");
+INFERNUX_FOUNDATION_API std::string FormatDiagnosticMessage(LogLevel level, const std::string &sourceFile,
+                                                            int sourceLine, const std::string &message,
+                                                            const std::string &projectRoot = "");
 
 class InxLog
 {
@@ -39,7 +42,7 @@ class InxLog
         DeferredTail,
     };
 
-    static InxLog &GetInstance();
+    INFERNUX_FOUNDATION_API static InxLog &GetInstance();
 
     /// Open a log file under the given path.  When a file is open, all log
     /// output goes to the file instead of the console.

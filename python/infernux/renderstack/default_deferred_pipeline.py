@@ -57,7 +57,6 @@ from infernux.renderstack._pipeline_common import (
     DEPTH_TEXTURE,
     DEFERRED_GBUFFER_CLEAR_COLOR,
     DEFERRED_LIGHTING_CLEAR_COLOR,
-    DEFERRED_LIGHTING_SHADER,
     GBUFFER_ALBEDO_TEXTURE,
     GBUFFER_EMISSION_TEXTURE,
     GBUFFER_MATERIAL_TEXTURE,
@@ -72,6 +71,7 @@ from infernux.renderstack._pipeline_common import (
     add_transparent_pass,
     create_deferred_gbuffer,
     create_main_scene_targets,
+    draw_deferred_lighting,
     opaque_queue_range,
     result_resources,
 )
@@ -212,19 +212,13 @@ class DefaultDeferredPipeline(RenderPipeline):
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
         with graph.add_pass("DeferredLightingPass") as p:
-            p.set_textures(
-                {
-                    "gAlbedo": GBUFFER_ALBEDO_TEXTURE,
-                    "gNormal": GBUFFER_NORMAL_TEXTURE,
-                    "gMaterial": GBUFFER_MATERIAL_TEXTURE,
-                    "gEmission": GBUFFER_EMISSION_TEXTURE,
-                    "gObject": GBUFFER_OBJECT_TEXTURE,
-                    "sceneDepth": DEPTH_TEXTURE,
-                }
-            )
             p.write_color(COLOR_TEXTURE)
             p.set_clear(color=DEFERRED_LIGHTING_CLEAR_COLOR)
-            p.fullscreen_quad(DEFERRED_LIGHTING_SHADER)
+            draw_deferred_lighting(
+                p, albedo=GBUFFER_ALBEDO_TEXTURE, normal=GBUFFER_NORMAL_TEXTURE,
+                material=GBUFFER_MATERIAL_TEXTURE, emission=GBUFFER_EMISSION_TEXTURE,
+                object_data=GBUFFER_OBJECT_TEXTURE, depth=DEPTH_TEXTURE,
+            )
 
         # Opaque shading models are Deferred-compatible by default. Models
         # that explicitly declare Unsupported [Deferred] skip the GBuffer and

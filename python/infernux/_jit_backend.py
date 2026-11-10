@@ -17,6 +17,7 @@ from numba.core.cpu import CPUContext
 from numba.core.registry import CPUDispatcher, CPUTarget, cpu_target
 from numba.core.runtime import rtsys
 
+from infernux._compiler.kernel_contract import WORK_ITEM_FAST_MATH
 from infernux.jit_runtime import (
     CpuCompilationStatistics,
     CpuOptimizationReport,
@@ -103,7 +104,7 @@ class _OwnedDispatcher(CPUDispatcher):
         # this class with positional locals/targetoptions in another process.
         self.targetdescr = _OwnedTarget()
         self._publication_stats = {}
-        options = {**(targetoptions or {}), "nopython": True}
+        options = {"fastmath": WORK_ITEM_FAST_MATH, **(targetoptions or {}), "nopython": True}
         super().__init__(py_func, locals, options, pipeline_class)
 
     def _make_finalizer(self):
@@ -164,6 +165,61 @@ class _OwnedDispatcher(CPUDispatcher):
                     (perf_counter() - started) * 1000, succeeded,
                     self._cache_hits[sig] > cache_hits, optimization_level,
                 )
+
+
+def compile_range_entry(dispatcher, parameter_kinds, plan):
+    """Export the proven range publication through a finite, exception-safe C ABI.
+
+    The C wrapper decodes borrowed POD slots; the existing native row function
+    remains the only algorithm. Its caller must retain both code and storage.
+    """
+    import numpy as np
+    from ._compiler.kernel_contract import ARRAY_DTYPES
+    from numba import carray
+    from numba.core.ccallback import CFunc
+
+    class OwnedCFunc(CFunc):
+        def __init__(self, function, signature):
+            self._targetdescr = _OwnedTarget()
+            stage = _OwnedContext(self._targetdescr.typing_context, "cpu")
+            self._targetdescr._owned_context = stage
+            super().__init__(function, (signature.args, signature.return_type), {},
+                             {"nopython": True, "nogil": True, "fastmath": WORK_ITEM_FAST_MATH})
+            try:
+                self.compile()
+            except BaseException:
+                stage.codegen()._engine._ee.close()
+                raise
+
+    dispatcher.disable_compile()
+    lines = ["def entry(slots, lengths, count, begin, end):",
+             "    if count < 0 or begin < 0 or begin > end or end > count:",
+             "        return 1", "    n = np.int64(count)"]
+    for extent in plan.resource_extents:
+        for condition in extent.guards("n", f"lengths[{extent.parameter}]"):
+            lines.extend([f"    if {condition}:", "        return 1"])
+    for index, kind in enumerate(parameter_kinds):
+        if kind not in ARRAY_DTYPES:
+            lines.extend([f"    if lengths[{index}] != 1:", "        return 1"])
+    lines.extend(["    if begin == end:", "        return 0", "    try:"])
+    for index, kind in enumerate(parameter_kinds):
+        dtype = ARRAY_DTYPES[kind] if kind in ARRAY_DTYPES else kind
+        value = f"carray(slots[{index}], (lengths[{index}],), dtype=np.{dtype})"
+        if kind not in ARRAY_DTYPES:
+            value += "[0]"
+        lines.append(f"        arg_{index} = {value}")
+    if plan.inner_range is not None:
+        control = plan.inner_range
+        for condition in control.guards(f"arg_{control.begin_parameter}", f"arg_{control.end_parameter}"):
+            lines.extend([f"        if {condition}:", "            return 1"])
+    arguments = ", ".join(f"arg_{index}" for index in range(len(parameter_kinds)))
+    lines.extend([f"        native({arguments}, begin, end)",
+                  "    except Exception:", "        return 2", "    return 0"])
+    namespace = {"native": dispatcher, "carray": carray, "np": np}
+    exec(compile("\n".join(lines), "<infernux-cpu-range-entry>", "exec"), namespace)
+    signature = types.int32(types.CPointer(types.voidptr), types.CPointer(types.int32),
+                            types.int32, types.int32, types.int32)
+    return OwnedCFunc(namespace["entry"], signature)
 
 
 @global_compiler_lock

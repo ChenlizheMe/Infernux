@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph, RenderPassBuilder
 
 COLOR_TEXTURE: str
 DEPTH_TEXTURE: str
@@ -27,8 +27,6 @@ FORWARD_CLEAR_COLOR: tuple[float, float, float, float]
 DEFERRED_GBUFFER_CLEAR_COLOR: tuple[float, float, float, float]
 DEFERRED_LIGHTING_CLEAR_COLOR: tuple[float, float, float, float]
 
-DEFERRED_LIGHTING_SHADER: str
-
 def opaque_queue_range() -> tuple[int, int]: ...
 def transparent_queue_range() -> tuple[int, int]: ...
 def result_resources(result) -> set[str]: ...
@@ -40,6 +38,9 @@ def create_main_scene_targets(
     msaa_samples: int = ...,
 ) -> None: ...
 def create_deferred_gbuffer(graph: RenderGraph) -> None: ...
+def draw_deferred_lighting(
+    render_pass: RenderPassBuilder, *, albedo, normal, material, emission, object_data, depth,
+) -> None: ...
 def add_shadow_caster_pass(
     graph: RenderGraph,
     *,

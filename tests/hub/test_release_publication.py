@@ -20,6 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG_KEY = "plugins/official-registry.json"
 PACKAGE_KEY = "plugins/fixture.platform/1.2.3/fixture.platform.inxpkg"
+CATALOG_SCHEMA = "infernux.official_plugin_registry"
 
 
 def test_official_plugin_reference_must_match_its_registered_repository(monkeypatch):
@@ -42,7 +43,7 @@ def test_official_plugin_reference_must_match_its_registered_repository(monkeypa
 def test_sdk_publication_requires_matching_published_desktop_players(monkeypatch, change):
     monkeypatch.syspath_prepend(str(ROOT / "scripts/release"))
     plugins = importlib.import_module("publish_plugin_objects")
-    registry = json.loads(plugins.REGISTRY.read_text(encoding="utf-8"))
+    registry = plugins.catalog()
     engine = runpy.run_path(str(ROOT / "python/infernux/version.py"))["ENGINE_RELEASE"]
     calls = []
 
@@ -60,7 +61,7 @@ def test_sdk_publication_requires_matching_published_desktop_players(monkeypatch
     monkeypatch.setattr(plugins.subprocess, "check_output", download)
     if change is None:
         plugins.verify_player_releases(registry)
-        assert len(calls) == 2
+        assert len(calls) == 4
     else:
         with pytest.raises(ValueError, match="Rebuild and publish"):
             plugins.verify_player_releases(registry)
@@ -71,6 +72,7 @@ def channel(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts/release"))
     hub = importlib.import_module("publish_hub_objects")
     plugins = importlib.import_module("publish_plugin_objects")
+    history = importlib.import_module("plugin_catalog_history")
     objects, requests, uploads = {}, [], {}
     failures = set()
 
@@ -138,17 +140,18 @@ def channel(tmp_path, monkeypatch):
     url = f"http://127.0.0.1:{server.server_port}"
     monkeypatch.setattr(hub, "PUBLIC_ENDPOINT", url + "/public")
     monkeypatch.setattr(hub, "UPLOAD_ENDPOINT", url + "/upload")
+    monkeypatch.setattr(history, "CATALOG_URL", url + "/public/" + CATALOG_KEY)
     # Force multiple parts so failure tests exercise an unfinished publication.
     monkeypatch.setattr(hub, "PART_SIZE", 16)
     payload = tmp_path / "fixture.platform.inxpkg"
     payload.write_bytes(b"INXPKG\0\0local package publication fixture")
     catalog = tmp_path / "official-registry.json"
-    catalog.write_text(json.dumps({"packages": [{
-        "reference": "fixture/platform", "version": "1.2.3", "category": "platform_build",
-        "source": {"location": url + "/public/" + PACKAGE_KEY},
-    }, {
+    catalog.write_text(json.dumps({"$schema": CATALOG_SCHEMA, "packages": [{
         "reference": "fixture/editor", "version": "1.0.0", "category": "animation",
         "source": {"location": url + "/public/plugins/editor.inxpkg"},
+    }, {
+        "reference": "fixture/platform", "version": "1.2.3", "category": "platform_build",
+        "source": {"location": url + "/public/" + PACKAGE_KEY},
     }]}), encoding="utf-8")
     objects["plugins/editor.inxpkg"] = b"existing editor package"
     editor_payload = tmp_path / "editor.inxpkg"
@@ -171,13 +174,19 @@ def channel(tmp_path, monkeypatch):
         thread.join(2)
 
 
+def _previous_registry(catalog):
+    registry = json.loads(catalog.read_bytes())
+    registry["packages"] = [item for item in registry["packages"] if item["reference"] == "fixture/editor"]
+    return json.dumps(registry).encode()
+
+
 @pytest.mark.parametrize("existing", ["missing", "identical", "older"])
 def test_registry_advances_only_after_all_packages_are_public(channel, existing):
     _, plugins, objects, requests, _, catalog, payload = channel
     if existing != "missing":
-        objects[CATALOG_KEY] = catalog.read_bytes() if existing == "identical" else b'{"packages": []}'
+        objects[CATALOG_KEY] = catalog.read_bytes() if existing == "identical" else _previous_registry(catalog)
     plugins.main()
-    assert objects[CATALOG_KEY] == catalog.read_bytes()
+    assert json.loads(objects[CATALOG_KEY]) == json.loads(catalog.read_bytes())
     assert objects[PACKAGE_KEY] == payload.read_bytes()
     completion = requests.index(("POST", "/upload/complete", CATALOG_KEY))
     for key in [PACKAGE_KEY, "plugins/editor.inxpkg"]:
@@ -207,8 +216,9 @@ def test_identical_versioned_payload_is_not_uploaded_twice(channel):
 
 @pytest.mark.parametrize("contents", [None, b""])
 def test_unavailable_advertised_package_preserves_catalog(channel, monkeypatch, contents):
-    _, plugins, objects, requests, _, _, _ = channel
-    objects[CATALOG_KEY] = b"old catalog"
+    _, plugins, objects, requests, _, catalog, _ = channel
+    previous = _previous_registry(catalog)
+    objects[CATALOG_KEY] = previous
     monkeypatch.setattr(sys, "argv", ["publish_plugin_objects.py", "--reference", "fixture/platform"])
     if contents is None:
         del objects["plugins/editor.inxpkg"]
@@ -216,28 +226,29 @@ def test_unavailable_advertised_package_preserves_catalog(channel, monkeypatch, 
         objects["plugins/editor.inxpkg"] = contents
     with pytest.raises((urllib.error.HTTPError, ValueError)):
         plugins.main()
-    assert objects[CATALOG_KEY] == b"old catalog"
+    assert objects[CATALOG_KEY] == previous
     assert ("POST", "/upload/start", CATALOG_KEY) not in requests
 
 
 @pytest.mark.parametrize("key", [PACKAGE_KEY, CATALOG_KEY])
 @pytest.mark.parametrize("step", ["part", "complete"])
 def test_failed_multipart_publication_preserves_previous_catalog(channel, key, step):
-    _, plugins, objects, requests, failures, _, _ = channel
-    objects[CATALOG_KEY] = b"old catalog"
+    _, plugins, objects, requests, failures, catalog, _ = channel
+    previous = _previous_registry(catalog)
+    objects[CATALOG_KEY] = previous
     failures.add(("/upload/" + step, key))
     with pytest.raises(urllib.error.HTTPError, match="503"):
         plugins.main()
-    assert objects[CATALOG_KEY] == b"old catalog"
+    assert objects[CATALOG_KEY] == previous
     assert ("POST", "/upload/abort", key) in requests
 
 
 def test_single_reference_publishes_complete_registry_last(channel, monkeypatch):
     _, plugins, objects, requests, _, catalog, _ = channel
-    objects[CATALOG_KEY] = b"old catalog"
+    objects[CATALOG_KEY] = _previous_registry(catalog)
     monkeypatch.setattr(sys, "argv", ["publish_plugin_objects.py", "--reference", "fixture/platform"])
     plugins.main()
-    assert objects[CATALOG_KEY] == catalog.read_bytes()
+    assert json.loads(objects[CATALOG_KEY]) == json.loads(catalog.read_bytes())
     assert ("POST", "/upload/stat", "plugins/editor.inxpkg") not in requests
     completion = requests.index(("POST", "/upload/complete", CATALOG_KEY))
     for key in [PACKAGE_KEY, "plugins/editor.inxpkg"]:

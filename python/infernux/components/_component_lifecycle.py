@@ -11,22 +11,14 @@ import sys
 
 from infernux.runtime_services import _dispatch_updates, _update_snapshot
 from infernux.timing import Time
+from infernux.execution import (component_execution, close_component_execution, execution_phase,
+                                simulation_state, step_execution, lifecycle_step_execution)
 
 
 
-_RUNTIME_PHASE_NAMES = (
-    "update",
-    "fixed_update",
-    "late_update",
-    "physics_pre_step",
-    "physics_post_step",
-)
-_RUNTIME_SCHEDULER_PHASES = (
-    "fixed_update",
-    "physics_pre_step",
-    "physics_post_step",
-    "update",
-    "late_update",
+from infernux.engine.runtime_dispatch import (
+    RUNTIME_PHASE_NAMES as _RUNTIME_PHASE_NAMES,
+    RUNTIME_SCHEDULER_PHASES as _RUNTIME_SCHEDULER_PHASES,
 )
 _MISSING = object()
 _runtime_phase_presence_fn = None
@@ -206,6 +198,8 @@ class RuntimeExecutionScheduler:
             + self._runtime_service_count("fixed_update"),
             len(self._phase_plan["update"])
             + self._runtime_service_count("update"),
+            len(self._phase_plan["animation_update"])
+            + self._runtime_service_count("animation_update"),
             len(self._phase_plan["late_update"])
             + self._runtime_service_count("late_update"),
         )
@@ -766,8 +760,9 @@ class RuntimeExecutionScheduler:
         delta_time: float,
         *,
         editor_only: bool = False,
+        cursor=None,
     ) -> None:
-        from infernux.compute import recording
+        from infernux.compute import _record_commands
 
         callbacks = () if editor_only else frame.update_callbacks.get(phase, ())
         unscaled_delta = Time.unscaled_delta_time
@@ -778,49 +773,55 @@ class RuntimeExecutionScheduler:
         tick_coroutines = (
             phase == "update" or phase == "fixed_update" or phase == "late_update"
         )
-        with recording():
-            for component, invoke in frame.dispatch_plan[phase]:
-                # ComponentLifecycleMixin declares these mirrors as class
-                # defaults, so the steady-state path is a direct LOAD_ATTR.
-                if component._is_destroyed:
+        with _record_commands(), execution_phase():
+            admitted_state = simulation_state()
+            cursor = [0, 0, 0, None] if cursor is None else cursor
+            entries = frame.dispatch_plan[phase]
+            while cursor[0] < len(entries):
+                component, invoke = entries[cursor[0]]
+                if simulation_state() != admitted_state:
+                    break
+                # The cursor names both the receiver and its coroutine tail.
+                # Pause after a callback resumes that tail, never the callback.
+                if component._is_destroyed or not component._runtime_active_in_hierarchy or (
+                        editor_only and not component._execute_in_edit_mode):
                     counters["phase_skips"] += 1
+                    cursor[0] += 1
+                    cursor[1] = 0
+                    cursor[3] = None
                     continue
-                if not component._runtime_active_in_hierarchy:
-                    counters["phase_skips"] += 1
-                    continue
-                if editor_only and not component._execute_in_edit_mode:
-                    counters["phase_skips"] += 1
-                    continue
-
-                if component._enabled:
-                    try:
-                        invoke(component, delta_time)
-                    except Exception as exc:
-                        self._report_phase_error(component, exc)
-
-                # Keep the component/invoker tuple stable for the frame, but make
-                # enabled transitions visible between phases just like the legacy
-                # Scene traversal. A disable in fixed_update therefore suppresses
-                # the following update/late_update callbacks immediately.
-                # Component ``enabled`` gates the user callback, while the owning
-                # hierarchy independently gates coroutine work.
-                if not component._runtime_active_in_hierarchy:
-                    continue
-                if tick_coroutines:
+                if cursor[1] == 0:
+                    cursor[1] = 1
+                    if component._enabled:
+                        try:
+                            invoke(component, delta_time)
+                        except Exception as exc:
+                            self._report_phase_error(component, exc)
+                if simulation_state() != admitted_state:
+                    return
+                if tick_coroutines and not component._is_destroyed and component._runtime_active_in_hierarchy:
                     scheduler = component.__dict__.get("_runtime_coroutine_scheduler")
                     if scheduler is not None and scheduler.count > 0:
                         try:
                             if phase == "update":
                                 scheduler.tick_update(delta_time, epoch=frame.epoch)
                             elif phase == "fixed_update":
-                                scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
+                                if cursor[3] is None:
+                                    cursor[3] = []
+                                if not scheduler.tick_fixed_update(delta_time, epoch=frame.epoch, continuation=cursor[3]):
+                                    return
                             else:
                                 scheduler.tick_late_update(delta_time, epoch=frame.epoch)
                         except Exception as exc:
                             self._report_phase_error(component, exc)
+                cursor[0] += 1
+                cursor[1] = 0
+                cursor[3] = None
                 counters["phase_dispatches"] += 1
-            if callbacks:
-                _dispatch_updates(callbacks, delta_time, unscaled_delta)
+            while cursor[2] < len(callbacks) and simulation_state() == admitted_state:
+                registration = callbacks[cursor[2]]
+                cursor[2] += 1
+                _dispatch_updates((registration,), delta_time, unscaled_delta)
 
     def _report_phase_error(self, component: Any, exc: Exception) -> None:
         """Route one phase failure; only the error path pays for the fallback."""
@@ -924,12 +925,48 @@ class RuntimeExecutionScheduler:
     def execute_native_phase(self, phase: str, delta_time: float) -> None:
         if self._native_frame is None:
             raise RuntimeError("native lifecycle phase requires SceneManager.begin_native_frame")
-        self._native_frame.execute_phase(phase, float(delta_time))
+        if phase in ("fixed_update", "physics_pre_step", "physics_post_step"):
+            from infernux.lib import SceneManager
+            manager = SceneManager.instance()
+            key = int(manager.simulation_epoch), int(manager.fixed_step_index)
+            if getattr(self, '_fixed_dispatch_key', None) != key:
+                self._fixed_dispatch_key = key
+                self._fixed_dispatch = {}
+            record = self._fixed_dispatch.setdefault(phase, (self._native_frame, [0, 0, 0, None], float(delta_time)))
+            source, cursor, delta = record
+            with step_execution():
+                self._native_frame.execute_phase(phase, delta, cursor=cursor, dispatch_frame=source)
+        else:
+            with step_execution():
+                self._native_frame.execute_phase(phase, float(delta_time))
         self._last_native_phase = (phase, float(delta_time))
         if phase == "fixed_update":
             self._counters["native_fixed_callbacks"] += 1
             self._counters["native_fixed_delta_sum"] += float(delta_time)
         self._counters["native_phase_dispatches"] += 1
+
+    def resume_native_result_boundary(self, barrier):
+        phase = {
+            'FIXED_SCRIPT': 'fixed_update',
+            'PHYSICS_SIMULATION': 'physics_pre_step',
+            'PHYSICS_POST_SCRIPT': 'physics_post_step',
+        }.get(barrier.name)
+        return phase is None or self.resume_native_fixed_phase(phase)
+
+    def resume_native_fixed_phase(self, phase):
+        from infernux.lib import SceneManager
+        manager = SceneManager.instance()
+        key = int(manager.simulation_epoch), int(manager.fixed_step_index)
+        if getattr(self, '_fixed_dispatch_key', None) != key:
+            return True
+        record = getattr(self, '_fixed_dispatch', {}).get(phase)
+        if record is None:
+            return True
+        source, cursor, delta = record
+        if cursor[0] < len(source.dispatch_plan[phase]) or cursor[2] < len(source.update_callbacks.get(phase, ())):
+            with step_execution():
+                self._native_frame.execute_phase(phase, delta, cursor=cursor, dispatch_frame=source)
+        return cursor[0] == len(source.dispatch_plan[phase]) and cursor[2] == len(source.update_callbacks.get(phase, ()))
 
     def execute_native_editor_update(self, delta_time: float) -> None:
         if self._native_frame is None:
@@ -938,6 +975,7 @@ class RuntimeExecutionScheduler:
 
         for phase, barrier in (
             ("update", RuntimeFrameBarrier.UPDATE_SCRIPT),
+            ("animation_update", RuntimeFrameBarrier.ANIMATION_EVALUATION),
             ("late_update", RuntimeFrameBarrier.LATE_SCRIPT),
         ):
             self.consume_runtime_changes(barrier, frame=self._native_frame)
@@ -997,6 +1035,8 @@ class RuntimeExecutionScheduler:
         self.end_native_frame()
         for frame in tuple(getattr(self, "_active_frames", ())):
             frame.close()
+        self._fixed_dispatch = {}
+        self._fixed_dispatch_key = None
         self._components.clear()
         self._component_tokens.clear()
         self._sync_native_work_availability(force=True)
@@ -1068,7 +1108,7 @@ class RuntimeExecutionFrame:
             scheduler._active_frames = active_frames
         active_frames.add(self)
 
-    def execute_phase(self, phase: str, delta_time: float) -> None:
+    def execute_phase(self, phase: str, delta_time: float, *, cursor=None, dispatch_frame=None) -> None:
         if self._closed:
             raise RuntimeError("runtime execution frame is already closed")
         if phase not in _RUNTIME_SCHEDULER_PHASES:
@@ -1080,6 +1120,7 @@ class RuntimeExecutionFrame:
             "physics_pre_step": RuntimeFrameBarrier.PHYSICS_PRE_SCRIPT,
             "physics_post_step": RuntimeFrameBarrier.PHYSICS_POST_SCRIPT,
             "update": RuntimeFrameBarrier.UPDATE_SCRIPT,
+            "animation_update": RuntimeFrameBarrier.ANIMATION_EVALUATION,
             "late_update": RuntimeFrameBarrier.LATE_SCRIPT,
         }
         self._scheduler.consume_runtime_changes(barriers[phase], frame=self)
@@ -1088,7 +1129,7 @@ class RuntimeExecutionFrame:
         # without taking the journal lock per write. The next barrier publishes
         # one coalesced revision for the whole phase.
         with self._scheduler.change_journal.transaction():
-            self._scheduler._execute_frame_phase(self, phase, delta_time)
+            self._scheduler._execute_frame_phase(dispatch_frame or self, phase, delta_time, cursor=cursor)
 
     def resolve_method(self, component: Any, name: str) -> Any:
         """Resolve a helper against this frame's captured dispatch epoch."""
@@ -1217,7 +1258,8 @@ class ComponentLifecycleMixin:
                 raise AttributeError(
                     f"{type(self).__name__} has no lifecycle method '{method_name}'"
                 )
-            callback(*args)
+            with component_execution(self), execution_phase(), lifecycle_step_execution():
+                callback(*args)
             return True
         except Exception as exc:
             try:
@@ -1325,6 +1367,7 @@ class ComponentLifecycleMixin:
         # flag prevents reentrant destruction while disabled/removed membership
         # prevents any further runtime phase from scheduling this component.
         self.__dict__["_is_destroying"] = True
+        close_component_execution(self)
         self._enabled = False
         try:
             self._remove_from_active_registry()
@@ -1361,6 +1404,7 @@ class ComponentLifecycleMixin:
         owner = self.__dict__["_play_domain_retirement_owner"]
 
         def cleanup():
+            close_component_execution(self)
             try:
                 if self._coroutine_scheduler is not None:
                     self._coroutine_scheduler.stop_all()
@@ -1370,7 +1414,8 @@ class ComponentLifecycleMixin:
                 if was_awake:
                     # Resolve against the retired class body; the replacement
                     # has its own native proxy, fields and dispatch descriptor.
-                    self.on_destroy()
+                    with component_execution(self):
+                        self.on_destroy()
 
         try:
             self._invoke_native_cleanup(cleanup, None, owner, True)
@@ -1441,7 +1486,8 @@ class ComponentLifecycleMixin:
             raise AttributeError(
                 f"{type(self).__name__} has no lifecycle method 'on_after_deserialize'"
             )
-        callback()
+        with component_execution(self), execution_phase():
+            callback()
 
     def _call_on_before_serialize(self):
         """Internal: Trigger on_before_serialize lifecycle."""

@@ -9,6 +9,16 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(_WIN32)
+#if defined(INFERNUX_RENDERER_RUNTIME_EXPORTS)
+#define INFERNUX_RENDERER_RUNTIME_API __declspec(dllexport)
+#else
+#define INFERNUX_RENDERER_RUNTIME_API __declspec(dllimport)
+#endif
+#else
+#define INFERNUX_RENDERER_RUNTIME_API __attribute__((visibility("default")))
+#endif
+
 namespace infernux
 {
 
@@ -70,21 +80,6 @@ class SceneRenderer
     SceneRenderer() = default;
     ~SceneRenderer() = default;
 
-    /// @brief Get the view matrix for rendering
-    [[nodiscard]] glm::mat4 GetViewMatrix() const;
-
-    /// @brief Get the projection matrix for rendering
-    [[nodiscard]] glm::mat4 GetProjectionMatrix() const;
-
-    /// @brief Get camera position for shaders
-    [[nodiscard]] glm::vec3 GetCameraPosition() const;
-
-    /// @brief Get camera forward direction
-    [[nodiscard]] glm::vec3 GetCameraForward() const;
-
-    /// @brief Get camera up vector
-    [[nodiscard]] glm::vec3 GetCameraUp() const;
-
     // ========================================================================
     // Renderable access
     // ========================================================================
@@ -103,13 +98,13 @@ class SceneRenderer
     /// @brief Build draw calls from visible renderables.
     /// Converts the culled/sorted RenderableObject list into DrawCall + combined vertex/index data.
     /// @note Vertices remain in model/local space; per-object world transform is applied on GPU via push constants.
-    [[nodiscard]] const DrawCallResult &BuildDrawCalls();
+    [[nodiscard]] INFERNUX_RENDERER_RUNTIME_API const DrawCallResult &BuildDrawCalls();
 
     /// @brief Build draw calls by re-culling existing renderables against a different camera.
     /// Reuses cached draw-call spans and world bounds from PrepareFrame().
     /// Returns a forward-visible set, plus an optional layer-filtered shadow candidate set.
-    [[nodiscard]] CameraDrawCallResult BuildDrawCallsForCamera(const RenderViewData &camera,
-                                                               bool includeShadowDrawCalls);
+    [[nodiscard]] INFERNUX_RENDERER_RUNTIME_API CameraDrawCallResult
+    BuildDrawCallsForCamera(const RenderViewData &camera, bool includeShadowDrawCalls);
 
     // ========================================================================
     // Settings
@@ -187,3 +182,5 @@ class SceneRenderer
 };
 
 } // namespace infernux
+
+#undef INFERNUX_RENDERER_RUNTIME_API

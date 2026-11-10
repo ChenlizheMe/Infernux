@@ -21,7 +21,7 @@ bool VerifyRhiBufferUpdateSnapshots(TestResources &resources)
                 device.Release(target);
             }
         } owner{device, native};
-        vk::VulkanCommandUploads uploads(resources.context.GetVmaAllocator());
+        vk::VulkanCommandUploads uploads(device);
         rhi::BufferDesc desc;
         desc.byteSize = totalBytes;
         desc.usage = rhi::BufferUsageFlags::TransferSource | rhi::BufferUsageFlags::TransferDestination;
@@ -48,7 +48,7 @@ bool VerifyRhiBufferUpdateSnapshots(TestResources &resources)
         for (uint32_t replay = 0; replay < 2; ++replay) {
             if (!Require(vkResetCommandPool(native, owner.pool, 0) == VK_SUCCESS, "Command update pool reset failed"))
                 return false;
-            uploads.Reset();
+            uploads.Recycle();
             std::vector<uint32_t> source(payloadBytes / 4);
             for (uint32_t frame = 0; frame < commands.size(); ++frame) {
                 for (size_t word = 0; word < source.size(); ++word)
@@ -135,8 +135,7 @@ bool VerifyRhiBufferUpdateSnapshots(TestResources &resources)
         }
         if (!Require(vkResetCommandPool(native, owner.pool, 0) == VK_SUCCESS, "Idle upload pool reset failed"))
             return false;
-        uploads.Reset();
-        uploads.Reset(); // A completed recording with no large updates retains no idle pages.
+        uploads.Recycle();
         if (!Require(uploads.PageCount() == 0, "Idle command uploads retained unused pages"))
             return false;
     }

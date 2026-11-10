@@ -51,10 +51,15 @@ def test_thin_shape_edit_survives_motion_transition(scene, constraints, motion):
     np.testing.assert_allclose(state["inverse_mass"][0],
                                [0 if constraints & bit else .2 for bit in (2, 4, 8)], atol=1e-6)
     np.testing.assert_allclose(state["inverse_inertia"], cold["inverse_inertia"], atol=1e-6)
-    body.add_torque(Vector3(.1, .2, .3), ForceMode.Impulse)
+    # Probe inertia below the body's angular-speed limit. A large impulse on
+    # this thin rod tests speed clamping instead of mass publication.
+    impulse = np.array([.0001, .0002, .0003])
+    expected = state["inverse_inertia"][0] @ impulse
+    impulse *= .5 / max(.5, np.linalg.norm(expected))
+    body.add_torque(Vector3(*impulse), ForceMode.Impulse)
     response = PublicPhysics.get_rigidbody_states([body])
     np.testing.assert_allclose(response["angular_velocity"][0],
-                               state["inverse_inertia"][0] @ np.array([.1, .2, .3]), atol=1e-6)
+                               state["inverse_inertia"][0] @ impulse, atol=1e-6)
 
 
 @pytest.mark.parametrize('shape,operation,constraints', [

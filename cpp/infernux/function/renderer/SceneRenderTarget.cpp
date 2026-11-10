@@ -131,11 +131,14 @@ uint64_t SceneRenderTarget::GetMsaaColorResidentBytes() const
 
 void SceneRenderTarget::InitializeAttachmentLayouts()
 {
+    const auto rendering = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice());
+    if (!rendering.IsValid())
+        throw std::runtime_error("SceneRenderTarget requires Vulkan dynamic rendering");
     std::array<VkImageMemoryBarrier, 4> barriers;
     uint32_t count = 0;
     barriers[count++] =
-        vkrender::MakeImageBarrier(m_colorImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                   VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_SHADER_READ_BIT);
+        vkrender::MakeImageBarrier(m_colorImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
     barriers[count++] = vkrender::MakeImageBarrier(
         m_depthImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         rhi::ToVkImageAspectMask(GetDepthFormat()), 0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
@@ -152,6 +155,33 @@ void SceneRenderTarget::InitializeAttachmentLayouts()
                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                          0, 0, nullptr, 0, nullptr, count, barriers.data());
+
+    // Camera stacks may preserve color, and a viewport may paint only part of
+    // the target. Give each new allocation defined pixels before its first use.
+    VkRenderingAttachmentInfo color{};
+    color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    VkRenderingInfo clear{};
+    clear.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    clear.renderArea.extent = {m_width, m_height};
+    clear.layerCount = 1;
+    clear.colorAttachmentCount = 1;
+    clear.pColorAttachments = &color;
+    for (const auto view : {m_colorImageView, m_msaaColorImageView}) {
+        if (view == VK_NULL_HANDLE)
+            continue;
+        color.imageView = view;
+        rendering.begin(command, &clear);
+        rendering.end(command);
+    }
+    const auto sampledColor = vkrender::MakeImageBarrier(
+        m_colorImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &sampledColor);
     m_vkCore->EndSingleTimeCommands(command);
 }
 

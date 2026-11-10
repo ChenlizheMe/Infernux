@@ -184,7 +184,7 @@ void main() { result = snapshot; }
         graph.graphInstanceId = program.graphInstanceId;
         graph.emitters = {program};
         std::string error;
-        if (owner.manager.ApplyGraph(graph, &error))
+        if (resources.PublishParticleGraph(owner.manager, graph, &error))
             return true;
         std::cerr << error << '\n';
         return Require(false, "A valid nonactive-scene skin source could not be published");

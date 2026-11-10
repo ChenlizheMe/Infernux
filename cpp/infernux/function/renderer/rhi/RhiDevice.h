@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <string_view>
 
@@ -18,7 +19,7 @@ namespace infernux::rhi
 /// RHI ABI version. The major component changes whenever a plugin must be
 /// rebuilt; the minor component is for additive contracts understood by the
 /// existing device vtable.
-inline constexpr uint32_t kRhiApiVersionMajor = 2;
+inline constexpr uint32_t kRhiApiVersionMajor = 3;
 inline constexpr uint32_t kRhiApiVersionMinor = 0;
 inline constexpr uint32_t kRhiApiVersion = (kRhiApiVersionMajor << 16u) | kRhiApiVersionMinor;
 
@@ -160,6 +161,17 @@ class Device
     }
 
     [[nodiscard]] virtual BufferHandle CreateBuffer(const BufferDesc &desc) = 0;
+    /// The caller retains every recorded use of a private buffer through its
+    /// submission. Managed allocation can defer with nullopt.
+    [[nodiscard]] virtual std::optional<BufferHandle> CreatePrivateBuffer(const BufferDesc &desc, bool managed)
+    {
+        (void)managed;
+        return CreateBuffer(desc);
+    }
+    /// Hand a private buffer to ordinary resource users and device retirement.
+    virtual void PublishPrivateBuffer(BufferHandle) noexcept
+    {
+    }
     [[nodiscard]] virtual TextureHandle CreateTexture(const TextureDesc &desc) = 0;
     [[nodiscard]] virtual TextureViewHandle CreateTextureView(const TextureViewDesc &desc) = 0;
     [[nodiscard]] virtual SamplerHandle CreateSampler(const SamplerDesc &desc) = 0;

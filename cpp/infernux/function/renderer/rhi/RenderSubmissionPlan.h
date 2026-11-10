@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RenderCoreApi.h"
 #include "RenderViewContext.h"
 #include "RhiSubmission.h"
 #include "RhiTypes.h"
@@ -73,7 +74,7 @@ struct SubmissionPlanStatistics
 
 /// Inspect dependency topology without assuming how a backend maps logical
 /// queue roles onto native queues.
-[[nodiscard]] SubmissionPlanStatistics AnalyzeSubmissionPlan(const SubmissionPlan &plan);
+[[nodiscard]] INFERNUX_RENDER_CORE_API SubmissionPlanStatistics AnalyzeSubmissionPlan(const SubmissionPlan &plan);
 
 /// Result of importing one already-compiled submission plan into a larger
 /// frame plan. Each source batch becomes one indivisible work item so its
@@ -97,16 +98,18 @@ struct ComposedSubmissionRange
 class SubmissionPlanComposer
 {
   public:
-    void Reset(uint32_t firstWorkItemId = 1) noexcept;
+    INFERNUX_RENDER_CORE_API void Reset(uint32_t firstWorkItemId = 1) noexcept;
 
-    [[nodiscard]] uint32_t AddWork(DeviceId device, QueueRole queue, SubmissionDomain domain, RenderViewId view,
-                                   PipelineStage waitStages, std::vector<uint32_t> dependencies = {},
-                                   bool forceBatchBoundary = true, std::string diagnosticName = {});
+    [[nodiscard]] INFERNUX_RENDER_CORE_API uint32_t AddWork(DeviceId device, QueueRole queue, SubmissionDomain domain,
+                                                            RenderViewId view, PipelineStage waitStages,
+                                                            std::vector<uint32_t> dependencies = {},
+                                                            bool forceBatchBoundary = true,
+                                                            std::string diagnosticName = {});
 
-    [[nodiscard]] ComposedSubmissionRange Append(const SubmissionPlan &source,
-                                                 const std::vector<uint32_t> &externalDependencies = {});
+    [[nodiscard]] INFERNUX_RENDER_CORE_API ComposedSubmissionRange
+    Append(const SubmissionPlan &source, const std::vector<uint32_t> &externalDependencies = {});
 
-    [[nodiscard]] bool Build(SubmissionPlan &output, std::string &error) const;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool Build(SubmissionPlan &output, std::string &error) const;
 
     [[nodiscard]] const std::vector<SubmissionWorkItem> &WorkItems() const noexcept
     {
@@ -121,7 +124,7 @@ class SubmissionPlanComposer
 /// Compile topologically ordered work into queue submission batches. The
 /// planner rejects forward, unknown, and implicit cross-device dependencies;
 /// cross-device traffic must be represented by an explicit transfer contract.
-[[nodiscard]] bool BuildSubmissionPlan(const std::vector<SubmissionWorkItem> &workItems, SubmissionPlan &output,
-                                       std::string &error);
+[[nodiscard]] INFERNUX_RENDER_CORE_API bool BuildSubmissionPlan(const std::vector<SubmissionWorkItem> &workItems,
+                                                                SubmissionPlan &output, std::string &error);
 
 } // namespace infernux::rhi

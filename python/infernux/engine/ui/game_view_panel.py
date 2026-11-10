@@ -993,12 +993,12 @@ class GameViewPanel(EditorPanel):
                     elem.get_rect(logical_w, logical_h), scale_x, scale_y,
                 )
             if semantic_capture_enabled:
-                vw, vh = elem.calc_visual_size(ew, eh)
+                vx, vy, vw, vh = elem._rect_geometry_for_size(ew, eh).visual_rect
                 self._record_game_ui_button_semantic(
                     ctx,
                     elem,
-                    vp_x + (ex + (ew - vw) * 0.5) * vp_w / game_w,
-                    vp_y + (ey + (eh - vh) * 0.5) * vp_h / game_h,
+                    vp_x + (ex + vx) * vp_w / game_w,
+                    vp_y + (ey + vy) * vp_h / game_h,
                     vw * vp_w / game_w,
                     vh * vp_h / game_h,
                 )
@@ -1102,11 +1102,13 @@ class GameViewPanel(EditorPanel):
             panel_focused=ClosablePanel.get_active_view_id() == self.window_id,
             cursor_locked=Input.is_cursor_locked(),
         )
+        dispatcher = self._mouse_event_dispatcher
+        pick_scene = route_scene_input and dispatcher.needs_scene_hit()
         mapped_positions = map_runtime_ui_pointer(
             surfaces, camera, game_px, game_py, game_w, game_h,
-            include_scene_hit=route_scene_input,
+            include_scene_hit=pick_scene,
         )
-        if route_scene_input:
+        if pick_scene:
             canvas_positions, scene_hit = mapped_positions
         else:
             canvas_positions, scene_hit = mapped_positions, None
@@ -1130,11 +1132,11 @@ class GameViewPanel(EditorPanel):
         # UI dispatch remains authoritative: blocking screen UI suppresses a
         # hidden 3D query, while Canvas-free world UI and ordinary mouse
         # callbacks consume the one shared physical hit snapshot above.
-        dispatcher = getattr(self, "_mouse_event_dispatcher", None)
-        if dispatcher is None:
-            return
         if not route_scene_input:
             dispatcher.reset()
+            return
+        if not pick_scene:
+            dispatcher.discard()
             return
         dispatcher.process(
             camera, (game_px, game_py), (float(game_w), float(game_h)),

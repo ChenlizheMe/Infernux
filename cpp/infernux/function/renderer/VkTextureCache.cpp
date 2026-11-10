@@ -40,7 +40,7 @@ void VkTextureCache::CreateSolidColorTexture(const std::string &name, uint8_t r,
         if (!rm.TryPublishTextureUpload(ticket))
             throw std::runtime_error("bootstrap RHI texture upload did not complete");
     }
-    (void)Insert(name, ticket->GetTexture(), 0, true, {}, 0);
+    (void)Insert(name, ticket->GetTexture(), 0, true, {}, 0, 0);
 }
 
 // ============================================================================
@@ -50,7 +50,8 @@ void VkTextureCache::CreateSolidColorTexture(const std::string &name, uint8_t r,
 std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::string &key,
                                                                 std::shared_ptr<rhi::TextureResource> texture,
                                                                 uint64_t lastUsedFrame, bool permanentlyPinned,
-                                                                std::string assetGuid, uint64_t runtimeVersion)
+                                                                std::string assetGuid, uint64_t runtimeVersion,
+                                                                uint64_t contentGeneration)
 {
     if (key.empty() || !texture || !texture->IsValid() || texture->GetResidentBytes() == 0)
         throw std::invalid_argument("VkTextureCache requires a valid keyed texture with resident bytes");
@@ -87,13 +88,14 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
             existing->second.lastUsedFrame = lastUsedFrame;
             existing->second.permanentlyPinned = permanentlyPinned;
             existing->second.runtimeVersion = runtimeVersion;
+            existing->second.contentGeneration = contentGeneration;
         } else {
             slot = std::make_shared<rhi::TextureGpuViewSlot>(key);
             std::shared_ptr<const rhi::TextureGpuView> previous;
             if (!slot->TryPublish(publication, &previous) || previous)
                 throw std::logic_error("new GPU texture slot rejected its initial publication");
             m_textures.emplace(key, Entry{slot, residentBytes, lastUsedFrame, permanentlyPinned, std::move(assetGuid),
-                                          runtimeVersion});
+                                          runtimeVersion, contentGeneration});
         }
         m_residentBytes += residentBytes;
         m_latestFrame = (std::max)(m_latestFrame, lastUsedFrame);
@@ -103,7 +105,8 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
 }
 
 std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::FindAsset(const std::string &key, const std::string &assetGuid,
-                                                                   uint64_t runtimeVersion, uint64_t frame)
+                                                                   uint64_t runtimeVersion, uint64_t contentGeneration,
+                                                                   uint64_t frame)
 {
     if (assetGuid.empty() || runtimeVersion == 0)
         throw std::invalid_argument("GPU texture lookup requires a published asset identity");
@@ -111,7 +114,8 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::FindAsset(const std::st
     auto entry = m_textures.find(key);
     if (entry == m_textures.end())
         return {};
-    if (entry->second.assetGuid != assetGuid || entry->second.runtimeVersion != runtimeVersion || !entry->second.slot ||
+    if (entry->second.assetGuid != assetGuid || entry->second.runtimeVersion != runtimeVersion ||
+        entry->second.contentGeneration != contentGeneration || !entry->second.slot ||
         entry->second.slot->NeedsRefresh()) {
         return {};
     }

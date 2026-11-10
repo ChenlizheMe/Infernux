@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 /**
  * @file EngineConfig.h
  * @brief Centralized runtime engine configuration.
@@ -153,7 +155,7 @@ struct EngineConfig
     // Singleton access
     // ========================================================================
 
-    static EngineConfig &Get();
+    INFERNUX_FOUNDATION_API static EngineConfig &Get();
 
   private:
     EngineConfig() = default;

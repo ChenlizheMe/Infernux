@@ -238,7 +238,7 @@ class EditorTools
     // Shared across all modes: X/Y/Z per-axis vertex & index arrays.
     // The builders fill these; GetDrawCalls applies mode-appropriate rotations.
     bool m_meshesBuilt = false;
-    bool m_meshDirty = false; // Set after highlight change to force GPU re-upload
+    uint64_t m_meshRevision = 0;
     // X-axis handle
     std::vector<Vertex> m_arrowXVerts;
     std::vector<uint32_t> m_arrowXInds;

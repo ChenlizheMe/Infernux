@@ -51,6 +51,38 @@ class UICanvas(InxUIComponent):
     """
 
     render_mode: RenderMode = serialized_field(default=RenderMode.ScreenOverlay)
+
+    def rebuild_layout(self, canvas_width=None, canvas_height=None):
+        """Publish this canvas's resolved layout into native rectangle channels."""
+        from ._layout_driver import rebuild_canvas
+        return rebuild_canvas(self, canvas_width, canvas_height, force=True)
+
+    def _prepare_native_layout(self, measure_text, width, height, text_scale):
+        from ._layout_driver import rebuild_canvas, release_layout
+        from .ui_frame import UIFrame
+        from .enums import UILayoutDirection
+        if not self.enabled or not self.game_object.active_in_hierarchy:
+            return release_layout(self)
+        elements = self._get_elements()
+        if self.__dict__.get('_layout_frame_members') is not elements:
+            self._layout_frames = tuple(element for element in elements if isinstance(element, UIFrame))
+            self._layout_rect_member = next((element for element in elements
+                                             if '_native_rect_layout' in element.__dict__), None)
+            self._layout_frame_members = elements
+        member = self.__dict__.get('_layout_rect_member')
+        if member is not None and '_native_rect_layout' not in member.__dict__:
+            # Preview can remove a temporary rectangle without changing ancestry.
+            member = next((element for element in elements if '_native_rect_layout' in element.__dict__), None)
+            self._layout_rect_member = member
+        if member is None:
+            if not any(frame.layout_direction != UILayoutDirection.None_ for frame in self._layout_frames):
+                return False
+        return rebuild_canvas(self, width, height, measure_text=measure_text, text_scale=text_scale)
+
+    def on_disable(self):
+        from ._layout_driver import release_layout
+        release_layout(self)
+
     sort_order: int = int_field(0, range=(-1000, 1000), tooltip="Render order (lower = earlier)")
     target_camera: GameObjectRef = serialized_field(
         default=None,
@@ -109,6 +141,10 @@ class UICanvas(InxUIComponent):
 
     def _set_game_object(self, game_object):
         super()._set_game_object(game_object)
+        from ._rect_transform import _bind_canvas
+        # Canvas is a native layout boundary even before its first child binds.
+        # Reparenting an existing rectangle must resolve this frame immediately.
+        _bind_canvas(self)
         # Rebinding the same owner after a Scene move changes world membership.
         # Publish at that lifecycle boundary, not through per-frame polling.
         self._publish_canvas_membership_change()
@@ -121,6 +157,8 @@ class UICanvas(InxUIComponent):
 
     def _call_on_destroy(self):
         was_bound = self.__dict__.get("_game_object") is not None
+        from ._layout_driver import release_layout
+        release_layout(self)
         super()._call_on_destroy()
         if was_bound:
             self._publish_canvas_membership_change()
@@ -129,6 +167,11 @@ class UICanvas(InxUIComponent):
         unchanged = is_unchanged_ui_value(self, name, value)
         super().__setattr__(name, value)
         if not name.startswith("_") and not unchanged:
+            if name in ('reference_width', 'reference_height'):
+                owner = self._try_get_game_object()
+                if owner is not None and owner.transform._has_rect_layout:
+                    from ._rect_transform import _bind_canvas
+                    _bind_canvas(self)
             mark_runtime_ui_dirty()
             if name == "sort_order":
                 self._publish_canvas_membership_change()

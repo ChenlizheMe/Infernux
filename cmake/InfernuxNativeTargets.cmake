@@ -17,15 +17,13 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
     set(_infernux_vulkan_loader ${INFERNUX_VULKAN_LOADER_TARGET})
 endif()
 
-# The Windows composition layer is always a private archive: its internal C++
-# surface is larger than the PE export-table limit and is not a public DLL ABI.
-# ELF development builds may still share it so native test processes reuse the
-# runtime image; shipping builds link it privately for LTO/dead stripping.
-if(INFERNUX_RUNTIME_STATIC)
-    add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
-else()
-    add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
-endif()
+# The composition layer is private to its final executable or extension.
+add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
+set_target_properties(InfernuxRuntime PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
 
 if(INFERNUX_USE_TARGET_PYTHON)
     add_library(_Infernux MODULE ${BINDING_SOURCES})
@@ -42,8 +40,6 @@ else()
     pybind11_add_module(_InfernuxBootstrap MODULE NO_EXTRAS ${INFERNUX_BOOTSTRAP_BINDING_SOURCE})
 endif()
 
-# Shared subsystem boundaries still predate explicit visibility annotations.
-# The composition library is private to the Python module in shipping builds.
 set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
     InfernuxAudioRuntime
@@ -54,30 +50,6 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxRendererRuntime
     InfernuxVulkanBackend
 )
-if(NOT INFERNUX_RUNTIME_STATIC)
-    list(APPEND INFERNUX_RUNTIME_DLL_TARGETS InfernuxRuntime)
-endif()
-# AssetRuntime has a deliberately annotated ABI. Existing subsystem DLLs are
-# kept on their current export policy until each boundary is annotated in turn.
-set(_infernux_legacy_auto_export_dlls
-    InfernuxFoundation
-    InfernuxAudioRuntime
-    InfernuxParticleRuntime
-    InfernuxShaderCompiler
-    InfernuxRenderCore
-    InfernuxRendererRuntime
-    InfernuxVulkanBackend
-)
-if(NOT INFERNUX_RUNTIME_STATIC)
-    list(APPEND _infernux_legacy_auto_export_dlls InfernuxRuntime)
-endif()
-foreach(_infernux_dll ${_infernux_legacy_auto_export_dlls})
-    set_target_properties(${_infernux_dll} PROPERTIES
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
-        CXX_VISIBILITY_PRESET default
-        VISIBILITY_INLINES_HIDDEN OFF
-    )
-endforeach()
 
 set(INFERNUX_NATIVE_TARGETS
     InfernuxFoundation
@@ -101,7 +73,7 @@ foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     )
 endforeach()
 if(INFERNUX_VULKAN_LOADER_TARGET)
-    foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
+    foreach(_infernux_target IN ITEMS InfernuxVulkanBackend InfernuxRuntime _Infernux)
         target_compile_definitions(${_infernux_target} PRIVATE
             VK_NO_PROTOTYPES=1
             INFERNUX_USE_VOLK=1
@@ -117,17 +89,43 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
     endforeach()
 endif()
 
-target_link_libraries(InfernuxFoundation PRIVATE infernux_utf8proc)
+target_link_libraries(InfernuxFoundation PRIVATE infernux_utf8proc ${CMAKE_DL_LIBS})
+target_compile_definitions(InfernuxFoundation
+    PRIVATE INFERNUX_FOUNDATION_EXPORTS=1
+    INTERFACE "$<$<PLATFORM_ID:Windows>:INFERNUX_FOUNDATION_IMPORTS=1>"
+)
 
 target_link_libraries(InfernuxAudioRuntime PUBLIC InfernuxFoundation SDL3::SDL3)
 target_link_libraries(InfernuxAudioRuntime PRIVATE dr_libs)
+target_compile_definitions(InfernuxAudioRuntime PRIVATE INFERNUX_AUDIO_RUNTIME_EXPORTS=1)
 target_link_libraries(InfernuxAssetRuntime PUBLIC InfernuxFoundation)
 target_compile_definitions(InfernuxAssetRuntime PRIVATE INFERNUX_ASSET_RUNTIME_EXPORTS=1)
 target_link_libraries(InfernuxParticleRuntime PUBLIC InfernuxFoundation)
-target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation)
+target_compile_definitions(InfernuxParticleRuntime PRIVATE INFERNUX_PARTICLE_RUNTIME_EXPORTS=1)
+target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation Vulkan::Headers)
+target_compile_definitions(InfernuxShaderCompiler PRIVATE INFERNUX_SHADER_COMPILER_EXPORTS=1)
 target_link_libraries(InfernuxRenderCore PUBLIC InfernuxFoundation)
+target_compile_definitions(InfernuxRenderCore PRIVATE INFERNUX_RENDER_CORE_EXPORTS=1)
 target_link_libraries(InfernuxRendererRuntime PUBLIC InfernuxFoundation)
+target_compile_definitions(InfernuxRendererRuntime PRIVATE INFERNUX_RENDERER_RUNTIME_EXPORTS=1)
+set_target_properties(
+    InfernuxFoundation InfernuxAssetRuntime
+    InfernuxAudioRuntime InfernuxParticleRuntime InfernuxShaderCompiler
+    InfernuxRenderCore InfernuxRendererRuntime InfernuxVulkanBackend
+    PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+set_target_properties(InfernuxAudioRuntime PROPERTIES C_VISIBILITY_PRESET hidden)
+if(UNIX AND NOT APPLE)
+    # Keep linked archives local to the module or library that owns them.
+    foreach(_infernux_target IN ITEMS InfernuxFoundation InfernuxShaderCompiler _Infernux)
+        target_link_options(${_infernux_target} PRIVATE "LINKER:--exclude-libs,ALL")
+    endforeach()
+endif()
 target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxRenderCore)
+target_compile_definitions(InfernuxVulkanBackend PRIVATE INFERNUX_VULKAN_BACKEND_EXPORTS=1)
 target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxFoundation
     InfernuxAudioRuntime
@@ -139,7 +137,7 @@ target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxVulkanBackend
 )
 target_include_directories(InfernuxRuntime PRIVATE "${CMAKE_SOURCE_DIR}/external/MikkTSpace")
-target_link_libraries(InfernuxRuntime PRIVATE lunasvg::lunasvg)
+target_link_libraries(InfernuxRuntime PRIVATE lunasvg::lunasvg stb)
 if(INFERNUX_USE_TARGET_PYTHON)
     target_link_libraries(InfernuxRuntime PRIVATE pybind11::headers InfernuxTargetPython)
 else()
@@ -190,6 +188,13 @@ if(INFERNUX_RELEASE_LTO)
         set_property(TARGET _Infernux PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         set_property(TARGET _InfernuxBootstrap PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         set_property(TARGET InfernuxRuntime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+            # Incremental LTCG reused an inlined pre-change class layout after
+            # all source objects had been rebuilt. Use full LTO for final modules.
+            foreach(_infernux_module _Infernux _InfernuxBootstrap)
+                target_link_options(${_infernux_module} PRIVATE "$<$<CONFIG:Release>:/LTCG>")
+            endforeach()
+        endif()
         if(WIN32)
             # Auto-exported subsystem DLLs cannot consume MSVC /GL objects.
             foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
@@ -282,46 +287,29 @@ target_link_libraries(InfernuxRuntime PUBLIC
     SDL3::SDL3
     glm::glm
     imgui
-    stb
     dr_libs
     ${_infernux_vulkan_loader}
     Jolt
     GPUOpen::VulkanMemoryAllocator
 )
-target_link_libraries(InfernuxFoundation PUBLIC
-    glm::glm
-    stb
-    ${_infernux_vulkan_loader}
-)
+# The screenshot encoder uses the same deflate library as the mesh importer.
+if(TARGET zlibstatic)
+    target_link_libraries(InfernuxRuntime PRIVATE zlibstatic)
+    target_include_directories(InfernuxRuntime PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
+else()
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(InfernuxRuntime PRIVATE ZLIB::ZLIB)
+endif()
+target_link_libraries(InfernuxFoundation PUBLIC glm::glm)
 target_link_libraries(InfernuxRenderCore PUBLIC glm::glm)
 target_link_libraries(InfernuxRendererRuntime PUBLIC glm::glm)
 target_link_libraries(InfernuxParticleRuntime PUBLIC glm::glm)
-target_link_libraries(InfernuxShaderCompiler PUBLIC ${_infernux_vulkan_loader})
 target_link_libraries(InfernuxVulkanBackend PUBLIC
     SDL3::SDL3
     glm::glm
     ${_infernux_vulkan_loader}
     GPUOpen::VulkanMemoryAllocator
 )
-
-find_package(ZLIB QUIET)
-if(TARGET zlibstatic)
-    set(INFERNUX_ZLIB_TARGET zlibstatic)
-    set(INFERNUX_ZLIB_INCLUDE_DIRS
-        ${CMAKE_SOURCE_DIR}/external/assimp/contrib/zlib
-        ${CMAKE_BINARY_DIR}/external/assimp/contrib/zlib
-    )
-elseif(TARGET ZLIB::ZLIB)
-    set(INFERNUX_ZLIB_TARGET ZLIB::ZLIB)
-elseif(TARGET ZLIB::zlib)
-    set(INFERNUX_ZLIB_TARGET ZLIB::zlib)
-else()
-    message(FATAL_ERROR "Infernux requires a zlib target for document transaction journals")
-endif()
-target_link_libraries(InfernuxFoundation PRIVATE ${INFERNUX_ZLIB_TARGET})
-if(INFERNUX_ZLIB_INCLUDE_DIRS)
-    target_include_directories(InfernuxFoundation PRIVATE ${INFERNUX_ZLIB_INCLUDE_DIRS})
-endif()
 
 if(NOT INFERNUX_ZSTD_TARGET)
     message(FATAL_ERROR

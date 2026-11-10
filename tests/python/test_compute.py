@@ -10,6 +10,206 @@ import infernux as inx
 from infernux import _jit_kernels as kernels
 
 
+def _compute_frontend(native, host=None):
+    from infernux.engine.engine import Engine
+    from infernux.lib import _Infernux
+    engine = Engine.__new__(Engine)
+    engine._engine = native
+    engine._mode = inx.lib.RuntimeMode.Headless
+    engine._frame_work = _Infernux._FrameWorkOwner()
+    engine._cpu_work_owner = None
+    engine._cpu_range_tasks = set()
+    engine._cpu_range_accepting = True
+    if host is not None:
+        engine._infernux_compute_host = host
+    return engine
+
+
+class _ComputeReadback:
+    def __init__(self, source, offset, size):
+        self.source, self.offset, self.size = source, offset, size
+        self.submission_serial = self.source_write_serial = 0
+        self.source_write_submission = (0, 0, 0)
+        self.payload = None
+        self.cancelled = False
+        self.maps = 0
+
+    @property
+    def done(self):
+        return self.submission_serial != 0
+
+    @property
+    def storage_blocks(self):
+        if self.cancelled or self.maps:
+            return ()
+        if self.submission_serial:
+            return ((id(self), 1, self.size),)
+        return getattr(self.source, "storage_blocks", ())
+
+    def capture(self, serial):
+        self.submission_serial = serial
+        self.source_write_serial = getattr(self.source, "last_write_serial", 0)
+        self.source_write_submission = self.source.last_write_submission
+        self.payload = self.source.payload[self.offset:self.offset + self.size]
+        self.source = None
+
+    def cancel(self):
+        if self.cancelled or (self.submission_serial and self.payload is None):
+            return False
+        self.cancelled = True
+        self.source = self.payload = None
+        return True
+
+    def get_bytes(self):
+        assert self.submission_serial and not self.cancelled and self.payload is not None
+        self.maps += 1
+        payload, self.payload = self.payload, None
+        return payload
+
+    def copy_into(self, destination):
+        payload = self.get_bytes()
+        np.copyto(destination.reshape(-1), np.frombuffer(payload, dtype=destination.dtype), casting="no")
+
+
+class _ComputeCompletion:
+    """An explicit ticket-state double, independent of the batch and host."""
+
+    def __init__(self, serial):
+        self.submission_serial = serial
+        self.done = False
+        self.wait_calls = 0
+        self.device_elapsed_ns = None
+
+    def wait(self):
+        self.wait_calls += 1
+        self.done = True
+
+
+class _PreparedComputeBatch:
+    """Native admission stand-in; only accepted uploads publish their serial."""
+
+    def __init__(self, host, dispatches, updates, reads=(), copies=()):
+        self.host = host
+        self.dispatches = tuple(dispatches)
+        self.updates = tuple(updates)
+        self.reads = tuple(reads)
+        self.copies = tuple(copies)
+        self.results = [_ComputeReadback(source, offset, size) for source, offset, size in reads]
+        self.submission_serial = 0
+        self.cancelled = False
+        self._payload_released = False
+        self._accepted_transfer_bytes = 0
+
+    requires_preparation = False
+    preparation_bytes = 0
+    has_preservation_work = False
+
+    def prepare_preservation(self, max_bytes, managed):
+        assert max_bytes > 0
+        return True, None
+
+    @property
+    def has_work(self):
+        return not self.submission_serial and not self.cancelled and bool(
+            self.dispatches or self.updates or self.copies or any(not result.cancelled for result in self.results))
+
+    @property
+    def storage_blocks(self):
+        buffers = [value for value, _, _ in self.updates]
+        buffers.extend(value for dispatch in self.dispatches if len(dispatch) > 2 for value in dispatch[1])
+        buffers.extend(value for source, target, *_ in self.copies for value in (source, target))
+        return (*[block for value in buffers for block in getattr(value, "storage_blocks", ())],
+                *[block for read in self.results for block in read.storage_blocks])
+
+    @property
+    def payload_bytes(self):
+        if self._payload_released or self.cancelled:
+            return 0
+        return sum(len(payload) for _, payload, _ in self.updates) + sum(
+            len(dispatch[3]) for dispatch in self.dispatches if len(dispatch) > 3)
+
+    @property
+    def execution_signature(self):
+        return (len(self.updates), len(self.copies), len(self.results),
+                *(str(dispatch[0]) for dispatch in self.dispatches))
+
+    @property
+    def transfer_bytes(self):
+        if self.submission_serial:
+            return self._accepted_transfer_bytes
+        if self.cancelled:
+            return 0
+        return sum(len(payload) for _, payload, _ in self.updates) + sum(
+            size for _, _, _, _, size in self.copies) + sum(read.size for read in self.results if not read.cancelled)
+
+    @property
+    def pending_staging_bytes(self):
+        if self.submission_serial:
+            return 0
+        return sum(read.size for read in self.results if not read.cancelled)
+
+    def readback(self, index):
+        return self.results[index]
+
+    def has_pending_write(self, buffer):
+        return self.has_work and (
+            any(value is buffer for value, _, _ in self.updates) or
+            any(target is buffer for _, target, *_ in self.copies) or
+            any(value is buffer and access in ("write", "read_write")
+                for _, buffers, accesses, *_ in self.dispatches
+                for value, access in zip(buffers, accesses))
+        )
+
+    def completion(self):
+        if not self.submission_serial:
+            raise RuntimeError("batch has not been accepted")
+        return _ComputeCompletion(self.submission_serial)
+
+    def cancel(self):
+        if self.submission_serial or self.cancelled:
+            return False
+        self.cancelled = True
+        self.dispatches = self.updates = self.reads = self.copies = ()
+        for result in self.results:
+            result.cancel()
+        return True
+
+    def submit(self):
+        assert self.has_work
+        try:
+            self.submission_serial = self.host.accept_batch(self)
+            self._payload_released = bool(self.submission_serial)
+            return self.submission_serial
+        finally:
+            if self.submission_serial:
+                self._accepted_transfer_bytes = (sum(len(payload) for _, payload, _ in self.updates)
+                    + sum(size for _, _, _, _, size in self.copies)
+                    + sum(read.size for read in self.results if not read.cancelled))
+                for native, _, _ in self.updates:
+                    if hasattr(native, "last_write_serial"):
+                        native.last_write_serial = self.submission_serial
+                for native, payload, offset in self.updates:
+                    if hasattr(native, "initialized"):
+                        native.initialized[offset:offset + len(payload)] = b"\1" * len(payload)
+                for dispatch in self.dispatches:
+                    if len(dispatch) == 8 and dispatch[7] is not None:
+                        for binding, offset, size in dispatch[7][1]:
+                            native = dispatch[1][binding]
+                            if hasattr(native, "initialized"):
+                                native.initialized[offset:offset + size] = b"\1" * size
+                for source, target, first, offset, size in self.copies:
+                    target.payload = target.payload[:offset] + source.payload[first:first + size] + target.payload[offset + size:]
+                    target.last_write_serial = self.submission_serial
+                    if hasattr(target, "initialized"):
+                        target.initialized[offset:offset + size] = b"\1" * size
+                for result in self.results:
+                    if not result.cancelled:
+                        result.capture(self.submission_serial)
+
+    def try_submit(self):
+        return self.submit()
+
+
 def test_web_cpu_cook_vectorizes_scalar_range_and_atomic_reductions(monkeypatch):
     from infernux.engine.build.compute_cpu import build_cpu_compute_source
 
@@ -640,6 +840,13 @@ def test_readback_cancel_abandons_without_polling_or_fetching():
     from infernux.compute import Readback
 
     class Pending:
+        cancelled = False
+        submission_serial = 0
+
+        def cancel(self):
+            self.cancelled = True
+            return True
+
         @property
         def done(self):
             pytest.fail("cancel must not poll the GPU")
@@ -664,6 +871,13 @@ def test_engine_resource_release_cancels_unconsumed_native_readbacks():
     from infernux.compute import Readback
 
     class Pending:
+        cancelled = False
+        submission_serial = 0
+
+        def cancel(self):
+            self.cancelled = True
+            return True
+
         @property
         def done(self):
             pytest.fail("engine teardown must not poll the GPU")
@@ -689,13 +903,20 @@ def test_native_readback_abandonment_and_source_release_preserve_gpu_data(engine
     for _ in range(12):
         source = host.create_buffer(1024, "int32")
         source.set_bytes(expected)
-        abandoned = source.get_bytes_async(len(expected))
+        packet = host.prepare_batch([], [], [(source, 0, len(expected))])
+        assert not packet.has_pending_write(source)
+        abandoned = packet.readback(0)
+        packet.submit()
+        del packet
         before = host.get_statistics()
         del abandoned
         after = host.get_statistics()
         assert after["wait_count"] == before["wait_count"]
         assert after["host_map_count"] == before["host_map_count"]
-        retained = source.get_bytes_async(len(expected))
+        packet = host.prepare_batch([], [], [(source, 0, len(expected))])
+        retained = packet.readback(0)
+        packet.submit()
+        del packet
         del source
         assert retained.get_bytes() == expected
         del retained
@@ -722,6 +943,12 @@ def test_buffer_gpu_uses_engine_owned_storage_and_never_indexes(monkeypatch):
     from infernux.application import Application
 
     class NativeBuffer:
+        last_write_serial = 0
+
+        @property
+        def last_write_submission(self):
+            return 11, 1, self.last_write_serial
+
         def __init__(self, byte_size):
             self.payload = bytes(byte_size)
             self.resource_index = 7
@@ -735,6 +962,10 @@ def test_buffer_gpu_uses_engine_owned_storage_and_never_indexes(monkeypatch):
         def get_bytes(self, byte_size, offset=0):
             return self.payload[offset : offset + byte_size]
 
+        @property
+        def storage_blocks(self):
+            return ((self.resource_index, self.resource_generation, len(self.payload)),)
+
     class Host:
         def __init__(self):
             self.created = []
@@ -747,17 +978,22 @@ def test_buffer_gpu_uses_engine_owned_storage_and_never_indexes(monkeypatch):
             self.created.append(result)
             return result
 
-        def dispatch_batch_and_read(self, dispatches, updates, reads):
-            assert dispatches == [] and updates == []
-            return [native.payload[offset : offset + byte_size] for native, offset, byte_size in reads]
+        def prepare_batch(self, dispatches, updates, reads=(), copies=()):
+            return _PreparedComputeBatch(self, dispatches, updates, reads, copies)
+
+        def accept_batch(self, batch):
+            assert batch.dispatches == ()
+            for native, payload, offset in batch.updates:
+                native.set_bytes(payload, offset)
+            return 1
 
     host = Host()
     acquisitions = []
     native = SimpleNamespace(
-        has_renderer=True,
+        has_gpu_compute=True,
         _acquire_compute_host=lambda: acquisitions.append(host) or host,
     )
-    frontend = SimpleNamespace(get_native_engine=lambda: native)
+    frontend = _compute_frontend(native)
     monkeypatch.setattr(Application, "_current_engine", staticmethod(lambda: frontend))
 
     values = inx.buffer(shape=4, dtype=np.float32, device="gpu", data=[1, 2, 3, 4])
@@ -799,12 +1035,18 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
         def set_bytes(self, value, offset=0):
             pass
 
-    host = SimpleNamespace(identity=12, create_buffer=lambda *args: NativeBuffer())
-    native = SimpleNamespace(has_renderer=True, _acquire_compute_host=lambda: host)
+    host = SimpleNamespace(
+        identity=12, create_buffer=lambda *args: NativeBuffer(),
+        prepare_batch=lambda dispatches, updates, reads=(), copies=(): _PreparedComputeBatch(host, dispatches, updates, reads, copies),
+        accept_batch=lambda batch: 1,
+        _release_lease=lambda: None,
+    )
+    native = SimpleNamespace(has_gpu_compute=True, _acquire_compute_host=lambda: host)
+    frontend = _compute_frontend(native)
     monkeypatch.setattr(
         Application,
         "_current_engine",
-        staticmethod(lambda: SimpleNamespace(get_native_engine=lambda: native)),
+        staticmethod(lambda: frontend),
     )
     values = inx.buffer(shape=4, device="gpu")
 
@@ -828,6 +1070,7 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
 
 
 def test_gpu_kernel_specializations_are_bounded_and_retire_lru(monkeypatch):
+    from infernux._compiler import gpu_artifact
     from infernux._compiler.taichi import frontend
 
     class Host:
@@ -849,8 +1092,8 @@ def test_gpu_kernel_specializations_are_bounded_and_retire_lru(monkeypatch):
 
     monkeypatch.setattr(inx.compute, "Buffer", CompilerBuffer)
     monkeypatch.setattr(inx.compute, "_KernelExecutable", Executable)
-    monkeypatch.setattr(frontend, "parameter_key", lambda params: params[1])
-    monkeypatch.setattr(frontend, "compile_kernel", lambda _fn, _params: object())
+    monkeypatch.setattr(gpu_artifact, "parameter_key", lambda params: params[1])
+    monkeypatch.setattr(frontend, "compile_kernel", lambda _fn, _params, **_request: object())
 
     declaration = inx.compute.Kernel(lambda *_params: None)
     first = declaration._executable((CompilerBuffer(), (0,)))
@@ -859,7 +1102,7 @@ def test_gpu_kernel_specializations_are_bounded_and_retire_lru(monkeypatch):
 
     assert len(declaration._executables) == 64
     assert first.closed
-    assert (31, (0,)) not in declaration._executables
+    assert (31, (0,), "none", ()) not in declaration._executables
 
 
 def test_engine_phase_records_launches_into_one_host_submission():
@@ -868,8 +1111,12 @@ def test_engine_phase_records_launches_into_one_host_submission():
     class Host:
         identity = 17
 
-        def dispatch_batch(self, dispatches, updates):
-            submissions.append((tuple(dispatches), tuple(updates)))
+        def prepare_batch(self, dispatches, updates, reads=(), copies=()):
+            return _PreparedComputeBatch(self, dispatches, updates, reads, copies)
+
+        def accept_batch(self, batch):
+            submissions.append((batch.dispatches, batch.updates))
+            return 1
 
     host = Host()
 
@@ -878,7 +1125,7 @@ def test_engine_phase_records_launches_into_one_host_submission():
             self.host = host
             self.sequence = 0
 
-        def prepare(self, params):
+        def prepare(self, params, *, gradients=None):
             self.sequence += 1
             native = object()
             return [(native, bytes([self.sequence]), 0)], [(f"dispatch-{self.sequence}", params)]
@@ -904,8 +1151,12 @@ def test_public_recording_scope_batches_ordered_launches():
     class Host:
         identity = 18
 
-        def dispatch_batch(self, dispatches, updates):
-            submissions.append((tuple(dispatches), tuple(updates)))
+        def prepare_batch(self, dispatches, updates, reads=(), copies=()):
+            return _PreparedComputeBatch(self, dispatches, updates, reads, copies)
+
+        def accept_batch(self, batch):
+            submissions.append((batch.dispatches, batch.updates))
+            return 1
 
     host = Host()
 
@@ -914,7 +1165,7 @@ def test_public_recording_scope_batches_ordered_launches():
             self.host = host
             self.sequence = 0
 
-        def prepare(self, params):
+        def prepare(self, params, *, gradients=None):
             self.sequence += 1
             native = object()
             return [(native, bytes([self.sequence]), 0)], [(f"dispatch-{self.sequence}", params)]
@@ -939,14 +1190,18 @@ def test_explicit_readback_joins_pending_compute_submission():
     submissions = []
 
     class NativeBuffer:
-        pass
+        payload = np.array([7.0, 8.0], np.float32).tobytes()
+        last_write_submission = (0, 0, 0)
 
     class Host:
         identity = 19
 
-        def dispatch_batch_and_read(self, dispatches, updates, reads):
-            submissions.append((tuple(dispatches), tuple(updates), tuple(reads)))
-            return [np.array([7.0, 8.0], np.float32).tobytes()]
+        def prepare_batch(self, dispatches, updates, reads=(), copies=()):
+            return _PreparedComputeBatch(self, dispatches, updates, reads, copies)
+
+        def accept_batch(self, batch):
+            submissions.append((batch.dispatches, batch.updates, batch.reads))
+            return 1
 
     host = Host()
 
@@ -954,7 +1209,7 @@ def test_explicit_readback_joins_pending_compute_submission():
         def __init__(self):
             self.host = host
 
-        def prepare(self, params):
+        def prepare(self, params, *, gradients=None):
             return [(NativeBuffer(), b"input", 0)], [("kernel", params)]
 
     declaration = inx.compute.Kernel(lambda value: None)

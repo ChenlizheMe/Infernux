@@ -1,5 +1,6 @@
 #pragma once
 
+#include <function/renderer/rhi/RenderCoreApi.h>
 #include <function/renderer/rhi/RhiCommand.h>
 
 #include <cstdint>
@@ -63,12 +64,12 @@ struct FullscreenPipelineKey
     uint32_t depthInputMask = 0;
     bool useDynamicRendering = false;
 
-    bool operator==(const FullscreenPipelineKey &other) const noexcept;
+    INFERNUX_RENDER_CORE_API bool operator==(const FullscreenPipelineKey &other) const noexcept;
 };
 
 struct FullscreenPipelineKeyHash
 {
-    size_t operator()(const FullscreenPipelineKey &key) const noexcept;
+    INFERNUX_RENDER_CORE_API size_t operator()(const FullscreenPipelineKey &key) const noexcept;
 };
 
 struct FullscreenPipelineEntry
@@ -85,6 +86,7 @@ struct FullscreenResourceInput
     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
     bool depthRead = false;
     rhi::BufferHandle buffer;
+    uint64_t byteOffset = 0;
     uint64_t byteSize = 0;
     rhi::SamplerHandle sampler;
 };
@@ -96,14 +98,15 @@ struct FullscreenResourceInput
 class FullscreenPipelineCache
 {
   public:
-    explicit FullscreenPipelineCache(std::shared_ptr<FullscreenRendererHost> host, size_t capacity = 64);
-    ~FullscreenPipelineCache();
+    INFERNUX_RENDER_CORE_API explicit FullscreenPipelineCache(std::shared_ptr<FullscreenRendererHost> host,
+                                                              size_t capacity = 64);
+    INFERNUX_RENDER_CORE_API ~FullscreenPipelineCache();
     FullscreenPipelineCache(const FullscreenPipelineCache &) = delete;
     FullscreenPipelineCache &operator=(const FullscreenPipelineCache &) = delete;
 
-    const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
-    void InvalidateShader(const std::string &shaderName);
-    [[nodiscard]] rhi::Device &GetDevice() const noexcept;
+    INFERNUX_RENDER_CORE_API const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
+    INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
+    [[nodiscard]] INFERNUX_RENDER_CORE_API rhi::Device &GetDevice() const noexcept;
 
   private:
     struct Impl;
@@ -113,33 +116,36 @@ class FullscreenPipelineCache
 class FullscreenRenderer
 {
   public:
-    FullscreenRenderer();
-    ~FullscreenRenderer();
+    INFERNUX_RENDER_CORE_API FullscreenRenderer();
+    INFERNUX_RENDER_CORE_API ~FullscreenRenderer();
 
     FullscreenRenderer(const FullscreenRenderer &) = delete;
     FullscreenRenderer &operator=(const FullscreenRenderer &) = delete;
 
-    void Initialize(std::shared_ptr<FullscreenRendererHost> host,
-                    std::shared_ptr<FullscreenPipelineCache> pipelines = {});
+    INFERNUX_RENDER_CORE_API void Initialize(std::shared_ptr<FullscreenRendererHost> host,
+                                             std::shared_ptr<FullscreenPipelineCache> pipelines = {});
     void Initialize(InxVkCoreModular *vkCore);
-    void Destroy();
+    INFERNUX_RENDER_CORE_API void Destroy();
 
-    const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
+    INFERNUX_RENDER_CORE_API const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
 
     /// Retire every cached pipeline compiled from @p shaderName. The next
     /// record resolves the newly published module and builds a fresh pipeline.
-    void InvalidateShader(const std::string &shaderName);
+    INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
 
-    rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const FullscreenResourceInput *inputs,
-                                           uint32_t inputCount, rhi::SamplerHandle colorSampler);
+    INFERNUX_RENDER_CORE_API rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout,
+                                                                    const FullscreenResourceInput *inputs,
+                                                                    uint32_t inputCount,
+                                                                    rhi::SamplerHandle colorSampler);
 
-    void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-              rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup, rhi::BindGroupHandle globalsGroup,
-              const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize);
+    INFERNUX_RENDER_CORE_API void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
+                                       rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
+                                       rhi::BindGroupHandle globalsGroup, const FullscreenPushConstants &pushConstants,
+                                       uint32_t pushConstantSize);
 
-    void ResetPool();
+    INFERNUX_RENDER_CORE_API void ResetPool();
 
-    [[nodiscard]] rhi::SamplerHandle GetLinearSampler() const noexcept;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API rhi::SamplerHandle GetLinearSampler() const noexcept;
 
   private:
     struct Impl;

@@ -329,6 +329,7 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
             buffer.binding = i;
             buffer.type = rhi::BindingType::StorageBuffer;
             buffer.buffer = input.buffer;
+            buffer.offset = input.byteOffset;
             buffer.byteSize = input.byteSize;
             continue;
         }

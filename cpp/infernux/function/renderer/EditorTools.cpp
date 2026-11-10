@@ -474,7 +474,7 @@ void EditorTools::RebuildActiveMeshes()
         m_meshesBuilt = true;
         break;
     }
-    m_meshDirty = true;
+    ++m_meshRevision;
 }
 
 // ============================================================================
@@ -717,8 +717,6 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         const float distance = glm::length(cameraPos - center);
         const float thickness = std::max(distance * 0.0036f * m_handleSize, 0.008f);
         const float cornerSize = thickness * 2.4f;
-        const bool dirty = m_meshDirty;
-        m_meshDirty = false;
 
         const std::array<glm::vec3, 8> offsets = {
             -axisX * halfWidth,
@@ -756,7 +754,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
             dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
             dc.meshVertices = &m_rectHandleVerts[i];
             dc.meshIndices = &m_rectHandleInds[i];
-            dc.forceBufferUpdate = dirty;
+            dc.meshRuntimeVersion = m_meshRevision;
             result.drawCalls.push_back(dc);
 
             if (i < 4) {
@@ -767,13 +765,12 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
                     glm::translate(glm::mat4(1.0f), center + offsets[i] + axisZ * thickness * 0.68f) * orientation *
                     glm::scale(glm::mat4(1.0f), glm::vec3(cornerSize * 0.82f));
                 midpoint.material = material;
-                midpoint.objectId = objectIds[i];
+                midpoint.objectId = EDITOR_TOOL_BASE_ID | (40 + i);
                 midpoint.identity =
-                    RenderProxyHandle::Synthetic(RenderDomain::EditorTool, EDITOR_TOOL_BASE_ID | (40 + i))
-                        .MakeDrawIdentity();
+                    RenderProxyHandle::Synthetic(RenderDomain::EditorTool, midpoint.objectId).MakeDrawIdentity();
                 midpoint.meshVertices = &m_rectMidpointVerts[i];
                 midpoint.meshIndices = &m_rectMidpointInds[i];
-                midpoint.forceBufferUpdate = dirty;
+                midpoint.meshRuntimeVersion = m_meshRevision;
                 result.drawCalls.push_back(midpoint);
             }
         }
@@ -825,9 +822,6 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         zRotation = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     }
 
-    const bool dirty = m_meshDirty;
-    m_meshDirty = false;
-
     // X-axis draw call
     {
         DrawCall dc;
@@ -839,7 +833,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_arrowXVerts;
         dc.meshIndices = &m_arrowXInds;
-        dc.forceBufferUpdate = dirty;
+        dc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(dc);
     }
 
@@ -854,7 +848,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_arrowYVerts;
         dc.meshIndices = &m_arrowYInds;
-        dc.forceBufferUpdate = dirty;
+        dc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(dc);
     }
 
@@ -869,7 +863,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_arrowZVerts;
         dc.meshIndices = &m_arrowZInds;
-        dc.forceBufferUpdate = dirty;
+        dc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(dc);
     }
 
@@ -883,7 +877,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         xyDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, xyDc.objectId).MakeDrawIdentity();
         xyDc.meshVertices = &m_planeXYVerts;
         xyDc.meshIndices = &m_planeXYInds;
-        xyDc.forceBufferUpdate = dirty;
+        xyDc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(xyDc);
 
         DrawCall xzDc;
@@ -895,7 +889,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         xzDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, xzDc.objectId).MakeDrawIdentity();
         xzDc.meshVertices = &m_planeXZVerts;
         xzDc.meshIndices = &m_planeXZInds;
-        xzDc.forceBufferUpdate = dirty;
+        xzDc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(xzDc);
 
         DrawCall yzDc;
@@ -907,7 +901,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         yzDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, yzDc.objectId).MakeDrawIdentity();
         yzDc.meshVertices = &m_planeYZVerts;
         yzDc.meshIndices = &m_planeYZInds;
-        yzDc.forceBufferUpdate = dirty;
+        yzDc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(yzDc);
     }
 
@@ -922,7 +916,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
             RenderProxyHandle::Synthetic(RenderDomain::EditorTool, centerDc.objectId).MakeDrawIdentity();
         centerDc.meshVertices = &m_centerCubeVerts;
         centerDc.meshIndices = &m_centerCubeInds;
-        centerDc.forceBufferUpdate = dirty;
+        centerDc.meshRuntimeVersion = m_meshRevision;
         result.drawCalls.push_back(centerDc);
     }
 

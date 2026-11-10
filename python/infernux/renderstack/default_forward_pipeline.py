@@ -75,7 +75,7 @@ class DefaultForwardPipeline(DefaultForwardParameters, RenderPipeline):
     # RenderPipeline interface
     # ------------------------------------------------------------------
 
-    def define_topology(self, graph: "RenderGraph") -> None:
+    def define_topology(self, graph: "RenderGraph", *, preview: bool = False) -> None:
         """Define forward rendering topology skeleton.
 
         Topology::
@@ -164,7 +164,8 @@ class DefaultForwardPipeline(DefaultForwardParameters, RenderPipeline):
 
         # Camera UI, final post-processing, display encoding and Screen UI use
         # one canonical tail in every built-in pipeline.
-        with graph.pass_result(current):
-            add_standard_post_process_section(graph, current)
+        if not preview:
+            with graph.pass_result(current):
+                add_standard_post_process_section(graph, current)
 
         graph.set_output(COLOR_TEXTURE)

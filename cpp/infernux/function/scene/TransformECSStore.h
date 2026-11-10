@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -13,6 +15,10 @@ namespace infernux
 class Scene;
 class Transform;
 class GameObject;
+namespace ui
+{
+struct RectTransformState;
+}
 
 /// Transient value bundle — used for bulk copy (CloneDataTo) and
 /// backwards-compatible read helpers, but **not** stored in the pool.
@@ -43,7 +49,7 @@ struct TransformECSData
 class TransformECSStore
 {
   public:
-    using InvalidationObserver = std::function<void(Transform *)>;
+    using InvalidationObserver = std::function<void(Transform *, const Transform *)>;
     // Keep the same Handle type for binary compatibility.
     struct Handle
     {
@@ -101,6 +107,34 @@ class TransformECSStore
     void SetLocalPosition(Handle h, const glm::vec3 &v)
     {
         m_localPositions[h.index] = v;
+        if (auto *layout = m_rectLayouts[h.index].get())
+            UpdateRectLocalPosition(h, *layout, {v.x, v.y});
+    }
+
+    [[nodiscard]] ui::RectTransformState *GetRectLayout(Handle h) const
+    {
+        return m_rectLayouts[h.index].get();
+    }
+    ui::RectTransformState &EnableRectLayout(Handle h);
+    void DisableRectLayout(Handle h);
+    uint64_t GetRectLayoutVersion(Handle h) const;
+    void ApplyRectLayout(Handle h, bool authored = true);
+    void ResolveRectLocalPosition(Handle h, const glm::vec3 &position);
+    uint64_t NextRectLayoutRevision() noexcept
+    {
+        return ++m_rectLayoutRevision;
+    }
+    uint64_t RectLayoutInputRevision() const noexcept
+    {
+        return m_rectLayoutInputRevision;
+    }
+    void MarkRectLayoutInputChanged() noexcept
+    {
+        ++m_rectLayoutInputRevision;
+    }
+    void SetRectLayoutZ(Handle h, float value)
+    {
+        m_localPositions[h.index].z = value;
     }
 
     // — local euler angles —
@@ -369,11 +403,21 @@ class TransformECSStore
     /// A later local write supersedes only the corresponding cached world channel.
     void RecordLocalPoseWrite(Handle h, bool position, bool rotation);
 
+    // Publish sparse authored edits at the fixed-step boundary while cached
+    // world poses remain authoritative. Physics readback is not an edit.
+    void VisitAuthoredPoseWrites(void (*visitor)(Transform *)) const;
+
+    // An explicit pose assignment is observable by physics even when its
+    // numeric value is unchanged. Solver/presentation writes do not advance it.
+    [[nodiscard]] std::array<uint64_t, 2> GetAuthoredPoseRevision(Handle h) const
+    {
+        return m_authoredPoseRevisions[h.index];
+    }
+
     const glm::mat4 &ComposeFrameCacheWorldMatrix(Handle h, const Transform *owner);
 
     // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.
     void SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v);
-    void SetCachedWorldRotation(uint32_t slotIndex, const glm::quat &q);
     void SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const glm::vec3 &position, const glm::quat &rotation,
                                        bool applyRotation);
 
@@ -388,7 +432,9 @@ class TransformECSStore
     void SetCachedLocalEulerAngles(uint32_t slotIndex, const glm::vec3 &v);
 
   private:
-    TransformECSStore() = default;
+    TransformECSStore();
+    ~TransformECSStore();
+    void UpdateRectLocalPosition(Handle h, ui::RectTransformState &layout, glm::vec2 position);
 
     void SyncAllWorldMatrices();
     void EnsureFrameCacheSlot(uint32_t slotIndex);
@@ -399,6 +445,9 @@ class TransformECSStore
 
     // ── SoA arrays (all the same length == Capacity()) ───────────────
     std::vector<glm::vec3> m_localPositions;
+    std::vector<std::unique_ptr<ui::RectTransformState>> m_rectLayouts;
+    uint64_t m_rectLayoutRevision = 0;
+    uint64_t m_rectLayoutInputRevision = 0;
     std::vector<glm::vec3> m_localEulerAngles;
     std::vector<glm::quat> m_localRotations;
     std::vector<glm::vec3> m_cachedWorldEulerAngles;
@@ -416,6 +465,7 @@ class TransformECSStore
     std::vector<uint8_t> m_worldMatrixDirtyListed;
     std::vector<uint32_t> m_worldMatrixDirtyIndices;
     std::vector<Transform *> m_owners;
+    std::vector<std::array<uint64_t, 2>> m_authoredPoseRevisions;
 
     // ── Global dirty flag for fast SyncSceneWorldMatrices skip ───────
     bool m_anyWorldMatrixDirty = false;

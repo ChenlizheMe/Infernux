@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPONENT_REF
 from infernux.debug import Debug
+from infernux.engine.component_restore import rewrite_native_component_references
 
 
 # ─── Public data types ────────────────────────────────────────────────────
@@ -93,8 +94,8 @@ _REFERENCE_ID_KEYS = {GAME_OBJECT_REF: "object_id", COMPONENT_REF: "game_object_
 def resolve_prefab_instance_root(instance_obj):
     """Return the linked root for the prefab instance containing *instance_obj*.
 
-    Every node in an instantiated prefab carries the same ``prefab_guid``.
-    ``prefab_root`` is authoritative.
+    Authored members can sit under a different nested instance. Follow their
+    source GUID to the enclosing root that owns them.
     """
     if instance_obj is None:
         return None
@@ -104,9 +105,7 @@ def resolve_prefab_instance_root(instance_obj):
 
     current = instance_obj
     while current is not None:
-        if (getattr(current, "prefab_guid", "") or "") != guid:
-            break
-        if bool(getattr(current, "prefab_root", False)):
+        if current.prefab_guid == guid and current.prefab_root:
             return current
         current = current.get_parent()
     raise LookupError(f"prefab instance has no marked root for GUID: {guid}")
@@ -196,9 +195,12 @@ def get_property_modifications(instance_obj, prefab_path: str):
     result = []
 
     def fields(node, original, instance_component_id, source_component_id,
-               current, previous, prefix="", defaults=()):
+               current, previous, prefix="", defaults=(), type_id=""):
+        comparison = rewrite_native_component_references(
+            type_id, current, lambda value: 0 if value == 0 else component_ids.get(value, -value),
+        )
         for key in sorted(current.keys() | previous.keys()):
-            if key in current and key in previous and _same_value(current[key], previous[key], object_ids):
+            if key in current and key in previous and _same_value(comparison[key], previous[key], object_ids):
                 continue
             result.append(PropertyModification(
                 node["id"], instance_component_id, original["local_id"], source_component_id,
@@ -225,7 +227,7 @@ def get_property_modifications(instance_obj, prefab_path: str):
             if previous is None:
                 continue
             fields(node, original, record["component_id"], previous["component_id"],
-                   record["data"], previous["data"], prefix="data.")
+                   record["data"], previous["data"], prefix="data.", type_id=record["type_id"])
             fields(node, original, record["component_id"], previous["component_id"],
                    {key: value for key, value in record.items() if key not in _COMPONENT_IDENTITY_KEYS},
                    {key: value for key, value in previous.items() if key not in _COMPONENT_IDENTITY_KEYS})
@@ -233,7 +235,7 @@ def get_property_modifications(instance_obj, prefab_path: str):
 
 
 _COMPONENT_IDENTITY_KEYS = frozenset({
-    "type_id", "component_id", "instance_guid", "prefab_source_id", "data",
+    "type_id", "component_id", "instance_guid", "prefab_source_id", "prefab_source_guid", "data",
 })
 
 
@@ -385,6 +387,9 @@ def _loaded_prefab_scenes(instance_root=None):
 
     manager = SceneManager.instance()
     scenes = [manager.get_scene_at(index) for index in range(manager.scene_count)]
+    persistent = manager.get_runtime_persistent_scene()
+    if persistent is not None and persistent not in scenes:
+        scenes.append(persistent)
     source_scene = getattr(instance_root, "scene", None)
     if source_scene is not None and not source_scene.is_preview and source_scene not in scenes:
         scenes.append(source_scene)
@@ -410,6 +415,7 @@ def build_prefab_asset_edit_command(prefab_path, document, asset_database, *, so
                                    description="Save Prefab Asset"):
     """One source write and every open instance projection share the same Undo."""
     from infernux.engine.undo import PrefabApplyOverridesCommand
+    from infernux.engine.component_restore import validate_prefab_source_components
     from infernux.engine.prefab_manager import _read_prefab_document, _validate_nested_source_ancestry
     from infernux.engine.prefab_variant import dependent_variant_updates
 
@@ -429,6 +435,7 @@ def build_prefab_asset_edit_command(prefab_path, document, asset_database, *, so
                 previous = _read_prefab_document(path)
                 identity = identities[path]
                 _validate_nested_source_ancestry(updated["root_object"], (identity,))
+                validate_prefab_source_components(updated["root_object"])
                 snapshots = _snapshot_all_linked_instances(
                     identity, base_root=previous["root_object"],
                     **(source_snapshot if path == prefab_path and source_snapshot else {}),
@@ -442,7 +449,12 @@ def build_prefab_asset_edit_command(prefab_path, document, asset_database, *, so
             for _obj, _document, plan in prepared:
                 plan.discard()
             raise
-        return _publish_applied_prefab(prepared)
+        if not _publish_applied_prefab(prepared):
+            return False
+        _record_published_prefab_sources(asset_database, {
+            identities[path]: updated for path, updated in updates.items()
+        })
+        return True
 
     return PrefabApplyOverridesCommand(
         capture, apply,
@@ -466,6 +478,14 @@ def _validate_prefab_source_replay(expected, prefab_path, asset_database):
     current = _read_prefab_document(prefab_path)
     if current != expected.prefab_document:
         raise RuntimeError("Prefab source changed outside this history; Undo/Redo left it unchanged")
+
+
+def _record_published_prefab_sources(asset_database, sources):
+    from infernux.engine.prefab_manager import _published_prefab_sources_for
+
+    published = _published_prefab_sources_for(asset_database)
+    if published is not None:
+        published.update(sources)
 
 
 def _write_prefab_apply_document(prefab_path: str, document: dict,
@@ -565,6 +585,9 @@ def _restore_prefab_edit_batch(states, asset_database):
         except Exception as rollback_exc:
             Debug.log_error(f"Prefab Apply rollback failed: {rollback_exc}")
         raise
+    _record_published_prefab_sources(asset_database, {
+        state.prefab_guid: state.prefab_document for state in states.values()
+    })
 
 
 def revert_overrides(instance_obj, prefab_path: str,
@@ -672,7 +695,9 @@ def build_prefab_property_revert_command(component, field_name, prefab_path,
         return record["data"]
 
     source_component_id = components.get(component.component_id)
-    source_value = storage(source_node, source_component_id)[key]
+    source_data = storage(source_node, source_component_id)
+    source_has_value = key in source_data
+    source_value = source_data.get(key)
     identities = {local: runtime for runtime, local in objects.items()}
     for node in _object_nodes(before):
         local = objects.get(node["id"])
@@ -701,10 +726,21 @@ def build_prefab_property_revert_command(component, field_name, prefab_path,
         return {name: remap(item) for name, item in value.items()}
 
     value = remap(source_value)
+    if source_has_value and section != "transform":
+        source_record = next(item for item in source_node["components"]
+                             if item["component_id"] == source_component_id)
+        native_ids = {local: runtime for runtime, local in components.items()}
+        native_ids[0] = 0
+        value = rewrite_native_component_references(
+            source_record["type_id"], {key: value}, lambda identity: native_ids[identity],
+        )[key]
     after = copy.deepcopy(before)
     target = next(node for node in _object_nodes(after) if node["id"] == owner.id)
     destination = storage(target, component.component_id)
-    destination[key] = value
+    if source_has_value:
+        destination[key] = value
+    else:
+        destination.pop(key, None)
 
     # Advance only this field's merge baseline. Updating the entire baseline
     # would hide unrelated source changes still waiting to reach this instance.
@@ -714,7 +750,11 @@ def build_prefab_property_revert_command(component, field_name, prefab_path,
         baseline_node = next((node for node in _object_nodes(baseline)
                               if node["local_id"] == source_id), None)
         if baseline_node is not None:
-            storage(baseline_node, source_component_id)[key] = copy.deepcopy(source_value)
+            baseline_data = storage(baseline_node, source_component_id)
+            if source_has_value:
+                baseline_data[key] = copy.deepcopy(source_value)
+            else:
+                baseline_data.pop(key, None)
 
     if after == before:
         return None
@@ -744,7 +784,7 @@ def _build_reverted_prefab_document(instance_obj, prefab_path: str):
     _stamp_prefab_guid(prefab_data, prefab_guid, is_root=True)
     if prefab_guid:
         prefab_data["prefab_source"] = _make_prefab_baseline(
-            source_document, outer_source_id=current_document.get("prefab_source", {}).get("outer_source_id", 0),
+            source_document, previous=current_document.get("prefab_source"),
         )
 
     # These fields describe this scene instance, not the prefab asset. Revert
@@ -779,6 +819,9 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
     The returned document is reused by Redo, not allocated again on each replay.
     """
     from infernux.engine.component_restore import _remap_local_reference_document
+    from infernux.engine.prefab_manager import (
+        _PREFAB_OCCURRENCE_FIELDS, _belongs_to_prefab_source, _source_component_id,
+    )
 
     if reserve_ids is None:
         from infernux.lib import GameObject
@@ -802,11 +845,19 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
     local_to_runtime = {0: 0}
     for node in _object_nodes(result):
         old = current_by_local.get(node["local_id"])
+        foreign_member = (old is not None and node["local_id"] < 0 and
+                          old.get("prefab_source_id") and not _belongs_to_prefab_source(current, old))
         if old is None:
             new_objects.append(node)
         else:
             node["id"] = old["id"]
             local_to_runtime[node["local_id"]] = old["id"]
+            if foreign_member:
+                node["prefab_guid"] = old["prefab_guid"]
+                node["prefab_source_id"] = old["prefab_source_id"]
+                old_baseline = old.get("prefab_source", {})
+                if node.get("prefab_source") and old_baseline.get("outer_source_guid"):
+                    node["prefab_source"].update((key, old_baseline[key]) for key in _PREFAB_OCCURRENCE_FIELDS)
         pairs = [(node["transform"], old["transform"] if old else None)]
         pairs.extend((component, current_components.get(component["component_id"]))
                      for component in node["components"])
@@ -819,6 +870,11 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
             else:
                 component["component_id"] = previous["component_id"]
                 local_to_runtime[reference_key] = previous["component_id"]
+                if (reference_key[1] < 0 and previous.get("prefab_source_id") and
+                        not _source_component_id(current, old, previous)):
+                    component["prefab_source_id"] = previous["prefab_source_id"]
+                    if "prefab_source_guid" in previous:
+                        component["prefab_source_guid"] = previous["prefab_source_guid"]
                 if "instance_guid" in previous:
                     component["instance_guid"] = previous["instance_guid"]
     object_ids, component_ids = reserve_ids(len(new_objects), len(new_components))
@@ -851,10 +907,10 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
         for component in node["components"]:
             map_scene_references(component["data"])
             component["data"] = _remap_local_reference_document(component["data"], local_to_runtime, "prefab")
-            if component["type_id"] in ("native:infernux.HingeJoint", "native:infernux.SliderJoint"):
-                fields = component["data"]
-                target = fields["connected_body_component_id"]
-                fields["connected_body_component_id"] = -target if target < 0 else native_component_ids[target]
+            component["data"] = rewrite_native_component_references(
+                component["type_id"], component["data"],
+                lambda target: -target if target < 0 else native_component_ids[target],
+            )
     return result
 
 
@@ -892,7 +948,7 @@ def _snapshot_linked_instances(scene, prefab_guid: str, *, base_root,
 
 _MERGE_IDENTITY_KEYS = frozenset({
     "id", "instance_guid",
-    "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
+    "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source_guid", "prefab_source",
 })
 _MISSING = object()
 
@@ -1092,7 +1148,7 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
     _stamp_prefab_guid(merged, prefab_guid, is_root=True, source_ids=source_ids, component_source_ids=component_sources)
     if prefab_guid:
         merged["prefab_source"] = _make_prefab_baseline(
-            updated_root, outer_source_id=runtime_document.get("prefab_source", {}).get("outer_source_id", 0),
+            updated_root, previous=runtime_document.get("prefab_source"),
         )
     for key in _ROOT_INSTANCE_KEYS:
         if key in runtime_document:
@@ -1109,7 +1165,7 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
 
 
 def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=None, affected_guids=None,
-                                   allocate_authoring_identities=True) -> dict:
+                                   allocate_authoring_identities=True, follow_nested_sources=True) -> dict:
     """Resolve a saved scene without instantiating objects or running scripts.
 
     Cook IDs are deterministic and allocated above every ID in this document,
@@ -1167,7 +1223,7 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
             if guid not in sources:
                 sources[guid] = load_source(guid)
             updated_root = sources[guid]
-            expected = _make_prefab_baseline(updated_root, outer_source_id=node.get("prefab_source", {}).get("outer_source_id", 0))
+            expected = _make_prefab_baseline(updated_root, previous=node.get("prefab_source"))
             if node.get("prefab_source") != expected:
                 local = copy.deepcopy(node)
                 object_ids, _, component_ids, _ = _localize_prefab_snapshot(
@@ -1177,7 +1233,7 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
                 node = _merge_prefab_instance_document(
                     node, local, object_ids, updated_root, guid, component_ids=component_ids, reserve_ids=reserve_ids,
                 )
-            resolve_all = True
+            resolve_all = follow_nested_sources
         node["children"] = [resolve(child, ancestry, resolve_all) for child in node["children"]]
         return node
 
@@ -1196,7 +1252,6 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
 
 
 def _prepare_applied_prefab(base_root, updated_root, snapshots, prefab_guid, asset_database):
-    from infernux.engine.component_restore import preflight_game_object_python_components
     prepared_updates = []
     try:
         for obj, runtime_document, local_document, object_ids, component_ids in snapshots:
@@ -1204,13 +1259,7 @@ def _prepare_applied_prefab(base_root, updated_root, snapshots, prefab_guid, ass
                 runtime_document, local_document, object_ids, updated_root,
                 prefab_guid, base_root=base_root, component_ids=component_ids,
             )
-            prepared = preflight_game_object_python_components(
-                merged,
-                asset_database,
-                preserve_document_ids=True,
-                reference_scene=obj.scene,
-                prefer_loaded_types=True,
-            )
+            prepared = _prepare_prefab_instance_update(obj, runtime_document, merged, asset_database)
             prepared_updates.append((obj, merged, prepared))
     except Exception:
         for _obj, _merged, prepared in prepared_updates:
@@ -1219,12 +1268,29 @@ def _prepare_applied_prefab(base_root, updated_root, snapshots, prefab_guid, ass
     return prepared_updates
 
 
+def _prepare_prefab_instance_update(obj, before, after, asset_database):
+    from infernux.engine._prefab_instance_values import prepare_prefab_instance_values
+    from infernux.engine.component_restore import preflight_game_object_python_components
+
+    values = prepare_prefab_instance_values(obj, before, after, asset_database)
+    if values is not None:
+        return values
+    return preflight_game_object_python_components(
+        after, asset_database, preserve_document_ids=True, reference_scene=obj.scene, prefer_loaded_types=True,
+    )
+
+
 def _publish_applied_prefab(prepared_updates):
+    from infernux.engine._prefab_instance_values import PrefabInstanceValues
     from infernux.engine.component_restore import commit_prepared_game_object_document
 
+    committed_values = []
     for index, (obj, merged, prepared) in enumerate(prepared_updates):
         try:
-            if not commit_prepared_game_object_document(
+            if isinstance(prepared, PrefabInstanceValues):
+                prepared.commit()
+                committed_values.append(prepared)
+            elif not commit_prepared_game_object_document(
                 obj,
                 merged,
                 prepared,
@@ -1235,8 +1301,12 @@ def _publish_applied_prefab(prepared_updates):
             prepared.discard()
             for _obj, _merged, remaining in prepared_updates[index + 1:]:
                 remaining.discard()
+            for values in reversed(committed_values):
+                values.discard()
             Debug.log_error(f"Failed to propagate applied prefab to scene instances: {exc}")
             return False
+    for values in committed_values:
+        values.finish()
     return True
 
 
@@ -1262,28 +1332,30 @@ def _serialize_obj(obj) -> Optional[dict]:
 
 def _instance_component_ids(instance, source):
     """Project components by their persisted source identities."""
-    from infernux.engine.prefab_manager import _prefab_baseline_root, _nested_source_projection
+    from infernux.engine.prefab_manager import _nested_source_projection, _prefab_baseline_root, _source_component_id
     if any(node.get("prefab_root") for child in instance["children"] for node in _object_nodes(child)):
         return _nested_source_projection(instance, source)[1]
     baseline = instance.get("prefab_source")
     if baseline:
         _prefab_baseline_root(baseline)
-    result = {component["component_id"]: component.get("prefab_source_id", -component["component_id"])
-              for node in _object_nodes(instance) for component in node["components"]}
+    result = {component["component_id"]: (
+        _source_component_id(instance, node, component) or -component["component_id"]
+    ) for node in _object_nodes(instance) for component in node["components"]}
     return result
 
 
 def _match_object_ids(instance: dict, prefab: dict, object_ids: dict):
+    from infernux.engine.prefab_manager import _belongs_to_prefab_source, _nested_source_projection
+
     object_ids[instance["id"]] = prefab["local_id"]
     if any(node.get("prefab_root") for child in instance["children"] for node in _object_nodes(child)):
-        from infernux.engine.prefab_manager import _nested_source_projection
         object_ids.update(_nested_source_projection(instance, prefab)[0])
         return
     if instance.get("prefab_source_id"):
         sources = {node["local_id"] for node in _object_nodes(prefab)}
         for node in _object_nodes(instance):
             source_id = node.get("prefab_source_id", 0)
-            if source_id in sources:
+            if source_id in sources and _belongs_to_prefab_source(instance, node):
                 object_ids[node["id"]] = source_id
 
 
@@ -1398,10 +1470,15 @@ def _diff_components(instance_comps: list, prefab_comps: list,
             out.append(Override(node_path, f"added_{section}:{tn}", None, tn))
             continue
         # Compare fields within this component
-        skip = {"type_id", "component_id", "instance_guid", "prefab_source_id"}
+        skip = _COMPONENT_IDENTITY_KEYS - {"data"}
         for key in set(ic.keys()) | set(pc.keys()):
             if key in skip:
                 continue
-            if not _same_value(ic.get(key), pc.get(key), object_ids):
+            value = ic.get(key)
+            if key == "data":
+                value = rewrite_native_component_references(
+                    tn, value, lambda identity: 0 if identity == 0 else component_ids.get(identity, -identity),
+                )
+            if not _same_value(value, pc.get(key), object_ids):
                 out.append(Override(node_path, f"{section}:{tn}.{key}",
                                    pc.get(key), ic.get(key)))

@@ -83,13 +83,12 @@ def exercise(project, event_kind, draft):
             if event_kind == "guid_replaced":
                 data["metadata"]["guid"]["value"] = "1" * 32
                 candidate = json.dumps(data)
-                error = RuntimeError
             else:
                 candidate = "{ invalid document"
-                error = json.JSONDecodeError
             meta.write_text(candidate, encoding="utf-8")
-            with pytest.raises(error):
-                handler._commit_metadata_modified(str(path))
+            handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(meta)))
+            assert handler.process_pending_reloads(force=True) == 1
+            assert handler.pending_count == 0
             assert database.query_generation == generation
             assert database.get_guid_from_path(str(path)) == imported.guid
             assert controller.settings.max_size == (32 if draft else settings.max_size)

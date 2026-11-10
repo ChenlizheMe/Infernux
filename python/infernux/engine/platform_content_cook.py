@@ -151,11 +151,13 @@ def cook_platform_content(
     request.report("cook", 0, 1000, "Publishing current project asset catalog")
     if request.asset_catalog_entries:
         catalog_entries = [dict(item) for item in request.asset_catalog_entries]
+        runtime_types = request.runtime_type_records
     else:
         # Publish and fully release the temporary headless host before the
         # content builder creates runtime-facing caches.
         catalog = publish_player_asset_catalog_for_host(request.project_root)
         catalog_entries = list(catalog["entries"])
+        runtime_types = catalog["runtime_type_records"]
     builder = GameBuilder(
         request.project_root,
         str(root),
@@ -173,7 +175,7 @@ def cook_platform_content(
         include_jit_runtime=False,
         build_scene_guids=list(settings["scene_guids"]),
     )
-    builder.freeze_asset_index_entries(catalog_entries)
+    builder.freeze_asset_index_entries(catalog_entries, runtime_type_records=runtime_types)
     def report(message: str, fraction: float) -> None:
         request.report(
             "cook",

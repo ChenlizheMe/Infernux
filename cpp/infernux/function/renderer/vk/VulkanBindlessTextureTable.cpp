@@ -83,8 +83,8 @@ bool VulkanBindlessTextureTable::Initialize(VkDevice device, VkDescriptorManager
     m_tableEpoch = g_nextBindlessTextureTableEpoch.fetch_add(1, std::memory_order_relaxed);
     if (m_tableEpoch == 0)
         m_tableEpoch = g_nextBindlessTextureTableEpoch.fetch_add(1, std::memory_order_relaxed);
-    m_owners.resize(capacity);
-    m_owners[0] = std::move(fallbackOwner);
+    m_slots.resize(capacity);
+    m_slots[0].owner = std::move(fallbackOwner);
 
     // Make every slot valid from the first draw. Capacity exhaustion and stale
     // generations resolve to slot zero; accidental unused indices also sample
@@ -105,14 +105,14 @@ bool VulkanBindlessTextureTable::Initialize(VkDevice device, VkDescriptorManager
 
 void VulkanBindlessTextureTable::DestroyAfterDeviceIdle() noexcept
 {
-    std::vector<std::shared_ptr<const void>> owners;
+    std::vector<TextureSlot> slots;
     VkDevice device = VK_NULL_HANDLE;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorManager *descriptorManager = nullptr;
     DescriptorLease descriptorLease{};
     {
         std::lock_guard lock(m_mutex);
-        owners = std::move(m_owners);
+        slots = std::move(m_slots);
         m_publications.clear();
         m_reclaimed.clear();
         m_indices.reset();
@@ -128,7 +128,7 @@ void VulkanBindlessTextureTable::DestroyAfterDeviceIdle() noexcept
         m_descriptorWrites = 0;
         m_tableEpoch = 0;
     }
-    owners.clear();
+    slots.clear();
     if (descriptorManager != nullptr)
         descriptorManager->Retire(descriptorLease);
     if (device != VK_NULL_HANDLE) {
@@ -147,7 +147,7 @@ rhi::ResourceIndex VulkanBindlessTextureTable::Publish(VkImageView view, VkSampl
     if (!resource.IsValid())
         return {};
     WriteDescriptor(resource.index, view, sampler);
-    m_owners[resource.index] = std::move(owner);
+    m_slots[resource.index] = {std::move(owner), resource, {}};
     return resource;
 }
 
@@ -171,10 +171,10 @@ VulkanBindlessTextureTable::PublishTextureView(const std::shared_ptr<const rhi::
         return {};
 
     WriteDescriptor(resource.index, imageView, sampler);
-    m_owners[resource.index] = view->GetOwner();
+    m_slots[resource.index] = {view->GetOwner(), resource, view->GetUploadSubmission()};
     if (!view->SetBindlessResourceIndex(m_tableEpoch, resource)) {
         (void)m_indices->Cancel(resource);
-        m_owners[resource.index].reset();
+        m_slots[resource.index] = {};
         return {};
     }
     m_publications.push_back({view, resource});
@@ -213,6 +213,14 @@ void VulkanBindlessTextureTable::MarkUsed(const rhi::ResourceIndex *resources, s
         m_descriptorManager->MarkUsed(m_descriptorLease, serial);
     if (m_indices)
         (void)m_indices->MarkUsed(resources, count, serial);
+    if (auto *reads = SubmissionReadScope::Current()) {
+        for (size_t index = 0; index < count; ++index) {
+            const auto resource = resources[index];
+            if (resource.index < m_slots.size() && m_slots[resource.index].resource == resource)
+                reads->Add(m_slots[resource.index].upload,
+                           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        }
+    }
 }
 
 size_t VulkanBindlessTextureTable::Collect(rhi::SubmissionSerial completedSerial) noexcept
@@ -245,8 +253,10 @@ size_t VulkanBindlessTextureTable::Collect(rhi::SubmissionSerial completedSerial
         collected = m_indices->CollectIndices(completedSerial, &m_reclaimed);
         released.reserve(m_reclaimed.size());
         for (const uint32_t index : m_reclaimed) {
-            if (index < m_owners.size())
-                released.push_back(std::move(m_owners[index]));
+            if (index < m_slots.size()) {
+                released.push_back(std::move(m_slots[index].owner));
+                m_slots[index] = {};
+            }
         }
     }
     released.clear();
@@ -282,7 +292,7 @@ VulkanBindlessTextureTable::Stats VulkanBindlessTextureTable::GetStats() const n
     std::lock_guard lock(m_mutex);
     Stats stats;
     stats.ready = m_device != VK_NULL_HANDLE && m_set != VK_NULL_HANDLE && m_indices;
-    stats.capacity = static_cast<uint32_t>(m_owners.size());
+    stats.capacity = static_cast<uint32_t>(m_slots.size());
     stats.descriptorWrites = m_descriptorWrites;
     if (m_indices)
         stats.indices = m_indices->GetStats();

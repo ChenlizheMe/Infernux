@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuRuntime.h"
 
 #include <array>
@@ -16,16 +18,16 @@ struct GpuParticleCullProgram
     ShaderBytecode cull;
     ShaderBytecode finalize;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleCullProgramStorage
 {
     std::array<std::vector<uint32_t>, 3> shaders;
 
-    [[nodiscard]] bool Assign(const GpuParticleCullProgram &program);
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] GpuParticleCullProgram View() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleCullProgram &program);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleCullProgram View() const noexcept;
 };
 
 enum class GpuParticleCullMode : uint32_t
@@ -36,9 +38,9 @@ enum class GpuParticleCullMode : uint32_t
 
 struct GpuParticleCullShaderSources
 {
-    [[nodiscard]] static std::string_view Reset() noexcept;
-    [[nodiscard]] static std::string_view Cull() noexcept;
-    [[nodiscard]] static std::string_view Finalize() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Reset() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Cull() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API static std::string_view Finalize() noexcept;
 };
 
 struct GpuParticleCullerDesc
@@ -84,17 +86,17 @@ class ParticleGpuCuller
     static constexpr uint32_t PlaneCount = 6;
 
     ParticleGpuCuller() = default;
-    ~ParticleGpuCuller();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuCuller();
 
     ParticleGpuCuller(const ParticleGpuCuller &) = delete;
     ParticleGpuCuller &operator=(const ParticleGpuCuller &) = delete;
     ParticleGpuCuller(ParticleGpuCuller &&) = delete;
     ParticleGpuCuller &operator=(ParticleGpuCuller &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleCullerDesc &desc);
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, const GpuParticleCullerDesc &desc);
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
         return m_capacity;
@@ -139,11 +141,12 @@ class ParticleGpuCuller
     {
         return m_sortDispatchArguments;
     }
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder, const std::array<float, PlaneCount * 4> &frustumPlanes,
-                     bool viewEnabled = true) const;
-    void RecordCull(const rhi::ComputeCommandEncoder &encoder,
-                    const std::array<float, PlaneCount * 4> &frustumPlanes) const;
-    void RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordReset(const rhi::ComputeCommandEncoder &encoder,
+                                                   const std::array<float, PlaneCount * 4> &frustumPlanes,
+                                                   bool viewEnabled = true) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordCull(const rhi::ComputeCommandEncoder &encoder,
+                                                  const std::array<float, PlaneCount * 4> &frustumPlanes) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const;
 
   private:
     void Record(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,

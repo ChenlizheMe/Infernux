@@ -292,20 +292,9 @@ ResourceHandle PassBuilder::CreateDepthStencil(const std::string &name, uint32_t
     return handle;
 }
 
-ResourceHandle PassBuilder::CreateBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage)
+ResourceHandle PassBuilder::CreateBuffer(const std::string &name, uint64_t size, rhi::BufferUsageFlags usage)
 {
-    ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
-    if (!m_graph->Owns(handle)) {
-        return handle;
-    }
-
-    auto &resource = m_graph->m_resources[handle.id];
-    resource.bufferDesc.name = name;
-    resource.bufferDesc.size = size;
-    resource.bufferDesc.usage = usage;
-    resource.bufferDesc.isTransient = true;
-
-    return handle;
+    return m_graph->RegisterTransientBuffer(name, size, usage);
 }
 
 ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
@@ -334,53 +323,168 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
 
 ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size)
 {
-    if (buffer != VK_NULL_HANDLE) {
-        for (uint32_t resourceId = 0; resourceId < m_graph->m_resources.size(); ++resourceId) {
-            auto &resource = m_graph->m_resources[resourceId];
-            if (!resource.isExternal || resource.type != ResourceType::Buffer || resource.externalBuffer != buffer)
-                continue;
-            if (size > resource.bufferDesc.size) {
-                resource.bufferDesc.size = size;
-                if (m_graph->m_rhiDevice) {
-                    m_graph->m_rhiDevice->Release(resource.rhiBuffer);
-                    resource.rhiBuffer = m_graph->m_rhiDevice->RegisterBuffer(buffer, size);
-                    if (!resource.rhiBuffer.IsValid())
-                        return {};
-                }
+    return m_graph->ImportBufferAlias(name, buffer, size);
+}
+
+ResourceHandle PassBuilder::ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size,
+                                         bool graphLocal)
+{
+    return m_graph->ImportBuffer(name, buffer, size, graphLocal);
+}
+
+ResourceHandle RenderGraph::ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size,
+                                         bool graphLocal)
+{
+    if (!buffer.IsValid() || size == 0 || !m_rhiDevice)
+        return {};
+    return ImportBufferAlias(name, m_rhiDevice->Resolve(buffer), size, buffer, graphLocal);
+}
+
+static bool SameImportedBufferLayout(const rhi::BufferDesc &a, const rhi::BufferDesc &b)
+{
+    return a.byteSize == b.byteSize && a.usage == b.usage && a.memory == b.memory && a.queueAccess == b.queueAccess;
+}
+
+ResourceHandle RenderGraph::ImportBufferAlias(const std::string &name, VkBuffer buffer, VkDeviceSize size,
+                                              rhi::BufferHandle source, bool graphLocal)
+{
+    rhi::BufferDesc sourceDesc;
+    if (source.IsValid() &&
+        (buffer == VK_NULL_HANDLE || !m_rhiDevice->GetBufferDesc(source, sourceDesc) || size > sourceDesc.byteSize))
+        return {};
+    if (const auto existing = m_importedBuffers.find(buffer); existing != m_importedBuffers.end()) {
+        const uint32_t resourceId = existing->second;
+        auto &resource = m_resources[resourceId];
+        if (source.IsValid() && resource.bufferDesc.byteSize > sourceDesc.byteSize)
+            return {};
+        rhi::BufferDesc currentDesc;
+        const bool sameFacts = source.IsValid() && m_rhiDevice->GetBufferDesc(resource.rhiBuffer, currentDesc) &&
+                               SameImportedBufferLayout(currentDesc, sourceDesc) &&
+                               m_rhiDevice->UsesConcurrentQueueSharing(resource.rhiBuffer) ==
+                                   m_rhiDevice->UsesConcurrentQueueSharing(source);
+        if (size > resource.bufferDesc.byteSize || (source.IsValid() && !sameFacts)) {
+            if (m_rhiDevice) {
+                const auto alias =
+                    source.IsValid() ? m_rhiDevice->RegisterBuffer(source) : m_rhiDevice->RegisterBuffer(buffer, size);
+                if (!alias.IsValid())
+                    return {};
+                m_rhiDevice->Release(resource.rhiBuffer);
+                resource.rhiBuffer = alias;
+                resource.concurrentQueueSharing = m_rhiDevice->UsesConcurrentQueueSharing(alias);
             }
-            return {m_graph->m_identity.Current(), resourceId, m_graph->m_resourceVersions[resourceId]};
+            resource.bufferDesc.byteSize = std::max(resource.bufferDesc.byteSize, size);
         }
+        resource.graphLocalBuffer &= graphLocal;
+        ++resource.bufferImportCount;
+        return {m_identity.Current(), resourceId, m_resourceVersions[resourceId]};
     }
 
-    ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
-    if (!m_graph->Owns(handle)) {
+    const auto alias = m_rhiDevice ? (source.IsValid() ? m_rhiDevice->RegisterBuffer(source)
+                                                       : m_rhiDevice->RegisterBuffer(buffer, size))
+                                   : rhi::BufferHandle{};
+    if (buffer != VK_NULL_HANDLE && m_rhiDevice && !alias.IsValid())
+        return {};
+    ResourceHandle handle = CreateResource(name, ResourceType::Buffer);
+    if (!Owns(handle)) {
+        if (m_rhiDevice)
+            m_rhiDevice->Release(alias);
         return handle;
     }
 
-    auto &resource = m_graph->m_resources[handle.id];
-    resource.bufferDesc.name = name;
-    resource.bufferDesc.size = size;
-    resource.bufferDesc.isTransient = false;
+    auto &resource = m_resources[handle.id];
+    resource.bufferDesc.byteSize = size;
     resource.isExternal = true;
-    resource.externalBuffer = buffer;
-    resource.rhiBuffer =
-        m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterBuffer(buffer, size) : rhi::BufferHandle{};
+    resource.graphLocalBuffer = graphLocal;
+    resource.nativeBuffer = buffer;
+    resource.rhiBuffer = alias;
+    resource.concurrentQueueSharing = m_rhiDevice && m_rhiDevice->UsesConcurrentQueueSharing(alias);
+    resource.bufferImportCount = 1;
+    if (buffer != VK_NULL_HANDLE)
+        m_importedBuffers.emplace(buffer, handle.id);
 
     return handle;
 }
 
-ResourceHandle PassBuilder::ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size)
+bool RenderGraph::RebindImportedBuffers(const std::vector<ImportedBufferBinding> &bindings)
 {
-    if (!buffer.IsValid() || size == 0 || !m_graph->m_rhiDevice)
-        return {};
-    const VkBuffer nativeBuffer = m_graph->m_rhiDevice->Resolve(buffer);
-    if (nativeBuffer == VK_NULL_HANDLE)
-        return {};
-    const ResourceHandle handle = ImportBuffer(name, nativeBuffer, static_cast<VkDeviceSize>(size));
-    if (m_graph->Owns(handle))
-        m_graph->m_resources[handle.id].concurrentQueueSharing =
-            m_graph->m_rhiDevice->UsesConcurrentQueueSharing(buffer);
-    return handle;
+    if (!m_compiled || !m_rhiDevice)
+        return false;
+
+    struct Replacement
+    {
+        ImportedBufferBinding binding;
+        VkBuffer native;
+        uint32_t imports = 1;
+        rhi::BufferHandle registration;
+    };
+    std::unordered_map<uint32_t, Replacement> replacements;
+    replacements.reserve(bindings.size());
+    for (const auto &binding : bindings) {
+        const auto native = m_rhiDevice->Resolve(binding.source);
+        if (!Owns(binding.resource) || native == VK_NULL_HANDLE)
+            return false;
+        const auto [entry, inserted] =
+            replacements.try_emplace(binding.resource.id, Replacement{binding, native, 1, {}});
+        if (!inserted) {
+            auto &group = entry->second;
+            if (group.native != native || group.binding.writer != binding.writer)
+                return false;
+            ++group.imports;
+            group.binding.graphLocal &= binding.graphLocal;
+        }
+    }
+
+    auto imports = m_importedBuffers;
+    for (const auto &[id, change] : replacements) {
+        const auto &resource = m_resources[id];
+        if (resource.type != ResourceType::Buffer || !resource.isExternal ||
+            (change.binding.graphLocal != resource.graphLocalBuffer &&
+             (resource.graphLocalBuffer || change.imports == resource.bufferImportCount)))
+            return false;
+        if (change.native == resource.nativeBuffer && change.binding.writer == m_initialResourceStates[id].queue)
+            continue;
+        rhi::BufferDesc current, next;
+        if (change.imports != resource.bufferImportCount || !m_rhiDevice->GetBufferDesc(resource.rhiBuffer, current) ||
+            !m_rhiDevice->GetBufferDesc(change.binding.source, next) || !SameImportedBufferLayout(current, next) ||
+            resource.concurrentQueueSharing != m_rhiDevice->UsesConcurrentQueueSharing(change.binding.source) ||
+            (!resource.concurrentQueueSharing && change.binding.writer != m_initialResourceStates[id].queue))
+            return false;
+        imports.erase(resource.nativeBuffer);
+    }
+    // Erase the old identities before testing the new ones so a two-slot swap
+    // preserves the same alias partition. A merge or split needs a new plan.
+    for (const auto &[id, change] : replacements) {
+        const auto [entry, inserted] = imports.emplace(change.native, id);
+        if (!inserted && entry->second != id)
+            return false;
+    }
+
+    try {
+        for (auto &[id, change] : replacements) {
+            if (change.native != m_resources[id].nativeBuffer) {
+                change.registration = m_rhiDevice->RegisterBuffer(change.binding.source);
+                if (!change.registration.IsValid())
+                    throw std::logic_error("A validated graph buffer could not be registered");
+            }
+        }
+    } catch (...) {
+        for (const auto &entry : replacements)
+            m_rhiDevice->Release(entry.second.registration);
+        throw;
+    }
+    m_importedBuffers.swap(imports);
+    for (const auto &[id, change] : replacements) {
+        auto &resource = m_resources[id];
+        if (change.registration.IsValid()) {
+            m_rhiDevice->Release(std::exchange(resource.rhiBuffer, change.registration));
+            resource.nativeBuffer = change.native;
+        }
+        const auto &initial = m_initialResourceStates[id];
+        if (change.registration.IsValid() || change.binding.writer != initial.queue)
+            SetResourceInitialState(change.binding.resource, initial.layout, initial.accessMask, initial.stages,
+                                    change.binding.writer);
+    }
+    return true;
 }
 
 ResourceHandle PassBuilder::Read(ResourceHandle handle, rhi::PipelineStage stages)
@@ -425,6 +529,13 @@ ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, rhi::Pipelin
     return handle;
 }
 
+void PassBuilder::PreservePreviousVersion(ResourceHandle handle)
+{
+    m_graph->m_passes[m_passId].reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency,
+                                                 rhi::PipelineStage::None, rhi::Access::None,
+                                                 rhi::TextureLayout::Undefined});
+}
+
 ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmentIndex)
 {
     if (!m_graph->Owns(handle)) {
@@ -437,10 +548,8 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
 
     auto &pass = m_graph->m_passes[m_passId];
 
-    // Model the previous attachment version as a graph-only input. A later
-    // SetClearColor() removes this dependency when the pass fully overwrites it.
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
-                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    // Keep the previous attachment version for loads and partial clears.
+    PreservePreviousVersion(handle);
 
     ResourceAccess access;
     access.handle = newHandle;
@@ -474,8 +583,7 @@ ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
 
     auto &pass = m_graph->m_passes[m_passId];
 
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
-                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    PreservePreviousVersion(handle);
 
     ResourceAccess access;
     access.handle = newHandle;
@@ -577,6 +685,8 @@ ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
         return {};
 
     auto &pass = m_graph->m_passes[m_passId];
+    if (m_graph->m_resources[handle.id].graphLocalBuffer)
+        PreservePreviousVersion(handle);
     pass.writes.push_back({next, ResourceUsage::Write, rhi::PipelineStage::ComputeShader, rhi::Access::ShaderWrite,
                            rhi::TextureLayout::Undefined});
     return next;
@@ -594,8 +704,7 @@ ResourceHandle PassBuilder::WriteStorageTexture(ResourceHandle handle)
         return {};
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
-                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    PreservePreviousVersion(handle);
     pass.writes.push_back({next, ResourceUsage::Write | ResourceUsage::Storage, rhi::PipelineStage::ComputeShader,
                            rhi::Access::ShaderWrite, rhi::TextureLayout::General});
     return next;
@@ -644,7 +753,7 @@ ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
     return handle;
 }
 
-ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
+ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle, bool preservePreviousContents)
 {
     if (!m_graph->Owns(handle)) {
         return {};
@@ -655,6 +764,8 @@ ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
         return {};
 
     auto &pass = m_graph->m_passes[m_passId];
+    if (preservePreviousContents || m_graph->m_resources[handle.id].graphLocalBuffer)
+        PreservePreviousVersion(handle);
 
     ResourceAccess access;
     access.handle = newHandle;
@@ -764,17 +875,6 @@ void PassBuilder::SetClearColor(float r, float g, float b, float a)
     auto &pass = m_graph->m_passes[m_passId];
     pass.clearColor = {{r, g, b, a}};
     pass.clearColorEnabled = true;
-    pass.reads.erase(std::remove_if(pass.reads.begin(), pass.reads.end(),
-                                    [&](const ResourceAccess &read) {
-                                        if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) == 0)
-                                            return false;
-                                        return std::any_of(pass.colorOutputs.begin(), pass.colorOutputs.end(),
-                                                           [&](ResourceHandle output) {
-                                                               return output.IsValid() && output.id == read.handle.id &&
-                                                                      output.version == read.handle.version + 1;
-                                                           });
-                                    }),
-                     pass.reads.end());
 }
 
 void PassBuilder::SetClearDepth(float depth, uint32_t stencil)
@@ -782,16 +882,6 @@ void PassBuilder::SetClearDepth(float depth, uint32_t stencil)
     auto &pass = m_graph->m_passes[m_passId];
     pass.clearDepth = {depth, stencil};
     pass.clearDepthEnabled = true;
-    if (pass.depthOutput.IsValid()) {
-        pass.reads.erase(std::remove_if(pass.reads.begin(), pass.reads.end(),
-                                        [&](const ResourceAccess &read) {
-                                            return static_cast<int>(read.usage & ResourceUsage::VersionDependency) !=
-                                                       0 &&
-                                                   read.handle.id == pass.depthOutput.id &&
-                                                   pass.depthOutput.version == read.handle.version + 1;
-                                        }),
-                         pass.reads.end());
-    }
 }
 
 // ============================================================================
@@ -813,7 +903,7 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_deletionQueue(std::exchange(other.m_deletionQueue, nullptr)), m_queueTopology(other.m_queueTopology),
       m_passes(std::move(other.m_passes)), m_resources(std::move(other.m_resources)),
       m_resourceVersions(std::move(other.m_resourceVersions)), m_executionOrder(std::move(other.m_executionOrder)),
-      m_submissionPlan(std::move(other.m_submissionPlan)),
+      m_submissionPlan(std::move(other.m_submissionPlan)), m_importedBuffers(std::move(other.m_importedBuffers)),
       m_queueOwnershipTransfers(std::move(other.m_queueOwnershipTransfers)),
       m_queueOwnershipTransferInfos(std::move(other.m_queueOwnershipTransferInfos)),
       m_batchOutgoingOwnershipTransfers(std::move(other.m_batchOutgoingOwnershipTransfers)),
@@ -852,6 +942,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_resourceVersions = std::move(other.m_resourceVersions);
         m_executionOrder = std::move(other.m_executionOrder);
         m_submissionPlan = std::move(other.m_submissionPlan);
+        m_importedBuffers = std::move(other.m_importedBuffers);
         m_queueOwnershipTransfers = std::move(other.m_queueOwnershipTransfers);
         m_queueOwnershipTransferInfos = std::move(other.m_queueOwnershipTransferInfos);
         m_batchOutgoingOwnershipTransfers = std::move(other.m_batchOutgoingOwnershipTransfers);
@@ -971,7 +1062,7 @@ void RenderGraph::Reset()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
-    m_importedBufferAccessStages.clear();
+    m_importedBuffers.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
@@ -1000,7 +1091,7 @@ void RenderGraph::Destroy()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
-    m_importedBufferAccessStages.clear();
+    m_importedBuffers.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
@@ -1237,6 +1328,14 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image
                                           uint32_t width, uint32_t height, VkSampleCountFlagBits samples,
                                           uint32_t depth, bool isVolume)
 {
+    return ImportTextureAlias(name, image, view, format, width, height, samples, depth, isVolume, {});
+}
+
+ResourceHandle RenderGraph::ImportTextureAlias(const std::string &name, VkImage image, VkImageView view,
+                                               VkFormat format, uint32_t width, uint32_t height,
+                                               VkSampleCountFlagBits samples, uint32_t depth, bool isVolume,
+                                               rhi::TextureHandle source)
+{
     ResourceHandle handle;
     handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
@@ -1257,7 +1356,17 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image
     resource.externalImage = image;
     resource.externalView = view;
     resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
-    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
+    resource.rhiTexture =
+        m_rhiDevice ? (source.IsValid() ? m_rhiDevice->RegisterTexture(source) : m_rhiDevice->RegisterTexture(image))
+                    : rhi::TextureHandle{};
+    rhi::TextureDesc importedDesc;
+    if (m_rhiDevice && m_rhiDevice->GetTextureDesc(resource.rhiTexture, importedDesc) &&
+        importedDesc.format != rhi::PixelFormat::Undefined) {
+        resource.textureDesc.mipLevels = importedDesc.mipLevels;
+        resource.textureDesc.arrayLayers =
+            importedDesc.dimension == rhi::TextureDimension::Texture3D ? 1 : importedDesc.depthOrLayers;
+    }
+    resource.concurrentQueueSharing = m_rhiDevice && m_rhiDevice->UsesConcurrentQueueSharing(resource.rhiTexture);
 
     m_resources.push_back(std::move(resource));
     m_resourceVersions.push_back(0);
@@ -1278,12 +1387,16 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureH
     const VkImageView imageView = m_rhiDevice->Resolve(view);
     if (image == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE)
         return {};
-
-    const ResourceHandle handle =
-        ImportTexture(name, image, imageView, format, width, height, samples, depth, isVolume);
-    if (Owns(handle))
-        m_resources[handle.id].concurrentQueueSharing = m_rhiDevice->UsesConcurrentQueueSharing(texture);
-    return handle;
+    rhi::TextureDesc desc;
+    if (!m_rhiDevice->GetTextureDesc(texture, desc))
+        return {};
+    if (desc.format != rhi::PixelFormat::Undefined &&
+        (rhi::ToVkFormat(desc.format) != format || desc.width != width || desc.height != height ||
+         rhi::ToVkSampleCount(desc.samples) != samples ||
+         (isVolume ? desc.dimension != rhi::TextureDimension::Texture3D || desc.depthOrLayers != depth
+                   : desc.dimension != rhi::TextureDimension::Texture2D)))
+        return {};
+    return ImportTextureAlias(name, image, imageView, format, width, height, samples, depth, isVolume, texture);
 }
 
 RenderGraph::RenderTextureResources
@@ -1327,7 +1440,7 @@ RenderGraph::ImportRenderTexture(const std::string &name,
         const auto stages = depth && !sampledDepth
                                 ? rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth
                                 : (!depth && samples != rhi::SampleCount::One ? rhi::PipelineStage::ColorOutput
-                                                                              : rhi::PipelineStage::FragmentShader);
+                                                                              : rhi::RenderTextureSampleStages);
         SetResourceInitialState(handle, layout, access, stages);
         return handle;
     };
@@ -1410,7 +1523,7 @@ void RenderGraph::UpdateImportedRenderTextureColor(
     resource.externalOwner = generation;
     resource.externalImage = m_rhiDevice->Resolve(generation->color->GetTexture());
     resource.externalView = m_rhiDevice->Resolve(generation->color->GetView());
-    resource.rhiTexture = m_rhiDevice->RegisterTexture(resource.externalImage);
+    resource.rhiTexture = m_rhiDevice->RegisterTexture(generation->color->GetTexture());
     resource.rhiView = m_rhiDevice->RegisterTextureView(resource.externalView);
     RefreshImportedAttachmentViews(handle.id);
 }
@@ -1471,18 +1584,24 @@ ResourceHandle RenderGraph::RegisterTransientTexture(const std::string &name, ui
     return handle;
 }
 
-ResourceHandle RenderGraph::RegisterTransientBuffer(const std::string &name, VkDeviceSize size,
-                                                    VkBufferUsageFlags usage)
+ResourceHandle RenderGraph::RegisterTransientBuffer(const std::string &name, uint64_t size, rhi::BufferUsageFlags usage)
 {
     ResourceHandle handle = CreateResource(name, ResourceType::Buffer);
-    if (Owns(handle)) {
-        auto &resource = m_resources[handle.id];
-        resource.bufferDesc.name = name;
-        resource.bufferDesc.size = size;
-        resource.bufferDesc.usage = usage;
-        resource.bufferDesc.isTransient = true;
-    }
+    if (Owns(handle))
+        m_resources[handle.id].bufferDesc = {size, usage};
     return handle;
+}
+
+VkClearColorValue RenderGraph::EncodeClearColor(const VkClearColorValue &color, VkFormat format)
+{
+    if (!rhi::IsIntegerFormat(rhi::FromVkFormat(format)))
+        return color;
+    VkClearColorValue encoded{};
+    for (size_t channel = 0; channel < 4; ++channel) {
+        const double value = std::max(0.0, double{color.float32[channel]});
+        encoded.uint32[channel] = static_cast<uint32_t>(std::min(value, double{UINT32_MAX}));
+    }
+    return encoded;
 }
 
 bool RenderGraph::UpdatePassClearColor(const std::string &passName, float r, float g, float b, float a)
@@ -1490,11 +1609,11 @@ bool RenderGraph::UpdatePassClearColor(const std::string &passName, float r, flo
     for (auto &pass : m_passes) {
         if (pass.name == passName) {
             pass.clearColor = {{r, g, b, a}};
-            const uint32_t colorCount =
-                std::min<uint32_t>(static_cast<uint32_t>(pass.colorOutputs.size()),
-                                   static_cast<uint32_t>(pass.cachedRenderingColorAttachments.size()));
-            for (uint32_t i = 0; i < colorCount; ++i) {
-                pass.cachedRenderingColorAttachments[i].clearValue.color = pass.clearColor;
+            size_t index = 0;
+            for (const auto output : pass.colorOutputs) {
+                if (output.IsValid() && index < pass.cachedRenderingColorAttachments.size())
+                    pass.cachedRenderingColorAttachments[index++].clearValue.color =
+                        EncodeClearColor(pass.clearColor, m_resources[output.id].textureDesc.format);
             }
             return true;
         }
@@ -1636,19 +1755,24 @@ bool RenderGraph::Compile()
     return true;
 }
 
-bool RenderGraph::NeedsPersistentImageInitialization() const
+void RenderGraph::CollectPersistentImageInitializations(PersistentImageInitializations &images) const
 {
-    return std::any_of(m_resources.begin(), m_resources.end(), [](const ResourceData &resource) {
-        return resource.externalOwner && !resource.externalOwner->graphLayoutsInitialized;
-    });
+    for (const auto &resource : m_resources)
+        if (resource.refCount && resource.externalOwner)
+            AddPersistentImageInitialization(images, resource.externalOwner);
 }
 
-void RenderGraph::RecordPersistentImageInitialization(VkCommandBuffer commandBuffer)
+void RenderGraph::AddPersistentImageInitialization(
+    PersistentImageInitializations &images, const std::shared_ptr<const rhi::RenderTextureGeneration> &generation)
 {
-    for (const auto &resource : m_resources) {
-        const auto &generation = resource.externalOwner;
-        if (!generation || generation->graphLayoutsInitialized)
-            continue;
+    if (!generation->graphLayoutsInitialized && std::find(images.begin(), images.end(), generation) == images.end())
+        images.push_back(generation);
+}
+
+void RenderGraph::RecordPersistentImageInitializations(VkCommandBuffer commandBuffer, VulkanRhiDevice &device,
+                                                       const PersistentImageInitializations &images)
+{
+    for (const auto &generation : images) {
         // Initialize all attachments once, even when this view imports only a
         // subset. Other views borrow this same allocation and must not discard
         // it when they bind later or after their own graph has been rebuilt.
@@ -1661,29 +1785,63 @@ void RenderGraph::RecordPersistentImageInitialization(VkCommandBuffer commandBuf
             barrier.newLayout = layout;
             barrier.dstAccessMask = access;
             barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = m_rhiDevice->Resolve(image.GetTexture());
+            barrier.image = device.Resolve(image.GetTexture());
             barrier.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(rhi::ToVkFormat(image.GetFormat()));
             barrier.subresourceRange.levelCount = barrier.subresourceRange.layerCount = 1;
         };
-        add(*generation->color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT);
+        add(*generation->color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT);
         if (generation->multisampleColor)
             add(*generation->multisampleColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        const bool clearDepth = generation->depth && generation->description.samples == rhi::SampleCount::One;
+        const auto depthLayout = generation->description.sampledDepth && clearDepth
+                                     ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        const VkAccessFlags depthAccess =
+            depthLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                ? VK_ACCESS_SHADER_READ_BIT
+                : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         if (generation->depth) {
-            const bool sampled =
-                generation->description.sampledDepth && generation->description.samples == rhi::SampleCount::One;
-            add(*generation->depth,
-                sampled ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                        : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                sampled ? VK_ACCESS_SHADER_READ_BIT
-                        : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+            add(*generation->depth, clearDepth ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : depthLayout,
+                clearDepth ? VK_ACCESS_TRANSFER_WRITE_BIT : depthAccess);
         }
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                             VK_PIPELINE_STAGE_TRANSFER_BIT | rhi::ToVkPipelineStages(rhi::RenderTextureSampleStages) |
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                              0, 0, nullptr, 0, nullptr, count, barriers.data());
-        generation->graphLayoutsInitialized = true;
+        auto &color = barriers.front();
+        VkClearColorValue black{};
+        if (rhi::IsIntegerFormat(generation->color->GetFormat()))
+            black.uint32[3] = 1;
+        else
+            black.float32[3] = 1.0f;
+        vkCmdClearColorImage(commandBuffer, color.image, color.newLayout, &black, 1, &color.subresourceRange);
+        color.oldLayout = color.newLayout;
+        color.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        color.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        color.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        uint32_t readyCount = 1;
+        if (clearDepth) {
+            auto depth = barriers[count - 1];
+            const VkClearDepthStencilValue farPlane{0.0f, 0};
+            vkCmdClearDepthStencilImage(commandBuffer, depth.image, depth.newLayout, &farPlane, 1,
+                                        &depth.subresourceRange);
+            depth.oldLayout = depth.newLayout;
+            depth.newLayout = depthLayout;
+            depth.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            depth.dstAccessMask = depthAccess;
+            barriers[readyCount++] = depth;
+        }
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+                             nullptr, 0, nullptr, readyCount, barriers.data());
     }
+}
+
+void RenderGraph::PublishPersistentImageInitializations(const PersistentImageInitializations &images) noexcept
+{
+    for (const auto &generation : images)
+        generation->graphLayoutsInitialized = true;
 }
 
 void RenderGraph::BeginExecution()
@@ -1757,10 +1915,13 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordin
 
     m_recordingSubmissionBatches = false;
     m_immediateRecordingQueue = recordingQueue == rhi::QueueRole::Count ? rhi::QueueRole::Graphics : recordingQueue;
-    if (NeedsPersistentImageInitialization()) {
+    PersistentImageInitializations images;
+    CollectPersistentImageInitializations(images);
+    if (!images.empty()) {
         if (m_immediateRecordingQueue != rhi::QueueRole::Graphics)
             throw std::logic_error("Persistent images must be initialized on Graphics before queue handoff");
-        RecordPersistentImageInitialization(commandBuffer);
+        RecordPersistentImageInitializations(commandBuffer, *m_rhiDevice, images);
+        PublishPersistentImageInitializations(images);
     }
     PrepareExecutionResourceStates();
 #if INFERNUX_FRAME_PROFILE
@@ -1816,6 +1977,21 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #endif
 
     RenderContext context(commandBuffer, this);
+    auto *uploadReads = m_rhiDevice ? SubmissionReadScope::Current(commandBuffer) : nullptr;
+    const auto requireUpload = [&](const ResourceAccess &access) {
+        if (access.access == rhi::Access::None)
+            return;
+        const auto &resource = m_resources[access.handle.id];
+        if (!resource.isExternal)
+            return;
+        if (resource.type == ResourceType::Buffer) {
+            uploadReads->Add(m_rhiDevice->GetUploadSubmission(resource.rhiBuffer),
+                             rhi::ToVkPipelineStages(access.stages));
+        } else if (resource.rhiTexture.IsValid()) {
+            // An imported image may change layout before its first shader or copy access.
+            uploadReads->Add(m_rhiDevice->GetUploadSubmission(resource.rhiTexture), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        }
+    };
 
     for (uint32_t passIndex : passIndices) {
         if (passIndex >= m_passes.size()) {
@@ -1826,6 +2002,12 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 
         if (pass.culled) {
             continue;
+        }
+        if (uploadReads) {
+            for (const auto &access : pass.reads)
+                requireUpload(access);
+            for (const auto &access : pass.writes)
+                requireUpload(access);
         }
 
 #if INFERNUX_FRAME_PROFILE
@@ -1991,8 +2173,20 @@ std::vector<PassCompileInfo> RenderGraph::GetPassCompileInfos() const
 rhi::PipelineStage RenderGraph::GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept
 {
     const auto nativeBuffer = m_rhiDevice ? m_rhiDevice->Resolve(buffer) : VK_NULL_HANDLE;
-    const auto found = m_importedBufferAccessStages.find(nativeBuffer);
-    return found == m_importedBufferAccessStages.end() ? rhi::PipelineStage::None : found->second;
+    const auto found = m_importedBuffers.find(nativeBuffer);
+    return found == m_importedBuffers.end() ? rhi::PipelineStage::None : m_resources[found->second].bufferAccessStages;
+}
+
+bool RenderGraph::HasLiveWriteToImage(VkImage image) const noexcept
+{
+    if (image == VK_NULL_HANDLE)
+        return false;
+    return std::any_of(m_executionOrder.begin(), m_executionOrder.end(), [this, image](uint32_t passId) {
+        const auto &writes = m_passes[passId].writes;
+        return std::any_of(writes.begin(), writes.end(), [this, image](const ResourceAccess &write) {
+            return m_resources[write.handle.id].externalImage == image;
+        });
+    });
 }
 
 std::string RenderGraph::GetDebugString() const
@@ -2068,7 +2262,7 @@ VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
     if (resource.isExternal) {
         return resource.externalView;
     }
-    return resource.allocatedView;
+    return resource.rhiView.IsValid() ? m_rhiDevice->Resolve(resource.rhiView) : VK_NULL_HANDLE;
 }
 
 rhi::TextureViewHandle RenderGraph::ResolveRhiTextureView(ResourceHandle handle) const
@@ -2092,11 +2286,7 @@ VkBuffer RenderGraph::ResolveBuffer(ResourceHandle handle) const
         return VK_NULL_HANDLE;
     }
 
-    const auto &resource = m_resources[handle.id];
-    if (resource.isExternal) {
-        return resource.externalBuffer;
-    }
-    return resource.allocatedBuffer;
+    return m_resources[handle.id].nativeBuffer;
 }
 
 rhi::BufferHandle RenderGraph::ResolveRhiBuffer(ResourceHandle handle) const

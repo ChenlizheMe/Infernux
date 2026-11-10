@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from infernux.core.assets import AssetManager
-from infernux.lib import AssetMutationErrorCode, AssetMutationResult
+from infernux.lib import AssetMutationErrorCode, AssetMutationResult, ResourceType
 
 
 def _result(operation, path, *, succeeded=True, guid="guid", previous_path=""):
@@ -31,7 +31,10 @@ class _Database:
     def get_guid_from_path(self, path):
         return self.paths.get(path, "")
 
-    def import_asset(self, path):
+    def get_resource_type(self, path):
+        return ResourceType.DefaultText
+
+    def import_asset(self, path, *, write_scope=None):
         self.order.append("db-import")
         self.paths[path] = "new-guid"
         return _result("import", path, guid="new-guid")
@@ -43,12 +46,12 @@ class _Database:
     def get_meta_by_guid(self, guid):
         return _Metadata() if guid == "guid" else None
 
-    def delete_asset(self, path):
+    def delete_asset(self, path, *, write_scope=None):
         self.order.append("db-delete")
         self.paths.pop(path, None)
         return _result("delete", path)
 
-    def move_asset(self, old_path, new_path):
+    def move_asset(self, old_path, new_path, *, write_scope=None):
         self.order.append("db-move")
         guid = self.paths.pop(old_path, "")
         if not guid:
@@ -76,6 +79,9 @@ class _Registry:
 
 
 class _Metadata:
+    def get_resource_type(self):
+        return ResourceType.Shader
+
     def has_key(self, key):
         return key == "shader_id"
 
@@ -124,7 +130,9 @@ def test_delete_commits_database_before_evicting_live_registry(monkeypatch):
 
     result = AssetManager.delete_asset("old.txt", database=database)
     assert result and result.database_committed
-    assert order == ["db-delete", "registry-remove", "py-evict", "editor-deleted"]
+    # Native catalog publication owns resident retirement. The facade must
+    # project editor consequences once, without a second Registry removal.
+    assert order == ["db-delete", "py-evict", "editor-deleted"]
 
 
 def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
@@ -134,7 +142,7 @@ def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
 
     result = AssetManager.move_asset("old.txt", "new.txt", database=database)
     assert result and result.previous_path == "old.txt"
-    assert order == ["db-move", ("registry-move", "guid", "new.txt"), "py-evict"]
+    assert order == ["db-move", "py-evict"]
 
 
 def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):

@@ -178,6 +178,7 @@ def _numeric_fields(cls) -> dict[str, object]:
         name: metadata
         for name, metadata in get_serialized_fields(cls).items()
         if is_cds_backed(metadata.field_type)
+        and not getattr(_descriptor(cls, name), '_native_field_storage', False)
     }
 
 
@@ -193,7 +194,7 @@ def prepare_numeric_descriptors(cls) -> None:
         if name not in cls.__dict__:
             descriptor = _descriptor(cls, name)
             if isinstance(descriptor, SerializedFieldDescriptor):
-                setattr(cls, name, SerializedFieldDescriptor(metadata))
+                setattr(cls, name, descriptor.clone_for_owner())
 
 
 def _descriptor(cls, name: str):

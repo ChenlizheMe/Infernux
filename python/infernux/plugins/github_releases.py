@@ -16,7 +16,7 @@ from urllib.parse import quote, urlsplit
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_COMPATIBILITY_VERSION, ENGINE_VERSION
 
 from ._download import download_file
 from .package import InxPackage, PACKAGE_EXTENSION, validate_reference
@@ -90,7 +90,8 @@ def _release_manifest(asset: Mapping[str, object]) -> dict[str, object]:
     required = {"$schema", "reference", "version", "engine", "artifact", "generator"}
     if not isinstance(document, dict) or document.get("$schema") != RELEASE_MANIFEST_SCHEMA:
         raise RuntimeError("Unsupported GitHub plugin release manifest")
-    if frozenset(document) not in {frozenset(required), frozenset(required | {"release_tag"})}:
+    optional = {"release_tag", "engine_release", "source_revision", "plugin_source_revision", "python_abi"}
+    if not required <= document.keys() or document.keys() - required - optional:
         raise RuntimeError("Unsupported GitHub plugin release manifest")
     return document
 
@@ -120,7 +121,7 @@ def _validated_candidate(
         )
     engine = str(manifest.get("engine", "")).strip()
     try:
-        compatible = not engine or Version(ENGINE_VERSION) in SpecifierSet(engine)
+        compatible = not engine or Version(ENGINE_COMPATIBILITY_VERSION) in SpecifierSet(engine)
     except InvalidSpecifier as exc:
         raise RuntimeError(f"Invalid GitHub plugin engine range: {engine}") from exc
     artifact = manifest.get("artifact")

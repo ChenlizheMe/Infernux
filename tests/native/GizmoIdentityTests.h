@@ -48,13 +48,18 @@ class MetadataDevice final : public Device
 class MetadataQueue final : public ComputeQueue
 {
   public:
-    SubmissionTicket Submit(const Recorder &, std::shared_ptr<void>) override { throw std::logic_error("unexpected submit"); }
+    SubmissionTicket Submit(const Recorder &, ComputeSubmissionResources) override { throw std::logic_error("unexpected submit"); }
+    std::optional<SubmissionTicket> TrySubmit(const Recorder &, const ComputeSubmissionResources &, const Admission &) override
+    {
+        throw std::logic_error("unexpected try submit");
+    }
     void Wait(SubmissionTicket) override { throw std::logic_error("unexpected wait"); }
     bool IsComplete(SubmissionTicket) override { throw std::logic_error("unexpected ticket"); }
     void Collect() override {}
     bool SetProfilingEnabled(bool) override { return false; }
     GpuTimestampFrame GetProfile() const override { return {}; }
     uint64_t GetPendingSubmissionCount() const noexcept override { return 0; }
+    uint64_t GetRetainedUploadBytes() const noexcept override { return 0; }
 };
 
 inline bool Run()

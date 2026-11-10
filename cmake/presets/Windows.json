@@ -20,8 +20,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "INFERNUX_BUILD_PLAYER_HOST": "ON",
-        "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "ON"
+        "INFERNUX_BUILD_TESTS": "ON"
       }
     },
     {
@@ -31,8 +30,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "INFERNUX_BUILD_PLAYER_HOST": "ON",
-        "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "ON"
+        "INFERNUX_BUILD_TESTS": "ON"
       }
     },
     {
@@ -42,8 +40,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "INFERNUX_BUILD_PLAYER_HOST": "OFF",
-        "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "ON"
+        "INFERNUX_BUILD_TESTS": "ON"
       }
     }
   ],
@@ -79,6 +76,13 @@
       "configuration": "Release",
       "jobs": 4,
       "targets": ["prebuild_player_runtime"]
+    },
+    {
+      "name": "windows-msvc-platform-plugins",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4,
+      "targets": ["update_native_platform_plugin"]
     },
     {
       "name": "windows-msvc-wheel",

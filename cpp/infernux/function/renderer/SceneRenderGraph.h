@@ -23,11 +23,14 @@
 #include "InxRenderStruct.h"
 #include "MaterialPassPipeline.h"
 #include "RenderGraphDescription.h"
+#include "RenderInstanceHistory.h"
 #include "RendererList.h"
 #include "SceneDepthResolver.h"
 #include "lighting/CanonicalLightGpuBuffer.h"
 #include "lighting/ForwardPlusLightGrid.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
+#include "rhi/CameraViewportTarget.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
 #include "vk/ViewGlobalsBinding.h"
@@ -40,12 +43,65 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
 {
+/// A capture of one submitted graph execution, not a mutable latest-value slot.
+struct GraphBufferCapture
+{
+    enum class Status
+    {
+        Pending,
+        Accepted,
+        Cancelled
+    };
+    Status status = Status::Pending;
+    std::string error;
+    std::vector<uint64_t> shape;
+    rhi::ComputeScalarType scalarType = rhi::ComputeScalarType::Float32;
+    uint64_t byteOffset = 0;
+    uint64_t storageByteSize = 0;
+    std::string storageClaim;
+    std::shared_ptr<rhi::ComputeBuffer> storageBuffer;
+    rhi::RenderViewId view = rhi::InvalidRenderViewId;
+    uint64_t generation = 0, occurrence = 0;
+    std::string name;
+    std::shared_ptr<rhi::ComputeBuffer> value;
+    bool selected = false;
+    void Cancel(const std::string &reason)
+    {
+        if (status == Status::Pending) {
+            status = Status::Cancelled;
+            error = reason;
+            storageBuffer.reset();
+        }
+    }
+};
+
+class GraphFramePublication
+{
+  public:
+    struct Write
+    {
+        std::shared_ptr<rhi::ComputeBufferAllocation> allocation;
+        intervals::Set initialized, written;
+    };
+    struct Capture
+    {
+        std::shared_ptr<GraphBufferCapture> request;
+        std::shared_ptr<rhi::ComputeBuffer> value;
+    };
+    std::vector<Write> writes;
+    std::vector<Capture> captures;
+    GraphEventQueue events;
+    ~GraphFramePublication();
+    void Accept(rhi::SubmissionTicket completion, GraphEventQueue &acceptedEvents) noexcept;
+};
 
 class InxVkCoreModular;
 class InxMaterial;
@@ -57,7 +113,8 @@ class Scene;
 namespace rhi
 {
 class TextureGpuView;
-}
+class ComputeWorkInstance;
+} // namespace rhi
 namespace particle
 {
 class ParticleGpuDrawRegistry;
@@ -68,56 +125,6 @@ class ParticleGpuOutputRenderer;
 
 // Forward-declare from Camera.h
 enum class CameraClearFlags;
-
-/**
- * @brief Pass type enumeration for scene rendering
- */
-enum class ScenePassType
-{
-    DepthPrePass, ///< Depth-only pass for early-z optimization
-    ShadowPass,   ///< Shadow map generation
-    MainColor,    ///< Main color pass with materials
-    Transparent,  ///< Transparent objects (back-to-front)
-    UI,           ///< UI overlay (ImGui)
-    Custom        ///< Custom user-defined pass
-};
-
-/**
- * @brief Configuration for a scene render pass
- */
-struct ScenePassConfig
-{
-    std::string name;
-    ScenePassType type = ScenePassType::MainColor;
-    bool enabled = true;
-
-    // Clear settings
-    bool clearColor = true;
-    bool clearDepth = true;
-    float clearColorValue[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    float clearDepthValue = 0.0f;
-
-    // Output settings for readback
-    bool hasOwnRenderTarget = false; ///< If true, creates dedicated render target for this pass
-    bool enableReadback = false;     ///< If true, allows CPU readback of output
-
-    // Input dependencies (pass names to read from)
-    std::vector<std::string> inputPasses;
-
-    // ========================================================================
-    // Resource and subpass support
-    // ========================================================================
-
-    // Resource declarations (if empty, uses default scene target)
-    std::vector<vk::ResourceHandle> inputTextures;  ///< Input textures to read from
-    std::vector<vk::ResourceHandle> outputTextures; ///< Output color attachments
-    vk::ResourceHandle depthOutput;                 ///< Depth attachment (optional)
-
-    // Subpass support - allows multiple subpasses in one RenderPass
-    bool isSubpass = false;     ///< If true, this is a subpass of a parent pass
-    std::string parentPassName; ///< Parent pass name (if isSubpass == true)
-    uint32_t subpassIndex = 0;  ///< Index within parent pass's subpasses
-};
 
 /**
  * @brief Pass render callback signature using RenderGraph context
@@ -145,7 +152,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     SceneRenderGraph &operator=(const SceneRenderGraph &) = delete;
 
     /**
-     * @brief Initialize the scene render graph
+     * @brief Initialize logical view identity; GPU view resources are prepared on first use
      * @param vkCore Vulkan core for resource access
      * @param sceneTarget Scene render target for external resources
      * @return true if successful
@@ -154,11 +161,19 @@ class SceneRenderGraph : public NativeLifetimeOwner
                     rhi::RenderViewKind viewKind = rhi::RenderViewKind::Scene,
                     std::shared_ptr<rhi::RenderTexture> output = {});
 
+    /// Called after Initialize at the renderer's idle scene boundary. Only
+    /// physical transient images move; all previous view/scene state is retired.
+    void TakeReusableImagesFrom(SceneRenderGraph &previous)
+    {
+        m_renderGraph->TakeReusableImagesFrom(*previous.m_renderGraph);
+    }
+
     [[nodiscard]] uint64_t GetResourceAccessRevision() const
     {
         return m_resourceAccessRevision;
     }
     [[nodiscard]] RenderViewAccess GetResourceAccess() const;
+    [[nodiscard]] bool HasPendingBufferInputs(bool forStep = false) const;
 
     /**
      * @brief Cleanup resources
@@ -209,16 +224,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
      */
     bool ApplyPythonGraph(const RenderGraphDescription &desc);
 
-    /// Validate a backend-neutral graph description before applying it.
-    [[nodiscard]] static bool ValidateGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples);
-
-    /// Resolve a validated raster pass against this view's actual attachments,
-    /// never against the presentation/material manager's global defaults.
-    [[nodiscard]] static MaterialPassPipelineDescriptor ResolveMaterialPass(const RenderGraphDescription &graph,
-                                                                            const GraphPassDesc &pass,
-                                                                            const rhi::RenderViewContext &view,
-                                                                            bool invertCulling = false);
-
     /// Upload changed runtime parameter blocks without rebuilding graph topology.
     void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
 
@@ -238,6 +243,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
      */
     void SetScreenUIRenderer(InxScreenUIRenderer *renderer, bool screenOutput = true)
     {
+        if (m_screenUIOutput != screenOutput && m_viewportGeneration)
+            m_needsRebuild = true;
         m_screenUIRenderer = renderer;
         m_screenUIOutput = screenOutput;
     }
@@ -271,7 +278,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
      */
     [[nodiscard]] int GetRequestedMsaaSamples() const
     {
-        return m_hasPythonGraph ? m_pythonGraphDesc.msaaSamples : 0;
+        return m_pythonGraphValid ? m_pythonGraphDesc.msaaSamples : 0;
     }
 
     /// Return the square shadow atlas extent declared by this graph, or zero
@@ -287,13 +294,14 @@ class SceneRenderGraph : public NativeLifetimeOwner
     }
 
     void SetOutputTexture(std::shared_ptr<rhi::RenderTexture> output);
+    bool SetCameraViewport(const Camera &camera);
     [[nodiscard]] bool HasOutputTexture() const noexcept
     {
         return m_outputTexture != nullptr;
     }
     [[nodiscard]] SceneRenderTarget *GetOutputTarget() const noexcept
     {
-        return m_sceneTarget;
+        return m_outputTarget && m_outputTexture ? m_outputTarget.get() : m_screenTarget;
     }
 
     /// Replace the external target without reinitializing graph-owned pools.
@@ -303,18 +311,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     // ========================================================================
     // Resource management
     // ========================================================================
-
-    /**
-     * @brief Create a transient texture resource
-     * @param name Resource name for debugging
-     * @param width Texture width
-     * @param height Texture height
-     * @param format Vulkan format
-     * @param isTransient Transient usage hint; graph-owned storage remains independent
-     * @return Resource handle for use in pass configuration
-     */
-    vk::ResourceHandle CreateTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
-                                              bool isTransient = true);
 
     /**
      * @brief Get the scene color target resource handle
@@ -338,26 +334,14 @@ class SceneRenderGraph : public NativeLifetimeOwner
     // Execution (Pure RenderGraph)
     // ========================================================================
 
-    /**
-     * @brief Build and execute the render graph for the current frame
-     * @param commandBuffer Command buffer to record into
-     *
-     * This method:
-     * 1. Applies per-frame camera clear overrides without rebuild
-     * 2. Calls RenderGraph::Execute() to record all commands
-     *
-     * Call EnsureGraphBuilt() before command buffer recording to handle
-     * rebuilds and compilation.
-     */
-    void Execute(VkCommandBuffer commandBuffer);
-
     /// Prepare mutable per-frame state before the backend records the
     /// compiler-produced submission batches on their native queues.
     [[nodiscard]] bool PrepareSubmissionExecution();
 
-    /// Complete diagnostics and publish the offscreen output after every
-    /// compiler-produced batch has been recorded.
+    /// Record diagnostics after the view's batches.
     [[nodiscard]] bool CompleteSubmissionExecution(VkCommandBuffer commandBuffer);
+    /// Advance the view's history after the frame submission is accepted.
+    void CommitSubmissionExecution();
 
     [[nodiscard]] vk::RenderGraph *GetCompiledRenderGraph() noexcept
     {
@@ -382,8 +366,14 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// @brief Diagnostic: whether the graph is currently built and ready to execute
     [[nodiscard]] bool IsGraphBuilt() const
     {
-        return m_graphBuilt;
+        return m_graphBuilt && !m_graphStorageDeferred;
     }
+
+    [[nodiscard]] bool IsGraphStorageDeferred() const noexcept
+    {
+        return m_graphStorageDeferred;
+    }
+    [[nodiscard]] bool AdmitGraphEvents(const GraphEventInterests &interests);
 
     /// @brief Diagnostic: whether the graph needs a rebuild before next execute
     [[nodiscard]] bool NeedsRebuild() const
@@ -414,6 +404,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         for (const auto &pass : m_pythonGraphDesc.passes) {
             for (const auto &command : pass.commands) {
                 if (command.type == GraphCommandType::FullscreenQuad && command.shaderName == shaderName) {
+                    InvalidateTemporalHistory();
                     m_needsRebuild = true;
                     return;
                 }
@@ -495,10 +486,16 @@ class SceneRenderGraph : public NativeLifetimeOwner
         }
     };
 
-    /// Latest background-compute publication consumed by this view's material
-    /// or imported graph buffers. Callers add its compute->graphics frame wait.
-    [[nodiscard]] rhi::SubmissionTicket
-    GetLatestComputeBufferWriteSubmission(rhi::PipelineStage &consumerStages) const noexcept;
+    /// Actual producers consumed by live passes; serials from distinct queues
+    /// are separate dependencies, never a device-wide ordering counter.
+    [[nodiscard]] std::vector<rhi::SubmissionDependency> GetBufferReadDependencies() const;
+    [[nodiscard]] const rhi::ComputeBufferBindings &GetComputeBufferBindings() const noexcept
+    {
+        return m_computeBufferReads;
+    }
+    [[nodiscard]] std::shared_ptr<void> AcquireComputeReadValues() const;
+    [[nodiscard]] std::shared_ptr<GraphBufferCapture> CaptureBuffer(const std::string &name);
+    [[nodiscard]] std::shared_ptr<GraphFramePublication> PreparePublication(const GraphEventInterests &interests);
 
     /// Classify an implicit material/UI sample against explicit same-graph
     /// writers. Sampling before a local producer or in its writing pass is
@@ -507,17 +504,22 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature, uint64_t objectBufferRevision) const noexcept
     {
-        return m_hasCachedDrawCalls && signature != 0 && objectBufferRevision != 0 &&
-               m_cachedSubmissionSignature == signature && m_cachedObjectBufferRevision == objectBufferRevision &&
+        return m_hasCachedDrawCalls && signature != 0 && HasReadyObjectBindings(objectBufferRevision) &&
+               m_cachedSubmissionSignature == signature &&
                m_cachedParticleDrawRegistryRevision == CurrentParticleDrawRegistryRevision();
     }
 
-    void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner = {},
-                                      uint64_t objectBufferRevision = 0)
+    [[nodiscard]] bool HasReadyObjectBindings(uint64_t revision) const noexcept
+    {
+        return revision != 0 && m_cachedObjectBufferRevision == revision;
+    }
+
+    void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner,
+                                      uint64_t readyObjectBufferRevision)
     {
         m_cachedSubmissionSignature = signature;
         m_cachedRenderWorldOwner = std::move(owner);
-        m_cachedObjectBufferRevision = objectBufferRevision;
+        m_cachedObjectBufferRevision = readyObjectBufferRevision;
         m_cachedParticleDrawRegistryRevision = CurrentParticleDrawRegistryRevision();
     }
 
@@ -609,8 +611,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// explicitly declares it static and it has no frame-varying skin pose.
     [[nodiscard]] static bool ShadowCasterRequiresContinuousUpdate(const DrawCall &drawCall) noexcept
     {
-        return !drawCall.isStatic || drawCall.skinBoneMatrices != nullptr ||
-               drawCall.previousSkinBoneMatrices != nullptr;
+        return !drawCall.isStatic || drawCall.skinBoneMatrices != nullptr;
     }
 
     /// Upload this view's camera constants into its current frame-local buffer.
@@ -643,9 +644,27 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_cachedUnjitteredProj = glm::mat4(1.0f);
         m_hasCachedCameraVP = false;
         m_cachedCamera = nullptr;
-        m_previousViewProj = glm::mat4(1.0f);
-        m_cameraHistoryValid = false;
+        m_requestedDraw = 0;
         InvalidateTemporalHistory();
+    }
+
+    void RequestView(uint64_t draw, uint64_t objectBindingIdentity, bool reusesObjectBindings) noexcept
+    {
+        m_requestedDraw = draw;
+        m_objectBindingIdentity = objectBindingIdentity;
+        m_reusesObjectBindings = reusesObjectBindings;
+    }
+    [[nodiscard]] bool IsViewRequested(uint64_t draw) const noexcept
+    {
+        return m_requestedDraw == draw;
+    }
+    [[nodiscard]] uint64_t GetObjectBindingIdentity() const noexcept
+    {
+        return m_objectBindingIdentity;
+    }
+    [[nodiscard]] bool ReusesObjectBindings() const noexcept
+    {
+        return m_reusesObjectBindings;
     }
 
     /// Retire per-view particle cullers/sorters and forbid executing a compiled
@@ -662,8 +681,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// VkImage handles are not used in barrier insertion.
     void ClearCachedFrameState()
     {
+        CancelBufferCaptures("render view scene was reset");
+        ++m_bufferGeneration;
         ClearCachedViewSubmission();
         InvalidateParticleViews();
+        RetireWorkInstances();
         InvalidatePerViewShadowBindings();
         m_needsRebuild = true;
         // Prevent Execute() from running the old compiled graph before
@@ -677,12 +699,16 @@ class SceneRenderGraph : public NativeLifetimeOwner
         // pipeline calls ApplyPythonGraph().  This avoids the MSAA
         // mismatch guard firing on an outdated descriptor.
         m_hasPythonGraph = false;
+        m_pythonGraphValid = false;
         m_hasShadowCasterPass = false;
         m_parameterBlocks.clear();
         m_submittedParameterBlocks.clear();
         ++m_parameterBlockGeneration;
         m_submittedParameterBlockGeneration = m_parameterBlockGeneration;
         m_pythonMaterialPasses.clear();
+        m_materialTextureReads.clear();
+        m_materialBufferReads.clear();
+        m_liveBufferInputs.clear();
         m_pythonGraphDesc = {};
         ++m_resourceAccessRevision;
     }
@@ -715,7 +741,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
             return;
         m_previousViewProj = m_cachedProj * m_cachedView;
         m_cameraHistoryValid = true;
-        if (m_pythonGraphDesc.temporalJitter)
+        if (m_pythonGraphValid && m_pythonGraphDesc.temporalJitter)
             m_temporalSampleIndex = (m_temporalSampleIndex + 1u) % kTemporalJitterSampleCount;
     }
 
@@ -729,6 +755,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     [[nodiscard]] rhi::BindGroupHandle GetEditorOverlayBindGroup() const;
 
     /// Build immutable lighting and shadow state owned by this camera graph.
+    /// Stage the existing CPU collector; EnsureGraphBuilt publishes its GPU data.
     void StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
                              const ShaderLightingUBO &environmentLighting);
     [[nodiscard]] bool HasCameraShadows() const noexcept
@@ -765,19 +792,38 @@ class SceneRenderGraph : public NativeLifetimeOwner
         std::unordered_map<uint64_t, particle::GpuParticleViewDiagnosticSnapshot> snapshots;
     };
 
-    /**
-     * @brief Build the vk::RenderGraph from configured passes
-     */
-    void BuildRenderGraph();
+    struct GraphAssetTexture
+    {
+        const GraphTextureDesc *descriptor;
+        std::shared_ptr<const rhi::TextureGpuView> publication;
+        uint64_t contentGeneration;
+    };
+    void BuildRenderGraph(bool buffersPrepared, const std::vector<GraphAssetTexture> &assetTextures);
+    void CacheLiveAuthorPasses();
+    [[nodiscard]] bool EnsureViewGpuResources();
+    void ReleaseViewGpuResources() noexcept;
+    [[nodiscard]] bool UploadCameraLighting();
     void RefreshMaterialTextureReads();
 
-    /**
-     * @brief Pre-register all non-backbuffer transient textures so their
-     * ResourceHandles are available before passes reference them.
-     */
-    bool RegisterTransientTextures(uint32_t width, uint32_t height,
-                                   std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
+    /// Register graph texture allocations and publish the imported bindings before adding the author passes.
+    bool RegisterGraphTextures(uint32_t width, uint32_t height, const std::vector<GraphAssetTexture> &assetTextures,
+                               std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
     void RetireImportedTextureAssets();
+    void RetireWorkInstances();
+    bool ProveGraphBufferContents();
+    bool PrepareGraphBuffers();
+    [[nodiscard]] bool CanRetainEventBuffers(const GraphEventInterests &interests) const;
+    void PublishGraphBuffers();
+    void CancelBufferCaptures(const std::string &reason);
+    [[nodiscard]] const GraphBufferDesc &FindBufferExport(const std::string &name) const;
+    [[nodiscard]] std::shared_ptr<GraphBufferCapture> MakeBufferCapture(const GraphBufferDesc &buffer) const;
+    [[nodiscard]] rhi::ComputeBufferBindings CaptureComputeBufferReads() const;
+    bool RefreshComputeBufferBindings(bool &prepared);
+    void RetireComputeBufferBindings();
+    void DeclareMaterialBufferReads(vk::PassBuilder &builder, const std::string &passName);
+    bool ValidateOutputTextureAliases(const RenderGraphDescription &description) const;
+    std::optional<GraphPassDesc> ResolveCameraClearOverride() const;
+    std::shared_ptr<rhi::ComputeBuffer> ResolveGraphBufferOwner(const GraphBufferDesc &buffer) const;
 
     [[nodiscard]] MaterialPassPipelineDescriptor GetEditorOverlayMaterialPass() const;
 
@@ -792,6 +838,9 @@ class SceneRenderGraph : public NativeLifetimeOwner
      * @brief Set the graph output handle for dead-pass culling.
      */
     void FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
+    vk::ResourceHandle CopyViewportRegion(const std::string &name, vk::ResourceHandle source,
+                                          vk::ResourceHandle destination, rhi::TextureAspect aspect, bool restore);
+    void ImportViewportDestination();
     vk::ResourceHandle AppendEditorOutline(vk::ResourceHandle displayTarget);
 
     /**
@@ -801,7 +850,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     void ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles);
     void BindTemporalHistoryResources();
     void CommitTemporalHistory();
-    void RetireTemporalHistoryResources();
+    void UpdateTemporalProjection();
 
     /// @brief Update this frame's per-view shadow descriptor before recording.
     void RefreshPerViewShadowDescriptor();
@@ -822,6 +871,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::shared_ptr<rhi::RenderTexture> m_outputTexture;
     std::shared_ptr<const rhi::RenderTextureGeneration> m_outputGeneration;
     std::unique_ptr<SceneRenderTarget> m_outputTarget;
+    rhi::CameraViewportTarget m_viewport;
+    std::shared_ptr<const rhi::RenderTextureGeneration> m_viewportGeneration;
+    std::unique_ptr<SceneRenderTarget> m_viewportWorkTarget;
+    vk::ResourceHandle m_viewportOutputColor, m_viewportOutputRaster, m_viewportOutputDepth;
+    bool m_viewportColorPublished = false;
     rhi::RenderViewContext m_renderView;
     InxScreenUIRenderer *m_screenUIRenderer = nullptr;
     bool m_screenUIOutput = true;
@@ -834,8 +888,12 @@ class SceneRenderGraph : public NativeLifetimeOwner
     uint64_t m_worldUIDepthRunSignature = 0;
     bool m_needsCompile = true;
     bool m_graphBuilt = false;
+    bool m_graphStorageDeferred = false;
+    bool m_graphBuffersPublished = false;
+    bool m_viewGpuResourcesReady = false;
     int m_effectiveMsaaSamples = 0;
     bool m_hasPythonGraph = false;
+    bool m_pythonGraphValid = false;
     uint64_t m_pythonGraphSourceRevision = 0;
     rhi::GraphicsRenderingSignature m_pythonCallbackTarget;
     bool m_cameraInvertCulling = false;
@@ -846,6 +904,30 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     // Python graph description (stored for BuildRenderGraph)
     RenderGraphDescription m_pythonGraphDesc;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> m_workInstances;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_graphBufferOwners;
+    std::vector<std::pair<vk::ResourceHandle, size_t>> m_graphBufferImports;
+    std::vector<std::pair<vk::ResourceHandle, const rhi::ComputeBuffer *>> m_materialBufferImports;
+    GraphBufferContents m_graphBufferContents;
+    std::unordered_set<std::string> m_graphBufferWrites;
+    std::vector<std::weak_ptr<GraphBufferCapture>> m_bufferCaptures;
+    struct AuthorPass
+    {
+        size_t index;
+        std::optional<size_t> dispatch;
+    };
+    std::unordered_map<uint32_t, AuthorPass> m_authorPassIndices;
+    std::vector<size_t> m_executedEventPasses;
+    // Validated readers of the current description survive a deferred rebuild.
+    std::vector<GraphBufferInput *> m_liveBufferInputs;
+    uint64_t m_bufferOccurrence = 0;
+    uint64_t m_bufferGeneration = 0;
+    uint64_t m_historyEpoch = 0;
+    bool m_historyResetPending = false;
+    uint64_t m_requestedDraw = 0;
+    uint64_t m_objectBindingIdentity = 0;
+    bool m_reusesObjectBindings = false;
+    CameraClearFlags m_bufferProofClearFlags = {};
     uint64_t m_resourceAccessRevision = 1;
 
     struct RuntimeParameterBlock
@@ -866,8 +948,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     uint64_t m_submittedParameterBlockGeneration = 0;
 
     // Render callbacks keyed by pass name.
-    // Populated by ApplyPythonGraph(). BuildRenderGraph() reads this map directly,
-    // bypassing the intermediate ScenePassConfig conversion.
+    // Published by ApplyPythonGraph and consumed when building the runtime graph.
     std::unordered_map<std::string, ScenePassRenderCallback> m_pythonCallbacks;
     std::unordered_map<std::string, MaterialPassPipelineDescriptor> m_pythonMaterialPasses;
 
@@ -896,9 +977,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     vk::ResourceHandle m_visibleRendererList;
     vk::ResourceHandle m_shadowRendererList;
 
-    // Transient resources created by CreateTransientTexture()
-    std::unordered_map<std::string, vk::ResourceHandle> m_transientResources;
-
     struct TemporalHistoryResource
     {
         std::array<std::shared_ptr<rhi::RenderTexture>, 2> targets{};
@@ -913,13 +991,26 @@ class SceneRenderGraph : public NativeLifetimeOwner
         bool valid = false;
     };
     std::unordered_map<std::string, TemporalHistoryResource> m_temporalHistories;
-    std::unordered_map<const rhi::RenderTexture *, uint64_t> m_persistentTextureRevisions;
+    struct ImportedTextureBinding
+    {
+        rhi::TextureHandle texture;
+        rhi::SamplerHandle sampler;
+        rhi::PixelFormat format;
+        uint64_t revision;
+        uint64_t contentGeneration = 0;
+        /// Retained by the compiled graph's external allocation owner.
+        const rhi::TextureResource *persistentAttachment = nullptr;
+        bool operator!=(const ImportedTextureBinding &other) const noexcept
+        {
+            return texture != other.texture || sampler != other.sampler || format != other.format ||
+                   revision != other.revision || contentGeneration != other.contentGeneration;
+        }
+    };
+    std::unordered_map<std::string, ImportedTextureBinding> m_importedTextureBindings;
     std::vector<std::shared_ptr<const rhi::TextureGpuView>> m_graphTexturePublications;
-    std::unordered_map<std::string, rhi::SamplerHandle> m_graphTextureSamplers;
-    std::unordered_map<std::string, rhi::PixelFormat> m_graphTextureFormats;
-    std::unordered_map<std::string, uint64_t> m_graphTextureAssetVersions;
     std::vector<MaterialTextureRead> m_materialTextureReads;
     std::vector<MaterialBufferRead> m_materialBufferReads;
+    rhi::ComputeBufferBindings m_computeBufferReads;
     std::unordered_map<std::string, std::vector<std::shared_ptr<const rhi::RenderTextureGeneration>>>
         m_drawTextureInputs;
 
@@ -970,10 +1061,12 @@ class SceneRenderGraph : public NativeLifetimeOwner
     glm::mat4 m_cachedUnjitteredProj{1.0f};
     std::array<float, 24> m_particleFrustumPlanes{};
     bool m_hasCachedCameraVP = false;
+    bool m_cameraMatricesStaged = false;
     glm::mat4 m_drawView{1.0f};
     glm::mat4 m_billboardView{1.0f};
     bool m_hasBillboardView = false;
     glm::mat4 m_previousViewProj{1.0f};
+    RenderInstanceHistory m_motionHistory;
     bool m_cameraHistoryValid = false;
     const Camera *m_cachedCamera = nullptr;
     uint64_t m_cachedCameraHistoryRevision = 0;

@@ -5,7 +5,7 @@ ShaderInfo {
     ShadingModel PBR
     Queue 2000
     Cull None
-    AlphaClip on
+    AlphaClip 0.5
     Properties {
         Color baseColor = [1.0, 1.0, 1.0, 1.0]
         Float metallic = 0.0
@@ -15,7 +15,9 @@ ShaderInfo {
         Float normalScale = 1.0
         Float specularHighlights = 1.0
         Texture2D texSampler = white
+        Float4 texSampler_ST = [1.0, 1.0, 0.0, 0.0]
         Texture2D normalMap = normal
+        Float4 normalMap_ST = [1.0, 1.0, 0.0, 0.0]
         Float4 uvRect = [0.0, 0.0, 1.0, 1.0]
         Float4 displayScale = [1.0, 1.0, 0.0, 0.0]
     }
@@ -32,12 +34,12 @@ void surface(out SurfaceData s) {
     }
     // uvRect: xy = offset, zw = scale (sub-rect in UV space)
     vec2 uv = material.uvRect.xy + tc * material.uvRect.zw;
-    vec4 texColor = texture(texSampler, uv);
+    vec4 texColor = texture(texSampler, transformTextureUV(uv, material.texSampler_ST));
     s.albedo     = texColor.rgb * material.baseColor.rgb;
     s.metallic   = material.metallic;
     s.smoothness = material.smoothness;
     s.occlusion  = material.ambientOcclusion;
-    s.normalWS   = sampleNormal(normalMap, material.normalScale);
+    s.normalWS   = sampleNormal(normalMap, transformTextureUV(v_TexCoord, material.normalMap_ST), material.normalScale);
     s.emission   = material.emissionColor.rgb * material.emissionColor.a;
     s.alpha      = texColor.a * material.baseColor.a;
     s.specularHighlights = material.specularHighlights;

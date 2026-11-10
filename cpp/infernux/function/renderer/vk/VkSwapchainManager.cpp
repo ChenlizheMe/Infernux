@@ -299,11 +299,8 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
                      m_imageAvailableSemaphores.size(), " acquire semaphores");
         return SwapchainResult::Error;
     }
-    // Acquire the next image
-    // Use a finite timeout (500 ms) so we never hang forever when the
-    // window is occluded or the compositor is busy (e.g. Alt+Tab).
-    constexpr uint64_t kAcquireTimeoutNs = 500'000'000; // 500 ms
-    VkResult result = m_dispatch.acquireNextImage(m_device, m_generation.swapchain, kAcquireTimeoutNs,
+    // A busy presentation surface defers drawing until another host cycle.
+    VkResult result = m_dispatch.acquireNextImage(m_device, m_generation.swapchain, 0,
                                                   m_imageAvailableSemaphores[frameSlot], VK_NULL_HANDLE, &imageIndex);
 
     if (result == VK_ERROR_SURFACE_LOST_KHR) {
@@ -322,8 +319,7 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
         return SwapchainResult::Success;
     }
     if (result == VK_TIMEOUT || result == VK_NOT_READY) {
-        // The window is likely occluded or the compositor is busy. No image was
-        // acquired, so skip this frame without destroying a valid generation.
+        // No image was acquired. Keep this swapchain and its acquire semaphore.
         return SwapchainResult::SkipFrame;
     }
     if (result != VK_SUCCESS) {

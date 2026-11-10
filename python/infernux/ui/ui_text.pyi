@@ -23,7 +23,7 @@ class UIText(InxUIScreenComponent):
         fallback_fonts: Ordered fallback Font assets, persisted by GUID.
         font_size: Font size in canvas pixels.
         line_height: Line height multiplier.
-        letter_spacing: Extra letter spacing in pixels.
+        letter_spacing: Extra spacing per character in pixels. Keep 0 for the font's natural CJK/Latin cell alignment.
         text_align_h: Horizontal text alignment.
         text_align_v: Vertical text alignment.
         overflow: Text overflow mode.

@@ -1,7 +1,8 @@
 """Isolated graph-builder state for replaying one mounted effect's values."""
 from __future__ import annotations
 
-from infernux.rendergraph.graph import BufferHandle, RenderGraph, RenderPassBuilder, TextureHandle
+from infernux.lib import GraphTextureDesc
+from infernux.rendergraph.graph import BufferHandle, RenderGraph, RenderPassBuilder, TextureHandle, WorkBinding
 from infernux.renderstack.pass_result import PassResult
 from infernux.renderstack.resource_bus import ResourceBus
 
@@ -15,8 +16,12 @@ def _fork(graph, resources):
         identity = id(value)
         if identity in memo:
             return memo[identity]
-        if isinstance(value, (RenderGraph, RenderPassBuilder, TextureHandle, BufferHandle, PassResult)):
-            result = object.__new__(type(value))
+        if isinstance(value, (RenderGraph, RenderPassBuilder, TextureHandle, BufferHandle, WorkBinding, PassResult)):
+            if isinstance(value, TextureHandle):
+                result = GraphTextureDesc.__new__(type(value))
+                GraphTextureDesc.__init__(result, value)
+            else:
+                result = object.__new__(type(value))
             memo[identity] = result
             result.__dict__.update({key: clone(item) for key, item in vars(value).items()})
             if isinstance(result, RenderGraph):
@@ -56,6 +61,8 @@ def _fork(graph, resources):
 def graph_structure(graph):
     """Exact builder structure, excluding only dynamic parameter values."""
     def freeze(value):
+        if isinstance(value, WorkBinding):
+            return ("work_binding", value.name)
         if isinstance(value, dict):
             return tuple((key, freeze(item)) for key, item in value.items())
         if isinstance(value, (tuple, list)):
@@ -65,8 +72,16 @@ def graph_structure(graph):
         return value
 
     return (
-        tuple(freeze(vars(handle)) for handle in graph._textures),
+        tuple((GraphTextureDesc(handle), freeze(vars(handle))) for handle in graph._textures),
         tuple(freeze(vars(handle)) for handle in graph._buffers),
+        tuple((
+            binding.name,
+            # Keep the immutable recipe alive as well as comparing identity:
+            # equal port layouts do not imply equal prepared computation.
+            id(binding._native), binding._native,
+            tuple(sorted((name, source.name, source.byte_offset, source.byte_size)
+                         for name, source in binding._input_bindings.items())),
+        ) for binding in graph._work_bindings),
         tuple(freeze({
             key: tuple(value) if key == "_push_constants" else value
             for key, value in vars(render_pass).items()

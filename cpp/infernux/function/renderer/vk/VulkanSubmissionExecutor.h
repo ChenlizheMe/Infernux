@@ -1,6 +1,9 @@
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include "VulkanCommandUploads.h"
+#include "VulkanSubmissionWaits.h"
 
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 
@@ -29,13 +32,10 @@ class VulkanSubmissionExecutor
 
     struct ExternalSync
     {
+        // Recording can add actual resource producers before queue reservation.
+        std::vector<SubmissionWait> producers;
         VkSemaphore imageAvailable = VK_NULL_HANDLE;
         VkPipelineStageFlags imageAvailableStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkSemaphore uploadTimeline = VK_NULL_HANDLE;
-        uint64_t uploadTimelineValue = 0;
-        VkSemaphore backgroundComputeTimeline = VK_NULL_HANDLE;
-        uint64_t backgroundComputeTimelineValue = 0;
-        VkPipelineStageFlags backgroundComputeStages = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
         VkSemaphore renderFinished = VK_NULL_HANDLE;
         VkFence completionFence = VK_NULL_HANDLE;
         VkSemaphore previousFrameTimeline = VK_NULL_HANDLE;
@@ -55,7 +55,8 @@ class VulkanSubmissionExecutor
         rhi::SubmissionTicket completionTicket{};
         VkSemaphore completionTimeline = VK_NULL_HANDLE;
         uint64_t completionTimelineValue = 0;
-        bool submittedAny = false;
+        // Prefix of the plan accepted by the queues, even if a later submit fails.
+        size_t submittedBatchCount = 0;
 
         [[nodiscard]] bool Succeeded() const noexcept
         {
@@ -64,27 +65,32 @@ class VulkanSubmissionExecutor
     };
 
     VulkanSubmissionExecutor() = default;
-    ~VulkanSubmissionExecutor();
+    INFERNUX_VULKAN_BACKEND_API ~VulkanSubmissionExecutor();
     VulkanSubmissionExecutor(const VulkanSubmissionExecutor &) = delete;
     VulkanSubmissionExecutor &operator=(const VulkanSubmissionExecutor &) = delete;
 
-    bool Initialize(VkDeviceContext &device, VulkanQueueManager &queues, uint32_t frameSlotCount);
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API bool Initialize(VkDeviceContext &device, VulkanQueueManager &queues,
+                                                uint32_t frameSlotCount);
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
-    [[nodiscard]] ExecuteResult Execute(uint32_t frameSlot, const rhi::SubmissionPlan &plan,
-                                        const BatchRecorder &recorder, const ExternalSync &sync);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ExecuteResult Execute(uint32_t frameSlot, const rhi::SubmissionPlan &plan,
+                                                                    const BatchRecorder &recorder,
+                                                                    const ExternalSync &sync);
 
     /// Publish completion for every queue ticket that contributed to a frame
     /// after the frame completion fence has signaled.
-    void CompleteFrame(uint32_t frameSlot) noexcept;
+    INFERNUX_VULKAN_BACKEND_API void CompleteFrame(uint32_t frameSlot) noexcept;
 
-    /// Emit timeline counter evidence for a frame that has exceeded its fence
-    /// budget. This is intentionally read-only and safe to call while waiting.
-    void LogFrameWaitDiagnostics(uint32_t frameSlot, uint32_t elapsedMilliseconds) const noexcept;
+    /// Actual retained page capacities across slots and roles. Observation
+    /// neither collects completion nor resets or releases cached storage.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API uint64_t GetRetainedUploadBytes() const noexcept;
 
-    [[nodiscard]] VkSemaphore GetDependencyTimeline(rhi::QueueRole role) const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkSemaphore GetDependencyTimeline(rhi::QueueRole role) const noexcept;
 
   private:
+    friend class VulkanComputeQueue;
+    [[nodiscard]] VulkanCommandUploads &CommandUploads(uint32_t frameSlot, rhi::QueueRole role) noexcept;
+
     struct RolePool
     {
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -99,40 +105,15 @@ class VulkanSubmissionExecutor
         std::vector<rhi::SubmissionTicket> submittedTickets;
     };
 
-    struct LaneTimeline
-    {
-        VkSemaphore semaphore = VK_NULL_HANDLE;
-        uint64_t nextValue = 1;
-    };
-
-    struct FrameDiagnostic
-    {
-        std::vector<rhi::QueueRole> batchRoles;
-        std::vector<uint32_t> batchLanes;
-        std::vector<uint64_t> batchSignalValues;
-        std::vector<uint32_t> batchQueuePredecessors;
-        std::vector<std::vector<rhi::SubmissionBatchDependency>> batchWaits;
-        std::vector<std::string> batchNames;
-        VkSemaphore previousTimeline = VK_NULL_HANDLE;
-        uint64_t previousTimelineValue = 0;
-        VkSemaphore uploadTimeline = VK_NULL_HANDLE;
-        uint64_t uploadTimelineValue = 0;
-        VkSemaphore backgroundComputeTimeline = VK_NULL_HANDLE;
-        uint64_t backgroundComputeTimelineValue = 0;
-        VkSemaphore completionTimeline = VK_NULL_HANDLE;
-        uint64_t completionTimelineValue = 0;
-    };
-
     [[nodiscard]] bool CreatePools(FrameState &frame);
     [[nodiscard]] VkCommandBuffer AcquireCommandBuffer(FrameState &frame, rhi::QueueRole role);
-    void CancelReservations(const std::vector<rhi::SubmissionTicket> &tickets, size_t first) noexcept;
 
     VkDeviceContext *m_deviceContext = nullptr;
     VulkanQueueManager *m_queues = nullptr;
     VkDevice m_device = VK_NULL_HANDLE;
-    std::vector<LaneTimeline> m_laneTimelines;
+    // Borrowed device-owned timelines; executors own command pools, not queue identity.
+    std::vector<VkSemaphore> m_laneTimelines;
     std::vector<FrameState> m_frames;
-    std::vector<FrameDiagnostic> m_frameDiagnostics;
 };
 
 } // namespace infernux::vk

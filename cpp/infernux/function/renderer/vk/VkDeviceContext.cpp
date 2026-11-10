@@ -426,14 +426,14 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         return false;
     }
 
-    if (surface == VK_NULL_HANDLE) {
-        INXLOG_ERROR("Invalid surface handle");
+    if (config.presentation != (surface != VK_NULL_HANDLE)) {
+        INXLOG_ERROR("Vulkan surface does not match the declared presentation requirement");
         return false;
     }
 
-    INXLOG_INFO("Initializing Vulkan device with external surface...");
+    INXLOG_INFO("Initializing Vulkan device; presentation=", config.presentation);
 
-    // Store surface (we don't own it - created externally)
+    // Adopt the externally created surface; release it before its window closes.
     m_surface = surface;
 
     // Step 1: Pick physical device
@@ -530,10 +530,7 @@ void VkDeviceContext::Destroy() noexcept
     m_descriptorIndexingEnabled = false;
     m_timelineSemaphoreEnabled = false;
 
-    if (m_surface != VK_NULL_HANDLE && m_instance != VK_NULL_HANDLE) {
-        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-        m_surface = VK_NULL_HANDLE;
-    }
+    DestroySurface();
 
     if (m_debugMessenger != VK_NULL_HANDLE && m_instance != VK_NULL_HANDLE) {
         DestroyDebugUtilsMessengerEXT(m_instance, m_debugMessenger, nullptr);
@@ -545,6 +542,13 @@ void VkDeviceContext::Destroy() noexcept
         m_instance = VK_NULL_HANDLE;
     }
     m_instanceApiVersion = VK_API_VERSION_1_2;
+}
+
+void VkDeviceContext::DestroySurface() noexcept
+{
+    if (m_surface != VK_NULL_HANDLE && m_instance != VK_NULL_HANDLE)
+        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+    m_surface = VK_NULL_HANDLE;
 }
 
 // ============================================================================
@@ -768,10 +772,9 @@ bool VkDeviceContext::PickPhysicalDevice(const DeviceConfig &config)
     // Rank only devices that can satisfy the same feature contract used below
     // by CreateLogicalDevice. A faster but incompatible adapter must not mask
     // a compatible adapter, and device-creation failures are not retried.
-    const auto *best = SelectVulkanPhysicalDevice(candidates);
+    const auto *best = SelectVulkanPhysicalDevice(candidates, config.presentation);
     if (best == nullptr) {
-        INXLOG_ERROR("No suitable GPU found: Vulkan 1.2, sampler anisotropy, Dynamic Rendering and "
-                     "Synchronization2 are required together with presentation support");
+        INXLOG_ERROR("No suitable Vulkan GPU for the declared device requirements; presentation=", config.presentation);
         return false;
     }
 
@@ -780,7 +783,6 @@ bool VkDeviceContext::PickPhysicalDevice(const DeviceConfig &config)
 
     // Cache device properties
     m_deviceProperties = best->probe.properties;
-    m_deviceFeatures = best->probe.coreFeatures;
     INXLOG_DIAGNOSTIC("INFERNUX_VULKAN_ADAPTER name=", m_deviceProperties.deviceName,
                       " vendor=", m_deviceProperties.vendorID, " device=", m_deviceProperties.deviceID,
                       " driver=", m_deviceProperties.driverVersion, " score=", best->score,
@@ -817,7 +819,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     const auto capabilitySnapshot = VulkanCapabilitySnapshot::FromProbe(capabilityProbe);
     VulkanDeviceFeatureChain featureChain(capabilitySnapshot);
     vk::DeviceCapabilityRequest capabilityRequest{};
-    if (!MeetsVulkanDeviceRequirements(capabilityProbe)) {
+    if (!MeetsVulkanDeviceRequirements(capabilityProbe, config.presentation)) {
         INXLOG_ERROR("The selected Vulkan device does not meet the required device feature contract");
         return false;
     }
@@ -825,7 +827,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     capabilityRequest.descriptorIndexing =
         capabilitySnapshot.supported.bindless.IsSupported() && !forceBoundedDescriptors;
     capabilityRequest.timelineSemaphore = capabilitySnapshot.supported.timelineSemaphore.supported;
-    capabilityRequest.dynamicRendering = true;
+    capabilityRequest.dynamicRendering = config.presentation;
     capabilityRequest.synchronization2 = true;
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
     // Enable optional arithmetic once on the engine-owned device. Compute
@@ -833,6 +835,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     capabilityRequest.shaderInt16 = capabilitySnapshot.supported.shaderInt16.supported;
     capabilityRequest.shaderInt64 = capabilitySnapshot.supported.shaderInt64.supported;
     capabilityRequest.shaderFloat64 = capabilitySnapshot.supported.shaderFloat64.supported;
+    capabilityRequest.hostQueryReset = capabilitySnapshot.supported.hostQueryReset.supported;
     if (forceBoundedDescriptors)
         INXLOG_INFO("Descriptor indexing disabled by INFERNUX_FORCE_BOUNDED_DESCRIPTORS; validating bounded "
                     "descriptor fallback");
@@ -844,7 +847,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     const VkPhysicalDeviceFeatures &supportedFeatures = capabilityProbe.coreFeatures;
 
     VkPhysicalDeviceFeatures deviceFeatures = featureChain.GetFeatures2().features;
-    deviceFeatures.samplerAnisotropy = VK_TRUE;
+    deviceFeatures.samplerAnisotropy = config.presentation ? VK_TRUE : VK_FALSE;
     deviceFeatures.fillModeNonSolid = supportedFeatures.fillModeNonSolid; // Optional wireframe support
     deviceFeatures.depthBiasClamp = supportedFeatures.depthBiasClamp;     // Optional shadow bias clamping
     deviceFeatures.wideLines = supportedFeatures.wideLines;               // For debug lines (when available)
@@ -859,7 +862,9 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     enabledFeatures2.features = deviceFeatures;
 
     // Build device extension list
-    std::vector<const char *> deviceExtensions(DEVICE_EXTENSIONS.begin(), DEVICE_EXTENSIONS.end());
+    std::vector<const char *> deviceExtensions;
+    if (config.presentation)
+        deviceExtensions.assign(DEVICE_EXTENSIONS.begin(), DEVICE_EXTENSIONS.end());
     const auto appendExtension = [&deviceExtensions](const char *extension) {
         if (std::find(deviceExtensions.begin(), deviceExtensions.end(), extension) == deviceExtensions.end())
             deviceExtensions.push_back(extension);
@@ -893,6 +898,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 #if defined(INFERNUX_USE_VOLK)
     volkLoadDevice(m_device);
 #endif
+    m_deviceFeatures = enabledFeatures2.features;
     m_vulkanFeatures = enabledCapabilityState;
     m_descriptorIndexingEnabled = m_vulkanFeatures.bindless.IsEnabled();
     m_timelineSemaphoreEnabled = m_vulkanFeatures.timelineSemaphore.enabled;
@@ -900,7 +906,8 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     // Get queue handles
     vkGetDeviceQueue(m_device, m_queueIndices.graphicsFamily.value(), 0, &m_graphicsQueue);
     vkGetDeviceQueue(m_device, m_queueIndices.computeFamily.value(), m_queueIndices.computeQueueIndex, &m_computeQueue);
-    vkGetDeviceQueue(m_device, m_queueIndices.presentFamily.value(), 0, &m_presentQueue);
+    if (m_queueIndices.presentFamily)
+        vkGetDeviceQueue(m_device, *m_queueIndices.presentFamily, 0, &m_presentQueue);
     m_hasIndependentComputeQueue = m_computeQueue != VK_NULL_HANDLE && m_computeQueue != m_graphicsQueue;
     if (m_hasIndependentComputeQueue) {
         INXLOG_INFO("Async compute queue enabled (family ", m_queueIndices.computeFamily.value(), ", queue ",
@@ -972,6 +979,7 @@ void VkDeviceContext::BuildCapabilities()
     m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindSampledTexturesPerSet =
         vulkan12Properties.maxDescriptorSetUpdateAfterBindSampledImages;
     capabilities.limits.maxStorageBuffersPerStage = limits.maxPerStageDescriptorStorageBuffers;
+    capabilities.limits.minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment;
     capabilities.limits.maxSamplerAnisotropy = limits.maxSamplerAnisotropy;
     std::copy_n(limits.maxComputeWorkGroupCount, 3, capabilities.limits.maxComputeWorkgroupCount);
     std::copy_n(limits.maxComputeWorkGroupSize, 3, capabilities.limits.maxComputeWorkgroupSize);
@@ -982,6 +990,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.features.wideLines = m_deviceFeatures.wideLines == VK_TRUE;
     capabilities.features.independentComputeQueue = m_hasIndependentComputeQueue;
     capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
+    capabilities.features.multisampleTextureCopies = true;
     m_vulkanFeatures.PublishShaderCapabilities(capabilities.portable);
     capabilities.portable.maxBindlessSampledTextures =
         m_descriptorIndexingEnabled ? VulkanBindlessTextureTable::SelectCapacity(m_vulkanFeatures.descriptorLimits) : 0;
@@ -994,12 +1003,8 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.portable.pushConstantBytes = limits.maxPushConstantsSize;
     capabilities.portable.mappableReadback = true;
 
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &queueFamilyCount, nullptr);
-    std::vector<VkQueueFamilyProperties> queueProperties(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &queueFamilyCount, queueProperties.data());
-    if (m_queueIndices.graphicsFamily.has_value() && m_queueIndices.graphicsFamily.value() < queueProperties.size()) {
-        const uint32_t validBits = queueProperties[m_queueIndices.graphicsFamily.value()].timestampValidBits;
+    if (m_queueIndices.graphicsFamily) {
+        const auto validBits = QueryTimestampSupport(*m_queueIndices.graphicsFamily).validBits;
         capabilities.timestampQueries.supported = validBits > 0;
         capabilities.timestampQueries.graphicsAndCompute = limits.timestampComputeAndGraphics == VK_TRUE;
         capabilities.timestampQueries.validBits = validBits;
@@ -1034,6 +1039,23 @@ void VkDeviceContext::BuildCapabilities()
             formatCapabilities.sampleCounts = SampleCountBit(SampleCount::One);
         }
     }
+}
+
+VkDeviceContext::QueueTimestampSupport VkDeviceContext::QueryTimestampSupport(uint32_t queueFamily) const
+{
+    uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &count, nullptr);
+    if (queueFamily >= count)
+        return {};
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &count, families.data());
+    const auto &family = families[queueFamily];
+    // A transfer-only pool can write timestamps but cannot reset query
+    // pools in a command buffer.
+    const bool resetOnHost = (family.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0;
+    if (resetOnHost && !m_vulkanFeatures.hostQueryReset.enabled)
+        return {};
+    return {family.timestampValidBits, resetOnHost};
 }
 
 rhi::SampleCountMask VkDeviceContext::GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept
@@ -1076,7 +1098,8 @@ QueueFamilyIndices VkDeviceContext::FindQueueFamilies(VkPhysicalDevice device) c
         }
 
         VkBool32 presentSupport = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, m_surface, &presentSupport);
+        if (m_surface != VK_NULL_HANDLE)
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, m_surface, &presentSupport);
         if (presentSupport && !indices.presentFamily.has_value()) {
             indices.presentFamily = i;
         }
@@ -1125,12 +1148,14 @@ bool VkDeviceContext::IsDeviceSuitable(VkPhysicalDevice device, const DeviceConf
 
     // Check queue families
     QueueFamilyIndices indices = FindQueueFamilies(device);
-    if (!indices.IsComplete()) {
+    if (!indices.IsComplete(config.presentation)) {
         return false;
     }
 
     // Check extension support
-    std::vector<const char *> requiredExtensions(DEVICE_EXTENSIONS.begin(), DEVICE_EXTENSIONS.end());
+    std::vector<const char *> requiredExtensions;
+    if (config.presentation)
+        requiredExtensions.assign(DEVICE_EXTENSIONS.begin(), DEVICE_EXTENSIONS.end());
 #ifdef __APPLE__
     requiredExtensions.push_back("VK_KHR_portability_subset");
 #endif
@@ -1139,18 +1164,13 @@ bool VkDeviceContext::IsDeviceSuitable(VkPhysicalDevice device, const DeviceConf
         return false;
     }
 
-    // Check swapchain support
-    SwapchainSupportDetails swapchainSupport;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, m_surface, &swapchainSupport.capabilities);
-
-    uint32_t formatCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device, m_surface, &formatCount, nullptr);
-
-    uint32_t presentModeCount = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(device, m_surface, &presentModeCount, nullptr);
-
-    if (formatCount == 0 || presentModeCount == 0) {
-        return false;
+    if (config.presentation) {
+        uint32_t formatCount = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, m_surface, &formatCount, nullptr);
+        uint32_t presentModeCount = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, m_surface, &presentModeCount, nullptr);
+        if (formatCount == 0 || presentModeCount == 0)
+            return false;
     }
 
     // Required rendering features are checked together by SelectVulkanPhysicalDevice.

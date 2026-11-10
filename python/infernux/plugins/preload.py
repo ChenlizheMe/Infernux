@@ -1352,17 +1352,15 @@ def _load_module(
 
 def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
     """Execute one selected source/bytecode module without stale source bytecode."""
-    spec = importlib.util.spec_from_file_location(module_name, path)
+    from infernux.engine.script_source import SourceFileLoader
+
+    loader = None if path.casefold().endswith(".pyc") else SourceFileLoader(module_name, path)
+    spec = importlib.util.spec_from_file_location(module_name, path, loader=loader)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load InxPreload candidate: {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    if path.casefold().endswith(".pyc"):
-        spec.loader.exec_module(module)
-    else:
-        with open(path, "rb") as stream:
-            code = compile(stream.read(), path, "exec")
-        exec(code, module.__dict__)
+    spec.loader.exec_module(module)
     parent_name, _, child_name = module_name.rpartition(".")
     if parent_name:
         setattr(sys.modules[parent_name], child_name, module)
@@ -1371,6 +1369,9 @@ def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
 
 def _unpublish_module(name: str) -> None:
     module = sys.modules.pop(name, None)
+    if module is not None:
+        from infernux.components.serializable_object import _publish_serializable_types
+        _publish_serializable_types({}, {name})
     parent_name, _, child_name = name.rpartition(".")
     parent = sys.modules.get(parent_name)
     if module is not None and parent is not None and getattr(parent, child_name, None) is module:
@@ -1555,7 +1556,9 @@ def _temporary_import_paths(
         # PathFinder may be iterating this list on a plugin's background
         # thread. Publish a separate list and never shorten its live iterator.
         sys.path = temporary
-        yield
+        from infernux.engine.script_source import source_imports
+        with source_imports(project_root):
+            yield
     finally:
         sys.path = before
 

@@ -41,7 +41,7 @@ from infernux.core.asset_types import (
     ShaderAssetInfo,
     FontAssetInfo,
     read_meta_file,
-    read_asset_metadata,
+    read_published_asset_metadata,
     read_texture_import_settings,
     read_audio_import_settings,
     read_mesh_import_settings,
@@ -261,79 +261,18 @@ class _ImportSettingsController:
 
         registry = DocumentRegistry.instance()
         content = self._content_document(self.settings)
-        registry.capture_save_revision(
-            ticket.ticket_id,
-            content_token=document_content_token(content),
-        )
-        if self.category == "mesh" or (self.category == "texture" and "::subtex:" in self.file_path):
+        token = document_content_token(content)
+        registry.capture_save_revision(ticket.ticket_id, content_token=token)
+        if self.category in {"mesh", "texture", "audio"}:
             from infernux.core.assets import AssetManager
             from infernux.engine.interaction import DocumentActionResult, DocumentActionStatus
 
             snapshot = copy.deepcopy(self.settings)
-            database = AssetManager.begin_model_reimport(self.file_path, snapshot)
-            self._pending_model_save = (database, ticket.ticket_id, snapshot, document_content_token(content))
-            return DocumentActionResult(DocumentActionStatus.PENDING)
-        if self.category == "texture":
-            from infernux.engine.interaction import (
-                DocumentActionResult,
-                DocumentActionStatus,
-            )
-            from infernux.engine.ui.asset_import_progress import (
-                AssetImportProgressService,
-            )
-
-            settings_snapshot = copy.deepcopy(self.settings)
-            content_token = document_content_token(content)
-
-            def _work() -> bool:
-                # An external sidecar publication can retire this save while
-                # its progress modal is still presenting the opening frame.
-                # Never apply the captured draft after its ticket was cancelled.
-                if not ticket.is_pending:
-                    return False
-                if not self.exec_layer.apply_import_settings(settings_snapshot):
-                    return False
-                from infernux.core.assets import AssetManager
-
-                AssetManager.flush_pending_gpu_texture_reloads(
-                    paths=[self.file_path],
-                    max_items=None,
-                )
-                return True
-
-            def _is_published() -> bool:
-                from infernux.engine.ui.asset_resource_preview import (
-                    ensure_imported_texture_preview,
-                )
-
-                return ensure_imported_texture_preview(self.file_path)
-
-            def _complete(success: bool, message: str) -> None:
-                if success:
-                    self.disk_settings = copy.deepcopy(settings_snapshot)
-                    if self.state is not None and self.state.import_controller is self:
-                        self.state.disk_settings = self.disk_settings
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=success,
-                    message=message,
-                    content_token=content_token if success else None,
-                )
-
-            started = AssetImportProgressService.instance().begin(
-                title=t("asset.import_progress.texture_title"),
-                path=self.file_path,
-                work=_work,
-                is_published=_is_published,
-                complete=_complete,
-            )
-            if not started:
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=False,
-                    message="another asset import is already in progress",
-                )
-                return False
+            if self.category == "mesh" or "::subtex:" in self.file_path:
+                database = AssetManager.begin_model_reimport(self.file_path, snapshot)
+            else:
+                database = AssetManager.begin_import_settings_apply(self.category, self.file_path, snapshot)
+            self._pending_model_save = (database, ticket.ticket_id, snapshot, token)
             return DocumentActionResult(DocumentActionStatus.PENDING)
 
         if not self.exec_layer.apply_import_settings(self.settings):
@@ -344,7 +283,7 @@ class _ImportSettingsController:
         registry.complete_save(
             ticket.ticket_id,
             success=True,
-            content_token=document_content_token(content),
+            content_token=token,
         )
         return True
 
@@ -374,6 +313,7 @@ class _ImportSettingsController:
                 self.state.disk_settings = self.disk_settings
         completed = DocumentRegistry.instance().complete_save(
             ticket_id, success=success, message=message, content_token=token if success else None,
+            committed_file_state=ticket.expected_file_state,
         )
         from infernux.engine.interaction import SaveTicketStatus
 
@@ -383,15 +323,16 @@ class _ImportSettingsController:
             completed.message,
         )
         if not success:
-            Debug.log_error(f"Model Apply failed for '{self.file_path}': {message}")
+            Debug.log_error(f"Asset Apply failed for '{self.file_path}': {message}")
         return 1
 
     def cancel_pending_writes(self) -> None:
         if self._pending_model_save is not None:
             database = self._pending_model_save[0]
-            database.discard_model_reimport()
+            cancelled = database.discard_model_reimport()
             self._pending_model_save = None
-            _ImportSettingsBatch.model_save_completed(self.document_id, False, "model Apply was cancelled")
+            message = "asset Apply was cancelled" if cancelled else "asset Apply is completing its accepted write"
+            _ImportSettingsBatch.model_save_completed(self.document_id, False, message)
 
     def discard(self, *, document_id: str):
 
@@ -670,8 +611,9 @@ class _State:
         self.file_path = file_path
         self.category = category
         try:
-            self.meta = (read_asset_metadata(file_path) if any(token in file_path for token in ("::subtex:", "::subanim:"))
-                         else read_meta_file(_meta_host_path_for_virtual_asset(file_path)))
+            meta_path = (file_path if any(token in file_path for token in ("::subtex:", "::subanim:"))
+                         else _meta_host_path_for_virtual_asset(file_path))
+            self.meta = read_published_asset_metadata(meta_path)
             result = cat_def.load_fn(file_path)
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
             report_asset_load_error(file_path, str(exc))
@@ -1120,11 +1062,12 @@ def _ensure_categories():
         autosave_debounce=0.2,
     )
 
-    from .render_texture_inspector import load_document, render_body
+    from .render_texture_inspector import load_document, render_body, render_preview
     _categories["render_texture"] = AssetCategoryDef(
         display_name="asset.display_render_texture",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
         load_fn=load_document,
+        custom_header_fn=render_preview,
         custom_body_fn=render_body,
         autosave_debounce=0.35,
     )
@@ -1208,14 +1151,16 @@ def _load_identity_asset(path: str):
 
 
 def _load_shader(path: str):
-    meta = read_meta_file(path)
-    guid = (meta or {}).get("guid", "")
+    from infernux.core.assets import AssetManager
+
+    guid = AssetManager._get_guid_from_path(path) or ""
     return ShaderAssetInfo.from_path(path, guid=guid), {}
 
 
 def _load_font(path: str):
-    meta = read_meta_file(path)
-    guid = (meta or {}).get("guid", "")
+    from infernux.core.assets import AssetManager
+
+    guid = AssetManager._get_guid_from_path(path) or ""
     return FontAssetInfo.from_path(path, guid=guid), {}
 
 
@@ -1443,14 +1388,13 @@ def _render_data_asset_body(ctx: InxGUIContext, panel, state: _State):
 
 
 def _load_render_effect(path: str):
+    from infernux.core.assets import AssetManager
     from infernux.renderstack.render_effect import (
         EditableRenderEffectGroup,
         RenderEffect,
     )
 
     if path.lower().endswith(".effect"):
-        from infernux.core.assets import AssetManager
-
         database = AssetManager.require_asset_database()
         guid = str(database.get_guid_from_path(path) or "")
         effect = (
@@ -1468,7 +1412,7 @@ def _load_render_effect(path: str):
     document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
     if not isinstance(document, RenderEffectGroupAsset):
         return None
-    guid = str((read_meta_file(path) or {}).get("guid", "") or "")
+    guid = AssetManager._get_guid_from_path(path) or ""
     return EditableRenderEffectGroup(
         document,
         file_path=path,
@@ -1985,14 +1929,14 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     field_label(ctx, t("asset.animclip3d_source_model"), lw)
 
     def _on_model_pick(path, _clip=clip):
+        database = AssetManager._asset_database
         supplied_guid = ""
         if isinstance(path, dict):
             supplied_guid = str(path.get("guid") or "").strip()
             p = str(path.get("path_hint") or "").strip()
             if supplied_guid and not p:
                 try:
-                    adb = getattr(AssetManager, "_asset_database", None)
-                    p = str(adb.get_path_from_guid(supplied_guid) or "") if adb else ""
+                    p = str(database.get_path_from_guid(supplied_guid) or "") if database else ""
                 except (AttributeError, RuntimeError):
                     p = ""
         else:
@@ -2003,8 +1947,8 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         model_guid = model_guid or AssetManager._get_guid_from_path(p) or ""
         bone_names = []
         # Pull bind pose bone names from import metadata (cheap UX).
-        meta = read_meta_file(p) or {}
-        csv = str(meta.get("bone_names_csv", "") or "")
+        metadata = database.get_meta_by_guid(model_guid) if model_guid and database is not None else None
+        csv = metadata.get_string("bone_names_csv") if metadata is not None else ""
         if csv:
             bone_names = [x.strip() for x in csv.split(",") if x.strip()]
         document = _clip.serialize_document()
@@ -2796,7 +2740,7 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                         if key == "texture_type" and hasattr(settings, "_sync_derived_fields"):
                             settings._sync_derived_fields()
                             if value is TextureType.SPRITE and not settings.sprite_frames:
-                                metadata = state.meta or read_meta_file(state.file_path) or {}
+                                metadata = state.meta or {}
                                 width = int(metadata.get("width", metadata.get("artifact_width", 0)) or 0)
                                 height = int(metadata.get("height", metadata.get("artifact_height", 0)) or 0)
                                 if width <= 0 or height <= 0:

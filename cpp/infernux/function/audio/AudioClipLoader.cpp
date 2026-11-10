@@ -10,6 +10,10 @@
 
 namespace infernux
 {
+void AudioClipLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
+{
+    payload.Get<AudioClip>()->SetFilePath(filePath);
+}
 
 // =============================================================================
 // Load — decode audio file and create a new AudioClip
@@ -53,16 +57,15 @@ bool AudioClipLoader::Reload(const RuntimeAssetPayload &existing, const std::str
         return false;
     }
 
-    // Unload current data and reload from file
-    clip->Unload();
     const auto metadata = adb ? adb->GetMetaByGuid(guid) : nullptr;
-    if (!clip->LoadFromFile(filePath, metadata.get())) {
+    AudioClip candidate;
+    if (!candidate.LoadFromFile(filePath, metadata.get())) {
         INXLOG_ERROR("AudioClipLoader::Reload: failed to decode: ", filePath);
         return false;
     }
 
-    // Restore authoritative GUID
-    clip->SetGuid(guid);
+    candidate.SetGuid(guid);
+    *clip = std::move(candidate);
 
     return true;
 }
@@ -88,16 +91,14 @@ std::set<std::string> AudioClipLoader::ScanDependencies(const std::string & /*fi
 // CreateMeta — audio-specific .meta creation
 // =============================================================================
 
-void AudioClipLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                                 InxResourceMeta &metaData) const
+void AudioClipLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
-    metaData.Init(content, contentSize, filePath, ResourceType::Audio);
+    metaData.InitFromSource(source, ResourceType::Audio);
 
-    std::filesystem::path path = ToFsPath(filePath);
+    const auto path = ToFsPath(source.Path());
     std::string resourceName = FromFsPath(path.stem());
 
     metaData.AddMetadata("resource_name", resourceName);
-    metaData.AddMetadata("file_size", static_cast<int>(contentSize));
     metaData.AddMetadata("file_type", std::string("audio"));
     metaData.AddMetadata("extension", FromFsPath(path.extension()));
 }

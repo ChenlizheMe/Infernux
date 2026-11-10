@@ -1,6 +1,8 @@
 #include "PhysicsContactListener.h"
 
 #include "../Collider.h"
+#include "../GameObject.h"
+#include "PhysicsLayers.h"
 #include "PhysicsWorld.h"
 
 #include <Jolt/Physics/Body/Body.h>
@@ -60,18 +62,31 @@ float CombineMaterialValue(float value1, PhysicsMaterialCombine mode1, float val
     return 0.0f;
 }
 
-void ApplyContactMaterial(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &manifold,
+bool ContactLayersAllow(const JPH::Body &body1, const JPH::Body &body2, const Collider *collider1,
+                        const Collider *collider2)
+{
+    if (!PhysicsObjectLayers::IsMixed(body1.GetObjectLayer()) && !PhysicsObjectLayers::IsMixed(body2.GetObjectLayer()))
+        return true;
+    return collider1 && collider2 &&
+           TagLayerManager::Instance().GetLayersCollide(collider1->GetGameObject()->GetLayer(),
+                                                        collider2->GetGameObject()->GetLayer());
+}
+
+bool ApplyContactMaterial(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &manifold,
                           JPH::ContactSettings &settings)
 {
     const Collider *collider1 = ResolveContactCollider(body1, manifold.mSubShapeID1);
     const Collider *collider2 = ResolveContactCollider(body2, manifold.mSubShapeID2);
-    if (!collider1 || !collider2)
-        return;
+    if (!collider1 || !collider2 || !ContactLayersAllow(body1, body2, collider1, collider2)) {
+        settings.mIsSensor = true;
+        return false;
+    }
 
     settings.mCombinedFriction = CombineMaterialValue(collider1->GetFriction(), collider1->GetFrictionCombine(),
                                                       collider2->GetFriction(), collider2->GetFrictionCombine());
     settings.mCombinedRestitution = CombineMaterialValue(collider1->GetBounciness(), collider1->GetBounceCombine(),
                                                          collider2->GetBounciness(), collider2->GetBounceCombine());
+    return true;
 }
 } // namespace
 
@@ -153,6 +168,14 @@ void InxContactListener::SetColliderPairIgnored(uint64_t componentIdA, uint64_t 
     m_hasIgnoredColliderPairs.store(!m_ignoredColliderPairs.empty(), std::memory_order_release);
 }
 
+bool InxContactListener::GetBodyPairIgnored(uint32_t bodyIdA, uint32_t bodyIdB) const
+{
+    if (!m_hasIgnoredBodyPairs.load(std::memory_order_acquire))
+        return false;
+    std::shared_lock lock(m_ignoredPairMutex);
+    return m_ignoredBodyPairs.find(BodyPairKey(bodyIdA, bodyIdB)) != m_ignoredBodyPairs.end();
+}
+
 bool InxContactListener::GetColliderPairIgnored(uint64_t componentIdA, uint64_t componentIdB) const
 {
     if (componentIdA == 0 || componentIdB == 0 || componentIdA == componentIdB)
@@ -211,10 +234,20 @@ JPH::ValidateResult InxContactListener::OnContactValidate(const JPH::Body &inBod
                                                           JPH::RVec3Arg,
                                                           const JPH::CollideShapeResult &inCollisionResult)
 {
+    const bool checkRetired = PhysicsWorld::Instance().HasRetiredShapeMembers() ||
+                              PhysicsObjectLayers::IsMixed(inBody1.GetObjectLayer()) ||
+                              PhysicsObjectLayers::IsMixed(inBody2.GetObjectLayer());
+    if (checkRetired) {
+        const auto *collider1 = ResolveContactCollider(inBody1, inCollisionResult.mSubShapeID1);
+        const auto *collider2 = ResolveContactCollider(inBody2, inCollisionResult.mSubShapeID2);
+        if (!collider1 || !collider2 || !ContactLayersAllow(inBody1, inBody2, collider1, collider2))
+            return JPH::ValidateResult::RejectContact;
+    }
     const bool checkBodies = m_hasIgnoredBodyPairs.load(std::memory_order_acquire);
     const bool checkColliders = m_hasIgnoredColliderPairs.load(std::memory_order_acquire);
     if (!checkBodies && !checkColliders)
-        return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
+        return checkRetired ? JPH::ValidateResult::AcceptContact
+                            : JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
 
     std::shared_lock lock(m_ignoredPairMutex);
     if (checkBodies) {
@@ -234,7 +267,7 @@ JPH::ValidateResult InxContactListener::OnContactValidate(const JPH::Body &inBod
         // ignored compound member. Accept only the validated contact.
         return JPH::ValidateResult::AcceptContact;
     }
-    return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
+    return checkRetired ? JPH::ValidateResult::AcceptContact : JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
 }
 
 InxContactListener::ColliderPairKey InxContactListener::MakeColliderPairKey(uint64_t componentIdA,
@@ -256,6 +289,28 @@ void InxContactListener::InvalidatePairsForBody(uint32_t bodyId)
     auto it = m_contactPairs.begin();
     while (it != m_contactPairs.end()) {
         if (it->first.bodyA == bodyId || it->first.bodyB == bodyId)
+            it = m_contactPairs.erase(it);
+        else
+            ++it;
+    }
+}
+
+void InxContactListener::ResetBodies(const std::unordered_set<uint32_t> &bodyIds)
+{
+    const auto matches = [&](const ContactEvent &event) {
+        return bodyIds.count(event.bodyIdA) || bodyIds.count(event.bodyIdB);
+    };
+    const auto removeEvents = [&](std::vector<ContactEvent> &events) {
+        events.erase(std::remove_if(events.begin(), events.end(), matches), events.end());
+    };
+    for (auto &shard : m_eventShards) {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        removeEvents(shard.events);
+    }
+    removeEvents(m_rawEvents);
+    removeEvents(m_events);
+    for (auto it = m_contactPairs.begin(); it != m_contactPairs.end();) {
+        if (bodyIds.count(it->first.bodyA) || bodyIds.count(it->first.bodyB))
             it = m_contactPairs.erase(it);
         else
             ++it;
@@ -320,7 +375,8 @@ void InxContactListener::OnContactAdded(const JPH::Body &inBody1, const JPH::Bod
 {
     bool isSensor = IsTriggerContact(inBody1, inBody2, inManifold);
     ioSettings.mIsSensor = isSensor;
-    ApplyContactMaterial(inBody1, inBody2, inManifold, ioSettings);
+    if (!ApplyContactMaterial(inBody1, inBody2, inManifold, ioSettings))
+        return;
     ContactEventType type = isSensor ? ContactEventType::TriggerEnter : ContactEventType::CollisionEnter;
     const ContactEventType exitType = isSensor ? ContactEventType::TriggerExit : ContactEventType::CollisionExit;
     if (Wants(type) || Wants(exitType))
@@ -332,7 +388,8 @@ void InxContactListener::OnContactPersisted(const JPH::Body &inBody1, const JPH:
 {
     bool isSensor = IsTriggerContact(inBody1, inBody2, inManifold);
     ioSettings.mIsSensor = isSensor;
-    ApplyContactMaterial(inBody1, inBody2, inManifold, ioSettings);
+    if (!ApplyContactMaterial(inBody1, inBody2, inManifold, ioSettings))
+        return;
     ContactEventType type = isSensor ? ContactEventType::TriggerStay : ContactEventType::CollisionStay;
     if (Wants(type))
         PushEvent(type, inBody1, inBody2, &inManifold);

@@ -150,8 +150,14 @@ void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPi
                                   const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
                                   const uint32_t *dynamicOffsets)
 {
-    if (g_recordingDescriptorManager && descriptorSets)
-        g_recordingDescriptorManager->MarkUsed(descriptorSets, descriptorSetCount, g_recordingSubmissionSerial);
+    if (g_recordingDescriptorManager && descriptorSets) {
+        const VkPipelineStageFlags stages =
+            pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE
+                ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        g_recordingDescriptorManager->MarkUsed(descriptorSets, descriptorSetCount, g_recordingSubmissionSerial, cmdBuf,
+                                               stages);
+    }
     RecordDescriptorBind(site, cmdBuf, layout, firstSet, descriptorSetCount, descriptorSets);
     vkCmdBindDescriptorSets(cmdBuf, pipelineBindPoint, layout, firstSet, descriptorSetCount, descriptorSets,
                             dynamicOffsetCount, dynamicOffsets);

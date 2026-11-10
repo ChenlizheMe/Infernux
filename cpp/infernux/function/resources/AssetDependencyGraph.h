@@ -62,7 +62,15 @@ class AssetDependencySnapshot final
 class AssetDependencyGraph
 {
   public:
+    INFERNUX_ASSET_RUNTIME_API AssetDependencyGraph();
+    ~AssetDependencyGraph() = default;
+
+    /// The running world's database owns the graph. Runtime consumers use
+    /// this binding; standalone databases always use their own graph.
     INFERNUX_ASSET_RUNTIME_API static AssetDependencyGraph &Instance();
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API static std::shared_ptr<AssetDependencyGraph> Current();
+    /// Changed only at the quiescent engine startup/shutdown boundary.
+    INFERNUX_ASSET_RUNTIME_API static void SetCurrent(std::shared_ptr<AssetDependencyGraph> graph);
 
     AssetDependencyGraph(const AssetDependencyGraph &) = delete;
     AssetDependencyGraph &operator=(const AssetDependencyGraph &) = delete;
@@ -99,6 +107,7 @@ class AssetDependencyGraph
     GetDependenciesBatch(const std::vector<std::string> &guids) const;
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API std::unordered_set<std::string>
     GetDependents(const std::string &guid) const;
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API bool HasRuntimeDependents(const std::string &guid) const;
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API bool HasDependency(const std::string &userGuid,
                                                                 const std::string &dependencyGuid) const;
 
@@ -115,9 +124,6 @@ class AssetDependencyGraph
     INFERNUX_ASSET_RUNTIME_API void Clear();
 
   private:
-    AssetDependencyGraph();
-    ~AssetDependencyGraph() = default;
-
     void PublishAssetMutation(const std::function<void(AssetDependencySnapshot &)> &mutation);
     static void AddEdge(AssetDependencySnapshot &snapshot, const std::string &userGuid,
                         const std::string &dependencyGuid);

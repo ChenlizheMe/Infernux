@@ -102,20 +102,13 @@ void CapsuleCollider::AutoFitToMesh()
     m_height = std::max(m_height, m_radius * 2.0f + 0.001f);
 }
 
-void *CapsuleCollider::CreateJoltShapeRaw() const
+JPH::RefConst<JPH::Shape> CapsuleCollider::CreateJoltShape() const
 {
     float r = m_radius;
     float h = m_height;
-    glm::vec3 signedScale(1.0f);
-    if (auto *go = GetGameObject()) {
-        if (auto *tf = go->GetTransform()) {
-            signedScale = tf->GetWorldScale();
-        }
-    }
-
     // Account for scale
     {
-        glm::vec3 s = glm::abs(signedScale);
+        glm::vec3 s = GetWorldScale();
         float axisScale = (m_direction == 0) ? s.x : (m_direction == 1) ? s.y : s.z;
         float radScale = 0.0f;
         switch (m_direction) {
@@ -135,7 +128,7 @@ void *CapsuleCollider::CreateJoltShapeRaw() const
 
     // Jolt CapsuleShape(halfHeight, radius) — half height is the cylinder portion only
     float halfCylinder = std::max((h - 2.0f * r) * 0.5f, 0.0f);
-    JPH::Shape *shape = new JPH::CapsuleShape(halfCylinder, r);
+    JPH::RefConst<JPH::Shape> shape = new JPH::CapsuleShape(halfCylinder, r);
     JPH::Quat rotation = JPH::Quat::sIdentity();
 
     // Jolt capsule is always along Y. Rotate if direction != Y.
@@ -147,7 +140,7 @@ void *CapsuleCollider::CreateJoltShapeRaw() const
         rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::JPH_PI * 0.5f);
     }
 
-    glm::vec3 center = GetCenter() * signedScale;
+    glm::vec3 center = GetCenterInRigidSpace();
     return new JPH::RotatedTranslatedShape(JPH::Vec3(center.x, center.y, center.z), rotation, shape);
 }
 

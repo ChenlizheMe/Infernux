@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -17,6 +18,7 @@ namespace infernux
 
 class InxSkinnedMesh;
 class InxMaterial;
+class InxResourceMeta;
 
 /**
  * @brief A contiguous range within a shared vertex/index buffer.
@@ -130,6 +132,7 @@ struct ImportedModelNode
 /// One immutable geometry generation retained by consumers while in flight.
 struct MeshGeometry
 {
+    uint64_t storageIdentity = 0;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<SubMesh> subMeshes;
@@ -140,6 +143,8 @@ struct MeshGeometry
     // remains authoritative after a non-readable mesh becomes GPU resident.
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
+
+    [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
 };
 
 /**
@@ -169,7 +174,7 @@ class InxMesh
 {
   public:
     InxMesh() = default;
-    explicit InxMesh(const std::string &name) : m_name(name)
+    explicit InxMesh(std::string name) : m_name(std::move(name))
     {
     }
 
@@ -232,6 +237,22 @@ class InxMesh
     [[nodiscard]] bool IsCpuReadable() const noexcept
     {
         return m_cpuReadable;
+    }
+    void SetImportedScale(float scale) noexcept
+    {
+        m_importedScale = scale;
+    }
+    [[nodiscard]] float GetImportedScale() const noexcept
+    {
+        return m_importedScale;
+    }
+    void SetImportMetadata(std::shared_ptr<const InxResourceMeta> metadata) noexcept
+    {
+        m_importMetadata = std::move(metadata);
+    }
+    [[nodiscard]] const std::shared_ptr<const InxResourceMeta> &GetImportMetadata() const noexcept
+    {
+        return m_importMetadata;
     }
     [[nodiscard]] bool HasCpuGeometry() const noexcept
     {
@@ -361,7 +382,7 @@ class InxMesh
     }
     void SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
                       std::vector<ImportedModelNode> nodes, std::vector<MeshMorphTarget> morphTargets = {});
-    void ReplaceImportedContent(const InxMesh &source);
+    void ReplaceImportedContent(InxMesh replacement) noexcept;
 
     // ── Builder API (called by MeshLoader during import) ─────────────────
 
@@ -400,6 +421,7 @@ class InxMesh
         return static_cast<bool>(m_skinnedData);
     }
 
+    [[nodiscard]] size_t GetObjectMemoryBytes() const noexcept;
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
 
   private:
@@ -415,9 +437,11 @@ class InxMesh
     std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
     std::vector<ImportedModelNode> m_modelNodes;
     std::shared_ptr<const InxSkinnedMesh> m_skinnedData;
+    std::shared_ptr<const InxResourceMeta> m_importMetadata;
     MeshIndexFormat m_indexFormat = MeshIndexFormat::Auto;
     MeshCompression m_compression = MeshCompression::Off;
     bool m_cpuReadable = true;
+    float m_importedScale = 1.0f;
     uint64_t m_generation = 0;
 };
 

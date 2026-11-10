@@ -249,7 +249,8 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     void BeginCommandPacket();
     std::shared_ptr<CommandPacket> EndCommandPacket();
     void AbortCommandPacket();
-    void AppendCommandPackets(const std::vector<std::shared_ptr<CommandPacket>> &packets);
+    void AppendCommandPackets(const std::vector<std::shared_ptr<CommandPacket>> &packets,
+                              const std::vector<float> &opacities = {});
     std::array<uint64_t, 3> GetCommandPacketEpoch() const;
 
     /// Attach a GUID-backed material contract to subsequent commands in a
@@ -297,6 +298,10 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
                   float uv0X = 0.0f, float uv0Y = 0.0f, float uv1X = 1.0f, float uv1Y = 1.0f, float r = 1.0f,
                   float g = 1.0f, float b = 1.0f, float a = 1.0f, float rotation = 0.0f, bool mirrorH = false,
                   bool mirrorV = false, float rounding = 0.0f);
+    void AddFilledImage(ScreenUIList list, uint64_t textureId, float minX, float minY, float maxX, float maxY,
+                        float u0 = 0, float v0 = 0, float u1 = 1, float v1 = 1, float r = 1, float g = 1, float b = 1,
+                        float a = 1, float amount = 1, int method = 4, int origin = 0, bool clockwise = true,
+                        float rotation = 0, bool mirrorH = false, bool mirrorV = false);
 
     /**
      * @brief Add aligned text (uses ImGui font atlas)

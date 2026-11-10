@@ -519,6 +519,8 @@ def _render_list_field(
     item_label=None,
     item_renderer=None,
     on_change=None,
+    expanded: bool | None = None,
+    on_expanded_change=None,
 ):
     from infernux.components.fields import FieldType
     from .igui import IGUI
@@ -578,6 +580,8 @@ def _render_list_field(
             changed = True
 
     # ── Unified list header: [label [N] ........... [-][+]] ──
+    if expanded is not None:
+        ctx.set_next_item_open(expanded, 1)
     header_open = IGUI.list_header(
         ctx, display_name or serialized_field_label(field_name, metadata), len(items),
         on_add=_on_add if not metadata.readonly else None,
@@ -585,6 +589,9 @@ def _render_list_field(
         accept_drop=_hdr_drag_type if not metadata.readonly else None,
         on_header_drop=_header_drop if _hdr_drag_type and not metadata.readonly else None,
     )
+
+    if expanded is not None and header_open != expanded and on_expanded_change is not None:
+        on_expanded_change(header_open)
 
     if not header_open:
         _commit_change()

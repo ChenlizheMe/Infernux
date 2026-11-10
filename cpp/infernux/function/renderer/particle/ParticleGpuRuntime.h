@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ParticleRuntimeApi.h"
+
 #include "ParticleGpuContactRuntime.h"
 #include "ParticleGpuContinuationRuntime.h"
 #include "ParticleRenderInstance.h"
@@ -212,85 +214,101 @@ class ParticleGpuRuntime
     static constexpr uint32_t BaseCounterWordCount = 13;
     static constexpr uint32_t EventCounterWordOffset = BaseCounterWordCount;
 
-    ParticleGpuRuntime();
-    ~ParticleGpuRuntime();
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuRuntime();
+    INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuRuntime();
 
     ParticleGpuRuntime(const ParticleGpuRuntime &) = delete;
     ParticleGpuRuntime &operator=(const ParticleGpuRuntime &) = delete;
     ParticleGpuRuntime(ParticleGpuRuntime &&) = delete;
     ParticleGpuRuntime &operator=(ParticleGpuRuntime &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuEmitterDesc &desc);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Create(rhi::Device &device, const GpuEmitterDesc &desc);
     /// Build a new kernel/pipeline revision over the same GPU-resident state.
     /// Capacity and state ABI must match exactly.
-    [[nodiscard]] bool CreateCompatible(rhi::Device &device, const GpuEmitterDesc &desc,
-                                        const ParticleGpuRuntime &previous);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool CreateCompatible(rhi::Device &device, const GpuEmitterDesc &desc,
+                                                                      const ParticleGpuRuntime &previous);
     /// Atomically install a compatible pipeline/data-interface revision while
     /// leaving this runtime object and its GPU-resident particle state stable.
     /// The replacement receives the retired resources and must remain alive
     /// until all in-flight frames that referenced them have completed.
-    [[nodiscard]] bool AdoptCompatibleRevision(ParticleGpuRuntime &replacement) noexcept;
-    void Destroy() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool AdoptCompatibleRevision(ParticleGpuRuntime &replacement) noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] bool SharesStateWith(const ParticleGpuRuntime &other) const noexcept;
-    [[nodiscard]] bool NeedsBootstrap() const noexcept;
-    void RequestBootstrap() noexcept;
-    void MarkStateInitialized() noexcept;
-    [[nodiscard]] bool UpdateTransforms(const GpuParticleTransforms &transforms);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool SharesStateWith(const ParticleGpuRuntime &other) const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool NeedsBootstrap() const noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void RequestBootstrap() noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void MarkStateInitialized() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool UpdateTransforms(const GpuParticleTransforms &transforms);
     /// Refresh scene-owned skinned Mesh parameters without rebuilding the
     /// particle graph or re-uploading immutable geometry.
-    [[nodiscard]] bool UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
     /// Capture prepared CPU inputs before simulation; acknowledge the actual
     /// submission result separately so rejected recordings retain their data.
-    [[nodiscard]] bool HasPendingUploads() const noexcept;
-    [[nodiscard]] bool RecordPendingUploads(const rhi::TransferCommandEncoder &encoder);
-    void NotifySubmission(bool submitted) noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool HasPendingUploads() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordPendingUploads(const rhi::TransferCommandEncoder &encoder);
+    INFERNUX_PARTICLE_RUNTIME_API void NotifySubmission(bool submitted) noexcept;
 
-    [[nodiscard]] bool RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                                       rhi::BindGroupHandle graphSpawnGroup);
-    void RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount, uint32_t spawnBaseId,
-                            uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
-                            rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle spawnMetadata,
-                            uint64_t indirectOffset) const;
-    [[nodiscard]] bool RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                                    uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
-                                    bool collectCollisionDiagnostics = false) const;
-    [[nodiscard]] bool RecordUpdateRenderingFused(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                                                  uint32_t simulationStep, float deltaTime,
-                                                  rhi::BindGroupHandle graphSpawnGroup) const;
-    void RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                              rhi::BindGroupHandle graphSpawnGroup, bool resetAll = false) const;
-    void RecordContactSolve(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                            rhi::BindGroupHandle graphSpawnGroup) const;
-    void RecordContactDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
-                               float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
-                               bool collectCollisionDiagnostics = false) const;
-    [[nodiscard]] bool RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
-                                         rhi::BindGroupHandle graphSpawnGroup, bool resetCollisionDiagnostics = false,
-                                         bool prepareAliveWrite = false) const;
-    [[nodiscard]] bool RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                                       uint32_t simulationStep, rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordBootstrap(const rhi::ComputeCommandEncoder &encoder,
+                                                                     uint32_t systemSeed,
+                                                                     rhi::BindGroupHandle graphSpawnGroup);
+    INFERNUX_PARTICLE_RUNTIME_API void
+    RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount, uint32_t spawnBaseId,
+                       uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
+                       rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle spawnMetadata,
+                       uint64_t indirectOffset) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordUpdate(const rhi::ComputeCommandEncoder &encoder,
+                                                                  uint32_t systemSeed, uint32_t simulationStep,
+                                                                  float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
+                                                                  bool collectCollisionDiagnostics = false) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    RecordUpdateRenderingFused(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
+                               float deltaTime, rhi::BindGroupHandle graphSpawnGroup) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder,
+                                                            uint32_t simulationStep,
+                                                            rhi::BindGroupHandle graphSpawnGroup,
+                                                            bool resetAll = false) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordContactSolve(const rhi::ComputeCommandEncoder &encoder,
+                                                          uint32_t simulationStep,
+                                                          rhi::BindGroupHandle graphSpawnGroup) const;
+    INFERNUX_PARTICLE_RUNTIME_API void RecordContactDispatch(const rhi::ComputeCommandEncoder &encoder,
+                                                             uint32_t systemSeed, uint32_t simulationStep,
+                                                             float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
+                                                             bool collectCollisionDiagnostics = false) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
+                                                                       rhi::BindGroupHandle graphSpawnGroup,
+                                                                       bool resetCollisionDiagnostics = false,
+                                                                       bool prepareAliveWrite = false) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RecordRendering(const rhi::ComputeCommandEncoder &encoder,
+                                                                     uint32_t systemSeed, uint32_t simulationStep,
+                                                                     rhi::BindGroupHandle graphSpawnGroup) const;
     [[nodiscard]] bool SupportsFusedUpdateRendering() const noexcept
     {
         return m_supportsFusedUpdateRendering;
     }
-    [[nodiscard]] bool HasContinuations() const noexcept;
-    [[nodiscard]] const GpuParticleContinuationResources &ContinuationResources() const noexcept;
-    [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
-    [[nodiscard]] bool SharesContinuationStateWith(const ParticleGpuRuntime &other) const noexcept;
-    void RequestContinuationReset() noexcept;
-    [[nodiscard]] bool RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                 uint64_t elapsedTimeTicks);
-    [[nodiscard]] bool RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                  uint64_t elapsedTimeTicks) const;
-    [[nodiscard]] bool RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                  uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
-                                                  rhi::BindGroupHandle graphSpawnGroup) const;
-    [[nodiscard]] bool HasContactRuntime() const noexcept;
-    [[nodiscard]] const GpuParticleContactResources &ContactResources() const noexcept;
-    [[nodiscard]] GpuParticleContactTelemetry ContactTelemetry() const noexcept;
-    [[nodiscard]] bool SharesContactStateWith(const ParticleGpuRuntime &other) const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool HasContinuations() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API const GpuParticleContinuationResources &
+    ContinuationResources() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    SharesContinuationStateWith(const ParticleGpuRuntime &other) const noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void RequestContinuationReset() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                              uint64_t elapsedTimeTicks);
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                               uint64_t elapsedTimeTicks) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                               uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
+                               rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool HasContactRuntime() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API const GpuParticleContactResources &ContactResources() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API GpuParticleContactTelemetry ContactTelemetry() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool
+    SharesContactStateWith(const ParticleGpuRuntime &other) const noexcept;
     [[nodiscard]] uint64_t ContactPrepareRecordCalls() const noexcept
     {
         return m_contactPrepareRecordCalls;
@@ -328,23 +346,24 @@ class ParticleGpuRuntime
     }
     /// The exact Mesh storage bindings consumed by particle kernels. Their
     /// byte ranges are shared by descriptor creation and RenderGraph imports.
-    [[nodiscard]] const std::vector<rhi::BufferBinding> &MeshBufferBindings() const noexcept;
-    [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle CounterBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle VisibilityBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle SimulationControlBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle AliveIndexBuffer(uint32_t slot) const noexcept;
-    [[nodiscard]] rhi::BufferHandle AliveDispatchBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle AliveControlBuffer() const noexcept;
-    [[nodiscard]] uint32_t AliveReadSlot() const noexcept;
-    [[nodiscard]] uint32_t AliveWriteSlot() const noexcept;
-    [[nodiscard]] bool IsAliveListReady() const noexcept;
-    void PublishAliveWrite() noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API const std::vector<rhi::BufferBinding> &
+    MeshBufferBindings() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle StateBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle FreeListBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle CounterBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle InstanceBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle VisibilityBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle IndirectBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle RenderIndexBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle TransformBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle SimulationControlBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle AliveIndexBuffer(uint32_t slot) const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle AliveDispatchBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle AliveControlBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t AliveReadSlot() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API uint32_t AliveWriteSlot() const noexcept;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsAliveListReady() const noexcept;
+    INFERNUX_PARTICLE_RUNTIME_API void PublishAliveWrite() noexcept;
     [[nodiscard]] rhi::BindingLayoutHandle GraphSpawnLayout() const noexcept
     {
         return m_graphSpawnLayout;

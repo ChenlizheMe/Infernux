@@ -4,7 +4,7 @@
  *
  * Split from InxVkCoreModular.cpp for maintainability.
  * Contains: DrawFrame, DrawSceneFiltered,
- *           SetDrawCalls, EnsureObjectBuffers, CleanupUnusedBuffers.
+ *           SetDrawCalls, mesh binding, and unused buffer collection.
  */
 
 #include "InxError.h"
@@ -17,6 +17,7 @@
 #include "vk/VkRenderUtils.h"
 #include "vk/VkTypes.h"
 
+#include <core/threading/FrameWorkOwner.h>
 #include <function/renderer/Frustum.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -77,9 +78,16 @@ bool IsPackagedPlayerRuntime()
 // Rendering
 // ============================================================================
 
-void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, const float *viewUp,
-                                 std::array<double, 6> *phaseTimings)
+uint64_t InxVkCoreModular::DrawFrame(WindowOutput output, std::array<double, 6> *phaseTimings)
 try {
+    struct DrawBufferBindingsScope
+    {
+        InxVkCoreModular &core;
+        ~DrawBufferBindingsScope()
+        {
+            core.SetDrawBufferBindings(nullptr);
+        }
+    } drawBufferBindingsScope{*this};
     if (m_frameFailure)
         std::rethrow_exception(m_frameFailure);
     auto phaseStart = phaseTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -92,42 +100,29 @@ try {
     auto _tNow = _t0;
 #endif
 
-    // Skip rendering when the window is minimized (zero extent).
-    // Without this guard, vkAcquireNextImageKHR blocks indefinitely
-    // because the swapchain has no presentable images at 0×0.
-    {
-        VkExtent2D ext = m_backend.Presentation().GetExtent();
-        if (ext.width == 0 || ext.height == 0) {
-            // Yield a bit so we don't spin-lock the CPU while minimized
-            SDL_Delay(16);
-            return;
-        }
-    }
-
     const uint32_t frameSlot = GetCurrentFrameSlot();
-
-    // Acquire next swapchain image using the renderer-owned frame slot.
-    uint32_t imageIndex;
-    auto result = m_backend.Presentation().AcquireNextImage(frameSlot, imageIndex);
-
-    if (result == vk::SwapchainResult::SurfaceLost) {
-        m_presentationSurfaceLost = true;
-        INXLOG_WARN("Platform presentation surface was lost while acquiring an image; scheduling a surface rebind");
-        return;
-    }
-
-    if (result == vk::SwapchainResult::NeedRecreate) {
-        SDL_Log("INFERNUX_SWAPCHAIN_RECREATE stage=acquire");
-        RecreateSwapchain();
-        return;
-    }
-
-    if (result == vk::SwapchainResult::SkipFrame) {
-        return;
-    }
-
-    if (result == vk::SwapchainResult::Error) {
-        throw std::runtime_error("Failed to acquire swapchain image");
+    auto &presentation = m_backend.Presentation();
+    const VkExtent2D extent = presentation.GetExtent();
+    uint32_t imageIndex = 0;
+    bool presenting = false;
+    if (output != WindowOutput::Disabled && extent.width && extent.height) {
+        const auto result = presentation.AcquireNextImage(frameSlot, imageIndex);
+        switch (result) {
+        case vk::SwapchainResult::Success:
+            presenting = true;
+            break;
+        case vk::SwapchainResult::SkipFrame:
+            break;
+        case vk::SwapchainResult::NeedRecreate:
+            m_framebufferResized = true;
+            break;
+        case vk::SwapchainResult::SurfaceLost:
+            m_presentationSurfaceLost = true;
+            INXLOG_WARN("Platform presentation surface was lost while acquiring an image; scheduling a surface rebind");
+            break;
+        case vk::SwapchainResult::Error:
+            throw std::runtime_error("Failed to acquire swapchain image");
+        }
     }
     if (phaseTimings) {
         const auto now = std::chrono::steady_clock::now();
@@ -168,215 +163,148 @@ try {
         m_frameComputeExecutor && (!m_frameComputeWorkPredicate || m_frameComputeWorkPredicate());
     const bool separateComputeBatch = !asyncCompute && frameComputeHasWork && partitionedCompute;
 
-    const bool composedFrame = static_cast<bool>(m_frameSubmissionBuilder);
-    m_frameComputeReadTicket = {};
-    m_frameComputeReadStages = 0;
-    if (composedFrame) {
-        if (!EnsureGuiRenderGraph(imageIndex))
-            throw std::runtime_error("Failed to prepare the presentation render graph");
+    m_frameBufferReadDependencies.clear();
+    m_frameResidentVertexReads.clear();
+    m_frameSubmission.Reset();
+    if (presenting && !EnsureGuiRenderGraph(imageIndex))
+        throw std::runtime_error("Failed to prepare the presentation render graph");
 
-        m_frameSubmission.Reset();
-        const rhi::DeviceId device = m_backend.Device().GetDeviceId();
-        std::vector<uint32_t> setupDependencies;
-        if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, setupDependencies)) {
-            throw std::runtime_error("Failed to publish pre-setup queue ownership releases");
-        }
+    const rhi::DeviceId device = m_backend.Device().GetDeviceId();
+    std::vector<uint32_t> setupDependencies;
+    if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, setupDependencies)) {
+        throw std::runtime_error("Failed to publish pre-setup queue ownership releases");
+    }
 
-        uint32_t particleComputeWork = 0;
-        const bool splitParticleCompute = primeAsyncCompute || (separateComputeBatch && partitionedCompute);
-        if (splitParticleCompute) {
-            // OwnershipRelease must be submitted before PrimeSimulation waits
-            // on it. The previous order queued compute first; when Scene/Game
-            // views were hidden that frame, the release never existed and the
-            // compute acquire sat on exclusive Graphics-owned buffers.
-            const uint32_t primeSimulation = m_frameSubmission.AddWork(
-                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, setupDependencies,
-                [this]([[maybe_unused]] VkCommandBuffer commandBuffer) {
-                    return m_frameAsyncSimulationExecutor(commandBuffer);
-                },
-                "GpuParticle/PrimeSimulation");
-            particleComputeWork = m_frameSubmission.AddWork(
-                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, {primeSimulation},
-                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
-                "GpuParticle/PrimeExport");
-            // Play -> Stop -> Play often has preroll, so CanExecuteAsync is
-            // false and the old path recorded the entire particle graph into
-            // one GpuParticle/Simulation buffer. That erased the compiled
-            // sim/export boundary and tripped the 1000 ms frame watchdog.
-            // Keep the same two-submission split as async prime.
-        } else if (separateComputeBatch) {
-            particleComputeWork = m_frameSubmission.AddWork(
-                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, setupDependencies,
-                [this](VkCommandBuffer commandBuffer) {
-                    m_frameComputeExecutor(commandBuffer);
-                    return true;
-                },
-                "GpuParticle/Simulation");
-        } else if (!asyncCompute && frameComputeHasWork) {
-            // Small particle workloads stay on Graphics. This is not a CPU
-            // fallback: the same GPU compute graph is recorded before the
-            // camera graphs, but queue order replaces the expensive
-            // previous-frame fence/timeline dependency. It also keeps all
-            // particle buffers on one queue family, preserving the validation
-            // guarantees that motivated the cross-frame guard.
-            particleComputeWork = m_frameSubmission.AddWork(
-                device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, setupDependencies,
-                [this](VkCommandBuffer commandBuffer) {
-                    m_frameComputeExecutor(commandBuffer);
-                    return true;
-                },
-                "GpuParticle/InlineSimulation");
-        }
-
-        // Frame/Setup starts frame accounting. Waiting here for Simulation plus
-        // queuing OwnershipRelease after Setup deadlocks the independent
-        // compute family when a newly selected emitter first touches exclusive
-        // Graphics buffers (Game-only six-way preview).
-        const uint32_t setupWork = m_frameSubmission.AddWork(
-            device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, m_presentationView.id,
-            rhi::PipelineStage::AllGraphics, std::move(setupDependencies),
+    uint32_t particleComputeWork = 0;
+    if (primeAsyncCompute || separateComputeBatch) {
+        // OwnershipRelease must be submitted before PrimeSimulation waits
+        // on it. The previous order queued compute first; when Scene/Game
+        // views were hidden that frame, the release never existed and the
+        // compute acquire sat on exclusive Graphics-owned buffers.
+        const uint32_t primeSimulation = m_frameSubmission.AddWork(
+            device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+            rhi::PipelineStage::ComputeShader, setupDependencies,
+            [this]([[maybe_unused]] VkCommandBuffer commandBuffer) {
+                return m_frameAsyncSimulationExecutor(commandBuffer);
+            },
+            "GpuParticle/PrimeSimulation");
+        particleComputeWork = m_frameSubmission.AddWork(
+            device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+            rhi::PipelineStage::ComputeShader, {primeSimulation},
+            [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
+            "GpuParticle/PrimeExport");
+        // Play -> Stop -> Play often has preroll, so CanExecuteAsync is
+        // false and the old path recorded the entire particle graph into
+        // one GpuParticle/Simulation buffer. That erased the compiled
+        // sim/export boundary and tripped the 1000 ms frame watchdog.
+        // Keep the same two-submission split as async prime.
+    } else if (!asyncCompute && frameComputeHasWork) {
+        // Small particle workloads stay on Graphics. This is not a CPU
+        // fallback: the same GPU compute graph is recorded before the
+        // camera graphs, but queue order replaces the expensive
+        // previous-frame fence/timeline dependency. It also keeps all
+        // particle buffers on one queue family, preserving the validation
+        // guarantees that motivated the cross-frame guard.
+        particleComputeWork = m_frameSubmission.AddWork(
+            device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+            rhi::PipelineStage::ComputeShader, setupDependencies,
             [this](VkCommandBuffer commandBuffer) {
-#if INFERNUX_FRAME_PROFILE
-                m_gpuTimestampQueries.BeginFrame(commandBuffer, m_currentFrame);
-                m_composedFrameTimestampRegion =
-                    m_gpuTimestampQueries.BeginRegion(commandBuffer, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-#endif
+                m_frameComputeExecutor(commandBuffer);
                 return true;
             },
-            "Frame/Setup");
-
-        if (!m_frameSubmissionBuilder(m_frameSubmission, setupWork, particleComputeWork)) {
-            throw std::runtime_error("Failed to compose frame RenderGraph submissions");
-        }
-
-        uint32_t simulationWork = 0;
-        if (asyncCompute && !primeAsyncCompute) {
-            // RenderGraphs consume the previous exported generation. Queueing
-            // next-frame simulation after their view-local compute batches
-            // lets simulation overlap the current Graphics lane.
-            simulationWork = m_frameSubmission.AddWork(
-                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, {},
-                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); },
-                "GpuParticle/AsyncSimulation");
-        }
-
-        vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
-        const auto guiRange = m_frameSubmission.AppendRenderGraph(
-            guiGraph, {setupWork}, {}, [this, imageIndex](VkCommandBuffer commandBuffer) {
-#if INFERNUX_FRAME_PROFILE
-                m_gpuTimestampQueries.EndRegion(commandBuffer, m_composedFrameTimestampRegion,
-                                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-                m_composedFrameTimestampRegion = {};
-                m_gpuTimestampQueries.FinishFrame(m_currentFrame);
-#endif
-                return RecordPresentationReadback(commandBuffer, imageIndex);
-            });
-        if (guiRange.Empty()) {
-            throw std::runtime_error("Swapchain GUI RenderGraph produced no submission work");
-        }
-
-        if (asyncCompute && !primeAsyncCompute) {
-            std::vector<uint32_t> exportDependencies{simulationWork};
-            const uint32_t finalGraphics = m_frameSubmission.LastWork(rhi::QueueRole::Graphics);
-            if (finalGraphics != 0)
-                exportDependencies.push_back(finalGraphics);
-            (void)m_frameSubmission.AddWork(
-                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, std::move(exportDependencies),
-                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
-                "GpuParticle/AsyncExport");
-        }
-
-        if (!m_frameSubmission.Build(submissionPlan, submissionPlanError)) {
-            throw std::runtime_error("Failed to build composed frame submission plan: " + submissionPlanError);
-        }
-    } else {
-        std::vector<rhi::SubmissionWorkItem> frameWork;
-        if (asyncCompute && !primeAsyncCompute) {
-            frameWork.push_back({0,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Compute,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::ComputeShader,
-                                 {}});
-            frameWork.push_back({1,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Graphics,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::AllGraphics,
-                                 {}});
-            frameWork.push_back({2,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Compute,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::ComputeShader,
-                                 {0, 1}});
-        } else if (primeAsyncCompute) {
-            frameWork.push_back({0,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Compute,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::ComputeShader,
-                                 {}});
-            frameWork.push_back({1,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Compute,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::ComputeShader,
-                                 {0}});
-            frameWork.push_back({2,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Graphics,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::AllGraphics,
-                                 {1}});
-        } else if (asyncCompute || separateComputeBatch) {
-            frameWork.push_back({0,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Compute,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::ComputeShader,
-                                 {}});
-            frameWork.push_back({1,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Graphics,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::AllGraphics,
-                                 {0}});
-        } else {
-            frameWork.push_back({0,
-                                 m_backend.Device().GetDeviceId(),
-                                 rhi::QueueRole::Graphics,
-                                 rhi::SubmissionDomain::Frame,
-                                 rhi::InvalidRenderViewId,
-                                 rhi::PipelineStage::AllGraphics,
-                                 {}});
-        }
-        if (!rhi::BuildSubmissionPlan(frameWork, submissionPlan, submissionPlanError)) {
-            throw std::runtime_error("Failed to build frame submission plan: " + submissionPlanError);
-        }
+            "GpuParticle/InlineSimulation");
     }
-    if (submissionPlan.batches.empty()) {
-        throw std::runtime_error("Frame submission plan is empty");
+
+    // Frame/Setup starts frame accounting. Waiting here for Simulation plus
+    // queuing OwnershipRelease after Setup deadlocks the independent
+    // compute family when a newly selected emitter first touches exclusive
+    // Graphics buffers (Game-only six-way preview).
+    const uint32_t setupWork = m_frameSubmission.AddWork(
+        device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, m_presentationView.id,
+        rhi::PipelineStage::AllGraphics, std::move(setupDependencies),
+        [this](VkCommandBuffer commandBuffer) {
+#if INFERNUX_FRAME_PROFILE
+            m_gpuTimestampQueries.BeginFrame(commandBuffer, m_currentFrame);
+            m_frameTimestampRegion =
+                m_gpuTimestampQueries.BeginRegion(commandBuffer, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
+            return true;
+        },
+        "Frame/Setup");
+
+    std::vector<uint32_t> presentationDependencies{setupWork};
+    if (m_frameSubmissionBuilder &&
+        !m_frameSubmissionBuilder(m_frameSubmission, setupWork, particleComputeWork, presentationDependencies)) {
+        throw std::runtime_error("Failed to compose frame RenderGraph submissions");
+    }
+
+    uint32_t simulationWork = 0;
+    if (asyncCompute && !primeAsyncCompute) {
+        // RenderGraphs consume the previous exported generation. Queueing
+        // next-frame simulation after their view-local compute batches
+        // lets simulation overlap the current Graphics lane.
+        simulationWork = m_frameSubmission.AddWork(
+            device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+            rhi::PipelineStage::ComputeShader, {},
+            [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); },
+            "GpuParticle/AsyncSimulation");
+    }
+
+    // Without a window image, skip empty plans while keeping any admitted
+    // view, particle, initialization or capture work on the same frame slot.
+    if (!presenting && m_frameSubmission.WorkCount() == 1)
+        return 0;
+
+#if INFERNUX_FRAME_PROFILE
+    const auto finishTimings = [this](VkCommandBuffer commandBuffer) {
+        m_gpuTimestampQueries.EndRegion(commandBuffer, m_frameTimestampRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        m_frameTimestampRegion = {};
+        m_gpuTimestampQueries.FinishFrame(commandBuffer, m_currentFrame);
+        return true;
+    };
+#else
+    const auto finishTimings = [](VkCommandBuffer) { return true; };
+#endif
+    uint32_t presentationWork = 0;
+    const bool captureWindow = output == WindowOutput::DisplayAndCapture;
+    if (presenting) {
+        const auto guiRange = m_frameSubmission.AppendRenderGraph(
+            GetGuiRenderGraph(imageIndex), presentationDependencies, {},
+            [this, imageIndex, finishTimings, captureWindow](VkCommandBuffer commandBuffer) {
+                return finishTimings(commandBuffer) &&
+                       (!captureWindow || RecordPresentationReadback(commandBuffer, imageIndex));
+            });
+        if (guiRange.Empty())
+            throw std::runtime_error("Swapchain GUI RenderGraph produced no submission work");
+        presentationWork = guiRange.workItems.back();
+    }
+#if INFERNUX_FRAME_PROFILE
+    else {
+        (void)m_frameSubmission.AddWork(device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame,
+                                        rhi::InvalidRenderViewId, rhi::PipelineStage::AllGraphics,
+                                        presentationDependencies, finishTimings, "Frame/Finalize");
+    }
+#endif
+
+    if (asyncCompute && !primeAsyncCompute) {
+        std::vector<uint32_t> exportDependencies{simulationWork};
+        const uint32_t finalGraphics = m_frameSubmission.LastWork(rhi::QueueRole::Graphics);
+        if (finalGraphics != 0)
+            exportDependencies.push_back(finalGraphics);
+        (void)m_frameSubmission.AddWork(
+            device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+            rhi::PipelineStage::ComputeShader, std::move(exportDependencies),
+            [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
+            "GpuParticle/AsyncExport");
+    }
+
+    if (!m_frameSubmission.Build(submissionPlan, submissionPlanError)) {
+        throw std::runtime_error("Failed to build frame submission plan: " + submissionPlanError);
     }
     {
         const rhi::SubmissionPlanStatistics statistics = rhi::AnalyzeSubmissionPlan(submissionPlan);
         auto &telemetry = m_frameSubmissionTelemetry;
         ++telemetry.generation;
-        telemetry.composed = composedFrame;
         telemetry.computeQueueIndependent = independentCompute;
         const auto transferQueue = m_backend.Queues().GetSnapshot(rhi::QueueRole::Transfer);
         telemetry.transferQueueIndependent =
@@ -399,44 +327,38 @@ try {
     vk::VulkanSubmissionExecutor::ExternalSync externalSync{};
     std::array<double, 3> executionTimings{};
     externalSync.cpuTimings = phaseTimings ? &executionTimings : nullptr;
-    externalSync.imageAvailable = m_backend.Presentation().GetImageAvailableSemaphore(frameSlot);
-    externalSync.imageAvailableStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    externalSync.uploadTimeline = m_resourceManager.GetUploadTimelineSemaphore();
-    externalSync.uploadTimelineValue = m_resourceManager.GetRequiredUploadTimelineValue();
-    rhi::SubmissionTicket residentWrite = m_frameComputeReadTicket;
-    VkPipelineStageFlags residentReadStages = m_frameComputeReadStages;
-    for (const auto &[objectId, buffers] : m_perObjectBuffers) {
-        (void)objectId;
-        if (!buffers.residentVertexBuffer)
-            continue;
-        const auto write = buffers.residentVertexBuffer->GetLastWriteSubmission();
-        if (write.IsValid() && (!residentWrite.IsValid() || write.serial > residentWrite.serial))
-            residentWrite = write;
-        if (write.IsValid())
-            residentReadStages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (presenting) {
+        externalSync.imageAvailable = presentation.GetImageAvailableSemaphore(frameSlot);
+        externalSync.renderFinished = presentation.GetRenderFinishedSemaphore(imageIndex);
     }
-    m_frameSubmissionTelemetry.residentComputeWriteSerial = residentWrite.serial;
-    m_frameSubmissionTelemetry.latestBackgroundComputeSerial = m_computeQueue.LastSubmission().completionTicket.serial;
+    m_frameSubmissionTelemetry.latestBackgroundComputeSerial =
+        m_backend.Compute().LastSubmission().completionTicket.serial;
+    m_frameSubmissionTelemetry.residentComputeWriteSerial = 0;
     m_frameSubmissionTelemetry.residentComputeWaitPending = false;
-    if (residentWrite.IsValid()) {
-        const auto compute = m_computeQueue.DependencyFor(residentWrite);
-        externalSync.backgroundComputeTimeline = compute.completionTimeline;
-        externalSync.backgroundComputeTimelineValue = compute.completionTimelineValue;
-        externalSync.backgroundComputeStages =
-            residentReadStages != 0 ? residentReadStages : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
-        m_frameSubmissionTelemetry.residentComputeWaitPending = compute.completionTimeline != VK_NULL_HANDLE;
+    bool residentVertexBarrier = false;
+    for (const auto &read : m_frameBufferReadDependencies) {
+        const auto point = m_backend.Queues().DependencyFor(read.producer, rhi::QueueRole::Graphics);
+        if (point.semaphore != VK_NULL_HANDLE)
+            externalSync.producers.push_back(
+                {point.semaphore, point.value, rhi::ToVkPipelineStages(read.stages), rhi::QueueRole::Graphics});
+        else if ((read.stages & rhi::PipelineStage::VertexInput) != rhi::PipelineStage::None)
+            residentVertexBarrier = true;
+        // Compute-only diagnostics are not a device-wide resource version.
+        if (read.producer.queue == rhi::QueueRole::Compute) {
+            m_frameSubmissionTelemetry.residentComputeWriteSerial =
+                (std::max)(m_frameSubmissionTelemetry.residentComputeWriteSerial, read.producer.serial);
+            m_frameSubmissionTelemetry.residentComputeWaitPending |= point.pending;
+        }
     }
-    externalSync.renderFinished = m_backend.Presentation().GetRenderFinishedSemaphore(imageIndex);
     externalSync.completionFence = m_backend.Queues().GetGraphicsFrameFence(frameSlot);
     externalSync.completionEpoch = m_backend.Queues().GetFrameCompletionEpoch(frameSlot);
-    if (asyncCompute || separateComputeBatch) {
-        // Game-only Play -> Stop -> Play submits GpuParticle/Simulation on
-        // Compute while the previous Game view still owns exported particle
-        // buffers on Graphics. Async prime already waits the previous
-        // timeline; the sync fallback must do the same or the compute lane
-        // hangs inside exclusive queue-family ownership.
-        externalSync.previousFrameTimeline = m_previousFrameCompletionTimeline;
-        externalSync.previousFrameTimelineValue = m_previousFrameCompletionTimelineValue;
+    if (m_previousFrameCompletion.IsValid() &&
+        (asyncCompute || separateComputeBatch || m_previousFrameCompletion.queue != rhi::QueueRole::Graphics)) {
+        // The old export can have ended on Compute even when this frame only
+        // reads resident particles from Graphics. Carry the actual terminal
+        // dependency across changes in simulation and capture readiness.
+        externalSync.previousFrameTimeline = m_backend.Queues().GetDependencyTimeline(m_previousFrameCompletion.queue);
+        externalSync.previousFrameTimelineValue = m_previousFrameCompletion.serial;
         externalSync.previousFrameStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         externalSync.previousFrameWaitAtFirstBatch = primeAsyncCompute || separateComputeBatch;
     }
@@ -445,49 +367,41 @@ try {
     try {
         executeResult = m_submissionExecutor.Execute(
             frameSlot, submissionPlan,
-            [this, imageIndex, asyncCompute, primeAsyncCompute, separateComputeBatch, frameComputeHasWork,
-             composedFrame, &submissionPlan](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
+            [this, &submissionPlan, &residentVertexBarrier](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
                 if (batchIndex >= submissionPlan.batches.size())
                     return false;
-                if (composedFrame)
-                    return m_frameSubmission.RecordBatch(submissionPlan, batchIndex, commandBuffer);
                 const auto queue = submissionPlan.batches[batchIndex].queue;
-                if (asyncCompute) {
-                    if (primeAsyncCompute) {
-                        if (batchIndex == 0) {
-                            return m_frameAsyncSimulationExecutor(commandBuffer);
-                        }
-                        if (batchIndex == 1)
-                            return m_frameAsyncExportExecutor(commandBuffer);
-                        return batchIndex == 2 && RecordFrameCommands(commandBuffer, imageIndex);
-                    }
-                    if (batchIndex == 0)
-                        return m_frameAsyncSimulationExecutor(commandBuffer);
-                    if (batchIndex == 1)
-                        return RecordFrameCommands(commandBuffer, imageIndex);
-                    if (batchIndex == 2)
-                        return m_frameAsyncExportExecutor(commandBuffer);
-                    return false;
+                if (residentVertexBarrier && queue == rhi::QueueRole::Graphics) {
+                    // The native lane can alias Compute. Make prior writes visible
+                    // to direct vertex reads outside RenderGraph's buffer barriers.
+                    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+                    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                    residentVertexBarrier = false;
                 }
-                if (queue == rhi::QueueRole::Compute && separateComputeBatch) {
-                    m_frameComputeExecutor(commandBuffer);
-                    return true;
-                }
-                if (queue != rhi::QueueRole::Graphics)
-                    return false;
-                if (!separateComputeBatch && frameComputeHasWork)
-                    m_frameComputeExecutor(commandBuffer);
-                return RecordFrameCommands(commandBuffer, imageIndex);
+                return m_frameSubmission.RecordBatch(submissionPlan, batchIndex, commandBuffer);
             },
             externalSync);
         if (phaseTimings)
             std::copy(executionTimings.begin(), executionTimings.end(), phaseTimings->begin() + 3);
     } catch (...) {
+        m_resourceManager.CancelFrameImageReadbacks(externalSync.completionEpoch);
         if (m_frameComputeSubmissionCallback)
             m_frameComputeSubmissionCallback(false);
         if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
             INXLOG_ERROR("Failed to restore graphics frame slot after command recording exception");
         throw;
+    }
+    if (presentationWork && captureWindow && m_presentationReadback) {
+        const auto accepted = submissionPlan.batches.begin() + executeResult.submittedBatchCount;
+        if (std::any_of(submissionPlan.batches.begin(), accepted, [presentationWork](const auto &batch) {
+                return std::find(batch.workItems.begin(), batch.workItems.end(), presentationWork) !=
+                       batch.workItems.end();
+            })) {
+            m_resourceManager.AcceptFrameImageReadback(*m_presentationReadback, externalSync.completionEpoch);
+        }
     }
     if (m_frameComputeSubmissionCallback)
         m_frameComputeSubmissionCallback(executeResult.Succeeded());
@@ -499,18 +413,24 @@ try {
 
     const VkResult submitResult = executeResult.result;
     if (!executeResult.Succeeded()) {
+        m_resourceManager.CancelFrameImageReadbacks(externalSync.completionEpoch);
         if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
             INXLOG_ERROR("Failed to restore graphics frame fence after submission failure");
         // Earlier queue batches may already have executed. A failed terminal
         // submit is not permission to reset or replay their simulation state.
         throw std::runtime_error(
             std::string("Frame GPU submission failed: ") + vk::VkResultToString(submitResult) +
-            (executeResult.submittedAny ? " (work was already submitted)" : " (no work was submitted)"));
+            (executeResult.submittedBatchCount ? " (work was already submitted)" : " (no work was submitted)"));
     } else {
         // The frame slot epoch was reserved immediately before recording and
         // is completed only by the terminal frame fence. Publish it now so
         // transient resource pools can retire exactly against this submission.
         m_lastSubmittedCompletionEpoch = externalSync.completionEpoch;
+        m_frameSubmission.PublishAccepted(executeResult.completionTicket);
+        auto owners = m_frameSubmission.TakeResourceOwners();
+        if (!owners.empty())
+            m_deletionQueue.RetireAfter(externalSync.completionEpoch,
+                                        [owners = std::move(owners)]() mutable { owners.clear(); });
         (void)m_backend.Queues().AssociateFrameSlot(frameSlot, executeResult.completionTicket);
         if (asyncCompute)
             m_frameAsyncComputePrimed = true;
@@ -520,10 +440,7 @@ try {
         // next frame may enter async particle execution after an edit/play or
         // graph-readiness transition, while this frame's Graphics lane still
         // consumes the same exported indirect buffers.
-        m_previousFrameCompletionTimeline = executeResult.completionTimeline;
-        m_previousFrameCompletionTimelineValue = executeResult.completionTimelineValue;
-        m_computeQueue.SetPreviousGraphicsCompletion(m_previousFrameCompletionTimeline,
-                                                     m_previousFrameCompletionTimelineValue);
+        m_previousFrameCompletion = executeResult.completionTicket;
     }
 #if INFERNUX_FRAME_PROFILE
     if (submitResult == VK_SUCCESS) {
@@ -541,22 +458,27 @@ try {
         (*phaseTimings)[1] = std::chrono::duration<double, std::milli>(now - phaseStart).count();
         phaseStart = now;
     }
-    // Present
-    result = m_backend.Presentation().Present(m_backend.Queues(), imageIndex);
-    if (result == vk::SwapchainResult::Success && m_firstVisiblePresentationPending) {
-        m_firstVisiblePresentationPending = false;
-        m_firstVisiblePresentationCompleted = true;
-        SDL_Log("INFERNUX_FIRST_REVEAL_PRESENT");
-    }
-    if (result == vk::SwapchainResult::SurfaceLost) {
-        m_presentationSurfaceLost = true;
-        INXLOG_WARN("Platform presentation surface was lost while presenting; scheduling a surface rebind");
-    } else if (result == vk::SwapchainResult::NeedRecreate || m_framebufferResized) {
-        SDL_Log("INFERNUX_SWAPCHAIN_RECREATE stage=present result=%d framebuffer_resized=%d", static_cast<int>(result),
-                m_framebufferResized ? 1 : 0);
-        RecreateSwapchain();
-    } else if (result == vk::SwapchainResult::Error) {
-        throw std::runtime_error("Failed to present the submitted frame");
+    uint64_t presentationAcceptedNs = 0;
+    if (presenting) {
+        const auto result = presentation.Present(m_backend.Queues(), imageIndex);
+        if (result == vk::SwapchainResult::Success) {
+            const auto acceptedAt = std::chrono::steady_clock::now().time_since_epoch();
+            presentationAcceptedNs =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt).count());
+            if (m_firstVisiblePresentationPending) {
+                m_firstVisiblePresentationPending = false;
+                m_firstVisiblePresentationCompleted = true;
+                SDL_Log("INFERNUX_FIRST_REVEAL_PRESENT");
+            }
+        }
+        if (result == vk::SwapchainResult::SurfaceLost) {
+            m_presentationSurfaceLost = true;
+            INXLOG_WARN("Platform presentation surface was lost while presenting; scheduling a surface rebind");
+        } else if (result == vk::SwapchainResult::NeedRecreate) {
+            m_framebufferResized = true;
+        } else if (result == vk::SwapchainResult::Error) {
+            throw std::runtime_error("Failed to present the submitted frame");
+        }
     }
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
@@ -567,13 +489,23 @@ try {
 
     // Advance frame
     m_currentFrame = (m_currentFrame + 1) % m_maxFramesInFlight;
-    if (phaseTimings)
+    if (phaseTimings && presenting)
         (*phaseTimings)[2] =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phaseStart).count();
+    return presentationAcceptedNs;
 } catch (...) {
+    m_frameSubmission.DiscardPublications();
     if (!m_frameFailure)
         m_frameFailure = std::current_exception();
     throw;
+}
+
+void InxVkCoreModular::InvalidateDrawBufferCaches() noexcept
+{
+    ++m_drawListActivation;
+    m_staticInstanceRanges.clear();
+    m_staticFilteredListCaches.clear();
+    m_shadowScratchValid = false;
 }
 
 void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh)
@@ -585,10 +517,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
         (!drawCalls || m_drawListMetadata.size() == drawCalls->size()))
         return;
 
-    ++m_drawListActivation;
-    m_staticInstanceRanges.clear();
-    m_staticFilteredListCaches.clear();
-    m_shadowScratchValid = false;
+    InvalidateDrawBufferCaches();
     m_drawCallsPtr = drawCalls;
     m_drawListMetadataSource = drawCalls;
     m_drawListBufferRevision = 0;
@@ -630,8 +559,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
         if (bufferIt != m_perObjectBuffers.end()) {
             m_drawListMetadata.push_back({drawCall.objectId, material, queue, bufferIt->second.vertexBuffer,
                                           bufferIt->second.indexBuffer, bufferIt->second.indexCount,
-                                          bufferIt->second.residentVertexBuffer, bufferIt->second.residentVertexHandle,
-                                          bufferIt->second.indexFormat});
+                                          bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
         } else {
             m_drawListMetadata.push_back({drawCall.objectId, material, queue, {}, {}, 0});
         }
@@ -686,8 +614,8 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
         if (bufferIt != m_perObjectBuffers.end()) {
             m_shadowListMetadata.push_back({drawCall.objectId, material, material ? material->GetRenderQueue() : 2000,
                                             bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
-                                            bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
-                                            bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
+                                            bufferIt->second.indexCount, bufferIt->second.residentVertexHandle,
+                                            bufferIt->second.indexFormat});
         } else {
             m_shadowListMetadata.push_back(
                 {drawCall.objectId, material, material ? material->GetRenderQueue() : 2000, {}, {}, 0});
@@ -742,7 +670,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                                          const std::string &passTag,
                                          const MaterialPassPipelineDescriptor *pipelineDescriptor,
                                          GraphMaterialFilter materialFilter, const RendererSelection *selection,
-                                         uint64_t excludedObjectId, bool requireSourceDepthWrite)
+                                         uint64_t excludedObjectId, bool requireSourceDepthWrite,
+                                         RenderInstanceHistory *motionHistory)
 {
     const MaterialPassPipelineDescriptor activePass =
         pipelineDescriptor ? *pipelineDescriptor : m_materialPipelineManager.GetDefaultPassPipelineDescriptor();
@@ -953,17 +882,17 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.HasVertexBuffer() &&
                 bufferIt->second.indexBuffer) {
                 if (requiredIndexEnd <= bufferIt->second.indexCount) {
-                    fallbackBufferLeases.push_back(
-                        {dc.objectId, material, queue, bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
-                         bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
-                         bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
+                    fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
+                                                    bufferIt->second.indexBuffer, bufferIt->second.indexCount,
+                                                    bufferIt->second.residentVertexHandle,
+                                                    bufferIt->second.indexFormat});
                     bufferLease = &fallbackBufferLeases.back();
                 } else if (dc.indexStart == 0 && dc.vertexStart == 0 && bufferIt->second.indexCount > 0) {
                     // Same stale-lease fallback as the metadata path above.
-                    fallbackBufferLeases.push_back(
-                        {dc.objectId, material, queue, bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
-                         bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
-                         bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
+                    fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
+                                                    bufferIt->second.indexBuffer, bufferIt->second.indexCount,
+                                                    bufferIt->second.residentVertexHandle,
+                                                    bufferIt->second.indexFormat});
                     bufferLease = &fallbackBufferLeases.back();
                     indexCountClamp = static_cast<uint32_t>(bufferIt->second.indexCount);
                 }
@@ -972,8 +901,11 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const VkBuffer vb = bufferLease ? bufferLease->GetVertexHandle() : VK_NULL_HANDLE;
         const VkBuffer ib = bufferLease ? bufferLease->indexBuffer->GetBuffer() : VK_NULL_HANDLE;
 
-        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, ib, materialOwner, material, indexCountClamp,
-                                     parameters, bufferLease ? bufferLease->indexFormat : MeshIndexFormat::UInt32});
+        m_eligibleScratch.push_back(
+            {&dc, sortKey, matHash, vb, ib, materialOwner, material, indexCountClamp, parameters,
+             bufferLease ? bufferLease->indexFormat : MeshIndexFormat::UInt32,
+             bufferLease ? bufferLease->GetVertexUpload() : rhi::SubmissionTicket{},
+             bufferLease ? bufferLease->indexBuffer->GetUploadSubmission() : rhi::SubmissionTicket{}});
     }
 
     // A stable static publication already owns a sorted, fully resolved list.
@@ -992,7 +924,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
     auto stageNow = Clock::now();
-    m_drawSubMs[9] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+    m_drawSubMs[6] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
     stageStart = stageNow;
     m_drawSceneFilteredEligible += static_cast<uint64_t>(eligibleDraws.size());
 #endif
@@ -1007,7 +939,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             }
         }
 #if INFERNUX_FRAME_PROFILE
-        m_drawSubMs[8] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
+        m_drawSubMs[5] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
 #endif
         return;
     }
@@ -1093,8 +1025,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     if (!reusedStaticFilter && !selection && overrideMaterial.empty() && sortMode != "back_to_front" &&
         m_eligibleScratch.size() >= 256 &&
         std::all_of(m_eligibleScratch.begin(), m_eligibleScratch.end(), [](const SortableDrawCall &entry) {
-            return entry.dc && entry.dc->isStatic && entry.dc->skinBoneMatrices == nullptr &&
-                   entry.dc->previousSkinBoneMatrices == nullptr;
+            return entry.dc && entry.dc->isStatic && !entry.dc->skinBoneMatrices;
         })) {
         StaticFilteredListCache cache;
         cache.drawListActivation = m_drawListActivation;
@@ -1119,7 +1050,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
     stageNow = Clock::now();
-    m_drawSubMs[10] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+    m_drawSubMs[7] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
     stageStart = stageNow;
 #endif
 
@@ -1135,7 +1066,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     // frame-in-flight buffer instead of excluding Forward/Forward+/GBuffer
     // from the static range cache merely because they consume object identity,
     // layer mask, or transform history.
-    const bool staticUnskinnedSequence = staticFilteredSequenceKey != 0;
+    const bool staticUnskinnedSequence = staticFilteredSequenceKey != 0 && !motionHistory;
     bool reusedStaticRange = false;
     if (staticUnskinnedSequence) {
         for (const StaticInstanceRange &range : m_staticInstanceRanges) {
@@ -1165,16 +1096,24 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
 
     if (needsInstanceAuxiliary)
-        PrepareInstanceAuxiliary(m_ensureFrameCounter, writeBase + totalEligible);
+        PrepareInstanceAuxiliary(writeBase + totalEligible);
 
     if (!reusedStaticRange && totalEligible > 0 && frameIndex < m_instanceBuffers.size()) {
-        const bool needsPreviousSkinPalette = activePass.target == ShaderCompileTarget::Motion;
         size_t requiredBoneMatrices = m_skinPaletteWriteOffset;
+        if (motionHistory) {
+            m_previousMotionScratch.clear();
+            m_previousMotionScratch.reserve(totalEligible);
+        }
         for (const auto &entry : eligibleDraws) {
-            if (entry.dc->skinBoneMatrices)
-                requiredBoneMatrices += entry.dc->skinBoneMatrices->size();
-            if (needsPreviousSkinPalette && entry.dc->previousSkinBoneMatrices)
-                requiredBoneMatrices += entry.dc->previousSkinBoneMatrices->size();
+            const auto *palette = entry.dc->skinBoneMatrices.get();
+            const auto boneCount = palette ? palette->size() : 0;
+            requiredBoneMatrices += boneCount;
+            if (motionHistory) {
+                const auto *previous = motionHistory->Previous(entry.dc->identity, entry.dc->skinContinuity);
+                m_previousMotionScratch.push_back(previous);
+                if (previous && previous->skin.get() != palette)
+                    requiredBoneMatrices += boneCount;
+            }
         }
         const VkBuffer previousInstanceBuffer =
             m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
@@ -1225,9 +1164,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             for (size_t i = 0; i < totalEligible; ++i) {
                 const DrawCall &draw = *eligibleDraws[i].dc;
                 const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
+                const auto *previous = motionHistory ? m_previousMotionScratch[i] : nullptr;
+                const GPUInstanceAuxData auxiliary{
+                    previous ? previous->model : draw.worldMatrix, PackGPUObjectId(pickingId),
+                    (previous ? kGPUInstanceAuxFlagValidHistory : 0u) |
+                        (draw.receivesShadows ? 0u : kGPUInstanceAuxFlagNoReceiveShadows),
+                    draw.layerMask};
                 instanceAuxiliaryWritten &=
-                    WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
-                                           draw.worldMatrix, pickingId, draw.layerMask, draw.receivesShadows);
+                    WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), auxiliary);
             }
         }
 
@@ -1252,15 +1196,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                     m_skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
                     return offset;
                 };
-                auto resolveSkinData = [&](const DrawCall &draw) {
+                auto resolveSkinData = [&](size_t index) {
                     GPUSkinInstanceData skinData{};
-                    const std::vector<glm::mat4> *palette = draw.skinBoneMatrices;
+                    const auto *palette = eligibleDraws[index].dc->skinBoneMatrices.get();
                     if (!palette || palette->empty())
                         return skinData;
 
                     skinData.boneCount = static_cast<uint32_t>(palette->size());
                     skinData.flags = kGPUSkinFlagEnabled;
-                    if (!needsPreviousSkinPalette) {
+                    if (!motionHistory) {
                         const void *key = static_cast<const void *>(palette);
                         auto cached = m_skinPaletteFrameCache.find(key);
                         if (cached != m_skinPaletteFrameCache.end())
@@ -1272,15 +1216,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                     }
 
                     skinData.boneOffset = appendPalette(palette);
-                    const auto *previous = draw.previousSkinBoneMatrices;
-                    if (!previous || previous->size() != palette->size())
-                        previous = palette;
-                    skinData.previousBoneOffset = previous == palette ? skinData.boneOffset : appendPalette(previous);
+                    const auto *previous = m_previousMotionScratch[index];
+                    skinData.previousBoneOffset = previous && previous->skin.get() != palette
+                                                      ? appendPalette(previous->skin.get())
+                                                      : skinData.boneOffset;
                     return skinData;
                 };
 
                 for (size_t i = 0; i < totalEligible; ++i) {
-                    skinInstances[writeBase + i] = resolveSkinData(*eligibleDraws[i].dc);
+                    skinInstances[writeBase + i] = resolveSkinData(i);
                 }
                 skinInstancesWritten = true;
             }
@@ -1325,6 +1269,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     VkBuffer currentIndexBuffer = VK_NULL_HANDLE;
     MeshIndexFormat currentIndexFormat = MeshIndexFormat::UInt32;
     uint64_t issuedDraws = 0;
+    auto *uploadReads = vk::SubmissionReadScope::Current(cmdBuf);
 
     struct ResolvedMaterialPass
     {
@@ -1341,13 +1286,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     };
 
     std::unordered_map<const InxMaterial *, ResolvedMaterialPass> resolvedMaterialCache;
-    std::unordered_set<const InxMaterial *> updatedMaterials;
     // Draw count is not a useful estimate of unique materials. Reserving one
-    // hash bucket per instance made each 65k-object pass allocate two large
-    // tables even when every renderer shared DefaultLit.
+    // hash bucket per instance wastes memory when renderers share a material.
     const size_t expectedUniqueMaterials = std::min<size_t>(totalEligible, 256);
     resolvedMaterialCache.reserve(expectedUniqueMaterials);
-    updatedMaterials.reserve(expectedUniqueMaterials);
     size_t materialResolveCalls = 0;
     size_t materialCacheHits = 0;
     size_t materialUpdateCalls = 0;
@@ -1360,11 +1302,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         m_materialPassResolutionCacheGeneration = publicationGeneration;
     };
 
-    auto resolveMaterialPass = [&](const std::shared_ptr<InxMaterial> &owner) -> ResolvedMaterialPass {
+    auto resolveMaterialPass = [&](const std::shared_ptr<InxMaterial> &owner,
+                                   MaterialRenderData *forward = nullptr) -> ResolvedMaterialPass {
         if (!owner)
             return {};
 
-        MaterialRenderData *forward = ResolveMeshMaterial(owner);
+        if (!forward)
+            forward = ResolveMeshMaterial(owner);
         if (!forward)
             return {};
         const MaterialPassPipelineDescriptor defaultForward =
@@ -1428,6 +1372,20 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             return cacheIt->second;
         }
 
+        // Both sampled textures and storage buffers can publish another
+        // allocation without changing material properties. Resolve them before
+        // any draw in this list borrows the cached descriptor.
+        const bool propertiesChanged = owner->IsPropertiesDirty() ||
+                                       m_materialPipelineManager.HasPendingTextureProperties(owner->GetMaterialKey());
+        MaterialRenderData *forward = nullptr;
+        if (propertiesChanged || !owner->GetBuffers().empty()) {
+            forward = ResolveMeshMaterial(owner);
+            if (!forward)
+                return ResolvedMaterialPass{};
+            materialUpdateCalls += propertiesChanged;
+            syncPersistentMaterialPassCache();
+        }
+
         const MaterialPassResolutionCacheKey persistentKey{owner.get(),
                                                            MaterialPassPipelineDescriptorHash{}(activePass)};
         const auto persistentIt = m_materialPassResolutionCache.find(persistentKey);
@@ -1448,7 +1406,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
 
         ++materialResolveCalls;
-        ResolvedMaterialPass resolved = resolveMaterialPass(owner);
+        ResolvedMaterialPass resolved = resolveMaterialPass(owner, forward);
         if (resolved.IsValid()) {
             resolvedMaterialCache.emplace(owner.get(), resolved);
             MaterialPassResolutionCacheEntry cached;
@@ -1495,6 +1453,12 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                            &pushData);
         vkCmdDrawIndexed(cmdBuf, batchIndexCount, batchInstanceCount, batchIndexStart, batchVertexStart,
                          writeBase + static_cast<uint32_t>(batchFirstInstance));
+        if (motionHistory) {
+            for (size_t index = batchFirstInstance; index < batchFirstInstance + batchInstanceCount; ++index) {
+                const auto &draw = *eligibleDraws[index].dc;
+                motionHistory->Record(draw.identity, draw.worldMatrix, draw.skinBoneMatrices, draw.skinContinuity);
+            }
+        }
         issuedDraws += batchInstanceCount;
 #if INFERNUX_FRAME_PROFILE
         ++m_drawFilteredActualDraws;
@@ -1554,40 +1518,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         }
 
-        // Commit CPU-side material changes before selecting the immutable GPU
-        // generation used by this draw. Texture resolution may publish a new
-        // Resolve again only when an update can publish different render data.
-        if (matRaw != currentMaterialRaw) {
-            const std::string &materialKey = matRaw->GetMaterialKey();
-            const bool hasPendingTextures = m_materialPipelineManager.HasPendingTextureProperties(materialKey);
-            const bool needsMaterialUpdate = matRaw->IsPropertiesDirty() || hasPendingTextures;
-            // Pending texture resolution may become ready between draw-list
-            // passes, so preserve the old retry behavior for that state.
-            if (needsMaterialUpdate && (updatedMaterials.insert(matRaw).second || hasPendingTextures)) {
-                ++materialUpdateCalls;
-                UpdateMaterialUBO(*matRaw);
-            }
-            if (needsMaterialUpdate) {
-                MaterialRenderData *updated = m_materialPipelineManager.GetRenderData(materialKey);
-                if (!updated || !updated->isValid || updated->pipeline != resolved.pipeline ||
-                    updated->pipelineLayout != resolved.layout || updated->descriptorSet != resolved.descriptorSet ||
-                    (activePass.target == ShaderCompileTarget::Forward &&
-                     updated->shaderProgram.get() != resolved.program.get())) {
-                    ++materialResolveCalls;
-                    resolved = resolveMaterialPass(*matOwner);
-                    if (!resolved.IsValid()) {
-                        emitBatch();
-                        continue;
-                    }
-                    resolvedMaterialCache[matRaw] = resolved;
-                } else {
-                    resolved.descriptorSet = updated->descriptorSet;
-                    resolvedMaterialCache[matRaw] = resolved;
-                }
-            }
-        }
-
-        // Resolve pending textures above before deciding readiness. A default
+        // The cached pass has already resolved pending textures. A default
         // white descriptor is Vulkan-valid but is not the requested icon alpha
         // mask. Dedicated draws stay unpublished on both pending and failed
         // first publication; an existing complete descriptor remains visible
@@ -1761,12 +1692,16 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
 
         if (vb != currentVertexBuffer) {
+            if (uploadReads)
+                uploadReads->Add(entry.vertexUpload, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
             VkBuffer vertBuffers[] = {vb};
             VkDeviceSize vbOffsets[] = {0};
             vkCmdBindVertexBuffers(cmdBuf, 0, 1, vertBuffers, vbOffsets);
             currentVertexBuffer = vb;
         }
         if (entry.indexBuf != currentIndexBuffer || entry.indexFormat != currentIndexFormat) {
+            if (uploadReads)
+                uploadReads->Add(entry.indexUpload, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
             vkCmdBindIndexBuffer(cmdBuf, entry.indexBuf, 0, ToVkIndexType(entry.indexFormat));
             currentIndexBuffer = entry.indexBuf;
             currentIndexFormat = entry.indexFormat;
@@ -1801,8 +1736,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
     stageNow = Clock::now();
-    m_drawSubMs[11] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
-    m_drawSubMs[8] += std::chrono::duration<double, std::milli>(stageNow - totalStart).count();
+    m_drawSubMs[8] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+    m_drawSubMs[5] += std::chrono::duration<double, std::milli>(stageNow - totalStart).count();
     m_drawSceneFilteredIssued += issuedDraws;
 #endif
 }
@@ -1924,8 +1859,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                     bufferIt->second.indexBuffer && requiredIndexEnd <= bufferIt->second.indexCount) {
                     fallbackBufferLeases.push_back({dc.objectId, material.get(), renderQueue,
                                                     bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
-                                                    bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
-                                                    bufferIt->second.residentVertexHandle,
+                                                    bufferIt->second.indexCount, bufferIt->second.residentVertexHandle,
                                                     bufferIt->second.indexFormat});
                     bufferLease = &fallbackBufferLeases.back();
                 }
@@ -1954,19 +1888,21 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             if (pip == VK_NULL_HANDLE || shadowMatDesc == VK_NULL_HANDLE)
                 continue;
             m_shadowDrawScratch.push_back({&dc, bufferLease->GetVertexHandle(), bufferLease->indexBuffer->GetBuffer(),
-                                           pip, shadowMatDesc, dc.worldBounds, bufferLease->indexFormat});
+                                           pip, shadowMatDesc, dc.worldBounds, bufferLease->indexFormat,
+                                           bufferLease->GetVertexUpload(),
+                                           bufferLease->indexBuffer->GetUploadSubmission()});
         }
 
 #if INFERNUX_FRAME_PROFILE
         stageNow = Clock::now();
-        m_drawSubMs[13] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+        m_drawSubMs[10] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
         stageStart = stageNow;
         m_drawShadowEligible += static_cast<uint64_t>(m_shadowDrawScratch.size());
 #endif
 
         if (m_shadowDrawScratch.empty() && !additionalDraws) {
 #if INFERNUX_FRAME_PROFILE
-            m_drawSubMs[12] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
+            m_drawSubMs[9] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
 #endif
             return;
         }
@@ -2036,8 +1972,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         m_shadowScratchStatic =
             !m_shadowDrawScratch.empty() &&
             std::all_of(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), [](const ShadowDraw &draw) {
-                return draw.dc && draw.dc->isStatic && draw.dc->skinBoneMatrices == nullptr &&
-                       draw.dc->previousSkinBoneMatrices == nullptr;
+                return draw.dc && draw.dc->isStatic && !draw.dc->skinBoneMatrices;
             });
         m_shadowScratchUniformBatch = m_shadowDrawScratch.size() > 1;
         if (m_shadowScratchUniformBatch) {
@@ -2064,7 +1999,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
     stageNow = Clock::now();
-    m_drawSubMs[15] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+    m_drawSubMs[12] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
     stageStart = stageNow;
 #endif
 
@@ -2315,7 +2250,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
         stageNow = Clock::now();
-        m_drawSubMs[16] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+        m_drawSubMs[13] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
         stageStart = stageNow;
 #endif
 
@@ -2371,7 +2306,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
             for (uint32_t vi = 0; vi < visibleCount; ++vi) {
                 const DrawCall *dc = m_shadowDrawScratch[(*visibleIndices)[vi]].dc;
-                skinInstances[writeBase + vi] = resolveSkinData(dc ? dc->skinBoneMatrices : nullptr);
+                skinInstances[writeBase + vi] = resolveSkinData(dc ? dc->skinBoneMatrices.get() : nullptr);
             }
             if (staticShadowSubmission) {
                 staticUpload.visibilityGeneration = cachedView.generation;
@@ -2388,7 +2323,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
         stageNow = Clock::now();
-        m_drawSubMs[17] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+        m_drawSubMs[14] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
         stageStart = stageNow;
 #endif
 
@@ -2410,6 +2345,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             return;
         }
 
+        auto *uploadReads = vk::SubmissionReadScope::Current(cmdBuf);
         auto emitShadowBatch = [&]() {
             if (batchCount == 0)
                 return;
@@ -2461,11 +2397,15 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             }
 
             if (vb != currentVertexBuffer) {
+                if (uploadReads)
+                    uploadReads->Add(sd.vertexUpload, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
                 VkDeviceSize offsets[] = {0};
                 vkCmdBindVertexBuffers(cmdBuf, 0, 1, &vb, offsets);
                 currentVertexBuffer = vb;
             }
             if (sd.indexBuf != currentIndexBuffer || sd.indexFormat != currentIndexFormat) {
+                if (uploadReads)
+                    uploadReads->Add(sd.indexUpload, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
                 vkCmdBindIndexBuffer(cmdBuf, sd.indexBuf, 0, ToVkIndexType(sd.indexFormat));
                 currentIndexBuffer = sd.indexBuf;
                 currentIndexFormat = sd.indexFormat;
@@ -2495,15 +2435,15 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
 #if INFERNUX_FRAME_PROFILE
         stageNow = Clock::now();
-        m_drawSubMs[18] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
+        m_drawSubMs[15] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
         stageStart = stageNow;
 #endif
     }
 
 #if INFERNUX_FRAME_PROFILE
     stageNow = Clock::now();
-    m_drawSubMs[14] += std::chrono::duration<double, std::milli>(stageNow - totalStart).count();
-    m_drawSubMs[12] += std::chrono::duration<double, std::milli>(stageNow - totalStart).count();
+    m_drawSubMs[11] += std::chrono::duration<double, std::milli>(stageNow - totalStart).count();
+    m_drawSubMs[9] += std::chrono::duration<double, std::milli>(stageNow - totalStart).count();
     m_drawShadowIssued += issuedDraws;
 #endif
 }
@@ -2977,9 +2917,73 @@ void InxVkCoreModular::CleanupShadowPipeline()
 // Per-object buffer management
 // ============================================================================
 
+void InxVkCoreModular::RegisterMeshUploadWork(FrameWorkOwner &owner)
+{
+    FrameWorkSource source;
+    source.observe = [this] { PumpPendingMeshUploads(); };
+    source.refresh = source.observe;
+    source.describe = [this, &owner] {
+        FrameWorkFacts facts;
+        facts.pending = !m_pendingSharedMeshBuffers.empty();
+        for (const auto &[key, upload] : m_pendingSharedMeshBuffers) {
+            const bool vertex = upload.vertexUpload->GetSubmittedBytes() != upload.vertexUpload->GetSize();
+            const auto &ticket = vertex ? upload.vertexUpload : upload.indexUpload;
+            const auto unit = vertex ? sizeof(float) : key.IndexBytes();
+            const auto order = [this](uint64_t token) { return std::pair(token <= m_lastMeshGpuToken, token); };
+            if (m_resourceManager.PlanBufferUploadBlock(*ticket, owner, unit) &&
+                (!facts.gpu.ready || order(upload.token) < order(facts.gpu.token)))
+                facts.gpu = {upload.token, 0, true, false};
+        }
+        return facts;
+    };
+    source.advance = [this, &owner](bool, uint64_t token) {
+        for (auto &[key, upload] : m_pendingSharedMeshBuffers) {
+            if (upload.token != token)
+                continue;
+            m_lastMeshGpuToken = token;
+            const bool vertex = upload.vertexUpload->GetSubmittedBytes() != upload.vertexUpload->GetSize();
+            const auto &ticket = vertex ? upload.vertexUpload : upload.indexUpload;
+            const auto offset = ticket->GetSubmittedBytes();
+            const auto unit = vertex ? sizeof(float) : key.IndexBytes();
+            const auto bytes = m_resourceManager.PlanBufferUploadBlock(*ticket, owner, unit);
+            if (!bytes)
+                return false;
+            bool accepted;
+            if (!vertex && key.indexFormat == MeshIndexFormat::UInt16) {
+                accepted = m_resourceManager.TryAppendIndex16Upload(ticket, upload.indices->data() + offset / unit,
+                                                                    bytes, &owner);
+            } else {
+                const auto *data = vertex ? reinterpret_cast<const std::byte *>(upload.vertices->data())
+                                          : reinterpret_cast<const std::byte *>(upload.indices->data());
+                accepted = m_resourceManager.TryAppendBufferUpload(ticket, data + offset, bytes, &owner, bytes == unit,
+                                                                   unit, {vertex ? upload.indexUpload.get() : nullptr});
+            }
+            if (accepted && vertex && offset == 0) {
+                ++m_submittedMeshUploadCount;
+                m_asyncMeshUploadCount += ticket->IsAsync();
+            }
+            return accepted;
+        }
+        return false;
+    };
+    m_meshWorkSource = owner.AddSource(std::move(source));
+}
+
 void InxVkCoreModular::PumpPendingMeshUploads()
 {
+    if (m_pendingSharedMeshBuffers.empty())
+        return;
+    m_resourceManager.PollGpuUploads();
+    bool publishedRuntimeMesh = false;
+    auto &registry = AssetRegistry::Instance();
     for (auto pending = m_pendingSharedMeshBuffers.begin(); pending != m_pendingSharedMeshBuffers.end();) {
+        const auto &key = pending->first;
+        if (key.IsRegistryAsset() &&
+            (!registry.IsLoaded(key.assetGuid) || registry.GetAssetVersion(key.assetGuid) != key.runtimeVersion)) {
+            m_assetMeshViewKeys.erase({key.assetGuid, key.runtimeVersion, key.geometryView});
+            pending = m_pendingSharedMeshBuffers.erase(pending);
+            continue;
+        }
         const bool vertexReady = m_resourceManager.TryPublishBufferUpload(pending->second.vertexUpload);
         const bool indexReady = m_resourceManager.TryPublishBufferUpload(pending->second.indexUpload);
         if (!vertexReady || !indexReady) {
@@ -2987,62 +2991,69 @@ void InxVkCoreModular::PumpPendingMeshUploads()
             continue;
         }
 
-        if (!pending->first.assetGuid.empty()) {
-            auto &registry = AssetRegistry::Instance();
-            if (!registry.IsLoaded(pending->first.assetGuid) ||
-                registry.GetAssetVersion(pending->first.assetGuid) != pending->first.runtimeVersion) {
-                m_assetMeshViewKeys.erase(
-                    {pending->first.assetGuid, pending->first.runtimeVersion, pending->first.geometryView});
-                pending = m_pendingSharedMeshBuffers.erase(pending);
-                continue;
-            }
-        }
-
         SharedMeshBuffers buffers;
         buffers.vertexBuffer = pending->second.vertexUpload->GetBuffer();
         buffers.indexBuffer = pending->second.indexUpload->GetBuffer();
-        buffers.vertexCount = pending->second.vertexCount;
-        buffers.indexCount = pending->second.indexCount;
-        buffers.indexFormat = pending->second.indexFormat;
-        PublishSharedMeshBuffers(pending->first, std::move(buffers));
+        buffers.vertexCount = key.vertexCount;
+        buffers.indexCount = key.indexCount;
+        buffers.indexFormat = key.indexFormat;
+        PublishSharedMeshBuffers(key, std::move(buffers));
+        publishedRuntimeMesh |= key.dynamicObjectId != 0;
         pending = m_pendingSharedMeshBuffers.erase(pending);
         ++m_completedMeshUploadCount;
     }
+    // A runtime upload can arrive after its last view stopped using it.
+    // Recheck the bindings and retire unclaimed generations after preparation.
+    if (publishedRuntimeMesh)
+        ++m_objectBufferRevision;
 }
 
-void InxVkCoreModular::QueueSharedMeshUpload(const SharedMeshKey &key, const std::vector<Vertex> &vertices,
-                                             const std::vector<uint32_t> &indices)
+bool InxVkCoreModular::QueueSharedMeshUpload(const SharedMeshKey &key, const std::vector<Vertex> &vertices,
+                                             const std::vector<uint32_t> &indices, std::shared_ptr<const void> source)
 {
-    if (vertices.empty() || indices.empty() || vertices.size() != key.vertexCount || indices.size() != key.indexCount)
-        throw std::invalid_argument("Shared mesh upload requires non-empty geometry matching its identity");
+    if (const auto pending = m_pendingSharedMeshBuffers.find(key); pending != m_pendingSharedMeshBuffers.end()) {
+        pending->second.requestedFrame = m_ensureFrameCounter;
+        return true;
+    }
+    auto &registry = AssetRegistry::Instance();
+    if (key.IsRegistryAsset() &&
+        (!registry.IsLoaded(key.assetGuid) || registry.GetAssetVersion(key.assetGuid) != key.runtimeVersion))
+        return false;
+    PendingSharedMeshBuffers upload;
+    upload.vertices = &vertices;
+    upload.indices = &indices;
+    upload.source = std::move(source);
+    if (key.assetGuid.empty()) {
+        const auto bytes = (upload.source ? vertices.capacity() : vertices.size()) * sizeof(Vertex) +
+                           (upload.source ? indices.capacity() : indices.size()) * sizeof(uint32_t);
+        upload.sourceStorage = m_frameWorkOwner->TryReserveCpuStorage(bytes);
+        if (!upload.sourceStorage)
+            return false;
+    }
+    if (!upload.source && key.assetGuid.empty()) {
+        // Editor tools borrow mutable arrays for the current render only.
+        auto snapshot = std::make_shared<MeshGeometry>();
+        snapshot->vertices = vertices;
+        snapshot->indices = indices;
+        upload.vertices = &snapshot->vertices;
+        upload.indices = &snapshot->indices;
+        upload.source = std::move(snapshot);
+    }
+    upload.vertexUpload =
+        m_resourceManager.CreateBufferUpload(vertices.size() * sizeof(Vertex), rhi::BufferUsageFlags::Vertex);
+    upload.indexUpload =
+        m_resourceManager.CreateBufferUpload(indices.size() * key.IndexBytes(), rhi::BufferUsageFlags::Index);
     if (!key.assetGuid.empty()) {
         const AssetMeshViewIdentity identity{key.assetGuid, key.runtimeVersion, key.geometryView};
         const auto [published, inserted] = m_assetMeshViewKeys.emplace(identity, key);
         if (!inserted && !(published->second == key))
             throw std::logic_error("Asset mesh view identity changed inside one runtime generation");
     }
-    if (m_sharedMeshBuffers.find(key) != m_sharedMeshBuffers.end() ||
-        m_pendingSharedMeshBuffers.find(key) != m_pendingSharedMeshBuffers.end())
-        return;
-    PendingSharedMeshBuffers uploads;
-    uploads.vertexUpload = m_resourceManager.BeginBufferUpload(
-        {vertices.data(), vertices.size() * sizeof(Vertex), rhi::BufferUsage::Vertex});
-    if (key.indexFormat == MeshIndexFormat::UInt16) {
-        std::vector<uint16_t> packed(indices.begin(), indices.end());
-        uploads.indexUpload = m_resourceManager.BeginBufferUpload(
-            {packed.data(), packed.size() * sizeof(uint16_t), rhi::BufferUsage::Index});
-    } else {
-        uploads.indexUpload = m_resourceManager.BeginBufferUpload(
-            {indices.data(), indices.size() * sizeof(uint32_t), rhi::BufferUsage::Index});
-    }
-    uploads.vertexCount = vertices.size();
-    uploads.indexCount = indices.size();
-    uploads.indexFormat = key.indexFormat;
-    ++m_submittedMeshUploadCount;
-    if (uploads.vertexUpload->IsAsync() || uploads.indexUpload->IsAsync())
-        ++m_asyncMeshUploadCount;
-    if (!m_pendingSharedMeshBuffers.emplace(key, std::move(uploads)).second)
-        throw std::logic_error("Shared mesh upload identity was published concurrently");
+    upload.token = ++m_meshWorkToken;
+    upload.requestedFrame = m_ensureFrameCounter;
+    m_pendingSharedMeshBuffers.emplace(key, std::move(upload));
+    m_frameWorkOwner->Wake(m_meshWorkSource);
+    return true;
 }
 
 void InxVkCoreModular::QueueHierarchyCompanionView(const std::string &assetGuid, uint64_t runtimeVersion,
@@ -3079,253 +3090,237 @@ void InxVkCoreModular::QueueHierarchyCompanionView(const std::string &assetGuid,
         ResolveMeshIndexFormat(mesh->GetIndexFormat(), geometry->vertices.size(), geometry->indices);
     const SharedMeshKey key{
         assetGuid, 0, runtimeVersion, geometry->vertices.size(), geometry->indices.size(), format, companionView};
-    QueueSharedMeshUpload(key, geometry->vertices, geometry->indices);
+    (void)QueueSharedMeshUpload(key, geometry->vertices, geometry->indices, geometry);
 }
 
-void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,
-                                           const std::vector<uint32_t> &indices, MeshIndexFormat requestedIndexFormat,
-                                           bool forceUpdate, const std::string &assetGuid, uint64_t runtimeVersion,
-                                           MeshGeometryView geometryView)
+InxVkCoreModular::PerObjectBuffers *InxVkCoreModular::PrepareObjectGeometry(const DrawCall &draw)
 {
+    const auto &vertices = *draw.meshVertices;
+    const auto &indices = *draw.meshIndices;
+    const auto &assetGuid = draw.meshAssetGuid;
+    const auto geometryView = draw.meshGeometryView;
+    const auto objectId = draw.objectId;
+    const auto runtimeVersion = IsBuiltinMeshGuid(assetGuid) ? uint64_t{1} : draw.meshRuntimeVersion;
+    const auto requestedIndexFormat = draw.meshIndexFormat;
+    const bool cpuGeometryReleased = vertices.empty() || indices.empty();
     if (!assetGuid.empty() && runtimeVersion == 0)
         throw std::invalid_argument("Mesh GPU identity requires GUID and runtime version together");
-    if (vertices.empty() || indices.empty()) {
-        // Read/Write-disabled Player assets intentionally discard CPU staging
-        // after their first authoritative upload. Rebind that exact resident
-        // generation; never reconstruct it via a hidden GPU readback.
-        if (assetGuid.empty())
-            return;
-        auto object = m_perObjectBuffers.find(objectId);
-        if (object != m_perObjectBuffers.end() && object->second.sharedKey.assetGuid == assetGuid &&
-            object->second.sharedKey.runtimeVersion == runtimeVersion &&
-            object->second.sharedKey.geometryView == geometryView) {
-            object->second.ensuredOnFrame = m_ensureFrameCounter;
-            if (auto shared = m_sharedMeshBuffers.find(object->second.sharedKey); shared != m_sharedMeshBuffers.end())
-                shared->second.lastUsedFrame = m_ensureFrameCounter;
-            return;
-        }
-        const AssetMeshViewIdentity identity{assetGuid, runtimeVersion, geometryView};
-        const auto known = m_assetMeshViewKeys.find(identity);
-        if (known == m_assetMeshViewKeys.end())
-            throw std::runtime_error("Mesh GPU generation has no published geometry view identity");
-        const auto shared = m_sharedMeshBuffers.find(known->second);
-        if (shared == m_sharedMeshBuffers.end())
-            throw std::runtime_error("Mesh CPU geometry was released before its GPU generation became resident");
-        PerObjectBuffers binding;
-        binding.vertexBuffer = shared->second.vertexBuffer;
-        binding.indexBuffer = shared->second.indexBuffer;
-        binding.vertexCount = shared->second.vertexCount;
-        binding.indexCount = shared->second.indexCount;
-        binding.indexFormat = shared->second.indexFormat;
-        binding.sharedKey = shared->first;
-        binding.ensuredOnFrame = m_ensureFrameCounter;
-        m_perObjectBuffers[objectId] = std::move(binding);
-        shared->second.lastUsedFrame = m_ensureFrameCounter;
-        ++m_objectBufferRevision;
-        return;
-    }
     auto objectIt = m_perObjectBuffers.find(objectId);
     if (objectIt != m_perObjectBuffers.end()) {
-        // A second camera can carry the same one-shot force flag in its copied
-        // draw calls. The object was already updated from the same scene cache
-        // on this frame, so skip it regardless of that stale copy.
-        if (objectIt->second.ensuredOnFrame == m_ensureFrameCounter)
-            return;
-    }
-    if (objectIt != m_perObjectBuffers.end() && !forceUpdate) {
-        // Fast path: if data pointers AND sizes match, content hasn't changed
-        const bool generationMatches =
-            (runtimeVersion == 0 || objectIt->second.sharedKey.runtimeVersion == runtimeVersion) &&
-            (assetGuid.empty() || (objectIt->second.sharedKey.assetGuid == assetGuid &&
-                                   objectIt->second.sharedKey.geometryView == geometryView));
-        if (generationMatches && objectIt->second.lastVertexPtr == vertices.data() &&
-            objectIt->second.lastIndexPtr == indices.data() && objectIt->second.vertexCount == vertices.size() &&
-            objectIt->second.indexCount == indices.size()) {
-            if (requestedIndexFormat != MeshIndexFormat::Auto && objectIt->second.indexFormat != requestedIndexFormat)
-                forceUpdate = true;
-            else {
-                objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
-                return;
+        auto &binding = objectIt->second;
+        // All views of this object use the same captured draw source. A stamp
+        // can represent a deferred replacement that kept the old binding alive.
+        if (binding.ensuredOnFrame == m_ensureFrameCounter)
+            return binding.requestedGeometryReady ? &binding : nullptr;
+        const bool generationMatches = (runtimeVersion == 0 || binding.sharedKey.runtimeVersion == runtimeVersion) &&
+                                       binding.sharedKey.assetGuid == assetGuid &&
+                                       binding.sharedKey.geometryView == geometryView;
+        const bool sourceMatches =
+            !draw.forceBufferUpdate && binding.lastVertexPtr == vertices.data() &&
+            binding.lastIndexPtr == indices.data() && binding.vertexCount == vertices.size() &&
+            binding.indexCount == indices.size() &&
+            (requestedIndexFormat == MeshIndexFormat::Auto || binding.indexFormat == requestedIndexFormat);
+        if (generationMatches && (cpuGeometryReleased || sourceMatches)) {
+            binding.ensuredOnFrame = m_ensureFrameCounter;
+            binding.requestedGeometryReady = true;
+            if (cpuGeometryReleased) {
+                if (const auto shared = m_sharedMeshBuffers.find(binding.sharedKey);
+                    shared != m_sharedMeshBuffers.end())
+                    shared->second.lastUsedFrame = m_ensureFrameCounter;
             }
+            return &binding;
         }
     }
 
-    MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
+    SharedMeshKey sharedKey;
     if (!assetGuid.empty()) {
         const AssetMeshViewIdentity identity{assetGuid, runtimeVersion, geometryView};
         const auto known = m_assetMeshViewKeys.find(identity);
         if (known != m_assetMeshViewKeys.end()) {
-            if (known->second.vertexCount != vertices.size() || known->second.indexCount != indices.size())
+            sharedKey = known->second;
+            if (!cpuGeometryReleased &&
+                (sharedKey.vertexCount != vertices.size() || sharedKey.indexCount != indices.size()))
                 throw std::logic_error("Asset mesh geometry changed without publishing a new runtime generation");
-            indexFormat = known->second.indexFormat;
-            if (requestedIndexFormat != MeshIndexFormat::Auto && requestedIndexFormat != indexFormat)
+            if (requestedIndexFormat != MeshIndexFormat::Auto && requestedIndexFormat != sharedKey.indexFormat)
                 throw std::logic_error("Asset mesh index format changed without publishing a new runtime generation");
         } else {
-            indexFormat = ResolveMeshIndexFormat(requestedIndexFormat, vertices.size(), indices);
+            if (cpuGeometryReleased)
+                throw std::runtime_error("Mesh GPU generation has no published geometry view identity");
+            sharedKey = {assetGuid,      0,
+                         runtimeVersion, vertices.size(),
+                         indices.size(), ResolveMeshIndexFormat(requestedIndexFormat, vertices.size(), indices),
+                         geometryView};
         }
     } else {
-        indexFormat = ResolveMeshIndexFormat(requestedIndexFormat, vertices.size(), indices);
+        // Mutable draw producers supply a revision. Unversioned runtime
+        // geometry has fixed topology and storage for this draw identity.
+        sharedKey = {{},
+                     draw.meshUsesDetachedStorage ? 0 : objectId,
+                     runtimeVersion,
+                     vertices.size(),
+                     indices.size(),
+                     ResolveMeshIndexFormat(requestedIndexFormat, vertices.size(), indices),
+                     geometryView};
     }
-
-    // Asset meshes share their authoritative GUID generation. Runtime meshes
-    // instead use their owning draw object and a monotonic publication
-    // generation. Do not scan all vertex/index bytes to guess identity: a
-    // dynamic mesh already publishes an explicit dirty event, and hashing it
-    // adds an O(mesh size) CPU tax to every deformation frame.
-    uint64_t publicationVersion = runtimeVersion;
-    const uint64_t dynamicObjectId = assetGuid.empty() ? objectId : 0;
-    if (assetGuid.empty() && publicationVersion == 0) {
-        publicationVersion = 1;
-        if (objectIt != m_perObjectBuffers.end() && objectIt->second.sharedKey.assetGuid.empty() &&
-            objectIt->second.sharedKey.dynamicObjectId == objectId) {
-            if (objectIt->second.sharedKey.runtimeVersion == (std::numeric_limits<uint64_t>::max)())
-                throw std::overflow_error("Runtime mesh publication generation overflow");
-            publicationVersion = objectIt->second.sharedKey.runtimeVersion + 1;
-        }
-    }
-    const SharedMeshKey sharedKey{assetGuid,      dynamicObjectId, publicationVersion, vertices.size(),
-                                  indices.size(), indexFormat,     geometryView};
-
-    if (!assetGuid.empty())
-        QueueHierarchyCompanionView(assetGuid, runtimeVersion, geometryView);
 
     auto sharedIt = m_sharedMeshBuffers.find(sharedKey);
-    // Asset generations remain shared regardless of a copied one-shot dirty
-    // flag. Runtime generations are object-local and were advanced above.
-    const bool needsCreate =
-        (sharedIt == m_sharedMeshBuffers.end() || sharedIt->second.vertexCount != vertices.size() ||
-         sharedIt->second.indexCount != indices.size() || !sharedIt->second.vertexBuffer ||
-         !sharedIt->second.indexBuffer);
-
-    if (needsCreate) {
-        SharedMeshBuffers sharedBuffers;
-        QueueSharedMeshUpload(sharedKey, vertices, indices);
-        auto pending = m_pendingSharedMeshBuffers.find(sharedKey);
-        if (pending == m_pendingSharedMeshBuffers.end())
-            throw std::logic_error("Shared mesh upload was neither pending nor resident");
-
-        const bool vertexReady = m_resourceManager.TryPublishBufferUpload(pending->second.vertexUpload);
-        const bool indexReady = m_resourceManager.TryPublishBufferUpload(pending->second.indexUpload);
-        if (!vertexReady || !indexReady) {
-            // Keep the previous published buffers while the new content is in
-            // flight. The draw path already validates dc.indexStart+indexCount
-            // against the leased buffer's indexCount, so a stale lease can
-            // never read out of bounds — it either draws last frame's geometry
-            // or skips the object when the new draw range no longer fits.
-            // Erasing the entry here made every-frame dynamic meshes
-            // (LineRenderer trails) invisible for the whole movement on
-            // devices where transfer publication falls back to fences.
-            if (objectIt != m_perObjectBuffers.end())
-                objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
-            return;
+    if (sharedKey.dynamicObjectId) {
+        // Finish one captured revision per object. Continually changing
+        // procedural geometry can publish intermediate complete revisions.
+        auto active = m_runtimeMeshUploads.find(objectId);
+        if (active != m_runtimeMeshUploads.end() && !(active->second.key == sharedKey)) {
+            const auto pending = m_pendingSharedMeshBuffers.find(active->second.key);
+            if (pending != m_pendingSharedMeshBuffers.end() && pending->second.vertexUpload->GetSubmittedBytes() == 0) {
+                m_pendingSharedMeshBuffers.erase(pending);
+                m_runtimeMeshUploads.erase(active);
+                active = m_runtimeMeshUploads.end();
+            }
         }
-
-        sharedBuffers.vertexBuffer = pending->second.vertexUpload->GetBuffer();
-        sharedBuffers.indexBuffer = pending->second.indexUpload->GetBuffer();
-        sharedBuffers.vertexCount = pending->second.vertexCount;
-        sharedBuffers.indexCount = pending->second.indexCount;
-        sharedBuffers.indexFormat = pending->second.indexFormat;
-        m_pendingSharedMeshBuffers.erase(pending);
-        ++m_completedMeshUploadCount;
-
-        PublishSharedMeshBuffers(sharedKey, std::move(sharedBuffers));
-        sharedIt = m_sharedMeshBuffers.find(sharedKey);
+        if (active != m_runtimeMeshUploads.end()) {
+            active->second.requestedFrame = m_ensureFrameCounter;
+            if (auto completed = m_sharedMeshBuffers.find(active->second.key); completed != m_sharedMeshBuffers.end()) {
+                if (sharedIt == m_sharedMeshBuffers.end())
+                    sharedIt = completed;
+                m_runtimeMeshUploads.erase(active);
+                active = m_runtimeMeshUploads.end();
+            }
+        }
+        const bool requestedReady = sharedIt != m_sharedMeshBuffers.end() && sharedIt->first == sharedKey;
+        if (!requestedReady && active == m_runtimeMeshUploads.end() &&
+            QueueSharedMeshUpload(sharedKey, vertices, indices, draw.meshDataOwner))
+            m_runtimeMeshUploads.emplace(objectId, RuntimeMeshUpload{sharedKey, m_ensureFrameCounter});
+    } else if (!cpuGeometryReleased) {
+        if (sharedIt == m_sharedMeshBuffers.end())
+            (void)QueueSharedMeshUpload(sharedKey, vertices, indices, draw.meshDataOwner);
+        if (sharedKey.IsRegistryAsset())
+            QueueHierarchyCompanionView(assetGuid, runtimeVersion, geometryView);
+    }
+    if (sharedIt == m_sharedMeshBuffers.end()) {
+        // Read/Write-disabled Player assets rebind the resident generation.
+        if (cpuGeometryReleased)
+            throw std::runtime_error("Mesh CPU geometry was released before its GPU generation became resident");
+        // Render with the last complete pair while the requested revision is
+        // private. A view with deferred geometry cannot reuse its bindings.
+        if (objectIt != m_perObjectBuffers.end()) {
+            objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
+            objectIt->second.requestedGeometryReady = false;
+        }
+        return nullptr;
     }
 
+    const bool requestedReady = sharedIt->first == sharedKey;
     PerObjectBuffers objectBuffers;
     objectBuffers.vertexBuffer = sharedIt->second.vertexBuffer;
     objectBuffers.indexBuffer = sharedIt->second.indexBuffer;
     objectBuffers.vertexCount = sharedIt->second.vertexCount;
     objectBuffers.indexCount = sharedIt->second.indexCount;
     objectBuffers.indexFormat = sharedIt->second.indexFormat;
-    objectBuffers.sharedKey = sharedKey;
-    objectBuffers.lastVertexPtr = vertices.data();
-    objectBuffers.lastIndexPtr = indices.data();
+    objectBuffers.sharedKey = sharedIt->first;
+    objectBuffers.lastVertexPtr = requestedReady ? vertices.data() : nullptr;
+    objectBuffers.lastIndexPtr = requestedReady ? indices.data() : nullptr;
     objectBuffers.ensuredOnFrame = m_ensureFrameCounter;
+    objectBuffers.requestedGeometryReady = requestedReady;
 
-    if (objectIt != m_perObjectBuffers.end() && objectIt->second.residentVertexBuffer)
-        --m_residentVertexBufferCount;
-    m_perObjectBuffers[objectId] = std::move(objectBuffers);
+    m_residentVertexObjects.erase(objectId);
+    auto binding = m_perObjectBuffers.insert_or_assign(objectId, std::move(objectBuffers)).first;
     ++m_objectBufferRevision;
     sharedIt->second.lastUsedFrame = m_ensureFrameCounter;
     (void)TrimMeshGpuBudget();
+    return requestedReady ? &binding->second : nullptr;
 }
 
-void InxVkCoreModular::BindObjectVertexBuffer(uint64_t objectId, const std::shared_ptr<rhi::ComputeBuffer> &buffer)
+bool InxVkCoreModular::PrepareObjectBuffers(const DrawCall &draw)
 {
-    if (!buffer)
-        throw std::invalid_argument("Resident mesh vertex buffer must not be null");
-    auto object = m_perObjectBuffers.find(objectId);
-    if (object == m_perObjectBuffers.end() || !object->second.indexBuffer || object->second.vertexCount == 0)
-        throw std::logic_error("Resident mesh vertex buffer requires published mesh topology");
-    if (buffer->GetHost().device.GetDeviceId() != m_backend.Device().GetDeviceId())
-        throw std::invalid_argument("Resident mesh vertex buffer belongs to another rendering device");
-    const uint64_t requiredBytes = static_cast<uint64_t>(object->second.vertexCount) * sizeof(Vertex);
-    const auto &desc = buffer->GetDesc();
-    if (desc.scalarType != rhi::ComputeScalarType::Float32 || desc.lanes != 1 ||
-        buffer->GetByteSize() < requiredBytes || buffer->GetByteSize() % sizeof(Vertex) != 0)
-        throw std::invalid_argument(
-            "Resident mesh vertex buffer must use canonical Vertex storage with capacity >= vertex_count");
-
-    const VkBuffer native = m_backend.Device().GetRhiDevice().Resolve(buffer->GetBuffer());
-    if (native == VK_NULL_HANDLE)
-        throw std::runtime_error("Resident mesh vertex buffer has no Vulkan allocation");
-    if (object->second.residentVertexBuffer == buffer && object->second.residentVertexHandle == native)
-        return;
-    if (!object->second.residentVertexBuffer)
-        ++m_residentVertexBufferCount;
-    object->second.residentVertexBuffer = buffer;
-    object->second.residentVertexHandle = native;
-    object->second.ensuredOnFrame = m_ensureFrameCounter;
+    if (draw.meshAssetGuid.empty() && (draw.meshVertices->empty() || draw.meshIndices->empty()))
+        return true;
+    auto *binding = PrepareObjectGeometry(draw);
+    if (!binding)
+        return false;
+    const auto &buffer = draw.meshVertexBuffer;
+    if (binding->residentVertexBuffer == buffer)
+        return true;
+    if (buffer) {
+        if (buffer->GetHost().device.GetDeviceId() != m_backend.Device().GetDeviceId())
+            throw std::invalid_argument("Resident mesh vertex buffer belongs to another rendering device");
+        const uint64_t requiredBytes = static_cast<uint64_t>(binding->vertexCount) * sizeof(Vertex);
+        const auto &desc = buffer->GetDesc();
+        if (desc.scalarType != rhi::ComputeScalarType::Float32 || desc.lanes != 1 ||
+            buffer->GetByteSize() < requiredBytes || buffer->GetByteSize() % sizeof(Vertex) != 0)
+            throw std::invalid_argument(
+                "Resident mesh vertex buffer must use canonical Vertex storage with capacity >= vertex_count");
+        m_residentVertexObjects.insert(draw.objectId);
+    } else {
+        m_residentVertexObjects.erase(draw.objectId);
+    }
+    binding->residentVertexBuffer = buffer;
+    binding->residentVertexHandle = VK_NULL_HANDLE;
     ++m_objectBufferRevision;
-    m_shadowScratchValid = false;
+    InvalidateDrawBufferCaches();
+    return true;
 }
 
-void InxVkCoreModular::CleanupUnusedBuffers(const std::vector<DrawCall> &activeDrawCalls)
+void InxVkCoreModular::CaptureResidentVertexReads(const std::vector<DrawCall> &draws,
+                                                  const std::vector<DrawCall> &shadowDraws)
 {
-    // Build set of active objectIds
-    std::unordered_set<uint64_t> activeIds;
-    for (const auto &dc : activeDrawCalls) {
-        activeIds.insert(dc.objectId);
-    }
-    CleanupUnusedBuffersByIds(activeIds);
-}
-
-void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64_t> &activeIds)
-{
-    bool anyRemoved = false;
-    for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
-        if (activeIds.find(it->first) == activeIds.end()) {
-            if (it->second.residentVertexBuffer)
-                --m_residentVertexBufferCount;
-            auto shared = m_sharedMeshBuffers.find(it->second.sharedKey);
-            if (shared != m_sharedMeshBuffers.end())
-                shared->second.lastUsedFrame = m_ensureFrameCounter;
-            it = m_perObjectBuffers.erase(it);
-            anyRemoved = true;
-        } else {
-            ++it;
+    if (m_residentVertexObjects.empty())
+        return;
+    auto &device = m_backend.Device().GetRhiDevice();
+    bool changed = false;
+    const auto capture = [&](const auto &list) {
+        uint64_t previous = 0;
+        for (const auto &draw : list) {
+            if (draw.objectId == previous)
+                continue;
+            previous = draw.objectId;
+            if (m_residentVertexObjects.find(draw.objectId) == m_residentVertexObjects.end())
+                continue;
+            auto &buffers = m_perObjectBuffers.at(draw.objectId);
+            const auto &buffer = buffers.residentVertexBuffer;
+            const auto allocation = buffer->GetAllocation();
+            const auto native = device.Resolve(allocation->GetBuffer());
+            if (native == VK_NULL_HANDLE)
+                throw std::runtime_error("Resident mesh vertex buffer has no Vulkan allocation");
+            changed |= buffers.residentVertexHandle != native;
+            buffers.residentVertexHandle = native;
+            if (m_frameResidentVertexReads.insert(allocation.get()).second) {
+                RegisterFrameBufferReadDependency(allocation->GetLastWriteSubmission(),
+                                                  rhi::PipelineStage::VertexInput);
+                m_frameSubmission.Retain(
+                    std::make_shared<rhi::ComputeBufferState>(buffer->GetDesc(), allocation, true));
+            }
         }
+    };
+    capture(draws);
+    if (&shadowDraws != &draws)
+        capture(shadowDraws);
+    if (changed) {
+        // The authored draw lists still refer to the same object bindings.
+        // Only their resolved vertex handles and derived draw caches changed.
+        m_drawListBufferRevision = 0;
+        m_shadowListBufferRevision = 0;
+        InvalidateDrawBufferCaches();
     }
-    if (anyRemoved)
-        ++m_objectBufferRevision;
-    RetireUnusedRuntimeMeshBuffers();
-    (void)TrimMeshGpuBudget();
+}
+
+void InxVkCoreModular::KeepObjectBuffers(const std::vector<DrawCall> &drawCalls)
+{
+    uint64_t previous = 0;
+    for (const auto &draw : drawCalls) {
+        if (draw.objectId == previous)
+            continue;
+        previous = draw.objectId;
+        const auto binding = m_perObjectBuffers.find(draw.objectId);
+        if (binding != m_perObjectBuffers.end())
+            binding->second.ensuredOnFrame = m_ensureFrameCounter;
+    }
 }
 
 size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
 {
-    if (m_skipObjectBufferCleanupThisFrame) {
-        m_skipObjectBufferCleanupThisFrame = false;
-        return m_perObjectBuffers.size();
-    }
-
-    // Remove objects that were not referenced by EnsureObjectBuffers on this frame.
     bool anyRemoved = false;
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
         if (it->second.ensuredOnFrame != m_ensureFrameCounter) {
-            if (it->second.residentVertexBuffer)
-                --m_residentVertexBufferCount;
+            m_residentVertexObjects.erase(it->first);
             auto shared = m_sharedMeshBuffers.find(it->second.sharedKey);
             if (shared != m_sharedMeshBuffers.end())
                 shared->second.lastUsedFrame = m_ensureFrameCounter;
@@ -3343,28 +3338,48 @@ size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
     if (anyRemoved)
         (void)TrimMeshGpuBudget();
 
-    if (anyRemoved) {
-        for (auto &entry : m_objectBufferBindingCache)
-            entry.valid = false;
-    }
-
     return m_perObjectBuffers.size();
 }
 
 void InxVkCoreModular::RetireUnusedRuntimeMeshBuffers()
 {
-    // Runtime geometry has no asset to reload. Once neither objects nor draw
-    // snapshots retain it, an old deformation is not useful cache content.
-    for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end();) {
-        const auto &buffers = entry->second;
-        if (entry->first.dynamicObjectId != 0 && buffers.vertexBuffer.use_count() == 1 &&
-            buffers.indexBuffer.use_count() == 1) {
-            SharedMeshBuffers retired = std::move(entry->second);
-            entry = m_sharedMeshBuffers.erase(entry);
-            RetireSharedMeshBuffers(std::move(retired), false);
-        } else {
-            ++entry;
+    for (auto active = m_runtimeMeshUploads.begin(); active != m_runtimeMeshUploads.end();) {
+        if (active->second.requestedFrame == m_ensureFrameCounter) {
+            ++active;
+            continue;
         }
+        m_pendingSharedMeshBuffers.erase(active->second.key);
+        active = m_runtimeMeshUploads.erase(active);
+    }
+    for (auto pending = m_pendingSharedMeshBuffers.begin(); pending != m_pendingSharedMeshBuffers.end();) {
+        const auto &key = pending->first;
+        if (key.assetGuid.empty() && !key.dynamicObjectId && pending->second.requestedFrame != m_ensureFrameCounter &&
+            pending->second.source.use_count() == 1)
+            pending = m_pendingSharedMeshBuffers.erase(pending);
+        else
+            ++pending;
+    }
+    // Runtime geometry belongs to exactly one object binding. Accepted GPU
+    // work keeps its own lifetime after the logical cache entry is retired.
+    for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end();) {
+        const auto &key = entry->first;
+        if (key.dynamicObjectId == 0) {
+            ++entry;
+            continue;
+        }
+        const auto object = m_perObjectBuffers.find(key.dynamicObjectId);
+        if (object != m_perObjectBuffers.end() && object->second.sharedKey == key) {
+            ++entry;
+            continue;
+        }
+        const auto pending = m_runtimeMeshUploads.find(key.dynamicObjectId);
+        if (pending != m_runtimeMeshUploads.end() && pending->second.key == key) {
+            ++entry;
+            continue;
+        }
+        SharedMeshBuffers retired = std::move(entry->second);
+        entry = m_sharedMeshBuffers.erase(entry);
+        RetireSharedMeshBuffers(std::move(retired), false);
     }
 }
 
@@ -3393,8 +3408,7 @@ void InxVkCoreModular::InvalidateMeshCache(const std::string &meshGuid)
         else
             ++entry;
     }
-    for (auto &entry : m_objectBufferBindingCache)
-        entry.valid = false;
+    ++m_objectBufferRevision;
 }
 
 void InxVkCoreModular::PublishSharedMeshBuffers(const SharedMeshKey &key, SharedMeshBuffers buffers)
@@ -3422,7 +3436,7 @@ void InxVkCoreModular::PublishSharedMeshBuffers(const SharedMeshKey &key, Shared
     (void)inserted;
     if (!didInsert)
         throw std::logic_error("Shared mesh cache rejected a unique key");
-    if (!key.assetGuid.empty()) {
+    if (key.IsRegistryAsset()) {
         auto &registry = AssetRegistry::Instance();
         registry.MarkMeshGpuViewResident(key.assetGuid, key.runtimeVersion, key.geometryView);
         // A packaged Player retains immutable GPU storage as the authoritative
@@ -3512,7 +3526,7 @@ std::vector<GpuAssetResidencyRecord> InxVkCoreModular::GetAssetMeshGpuResidency(
     for (const auto &[key, uploads] : m_pendingSharedMeshBuffers) {
         if (key.assetGuid.empty())
             continue;
-        const uint64_t bytes = uploads.vertexUpload->GetSize() + uploads.indexUpload->GetSize();
+        const uint64_t bytes = uploads.vertexUpload->GetDestinationBytes() + uploads.indexUpload->GetDestinationBytes();
         records.push_back(
             {key.assetGuid, key.runtimeVersion, GpuAssetDomain::Mesh, bytes, m_ensureFrameCounter, true, true});
     }

@@ -25,9 +25,8 @@ void VerifyExecutorCommandUploads(vk::VkDeviceContext &context, vk::VulkanQueueM
         VkSemaphore gate = VK_NULL_HANDLE;
         assert(vkCreateSemaphore(context.GetDevice(), &semaphoreInfo, nullptr, &gate) == VK_SUCCESS);
         std::array<VkFence, 2> fences{};
-        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        for (auto &fence : fences)
-            assert(vkCreateFence(context.GetDevice(), &fenceInfo, nullptr, &fence) == VK_SUCCESS);
+        for (uint32_t frame = 0; frame < fences.size(); ++frame)
+            fences[frame] = queues.GetGraphicsFrameFence(frame);
         rhi::SubmissionPlan plan;
         std::string error;
         assert(rhi::BuildSubmissionPlan({{100,
@@ -42,18 +41,17 @@ void VerifyExecutorCommandUploads(vk::VkDeviceContext &context, vk::VulkanQueueM
             std::array<rhi::SubmissionSerial, 2> epochs{};
             std::vector<uint32_t> source(byteSize / 4);
             for (uint32_t frame = 0; frame < 2; ++frame) {
-                assert(vkResetFences(context.GetDevice(), 1, &fences[frame]) == VK_SUCCESS);
+                assert(queues.ResetGraphicsFrameFence(frame));
                 const uint32_t value = 0x12340000u + cycle * 256 + frame;
                 std::fill(source.begin(), source.end(), value);
                 vk::VulkanSubmissionExecutor::ExternalSync sync;
-                sync.completionEpoch = epochs[frame] = queues.ReserveCompletionEpoch();
+                sync.completionEpoch = epochs[frame] = queues.GetFrameCompletionEpoch(frame);
                 sync.completionFence = fences[frame];
-                sync.uploadTimeline = gate;
-                sync.uploadTimelineValue = cycle + 1;
+                sync.producers = {{gate, cycle + 1}};
                 const auto submitted = executor.Execute(
                     frame, plan,
                     [&](uint32_t, VkCommandBuffer commands) {
-                        auto *storage = vk::VulkanCommandUploads::Current(context.GetVmaAllocator(), commands);
+                        auto *storage = vk::VulkanCommandUploads::Current(device, commands);
                         assert(storage);
                         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -88,7 +86,7 @@ void VerifyExecutorCommandUploads(vk::VkDeviceContext &context, vk::VulkanQueueM
                         return true;
                     },
                     sync);
-                assert(submitted.Succeeded());
+                assert(submitted.Succeeded() && queues.AssociateFrameSlot(frame, submitted.completionTicket));
             }
             source.clear();
             source.shrink_to_fit();
@@ -104,16 +102,19 @@ void VerifyExecutorCommandUploads(vk::VkDeviceContext &context, vk::VulkanQueueM
                     return true;
                 },
                 rejectedSync);
-            assert(!rejected.Succeeded() && !rejected.submittedAny && unexpectedRecordings == 0);
+            assert(!rejected.Succeeded() && rejected.submittedBatchCount == 0 && unexpectedRecordings == 0);
             VkSemaphoreSignalInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
             signal.semaphore = gate;
             signal.value = cycle + 1;
             assert(vkSignalSemaphore(context.GetDevice(), &signal) == VK_SUCCESS);
             assert(vkWaitForFences(context.GetDevice(), 2, fences.data(), VK_TRUE, 5'000'000'000) == VK_SUCCESS);
             for (uint32_t frame = 0; frame < 2; ++frame) {
+                assert(queues.PollFrameCompletion(frame));
                 executor.CompleteFrame(frame);
-                queues.CompleteCompletionEpoch(epochs[frame]);
+                assert(queues.GetFrameCompletionEpoch(frame) == epochs[frame]);
             }
+            for (uint32_t frame = 0; frame < 2; ++frame)
+                assert(queues.CompleteFrameSlot(frame).IsValid());
             const auto *result =
                 static_cast<const uint32_t *>(device.MapBuffer(readback, 0, byteSize * 2, rhi::BufferMapAccess::Read));
             assert(result);
@@ -124,8 +125,6 @@ void VerifyExecutorCommandUploads(vk::VkDeviceContext &context, vk::VulkanQueueM
         }
         device.Release(readback);
         device.Release(target);
-        for (auto fence : fences)
-            vkDestroyFence(context.GetDevice(), fence, nullptr);
         vkDestroySemaphore(context.GetDevice(), gate, nullptr);
     }
 }

@@ -95,7 +95,8 @@ class WorldUIElementTarget:
 
     @property
     def input_logical_size(self) -> tuple[float, float]:
-        revision = _get_layout_revision()
+        layout = self.element.__dict__.get('_native_rect_layout')
+        revision = _get_layout_revision(), layout.revision if layout is not None else 0
         if revision != self._size_revision:
             width, height = self.element.get_resolved_size()
             self._logical_size = max(1.0, width), max(1.0, height)
@@ -171,8 +172,9 @@ def _project_world_ui_targets(targets, ray_origin, ray_direction, layer_mask=0xf
     positions = []
     for target, (x, y, distance) in zip(targets, local):
         width, height = target.input_logical_size
-        positions.append((x * WORLD_UI_PIXELS_PER_UNIT + width * 0.5,
-                          -y * WORLD_UI_PIXELS_PER_UNIT + height * 0.5, distance))
+        pivot = target.element.pivot
+        positions.append((x * WORLD_UI_PIXELS_PER_UNIT + width * pivot.x,
+                          -y * WORLD_UI_PIXELS_PER_UNIT + height * (1 - pivot.y), distance))
     return tuple(positions)
 
 
@@ -380,10 +382,12 @@ def _map_runtime_ui_pointer_geometry(
         world_targets, ray_origin, ray_direction, camera.culling_mask,
         camera, viewport_height,
     )
-    for (index, _surface), position in zip(world_entries, projected):
+    for (index, surface), position in zip(world_entries, projected):
         positions[index] = position
-        if position[0] == position[0]:
-            world_intersections.append((index, position[2]))
+        x, y, distance = position
+        width, height = surface.input_logical_size
+        if 0.0 <= x <= width and 0.0 <= y <= height and not surface.element.world_always_on_top:
+            world_intersections.append((index, distance))
     return positions, world_intersections, ray_origin, ray_direction, False
 
 
@@ -732,7 +736,7 @@ class RuntimeScreenUISubmission:
         engine = self._engine_ref()
         if engine is None:
             return False
-        frame_token = int(getattr(engine, "_render_submission_frame", -1))
+        frame_token = int(getattr(engine, "_service_opportunity", -1))
         if frame_token >= 0 and frame_token == self._last_submission_frame:
             return False
         renderer = engine.get_screen_ui_renderer()
@@ -748,6 +752,7 @@ class RuntimeScreenUISubmission:
             self._canvas_snapshot_token = canvas_token
         canvases = self._canvas_snapshot
         world_elements = _collect_world_ui_elements(*scenes)
+        self._prepare_native_layouts(canvases, world_elements, renderer, width, height)
 
         packets = self._command_packets
         texture_cache = packets.texture_cache
@@ -789,6 +794,37 @@ class RuntimeScreenUISubmission:
         self._last_submission_frame = frame_token
         return True
 
+    def _prepare_native_layouts(self, canvases, world_elements, renderer, width, height):
+        """Publish layout before geometry dependencies and command keys are read."""
+        from infernux.ui import UIFrame, UILayoutDirection
+        from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+        from infernux.ui._layout_driver import rebuild_world
+        for canvas in canvases:
+            prepare = getattr(canvas, '_prepare_native_layout', None)
+            if prepare is not None:
+                _, _, scale, cw, ch = _canvas_metrics(canvas, width, height)
+                prepare(renderer.measure_text, cw, ch, scale)
+        if self.__dict__.get('_world_layout_members') is not world_elements:
+            by_owner = {element.game_object.id: element for element in world_elements
+                        if isinstance(element, InxUIScreenComponent)}
+            groups = {}
+            for element in by_owner.values():
+                root = element
+                parent = element.game_object.get_parent()
+                while parent is not None:
+                    candidate = by_owner.get(parent.id)
+                    if candidate is not None:
+                        root = candidate
+                    parent = parent.get_parent()
+                groups.setdefault(root, []).append(element)
+            self._world_layout_roots = tuple((root, tuple(group)) for root, group in groups.items())
+            self._world_layout_members = world_elements
+        for root, group in self._world_layout_roots:
+            if root.transform._has_rect_layout or any(
+                    isinstance(element, UIFrame) and element.layout_direction != UILayoutDirection.None_
+                    for element in group):
+                rebuild_world(root, measure_text=renderer.measure_text)
+
     @staticmethod
     def prepare_text_layouts(world_elements, canvases, renderer,
                              game_width: int, game_height: int) -> None:
@@ -818,7 +854,7 @@ class RuntimeScreenUISubmission:
                     _resolve_text_layout(element, renderer.measure_text, text_scale)
 
     @staticmethod
-    def _submit_world_element(element, renderer, get_texture_id, screen_ui_list) -> None:
+    def _submit_world_element(element, renderer, get_texture_id, screen_ui_list, *, defer_group_alpha=False) -> None:
         game_object = element.game_object
         if game_object is None or not game_object.active_in_hierarchy or not element.enabled:
             return
@@ -834,8 +870,8 @@ class RuntimeScreenUISubmission:
         ignored_occluder = element.world_ignored_occluder
         world_args = (
             game_object,
-            logical_width * 0.5,
-            logical_height * 0.5,
+            logical_width * element.pivot.x,
+            logical_height * (1 - element.pivot.y),
             bool(element.world_always_on_top),
             bool(element.world_billboard),
             bool(element.world_constant_screen_size),
@@ -859,6 +895,7 @@ class RuntimeScreenUISubmission:
                 text_scale=1.0,
                 get_tex_id=get_texture_id,
                 world_transform_owned=True,
+                defer_group_alpha=defer_group_alpha,
             )
         finally:
             end_element()
@@ -915,18 +952,19 @@ class RuntimeScreenUISubmission:
 
     @staticmethod
     def _submit_screen_element(element, renderer, canvas, ui_list, logical_width, logical_height,
-                               scale_x, scale_y, text_scale, get_texture_id):
+                               scale_x, scale_y, text_scale, get_texture_id, *, defer_group_alpha=False):
         element_object = getattr(element, "game_object", None)
         if element_object is not None and not element_object.active_in_hierarchy:
             return
         if not getattr(element, "enabled", True):
             return
-        x, y, width, height = canvas.pixel_adjust_rect(
-            element.get_rect(logical_width, logical_height), scale_x, scale_y,
-        )
+        geometry = element._resolved_rect_geometry(logical_width, logical_height)
+        x, y, width, height = canvas.pixel_adjust_rect(geometry.render_rect, scale_x, scale_y)
         begin_object = getattr(renderer, "begin_screen_object", None)
         if callable(begin_object):
-            begin_object(element_object, ui_list, x + width * 0.5, y + height * 0.5, scale_x, scale_y)
+            px, py, pw, ph = canvas.pixel_adjust_rect(geometry.rect, scale_x, scale_y)
+            pivot = element.pivot
+            begin_object(element_object, ui_list, px + pw * pivot.x, py + ph * (1 - pivot.y), scale_x, scale_y)
         clip = element.get_effective_clip_rect(logical_width, logical_height)
         if clip is not None:
             left, top, width_clip, height_clip = canvas.pixel_adjust_rect(
@@ -941,6 +979,7 @@ class RuntimeScreenUISubmission:
                 sx=x, sy=y, sw=width, sh=height,
                 ref_w=logical_width, ref_h=logical_height, scale_x=scale_x,
                 scale_y=scale_y, text_scale=text_scale, get_tex_id=get_texture_id,
+                defer_group_alpha=defer_group_alpha,
             )
         finally:
             if clip is not None:

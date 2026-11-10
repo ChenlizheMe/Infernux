@@ -49,14 +49,21 @@ class RuntimeFrameBarrier(str, Enum):
     PHYSICS_POST_SCRIPT = "physics_post_script"
     TRANSFORM_RESOLVE = "transform_resolve"
     UPDATE_SCRIPT = "update_script"
+    ANIMATION_EVALUATION = "animation_evaluation"
     LATE_SCRIPT = "late_script"
     FINAL_TRANSFORM_RESOLVE = "final_transform_resolve"
     ANIMATION_TIMELINE = "animation_timeline"
     RENDER_EXTRACTION = "render_extraction"
     RENDER_GRAPH = "render_graph"
     SNAPSHOT_PUBLICATION = "snapshot_publication"
+    RENDER_SUBMITTED = "render_submitted"
+    RENDER_PRESENTED = "render_presented"
     PENDING_DESTROY = "pending_destroy"
     RETIREMENT = "retirement"
+
+    @classmethod
+    def from_native(cls, barrier):
+        return cls[barrier.name]
 
 
 @dataclass(frozen=True, slots=True)

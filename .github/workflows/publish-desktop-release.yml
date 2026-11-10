@@ -39,6 +39,8 @@ on:
         required: true
       SIGNPATH_API_TOKEN:
         required: false
+      PLATFORM_RELEASE_TOKEN:
+        required: true
 
 permissions:
   actions: read
@@ -46,11 +48,41 @@ permissions:
   pages: write
 
 concurrency:
-  group: desktop-release-publication
+  group: official-plugin-publication
   cancel-in-progress: false
 
 jobs:
+  publication-plan:
+    name: Check whether a new version needs publication
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.decision.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ !inputs.recover_partial_publication }}
+      - uses: actions/setup-python@v5
+        if: ${{ !inputs.recover_partial_publication }}
+        with:
+          python-version: '3.13'
+      - name: Install version comparison dependency
+        if: ${{ !inputs.recover_partial_publication }}
+        run: python -m pip install --disable-pip-version-check 'packaging>=24.0'
+      - name: Decide whether to publish
+        id: decision
+        env:
+          RECOVERY: ${{ inputs.recover_partial_publication }}
+        run: |
+          if [[ "$RECOVERY" == "true" ]]; then
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          else
+            python scripts/release/build_release_catalog.py --publication-status >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
+    needs: publication-plan
+    if: needs.publication-plan.outputs.publish == 'true'
     runs-on: windows-2022
     permissions:
       actions: read
@@ -174,6 +206,20 @@ jobs:
           pattern: '*-desktop-distribution-${{ inputs.run_id }}-${{ needs.verify.outputs.attempt }}'
           merge-multiple: true
           path: dist
+
+      - name: Download this engine release's complete platform plugin set
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          name: engine-platform-plugins-${{ inputs.run_id }}-${{ needs.verify.outputs.attempt }}
+          path: out/platform-plugins
+
+      - name: Validate all four platform plugin identities and payload digests
+        run: python scripts/release/build_platform_plugins.py assemble --output out/platform-plugins --sdk-wheels dist/*/infernux-*.whl
+
+      - name: Check engine-coupled plugin publication metadata
+        run: python scripts/release/publish_engine_plugins.py --directory out/platform-plugins --check
 
       - name: Validate the release payload
         env:
@@ -309,6 +355,19 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_VERSION/"* --clobber --repo "$GITHUB_REPOSITORY"
 
+      - name: Upload the matching platform plugins to the same engine release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" out/platform-plugins/* --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Update and publish the matching plugin repositories
+        env:
+          GH_TOKEN: ${{ secrets.PLATFORM_RELEASE_TOKEN }}
+        run: |
+          gh auth setup-git
+          python scripts/release/publish_engine_plugins.py --directory out/platform-plugins
+
       - name: Verify GitHub assets and preflight immutable PyPI files
         env:
           GH_TOKEN: ${{ github.token }}
@@ -358,6 +417,11 @@ jobs:
           for wheel in sorted((Path("dist") / version).glob("*.whl")):
               publisher.upload(wheel, f"wheels/{version}/build-{build}/{wheel.name}")
           PY
+
+      - name: Publish versioned platform plugins and then their catalogs to Cloudflare R2
+        env:
+          R2_UPLOAD_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+        run: python scripts/release/publish_platform_plugins.py --directory out/platform-plugins
 
       - name: Publish the GitHub Release
         if: steps.github_release.outputs.publish == 'true'

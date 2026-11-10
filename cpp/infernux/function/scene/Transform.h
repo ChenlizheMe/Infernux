@@ -8,6 +8,7 @@
 #include "Component.h"
 #include "TransformECSStore.h"
 #include <cmath>
+#include <core/math/QuaternionEuler.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -61,7 +62,12 @@ class Transform : public Component
         if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPositionOverride(m_ecsHandle)) {
             const glm::vec3 world = store.GetCachedWorldPosition(m_ecsHandle.index);
             const Transform *parent = GetParentTransformSafe();
-            return parent ? glm::vec3(glm::inverse(parent->GetWorldMatrix()) * glm::vec4(world, 1.0f)) : world;
+            const auto local = parent ? parent->InverseTransformPoint(world) : world;
+            if (store.GetRectLayout(m_ecsHandle)) {
+                store.ResolveRectLocalPosition(m_ecsHandle, local);
+                return store.GetLocalPosition(m_ecsHandle);
+            }
+            return local;
         }
         return store.GetLocalPosition(m_ecsHandle);
     }
@@ -69,6 +75,8 @@ class Transform : public Component
     /// @brief Set position in local (parent) space
     void SetLocalPosition(const glm::vec3 &position)
     {
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+            return;
         auto &store = TransformECSStore::Instance();
         store.SetLocalPosition(m_ecsHandle, position);
         store.RecordLocalPoseWrite(m_ecsHandle, true, false);
@@ -126,45 +134,17 @@ class Transform : public Component
     }
 
     /// @brief Set rotation from Euler angles (degrees) in local space
-    void SetLocalEulerAngles(const glm::vec3 &euler)
-    {
-        auto &store = TransformECSStore::Instance();
-        store.SetLocalEulerAngles(m_ecsHandle, euler);
-        store.SetLocalRotation(m_ecsHandle, EulerYXZToQuat(euler));
-        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
-        store.SetDirty(m_ecsHandle, true);
-        InvalidateWorldMatrix(true);
-    }
+    void SetLocalEulerAngles(const glm::vec3 &euler);
     void SetLocalEulerAngles(float x, float y, float z)
     {
         SetLocalEulerAngles(glm::vec3(x, y, z));
     }
 
     /// @brief Get rotation as quaternion in local space
-    [[nodiscard]] glm::quat GetLocalRotation() const
-    {
-        auto &store = TransformECSStore::Instance();
-        if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle)) {
-            const glm::quat world = store.GetCachedWorldRotation(m_ecsHandle.index);
-            const Transform *parent = GetParentTransformSafe();
-            return parent ? glm::inverse(parent->GetWorldRotation()) * world : world;
-        }
-        return store.GetLocalRotation(m_ecsHandle);
-    }
+    [[nodiscard]] glm::quat GetLocalRotation() const;
 
     /// @brief Set rotation from quaternion in local space
-    void SetLocalRotation(const glm::quat &rotation)
-    {
-        auto &store = TransformECSStore::Instance();
-        store.SetLocalRotation(m_ecsHandle, rotation);
-        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
-        store.SetLocalEulerAngles(m_ecsHandle,
-                                  ExtractEulerAnglesNear(rotation, store.GetLocalEulerAngles(m_ecsHandle)));
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
-        store.SetDirty(m_ecsHandle, true);
-        InvalidateWorldMatrix(true);
-    }
+    void SetLocalRotation(const glm::quat &rotation);
 
     // ========================================================================
     // World-space Rotation (considering parent hierarchy)
@@ -505,6 +485,11 @@ class Transform : public Component
 
   private:
     friend class Rigidbody;
+    friend class SkeletonInstance;
+    friend class TransformECSStore;
+
+    [[nodiscard]] glm::quat LocalRotationToWorld(const glm::quat &local) const;
+    [[nodiscard]] glm::quat WorldRotationToLocal(const glm::quat &world) const;
 
     /// Physics owns the authoritative pose for a dynamic Rigidbody. Apply its
     /// position and rotation as one cache invalidation while suppressing only
@@ -527,38 +512,16 @@ class Transform : public Component
     ///        Matches Unity's Quaternion.Euler(x, y, z).
     static glm::quat EulerYXZToQuat(const glm::vec3 &eulerDeg)
     {
-        glm::vec3 r = glm::radians(eulerDeg);
-        float cx = std::cos(r.x * 0.5f), sx = std::sin(r.x * 0.5f);
-        float cy = std::cos(r.y * 0.5f), sy = std::sin(r.y * 0.5f);
-        float cz = std::cos(r.z * 0.5f), sz = std::sin(r.z * 0.5f);
-        // q = qY * qX * qZ
-        glm::quat q;
-        q.w = cy * cx * cz + sy * sx * sz;
-        q.x = cy * sx * cz + sy * cx * sz;
-        q.y = sy * cx * cz - cy * sx * sz;
-        q.z = cy * cx * sz - sy * sx * cz;
-        return q;
+        const auto value = rotation::FromEulerYXZ(eulerDeg.x, eulerDeg.y, eulerDeg.z);
+        return glm::quat(value[3], value[0], value[1], value[2]);
     }
 
     /// @brief Extract Euler angles (degrees) from quaternion using YXZ intrinsic order.
     ///        Matches Unity's Quaternion.eulerAngles.
     static glm::vec3 QuatToEulerYXZ(const glm::quat &q)
     {
-        // sinX = 2(w*x - y*z)  derived from rotation-matrix element M[1][2] = -sinX
-        float sinX = 2.0f * (q.w * q.x - q.y * q.z);
-
-        float x, y, z;
-        if (std::abs(sinX) < 0.9999f) {
-            x = std::asin(sinX);
-            y = std::atan2(2.0f * (q.x * q.z + q.w * q.y), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
-            z = std::atan2(2.0f * (q.x * q.y + q.w * q.z), 1.0f - 2.0f * (q.x * q.x + q.z * q.z));
-        } else {
-            // Gimbal lock at pitch = ±90°
-            x = std::copysign(glm::half_pi<float>(), sinX);
-            y = std::atan2(-(2.0f * (q.x * q.z - q.w * q.y)), 1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-            z = 0.0f;
-        }
-        return glm::degrees(glm::vec3(x, y, z));
+        const auto euler = rotation::ToEulerYXZ(q.x, q.y, q.z, q.w);
+        return glm::vec3(euler[0], euler[1], euler[2]);
     }
 
     // ========================================================================
@@ -590,17 +553,9 @@ class Transform : public Component
 
     static float ToPublicAngleDegrees(float angle)
     {
-        float positive = std::fmod(angle, 360.0f);
-        if (positive < 0.0f) {
-            positive += 360.0f;
-        }
-
-        constexpr float kUnityEulerSnapEpsilon = 0.005729578f;
-        if (positive < kUnityEulerSnapEpsilon || positive > 360.0f - kUnityEulerSnapEpsilon) {
-            return 0.0f;
-        }
-
-        return positive;
+        // Authoring caches can retain multiple turns; quaternion extraction
+        // itself returns a single-turn value.
+        return rotation::PublicAngleDegrees(std::fmod(angle, 360.0f));
     }
 
     static glm::vec3 ToPublicEulerAngles(const glm::vec3 &euler)

@@ -48,6 +48,15 @@ struct TextureProcessOptions
 class TextureProcessor final
 {
   public:
+    // Runtime workspace planning shares this choice with the offline processor.
+    [[nodiscard]] static constexpr TextureCompression AutomaticRgba8Compression(TextureSemantic semantic, bool hasAlpha)
+    {
+        if (semantic == TextureSemantic::Color)
+            return hasAlpha ? TextureCompression::BC3 : TextureCompression::BC1;
+        if (semantic == TextureSemantic::Normal)
+            return TextureCompression::BC5;
+        return TextureCompression::None;
+    }
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> Process(TextureCpuData source,
                                                                        const TextureProcessOptions &options);
 };

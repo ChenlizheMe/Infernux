@@ -18,7 +18,7 @@ def test_component_ref_rebinds_invalidated_wrapper_when_native_identity_survives
     old = ref.resolve()
     handle = ref._cached_handle
     assert old.is_valid
-    BuiltinComponent._clear_cache()
+    BuiltinComponent._invalidate_component_ids((old.component_id,))
     assert old._is_destroyed
     assert scene.resolve_component(handle) is not None
     fresh = ref.resolve()

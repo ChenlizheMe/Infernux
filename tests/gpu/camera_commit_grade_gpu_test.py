@@ -26,7 +26,7 @@ class GradePipeline(inx.renderstack.RenderPipeline):
         graded=g.create_texture('graded',format=f.RGBA16_SFLOAT,samples=1)
         g.add_pass('ProduceGrade').write_color(graded).fullscreen_quad('Tutorial Commit Grade Source')
         exec(compile(commit[0],str(ROOT/'docs/learn/rendergraph-advanced.md'),'exec'),{'graph':g,'camera_color':color,'graded':graded})
-        depth=g.create_texture('depth',format=f.D32_SFLOAT,samples=1)
+        depth=g.create_texture('depth',format=f.D32_SFLOAT, camera_target=True)
         g.add_pass('DrawAfterCommit').write_color(color).write_depth(depth).set_clear(depth=0.0).draw_renderers(queue_range=(0,2500))
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
     def render_camera(self,context,camera,culling):
@@ -37,7 +37,7 @@ class MonitorPipeline(inx.renderstack.RenderPipeline):
     name='Tutorial Saved Camera Monitor'
     def define_topology(self,g):
         self.builds+=1;g.set_msaa_samples(1)
-        sampled=g.import_texture('producer',self.target)
+        sampled=g.import_texture('producer',self.target,require_current_write=True)
         color=g.create_texture('color',camera_target=True)
         g.add_pass('ReadCurrentCameraOutput').write_color(color).set_texture('_SourceTex',sampled).fullscreen_quad('Fullscreen Blit')
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
@@ -84,7 +84,8 @@ def main():
             material=inx.Material.create_unlit();material.set_color('baseColor',1,0,0,1);renderer.set_material(0,material)
             if args.target=='asset':
                 imported=AssetManager.import_asset(str(rt_path),database=database);assert imported,imported.error
-                target=inx.RenderTexture.load_by_guid(imported.guid);producer.target_texture=target
+                target=inx.RenderTexture.load_by_guid(imported.guid)
+                producer.render_to_texture=True;producer.target_texture=target
                 assert producer.target_texture is target
                 owner=scene.create_game_object('Monitor Camera');owner.transform.position=Vector3(0,0,-5);monitor=owner.add_component(inx.Camera);monitor.culling_mask=0;monitor.depth=-1
                 scene.main_camera=monitor;router.monitor_id=monitor.component_id

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -72,12 +74,13 @@ class SemanticTypeRegistry
         Snapshot m_candidate;
     };
 
-    SemanticTypeRegistry();
-    static SemanticTypeRegistry &Instance();
-    [[nodiscard]] Snapshot Read() const;
-    [[nodiscard]] PreparedPublication Prepare(const std::vector<SemanticOwnerEdit> &edits) const;
+    INFERNUX_FOUNDATION_API SemanticTypeRegistry();
+    INFERNUX_FOUNDATION_API static SemanticTypeRegistry &Instance();
+    [[nodiscard]] INFERNUX_FOUNDATION_API Snapshot Read() const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API PreparedPublication
+    Prepare(const std::vector<SemanticOwnerEdit> &edits) const;
     // Final owner commit edge. Stale preparations are rejected, never replayed.
-    uint64_t Publish(const PreparedPublication &publication);
+    INFERNUX_FOUNDATION_API uint64_t Publish(const PreparedPublication &publication);
 
   private:
     mutable std::mutex m_writer;

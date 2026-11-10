@@ -14,8 +14,9 @@
 
 #include <algorithm>
 #include <queue>
+#include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
+#include <utility>
 
 namespace infernux
 {
@@ -179,7 +180,8 @@ void RenderGraph::CullPasses()
             continue;
         }
         const bool writesExternal = std::any_of(pass.writes.begin(), pass.writes.end(), [&](const auto &write) {
-            return write.handle.id < m_resources.size() && m_resources[write.handle.id].isExternal;
+            return write.handle.id < m_resources.size() && m_resources[write.handle.id].isExternal &&
+                   !m_resources[write.handle.id].graphLocalBuffer;
         });
         if (writesExternal)
             retainRoot(passId, PassCullReason::ExternalWrite);
@@ -194,6 +196,19 @@ void RenderGraph::CullPasses()
 
         // Find the exact producer of every version this pass reads.
         for (const auto &read : pass.reads) {
+            if ((read.usage & ResourceUsage::VersionDependency) != ResourceUsage::None) {
+                const auto &texture = m_resources[read.handle.id].textureDesc;
+                if (pass.renderArea.width == texture.width && pass.renderArea.height == texture.height) {
+                    const auto follows = [&](ResourceHandle output) {
+                        return output.IsValid() && output.id == read.handle.id &&
+                               output.version == read.handle.version + 1;
+                    };
+                    if ((pass.clearDepthEnabled && follows(pass.depthOutput)) ||
+                        (pass.clearColorEnabled &&
+                         std::any_of(pass.colorOutputs.begin(), pass.colorOutputs.end(), follows)))
+                        continue;
+                }
+            }
             auto producer = producers.find(read.handle);
             if (producer == producers.end() || producer->second == passId)
                 continue;
@@ -210,27 +225,33 @@ void RenderGraph::CullPasses()
 
 void RenderGraph::ComputeResourceLifetimes()
 {
+    using TextureUsage = rhi::TextureUsageFlags;
     for (auto &resource : m_resources) {
         resource.firstPass = UINT32_MAX;
         resource.lastPass = 0;
         resource.refCount = 0;
+        resource.textureAccessUsage = TextureUsage::None;
     }
 
     for (uint32_t executionIndex = 0; executionIndex < m_executionOrder.size(); ++executionIndex) {
         const auto &pass = m_passes[m_executionOrder[executionIndex]];
-        for (const auto &read : pass.reads) {
-            auto &resource = m_resources[read.handle.id];
+        const auto record = [&](const ResourceAccess &access, bool writing) {
+            auto &resource = m_resources[access.handle.id];
             resource.firstPass = std::min(resource.firstPass, executionIndex);
             resource.lastPass = std::max(resource.lastPass, executionIndex);
-            resource.refCount++;
-        }
-
-        for (const auto &write : pass.writes) {
-            auto &resource = m_resources[write.handle.id];
-            resource.firstPass = std::min(resource.firstPass, executionIndex);
-            resource.lastPass = std::max(resource.lastPass, executionIndex);
-            resource.refCount++;
-        }
+            ++resource.refCount;
+            auto &usage = resource.textureAccessUsage;
+            if ((access.usage & ResourceUsage::Storage) != ResourceUsage::None)
+                usage = usage | TextureUsage::Storage;
+            if ((access.usage & ResourceUsage::Transfer) != ResourceUsage::None)
+                usage = usage | (writing ? TextureUsage::TransferDestination : TextureUsage::TransferSource);
+            if (!writing && (access.usage & ResourceUsage::ShaderRead) != ResourceUsage::None)
+                usage = usage | TextureUsage::Sampled;
+        };
+        for (const auto &read : pass.reads)
+            record(read, false);
+        for (const auto &write : pass.writes)
+            record(write, true);
     }
 }
 
@@ -382,7 +403,8 @@ bool RenderGraph::TopologicalSort()
 
 bool RenderGraph::CompileSubmissionPlan()
 {
-    m_importedBufferAccessStages.clear();
+    for (auto &resource : m_resources)
+        resource.bufferAccessStages = rhi::PipelineStage::None;
     std::vector<rhi::SubmissionWorkItem> workItems;
     workItems.reserve(m_executionOrder.size());
     for (const uint32_t passIndex : m_executionOrder) {
@@ -390,13 +412,10 @@ bool RenderGraph::CompileSubmissionPlan()
             continue;
         const auto &pass = m_passes[passIndex];
         const auto collectImportedBufferAccess = [&](const ResourceAccess &access) {
-            const auto &resource = m_resources[access.handle.id];
+            auto &resource = m_resources[access.handle.id];
             if (resource.type == ResourceType::Buffer && resource.isExternal && resource.rhiBuffer.IsValid() &&
                 access.access != rhi::Access::None) {
-                // Imported RHI handles borrow the same physical allocation under
-                // their own descriptor slot. Resolve aliases to the VkBuffer.
-                auto &stages = m_importedBufferAccessStages[resource.externalBuffer];
-                stages = stages | access.stages;
+                resource.bufferAccessStages = resource.bufferAccessStages | access.stages;
             }
         };
         for (const auto &read : pass.reads)
@@ -668,6 +687,7 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
         appendString(resource.name);
         signature.push_back(static_cast<uint64_t>(resource.type));
         signature.push_back(resource.isExternal);
+        signature.push_back(resource.graphLocalBuffer);
         signature.push_back(index < m_resourceVersions.size() ? m_resourceVersions[index] : 0);
 
         appendString(resource.textureDesc.name);
@@ -680,10 +700,8 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
         signature.push_back(static_cast<uint64_t>(resource.textureDesc.samples));
         signature.push_back(resource.textureDesc.isTransient);
 
-        appendString(resource.bufferDesc.name);
-        signature.push_back(resource.bufferDesc.size);
-        signature.push_back(resource.bufferDesc.usage);
-        signature.push_back(resource.bufferDesc.isTransient);
+        signature.push_back(resource.bufferDesc.byteSize);
+        signature.push_back(static_cast<uint64_t>(resource.bufferDesc.usage));
     }
 
     for (const auto &pass : m_passes) {
@@ -749,6 +767,7 @@ bool RenderGraph::RestoreStructuralCompilation(const std::vector<uint64_t> &sign
         m_resources[index].firstPass = found->resources[index].firstPass;
         m_resources[index].lastPass = found->resources[index].lastPass;
         m_resources[index].refCount = found->resources[index].refCount;
+        m_resources[index].textureAccessUsage = found->resources[index].textureAccessUsage;
     }
     m_executionOrder = found->executionOrder;
     ++m_structuralCacheHits;
@@ -765,7 +784,8 @@ void RenderGraph::StoreStructuralCompilation(std::vector<uint64_t> signature)
         entry.passes.push_back({pass.refCount, pass.culled, pass.cullReason, pass.dependsOn});
     entry.resources.reserve(m_resources.size());
     for (const auto &resource : m_resources)
-        entry.resources.push_back({resource.firstPass, resource.lastPass, resource.refCount});
+        entry.resources.push_back(
+            {resource.firstPass, resource.lastPass, resource.refCount, resource.textureAccessUsage});
 
     if (m_structuralCompileCache.size() == kStructuralCacheCapacity)
         m_structuralCompileCache.erase(m_structuralCompileCache.begin());
@@ -888,27 +908,14 @@ bool RenderGraph::AllocateResources()
         return false;
     }
 
-    VkDevice device = m_context->GetDevice();
-
-    // ========================================================================
-    // Create VkImages/VkBuffers and gather memory requirements
-    // ========================================================================
-
-    struct AllocationRequest
-    {
-        uint32_t resourceIndex;
-        VkMemoryRequirements memReqs;
-    };
-
-    std::vector<AllocationRequest> imageAllocRequests;
-
+    using TextureUsage = rhi::TextureUsageFlags;
     for (uint32_t ri = 0; ri < static_cast<uint32_t>(m_resources.size()); ++ri) {
         auto &resource = m_resources[ri];
 
         // Skip external, unreferenced, or already-allocated resources
         if (resource.isExternal || resource.refCount == 0)
             continue;
-        if (resource.allocatedImage != VK_NULL_HANDLE || resource.allocatedBuffer != VK_NULL_HANDLE)
+        if (resource.transientTexture.texture.IsValid() || resource.rhiBuffer.IsValid())
             continue;
 
         if (resource.type == ResourceType::Texture2D || resource.type == ResourceType::DepthStencil) {
@@ -923,175 +930,44 @@ bool RenderGraph::AllocateResources()
             imageInfo.arrayLayers = resource.textureDesc.arrayLayers;
             imageInfo.samples = resource.textureDesc.samples;
             imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-            // Keep render-graph images independently backed. The previous
-            // interval allocator bound different transient images to the same
-            // memory without emitting aliasing dependencies when ownership
-            // moved from one image to the next. That is undefined on Vulkan
-            // and is especially visible as stale/random tiles on mobile GPUs.
 
-            if (resource.type == ResourceType::DepthStencil) {
-                imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-                // If any pass reads this depth as a shader input (e.g. SSAO
-                // sampling the scene depth via sampler2D), enable SAMPLED_BIT.
-                for (const auto &p : m_passes) {
-                    if (p.culled)
-                        continue;
-                    for (const auto &acc : p.reads) {
-                        if (acc.handle.id == ri && (static_cast<int>(acc.usage & ResourceUsage::ShaderRead) != 0)) {
-                            imageInfo.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-                        }
-                    }
-                }
-            } else {
-                // Detect depth-formatted textures registered as Texture2D
-                // (e.g. shadow maps pre-registered via RegisterTransientTexture).
-                bool isDepthFormat = (resource.textureDesc.format == VK_FORMAT_D32_SFLOAT ||
-                                      resource.textureDesc.format == VK_FORMAT_D24_UNORM_S8_UINT ||
-                                      resource.textureDesc.format == VK_FORMAT_D16_UNORM ||
-                                      resource.textureDesc.format == VK_FORMAT_D32_SFLOAT_S8_UINT);
-                if (isDepthFormat) {
-                    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-                } else {
-                    imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-                }
-            }
-
-            for (const auto &pass : m_passes) {
-                if (pass.culled)
-                    continue;
-                const auto usesStorage = [ri](const ResourceAccess &access) {
-                    return access.handle.id == ri && static_cast<int>(access.usage & ResourceUsage::Storage) != 0;
-                };
-                if (std::any_of(pass.reads.begin(), pass.reads.end(), usesStorage) ||
-                    std::any_of(pass.writes.begin(), pass.writes.end(), usesStorage)) {
-                    imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-                    break;
-                }
-            }
-
-            // Add transfer usage flags if any pass uses this resource for
-            // transfer operations (blit/copy source or destination).
-            for (const auto &pass : m_passes) {
-                if (pass.culled)
-                    continue;
-                for (const auto &acc : pass.reads) {
-                    if (acc.handle.id == ri && (static_cast<int>(acc.usage & ResourceUsage::Transfer) != 0))
-                        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-                }
-                for (const auto &acc : pass.writes) {
-                    if (acc.handle.id == ri && (static_cast<int>(acc.usage & ResourceUsage::Transfer) != 0))
-                        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-                }
-            }
+            const bool depthAttachment = resource.type == ResourceType::DepthStencil;
+            const bool depthFormat = rhi::ToVkImageAspectMask(imageInfo.format) != VK_IMAGE_ASPECT_COLOR_BIT;
+            const auto attachmentUsage =
+                (depthAttachment || depthFormat) ? TextureUsage::DepthStencilAttachment : TextureUsage::ColorAttachment;
+            auto usage = resource.textureAccessUsage | attachmentUsage;
+            if (!depthAttachment)
+                usage = usage | TextureUsage::Sampled;
+            imageInfo.usage = rhi::ToVkTextureUsage(usage);
 
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-            // Graph declarations may request explicit sample counts and
-            // extents independently of the camera's accepted settings. Reject
-            // unsupported images at compilation, before passing them to Vulkan.
-            VkImageFormatProperties limits{};
-            const VkResult supported = vkGetPhysicalDeviceImageFormatProperties(
-                m_context->GetPhysicalDevice(), imageInfo.format, imageInfo.imageType, imageInfo.tiling,
-                imageInfo.usage, imageInfo.flags, &limits);
-            if (supported != VK_SUCCESS || (limits.sampleCounts & imageInfo.samples) == 0 ||
-                imageInfo.extent.width == 0 || imageInfo.extent.height == 0 ||
-                imageInfo.extent.width > limits.maxExtent.width || imageInfo.extent.height > limits.maxExtent.height ||
-                imageInfo.mipLevels == 0 || imageInfo.mipLevels > limits.maxMipLevels || imageInfo.arrayLayers == 0 ||
-                imageInfo.arrayLayers > limits.maxArrayLayers) {
-                INXLOG_ERROR("RenderGraph texture descriptor is unsupported by the device: ", resource.name,
-                             " (format=", imageInfo.format, ", samples=", imageInfo.samples,
-                             ", extent=", imageInfo.extent.width, "x", imageInfo.extent.height, ")");
-                return false;
+            // Each live image has independent storage. Reuse transfers the
+            // same image across graph generations, ordered on the graphics lane.
+            if (!ClaimReusableImage(ri, imageInfo)) {
+                resource.transientTexture = m_rhiDevice->CreateTransientTexture2D(imageInfo);
+                if (!resource.transientTexture.texture.IsValid()) {
+                    INXLOG_ERROR("Failed to allocate graph texture '", resource.name, "' (format=", imageInfo.format,
+                                 ", samples=", imageInfo.samples, ", extent=", imageInfo.extent.width, "x",
+                                 imageInfo.extent.height, ")");
+                    return false;
+                }
             }
-
-            if (ClaimReusableImage(ri, imageInfo))
-                continue;
             resource.allocatedUsage = imageInfo.usage;
-            if (vkCreateImage(device, &imageInfo, nullptr, &resource.allocatedImage) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to create image for resource: ", resource.name);
-                return false;
-            }
-
-            VkMemoryRequirements memReqs;
-            vkGetImageMemoryRequirements(device, resource.allocatedImage, &memReqs);
-
-            imageAllocRequests.push_back({ri, memReqs});
+            resource.rhiTexture = m_rhiDevice->RegisterTexture(resource.transientTexture.texture);
+            resource.rhiView = m_rhiDevice->RegisterTextureView(m_rhiDevice->Resolve(resource.transientTexture.view),
+                                                                resource.rhiTexture);
 
         } else if (resource.type == ResourceType::Buffer) {
-            VkBufferCreateInfo bufferInfo{};
-            bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            bufferInfo.size = resource.bufferDesc.size;
-            bufferInfo.usage = resource.bufferDesc.usage;
-            bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-            // Linear lifetime intervals do not establish an execution or
-            // memory dependency between independent graph branches. Each
-            // buffer therefore owns a disjoint VMA allocation until graph
-            // retirement. VMA can suballocate a memory block without aliasing
-            // live ranges and binds the correct offset for each buffer.
-            VmaAllocationCreateInfo allocationInfo{};
-            allocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-            if (vmaCreateBuffer(m_context->GetVmaAllocator(), &bufferInfo, &allocationInfo, &resource.allocatedBuffer,
-                                &resource.allocatedMemory, nullptr) != VK_SUCCESS) {
+            // Independent graph branches can overlap on the device.
+            resource.rhiBuffer = m_rhiDevice->CreateBuffer(resource.bufferDesc);
+            if (!resource.rhiBuffer.IsValid()) {
                 INXLOG_ERROR("Failed to allocate buffer resource '", resource.name, "'");
                 return false;
             }
-            resource.rhiBuffer = m_rhiDevice
-                                     ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer, resource.bufferDesc.size)
-                                     : rhi::BufferHandle{};
+            resource.nativeBuffer = m_rhiDevice->Resolve(resource.rhiBuffer);
         }
-    }
-
-    // Allocate every graph image independently. Reintroducing image-memory
-    // aliasing requires an explicit alias set in the compiled graph plus a
-    // full execution and memory dependency at every alias hand-off; lifetime
-    // interval overlap alone is not a sufficient Vulkan synchronization
-    // contract.
-    for (auto &req : imageAllocRequests) {
-        auto &resource = m_resources[req.resourceIndex];
-        VmaAllocator allocator = m_context->GetVmaAllocator();
-        VmaAllocationCreateInfo allocCreateInfo{};
-        // vmaAllocateMemory (raw) cannot infer the memory type from an image
-        // create descriptor, so select device-local memory explicitly.
-        allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-        VmaAllocation allocation = VK_NULL_HANDLE;
-        VmaAllocationInfo vmaAllocInfo{};
-        if (vmaAllocateMemory(allocator, &req.memReqs, &allocCreateInfo, &allocation, &vmaAllocInfo) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to allocate memory for resource: ", resource.name);
-            return false;
-        }
-        if (vkBindImageMemory(device, resource.allocatedImage, vmaAllocInfo.deviceMemory, 0) != VK_SUCCESS) {
-            vmaFreeMemory(allocator, allocation);
-            INXLOG_ERROR("Failed to bind image memory for resource: ", resource.name);
-            return false;
-        }
-        resource.allocatedMemory = allocation;
-
-        // Create image view (regardless of aliasing)
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = resource.allocatedImage;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = resource.textureDesc.format;
-
-        viewInfo.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(resource.textureDesc.format);
-
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = resource.textureDesc.mipLevels;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = resource.textureDesc.arrayLayers;
-
-        if (vkCreateImageView(device, &viewInfo, nullptr, &resource.allocatedView) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create image view for resource: ", resource.name);
-            return false;
-        }
-        resource.rhiView =
-            m_rhiDevice ? m_rhiDevice->RegisterTextureView(resource.allocatedView) : rhi::TextureViewHandle{};
-        resource.rhiTexture =
-            m_rhiDevice ? m_rhiDevice->RegisterTexture(resource.allocatedImage) : rhi::TextureHandle{};
     }
 
     RetireReusableImages();
@@ -1113,24 +989,15 @@ bool RenderGraph::ClaimReusableImage(uint32_t resourceIndex, const VkImageCreate
     }
     const NativeQueueBinding graphics = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)];
     const auto match = std::find_if(m_reusableImages.begin(), m_reusableImages.end(), [&](const ReusableImage &image) {
-        return image.graphicsLane == graphics.lane && image.format == info.format &&
-               image.width == info.extent.width && image.height == info.extent.height &&
-               image.mipLevels == info.mipLevels && image.arrayLayers == info.arrayLayers &&
-               image.samples == info.samples && image.usage == info.usage;
+        return image.graphicsLane == graphics.lane && image.format == info.format && image.width == info.extent.width &&
+               image.height == info.extent.height && image.mipLevels == info.mipLevels &&
+               image.arrayLayers == info.arrayLayers && image.samples == info.samples && image.usage == info.usage;
     });
     if (match == m_reusableImages.end())
         return false;
-    const ReusableImage claimed = *match;
+    m_resources[resourceIndex].transientTexture = match->storage;
     *match = m_reusableImages.back();
     m_reusableImages.pop_back();
-
-    auto &resource = m_resources[resourceIndex];
-    resource.allocatedImage = claimed.image;
-    resource.allocatedView = claimed.view;
-    resource.allocatedMemory = claimed.memory;
-    resource.allocatedUsage = claimed.usage;
-    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(claimed.view) : rhi::TextureViewHandle{};
-    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(claimed.image) : rhi::TextureHandle{};
 
     // Contents are discarded (Undefined), but the first transition waits for
     // every earlier graphics-queue access, including frames still in flight.
@@ -1209,6 +1076,12 @@ bool RenderGraph::CompileGraphicsAttachments()
             INXLOG_ERROR("RenderGraph pass '", pass.name, "' exceeds the color attachment limit");
             return false;
         }
+        const auto coversRenderArea = [&](const TextureDesc &texture) {
+            if (texture.width >= pass.renderArea.width && texture.height >= pass.renderArea.height)
+                return true;
+            INXLOG_ERROR("RenderGraph pass '", pass.name, "' renders outside an attachment's extent");
+            return false;
+        };
         for (uint32_t index = 0; index < signature.colorFormatCount; ++index) {
             const ResourceHandle output = pass.colorOutputs[index];
             if (!output.IsValid() || output.id >= m_resources.size()) {
@@ -1216,6 +1089,8 @@ bool RenderGraph::CompileGraphicsAttachments()
                 return false;
             }
             const auto &resource = m_resources[output.id];
+            if (!coversRenderArea(resource.textureDesc))
+                return false;
             if (resource.textureDesc.samples != sampleCount) {
                 INXLOG_ERROR("RenderGraph pass '", pass.name, "' mixes color attachment sample counts");
                 return false;
@@ -1224,6 +1099,8 @@ bool RenderGraph::CompileGraphicsAttachments()
         }
         if (effectiveDepth.IsValid()) {
             const auto &resource = m_resources[effectiveDepth.id];
+            if (!coversRenderArea(resource.textureDesc))
+                return false;
             if (resource.textureDesc.samples != sampleCount) {
                 INXLOG_ERROR("RenderGraph pass '", pass.name, "' mixes color and depth sample counts");
                 return false;
@@ -1280,21 +1157,22 @@ void RenderGraph::PrecomputeExecuteData()
             VkRenderingAttachmentInfo &attachment = pass.cachedRenderingColorAttachments[colorCount++];
             attachment = {};
             attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+            attachment.imageView = resource.isExternal ? resource.externalView : m_rhiDevice->Resolve(resource.rhiView);
             if (resource.isExternal)
                 resource.attachmentBindings.push_back(
                     {pass.id, colorCount - 1, ResourceData::AttachmentBinding::Kind::Color});
             attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             attachment.loadOp = pass.clearColorEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
             attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            attachment.clearValue.color = pass.clearColor;
+            attachment.clearValue.color = EncodeClearColor(pass.clearColor, resource.textureDesc.format);
             if (colorCount == 1 && pass.hasResolveAttachment && pass.resolveOutput.IsValid() &&
                 pass.resolveOutput.id < m_resources.size()) {
                 auto &resolve = m_resources[pass.resolveOutput.id];
                 attachment.resolveMode = rhi::IsIntegerFormat(rhi::FromVkFormat(resource.textureDesc.format))
                                              ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
                                              : VK_RESOLVE_MODE_AVERAGE_BIT;
-                attachment.resolveImageView = resolve.isExternal ? resolve.externalView : resolve.allocatedView;
+                attachment.resolveImageView =
+                    resolve.isExternal ? resolve.externalView : m_rhiDevice->Resolve(resolve.rhiView);
                 if (resolve.isExternal)
                     resolve.attachmentBindings.push_back(
                         {pass.id, colorCount - 1, ResourceData::AttachmentBinding::Kind::Resolve});
@@ -1308,7 +1186,7 @@ void RenderGraph::PrecomputeExecuteData()
             auto &resource = m_resources[depth.id];
             auto &attachment = pass.cachedRenderingDepthAttachment;
             attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            attachment.imageView = resource.isExternal ? resource.externalView : resource.allocatedView;
+            attachment.imageView = resource.isExternal ? resource.externalView : m_rhiDevice->Resolve(resource.rhiView);
             if (resource.isExternal)
                 resource.attachmentBindings.push_back({pass.id, 0, ResourceData::AttachmentBinding::Kind::Depth});
             const bool writableDepth = pass.depthOutput.IsValid();
@@ -1360,17 +1238,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     };
     const rhi::QueueRole recordingQueue = m_recordingSubmissionBatches ? pass.queue : m_immediateRecordingQueue;
 
-    const auto aspectMaskFor = [](const ResourceData &resource, bool isDepthInput) {
-        bool isDepthResource = resource.type == ResourceType::DepthStencil || isDepthInput;
-        if (!isDepthResource) {
-            const VkFormat format = resource.textureDesc.format;
-            isDepthResource = format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D24_UNORM_S8_UINT ||
-                              format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
-        }
-        return isDepthResource ? rhi::ToVkImageAspectMask(resource.textureDesc.format) : VK_IMAGE_ASPECT_COLOR_BIT;
-    };
-
-    auto addBarrier = [&](const ResourceAccess &access, bool isDepthInput = false) {
+    auto addBarrier = [&](const ResourceAccess &access) {
         if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
             return;
         if (access.handle.id >= m_resources.size())
@@ -1415,7 +1283,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             dstStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
         if (resource.type == ResourceType::Buffer) {
-            const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
+            const VkBuffer buffer = resource.nativeBuffer;
             if (buffer == VK_NULL_HANDLE)
                 return;
 
@@ -1433,14 +1301,14 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             barrier.dstQueueFamilyIndex = ownershipTransfer ? targetBinding.family : VK_QUEUE_FAMILY_IGNORED;
             barrier.buffer = buffer;
             barrier.offset = 0;
-            barrier.size = resource.bufferDesc.size;
+            barrier.size = resource.bufferDesc.byteSize;
             m_bufferBarrierScratch.push_back(barrier);
             srcStageMask |= srcStages;
             dstStageMask |= dstStages;
             return;
         }
 
-        VkImage image = resource.isExternal ? resource.externalImage : resource.allocatedImage;
+        VkImage image = resource.isExternal ? resource.externalImage : m_rhiDevice->Resolve(resource.rhiTexture);
         if (image == VK_NULL_HANDLE)
             return;
 
@@ -1463,7 +1331,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         barrier.srcQueueFamilyIndex = ownershipTransfer ? prevState.queueFamily : VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = ownershipTransfer ? targetBinding.family : VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = aspectMaskFor(resource, isDepthInput);
+        barrier.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(resource.textureDesc.format);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = resource.textureDesc.mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
@@ -1526,8 +1394,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
                 combinedRead.usage = combinedRead.usage | other.usage;
             }
         }
-        const bool isDepthInput = (combinedRead.usage & ResourceUsage::DepthRead) != ResourceUsage::None;
-        addBarrier(combinedRead, isDepthInput);
+        addBarrier(combinedRead);
     }
 
     // Check read-write overlap without heap allocation
@@ -1614,14 +1481,6 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
     m_bufferBarrierScratch.clear();
     VkPipelineStageFlags srcStageMask = 0;
 
-    const auto aspectMaskFor = [](const ResourceData &resource) {
-        const VkFormat format = resource.textureDesc.format;
-        const bool depth = resource.type == ResourceType::DepthStencil || format == VK_FORMAT_D32_SFLOAT ||
-                           format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D16_UNORM ||
-                           format == VK_FORMAT_D32_SFLOAT_S8_UINT;
-        return depth ? rhi::ToVkImageAspectMask(resource.textureDesc.format) : VK_IMAGE_ASPECT_COLOR_BIT;
-    };
-
     for (const uint32_t transferIndex : *outgoing) {
         if (transferIndex >= m_queueOwnershipTransfers.size())
             continue;
@@ -1640,7 +1499,7 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
         srcStageMask |= sourceStages;
 
         if (resource.type == ResourceType::Buffer) {
-            const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
+            const VkBuffer buffer = resource.nativeBuffer;
             if (buffer == VK_NULL_HANDLE)
                 continue;
             VkBufferMemoryBarrier barrier{};
@@ -1651,12 +1510,12 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
             barrier.dstQueueFamilyIndex = transfer.info.targetFamily;
             barrier.buffer = buffer;
             barrier.offset = 0;
-            barrier.size = resource.bufferDesc.size;
+            barrier.size = resource.bufferDesc.byteSize;
             m_bufferBarrierScratch.push_back(barrier);
             continue;
         }
 
-        const VkImage image = resource.isExternal ? resource.externalImage : resource.allocatedImage;
+        const VkImage image = resource.isExternal ? resource.externalImage : m_rhiDevice->Resolve(resource.rhiTexture);
         if (image == VK_NULL_HANDLE)
             continue;
         VkImageMemoryBarrier barrier{};
@@ -1668,7 +1527,7 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
         barrier.srcQueueFamilyIndex = transfer.info.sourceFamily;
         barrier.dstQueueFamilyIndex = transfer.info.targetFamily;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = aspectMaskFor(resource);
+        barrier.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(resource.textureDesc.format);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = resource.textureDesc.mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
@@ -1689,67 +1548,59 @@ void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32
 
 void RenderGraph::FreeResources()
 {
-    if (!m_context) {
+    if (!m_context)
         return;
-    }
 
-    // RHI registrations are graph-resource lifetime aliases, including
-    // external resources. Release them before the no-transient early-out and
-    // before any owned native resource is destroyed.
-    if (m_rhiDevice) {
-        for (auto &resource : m_resources) {
-            m_rhiDevice->Release(resource.rhiView);
-            resource.rhiView = {};
-            m_rhiDevice->Release(resource.rhiTexture);
-            resource.rhiTexture = {};
-            m_rhiDevice->Release(resource.rhiBuffer);
-            resource.rhiBuffer = {};
-        }
-    }
-
-    bool hasTransientResources = false;
-    for (const auto &resource : m_resources) {
-        if (resource.isExternal)
-            continue;
-        if (resource.allocatedView != VK_NULL_HANDLE || resource.allocatedImage != VK_NULL_HANDLE ||
-            resource.allocatedBuffer != VK_NULL_HANDLE || resource.allocatedMemory != VK_NULL_HANDLE) {
-            hasTransientResources = true;
-            break;
-        }
-    }
-
-    if (!hasTransientResources) {
-        return;
-    }
-
-    std::vector<VkImageView> imageViews;
-    std::vector<VkImage> images;
-    std::vector<VkBuffer> buffers;
-    std::unordered_set<VmaAllocation> allocationSet;
+    bool ownsBuffers = false;
+    bool ownsTextures = false;
     for (auto &resource : m_resources) {
+        m_rhiDevice->Release({std::exchange(resource.rhiTexture, {}), std::exchange(resource.rhiView, {})}, nullptr);
         if (resource.isExternal)
             continue;
-
-        if (resource.allocatedView != VK_NULL_HANDLE) {
-            imageViews.push_back(resource.allocatedView);
-            resource.allocatedView = VK_NULL_HANDLE;
-        }
-        if (resource.allocatedImage != VK_NULL_HANDLE) {
-            images.push_back(resource.allocatedImage);
-            resource.allocatedImage = VK_NULL_HANDLE;
-        }
-        if (resource.allocatedBuffer != VK_NULL_HANDLE) {
-            buffers.push_back(resource.allocatedBuffer);
-            resource.allocatedBuffer = VK_NULL_HANDLE;
-        }
-        if (resource.allocatedMemory != VK_NULL_HANDLE) {
-            allocationSet.insert(resource.allocatedMemory);
-            resource.allocatedMemory = VK_NULL_HANDLE;
-        }
+        ownsBuffers |= resource.rhiBuffer.IsValid();
+        ownsTextures |= resource.transientTexture.texture.IsValid();
     }
+    auto *completionDomain = PrepareResourceRetirement(ownsTextures, ownsBuffers);
+    for (auto &resource : m_resources) {
+        if (resource.transientTexture.texture.IsValid())
+            m_rhiDevice->Release(std::exchange(resource.transientTexture, {}), completionDomain,
+                                 completionDomain == nullptr);
+        m_rhiDevice->Release(std::exchange(resource.rhiBuffer, {}), completionDomain);
+        resource.nativeBuffer = VK_NULL_HANDLE;
+    }
+}
 
-    RetireNativeResources(std::move(imageViews), std::move(images), std::move(buffers),
-                          std::vector<VmaAllocation>(allocationSet.begin(), allocationSet.end()));
+GpuRetirementQueue *RenderGraph::PrepareResourceRetirement(bool ownsTextures, bool ownsBuffers) const
+{
+    if (m_context->IsShuttingDown())
+        return nullptr;
+    // Standalone graphs can record Vulkan work outside the device serial source.
+    if (!m_deletionQueue && (ownsTextures || (ownsBuffers && !m_rhiDevice->UsesSubmissionSerials()))) {
+        m_context->WaitIdleForShutdown();
+        SDL_PumpEvents();
+    }
+    return m_deletionQueue;
+}
+
+void RenderGraph::TakeReusableImagesFrom(RenderGraph &previous)
+{
+    if (this == &previous || !m_context || m_context != previous.m_context || m_deviceId != previous.m_deviceId ||
+        m_compiled || !m_passes.empty() || !m_resources.empty() || !m_reusableImages.empty())
+        throw std::logic_error("RenderGraph image handoff requires an empty successor on the same device");
+    if (m_deletionQueue != previous.m_deletionQueue)
+        throw std::logic_error("RenderGraph image handoff requires the same retirement domain");
+
+    const auto &graphics = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)];
+    const auto &previousGraphics = previous.m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)];
+    if (graphics.lane == UINT32_MAX || graphics.lane != previousGraphics.lane ||
+        graphics.family != previousGraphics.family)
+        throw std::logic_error("RenderGraph image handoff requires the same graphics queue");
+
+    // Reset retains eligible images, releases this generation's RHI aliases
+    // and pass closures, and advances its handle epoch. Swap transfers sole
+    // ownership; destroying the previous graph cannot retire these images.
+    previous.Reset();
+    m_reusableImages.swap(previous.m_reusableImages);
 }
 
 void RenderGraph::RetainReusableImages()
@@ -1759,21 +1610,17 @@ void RenderGraph::RetainReusableImages()
     const uint32_t graphicsLane = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)].lane;
     for (size_t index = 0; index < m_resources.size(); ++index) {
         auto &resource = m_resources[index];
-        if (resource.isExternal || resource.allocatedImage == VK_NULL_HANDLE ||
-            resource.allocatedView == VK_NULL_HANDLE || resource.allocatedMemory == VK_NULL_HANDLE)
+        if (!resource.transientTexture.texture.IsValid())
             continue;
         // UINT32_MAX: never recorded, so no GPU work references the image.
         const uint32_t lane = index < m_resourceStates.size() ? m_resourceStates[index].nativeQueueLane : UINT32_MAX;
         if (lane != UINT32_MAX && lane != graphicsLane)
             continue;
         const auto &desc = resource.textureDesc;
-        m_reusableImages.push_back({desc.format, desc.width, desc.height, desc.mipLevels, desc.arrayLayers,
-                                    desc.samples, resource.allocatedUsage, graphicsLane, resource.allocatedImage,
-                                    resource.allocatedView, resource.allocatedMemory});
         // FreeResources() still releases the RHI registrations of this generation.
-        resource.allocatedImage = VK_NULL_HANDLE;
-        resource.allocatedView = VK_NULL_HANDLE;
-        resource.allocatedMemory = VK_NULL_HANDLE;
+        m_reusableImages.push_back({desc.format, desc.width, desc.height, desc.mipLevels, desc.arrayLayers,
+                                    desc.samples, resource.allocatedUsage, graphicsLane, resource.transientTexture});
+        resource.transientTexture = {};
     }
 }
 
@@ -1781,73 +1628,36 @@ void RenderGraph::RetireReusableImages()
 {
     if (m_reusableImages.empty() || !m_context)
         return;
-    std::vector<VkImageView> views;
-    std::vector<VkImage> images;
-    std::vector<VmaAllocation> allocations;
-    for (const auto &image : m_reusableImages) {
-        views.push_back(image.view);
-        images.push_back(image.image);
-        allocations.push_back(image.memory);
-    }
+    auto *completionDomain = PrepareResourceRetirement(true, false);
+    for (const auto &image : m_reusableImages)
+        m_rhiDevice->Release(image.storage, completionDomain, completionDomain == nullptr);
     m_reusableImages.clear();
-    RetireNativeResources(std::move(views), std::move(images), {}, std::move(allocations));
-}
-
-void RenderGraph::RetireNativeResources(std::vector<VkImageView> imageViews, std::vector<VkImage> images,
-                                        std::vector<VkBuffer> buffers, std::vector<VmaAllocation> allocations)
-{
-    VkDevice device = m_context->GetDevice();
-    const VmaAllocator allocator = m_context->GetVmaAllocator();
-    auto destroyRetired = [device, allocator, imageViews = std::move(imageViews), images = std::move(images),
-                           buffers = std::move(buffers), allocations = std::move(allocations)]() mutable {
-        for (VkImageView view : imageViews)
-            vkDestroyImageView(device, view, nullptr);
-        for (VkImage image : images)
-            vkDestroyImage(device, image, nullptr);
-        for (VkBuffer buffer : buffers)
-            vkDestroyBuffer(device, buffer, nullptr);
-        for (VmaAllocation allocation : allocations)
-            vmaFreeMemory(allocator, allocation);
-    };
-
-    if (m_deletionQueue && !m_context->IsShuttingDown()) {
-        m_deletionQueue->Retire(std::move(destroyRetired));
-    } else {
-        if (!m_context->IsShuttingDown()) {
-            vkDeviceWaitIdle(device);
-            SDL_PumpEvents();
-        }
-        destroyRetired();
-    }
 }
 
 uint64_t RenderGraph::GetTransientResidentBytes() const
 {
-    if (!m_context)
+    if (!m_rhiDevice)
         return 0;
-    const VmaAllocator allocator = m_context->GetVmaAllocator();
-    std::unordered_set<VmaAllocation> allocations;
-    for (const auto &resource : m_resources) {
-        if (!resource.isExternal && resource.allocatedMemory != VK_NULL_HANDLE)
-            allocations.insert(resource.allocatedMemory);
-    }
     uint64_t bytes = 0;
-    for (const VmaAllocation allocation : allocations) {
-        VmaAllocationInfo info{};
-        vmaGetAllocationInfo(allocator, allocation, &info);
-        bytes += info.size;
+    for (const auto &resource : m_resources) {
+        if (resource.isExternal)
+            continue;
+        bytes += m_rhiDevice->GetBufferResidentBytes(resource.rhiBuffer);
+        bytes += m_rhiDevice->GetTextureResidentBytes(resource.transientTexture.texture);
     }
+    // An inactive view can own handoff inventory long before its next Compile.
+    for (const auto &image : m_reusableImages)
+        bytes += m_rhiDevice->GetTextureResidentBytes(image.storage.texture);
     return bytes;
 }
 
 size_t RenderGraph::GetTransientAllocationCount() const
 {
-    std::unordered_set<VmaAllocation> allocations;
-    for (const auto &resource : m_resources) {
-        if (!resource.isExternal && resource.allocatedMemory != VK_NULL_HANDLE)
-            allocations.insert(resource.allocatedMemory);
-    }
-    return allocations.size();
+    return m_reusableImages.size() +
+           std::count_if(m_resources.begin(), m_resources.end(), [](const ResourceData &resource) {
+               return !resource.isExternal &&
+                      (resource.rhiBuffer.IsValid() || resource.transientTexture.texture.IsValid());
+           });
 }
 
 } // namespace vk

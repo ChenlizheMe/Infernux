@@ -2,7 +2,6 @@
 #include "InxPath.h"
 #include <algorithm>
 #include <cctype>
-#include <fstream>
 #include <stdexcept>
 
 namespace infernux
@@ -41,13 +40,19 @@ bool IsCookedAssetDocument(const std::string &path)
 
 nlohmann::json ReadAssetDocument(const std::string &path)
 {
-    std::ifstream file(ToFsPath(path), std::ios::binary);
-    if (!file)
-        throw std::runtime_error("Cannot open asset document: " + path);
-    if (IsCookedAssetDocument(path)) {
-        const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    FileInput file(ToFsPath(path));
+    const auto size = file.Size();
+    if (size > std::string{}.max_size())
+        throw std::length_error("Asset document is too large to materialize: " + path);
+    std::string bytes(static_cast<size_t>(size), '\0');
+    file.Read(bytes.data(), bytes.size());
+    return ParseAssetDocument(path, bytes);
+}
+
+nlohmann::json ParseAssetDocument(const std::string &path, std::string_view bytes)
+{
+    if (IsCookedAssetDocument(path))
         return DecodeAssetDocument(bytes);
-    }
-    return nlohmann::json::parse(file);
+    return nlohmann::json::parse(bytes);
 }
 } // namespace infernux

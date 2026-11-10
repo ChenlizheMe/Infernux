@@ -71,7 +71,7 @@ struct alignas(16) GpuParticleSpawnDomainConstants
     uint32_t spawnBaseId = 0;
     uint32_t spawnGeneration = 0;
     uint32_t reset = 0;
-    uint32_t reserved = 0;
+    uint32_t metadataStrideWords = 0;
 };
 
 struct GpuParticleSpawnProgram
@@ -130,7 +130,6 @@ class ParticleGpuGraphSpawnDomain
         void DeclareInitRead(vk::PassBuilder &builder);
     };
     static constexpr uint32_t WorkgroupSize = 256;
-    static constexpr uint64_t MetadataStride = sizeof(GpuParticleSpawnMetadata);
     static constexpr uint64_t IndirectOffset = offsetof(GpuParticleSpawnMetadata, dispatchGroupCountX);
 
     ParticleGpuGraphSpawnDomain() = default;
@@ -210,7 +209,7 @@ class ParticleGpuGraphSpawnDomain
     }
     [[nodiscard]] uint64_t MetadataOffset(uint32_t targetSlot) const noexcept
     {
-        return uint64_t(targetSlot) * MetadataStride;
+        return uint64_t(targetSlot) * m_metadataStrideWords * sizeof(uint32_t);
     }
     [[nodiscard]] uint64_t InitIndirectOffset(uint32_t targetSlot) const noexcept
     {
@@ -245,6 +244,7 @@ class ParticleGpuGraphSpawnDomain
     rhi::Device *m_device = nullptr;
     uint64_t m_graphInstanceId = 0;
     uint32_t m_slotCount = 0;
+    uint32_t m_metadataStrideWords = 0;
     rhi::BufferHandle m_burstRequestCounts;
     rhi::BufferHandle m_consumingCounts;
     rhi::BufferHandle m_acceptingRequestSlots;
@@ -346,6 +346,10 @@ class ParticleRenderGraph
     [[nodiscard]] uint64_t LastConsumedFrame() const noexcept
     {
         return m_lastConsumedFrame;
+    }
+    [[nodiscard]] uint32_t LastConsumedSubstep() const noexcept
+    {
+        return m_lastConsumedSubstep;
     }
     [[nodiscard]] const GpuParticleGraphOutputs &Outputs() const noexcept
     {

@@ -280,7 +280,7 @@ void ShaderProgram::MergeReflectionData()
 
     // Helper to add or merge a binding
     auto addBinding = [this](uint32_t binding, uint32_t set, VkDescriptorType type, uint32_t count,
-                             VkShaderStageFlags stage, const std::string &name) {
+                             VkShaderStageFlags stage, const std::string &name, bool readOnly = false) {
         // Check if binding already exists
         for (auto &existing : m_descriptorBindings) {
             if (existing.binding == binding && existing.set == set) {
@@ -289,6 +289,7 @@ void ShaderProgram::MergeReflectionData()
                                              ", binding " + std::to_string(binding));
                 // Merge stage flags
                 existing.stageFlags |= stage;
+                existing.readOnly = existing.readOnly && readOnly;
                 return;
             }
         }
@@ -301,6 +302,7 @@ void ShaderProgram::MergeReflectionData()
         merged.descriptorCount = count;
         merged.stageFlags = stage;
         merged.name = name;
+        merged.readOnly = readOnly;
         m_descriptorBindings.push_back(merged);
     };
 
@@ -316,7 +318,7 @@ void ShaderProgram::MergeReflectionData()
     }
     for (const auto &buffer : m_vertReflection.GetStorageBuffers()) {
         addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
-                   VK_SHADER_STAGE_VERTEX_BIT, buffer.name);
+                   VK_SHADER_STAGE_VERTEX_BIT, buffer.name, buffer.readOnly);
     }
 
     // Process fragment shader UBOs
@@ -331,7 +333,7 @@ void ShaderProgram::MergeReflectionData()
     }
     for (const auto &buffer : m_fragReflection.GetStorageBuffers()) {
         addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, buffer.name);
+                   VK_SHADER_STAGE_FRAGMENT_BIT, buffer.name, buffer.readOnly);
     }
 
     // Sort by set, then by binding

@@ -189,7 +189,7 @@ int main(int argc, char **argv)
         if (!publication)
             publication = descriptors.GetOrCreateDescriptorSet(material, program);
         else
-            assert(descriptors.UpdateMaterialUBO(material.GetMaterialKey(), material));
+            assert(descriptors.UpdateMaterialProperties(material, program));
         assert(publication && publication->materialUBO && publication->vertexMaterialUBO);
         assert(publication->descriptorSet != previous);
         assert(publication->materialUBO->GetBuffer() != previousFragment);
@@ -201,7 +201,7 @@ int main(int argc, char **argv)
         // Repeated views and pending-texture polling must reuse this publication.
         const auto allocated = allocator.GetStats().liveSets;
         for (int repeat = 0; repeat < 8; ++repeat) {
-            assert(descriptors.UpdateMaterialUBO(material.GetMaterialKey(), material));
+            assert(descriptors.UpdateMaterialProperties(material, program));
             assert(publication->descriptorSet == previous);
         }
         assert(allocator.GetStats().liveSets == allocated);
@@ -276,7 +276,7 @@ int main(int argc, char **argv)
     }
     // Change the live material once more while every older publication is held.
     material.SetFloat("fragmentGain", 0);
-    assert(descriptors.UpdateMaterialUBO(material.GetMaterialKey(), material));
+    assert(descriptors.UpdateMaterialProperties(material, program));
     assert(publication->descriptorSet != previous);
     if (!queued)
         for (uint32_t index = 0; index < count; ++index)

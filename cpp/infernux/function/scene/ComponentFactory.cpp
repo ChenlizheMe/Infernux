@@ -80,6 +80,22 @@ const ComponentTypeConstraints &ComponentFactory::GetTypeConstraints(const std::
     return iterator->second.constraints;
 }
 
+void ComponentFactory::RewriteDocumentComponentReferences(
+    const std::string &typeName, nlohmann::json &document,
+    const std::function<nlohmann::json(const nlohmann::json &)> &rewrite)
+{
+    for (const auto &name : GetTypeConstraints(typeName).documentComponentReferences) {
+        const auto field = document.find(name);
+        if (field == document.end())
+            continue; // Optional fields and single-property authoring documents.
+        if (field->is_array()) {
+            for (auto &value : *field)
+                value = rewrite(value);
+        } else
+            *field = rewrite(*field);
+    }
+}
+
 std::vector<std::string> ComponentFactory::GetAttachmentBlockers(const std::string &typeName,
                                                                  const std::vector<std::string> &attachedTypes)
 {

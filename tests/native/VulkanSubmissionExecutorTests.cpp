@@ -126,7 +126,7 @@ int main()
     assert(vkdebug::GetDescriptorRecordingSubmissionSerial() == rhi::InvalidSubmissionSerial);
     assert(queues.AssociateFrameSlot(0, result.completionTicket));
     assert(recorded == plan.batches.size());
-    assert(queues.WaitForGraphicsFrameSlot(0));
+    assert(vkWaitForFences(context.GetDevice(), 1, &sync.completionFence, VK_TRUE, 5'000'000'000ULL) == VK_SUCCESS);
 
     executor.CompleteFrame(0);
     assert(queues.CompleteFrameSlot(0).IsValid());
@@ -343,8 +343,7 @@ int main()
         assert(standalonePlan.batches.size() == 3);
         assert(vkResetFences(context.GetDevice(), 1, &completionFence) == VK_SUCCESS);
         sync.completionEpoch = queues.ReserveCompletionEpoch();
-        sync.uploadTimeline = uploadGate;
-        sync.uploadTimelineValue = ++uploadValue;
+        sync.producers = {{uploadGate, ++uploadValue}};
         const auto reservedBefore = queues.GetSnapshot(role).lastReserved;
         const auto standalone = executor.Execute(
             0, standalonePlan,
@@ -425,8 +424,7 @@ int main()
         device.CollectResourceRetirements(sync.completionEpoch);
     }
     vkDestroySemaphore(context.GetDevice(), uploadGate, nullptr);
-    sync.uploadTimeline = VK_NULL_HANDLE;
-    sync.uploadTimelineValue = 0;
+    sync.producers.clear();
 
     // Independent background lanes must both contribute to completion. Gate
     // the Transfer root; Compute may finish first, but the final fence cannot.
@@ -494,7 +492,7 @@ int main()
                 return true;
             },
             sync);
-        assert(!rejected.Succeeded() && !rejected.submittedAny);
+        assert(!rejected.Succeeded() && rejected.submittedBatchCount == 0);
         assert(queues.GetSnapshot(rhi::QueueRole::Compute).lastReserved == reservedBefore);
     }
     sync.imageAvailable = VK_NULL_HANDLE;
@@ -541,7 +539,7 @@ int main()
                     assert(!timestamps.BeginRegion(commands, "capacity_exceeded", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
                                 .IsValid());
                     timestamps.EndRegion(commands, region, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-                    timestamps.FinishFrame(slot);
+                    timestamps.FinishFrame(commands, slot);
 #if INFERNUX_FRAME_PROFILE
                     assert(vk::GpuTimestampQueries::CurrentRecording() == nullptr);
 #endif
@@ -554,10 +552,13 @@ int main()
             executor.CompleteFrame(slot);
             queues.CompleteCompletionEpoch(timingSync.completionEpoch);
         }
-        assert(timestamps.CollectCompletedFrame(1));
+        const auto newer = timestamps.CollectCompletedFrame(1);
+        assert(newer && newer->serial == 2 && newer->Find("ordered_sample"));
         assert(timestamps.LatestFrame().serial == 2 && timestamps.LatestFrame().Find("ordered_sample"));
-        assert(!timestamps.CollectCompletedFrame(0));
+        const auto older = timestamps.CollectCompletedFrame(0);
+        assert(older && older->serial == 1 && older->Find("ordered_sample"));
         assert(timestamps.LatestFrame().serial == 2);
+        assert(!timestamps.CollectCompletedFrame(0));
     }
     timestamps.Destroy();
     VerifyExecutorCommandUploads(context, queues, executor);

@@ -4,9 +4,12 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace infernux
 {
@@ -38,100 +41,90 @@ static_assert(offsetof(GPUInstanceAuxData, objectId) == 64, "GPU object identity
     return static_cast<uint64_t>(objectId.x) | (static_cast<uint64_t>(objectId.y) << 32u);
 }
 
-/// Tracks one previous transform per stable render primitive. A logical frame
-/// may query the same primitive from several cameras and passes without
-/// advancing its history more than once.
+/// Rigid and skinned motion refer to the same accepted execution of one view.
+/// Recording can touch a primitive in several passes or be abandoned entirely.
 class RenderInstanceHistory
 {
   public:
-    void BeginFrame(uint64_t frameSerial)
+    struct Pose
     {
-        if (frameSerial == m_frameSerial)
+        glm::mat4 model{1.0f};
+        std::shared_ptr<const std::vector<glm::mat4>> skin;
+        uint64_t skinContinuity = 0;
+    };
+
+    void BeginFrame() noexcept
+    {
+        ++m_recordingFrame;
+    }
+
+    [[nodiscard]] const Pose *Previous(const RenderDrawIdentity &identity, uint64_t skinContinuity) const
+    {
+        if (m_acceptedFrame == 0)
+            return nullptr;
+        const auto entry = m_entries.find(identity);
+        if (entry == m_entries.end())
+            return nullptr;
+        const auto &previous = entry->second.frames[m_recordingSlot ^ 1u];
+        return previous.serial == m_acceptedFrame && previous.pose.skinContinuity == skinContinuity ? &previous.pose
+                                                                                                    : nullptr;
+    }
+
+    void Record(const RenderDrawIdentity &identity, const glm::mat4 &model,
+                const std::shared_ptr<const std::vector<glm::mat4>> &skin, uint64_t skinContinuity)
+    {
+        if (!identity.IsValid())
             return;
-
-        if (m_frameSerial != 0 && frameSerial < m_frameSerial)
-            Clear();
-
-        m_frameSerial = frameSerial;
-        if (frameSerial != 0 && (m_lastPruneFrame == 0 || frameSerial - m_lastPruneFrame >= kPruneInterval)) {
-            Prune(frameSerial);
-            m_lastPruneFrame = frameSerial;
+        auto &entry = m_entries[identity];
+        auto &current = entry.frames[m_recordingSlot];
+        if (current.serial != m_recordingFrame) {
+            current.pose = {model, skin, skinContinuity};
+            current.serial = m_recordingFrame;
         }
     }
 
-    [[nodiscard]] GPUInstanceAuxData Resolve(const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                             uint64_t objectId, uint32_t layerMask)
+    void CommitFrame()
     {
-        GPUInstanceAuxData result;
-        result.previousModel = currentModel;
-        result.objectId = PackGPUObjectId(objectId);
-        result.layerMask = layerMask;
-
-        if (m_frameSerial == 0 || !identity.IsValid())
-            return result;
-
-        auto [it, inserted] = m_entries.try_emplace(identity);
-        Entry &entry = it->second;
-        if (inserted) {
-            entry.currentModel = currentModel;
-            entry.previousForFrame = currentModel;
-            entry.lastObservedFrame = m_frameSerial;
-            return result;
+        m_acceptedFrame = m_recordingFrame;
+        m_recordingSlot ^= 1u;
+        if (m_acceptedFrame - m_lastPruneFrame < kPruneInterval)
+            return;
+        for (auto entry = m_entries.begin(); entry != m_entries.end();) {
+            const auto &frames = entry->second.frames;
+            if (m_acceptedFrame - std::max(frames[0].serial, frames[1].serial) > kRetentionFrames)
+                entry = m_entries.erase(entry);
+            else
+                ++entry;
         }
-
-        if (entry.lastObservedFrame == m_frameSerial) {
-            result.previousModel = entry.previousForFrame;
-            result.flags = entry.hasContinuousHistory ? kGPUInstanceAuxFlagValidHistory : 0u;
-            return result;
-        }
-
-        entry.hasContinuousHistory = entry.lastObservedFrame + 1u == m_frameSerial;
-        entry.previousForFrame = entry.hasContinuousHistory ? entry.currentModel : currentModel;
-        entry.currentModel = currentModel;
-        entry.lastObservedFrame = m_frameSerial;
-
-        result.previousModel = entry.previousForFrame;
-        result.flags = entry.hasContinuousHistory ? kGPUInstanceAuxFlagValidHistory : 0u;
-        return result;
+        m_lastPruneFrame = m_acceptedFrame;
     }
 
     void Clear() noexcept
     {
         m_entries.clear();
-        m_frameSerial = 0;
-        m_lastPruneFrame = 0;
-    }
-
-    [[nodiscard]] size_t Size() const noexcept
-    {
-        return m_entries.size();
+        m_acceptedFrame = 0;
     }
 
   private:
-    struct Entry
+    struct FramePose
     {
-        glm::mat4 currentModel{1.0f};
-        glm::mat4 previousForFrame{1.0f};
-        uint64_t lastObservedFrame = 0;
-        bool hasContinuousHistory = false;
+        Pose pose;
+        uint64_t serial = 0;
     };
 
-    void Prune(uint64_t frameSerial)
+    struct Entry
     {
-        for (auto it = m_entries.begin(); it != m_entries.end();) {
-            if (it->second.lastObservedFrame + kRetentionFrames < frameSerial)
-                it = m_entries.erase(it);
-            else
-                ++it;
-        }
-    }
+        FramePose frames[2];
+    };
 
     static constexpr uint64_t kRetentionFrames = 120;
     static constexpr uint64_t kPruneInterval = 60;
 
     std::unordered_map<RenderDrawIdentity, Entry, RenderDrawIdentityHash> m_entries;
-    uint64_t m_frameSerial = 0;
+    uint64_t m_recordingFrame = 0;
+    uint64_t m_acceptedFrame = 0;
     uint64_t m_lastPruneFrame = 0;
+    unsigned m_recordingSlot = 0;
 };
 
 } // namespace infernux

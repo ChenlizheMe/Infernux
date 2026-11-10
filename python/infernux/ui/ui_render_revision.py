@@ -70,10 +70,13 @@ def mark_runtime_ui_dirty(element=None, *, binding: bool = False, subtree: bool 
     return _runtime_ui_revision
 
 
-def _invalidate_ui_command_groups(element, *, subtree: bool = False) -> None:
+def _invalidate_ui_command_groups(element, *, subtree: bool = False, alpha_only: bool = False) -> None:
     """Notify existing submission owners, without retaining an edit history."""
     for group in element.__dict__.get('_ui_command_groups', ()):
-        group.invalidate(element)
+        if alpha_only:
+            group.invalidate_alpha(element)
+        else:
+            group.invalidate(element)
     if subtree:
         from .ui_canvas import UICanvas
 

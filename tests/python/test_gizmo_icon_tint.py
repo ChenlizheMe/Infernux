@@ -40,8 +40,9 @@ def test_light_billboard_and_selected_outline_use_emitted_color():
 
 
 def test_camera_and_light_gizmo_textures_are_alpha_silhouettes():
+    icons = Path(__file__).resolve().parents[2] / "python/infernux/resources/icons"
     for name in ("gizmo_camera.png", "gizmo_light.png"):
-        image = Image.open(Path("python/infernux/resources/icons") / name).convert("RGBA")
+        image = Image.open(icons / name).convert("RGBA")
         pixels = tuple(image.get_flattened_data())
         visible = [pixel for pixel in pixels if pixel[3] != 0]
         assert visible, name
@@ -49,8 +50,6 @@ def test_camera_and_light_gizmo_textures_are_alpha_silhouettes():
         assert max(pixel[3] for pixel in pixels) == 255, name
         assert min(pixel[3] for pixel in pixels) == 0, name
 
-    light = Image.open(
-        Path("python/infernux/resources/icons/gizmo_light.png")
-    ).convert("RGBA")
+    light = Image.open(icons / "gizmo_light.png").convert("RGBA")
     visible_light = [pixel for pixel in light.get_flattened_data() if pixel[3] != 0]
     assert {pixel[:3] for pixel in visible_light} == {(255, 255, 255)}

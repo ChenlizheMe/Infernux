@@ -20,6 +20,7 @@ def test_mesh_worker_respects_current_content_generation(engine, tmp_path, monke
         deadline = time.monotonic() + 15
         while not case.ready():
             assert time.monotonic() < deadline
+            engine.tick(0.016)
             time.sleep(0.001)
         result = case.exercise(mutation, allow_stale)
         (tmp_path / "mesh-retirement.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

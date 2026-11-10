@@ -3,7 +3,7 @@
 Allocation, resize, Camera output, material/UI sampling and explicit RenderGraph
 consumers are available in the graphical runtime. Imported descriptions are
 resolved by GUID; runtime-created targets never fabricate an asset identity.
-Unwritten pixels are undefined.
+Color starts opaque black when first used by the render graph.
 """
 from __future__ import annotations
 
@@ -62,15 +62,15 @@ class RenderTexture(ResourceProxy):
     Depth shader sampling is an explicit ``sampled_depth=True`` allocation
     use; ordinary depth testing does not require it.
 
-    Assign a depth-equipped target to ``camera.target_texture`` to render that
-    camera at the target's dimensions and sample count. Its output stays linear
-    and excludes screen-space UI and display encoding. Assign ``None`` to
-    return the camera to the screen output.
+    Enable ``camera.render_to_texture`` and assign a depth-equipped target to
+    ``camera.target_texture`` to render at its dimensions and sample count.
+    Its output stays linear and excludes screen-space UI and display encoding.
+    Leave the target empty for the camera's own memory output, or disable
+    ``camera.render_to_texture`` to use the screen.
 
-    An input-only ``graph.import_texture`` reads an active producer's output
-    from the same frame, even when Camera depth orders the consumer first.
-    Cycles, missing producers and same-target feedback are rejected; reading
-    old pixels is not an implicit history mechanism.
+    An input-only ``graph.import_texture`` samples the resident color image.
+    Use ``require_current_write=True`` when a consumer needs an active
+    producer in the same render opportunity.
 
     ``material.set_texture('texSampler', target)`` binds the sampled color
     (the resolved color for MSAA). The binding follows resize automatically

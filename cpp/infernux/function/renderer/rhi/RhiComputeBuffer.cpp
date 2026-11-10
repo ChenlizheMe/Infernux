@@ -1,6 +1,5 @@
 #include "RhiComputeBuffer.h"
 #include "RhiComputeKernel.h"
-#include <core/log/InxLog.h>
 
 #include <limits>
 #include <stdexcept>
@@ -12,77 +11,162 @@ namespace
 constexpr QueueAccessFlags kComputeBufferQueues =
     QueueAccessFlags::Graphics | QueueAccessFlags::Compute | QueueAccessFlags::Transfer;
 
-std::unique_ptr<BufferResource> CreateBufferResource(Device &device, const BufferDesc &desc)
+BufferHandle CreateComputeBuffer(Device &device, const BufferDesc &desc)
 {
     const auto handle = device.CreateBuffer(desc);
     if (!handle.IsValid())
         throw std::runtime_error("Failed to allocate compute buffer storage");
-    return std::make_unique<BufferResource>(device, handle, desc.byteSize);
+    return handle;
 }
-} // namespace
 
-ComputeBuffer::ComputeBuffer(ComputeHost &host, ComputeBufferDesc desc) : m_host(host.device, host.queue), m_desc(desc)
+BufferDesc ComputeStorageDesc(const ComputeHost &host, ComputeBufferDesc desc, BufferUsageFlags usage)
 {
+    host.RequireAlive();
     if (desc.elementCount == 0)
         throw std::invalid_argument("Compute buffer element count must be positive");
     if (desc.lanes == 0 || desc.lanes > 4)
         throw std::invalid_argument("Compute buffer lanes must be between one and four");
     if (desc.elementCount > (std::numeric_limits<uint64_t>::max)() / desc.GetElementStride())
         throw std::overflow_error("Compute buffer byte size exceeds the addressable range");
-    const auto byteSize = desc.GetByteSize();
-
-    m_storage = CreateBufferResource(host.device,
-                                     {byteSize,
-                                      BufferUsageFlags::Storage | BufferUsageFlags::Uniform | BufferUsageFlags::Vertex |
-                                          BufferUsageFlags::TransferSource | BufferUsageFlags::TransferDestination,
-                                      BufferMemory::DeviceLocal, nullptr, 0, kComputeBufferQueues});
+    return {desc.GetByteSize(),
+            BufferUsageFlags::Storage | BufferUsageFlags::Uniform | BufferUsageFlags::Vertex |
+                BufferUsageFlags::TransferSource | BufferUsageFlags::TransferDestination | usage,
+            BufferMemory::DeviceLocal,
+            nullptr,
+            0,
+            kComputeBufferQueues};
 }
 
-ComputeBuffer::~ComputeBuffer()
+} // namespace
+
+ComputeBufferAllocation::ComputeBufferAllocation(Device &device, const BufferDesc &desc, bool graphWritable)
+    : ComputeBufferAllocation(device, CreateComputeBuffer(device, desc), desc, graphWritable)
 {
-    if (m_uploadTicket.IsValid()) {
-        try {
-            m_host.queue.Wait(m_uploadTicket);
-        } catch (const std::exception &error) {
-            INXLOG_ERROR("Compute buffer upload wait failed during release; allocation follows GPU retirement: ",
-                         error.what());
-        }
-    }
 }
 
-BufferResource &ComputeBuffer::EnsureUploadBuffer()
+ComputeBufferAllocation::ComputeBufferAllocation(Device &device, BufferHandle buffer, const BufferDesc &desc,
+                                                 bool graphWritable)
+    : m_storage(device, buffer, desc.byteSize), m_desc(desc), m_graphWritable(graphWritable)
 {
-    if (!m_upload) {
-        m_upload = CreateBufferResource(m_host.device, {GetByteSize(), BufferUsageFlags::TransferSource,
-                                                        BufferMemory::Upload, nullptr, 0, kComputeBufferQueues});
-        m_host.queue.RecordStagingAllocation();
-    }
-    return *m_upload;
+    // The descriptor describes future storage; initial payload belongs only to this creation.
+    m_desc.initialData = nullptr;
+    m_desc.initialDataBytes = 0;
 }
 
-BufferResource &ComputeBuffer::EnsureReadbackBuffer()
+std::shared_ptr<ComputeBufferAllocation> ComputeBufferAllocation::CreatePrivate(Device &device, const BufferDesc &desc,
+                                                                                bool graphWritable, bool managed)
 {
-    if (!m_readback) {
-        m_readback = CreateBufferResource(m_host.device, {GetByteSize(), BufferUsageFlags::TransferDestination,
-                                                          BufferMemory::Readback, nullptr, 0, kComputeBufferQueues});
-        m_host.queue.RecordStagingAllocation();
+    const auto handle = device.CreatePrivateBuffer(desc, managed);
+    if (!handle)
+        return {};
+    if (!handle->IsValid())
+        throw std::runtime_error("Failed to allocate private compute storage");
+    std::unique_ptr<ComputeBufferAllocation> allocation;
+    try {
+        allocation.reset(new ComputeBufferAllocation(device, *handle, desc, graphWritable));
+    } catch (...) {
+        device.Release(*handle);
+        throw;
     }
-    return *m_readback;
+    return allocation;
 }
+
+void ComputeBufferAllocation::PublishGraphValue(SubmissionTicket completion, QueueRole writer,
+                                                intervals::Set initialized, intervals::Set written) noexcept
+{
+    m_lastWriteSubmission = completion;
+    m_lastWriterQueue = writer;
+    m_initialized = std::move(initialized);
+    m_written = std::move(written);
+}
+
+ComputeBufferState::ComputeBufferState(ComputeBufferDesc desc, std::shared_ptr<ComputeBufferAllocation> allocation,
+                                       bool frozen)
+    : m_desc(desc), m_allocation(std::move(allocation)), m_frozen(frozen)
+{
+    if (m_frozen)
+        ++m_allocation->m_readers;
+}
+
+ComputeBufferState::~ComputeBufferState()
+{
+    if (m_frozen)
+        --m_allocation->m_readers;
+}
+
+ComputeBuffer::ComputeBuffer(ComputeHost &host, ComputeBufferDesc desc)
+    : m_host(host), m_state(std::make_shared<ComputeBufferState>(
+                        desc,
+                        std::make_shared<ComputeBufferAllocation>(
+                            host.device, ComputeStorageDesc(host, desc, BufferUsageFlags::None)),
+                        false))
+{
+}
+
+std::shared_ptr<ComputeBuffer> ComputeBuffer::TryCreatePrivate(ComputeHost &host, ComputeBufferDesc desc)
+{
+    return TryCreate(host, desc, BufferUsageFlags::None, false);
+}
+
+std::shared_ptr<ComputeBuffer> ComputeBuffer::TryCreateGraphBuffer(ComputeHost &host, ComputeBufferDesc desc)
+{
+    return TryCreate(host, desc, BufferUsageFlags::Indirect, true);
+}
+
+std::shared_ptr<ComputeBuffer> ComputeBuffer::TryCreate(ComputeHost &host, ComputeBufferDesc desc,
+                                                        BufferUsageFlags usage, bool graphWritable)
+{
+    auto allocation =
+        ComputeBufferAllocation::CreatePrivate(host.device, ComputeStorageDesc(host, desc, usage), graphWritable, true);
+    if (!allocation)
+        return {};
+    return std::shared_ptr<ComputeBuffer>(
+        new ComputeBuffer(host, std::make_shared<ComputeBufferState>(desc, std::move(allocation), false)));
+}
+
+ComputeBuffer::ComputeBuffer(ComputeHost host, std::shared_ptr<ComputeBufferState> state)
+    : m_host(std::move(host)), m_state(std::move(state))
+{
+}
+
+void ComputeBuffer::PublishStorage()
+{
+    m_host.RequireAlive();
+    m_host.device.PublishPrivateBuffer(GetBuffer());
+}
+
+std::shared_ptr<ComputeBuffer> ComputeBuffer::Freeze()
+{
+    if (IsFrozen())
+        return shared_from_this();
+    return std::shared_ptr<ComputeBuffer>(
+        new ComputeBuffer(m_host, std::make_shared<ComputeBufferState>(GetDesc(), GetAllocation(), true)));
+}
+
+std::shared_ptr<ComputeBuffer> ComputeBuffer::FreezeScalars()
+{
+    auto layout = GetDesc();
+    layout.elementCount *= layout.lanes;
+    layout.lanes = 1;
+    return std::shared_ptr<ComputeBuffer>(
+        new ComputeBuffer(m_host, std::make_shared<ComputeBufferState>(layout, GetAllocation(), true)));
+}
+
+ComputeBuffer::~ComputeBuffer() = default;
 
 uint64_t ComputeBuffer::GetByteSize() const noexcept
 {
-    return m_storage ? m_storage->GetByteSize() : 0;
+    return GetAllocation()->GetByteSize();
 }
 
 const ComputeBufferDesc &ComputeBuffer::GetDesc() const noexcept
 {
-    return m_desc;
+    return m_state->GetDesc();
 }
 
 BufferHandle ComputeBuffer::GetBuffer() const noexcept
 {
-    return m_storage ? m_storage->GetBuffer() : BufferHandle{};
+    return GetAllocation()->GetBuffer();
 }
 
 ComputeHost &ComputeBuffer::GetHost() noexcept
@@ -95,97 +179,54 @@ const ComputeHost &ComputeBuffer::GetHost() const noexcept
     return m_host;
 }
 
+void ComputeBuffer::AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const
+{
+    GetAllocation()->AppendRetainedStorage(blocks);
+}
+
+void ComputeBufferAllocation::AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const
+{
+    blocks.push_back({GetBuffer(), GetByteSize()});
+}
+
 void ComputeBuffer::ValidateRange(uint64_t offset, uint64_t byteSize) const
 {
     const auto capacity = GetByteSize();
-    if (byteSize == 0 || offset > capacity || byteSize > capacity - offset)
+    if (byteSize == 0 || offset % 4 != 0 || byteSize % 4 != 0 || offset > capacity || byteSize > capacity - offset)
         throw std::out_of_range("Compute buffer transfer range is invalid");
 }
 
 void ComputeBuffer::SetData(uint64_t offset, const void *data, uint64_t byteSize)
 {
-    PrepareUpload(offset, data, byteSize);
-    m_uploadTicket = m_host.queue.Submit([this, offset, byteSize](ComputeRecordingContext &context) {
-        RecordPreparedUpload(context, offset, byteSize);
-        // This submission belongs to Compute, which may have no graphics stages.
-        // Graphics consumers acquire visibility through the attached write ticket.
-        context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, PipelineStage::ComputeShader,
-                                Access::ShaderRead | Access::ShaderWrite);
-        return true;
-    });
-    m_host.queue.RecordUpload(byteSize);
-    AttachWrite(m_uploadTicket);
-}
-
-void ComputeBuffer::PrepareUpload(uint64_t offset, const void *data, uint64_t byteSize)
-{
     ValidateRange(offset, byteSize);
     if (!data)
         throw std::invalid_argument("Compute buffer source cannot be null");
-    // The upload allocation is persistently reused. Wait only when the CPU is
-    // about to overwrite bytes still consumed by its previous copy; the new
-    // upload itself stays asynchronous and is ordered before later kernels by
-    // the engine compute queue.
-    if (m_uploadTicket.IsValid()) {
-        m_host.queue.Wait(m_uploadTicket);
-        m_uploadTicket = {};
-    }
-    auto &uploadResource = EnsureUploadBuffer();
-    if (!m_host.device.WriteBuffer(uploadResource.GetBuffer(), offset, data, byteSize))
-        throw std::runtime_error("Failed to write compute upload storage");
-    m_host.queue.RecordHostMap();
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    (void)PrepareComputeBatch(m_host, {{shared_from_this(), offset, {bytes, bytes + byteSize}}}, {})->Submit();
 }
 
-void ComputeBuffer::RecordPreparedUpload(ComputeRecordingContext &context, uint64_t offset, uint64_t byteSize) const
+void ComputeBufferAllocation::RecordUpload(ComputeRecordingContext &context, uint64_t offset, const void *data,
+                                           uint64_t byteSize) const
 {
-    ValidateRange(offset, byteSize);
-    if (!m_upload)
-        throw std::logic_error("Compute buffer upload was not prepared");
-    context.Transfer().CopyBuffer(m_upload->GetBuffer(), m_storage->GetBuffer(), {offset, offset, byteSize});
-}
-
-void ComputeBuffer::AttachUpload(SubmissionTicket ticket) noexcept
-{
-    m_uploadTicket = ticket;
-    AttachWrite(ticket);
-}
-
-void ComputeBuffer::AttachWrite(SubmissionTicket ticket) noexcept
-{
-    if (ticket.IsValid())
-        m_lastWriteSubmission = ticket;
+    if (!context.Transfer().UpdateBuffer(GetBuffer(), offset, data, byteSize))
+        throw std::runtime_error("Failed to record compute buffer upload");
 }
 
 SubmissionTicket ComputeBuffer::GetLastWriteSubmission() const noexcept
 {
-    return m_lastWriteSubmission;
+    return GetAllocation()->GetLastWriteSubmission();
 }
 
-void ComputeBuffer::PrepareReadback(uint64_t offset, uint64_t byteSize)
+bool ComputeBuffer::HasInitializedRange(uint64_t offset, uint64_t byteSize) const
 {
     ValidateRange(offset, byteSize);
-    (void)EnsureReadbackBuffer();
+    return GetAllocation()->HasInitializedRange(offset, byteSize);
 }
 
-void ComputeBuffer::RecordPreparedReadback(ComputeRecordingContext &context, uint64_t offset, uint64_t byteSize) const
+bool ComputeBufferAllocation::HasInitializedRange(uint64_t offset, uint64_t byteSize) const
 {
-    ValidateRange(offset, byteSize);
-    if (!m_readback)
-        throw std::logic_error("Compute buffer readback was not prepared");
-    context.Transfer().CopyBuffer(m_storage->GetBuffer(), m_readback->GetBuffer(), {offset, offset, byteSize});
-}
-
-std::vector<uint8_t> ComputeBuffer::FinishReadback(uint64_t offset, uint64_t byteSize)
-{
-    ValidateRange(offset, byteSize);
-    if (!m_readback)
-        throw std::logic_error("Compute buffer readback was not prepared");
-    m_uploadTicket = {};
-    std::vector<uint8_t> bytes(static_cast<size_t>(byteSize));
-    if (!m_host.device.ReadBuffer(m_readback->GetBuffer(), offset, bytes.data(), byteSize))
-        throw std::runtime_error("Failed to read compute readback storage");
-    m_host.queue.RecordHostMap();
-    return bytes;
+    return byteSize && offset <= GetByteSize() && byteSize <= GetByteSize() - offset &&
+           intervals::Contains(m_initialized, offset, offset + byteSize);
 }
 
 std::vector<uint8_t> ComputeBuffer::GetData(uint64_t offset, uint64_t byteSize)
@@ -194,82 +235,134 @@ std::vector<uint8_t> ComputeBuffer::GetData(uint64_t offset, uint64_t byteSize)
     return std::move(result.front());
 }
 
-std::shared_ptr<ComputeReadback> ComputeBuffer::GetDataAsync(uint64_t offset, uint64_t byteSize)
-{
-    ValidateRange(offset, byteSize);
-    return std::make_shared<ComputeReadback>(m_host, shared_from_this(), offset, byteSize);
-}
-
-std::shared_ptr<BufferResource> ComputeBuffer::AcquireAsyncReadbackStorage(uint64_t byteSize)
-{
-    // Both the queue and the consumer must have retired their snapshot before
-    // reuse. Keeping only the latest allocation bounds idle storage to one per
-    // source; replacing it never waits for or overwrites a live request.
-    if (!m_asyncReadback || m_asyncReadback.use_count() != 1 || m_asyncReadback->GetByteSize() < byteSize) {
-        m_asyncReadback =
-            CreateBufferResource(m_host.device, {byteSize, BufferUsageFlags::TransferDestination,
-                                                 BufferMemory::Readback, nullptr, 0, kComputeBufferQueues});
-        m_host.queue.RecordStagingAllocation();
-    }
-    return m_asyncReadback;
-}
-
 ComputeReadback::ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffer> source, uint64_t offset,
                                  uint64_t byteSize)
-    : m_host(host.device, host.queue), m_storage(std::make_shared<Storage>()), m_byteSize(byteSize)
+    : m_host(host), m_storage(std::make_shared<Storage>()), m_offset(offset), m_byteSize(byteSize)
 {
     if (!source || !source->GetHost().SharesServicesWith(host))
         throw std::invalid_argument("Compute readback source must belong to its host");
-    if (byteSize == 0 || offset > source->GetByteSize() || byteSize > source->GetByteSize() - offset)
-        throw std::out_of_range("Compute readback range is invalid");
-    m_storage->source = std::move(source);
-    m_storage->staging = m_storage->source->AcquireAsyncReadbackStorage(byteSize);
-    m_ticket = host.queue.Submit(
-        [this, offset, byteSize](ComputeRecordingContext &context) {
-            context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, PipelineStage::Transfer,
-                                    Access::TransferRead);
-            context.Transfer().CopyBuffer(m_storage->source->GetBuffer(), m_storage->staging->GetBuffer(),
-                                          {offset, 0, byteSize});
-            // The source remains writable after this asynchronous snapshot.
-            // A host-only dependency exposes staging bytes to the CPU but
-            // does not order a subsequent upload after the source copy read.
-            context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite,
-                                    PipelineStage::Host | PipelineStage::Transfer,
-                                    Access::HostRead | Access::TransferWrite);
-            return true;
-        },
-        m_storage);
-    if (!m_ticket.IsValid())
-        throw std::runtime_error("Failed to submit compute readback");
-    host.queue.RecordReadback(byteSize);
+    source->ValidateRange(offset, byteSize);
+    m_source = source->m_state;
+    m_storage->source = source->GetAllocation();
+    m_sourceBuffer = m_storage->source->GetBuffer();
+}
+
+std::shared_ptr<BufferResource> ComputeReadback::AllocateStaging(bool managed)
+{
+    const BufferDesc desc{
+        m_byteSize, BufferUsageFlags::TransferDestination, BufferMemory::Readback, nullptr, 0, kComputeBufferQueues};
+    const auto handle = m_host.device.CreatePrivateBuffer(desc, managed);
+    if (!handle)
+        return {};
+    if (!handle->IsValid())
+        throw std::runtime_error("Failed to allocate compute readback storage");
+    std::shared_ptr<BufferResource> staging;
+    try {
+        staging = std::make_shared<BufferResource>(m_host.device, *handle, m_byteSize);
+    } catch (...) {
+        m_host.device.Release(*handle);
+        throw;
+    }
+    m_host.Queue().RecordStagingAllocation();
+    return staging;
+}
+
+void ComputeReadback::Rebind(std::shared_ptr<ComputeBufferAllocation> allocation)
+{
+    if (m_cancelled)
+        return;
+    m_storage->source = std::move(allocation);
+    m_sourceBuffer = m_storage->source->GetBuffer();
+}
+
+void ComputeReadback::Record(ComputeRecordingContext &context) const
+{
+    if (!m_cancelled) {
+        context.Require(m_storage->source->GetLastWriteSubmission());
+        context.Transfer().CopyBuffer(m_sourceBuffer, m_storage->staging->GetBuffer(), {m_offset, 0, m_byteSize});
+    }
+}
+
+std::shared_ptr<ComputeReadback::Storage> ComputeReadback::Attach(SubmissionTicket ticket) noexcept
+{
+    if (m_cancelled)
+        return {};
+    m_ticket = ticket;
+    m_sourceWriteSubmission = m_storage->source->GetLastWriteSubmission();
+    m_source.reset();
+    return m_storage;
+}
+
+bool ComputeReadback::Cancel() noexcept
+{
+    if (m_cancelled || !m_storage)
+        return false;
+    m_cancelled = true;
+    m_storage.reset();
+    m_source.reset();
+    return true;
+}
+
+void ComputeReadback::AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const
+{
+    if (m_storage)
+        m_storage->AppendRetainedStorage(blocks);
+}
+
+void ComputeReadback::Storage::AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const
+{
+    if (source)
+        source->AppendRetainedStorage(blocks);
+    if (staging)
+        blocks.push_back({staging->GetBuffer(), staging->GetByteSize()});
 }
 
 bool ComputeReadback::IsComplete()
 {
-    if (!m_complete && m_host.queue.IsComplete(m_ticket)) {
+    if (!m_complete && m_ticket.IsValid() && m_host.Queue().IsComplete(m_ticket)) {
         m_complete = true;
-        m_ticket = {};
+        if (m_storage)
+            m_storage->source.reset();
+        m_source.reset();
     }
     return m_complete;
 }
 
 void ComputeReadback::Wait()
 {
-    if (m_complete || !m_ticket.IsValid())
+    if (m_cancelled)
+        throw std::logic_error("Compute readback was cancelled");
+    if (!m_ticket.IsValid())
+        throw std::logic_error("Compute readback has not been accepted");
+    if (m_complete)
         return;
-    m_host.queue.Wait(m_ticket);
+    m_host.Queue().Wait(m_ticket);
     m_complete = true;
-    m_ticket = {};
+    m_storage->source.reset();
+    m_source.reset();
 }
 
 std::vector<uint8_t> ComputeReadback::GetData()
 {
-    Wait();
     std::vector<uint8_t> bytes(static_cast<size_t>(m_byteSize));
-    if (!m_host.device.ReadBuffer(m_storage->staging->GetBuffer(), 0, bytes.data(), m_byteSize))
-        throw std::runtime_error("Failed to read completed compute readback storage");
-    m_host.queue.RecordHostMap();
+    ReadInto(bytes.data(), m_byteSize);
     return bytes;
+}
+
+void ComputeReadback::ReadInto(void *destination, uint64_t byteSize)
+{
+    if (!destination || byteSize != m_byteSize)
+        throw std::invalid_argument("Compute readback destination must match its exact byte size");
+    if (m_cancelled)
+        throw std::logic_error("Compute readback was cancelled");
+    if (!m_storage)
+        throw std::logic_error("Compute readback data has already been consumed");
+    m_host.RequireAlive();
+    Wait();
+    if (!m_host.device.ReadBuffer(m_storage->staging->GetBuffer(), 0, destination, m_byteSize))
+        throw std::runtime_error("Failed to read completed compute readback storage");
+    m_host.Queue().RecordHostMap();
+    m_storage.reset();
 }
 
 std::vector<std::vector<uint8_t>> ReadComputeBatch(ComputeHost &host, std::vector<ComputeBufferRead> reads)

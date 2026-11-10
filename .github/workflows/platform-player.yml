@@ -147,9 +147,8 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/tests/acceptance/windows_software_vulkan.cmake"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build --preset windows-msvc-release
+          # The Player and wheel targets build the native artifacts used below.
+          cmake --preset windows-msvc-release -DINFERNUX_BUILD_TESTS=OFF "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/tests/acceptance/windows_software_vulkan.cmake"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset windows-msvc-player
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -250,8 +249,7 @@ jobs:
       - name: Build Linux Player runtime
         run: |
           conda activate infernux
-          cmake --preset linux-clang-release
-          cmake --build --preset linux-clang-release
+          cmake --preset linux-clang-release -DINFERNUX_BUILD_TESTS=OFF
           cmake --build --preset linux-clang-player
           cmake --build --preset linux-clang-install-wheel
 
@@ -352,8 +350,8 @@ jobs:
       - name: Build Linux host modules
         run: |
           conda activate infernux
-          cmake --preset linux-clang-headless
-          cmake --build --preset linux-clang-headless
+          cmake --preset linux-clang-headless -DINFERNUX_BUILD_TESTS=OFF
+          cmake --build --preset linux-clang-headless --target stage_python_sdk infernux_gpu_jit_compiler
 
       - name: Prepare pinned Web toolchain
         run: |
@@ -698,8 +696,8 @@ jobs:
       - name: Build Linux host modules
         run: |
           conda activate infernux
-          cmake --preset linux-clang-headless
-          cmake --build --preset linux-clang-headless
+          cmake --preset linux-clang-headless -DINFERNUX_BUILD_TESTS=OFF
+          cmake --build --preset linux-clang-headless --target stage_python_sdk infernux_gpu_jit_compiler
 
       - name: Prepare pinned Android Python runtime
         run: |

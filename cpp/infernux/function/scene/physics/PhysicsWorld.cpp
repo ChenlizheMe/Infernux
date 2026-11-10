@@ -26,12 +26,14 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/EmptyShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
+#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
-#include <Jolt/Physics/Constraints/SliderConstraint.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -198,6 +200,33 @@ static glm::mat3 InvertAllowedAngularSubspace(const glm::mat3 &inverseTensor, ui
     return result;
 }
 
+template <typename Visitor>
+void VisitPhysicsReceiverObjects(const Collider &collider, bool triggerEvent, Visitor &&visit)
+{
+    auto *leaf = collider.GetGameObject();
+    auto *body = collider.GetAttachedRigidbody();
+    auto *owner = body ? body->GetGameObject() : leaf;
+    visit(owner);
+    // Unity collision messages target the body. A trigger shape additionally
+    // receives its own trigger messages on the child object.
+    if (triggerEvent && collider.IsTrigger() && leaf != owner)
+        visit(leaf);
+}
+
+JPH::ObjectLayer BodyLayerForMembers(const std::vector<Collider *> &members, const GameObject &owner, bool moving)
+{
+    int layer = -1;
+    for (const auto *member : members) {
+        if (!member)
+            continue;
+        const int memberLayer = member->GetGameObject()->GetLayer();
+        if (layer >= 0 && layer != memberLayer)
+            return moving ? PhysicsObjectLayers::MIXED_MOVING : PhysicsObjectLayers::MIXED_NON_MOVING;
+        layer = memberLayer;
+    }
+    return PhysicsObjectLayers::Encode(layer < 0 ? owner.GetLayer() : layer, moving);
+}
+
 class LayerMaskObjectFilter final : public JPH::ObjectLayerFilter
 {
   public:
@@ -207,6 +236,8 @@ class LayerMaskObjectFilter final : public JPH::ObjectLayerFilter
 
     bool ShouldCollide(JPH::ObjectLayer inLayer) const override
     {
+        if (PhysicsObjectLayers::IsMixed(inLayer))
+            return true;
         const int gameLayer = PhysicsObjectLayers::DecodeGameLayer(inLayer);
         return (m_layerMask & (1u << static_cast<uint32_t>(gameLayer))) != 0;
     }
@@ -218,15 +249,20 @@ class LayerMaskObjectFilter final : public JPH::ObjectLayerFilter
 class DeterministicClosestShapeRayCollector final : public JPH::CastRayCollector
 {
   public:
-    DeterministicClosestShapeRayCollector(JPH::BodyID bodyId, float parentEarlyOut) : m_bodyId(bodyId)
+    DeterministicClosestShapeRayCollector(const JPH::Body &body, float parentEarlyOut, bool filterRetired,
+                                          uint32_t layerMask)
+        : m_body(body), m_filterRetired(filterRetired), m_layerMask(layerMask)
     {
         ResetEarlyOutFraction(parentEarlyOut);
     }
 
     void AddHit(const JPH::RayCastResult &candidate) override
     {
+        if (m_filterRetired &&
+            !PhysicsWorld::Instance().AcceptsSubShapeQuery(m_body, candidate.mSubShapeID2.GetValue(), m_layerMask))
+            return;
         JPH::RayCastResult result = candidate;
-        result.mBodyID = m_bodyId;
+        result.mBodyID = m_body.GetID();
         const auto key = std::tuple(result.mFraction, result.mSubShapeID2.GetValue());
         if (!m_hadHit || key < std::tuple(m_hit.mFraction, m_hit.mSubShapeID2.GetValue())) {
             m_hit = result;
@@ -250,7 +286,9 @@ class DeterministicClosestShapeRayCollector final : public JPH::CastRayCollector
     }
 
   private:
-    JPH::BodyID m_bodyId;
+    const JPH::Body &m_body;
+    bool m_filterRetired;
+    uint32_t m_layerMask;
     JPH::RayCastResult m_hit{};
     bool m_hadHit = false;
 };
@@ -274,9 +312,9 @@ class DeterministicClosestRayBodyCollector final : public JPH::RayCastBodyCollec
     DeterministicClosestRayBodyCollector(const JPH::RRayCast &ray, const JPH::BodyLockInterface &bodyLocks,
                                          RaycastBatchProfile *profile = nullptr,
                                          RaycastPublishedBodyCache *publishedCache = nullptr,
-                                         uint64_t queryGeneration = 0)
+                                         uint64_t queryGeneration = 0, uint32_t layerMask = 0xFFFFFFFFu)
         : m_ray(ray), m_bodyLocks(bodyLocks), m_profile(profile), m_publishedCache(publishedCache),
-          m_queryGeneration(queryGeneration)
+          m_queryGeneration(queryGeneration), m_layerMask(layerMask)
     {
     }
 
@@ -318,6 +356,10 @@ class DeterministicClosestRayBodyCollector final : public JPH::RayCastBodyCollec
   private:
     void AddBody(const JPH::Body &body, const JPH::TransformedShape &transformedShape)
     {
+        const bool filterRetired =
+            PhysicsWorld::Instance().HasRetiredShapeMembers() || PhysicsObjectLayers::IsMixed(body.GetObjectLayer());
+        if (filterRetired && !PhysicsWorld::Instance().FindColliderByBodyId(body.GetID().GetIndexAndSequenceNumber()))
+            return;
         JPH::RayCastResult result;
         result.mFraction = GetEarlyOutFraction();
         const uint64_t narrowStartNs = m_profile ? ProfileNowNs() : 0;
@@ -344,7 +386,7 @@ class DeterministicClosestRayBodyCollector final : public JPH::RayCastBodyCollec
             // compound and decorated shapes therefore keep RayCastSettings'
             // one-sided semantics while still collecting only the closest
             // valid hit for this broadphase candidate.
-            DeterministicClosestShapeRayCollector closest(body.GetID(), GetEarlyOutFraction());
+            DeterministicClosestShapeRayCollector closest(body, GetEarlyOutFraction(), filterRetired, m_layerMask);
             transformedShape.CastRay(m_ray, JPH::RayCastSettings(), closest);
             if (closest.HadHit()) {
                 result = closest.Hit();
@@ -356,7 +398,8 @@ class DeterministicClosestRayBodyCollector final : public JPH::RayCastBodyCollec
             if (hit)
                 ++m_profile->narrowphaseHits;
         }
-        if (!hit)
+        if (!hit || (filterRetired &&
+                     !PhysicsWorld::Instance().AcceptsSubShapeQuery(body, result.mSubShapeID2.GetValue(), m_layerMask)))
             return;
 
         const auto key =
@@ -401,7 +444,27 @@ class DeterministicClosestRayBodyCollector final : public JPH::RayCastBodyCollec
     RaycastBatchProfile *m_profile = nullptr;
     RaycastPublishedBodyCache *m_publishedCache = nullptr;
     uint64_t m_queryGeneration = 0;
+    uint32_t m_layerMask;
     bool m_hadHit = false;
+};
+
+class FilteredCCDCollector final : public JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector>
+{
+  public:
+    FilteredCCDCollector(const JPH::Body &source, const JPH::Body &target) : m_source(source), m_target(target)
+    {
+    }
+
+    void AddHit(const JPH::ShapeCastResult &result) override
+    {
+        if (PhysicsWorld::Instance().AcceptsCCDCandidate(m_source, m_target, result.mSubShapeID1.GetValue(),
+                                                         result.mSubShapeID2.GetValue()))
+            JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector>::AddHit(result);
+    }
+
+  private:
+    const JPH::Body &m_source;
+    const JPH::Body &m_target;
 };
 
 class ProfiledAllHitRayCollector final : public JPH::AllHitCollisionCollector<JPH::CastRayCollector>
@@ -443,27 +506,39 @@ class ProfiledAllHitRayCollector final : public JPH::AllHitCollisionCollector<JP
     uint64_t m_narrowStartNs = 0;
 };
 
-static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const Collider *exclude,
+static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(const PhysicsActorData &actor, const Collider *exclude,
                                                           size_t *outShapeCount = nullptr,
                                                           std::vector<Collider *> *outMembers = nullptr)
 {
-    if (!go) {
-        return nullptr;
-    }
-
+    auto *go = actor.owner;
     std::vector<std::pair<Collider *, JPH::RefConst<JPH::Shape>>> childShapes;
-    auto colliders = go->GetComponents<Collider>();
+    const auto &colliders = actor.colliders;
     childShapes.reserve(colliders.size());
     bool complete = true;
 
     for (auto *col : colliders) {
-        if (!col || col == exclude || col->IsBeingDestroyed() || !col->IsEnabled()) {
+        if (!col || col == exclude || col->IsBeingDestroyed() || !col->IsEnabled() ||
+            !col->GetGameObject()->IsActiveInHierarchy()) {
             continue;
         }
 
-        JPH::RefConst<JPH::Shape> child(static_cast<const JPH::Shape *>(col->CreateJoltShapeRaw()));
+        auto child = col->CreateJoltShape();
         if (child) {
-            childShapes.emplace_back(col, child);
+            if (child->GetSubType() == JPH::EShapeSubType::Empty)
+                continue; // Empty children have no geometry or compound mass.
+            if (col->GetGameObject() != go) {
+                const auto *actorTransform = go->GetTransform();
+                const auto *childTransform = col->GetGameObject()->GetTransform();
+                const auto inverseRotation = glm::inverse(actorTransform->GetWorldRotation());
+                const auto position = inverseRotation * (childTransform->GetPosition() - actorTransform->GetPosition());
+                const auto rotation = glm::normalize(inverseRotation * childTransform->GetWorldRotation());
+                // Each primitive already bakes world scale. Only the rigid
+                // relative pose belongs here; a full inverse matrix scales twice.
+                child =
+                    new JPH::RotatedTranslatedShape(JPH::Vec3(position.x, position.y, position.z),
+                                                    JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w), child);
+            }
+            childShapes.emplace_back(col, std::move(child));
         } else {
             // A pending or rejected child must not silently disappear from
             // a replacement compound. Visit every child to start its cook.
@@ -471,7 +546,7 @@ static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const 
         }
     }
 
-    if (!complete || childShapes.empty()) {
+    if (!complete) {
         if (outShapeCount)
             *outShapeCount = 0;
         return nullptr;
@@ -485,21 +560,137 @@ static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const 
             outMembers->push_back(child.first);
     }
 
-    if (childShapes.size() == 1) {
-        return childShapes.front().second;
+    JPH::RefConst<JPH::Shape> shape;
+    if (childShapes.empty()) {
+        shape = new JPH::EmptyShape();
+    } else if (childShapes.size() == 1) {
+        shape = childShapes.front().second;
+    } else {
+        JPH::StaticCompoundShapeSettings compoundSettings;
+        for (size_t i = 0; i < childShapes.size(); ++i) {
+            compoundSettings.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), childShapes[i].second,
+                                      static_cast<uint32_t>(i));
+        }
+        auto result = compoundSettings.Create();
+        if (result.HasError())
+            return nullptr;
+        shape = result.Get();
     }
+    if (auto *body = actor.rigidbody; body && body->IsEnabled()) {
+        if (const auto &properties = body->GetAuthoredMassProperties()) {
+            const auto center = properties->center * go->GetTransform()->GetWorldScale();
+            const JPH::Vec3 offset = JPH::Vec3(center.x, center.y, center.z) - shape->GetCenterOfMass();
+            shape = new JPH::OffsetCenterOfMassShape(shape, offset);
+        }
+    }
+    return shape;
+}
 
-    JPH::StaticCompoundShapeSettings compoundSettings;
-    for (size_t i = 0; i < childShapes.size(); ++i) {
-        compoundSettings.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), childShapes[i].second,
-                                  static_cast<uint32_t>(i));
-    }
+static void PublishColliderCenters(const PhysicsActorData &actor)
+{
+    auto &store = PhysicsECSStore::Instance();
+    for (auto *collider : actor.colliders)
+        store.GetCollider(collider->GetECSHandle()).publishedRigidCenter = collider->GetCenterInRigidSpace();
+}
 
-    auto result = compoundSettings.Create();
-    if (result.HasError()) {
-        return nullptr;
+static std::optional<uint32_t> CompoundMemberIndex(const JPH::Shape *shape, uint32_t subShapeIdValue)
+{
+    // Decorators (including explicit COM) preserve the child's subshape bits.
+    // Queries and contacts must resolve the same published compound member.
+    while (shape && shape->GetType() == JPH::EShapeType::Decorated)
+        shape = static_cast<const JPH::DecoratedShape *>(shape)->GetInnerShape();
+    if (!shape || shape->GetType() != JPH::EShapeType::Compound)
+        return std::nullopt;
+    const auto *compound = static_cast<const JPH::CompoundShape *>(shape);
+    JPH::SubShapeID subShapeId;
+    subShapeId.SetValue(subShapeIdValue);
+    if (!compound->IsSubShapeIDValid(subShapeId))
+        return std::nullopt;
+    JPH::SubShapeID remainder;
+    return compound->GetCompoundUserData(compound->GetSubShapeIndexFromID(subShapeId, remainder));
+}
+
+static JPH::Mat44 ScaledAuthoredInertia(const RigidbodyMassProperties &properties, const glm::vec3 &scale)
+{
+    const glm::dmat3 rotation = glm::mat3_cast(glm::dquat(properties.rotation));
+    glm::dmat3 diagonal(0.0);
+    for (int i = 0; i < 3; ++i)
+        diagonal[i][i] = properties.moments[i];
+    const glm::dmat3 inertia = rotation * diagonal * glm::transpose(rotation);
+    const double halfTrace = .5 * (inertia[0][0] + inertia[1][1] + inertia[2][2]);
+    glm::dmat3 secondMoment(0.0);
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+            secondMoment[column][row] =
+                ((column == row ? halfTrace : 0.0) - inertia[column][row]) * double(scale[column]) * double(scale[row]);
+    const double trace = secondMoment[0][0] + secondMoment[1][1] + secondMoment[2][2];
+    JPH::Mat44 result = JPH::Mat44::sIdentity();
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+            result(row, column) = float((column == row ? trace : 0.0) - secondMoment[column][row]);
+    // Constant authored mass: do not multiply by volume and divide it out.
+    // This also retains valid planar inertia at a single zero scale axis.
+    return result;
+}
+
+struct MassConfiguration
+{
+    float mass;
+    JPH::Vec3 inverse;
+    JPH::Quat axes;
+};
+
+static MassConfiguration PrepareMassConfiguration(const JPH::MassProperties &properties)
+{
+    const auto diagonal = properties.mInertia.GetDiagonal3();
+    const float magnitude = std::max({diagonal.GetX(), diagonal.GetY(), diagonal.GetZ()});
+    if (!std::isfinite(magnitude) || magnitude <= 0.0f)
+        throw std::invalid_argument("rigidbody inertia is not finite positive at the current scale");
+    auto normalized = properties;
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+            normalized.mInertia(row, column) = float(double(properties.mInertia(row, column)) / magnitude);
+    JPH::Mat44 axes;
+    JPH::Vec3 moments;
+    if (!normalized.DecomposePrincipalMomentsOfInertia(axes, moments))
+        throw std::invalid_argument("rigidbody inertia cannot be decomposed at the current scale");
+    JPH::Vec3 inverse = JPH::Vec3::sZero();
+    for (int i = 0; i < 3; ++i) {
+        const double moment = double(moments[i]) * magnitude;
+        const float value = float(1.0 / moment);
+        if (moment <= 0.0 || !std::isfinite(value) || value <= 0.0f)
+            throw std::invalid_argument("rigidbody inverse inertia is not representable at the current scale");
+        inverse.SetComponent(i, value);
     }
-    return result.Get();
+    return {properties.mMass, inverse, axes.GetQuaternion()};
+}
+
+static void ApplyMassConfiguration(JPH::MotionProperties &motion, JPH::EAllowedDOFs allowed,
+                                   const MassConfiguration &prepared)
+{
+    JPH::MassProperties configuration;
+    configuration.mMass = prepared.mass;
+    configuration.mInertia = JPH::Mat44::sIdentity();
+    // Jolt's generic setter substitutes a unit sphere for small inertia.
+    // Configure mass/DOFs, then install the validated physical eigensystem
+    // under the same body lock. No synthetic tensor is externally published.
+    motion.SetMassProperties(allowed, configuration);
+    if ((uint32_t(allowed) & 0x38U) != 0)
+        motion.SetInverseInertia(prepared.inverse, prepared.axes);
+}
+
+static MassConfiguration BodyMassConfiguration(const JPH::Shape *shape, float mass,
+                                               const RigidbodyMassProperties *properties, const glm::vec3 &scale)
+{
+    JPH::MassProperties value;
+    if (properties) {
+        value.mMass = mass;
+        value.mInertia = ScaledAuthoredInertia(*properties, scale);
+    } else {
+        value = shape->GetMassProperties();
+        value.ScaleToMass(mass);
+    }
+    return PrepareMassConfiguration(value);
 }
 
 } // namespace
@@ -570,6 +761,13 @@ PhysicsWorld::~PhysicsWorld()
 // ============================================================================
 // Init / Shutdown
 // ============================================================================
+
+void PhysicsWorld::RequireOwnerThread() const
+{
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThreadId)
+        throw std::logic_error("joint batch IO requires the active physics owner thread");
+}
 
 void PhysicsWorld::Initialize()
 {
@@ -686,6 +884,9 @@ void PhysicsWorld::Shutdown()
     if (!m_initialized)
         return;
 
+    while (!m_ragdolls.empty())
+        DestroyRagdollAssembly(m_ragdolls.begin()->first);
+
     // Constraints must leave the solver before either referenced body dies.
     while (!m_constraints.empty())
         DestroyConstraint(m_constraints.begin()->first);
@@ -699,11 +900,11 @@ void PhysicsWorld::Shutdown()
     // gone (SceneManager::Shutdown runs first in Infernux::Cleanup), so a
     // non-empty map here indicates a teardown-ordering bug — sweep it anyway
     // so Jolt's PhysicsSystem is destroyed with zero live bodies.
-    if (m_physicsSystem && !m_bodyToCollider.empty()) {
-        INXLOG_WARN("PhysicsWorld: ", m_bodyToCollider.size(),
+    if (m_physicsSystem && !m_bodies.empty()) {
+        INXLOG_WARN("PhysicsWorld: ", m_bodies.size(),
                     " bodies still alive at shutdown — destroying them (check teardown order).");
         JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-        for (const auto &[id, collider] : m_bodyToCollider) {
+        for (const auto &[id, collider] : m_bodies) {
             (void)collider;
             JPH::BodyID bodyId(id);
             if (bi.IsAdded(bodyId))
@@ -711,15 +912,15 @@ void PhysicsWorld::Shutdown()
             bi.DestroyBody(bodyId);
         }
     }
-    m_bodyToCollider.clear();
-    m_bodyColliders.clear();
-    m_bodyQueryIdentities.clear();
+    m_bodies.clear();
+    m_retiredShapeBodyCount = 0;
     m_poseReadbackBodyIds.clear();
     m_staticContinuousBodyIds.clear();
     m_continuousBodyIds.clear();
     m_kinematicMoveStates.clear();
     m_nextConstraintId = 1;
     m_lastDynamicCCDSplitCount = 0;
+    m_previousSolverStepDuration = 0.0f;
     m_ownerThreadId = {};
 
     // Step 2: tear down subsystems in dependency order (newest first).
@@ -757,6 +958,7 @@ float PhysicsWorld::FindEarliestDynamicCCDFraction(float deltaTime) const
     struct BodySnapshot
     {
         JPH::BodyID id;
+        const JPH::Body *body;
         JPH::ObjectLayer layer;
         JPH::CollisionGroup collisionGroup;
         JPH::RefConst<JPH::Shape> shape;
@@ -783,6 +985,8 @@ float PhysicsWorld::FindEarliestDynamicCCDFraction(float deltaTime) const
 
         BodySnapshot snapshot;
         snapshot.id = id;
+        // The owner holds the query write epoch across this complete scan.
+        snapshot.body = &body;
         snapshot.layer = body.GetObjectLayer();
         snapshot.collisionGroup = body.GetCollisionGroup();
         snapshot.shape = body.GetShape();
@@ -827,7 +1031,7 @@ float PhysicsWorld::FindEarliestDynamicCCDFraction(float deltaTime) const
                 continue;
 
             JPH::RShapeCast cast(source.shape, JPH::Vec3::sOne(), source.centerOfMassTransform, relativeMotion);
-            JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+            FilteredCCDCollector collector(*source.body, *target.body);
             JPH::ShapeFilter shapeFilter;
             shapeFilter.mBodyID2 = target.id;
             target.transformedShape.CastShape(cast, castSettings, source.centerOfMassTransform.GetTranslation(),
@@ -875,7 +1079,7 @@ float PhysicsWorld::FindEarliestStaticCCDFraction(float deltaTime) const
         const JPH::RMat44 sourceTransform = source.GetCenterOfMassTransform();
         const JPH::RShapeCast cast(source.GetShape(), JPH::Vec3::sOne(), sourceTransform, motion);
 
-        for (const auto &[targetRawId, collider] : m_bodyToCollider) {
+        for (const auto &[targetRawId, collider] : m_bodies) {
             (void)collider;
             if (targetRawId == sourceRawId)
                 continue;
@@ -890,7 +1094,7 @@ float PhysicsWorld::FindEarliestStaticCCDFraction(float deltaTime) const
                 !source.GetCollisionGroup().CanCollide(target.GetCollisionGroup()))
                 continue;
 
-            JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+            FilteredCCDCollector collector(source, target);
             JPH::ShapeFilter shapeFilter;
             shapeFilter.mBodyID2 = targetId;
             target.GetTransformedShape().CastShape(cast, castSettings, sourceTransform.GetTranslation(), collector,
@@ -940,8 +1144,8 @@ void PhysicsWorld::SettleKinematicMoves()
         constexpr int kRestoreAfterIdleSteps = 3;
         if (state.idleSteps >= kRestoreAfterIdleSteps) {
             bool restore = true;
-            if (auto found = m_bodyToCollider.find(it->first); found != m_bodyToCollider.end() && found->second) {
-                const Rigidbody *rb = found->second->GetCachedRigidbody();
+            if (auto found = m_bodies.find(it->first); found != m_bodies.end()) {
+                const Rigidbody *rb = found->second.rigidbody;
                 restore = (rb == nullptr || !rb->IsEnabled());
             }
             if (restore)
@@ -970,14 +1174,12 @@ void PhysicsWorld::Step(float deltaTime)
     if (m_contactListener) {
         uint8_t eventInterestMask = 0;
         std::unordered_set<GameObject *> visitedObjects;
-        visitedObjects.reserve(m_bodyToCollider.size());
-        for (const auto &[bodyId, collider] : m_bodyToCollider) {
-            (void)bodyId;
-            GameObject *gameObject = collider ? collider->GetGameObject() : nullptr;
+        visitedObjects.reserve(m_bodies.size());
+        const auto inspectReceiver = [&](GameObject *gameObject) {
             if (!gameObject || !gameObject->IsActiveInHierarchy() || !visitedObjects.insert(gameObject).second)
-                continue;
+                return;
             for (const auto &component : gameObject->GetAllComponents()) {
-                if (!component || !component->IsEnabled() || !component->WantsPhysicsCallbacks())
+                if (!component || !component->WantsPhysicsCallbacks())
                     continue;
                 if (component->WantsCollisionEnterCallbacks())
                     eventInterestMask |= CollisionEnterInterest;
@@ -992,6 +1194,12 @@ void PhysicsWorld::Step(float deltaTime)
                 if (component->WantsTriggerExitCallbacks())
                     eventInterestMask |= TriggerExitInterest;
             }
+        };
+        for (const auto &[bodyId, record] : m_bodies) {
+            (void)bodyId;
+            for (auto *collider : record.members)
+                if (collider)
+                    VisitPhysicsReceiverObjects(*collider, true, inspectReceiver);
         }
         if (m_contactEventStreamEnabled) {
             eventInterestMask |= CollisionEnterInterest | CollisionStayInterest | CollisionExitInterest;
@@ -1032,22 +1240,40 @@ void PhysicsWorld::Step(float deltaTime)
             m_contactImpulses.push_back(impulse);
         }
     };
+    const auto updateSolver = [&](float duration, int collisionSteps) {
+        const float stepDuration = duration / collisionSteps;
+        const JPH::PhysicsSettings settings = m_physicsSystem->GetPhysicsSettings();
+        // Jolt scales cached impulses by the ratio of the new and old time
+        // steps. After a short CCD slice this can magnify an impact impulse.
+        const bool resetWarmStart = settings.mConstraintWarmStart && m_previousSolverStepDuration > 0.0f &&
+                                    stepDuration > 2.0f * m_previousSolverStepDuration;
+        if (resetWarmStart) {
+            auto coldSettings = settings;
+            coldSettings.mConstraintWarmStart = false;
+            m_physicsSystem->SetPhysicsSettings(coldSettings);
+        }
+        const auto error = m_physicsSystem->Update(duration, collisionSteps, m_tempAllocator.get(), m_jobSystem.get());
+        if (resetWarmStart)
+            m_physicsSystem->SetPhysicsSettings(settings);
+        m_previousSolverStepDuration = stepDuration;
+        if (error != JPH::EPhysicsUpdateError::None)
+            throw std::runtime_error("physics update failed (error flags " +
+                                     std::to_string(static_cast<uint32_t>(error)) + ")");
+        appendContactImpulses();
+    };
     try {
         while (remainingTime > kMinStepDuration) {
             const float hitFraction =
                 std::min(FindEarliestStaticCCDFraction(remainingTime), FindEarliestDynamicCCDFraction(remainingTime));
             if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
-                m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps, m_tempAllocator.get(),
-                                        m_jobSystem.get());
-                appendContactImpulses();
+                updateSolver(remainingTime, EngineConfig::Get().physicsCollisionSteps);
                 remainingTime = 0.0f;
                 break;
             }
 
             const float segmentFraction = std::clamp(hitFraction + kTOIPadding, kTOIPadding, 0.999f);
             const float segmentTime = remainingTime * segmentFraction;
-            m_physicsSystem->Update(segmentTime, 1, m_tempAllocator.get(), m_jobSystem.get());
-            appendContactImpulses();
+            updateSolver(segmentTime, 1);
             remainingTime -= segmentTime;
             ++dynamicCCDSplits;
         }
@@ -1125,6 +1351,7 @@ const std::vector<ContactEvent> &PhysicsWorld::GetContactEvents() const
 
 size_t PhysicsWorld::DispatchContactEvents()
 {
+    const auto admittedState = SceneManager::Instance().GetSimulationState();
     if (!m_contactListener)
         return 0;
 
@@ -1132,6 +1359,16 @@ size_t PhysicsWorld::DispatchContactEvents()
     if (events.empty())
         return 0;
     const size_t eventCount = events.size();
+    struct DispatchScope
+    {
+        bool &active;
+        bool previous;
+        ~DispatchScope()
+        {
+            active = previous;
+        }
+    } dispatchScope{m_dispatchingContacts, m_dispatchingContacts};
+    m_dispatchingContacts = true;
 
     // Resolve the complete batch before any user code can remove a collider,
     // rebuild a compound shape or clear the listener's event storage. Subshape
@@ -1141,14 +1378,21 @@ size_t PhysicsWorld::DispatchContactEvents()
         ContactEvent event;
         ObjectHandle colliderA;
         ObjectHandle colliderB;
+        PhysicsTargetReference bodyA;
+        PhysicsTargetReference bodyB;
     };
     std::vector<PendingContact> pending;
     pending.reserve(eventCount);
     for (const auto &event : events) {
         Collider *a = ResolveColliderForSubShape(event.bodyIdA, event.subShapeIdA);
         Collider *b = ResolveColliderForSubShape(event.bodyIdB, event.subShapeIdB);
-        if (a && b)
-            pending.push_back({event, a->GetHandle(), b->GetHandle()});
+        if (a && b) {
+            const auto captureBody = [](Collider *collider) {
+                auto *body = collider->GetAttachedRigidbody();
+                return PhysicsTargetReference(body);
+            };
+            pending.push_back({event, a->GetHandle(), b->GetHandle(), captureBody(a), captureBody(b)});
+        }
     }
 
     std::vector<ObjectHandle> receiversA;
@@ -1160,8 +1404,7 @@ size_t PhysicsWorld::DispatchContactEvents()
         if (!handle.IsValid())
             return nullptr;
         Component *comp = Component::FindByComponentId(handle.id);
-        if (!comp || comp->GetHandle() != handle || !comp->IsEnabled() || comp->IsDestroyed() ||
-            comp->IsBeingDestroyed())
+        if (!comp || comp->GetHandle() != handle || comp->IsDestroyed() || comp->IsBeingDestroyed())
             return nullptr;
         GameObject *owner = comp->GetGameObject();
         if (!owner || owner->IsDestroying() || !owner->IsActiveInHierarchy())
@@ -1172,10 +1415,12 @@ size_t PhysicsWorld::DispatchContactEvents()
         // Only handles captured from Collider instances enter this path. A
         // matching generation cannot resolve to a replacement component type.
         auto *collider = static_cast<Collider *>(resolveActiveComponent(handle));
-        return collider && collider->GetBodyId() == bodyId ? collider : nullptr;
+        return collider && collider->IsEnabled() && collider->GetBodyId() == bodyId ? collider : nullptr;
     };
 
     auto wantsEvent = [](const Component &comp, ContactEventType type) {
+        if (!comp.IsEnabled())
+            return false;
         switch (type) {
         case ContactEventType::CollisionEnter:
             return comp.WantsCollisionEnterCallbacks();
@@ -1194,6 +1439,8 @@ size_t PhysicsWorld::DispatchContactEvents()
     };
 
     for (const auto &contact : pending) {
+        if (SceneManager::Instance().GetSimulationState() != admittedState)
+            break;
         const auto &evt = contact.event;
         Collider *colA = resolveCollider(contact.colliderA, evt.bodyIdA);
         Collider *colB = resolveCollider(contact.colliderB, evt.bodyIdB);
@@ -1237,15 +1484,15 @@ size_t PhysicsWorld::DispatchContactEvents()
         receiversA.clear();
         receiversB.clear();
 
-        for (const auto &comp : goA->GetAllComponents()) {
-            if (comp && comp->IsEnabled() && wantsEvent(*comp, type))
-                receiversA.push_back(comp->GetHandle());
-        }
-
-        for (const auto &comp : goB->GetAllComponents()) {
-            if (comp && comp->IsEnabled() && wantsEvent(*comp, type))
-                receiversB.push_back(comp->GetHandle());
-        }
+        const auto collectReceivers = [&](Collider &collider, std::vector<ObjectHandle> &receivers) {
+            VisitPhysicsReceiverObjects(collider, isTrigger, [&](GameObject *object) {
+                for (const auto &component : object->GetAllComponents())
+                    if (wantsEvent(*component, type))
+                        receivers.push_back(component->GetHandle());
+            });
+        };
+        collectReceivers(*colA, receiversA);
+        collectReceivers(*colB, receiversB);
 
         if (receiversA.empty() && receiversB.empty())
             continue;
@@ -1254,17 +1501,27 @@ size_t PhysicsWorld::DispatchContactEvents()
         // components do not inherit this contact's already queued delivery.
         auto dispatchToReceivers = [&](const std::vector<ObjectHandle> &receivers, bool sideA) {
             for (const auto &handle : receivers) {
+                if (SceneManager::Instance().GetSimulationState() != admittedState)
+                    return;
                 Collider *a = resolveCollider(contact.colliderA, evt.bodyIdA);
                 Collider *b = resolveCollider(contact.colliderB, evt.bodyIdB);
                 if (!a || !b)
                     break;
                 Component *comp = resolveActiveComponent(handle);
-                if (!comp || comp->GetGameObject() != (sideA ? a : b)->GetGameObject() || !wantsEvent(*comp, type))
+                if (!comp || !wantsEvent(*comp, type))
+                    continue;
+                bool stillReceives = false;
+                VisitPhysicsReceiverObjects(*(sideA ? a : b), isTrigger, [&](GameObject *object) {
+                    stillReceives |= comp->GetGameObject() == object;
+                });
+                if (!stillReceives)
                     continue;
 
                 CollisionInfo info;
                 info.collider = sideA ? b : a;
-                info.gameObject = info.collider->GetGameObject();
+                info.bodyTarget = sideA ? contact.bodyB : contact.bodyA;
+                auto *otherBody = dynamic_cast<Rigidbody *>(info.bodyTarget.GetComponent());
+                info.gameObject = otherBody ? otherBody->GetGameObject() : info.collider->GetGameObject();
                 info.target = PhysicsTargetReference(info.collider);
                 info.contactPoint = evt.contactPoint;
                 // Jolt's normal points A -> B; the public normal points from
@@ -1304,28 +1561,27 @@ size_t PhysicsWorld::DispatchContactEvents()
 // Body management
 // ============================================================================
 
-uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrigger)
+uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
-    if (!m_initialized || !collider)
+    if (!m_initialized)
         return 0xFFFFFFFF;
-
-    auto *go = collider->GetGameObject();
-    if (!go)
-        return 0xFFFFFFFF;
+    auto *go = actor.owner;
+    const bool isStatic = !actor.rigidbody || !actor.rigidbody->IsEnabled();
 
     size_t shapeCount = 0;
     std::vector<Collider *> members;
-    auto shape = BuildShapeForColliderSet(go, nullptr, &shapeCount, &members);
+    auto shape = BuildShapeForColliderSet(actor, nullptr, &shapeCount, &members);
     if (!shape)
         return 0xFFFFFFFF;
+    const auto *collider = members.empty() ? nullptr : members.front();
 
     Transform *tf = go->GetTransform();
     glm::quat rot = tf->GetWorldRotation();
     glm::vec3 pos = tf->GetPosition();
 
     JPH::EMotionType motionType = isStatic ? JPH::EMotionType::Static : JPH::EMotionType::Dynamic;
-    JPH::ObjectLayer objLayer = PhysicsObjectLayers::Encode(go->GetLayer(), !isStatic);
+    JPH::ObjectLayer objLayer = BodyLayerForMembers(members, *go, !isStatic);
 
     JPH::BodyCreationSettings settings(shape, JPH::RVec3(pos.x, pos.y, pos.z), JPH::Quat(rot.x, rot.y, rot.z, rot.w),
                                        motionType, objLayer);
@@ -1335,14 +1591,15 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
     // Jolt does not create MotionProperties for static bodies and
     // SetMotionType() will crash.
     settings.mAllowDynamicOrKinematic = true;
-    settings.mIsSensor = isTrigger;
-    settings.mUserData = reinterpret_cast<uint64_t>(collider);
+    settings.mApplyGyroscopicForce = true;
+    settings.mIsSensor = !members.empty() && std::all_of(members.begin(), members.end(),
+                                                         [](const Collider *member) { return member->IsTrigger(); });
     settings.mUseManifoldReduction = shapeCount <= 1;
 
     // Body-level fallback. Contact callbacks replace these values using the
     // actual compound subshapes and their material combine modes.
-    settings.mFriction = collider->GetFriction();
-    settings.mRestitution = collider->GetBounciness();
+    settings.mFriction = collider ? collider->GetFriction() : 0.0f;
+    settings.mRestitution = collider ? collider->GetBounciness() : 0.0f;
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     JPH::Body *body = bodyInterface.CreateBody(settings);
@@ -1356,40 +1613,37 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
     // Collider::OnEnable() queues broadphase publication separately.
 
     uint32_t id = bodyId.GetIndexAndSequenceNumber();
-    m_bodyToCollider[id] = collider;
-    m_bodyColliders[id] = std::move(members);
+    SetBodyActorOwner(id, actor);
+    m_bodies.at(id).members = std::move(members);
+    auto &publishedRecord = m_bodies.at(id);
+    m_physicsSystem->GetBodyInterface().SetObjectLayer(
+        JPH::BodyID(id), BodyLayerForMembers(publishedRecord.members, *publishedRecord.gameObject,
+                                             m_physicsSystem->GetBodyInterface().GetMotionType(JPH::BodyID(id)) !=
+                                                 JPH::EMotionType::Static));
     PublishBodyQueryIdentitiesUnlocked(id);
+    PublishBodyShapeGeometryUnlocked(id);
+    PublishColliderCenters(actor);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
     return id;
 }
 
-void PhysicsWorld::DestroyBody(Collider *collider)
+void PhysicsWorld::DestroyBody(uint32_t id)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
-    if (!m_initialized || !collider)
+    if (!m_initialized || id == 0xFFFFFFFF)
         return;
+    InvalidateRagdollsForBody(id);
+    DestroyConstraintsForBody(id);
 
-    uint32_t id = collider->GetBodyId();
-    if (id == 0xFFFFFFFF)
-        return;
-
-    std::vector<uint64_t> attachedConstraints;
-    for (const auto &[constraintId, record] : m_constraints) {
-        if (record.bodyIdA == id || record.bodyIdB == id)
-            attachedConstraints.push_back(constraintId);
-    }
-    for (uint64_t constraintId : attachedConstraints)
-        DestroyConstraint(constraintId);
-
-    // Contract: caller (Collider::UnregisterBody) must have already removed
+    // Contract: caller (PhysicsECSStore::RetireActor) must have already removed
     // this body from the broadphase. See PhysicsWorld.h::DestroyBody for the
     // full ordering invariant.
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.DestroyBody(JPH::BodyID(id));
 
-    m_bodyToCollider.erase(id);
-    m_bodyColliders.erase(id);
-    m_bodyQueryIdentities.erase(id);
+    if (m_bodies.at(id).hasRetiredShapeMembers)
+        --m_retiredShapeBodyCount;
+    m_bodies.erase(id);
     m_staticContinuousBodyIds.erase(id);
     m_continuousBodyIds.erase(id);
     m_kinematicMoveStates.erase(id);
@@ -1398,13 +1652,15 @@ void PhysicsWorld::DestroyBody(Collider *collider)
         m_contactListener->RemoveIgnoredPairsForBody(id);
 }
 
-void PhysicsWorld::SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot)
+void PhysicsWorld::SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot,
+                                   bool cancelKinematicMove)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
-    SetBodyPositionUnlocked(bodyId, pos, rot);
+    SetBodyPositionUnlocked(bodyId, pos, rot, cancelKinematicMove);
 }
 
-void PhysicsWorld::SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot)
+void PhysicsWorld::SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot,
+                                           bool cancelKinematicMove)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
@@ -1412,6 +1668,8 @@ void PhysicsWorld::SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos
     // Transform sync runs serially on the main thread before PhysicsSystem::Update.
     // Avoid taking Jolt's striped body lock once per moved static/kinematic body.
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterfaceNoLock();
+    if (cancelKinematicMove && m_kinematicMoveStates.erase(bodyId))
+        bodyInterface.SetLinearAndAngularVelocity(JPH::BodyID(bodyId), JPH::Vec3::sZero(), JPH::Vec3::sZero());
     bodyInterface.SetPositionAndRotation(JPH::BodyID(bodyId), JPH::RVec3(pos.x, pos.y, pos.z),
                                          JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::EActivation::DontActivate);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
@@ -1452,22 +1710,113 @@ void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
+void PhysicsWorld::RequireResetPhase() const
+{
+    RequireOwnerThread();
+    const auto &manager = SceneManager::Instance();
+    if (!m_initialized || !manager.IsPlaying() || m_dispatchingContacts ||
+        manager.GetFixedStepIndex() != manager.GetCompletedFixedStepIndex())
+        throw std::runtime_error("body reset requires Play between completed steps, outside contact dispatch");
+}
+
+void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionState> &states)
+{
+    RequireResetPhase();
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
+    auto &interface = m_physicsSystem->GetBodyInterfaceNoLock();
+    std::unordered_set<uint32_t> ids;
+    JPH::BodyIDVector contactResetIds;
+    contactResetIds.reserve(states.size());
+    for (const auto &state : states) {
+        JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterfaceNoLock(), JPH::BodyID(state.bodyId));
+        if (!lock.Succeeded() || lock.GetBody().IsStatic() || !lock.GetBody().IsInBroadPhase())
+            throw std::invalid_argument("reset requires resident dynamic or kinematic bodies");
+        ids.insert(state.bodyId);
+        contactResetIds.emplace_back(state.bodyId);
+    }
+    for (const auto &state : states) {
+        const JPH::BodyID id(state.bodyId);
+        m_kinematicMoveStates.erase(state.bodyId);
+        interface.SetPositionAndRotation(
+            id, JPH::RVec3(state.position.x, state.position.y, state.position.z),
+            JPH::Quat(state.rotation.x, state.rotation.y, state.rotation.z, state.rotation.w),
+            JPH::EActivation::DontActivate);
+        {
+            JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterfaceNoLock(), id);
+            lock.GetBody().ResetMotion();
+        }
+        interface.SetLinearAndAngularVelocity(
+            id, JPH::Vec3(state.linearVelocity.x, state.linearVelocity.y, state.linearVelocity.z),
+            JPH::Vec3(state.angularVelocity.x, state.angularVelocity.y, state.angularVelocity.z));
+        interface.ActivateBody(id);
+    }
+    for (auto &[id, record] : m_constraints) {
+        if (ids.count(record.bodyIdA) || ids.count(record.bodyIdB)) {
+            record.constraint->ResetWarmStart();
+            if (record.constraint->GetSubType() == JPH::EConstraintSubType::Hinge)
+                static_cast<JPH::HingeConstraint *>(record.constraint)->ResetRotorState();
+            ActivateConstraintBodies(record);
+        }
+    }
+    m_physicsSystem->ForgetBodyContacts(contactResetIds.data(), static_cast<int>(contactResetIds.size()));
+    if (m_contactListener)
+        m_contactListener->ResetBodies(ids);
+    m_contactImpulses.erase(std::remove_if(m_contactImpulses.begin(), m_contactImpulses.end(),
+                                           [&](const ContactImpulse &event) {
+                                               return ids.count(event.bodyIdA) || ids.count(event.bodyIdB);
+                                           }),
+                            m_contactImpulses.end());
+    if (!states.empty())
+        m_queryGeneration.fetch_add(1, std::memory_order_release);
+}
+
 void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
 {
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = store.GetCollider(collider->GetECSHandle()).actorHandle;
+    if (store.IsValid(handle))
+        UpdateBodyShape(store.GetActor(handle), exclude);
+}
+
+void PhysicsWorld::UpdateBodyShape(PhysicsActorData &actor, const Collider *exclude)
+{
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
-    if (!m_initialized || !collider)
+    const uint32_t id = actor.bodyId;
+    if (!m_initialized || id == 0xFFFFFFFF)
         return;
-
-    uint32_t id = collider->GetBodyId();
-    if (id == 0xFFFFFFFF)
-        return;
-
+    // Component lifetime ends immediately, independently of an asynchronous
+    // replacement mesh cook. Keep old subshape indices, retire their identities.
+    auto &record = m_bodies.at(id);
+    SetBodyActorOwner(id, actor);
+    for (auto &member : record.members) {
+        if (member &&
+            (member == exclude ||
+             std::find(actor.colliders.begin(), actor.colliders.end(), member) == actor.colliders.end() ||
+             member->IsBeingDestroyed() || !member->IsEnabled() || !member->GetGameObject()->IsActiveInHierarchy()))
+            member = nullptr;
+    }
+    const bool hasRetiredMembers = std::any_of(record.members.begin(), record.members.end(),
+                                               [](const Collider *member) { return member == nullptr; });
+    if (hasRetiredMembers && !record.hasRetiredShapeMembers) {
+        record.hasRetiredShapeMembers = true;
+        ++m_retiredShapeBodyCount;
+        m_physicsSystem->GetBodyInterface().InvalidateContactCache(JPH::BodyID(id));
+    }
+    PublishBodyQueryIdentitiesUnlocked(id);
+    m_queryGeneration.fetch_add(1, std::memory_order_release);
     size_t shapeCount = 0;
     std::vector<Collider *> members;
-    auto newShape = BuildShapeForColliderSet(collider->GetGameObject(), exclude, &shapeCount, &members);
+    auto newShape = BuildShapeForColliderSet(actor, exclude, &shapeCount, &members);
     if (!newShape)
         return;
 
+    auto *rigidbody = actor.rigidbody;
+    std::optional<MassConfiguration> massConfiguration;
+    if (rigidbody && rigidbody->IsEnabled() && !rigidbody->IsKinematic()) {
+        const auto &properties = rigidbody->GetAuthoredMassProperties();
+        massConfiguration = BodyMassConfiguration(newShape, rigidbody->GetMass(), properties ? &*properties : nullptr,
+                                                  actor.owner->GetTransform()->GetWorldScale());
+    }
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.SetUseManifoldReduction(JPH::BodyID(id), shapeCount <= 1);
     // The old bounds contain sleepers whose support is about to disappear.
@@ -1482,6 +1831,9 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     // without first replacing it with the shape's default density mass.
     const JPH::Vec3 previousCenterOfMass = bodyInterface.GetShape(JPH::BodyID(id))->GetCenterOfMass();
     bodyInterface.SetShape(JPH::BodyID(id), newShape, false, JPH::EActivation::Activate);
+    // All shape-publication paths share this actor revision, including sibling
+    // additions/removals. Publish immediately after the real SetShape commit.
+    ++actor.shapeRevision;
     const JPH::Vec3 deltaCenterOfMass = newShape->GetCenterOfMass() - previousCenterOfMass;
     for (auto &[constraintId, record] : m_constraints) {
         if (record.bodyIdA == id || record.bodyIdB == id) {
@@ -1489,23 +1841,37 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
             // SetShape preserves the ID but does not notify constraints.
             if (deltaCenterOfMass != JPH::Vec3::sZero())
                 record.constraint->NotifyShapeChanged(JPH::BodyID(id), deltaCenterOfMass);
-            UpdateConstraintScale(record, id, collider->GetGameObject()->GetTransform()->GetWorldScale());
+            UpdateConstraintScale(record, id, actor.owner->GetTransform()->GetWorldScale());
         }
     }
-    auto *rigidbody = collider->GetCachedRigidbody();
-    if (rigidbody && rigidbody->IsEnabled())
-        SetBodyAllowedDOFs(id, 0x3F & ~(rigidbody->GetConstraints() >> 1), rigidbody->GetMass());
+    if (massConfiguration) {
+        JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(id));
+        if (lock.Succeeded() && lock.GetBody().IsDynamic())
+            ApplyMassConfiguration(*lock.GetBody().GetMotionProperties(),
+                                   static_cast<JPH::EAllowedDOFs>(0x3F & ~(rigidbody->GetConstraints() >> 1)),
+                                   *massConfiguration);
+    }
     // Publish geometry, aggregate sensor state and its exact member identities
     // under the same query snapshot lock. A single remaining shape has no
     // compound subshape ID, so its primary identity must follow that member.
-    const bool isSensor =
-        std::all_of(members.begin(), members.end(), [](const Collider *member) { return member->IsTrigger(); });
+    const bool isSensor = !members.empty() && std::all_of(members.begin(), members.end(),
+                                                          [](const Collider *member) { return member->IsTrigger(); });
     const bool sensorChanged = bodyInterface.IsSensor(JPH::BodyID(id)) != isSensor;
     bodyInterface.SetIsSensor(JPH::BodyID(id), isSensor);
-    m_bodyToCollider[id] = members.front();
-    bodyInterface.SetUserData(JPH::BodyID(id), reinterpret_cast<uint64_t>(members.front()));
-    m_bodyColliders[id] = std::move(members);
+    SetBodyActorOwner(id, actor);
+    if (record.hasRetiredShapeMembers) {
+        record.hasRetiredShapeMembers = false;
+        --m_retiredShapeBodyCount;
+    }
+    m_bodies.at(id).members = std::move(members);
+    auto &publishedRecord = m_bodies.at(id);
+    m_physicsSystem->GetBodyInterface().SetObjectLayer(
+        JPH::BodyID(id), BodyLayerForMembers(publishedRecord.members, *publishedRecord.gameObject,
+                                             m_physicsSystem->GetBodyInterface().GetMotionType(JPH::BodyID(id)) !=
+                                                 JPH::EMotionType::Static));
     PublishBodyQueryIdentitiesUnlocked(id);
+    PublishBodyShapeGeometryUnlocked(id);
+    PublishColliderCenters(actor);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
     // Expanded or newly solid geometry can also reach sleeping bodies outside
     // the old bounds. These queries run only on authored shape changes.
@@ -1515,12 +1881,16 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     }
 }
 
-void PhysicsWorld::SetBodyIsSensor(uint32_t bodyId, bool isSensor)
+void PhysicsWorld::RefreshBodyTriggerState(uint32_t bodyId)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
+    const auto &members = m_bodies.at(bodyId).members;
+    const bool isSensor = !members.empty() && std::all_of(members.begin(), members.end(), [](const Collider *member) {
+        return !member || member->IsTrigger();
+    });
     JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
     if (lock.Succeeded()) {
         lock.GetBody().SetIsSensor(isSensor);
@@ -1535,6 +1905,10 @@ void PhysicsWorld::InvalidateContactPairsForBody(uint32_t bodyId)
         return;
     if (m_contactListener)
         m_contactListener->InvalidatePairsForBody(bodyId);
+    auto &bodies = m_physicsSystem->GetBodyInterface();
+    const JPH::BodyID id(bodyId);
+    m_physicsSystem->ForgetBodyContacts(&id, 1);
+    bodies.ActivateBody(JPH::BodyID(bodyId));
 }
 
 void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
@@ -1580,8 +1954,7 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
     // Submit them only after Jolt has accepted the unique final body set,
     // for initial creation and reactivation through the same publication path.
     for (const uint32_t id : bodies) {
-        auto *collider = FindColliderByBodyId(id);
-        auto *rigidbody = collider ? collider->GetCachedRigidbody() : nullptr;
+        auto *rigidbody = FindRigidbodyByBodyId(id);
         if (rigidbody && rigidbody->IsEnabled())
             rigidbody->FlushPendingForceCommands();
     }
@@ -1592,15 +1965,24 @@ bool PhysicsWorld::IsBodyInBroadphase(uint32_t bodyId) const
     return m_initialized && bodyId != 0xFFFFFFFF && m_physicsSystem->GetBodyInterface().IsAdded(JPH::BodyID(bodyId));
 }
 
-void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
+void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId, bool preserveVelocity)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
+    InvalidateRagdollsForBody(bodyId);
+
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     WakeBodiesTouchingStatic(bodyId);
+    JPH::Vec3 linear = JPH::Vec3::sZero(), angular = JPH::Vec3::sZero();
+    if (preserveVelocity)
+        bodyInterface.GetLinearAndAngularVelocity(JPH::BodyID(bodyId), linear, angular);
     bodyInterface.RemoveBody(JPH::BodyID(bodyId));
+    // Jolt deactivation clears velocity. A retained scene suspends residency,
+    // not motion state: retain the values on the same allocated body.
+    if (preserveVelocity)
+        bodyInterface.SetLinearAndAngularVelocity(JPH::BodyID(bodyId), linear, angular);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
@@ -1632,12 +2014,13 @@ void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
         break;
     }
 
-    if (auto it = m_bodyToCollider.find(bodyId);
-        it != m_bodyToCollider.end() && it->second && it->second->GetGameObject()) {
-        layer = PhysicsObjectLayers::Encode(it->second->GetGameObject()->GetLayer(), motionType != 0);
+    if (auto it = m_bodies.find(bodyId); it != m_bodies.end() && it->second.gameObject) {
+        layer = BodyLayerForMembers(it->second.members, *it->second.gameObject, motionType != 0);
     }
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    if (bi.GetMotionType(JPH::BodyID(bodyId)) == mt)
+        return;
     bi.SetMotionType(JPH::BodyID(bodyId), mt, JPH::EActivation::Activate);
     bi.SetObjectLayer(JPH::BodyID(bodyId), layer);
     if (mt != JPH::EMotionType::Dynamic) {
@@ -1650,7 +2033,7 @@ void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
-void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
+void PhysicsWorld::RefreshBodyLayers(uint32_t bodyId)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodyId == 0xFFFFFFFF)
@@ -1659,7 +2042,11 @@ void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     const JPH::EMotionType motionType = bi.GetMotionType(JPH::BodyID(bodyId));
     const bool moving = motionType != JPH::EMotionType::Static;
-    bi.SetObjectLayer(JPH::BodyID(bodyId), PhysicsObjectLayers::Encode(gameLayer, moving));
+    const auto &record = m_bodies.at(bodyId);
+    bi.SetObjectLayer(JPH::BodyID(bodyId), BodyLayerForMembers(record.members, *record.gameObject, moving));
+    bi.InvalidateContactCache(JPH::BodyID(bodyId));
+    PublishBodyQueryIdentitiesUnlocked(bodyId);
+    WakeBodiesTouchingStatic(bodyId);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
 
@@ -1684,13 +2071,21 @@ void PhysicsWorld::SetBodyGravityFactor(uint32_t bodyId, float factor)
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
-    JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
-    if (lock.Succeeded()) {
-        JPH::Body &body = lock.GetBody();
-        if (!body.IsStatic()) {
-            body.GetMotionProperties()->SetGravityFactor(factor);
+    bool activate = false;
+    {
+        JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
+        if (lock.Succeeded()) {
+            JPH::Body &body = lock.GetBody();
+            if (!body.IsStatic()) {
+                auto *motion = body.GetMotionProperties();
+                activate = body.IsDynamic() && motion->GetGravityFactor() != factor;
+                motion->SetGravityFactor(factor);
+            }
         }
     }
+    auto &bodies = m_physicsSystem->GetBodyInterface();
+    if (activate && bodies.IsAdded(JPH::BodyID(bodyId)))
+        bodies.ActivateBody(JPH::BodyID(bodyId));
 }
 
 void PhysicsWorld::SetBodyFriction(uint32_t bodyId, float friction)
@@ -1767,13 +2162,28 @@ void PhysicsWorld::AddBodyForce(uint32_t bodyId, const glm::vec3 &force)
     bi.AddForce(JPH::BodyID(bodyId), JPH::Vec3(force.x, force.y, force.z));
 }
 
+namespace
+{
+template <typename Apply> void ApplyBodyImpulse(JPH::PhysicsSystem &system, JPH::BodyID id, Apply apply)
+{
+    JPH::BodyLockWrite lock(system.GetBodyLockInterface(), id);
+    if (!lock.Succeeded() || !lock.GetBody().IsDynamic())
+        return;
+
+    apply(lock.GetBody());
+    // An already active body can be one step away from sleeping. Refresh
+    // its sleep timer along with the impulse, under the same body lock.
+    system.GetBodyInterfaceNoLock().ActivateBody(id);
+}
+} // namespace
+
 void PhysicsWorld::AddBodyImpulse(uint32_t bodyId, const glm::vec3 &impulse)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-    bi.AddImpulse(JPH::BodyID(bodyId), JPH::Vec3(impulse.x, impulse.y, impulse.z));
+    ApplyBodyImpulse(*m_physicsSystem, JPH::BodyID(bodyId),
+                     [&](JPH::Body &body) { body.AddImpulse(JPH::Vec3(impulse.x, impulse.y, impulse.z)); });
 }
 
 void PhysicsWorld::AddBodyTorque(uint32_t bodyId, const glm::vec3 &torque)
@@ -1790,8 +2200,8 @@ void PhysicsWorld::AddBodyAngularImpulse(uint32_t bodyId, const glm::vec3 &impul
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-    bi.AddAngularImpulse(JPH::BodyID(bodyId), JPH::Vec3(impulse.x, impulse.y, impulse.z));
+    ApplyBodyImpulse(*m_physicsSystem, JPH::BodyID(bodyId),
+                     [&](JPH::Body &body) { body.AddAngularImpulse(JPH::Vec3(impulse.x, impulse.y, impulse.z)); });
 }
 
 // ---- Forces at position ----
@@ -1810,12 +2220,36 @@ void PhysicsWorld::AddBodyImpulseAtPosition(uint32_t bodyId, const glm::vec3 &im
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
-    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-    bi.AddImpulse(JPH::BodyID(bodyId), JPH::Vec3(impulse.x, impulse.y, impulse.z),
-                  JPH::RVec3(point.x, point.y, point.z));
+    ApplyBodyImpulse(*m_physicsSystem, JPH::BodyID(bodyId), [&](JPH::Body &body) {
+        body.AddImpulse(JPH::Vec3(impulse.x, impulse.y, impulse.z), JPH::RVec3(point.x, point.y, point.z));
+    });
 }
 
 // ---- Constraints / Motion quality ----
+
+void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
+                                              const RigidbodyMassProperties *properties) const
+{
+    auto *owner = body.GetGameObject();
+    const auto scale = owner ? owner->GetTransform()->GetWorldScale() : glm::vec3(1.0f);
+    if (properties) {
+        (void)BodyMassConfiguration(nullptr, mass, properties, scale);
+        return;
+    }
+    if (!owner || !m_initialized || body.IsKinematic())
+        return; // Geometry facts do not exist until a collider creates its body.
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
+    const auto id = body.GetBodyId();
+    if (id == 0xFFFFFFFF)
+        return;
+    JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(id));
+    if (lock.Succeeded() && lock.GetBody().IsDynamic()) {
+        const JPH::Shape *shape = lock.GetBody().GetShape();
+        if (shape->GetSubType() == JPH::EShapeSubType::OffsetCenterOfMass)
+            shape = static_cast<const JPH::OffsetCenterOfMassShape *>(shape)->GetInnerShape();
+        (void)BodyMassConfiguration(shape, mass, nullptr, scale);
+    }
+}
 
 void PhysicsWorld::SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float mass)
 {
@@ -1826,23 +2260,15 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float ma
     if (lock.Succeeded()) {
         JPH::Body &body = lock.GetBody();
         if (body.IsDynamic()) {
-            JPH::MassProperties massProps = body.GetShape()->GetMassProperties();
-            massProps.ScaleToMass(mass > 0.001f ? mass : 0.001f);
-
-            // Thin-body inertia stabilization: ensure no principal axis has
-            // less than 10 % of the maximum moment of inertia.  This prevents
-            // extreme angular accelerations for flat / thin shapes (e.g.
-            // sprites, panels) where one dimension is much smaller than the
-            // others.
-            JPH::Vec3 diag = massProps.mInertia.GetDiagonal3();
-            float maxI = std::max({diag.GetX(), diag.GetY(), diag.GetZ()});
-            if (maxI > 1e-10f) {
-                float minI = maxI * 0.1f;
-                massProps.mInertia.SetDiagonal3(
-                    JPH::Vec3(std::max(diag.GetX(), minI), std::max(diag.GetY(), minI), std::max(diag.GetZ(), minI)));
-            }
-
-            body.GetMotionProperties()->SetMassProperties(static_cast<JPH::EAllowedDOFs>(allowedDOFs), massProps);
+            auto found = m_bodies.find(bodyId);
+            auto *rigidbody = found == m_bodies.end() ? nullptr : found->second.rigidbody;
+            const auto *properties = rigidbody && rigidbody->GetAuthoredMassProperties()
+                                         ? &*rigidbody->GetAuthoredMassProperties()
+                                         : nullptr;
+            const auto scale =
+                rigidbody ? rigidbody->GetGameObject()->GetTransform()->GetWorldScale() : glm::vec3(1.0f);
+            const auto prepared = BodyMassConfiguration(body.GetShape(), mass, properties, scale);
+            ApplyMassConfiguration(*body.GetMotionProperties(), static_cast<JPH::EAllowedDOFs>(allowedDOFs), prepared);
         }
     }
 }
@@ -2021,7 +2447,10 @@ void PhysicsWorld::ActivateBody(uint32_t bodyId)
         return;
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-    bi.ActivateBody(JPH::BodyID(bodyId));
+    // Inactive objects and retained scenes keep their allocated bodies. Only
+    // resident bodies belong to Jolt's active simulation set.
+    if (bi.IsAdded(JPH::BodyID(bodyId)))
+        bi.ActivateBody(JPH::BodyID(bodyId));
 }
 
 void PhysicsWorld::ActivateBodiesInAABB(const glm::vec3 &min, const glm::vec3 &max)
@@ -2067,6 +2496,10 @@ void PhysicsWorld::DeactivateBody(uint32_t bodyId)
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.DeactivateBody(JPH::BodyID(bodyId));
+    for (auto &[id, record] : m_constraints)
+        if (record.constraint->GetSubType() == JPH::EConstraintSubType::Hinge &&
+            (record.bodyIdA == bodyId || record.bodyIdB == bodyId))
+            static_cast<JPH::HingeConstraint *>(record.constraint)->ResetRotorState();
 }
 
 glm::vec3 PhysicsWorld::GetBodyPosition(uint32_t bodyId) const
@@ -2100,7 +2533,7 @@ glm::vec3 PhysicsWorld::GetBodyCenterOfMassPosition(uint32_t bodyId) const
     return glm::vec3(static_cast<float>(p.GetX()), static_cast<float>(p.GetY()), static_cast<float>(p.GetZ()));
 }
 
-PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t bodyId) const
+PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t bodyId, PhysicsStateFields fields) const
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         throw std::logic_error("Motion state requires an active physics body");
@@ -2112,305 +2545,31 @@ PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t bodyId) const
         return glm::vec3(static_cast<float>(v.GetX()), static_cast<float>(v.GetY()), static_cast<float>(v.GetZ()));
     };
     PhysicsBodyMotionState state;
-    state.position = vector(body.GetPosition());
-    const auto rotation = body.GetRotation();
-    state.rotation = glm::quat(rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ());
-    state.centerOfMass = vector(body.GetCenterOfMassPosition());
-    state.linearVelocity = vector(body.GetLinearVelocity());
-    state.angularVelocity = vector(body.GetAngularVelocity());
+    state.bodyId = body.GetID().GetIndexAndSequenceNumber();
+    if (HasPhysicsStateField(fields, PhysicsStateFields::Position))
+        state.position = vector(body.GetPosition());
+    if (HasPhysicsStateField(fields, PhysicsStateFields::Rotation)) {
+        const auto rotation = body.GetRotation();
+        state.rotation = glm::quat(rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ());
+    }
+    if (HasPhysicsStateField(fields, PhysicsStateFields::CenterOfMass))
+        state.centerOfMass = vector(body.GetCenterOfMassPosition());
+    if (HasPhysicsStateField(fields, PhysicsStateFields::LinearVelocity))
+        state.linearVelocity = vector(body.GetLinearVelocity());
+    if (HasPhysicsStateField(fields, PhysicsStateFields::AngularVelocity))
+        state.angularVelocity = vector(body.GetAngularVelocity());
     if (body.IsDynamic()) {
-        const auto *motion = body.GetMotionProperties();
-        state.inverseMass = vector(motion->LockTranslation(JPH::Vec3::sReplicate(motion->GetInverseMass())));
-        const auto inertia = body.GetInverseInertia();
-        for (int column = 0; column < 3; ++column)
-            state.inverseInertia[column] = vector(inertia.GetColumn3(column));
+        if (HasPhysicsStateField(fields, PhysicsStateFields::InverseMass)) {
+            const auto *motion = body.GetMotionProperties();
+            state.inverseMass = vector(motion->LockTranslation(JPH::Vec3::sReplicate(motion->GetInverseMass())));
+        }
+        if (HasPhysicsStateField(fields, PhysicsStateFields::InverseInertia)) {
+            const auto inertia = body.GetInverseInertia();
+            for (int column = 0; column < 3; ++column)
+                state.inverseInertia[column] = vector(inertia.GetColumn3(column));
+        }
     }
     return state;
-}
-
-uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                             const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
-                                             const glm::vec3 &localAnchor, bool useLimits, float minimumAngle,
-                                             float maximumAngle, bool enableCollision)
-{
-    if (!m_initialized || !m_physicsSystem)
-        throw std::logic_error("hinge creation requires an initialized physics world");
-    if (bodyIdA == 0xFFFFFFFF)
-        throw std::invalid_argument("hinge body A is unavailable");
-    if (bodyIdA == bodyIdB)
-        throw std::invalid_argument("hinge cannot connect a body to itself");
-    if (!IsFinite(worldAnchor) || !IsFinite(worldAxis) || glm::dot(worldAxis, worldAxis) <= 1e-12f)
-        throw std::invalid_argument("hinge anchor and axis must be finite and the axis must be non-zero");
-    if (!std::isfinite(minimumAngle) || !std::isfinite(maximumAngle) || minimumAngle > 0.0f || maximumAngle < 0.0f ||
-        minimumAngle > maximumAngle || minimumAngle < -glm::pi<float>() || maximumAngle > glm::pi<float>())
-        throw std::invalid_argument("hinge limits must be ordered radians within [-pi, pi] and span zero");
-
-    const glm::vec3 axis = glm::normalize(worldAxis);
-    const glm::vec3 reference = std::abs(axis.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-    const glm::vec3 normal = glm::normalize(glm::cross(axis, reference));
-
-    JPH::HingeConstraintSettings settings;
-    settings.mSpace = JPH::EConstraintSpace::WorldSpace;
-    settings.mPoint1 = settings.mPoint2 = JPH::RVec3(worldAnchor.x, worldAnchor.y, worldAnchor.z);
-    settings.mHingeAxis1 = settings.mHingeAxis2 = JPH::Vec3(axis.x, axis.y, axis.z);
-    settings.mNormalAxis1 = settings.mNormalAxis2 = JPH::Vec3(normal.x, normal.y, normal.z);
-    settings.mLimitsMin = useLimits ? minimumAngle : -glm::pi<float>();
-    settings.mLimitsMax = useLimits ? maximumAngle : glm::pi<float>();
-
-    JPH::BodyID ids[2] = {JPH::BodyID(bodyIdA), JPH::BodyID(bodyIdB)};
-    JPH::Constraint *constraint = nullptr;
-    if (bodyIdB == 0xFFFFFFFF) {
-        JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), ids[0]);
-        if (!lock.Succeeded())
-            throw std::logic_error("hinge body A no longer exists");
-        constraint = settings.Create(JPH::Body::sFixedToWorld, lock.GetBody());
-    } else {
-        JPH::BodyLockMultiWrite lock(m_physicsSystem->GetBodyLockInterface(), ids, 2);
-        JPH::Body *bodyA = lock.GetBody(0);
-        JPH::Body *bodyB = lock.GetBody(1);
-        if (!bodyA || !bodyB)
-            throw std::logic_error("hinge connected body no longer exists");
-        constraint = settings.Create(*bodyB, *bodyA);
-    }
-    if (!constraint)
-        throw std::runtime_error("Jolt failed to create hinge constraint");
-
-    m_physicsSystem->AddConstraint(constraint);
-    const uint64_t constraintId = m_nextConstraintId++;
-    const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
-    ConstraintRecord record{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge};
-    CaptureConstraintAnchors(record, localAnchor);
-    m_constraints.emplace(constraintId, record);
-    if (ignoresCollision)
-        SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
-    return constraintId;
-}
-
-uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                              const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
-                                              const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
-                                              float maximumDistance, bool enableCollision)
-{
-    if (!m_initialized || !m_physicsSystem)
-        throw std::logic_error("slider creation requires an initialized physics world");
-    if (bodyIdA == 0xFFFFFFFF)
-        throw std::invalid_argument("slider body A is unavailable");
-    if (bodyIdA == bodyIdB)
-        throw std::invalid_argument("slider cannot connect a body to itself");
-    if (!IsFinite(worldAnchor) || !IsFinite(worldAxis) || glm::dot(worldAxis, worldAxis) <= 1e-12f)
-        throw std::invalid_argument("slider anchor and axis must be finite and the axis must be non-zero");
-    if (!std::isfinite(minimumDistance) || !std::isfinite(maximumDistance) || minimumDistance > 0.0f ||
-        maximumDistance < 0.0f || minimumDistance > maximumDistance)
-        throw std::invalid_argument("slider limits must be ordered metres and span zero");
-
-    const glm::vec3 axis = glm::normalize(worldAxis);
-    JPH::SliderConstraintSettings settings;
-    settings.mSpace = JPH::EConstraintSpace::WorldSpace;
-    settings.mPoint1 = settings.mPoint2 = JPH::RVec3(worldAnchor.x, worldAnchor.y, worldAnchor.z);
-    settings.SetSliderAxis(JPH::Vec3(axis.x, axis.y, axis.z));
-    settings.mLimitsMin = useLimits ? minimumDistance : -FLT_MAX;
-    settings.mLimitsMax = useLimits ? maximumDistance : FLT_MAX;
-
-    JPH::BodyID ids[2] = {JPH::BodyID(bodyIdA), JPH::BodyID(bodyIdB)};
-    JPH::Constraint *constraint = nullptr;
-    if (bodyIdB == 0xFFFFFFFF) {
-        JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), ids[0]);
-        if (!lock.Succeeded())
-            throw std::logic_error("slider body A no longer exists");
-        constraint = settings.Create(JPH::Body::sFixedToWorld, lock.GetBody());
-    } else {
-        JPH::BodyLockMultiWrite lock(m_physicsSystem->GetBodyLockInterface(), ids, 2);
-        JPH::Body *bodyA = lock.GetBody(0);
-        JPH::Body *bodyB = lock.GetBody(1);
-        if (!bodyA || !bodyB)
-            throw std::logic_error("slider connected body no longer exists");
-        constraint = settings.Create(*bodyB, *bodyA);
-    }
-    if (!constraint)
-        throw std::runtime_error("Jolt failed to create slider constraint");
-
-    m_physicsSystem->AddConstraint(constraint);
-    const uint64_t constraintId = m_nextConstraintId++;
-    const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
-    ConstraintRecord record{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider};
-    CaptureConstraintAnchors(record, localAnchor);
-    m_constraints.emplace(constraintId, record);
-    if (ignoresCollision)
-        SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
-    return constraintId;
-}
-
-void PhysicsWorld::CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor)
-{
-    const auto capture = [&](uint32_t bodyId, JPH::Vec3Arg point, glm::vec3 &anchor, glm::vec3 &scale,
-                             glm::vec3 &collapsedOffset) {
-        if (bodyId == 0xFFFFFFFF)
-            return;
-        const auto *transform = m_bodyToCollider.at(bodyId)->GetGameObject()->GetTransform();
-        scale = transform->GetWorldScale();
-        const auto offset =
-            point + m_physicsSystem->GetBodyInterface().GetShape(JPH::BodyID(bodyId))->GetCenterOfMass();
-        // Capture the actual bound physics frame: a kinematic body's visual
-        // Transform may already contain its next target pose. A collapsed
-        // scale axis has no inverse: retain the owner's authored coordinate
-        // and the actual bound offset that cannot be represented by scaling.
-        const glm::vec3 collapsed = bodyId == record.bodyIdA ? localAnchor : glm::vec3(0.0f);
-        for (int axis = 0; axis < 3; ++axis) {
-            anchor[axis] = scale[axis] == 0.0f ? collapsed[axis] : offset[axis] / scale[axis];
-            collapsedOffset[axis] = scale[axis] == 0.0f ? offset[axis] : 0.0f;
-        }
-    };
-    const auto *joint = static_cast<JPH::TwoBodyConstraint *>(record.constraint);
-    capture(record.bodyIdA, joint->GetConstraintToBody2Matrix().GetTranslation(), record.anchorA, record.scaleA,
-            record.collapsedOffsetA);
-    capture(record.bodyIdB, joint->GetConstraintToBody1Matrix().GetTranslation(), record.anchorB, record.scaleB,
-            record.collapsedOffsetB);
-}
-
-void PhysicsWorld::UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale)
-{
-    const bool ownerChanged = bodyId == record.bodyIdA;
-    auto &boundScale = ownerChanged ? record.scaleA : record.scaleB;
-    if (scale == boundScale)
-        return;
-
-    // Retain both local attachment points and the original joint frames.
-    // Recreating from a single current world point would move the other end
-    // and reset the hinge's zero angle / slider's zero displacement.
-    const glm::vec3 anchor = ownerChanged ? record.anchorA : record.anchorB;
-    const glm::vec3 offset = anchor * scale + (ownerChanged ? record.collapsedOffsetA : record.collapsedOffsetB);
-    auto settings = record.constraint->GetConstraintSettings();
-    JPH::BodyID ids[2] = {JPH::BodyID(record.bodyIdA), JPH::BodyID(record.bodyIdB)};
-    JPH::Constraint *replacement = nullptr;
-    {
-        JPH::BodyLockMultiWrite lock(m_physicsSystem->GetBodyLockInterface(), ids, 2);
-        auto *bodyA = lock.GetBody(0);
-        auto *bodyB = record.bodyIdB == 0xFFFFFFFF ? &JPH::Body::sFixedToWorld : lock.GetBody(1);
-        if (!bodyA || !bodyB)
-            throw std::logic_error("constraint scale publication requires both bound bodies");
-        const auto *changedBody = ownerChanged ? bodyA : bodyB;
-        const JPH::RVec3 point(JPH::Vec3(offset.x, offset.y, offset.z) - changedBody->GetShape()->GetCenterOfMass());
-        if (record.kind == ConstraintKind::Hinge) {
-            auto *hinge = static_cast<JPH::HingeConstraintSettings *>(settings.GetPtr());
-            (ownerChanged ? hinge->mPoint2 : hinge->mPoint1) = point;
-            replacement = hinge->Create(*bodyB, *bodyA);
-        } else {
-            auto *slider = static_cast<JPH::SliderConstraintSettings *>(settings.GetPtr());
-            (ownerChanged ? slider->mPoint2 : slider->mPoint1) = point;
-            replacement = slider->Create(*bodyB, *bodyA);
-        }
-    }
-    m_physicsSystem->AddConstraint(replacement);
-    m_physicsSystem->RemoveConstraint(record.constraint);
-    record.constraint = replacement;
-    boundScale = scale;
-    ActivateConstraintBodies(record);
-}
-
-void PhysicsWorld::ActivateConstraintBodies(const ConstraintRecord &record)
-{
-    auto &bodies = m_physicsSystem->GetBodyInterface();
-    for (const auto id : {record.bodyIdA, record.bodyIdB}) {
-        if (id != 0xFFFFFFFF && bodies.IsAdded(JPH::BodyID(id)))
-            bodies.ActivateBody(JPH::BodyID(id));
-    }
-}
-
-void PhysicsWorld::UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision)
-{
-    const bool ignores = record.bodyIdB != 0xFFFFFFFF && !enableCollision;
-    if (ignores != record.ignoresCollision) {
-        SetConstraintPairSuppressed(record.bodyIdA, record.bodyIdB, ignores);
-        record.ignoresCollision = ignores;
-    }
-}
-
-void PhysicsWorld::UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
-                                                 bool enableCollision)
-{
-    auto &record = m_constraints.at(constraintId);
-    if (record.kind != ConstraintKind::Hinge)
-        throw std::logic_error("constraint is not a hinge");
-    auto *hinge = static_cast<JPH::HingeConstraint *>(record.constraint);
-    const float lower = useLimits ? minimum : -glm::pi<float>();
-    const float upper = useLimits ? maximum : glm::pi<float>();
-    if (hinge->GetLimitsMin() != lower || hinge->GetLimitsMax() != upper) {
-        hinge->SetLimits(lower, upper);
-        hinge->ResetWarmStart();
-        ActivateConstraintBodies(record);
-    }
-    UpdateConstraintCollision(record, enableCollision);
-}
-
-void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
-                                                  bool enableCollision)
-{
-    auto &record = m_constraints.at(constraintId);
-    if (record.kind != ConstraintKind::Slider)
-        throw std::logic_error("constraint is not a slider");
-    auto *slider = static_cast<JPH::SliderConstraint *>(record.constraint);
-    const float lower = useLimits ? minimum : -FLT_MAX;
-    const float upper = useLimits ? maximum : FLT_MAX;
-    if (slider->GetLimitsMin() != lower || slider->GetLimitsMax() != upper) {
-        slider->SetLimits(lower, upper);
-        slider->ResetWarmStart();
-        ActivateConstraintBodies(record);
-    }
-    UpdateConstraintCollision(record, enableCollision);
-}
-
-void PhysicsWorld::DestroyConstraint(uint64_t constraintId)
-{
-    auto it = m_constraints.find(constraintId);
-    if (it == m_constraints.end())
-        return;
-    ConstraintRecord record = it->second;
-    m_constraints.erase(it);
-    if (m_physicsSystem && record.constraint)
-        m_physicsSystem->RemoveConstraint(record.constraint);
-    if (record.ignoresCollision)
-        SetConstraintPairSuppressed(record.bodyIdA, record.bodyIdB, false);
-    record.owner.OnPhysicsConstraintDestroyed();
-}
-
-float PhysicsWorld::GetHingeConstraintAngle(uint64_t constraintId) const
-{
-    auto it = m_constraints.find(constraintId);
-    if (it == m_constraints.end())
-        throw std::logic_error("hinge constraint is not active");
-    if (it->second.kind != ConstraintKind::Hinge)
-        throw std::logic_error("constraint is not a hinge");
-    // Avoid cross-DLL RTTI: the record already carries the authoritative kind.
-    return static_cast<JPH::HingeConstraint *>(it->second.constraint)->GetCurrentAngle();
-}
-
-float PhysicsWorld::GetSliderConstraintPosition(uint64_t constraintId) const
-{
-    auto it = m_constraints.find(constraintId);
-    if (it == m_constraints.end())
-        throw std::logic_error("slider constraint is not active");
-    if (it->second.kind != ConstraintKind::Slider)
-        throw std::logic_error("constraint is not a slider");
-    return static_cast<JPH::SliderConstraint *>(it->second.constraint)->GetCurrentPosition();
-}
-
-void PhysicsWorld::SetConstraintPairSuppressed(uint32_t bodyIdA, uint32_t bodyIdB, bool suppressed)
-{
-    if (!m_contactListener || !m_physicsSystem || bodyIdA == 0xFFFFFFFF || bodyIdB == 0xFFFFFFFF)
-        return;
-    m_contactListener->SetBodyPairIgnored(bodyIdA, bodyIdB, suppressed);
-    m_contactListener->InvalidatePairsForBody(bodyIdA);
-    m_contactListener->InvalidatePairsForBody(bodyIdB);
-    JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
-    bodyInterface.InvalidateContactCache(JPH::BodyID(bodyIdA));
-    bodyInterface.InvalidateContactCache(JPH::BodyID(bodyIdB));
-    // Constraint retirement also runs after broadphase removal, immediately
-    // before body destruction. Jolt activation requires a resident body;
-    // reactivating a removed body would leave its freed ID in the active set.
-    if (bodyInterface.IsAdded(JPH::BodyID(bodyIdA)))
-        bodyInterface.ActivateBody(JPH::BodyID(bodyIdA));
-    if (bodyInterface.IsAdded(JPH::BodyID(bodyIdB)))
-        bodyInterface.ActivateBody(JPH::BodyID(bodyIdB));
 }
 
 void PhysicsWorld::SetColliderPairIgnored(Collider *colliderA, Collider *colliderB, bool ignored)
@@ -2453,37 +2612,64 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
     std::shared_lock snapshotRead(m_querySnapshotMutex);
     if (!m_initialized)
         throw std::logic_error("compute_penetration requires initialized physics");
-    const auto shapeForQuery = [](const Collider &collider) -> JPH::RefConst<JPH::Shape> {
-        // Primitive construction is read-only. A convex MeshCollider is also
-        // valid once its cooked shape is published; do not start an async cook
-        // from a query and do not silently approximate a non-convex mesh.
-        const auto *mesh = dynamic_cast<const MeshCollider *>(&collider);
+    struct QueryShape
+    {
+        JPH::RefConst<JPH::Shape> shape;
+        JPH::Vec3 scale = JPH::Vec3::sReplicate(1.0f);
+        JPH::Vec3 offset = JPH::Vec3::sZero();
+
+        JPH::Vec3 CenterOfMass() const
+        {
+            return offset + scale * shape->GetCenterOfMass();
+        }
+    };
+    const auto shapeForQuery = [this](const Collider &collider) -> QueryShape {
+        if (const auto *mesh = dynamic_cast<const MeshCollider *>(&collider)) {
+            const auto &store = PhysicsECSStore::Instance();
+            const auto &state = store.GetCollider(mesh->GetECSHandle());
+            const uint32_t bodyId =
+                store.IsValid(state.actorHandle) ? store.GetActor(state.actorHandle).bodyId : UINT32_MAX;
+            const PhysicsShapeGeometry *geometry = nullptr;
+            const auto record = m_bodies.find(bodyId);
+            if (record != m_bodies.end()) {
+                JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
+                if (lock.Succeeded()) {
+                    for (const auto &leaf : record->second.shapeLeaves) {
+                        const auto *identity = ResolvePublishedQueryIdentity(lock.GetBody(), bodyId, leaf.subShapeId);
+                        if (identity && identity->collider == mesh) {
+                            geometry = leaf.geometry.get();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!(geometry ? geometry->convex : mesh->IsConvex()))
+                throw std::invalid_argument(
+                    "compute_penetration requires published MeshCollider.convex = true geometry");
+            if (!geometry)
+                throw std::logic_error("compute_penetration MeshCollider geometry is not published");
+            const auto &scale = geometry->scale;
+            const auto &center = state.publishedRigidCenter;
+            return {geometry->shape.get(), {scale.x, scale.y, scale.z}, {center.x, center.y, center.z}};
+        }
         if (!dynamic_cast<const BoxCollider *>(&collider) && !dynamic_cast<const SphereCollider *>(&collider) &&
-            !dynamic_cast<const CapsuleCollider *>(&collider) && !dynamic_cast<const CylinderCollider *>(&collider) &&
-            !mesh)
+            !dynamic_cast<const CapsuleCollider *>(&collider) && !dynamic_cast<const CylinderCollider *>(&collider))
             throw std::invalid_argument(
                 "compute_penetration supports Box, Sphere, Capsule, Cylinder and convex Mesh colliders");
-        if (mesh && !mesh->IsConvex())
-            throw std::invalid_argument("compute_penetration requires MeshCollider.convex = true");
-        const auto *rawShape = static_cast<const JPH::Shape *>(collider.CreateJoltShapeRaw());
-        if (!rawShape) {
-            const std::string detail = mesh && !mesh->GetShapeError().empty() ? ": " + mesh->GetShapeError() : "";
-            throw std::logic_error("compute_penetration collider geometry is not ready" + detail);
-        }
-        return rawShape;
+        return {collider.CreateJoltShape()};
     };
     const auto shapeA = shapeForQuery(a), shapeB = shapeForQuery(b);
     // Work relative to A's origin, then restore world coordinates in the result.
     const auto delta = positionB - positionA;
     const auto transformA =
-        JPH::Mat44::sRotation(ToJoltQuat(rotationA)) * JPH::Mat44::sTranslation(shapeA->GetCenterOfMass());
+        JPH::Mat44::sRotation(ToJoltQuat(rotationA)) * JPH::Mat44::sTranslation(shapeA.CenterOfMass());
     const auto transformB =
         JPH::Mat44::sRotationTranslation(ToJoltQuat(rotationB), JPH::Vec3(delta.x, delta.y, delta.z)) *
-        JPH::Mat44::sTranslation(shapeB->GetCenterOfMass());
+        JPH::Mat44::sTranslation(shapeB.CenterOfMass());
     JPH::ClosestHitCollisionCollector<JPH::CollideShapeCollector> collector;
-    JPH::CollisionDispatch::sCollideShapeVsShape(shapeA, shapeB, JPH::Vec3::sReplicate(1), JPH::Vec3::sReplicate(1),
-                                                 transformA, transformB, JPH::SubShapeIDCreator(),
-                                                 JPH::SubShapeIDCreator(), JPH::CollideShapeSettings(), collector);
+    JPH::CollisionDispatch::sCollideShapeVsShape(shapeA.shape, shapeB.shape, shapeA.scale, shapeB.scale, transformA,
+                                                 transformB, JPH::SubShapeIDCreator(), JPH::SubShapeIDCreator(),
+                                                 JPH::CollideShapeSettings(), collector);
     if (!collector.HadHit() || collector.mHit.mPenetrationDepth <= 0)
         return std::nullopt;
     const auto &hit = collector.mHit;
@@ -2704,8 +2890,10 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
         // Resolve application identity from the immutable data published
         // with this query epoch. Collider properties are owner-authored
         // mutable state and must never be read by parallel query workers.
-        const QueryColliderIdentity *identity = ResolvePublishedQueryIdentity(
+        const QueryTargetIdentity *identity = ResolvePublishedQueryIdentity(
             body, result.mBodyID.GetIndexAndSequenceNumber(), result.mSubShapeID2.GetValue());
+        if (!identity || !(identity->layerBit & layerMask))
+            return false;
         if (filterTriggers && (body.IsSensor() || (identity && identity->isTrigger)))
             return false;
         outHit.collider = identity ? identity->collider : nullptr;
@@ -2727,8 +2915,8 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
 
     if (queryTriggers) {
         static thread_local RaycastPublishedBodyCache publishedBodyCache;
-        DeterministicClosestRayBodyCollector collector(ray, bodyLocks, profile,
-                                                       queryEpochHeld ? &publishedBodyCache : nullptr, queryGeneration);
+        DeterministicClosestRayBodyCollector collector(
+            ray, bodyLocks, profile, queryEpochHeld ? &publishedBodyCache : nullptr, queryGeneration, layerMask);
         const uint64_t queryStartNs = profile ? profileNowNs() : 0;
         if (queryEpochHeld) {
             m_physicsSystem->GetBroadPhaseNoLock().CastRayNoLock(static_cast<JPH::RayCast>(ray), collector,
@@ -2822,7 +3010,7 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
                std::tuple(right.mFraction, right.mBodyID.GetIndexAndSequenceNumber(), right.mSubShapeID2.GetValue());
     });
     for (const JPH::RayCastResult &result : collector.mHits) {
-        if (ResolveColliderForSubShape(bodyId, result.mSubShapeID2.GetValue()) != &collider)
+        if (ResolveColliderForSubShape(lock.GetBody(), bodyId, result.mSubShapeID2.GetValue()) != &collider)
             continue;
 
         outHit.distance = result.mFraction * maxDistance;
@@ -2845,76 +3033,58 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
 glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
+    if (!collider.IsEnabled() || !collider.GetGameObject()->IsActiveInHierarchy())
+        return point;
     std::shared_lock snapshotRead(m_querySnapshotMutex);
     if (!m_initialized)
         throw std::logic_error("closest_point requires initialized physics");
-
-    const uint32_t bodyId = collider.GetBodyId();
-    if (bodyId == 0xFFFFFFFF)
+    JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(collider.GetBodyId()));
+    if (!lock.SucceededAndIsInBroadPhase())
         throw std::logic_error("closest_point requires a registered collider");
+    const auto &body = lock.GetBody();
+    const auto transformed = body.GetTransformedShape();
+    JPH::AllHitCollisionCollector<JPH::CollidePointCollector> inside;
+    transformed.CollidePoint(JPH::RVec3(point.x, point.y, point.z), inside);
+    for (const auto &hit : inside.mHits)
+        if (ResolveColliderForSubShape(body, collider.GetBodyId(), hit.mSubShapeID2.GetValue()) == &collider)
+            return point;
 
-    glm::vec3 bodyPosition(0.0f);
-    glm::quat bodyRotation(1.0f, 0.0f, 0.0f, 0.0f);
-    {
-        JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
-        if (!lock.Succeeded())
-            throw std::logic_error("closest_point collider body is unavailable");
-        const JPH::Body &body = lock.GetBody();
-        const JPH::TransformedShape transformedShape = body.GetTransformedShape();
-        JPH::AllHitCollisionCollector<JPH::CollidePointCollector> insideCollector;
-        transformedShape.CollidePoint(JPH::RVec3(point.x, point.y, point.z), insideCollector);
-        for (const JPH::CollidePointResult &result : insideCollector.mHits) {
-            if (ResolveColliderForSubShape(bodyId, result.mSubShapeID2.GetValue()) == &collider)
-                return point;
+    JPH::AllHitCollisionCollector<JPH::TransformedShapeCollector> leaves;
+    transformed.CollectTransformedShapes(body.GetWorldSpaceBounds(), leaves);
+    const JPH::SphereShape pointShape(1.0e-5f);
+    float minimumDistance = std::numeric_limits<float>::infinity();
+    glm::vec3 closestPoint{};
+    for (const auto &leaf : leaves.mHits) {
+        if (ResolveColliderForSubShape(body, collider.GetBodyId(), leaf.mSubShapeIDCreator.GetID().GetValue()) !=
+            &collider)
+            continue;
+        const auto &center = leaf.mShapePositionCOM;
+        const glm::vec3 base(center.GetX(), center.GetY(), center.GetZ());
+        const auto relative = point - base;
+        const JPH::AABox bounds = leaf.mShape->GetLocalBounds();
+        JPH::CollideShapeSettings settings;
+        settings.mMaxSeparationDistance =
+            glm::length(relative) +
+            ((bounds.GetCenter().Abs() + bounds.GetExtent()) * leaf.GetShapeScale().Abs()).Length() + 1.0f;
+        JPH::ClosestHitCollisionCollector<JPH::CollideShapeCollector> collector;
+        JPH::CollisionDispatch::sCollideShapeVsShape(
+            &pointShape, leaf.mShape, JPH::Vec3::sReplicate(1), leaf.GetShapeScale(),
+            JPH::Mat44::sTranslation(JPH::Vec3(relative.x, relative.y, relative.z)),
+            JPH::Mat44::sRotation(leaf.mShapeRotation), JPH::SubShapeIDCreator(), JPH::SubShapeIDCreator(), settings,
+            collector);
+        if (!collector.HadHit())
+            continue;
+        const auto &contact = collector.mHit.mContactPointOn2;
+        const auto candidate = base + glm::vec3(contact.GetX(), contact.GetY(), contact.GetZ());
+        const float distance = glm::dot(candidate - point, candidate - point);
+        if (distance < minimumDistance) {
+            minimumDistance = distance;
+            closestPoint = candidate;
         }
-        const JPH::RVec3 position = body.GetPosition();
-        bodyPosition = glm::vec3(static_cast<float>(position.GetX()), static_cast<float>(position.GetY()),
-                                 static_cast<float>(position.GetZ()));
-        const JPH::Quat rotation = body.GetRotation();
-        bodyRotation = glm::quat(rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ());
     }
-
-    const auto *meshCollider = dynamic_cast<const MeshCollider *>(&collider);
-    if (!dynamic_cast<const BoxCollider *>(&collider) && !dynamic_cast<const SphereCollider *>(&collider) &&
-        !dynamic_cast<const CapsuleCollider *>(&collider) && !dynamic_cast<const CylinderCollider *>(&collider) &&
-        !meshCollider)
-        throw std::invalid_argument(
-            "closest_point currently supports Box, Sphere, Capsule, Cylinder and Mesh colliders");
-
-    // Jolt's MeshShape participates in the same point-vs-shape narrow phase
-    // as convex shapes.  Do not reject a ready static triangle mesh here: the
-    // broad phase and triangle BVH already provide the correct non-convex
-    // closest surface.  Dynamic rigidbodies still reject non-convex meshes at
-    // MeshCollider::CreateJoltShapeRaw(), so this does not weaken the physics
-    // body contract or introduce a convex approximation.
-
-    const auto *rawShape = static_cast<const JPH::Shape *>(collider.CreateJoltShapeRaw());
-    if (!rawShape) {
-        const auto *mesh = dynamic_cast<const MeshCollider *>(&collider);
-        const std::string detail = mesh && !mesh->GetShapeError().empty() ? ": " + mesh->GetShapeError() : "";
-        throw std::logic_error("closest_point collider geometry is not ready" + detail);
-    }
-    const JPH::RefConst<JPH::Shape> targetShape = rawShape;
-    constexpr float pointRadius = 1.0e-5f;
-    const JPH::SphereShape pointShape(pointRadius);
-    const glm::vec3 relativePoint = point - bodyPosition;
-    const JPH::Mat44 pointTransform =
-        JPH::Mat44::sTranslation(JPH::Vec3(relativePoint.x, relativePoint.y, relativePoint.z));
-    const JPH::Mat44 targetTransform =
-        JPH::Mat44::sRotation(ToJoltQuat(bodyRotation)) * JPH::Mat44::sTranslation(targetShape->GetCenterOfMass());
-    const JPH::AABox bounds = targetShape->GetLocalBounds();
-    JPH::CollideShapeSettings settings;
-    settings.mMaxSeparationDistance =
-        glm::length(relativePoint) + bounds.GetCenter().Length() + bounds.GetExtent().Length() + 1.0f;
-    JPH::ClosestHitCollisionCollector<JPH::CollideShapeCollector> collector;
-    JPH::CollisionDispatch::sCollideShapeVsShape(
-        &pointShape, targetShape, JPH::Vec3::sReplicate(1), JPH::Vec3::sReplicate(1), pointTransform, targetTransform,
-        JPH::SubShapeIDCreator(), JPH::SubShapeIDCreator(), settings, collector);
-    if (!collector.HadHit())
-        throw std::runtime_error("closest_point could not evaluate collider geometry");
-
-    const JPH::Vec3 closest = collector.mHit.mContactPointOn2;
-    return bodyPosition + glm::vec3(closest.GetX(), closest.GetY(), closest.GetZ());
+    if (!std::isfinite(minimumDistance))
+        throw std::runtime_error("closest_point collider geometry is not published");
+    return closestPoint;
 }
 
 std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
@@ -2958,6 +3128,8 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
         hit.bodyId = bodyId;
 
         hit.collider = ResolveColliderForSubShape(hit.bodyId, result.mSubShapeID2.GetValue());
+        if (!hit.collider || !(layerMask & (uint32_t{1} << hit.collider->GetGameObject()->GetLayer())))
+            continue;
         if (!queryTriggers && (IsBodySensor(bodyId) || (hit.collider && hit.collider->IsTrigger())))
             continue;
         if (hit.collider && hit.collider->GetGameObject()) {
@@ -3020,6 +3192,8 @@ std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, 
     for (const auto &hit : collector.mHits) {
         uint32_t bodyId = hit.mBodyID2.GetIndexAndSequenceNumber();
         Collider *col = ResolveColliderForSubShape(bodyId, hit.mSubShapeID2.GetValue());
+        if (!col || !(layerMask & (uint32_t{1} << col->GetGameObject()->GetLayer())))
+            continue;
         if (!queryTriggers && (IsBodySensor(bodyId) || (col && col->IsTrigger())))
             continue;
         if (col && seen.insert(col).second) {
@@ -3036,7 +3210,7 @@ std::vector<Collider *> PhysicsWorld::OverlapShapeImpl(const JPH::Shape &shape, 
 
 bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origin, const glm::quat &orientation,
                                  const glm::vec3 &direction, float maxDistance, RaycastHit &outHit, uint32_t layerMask,
-                                 bool queryTriggers) const
+                                 bool queryTriggers, const Collider *movingCollider) const
 {
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
     std::shared_lock snapshotRead(m_querySnapshotMutex);
@@ -3053,6 +3227,7 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
     // Initial overlap also promises a target surface point. Jolt otherwise
     // permits an interior GJK point; EPA runs only for penetrating starts.
     castSettings.mReturnDeepestPoint = true;
+    castSettings.mUseShrunkenShapeAndConvexRadius = movingCollider != nullptr;
     JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
     LayerMaskObjectFilter objectFilter(layerMask);
 
@@ -3069,10 +3244,20 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
     });
     const JPH::ShapeCastResult *selected = nullptr;
     Collider *selectedCollider = nullptr;
+    const JPH::Vec3 castDirection(dir.x, dir.y, dir.z);
+    const uint32_t movingBody = movingCollider ? movingCollider->GetBodyId() : UINT32_MAX;
     for (const auto &candidate : collector.mHits) {
         uint32_t candidateBodyId = candidate.mBodyID2.GetIndexAndSequenceNumber();
         Collider *candidateCollider = ResolveColliderForSubShape(candidateBodyId, candidate.mSubShapeID2.GetValue());
+        if (!candidateCollider || !(layerMask & (uint32_t{1} << candidateCollider->GetGameObject()->GetLayer())))
+            continue;
         if (!queryTriggers && (IsBodySensor(candidateBodyId) || (candidateCollider && candidateCollider->IsTrigger())))
+            continue;
+        if (movingCollider &&
+            (candidateBodyId == movingBody || candidateCollider->GetGameObject() == movingCollider->GetGameObject() ||
+             GetColliderPairIgnored(movingCollider, candidateCollider) ||
+             (candidate.mFraction <= 0.0f &&
+              candidate.mPenetrationAxis.Dot(castDirection) <= 1e-3f * candidate.mPenetrationAxis.Length())))
             continue;
         selected = &candidate;
         selectedCollider = candidateCollider;
@@ -3149,11 +3334,12 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
     std::unordered_set<Rigidbody *> seen;
     for (const JPH::BodyID &bodyId : collector.mHits) {
         const uint32_t id = bodyId.GetIndexAndSequenceNumber();
-        Collider *collider = FindColliderByBodyId(id);
-        if (!collider || (!queryTriggers && (IsBodySensor(id) || collider->IsTrigger())))
+        const auto &targets = m_bodies.at(id).targets;
+        if (!std::any_of(targets.begin(), targets.end(), [&](const auto &target) {
+                return (target.layerBit & layerMask) && (queryTriggers || !target.isTrigger);
+            }))
             continue;
-        GameObject *gameObject = collider->GetGameObject();
-        Rigidbody *rigidbody = gameObject ? gameObject->GetComponent<Rigidbody>() : nullptr;
+        Rigidbody *rigidbody = FindRigidbodyByBodyId(id);
         if (rigidbody && rigidbody->IsEnabled() && seen.insert(rigidbody).second)
             results.push_back(rigidbody);
     }
@@ -3207,6 +3393,18 @@ bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents
     return ShapeCastImpl(box, center, orientation, direction, maxDistance, outHit, layerMask, queryTriggers);
 }
 
+bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
+                            const glm::vec3 &displacement, RaycastHit &outHit) const
+{
+    const auto *object = box.GetGameObject();
+    if (!m_initialized || !object)
+        return false;
+    const auto layerMask = TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer());
+    const auto shape = box.CreateJoltShape();
+    return ShapeCastImpl(*shape, position, rotation, displacement, glm::length(displacement), outHit, layerMask, false,
+                         &box);
+}
+
 bool PhysicsWorld::CapsuleCast(const glm::vec3 &point0, const glm::vec3 &point1, float radius,
                                const glm::vec3 &direction, float maxDistance, RaycastHit &outHit, uint32_t layerMask,
                                bool queryTriggers) const
@@ -3230,81 +3428,222 @@ bool PhysicsWorld::CapsuleCast(const glm::vec3 &point0, const glm::vec3 &point1,
 // Lookup
 // ============================================================================
 
+void PhysicsWorld::SetBodyActorOwner(uint32_t bodyId, const PhysicsActorData &actor)
+{
+    auto &record = m_bodies[bodyId];
+    record.gameObject = actor.owner;
+    record.rigidbody = actor.rigidbody;
+}
+
+Rigidbody *PhysicsWorld::FindRigidbodyByBodyId(uint32_t bodyId) const
+{
+    const auto found = m_bodies.find(bodyId);
+    return found == m_bodies.end() ? nullptr : found->second.rigidbody;
+}
+
+std::vector<glm::vec3> PhysicsShapeGeometry::GetTriangles() const
+{
+    JPH::Shape::GetTrianglesContext context;
+    const JPH::Vec3 leafScale(scale.x, scale.y, scale.z);
+    shape->GetTrianglesStart(context, shape->GetLocalBounds().Scaled(leafScale), JPH::Vec3::sZero(),
+                             JPH::Quat::sIdentity(), leafScale);
+    // A convex face is emitted as one block (up to 254 triangles).
+    constexpr int batchSize = 256;
+    JPH::Float3 vertices[3 * batchSize];
+    std::vector<glm::vec3> result;
+    for (int count; (count = shape->GetTrianglesNext(context, batchSize, vertices)) != 0;)
+        for (int index = 0; index < count * 3; ++index)
+            result.emplace_back(vertices[index].x, vertices[index].y, vertices[index].z);
+    return result;
+}
+
+void PhysicsWorld::PublishBodyShapeGeometryUnlocked(uint32_t bodyId)
+{
+    JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
+    const auto &body = lock.GetBody();
+    auto &record = m_bodies.at(bodyId);
+    auto previous = std::move(record.shapeLeaves);
+    JPH::AllHitCollisionCollector<JPH::TransformedShapeCollector> collector;
+    body.GetTransformedShape().CollectTransformedShapes(body.GetWorldSpaceBounds(), collector);
+    record.shapeLeaves.reserve(collector.mHits.size());
+    const auto inverseBodyRotation = body.GetRotation().Conjugated();
+    for (const auto &leaf : collector.mHits) {
+        if (leaf.mShape->GetSubType() == JPH::EShapeSubType::Empty)
+            continue;
+        const auto nativeScale = leaf.GetShapeScale();
+        const glm::vec3 scale(nativeScale.GetX(), nativeScale.GetY(), nativeScale.GetZ());
+        std::shared_ptr<const PhysicsShapeGeometry> geometry;
+        for (const auto &old : previous)
+            if (old.geometry->shape.get() == leaf.mShape.GetPtr() && old.geometry->scale == scale) {
+                geometry = old.geometry;
+                break;
+            }
+        if (!geometry) {
+            auto built = std::make_shared<PhysicsShapeGeometry>();
+            built->identity = ++m_nextShapeGeometryIdentity;
+            leaf.mShape->AddRef();
+            built->shape = {leaf.mShape.GetPtr(), [](const JPH::Shape *shape) { shape->Release(); }};
+            built->scale = scale;
+            built->convex = leaf.mShape->GetType() == JPH::EShapeType::Convex;
+            const auto bounds = leaf.mShape->GetLocalBounds().Scaled(nativeScale);
+            built->boundsMin = {bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ()};
+            built->boundsMax = {bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ()};
+            switch (leaf.mShape->GetSubType()) {
+            case JPH::EShapeSubType::Box: {
+                const auto half =
+                    static_cast<const JPH::BoxShape *>(leaf.mShape.GetPtr())->GetHalfExtent() * nativeScale.Abs();
+                built->type = PhysicsShapeType::Box;
+                built->dimensions = {2 * half.GetX(), 2 * half.GetY(), 2 * half.GetZ(), 0};
+                break;
+            }
+            case JPH::EShapeSubType::Sphere:
+                built->type = PhysicsShapeType::Sphere;
+                built->dimensions.x =
+                    static_cast<const JPH::SphereShape *>(leaf.mShape.GetPtr())->GetRadius() * nativeScale.Abs().GetX();
+                break;
+            case JPH::EShapeSubType::Capsule: {
+                const auto *capsule = static_cast<const JPH::CapsuleShape *>(leaf.mShape.GetPtr());
+                const float radius = capsule->GetRadius() * nativeScale.Abs().GetX();
+                built->type = PhysicsShapeType::Capsule;
+                built->dimensions = {
+                    radius, 2 * (capsule->GetHalfHeightOfCylinder() * nativeScale.Abs().GetY() + radius), 1, 0};
+                break;
+            }
+            default:
+                built->type = PhysicsShapeType::Mesh;
+                break;
+            }
+            geometry = std::move(built);
+        }
+        const auto position = inverseBodyRotation * JPH::Vec3(leaf.mShapePositionCOM - body.GetCenterOfMassPosition());
+        const auto rotation = inverseBodyRotation * leaf.mShapeRotation;
+        record.shapeLeaves.push_back({leaf.mSubShapeIDCreator.GetID().GetValue(),
+                                      {position.GetX(), position.GetY(), position.GetZ()},
+                                      {rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ()},
+                                      std::move(geometry)});
+    }
+    for (auto *member : record.members)
+        if (auto *mesh = dynamic_cast<MeshCollider *>(member))
+            mesh->PublishCookedGeometry();
+}
+
+std::vector<PhysicsShapeState> PhysicsWorld::GetBodyShapeStates(uint32_t bodyId, bool queryTriggers) const
+{
+    std::shared_lock snapshotRead(m_querySnapshotMutex);
+    JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
+    if (!lock.SucceededAndIsInBroadPhase())
+        throw std::runtime_error("shape state requires an active physics body");
+    const auto &body = lock.GetBody();
+    const auto nativeCenter = body.GetCenterOfMassPosition();
+    const glm::vec3 center(nativeCenter.GetX(), nativeCenter.GetY(), nativeCenter.GetZ());
+    const auto nativeRotation = body.GetRotation();
+    const glm::quat rotation(nativeRotation.GetW(), nativeRotation.GetX(), nativeRotation.GetY(),
+                             nativeRotation.GetZ());
+    const auto velocity = body.GetLinearVelocity();
+    const auto angular = body.GetAngularVelocity();
+    std::vector<PhysicsShapeState> states;
+    const auto &leaves = m_bodies.at(bodyId).shapeLeaves;
+    states.reserve(leaves.size());
+    for (const auto &leaf : leaves) {
+        const auto *identity = ResolvePublishedQueryIdentity(body, bodyId, leaf.subShapeId);
+        if (!identity || (!queryTriggers && identity->isTrigger))
+            continue;
+        states.push_back({identity->collider,
+                          identity->memberIndex,
+                          identity->layerBit,
+                          identity->isTrigger,
+                          !body.IsStatic(),
+                          leaf.geometry,
+                          center + rotation * leaf.center,
+                          rotation * leaf.rotation,
+                          center,
+                          {velocity.GetX(), velocity.GetY(), velocity.GetZ()},
+                          {angular.GetX(), angular.GetY(), angular.GetZ()}});
+    }
+    return states;
+}
+
+std::vector<PhysicsBoxShapeState> PhysicsWorld::GetBodyBoxShapeStates(uint32_t bodyId, bool queryTriggers) const
+{
+    std::vector<PhysicsBoxShapeState> states;
+    for (const auto &leaf : GetBodyShapeStates(bodyId, queryTriggers)) {
+        if (leaf.geometry->type == PhysicsShapeType::Box && dynamic_cast<BoxCollider *>(leaf.collider))
+            states.push_back({leaf.memberIndex, leaf.center, leaf.rotation, glm::vec3(leaf.geometry->dimensions) * .5f,
+                              leaf.collider->GetFriction(), leaf.collider->GetBounciness()});
+    }
+    std::sort(states.begin(), states.end(),
+              [](const auto &left, const auto &right) { return left.memberIndex < right.memberIndex; });
+    return states;
+}
+
 Collider *PhysicsWorld::FindColliderByBodyId(uint32_t bodyId) const
 {
-    auto it = m_bodyToCollider.find(bodyId);
-    return (it != m_bodyToCollider.end()) ? it->second : nullptr;
+    const auto found = m_bodies.find(bodyId);
+    return found != m_bodies.end() && !found->second.targets.empty() ? found->second.targets.front().collider : nullptr;
 }
 
 void PhysicsWorld::PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId)
 {
-    auto &published = m_bodyQueryIdentities[bodyId];
+    auto &record = m_bodies.at(bodyId);
+    auto &published = record.targets;
     published.clear();
+    published.reserve(record.members.size());
 
-    const auto append = [&published](Collider *collider, uint32_t memberIndex) {
+    // Retired members keep their original subshape indices until the next shape commit.
+    for (size_t index = 0; index < record.members.size(); ++index) {
+        auto *collider = record.members[index];
         if (!collider)
-            return;
-        const auto existing =
-            std::find_if(published.begin(), published.end(),
-                         [collider](const QueryColliderIdentity &identity) { return identity.collider == collider; });
-        if (existing != published.end()) {
-            existing->memberIndex = memberIndex;
-            return;
-        }
+            continue;
         GameObject *gameObject = collider->GetGameObject();
-        QueryColliderIdentity identity;
+        QueryTargetIdentity identity;
         identity.collider = collider;
         identity.gameObject = gameObject;
         identity.colliderId = collider->GetComponentID();
         identity.gameObjectId = gameObject ? gameObject->GetID() : 0;
-        identity.memberIndex = memberIndex;
+        identity.memberIndex = static_cast<uint32_t>(index);
         identity.target = PhysicsTargetReference(collider);
         identity.isTrigger = collider->IsTrigger();
+        identity.layerBit = uint32_t{1} << gameObject->GetLayer();
         published.push_back(identity);
-    };
-
-    // Primary first gives non-compound/failure paths a fallback that is also
-    // part of this immutable publication. Query workers do not consult the
-    // mutable body-to-component maps at all.
-    const auto primary = m_bodyToCollider.find(bodyId);
-    if (primary != m_bodyToCollider.end())
-        append(primary->second, UINT32_MAX);
-
-    const auto colliders = m_bodyColliders.find(bodyId);
-    if (colliders != m_bodyColliders.end()) {
-        published.reserve(published.size() + colliders->second.size());
-        for (size_t index = 0; index < colliders->second.size(); ++index)
-            append(colliders->second[index], static_cast<uint32_t>(index));
     }
 }
 
-const PhysicsWorld::QueryColliderIdentity *
+const PhysicsWorld::QueryTargetIdentity *
 PhysicsWorld::ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId, uint32_t subShapeIdValue) const
 {
-    const auto published = m_bodyQueryIdentities.find(bodyId);
-    if (published == m_bodyQueryIdentities.end() || published->second.empty())
+    const auto published = m_bodies.find(bodyId);
+    if (published == m_bodies.end() || published->second.targets.empty())
         return nullptr;
 
-    const QueryColliderIdentity *fallback = &published->second.front();
+    const QueryTargetIdentity *fallback = &published->second.targets.front();
 
-    const JPH::Shape *shape = body.GetShape();
-    if (!shape || shape->GetType() != JPH::EShapeType::Compound)
+    const auto memberIndex = CompoundMemberIndex(body.GetShape(), subShapeIdValue);
+    if (!memberIndex)
         return fallback;
-
-    const auto *compound = static_cast<const JPH::CompoundShape *>(shape);
-    JPH::SubShapeID subShapeId;
-    subShapeId.SetValue(subShapeIdValue);
-    if (!compound->IsSubShapeIDValid(subShapeId))
-        return fallback;
-
-    JPH::SubShapeID remainder;
-    const uint32_t subShapeIndex = compound->GetSubShapeIndexFromID(subShapeId, remainder);
-    const uint32_t memberIndex = compound->GetCompoundUserData(subShapeIndex);
 
     const auto match = std::find_if(
-        published->second.begin(), published->second.end(),
-        [memberIndex](const QueryColliderIdentity &identity) { return identity.memberIndex == memberIndex; });
-    return match != published->second.end() ? &*match : fallback;
+        published->second.targets.begin(), published->second.targets.end(),
+        [memberIndex](const QueryTargetIdentity &identity) { return identity.memberIndex == *memberIndex; });
+    return match != published->second.targets.end() ? &*match : nullptr;
+}
+
+bool PhysicsWorld::AcceptsSubShapeQuery(const JPH::Body &body, uint32_t subShapeId, uint32_t layerMask) const
+{
+    const auto *identity = ResolvePublishedQueryIdentity(body, body.GetID().GetIndexAndSequenceNumber(), subShapeId);
+    return identity && (identity->layerBit & layerMask) != 0;
+}
+
+bool PhysicsWorld::AcceptsCCDCandidate(const JPH::Body &source, const JPH::Body &target, uint32_t sourceSubShape,
+                                       uint32_t targetSubShape) const
+{
+    const auto sourceId = source.GetID().GetIndexAndSequenceNumber();
+    const auto targetId = target.GetID().GetIndexAndSequenceNumber();
+    const auto *a = ResolvePublishedQueryIdentity(source, sourceId, sourceSubShape);
+    const auto *b = ResolvePublishedQueryIdentity(target, targetId, targetSubShape);
+    return a && b && !a->isTrigger && !b->isTrigger &&
+           TagLayerManager::Instance().GetLayersCollide(a->gameObject->GetLayer(), b->gameObject->GetLayer()) &&
+           (!m_contactListener || (!m_contactListener->GetBodyPairIgnored(sourceId, targetId) &&
+                                   !m_contactListener->GetColliderPairIgnored(a->colliderId, b->colliderId)));
 }
 
 Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const
@@ -3331,104 +3670,24 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(const JPH::Body &body, uint32
         return nullptr;
     }
 
-    const JPH::Shape *shape = body.GetShape();
-    if (!shape || shape->GetType() != JPH::EShapeType::Compound) {
+    const auto memberIndex = CompoundMemberIndex(body.GetShape(), subShapeIdValue);
+    if (!memberIndex) {
         return fallback;
     }
 
-    const auto *compound = static_cast<const JPH::CompoundShape *>(shape);
-    JPH::SubShapeID subShapeId;
-    subShapeId.SetValue(subShapeIdValue);
-    if (!compound->IsSubShapeIDValid(subShapeId)) {
+    const auto cached = m_bodies.find(bodyId);
+    if (cached == m_bodies.end() || *memberIndex >= cached->second.members.size()) {
         return fallback;
     }
-
-    JPH::SubShapeID remainder;
-    const uint32_t subShapeIndex = compound->GetSubShapeIndexFromID(subShapeId, remainder);
-    const uint32_t memberIndex = compound->GetCompoundUserData(subShapeIndex);
-
-    const auto cached = m_bodyColliders.find(bodyId);
-    if (cached == m_bodyColliders.end() || memberIndex >= cached->second.size()) {
-        return fallback;
-    }
-    return cached->second[memberIndex] ? cached->second[memberIndex] : fallback;
-}
-
-void PhysicsWorld::RebindBodyCollider(uint32_t bodyId, Collider *collider)
-{
-    std::unique_lock snapshotWrite(m_querySnapshotMutex);
-    if (!m_initialized || bodyId == 0xFFFFFFFF || !collider) {
-        return;
-    }
-    m_bodyToCollider[bodyId] = collider;
-    m_physicsSystem->GetBodyInterface().SetUserData(JPH::BodyID(bodyId), reinterpret_cast<uint64_t>(collider));
-    // Rebinding does not replace the shape. Preserve its member indices and
-    // clear removed pointers using the current owner's live component list.
-    const auto liveMembers = collider->GetGameObject()->GetComponents<Collider>();
-    auto &members = m_bodyColliders.at(bodyId);
-    for (auto &member : members) {
-        const auto live = std::find(liveMembers.begin(), liveMembers.end(), member);
-        if (live == liveMembers.end() || (*live)->IsBeingDestroyed())
-            member = nullptr;
-    }
-    PublishBodyQueryIdentitiesUnlocked(bodyId);
-    m_queryGeneration.fetch_add(1, std::memory_order_release);
+    return cached->second.members[*memberIndex];
 }
 
 void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
 {
     if (!m_initialized || !scene)
         return;
-
-    bool anyRegistered = false;
-    auto &store = PhysicsECSStore::Instance();
-
-    // Flush deferred body creation queue first (from Collider::Awake).
-    auto pendingBodies = store.ConsumePendingBodyCreations();
-    for (auto handle : pendingBodies) {
-        if (!store.IsValid(handle))
-            continue;
-        auto &data = store.GetCollider(handle);
-        auto *col = data.owner;
-        if (!col || !col->IsEnabled() || col->GetBodyId() != 0xFFFFFFFF)
-            continue;
-        col->RegisterBody();
-        if (col->GetBodyId() != 0xFFFFFFFF) {
-            col->AddToBroadphase();
-            anyRegistered = true;
-        }
-    }
-
-    // Walk all alive colliders — register any that still lack a body
-    // (shouldn't normally happen after the pending queue flush, but
-    // guards against edge cases).
-    auto handles = store.GetAliveColliderHandles();
-    for (auto handle : handles) {
-        auto &data = store.GetCollider(handle);
-        auto *col = data.owner;
-        if (!col || !col->IsEnabled())
-            continue;
-
-        if (col->GetBodyId() == 0xFFFFFFFF) {
-            col->RegisterBody();
-            col->AddToBroadphase();
-            anyRegistered = true;
-        }
-
-        col->SyncTransformToPhysics();
-    }
-
-    // Flush deferred broadphase additions, then rebuild the BVH tree
-    // so raycasts can find newly added static bodies.
-    auto pending = store.ConsumePendingBroadphaseAdds();
-    if (!pending.empty()) {
-        AddBodiesBatch(pending);
-        anyRegistered = true;
-    }
-
-    if (anyRegistered) {
-        OptimizeBroadPhase();
-    }
+    auto &manager = SceneManager::Instance();
+    manager.SyncTransforms();
 }
 
 void PhysicsWorld::OptimizeBroadPhase()

@@ -105,7 +105,7 @@ def test_cull_preserves_every_visible_source_index(cull_kernels, count, case, vi
         stages = [("Reset", 1), *([("Cull", groups)] if groups else []), ("Finalize", 1)]
         accesses = ["read", "read", "read_write", "read_write", "read_write",
                     "read", "read_write", "read", "read"]
-        dispatches = [(kernels[name], buffers, accesses, constants, groups, 1, 1)
+        dispatches = [(kernels[name], buffers, accesses, constants, groups, 1, 1, None)
                       for name, groups in stages]
         for iteration in range(4):
             # Another view may already have made the shared simulation visible.

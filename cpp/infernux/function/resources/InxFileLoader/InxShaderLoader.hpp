@@ -1,4 +1,5 @@
 #pragma once
+#include <function/resources/AssetRegistry/AssetSource.h>
 
 #include <SPIRV/GlslangToSpv.h>
 #include <atomic>
@@ -155,8 +156,7 @@ class InxShaderLoader
         return s_additionalSearchPaths;
     }
 
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InxResourceMeta &metaData) const;
+    void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const;
 
     /// Compile shader source to SPIR-V and populate variant caches.
     /// Returns compiled data as shared_ptr<vector<char>> (forward SPIR-V), or nullptr on failure.
@@ -282,7 +282,7 @@ class InxShaderLoader
                                       const std::unordered_map<std::string, std::string> &shaderIdMap) const;
 
     /// Load a template file from _templates/ directory (with caching).
-    static std::string LoadTemplate(const std::string &templateName);
+    static std::string LoadTemplate(const std::string &templateName, const std::string &rootSource = "");
 
     /// Replace all occurrences of a placeholder in a string.
     static void ReplacePlaceholder(std::string &str, const std::string &placeholder, const std::string &replacement);
@@ -292,7 +292,12 @@ class InxShaderLoader
     static std::vector<std::string> s_projectSearchPaths;
 
     /// Template file cache (static — shared across all loader instances)
-    static std::unordered_map<std::string, std::string> s_templateCache;
+    struct TemplateSource
+    {
+        std::string text;
+        std::string path;
+    };
+    static std::unordered_map<std::string, TemplateSource> s_templateCache;
 
     /// Shading model cache (static — avoids re-parsing .shadingmodel files)
     static std::unordered_map<std::string, ShaderDescriptor> s_shadingModelCache;

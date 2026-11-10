@@ -748,7 +748,7 @@ COMMON_NODE_DEFINITIONS = (
             _input(
                 "curve",
                 TypeRef(ValueType.CURVE),
-                default=AnimationCurve().to_dict(),
+                default=AnimationCurve.ease_in_out(0.0, 0.0, 1.0, 1.0).to_dict(),
             ),
             _input(
                 "t",

@@ -1,19 +1,26 @@
 from __future__ import annotations
+from infernux.screen import Rect
 
 from typing import Any, List, Optional, Tuple, Union
 
 from infernux.components.builtin_component import BuiltinComponent
 from infernux.core.render_texture import RenderTexture
 from infernux.core.asset_ref import RenderTextureRef
+from infernux.lib import Vector2
 import numpy as np
 from numpy.typing import NDArray, ArrayLike
 
 class Camera(BuiltinComponent):
     """A Camera component that renders a view of the scene."""
 
+    render_to_texture: bool
+    memory_output_size: Vector2
+    render_on_demand: bool
+    def request_render(self) -> None: ...
+
     @property
     def target_texture(self) -> RenderTexture | RenderTextureRef | None:
-        """Output owner, unresolved asset reference, or None for the screen.
+        """Optional shared target when rendering to a texture.
 
         Imported targets persist by GUID. Anonymous runtime targets do not.
         Requires depth; resolution and MSAA belong to the target asset.
@@ -21,6 +28,8 @@ class Camera(BuiltinComponent):
         ...
     @target_texture.setter
     def target_texture(self, value: RenderTexture | RenderTextureRef | None) -> None: ...
+    @property
+    def output_texture(self) -> RenderTexture | None: ...
     def set_clip_planes(self, near_clip: float, far_clip: float) -> None: ...
     @property
     def projection_matrix(self) -> NDArray[np.float32]: ...
@@ -157,6 +166,19 @@ class Camera(BuiltinComponent):
     def aspect_ratio(self) -> float:
         """The aspect ratio of the camera (width / height)."""
         ...
+    @aspect_ratio.setter
+    def aspect_ratio(self, value: float) -> None: ...
+    def reset_aspect_ratio(self) -> None: ...
+    @property
+    def has_custom_aspect_ratio(self) -> bool: ...
+    @property
+    def rect(self) -> "Rect": ...
+    @rect.setter
+    def rect(self, value: "Rect") -> None: ...
+    @property
+    def pixel_rect(self) -> "Rect": ...
+    @pixel_rect.setter
+    def pixel_rect(self, value: "Rect") -> None: ...
 
     @property
     def near_clip(self) -> float:

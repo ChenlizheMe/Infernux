@@ -8,6 +8,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <function/renderer/Frustum.h>
@@ -27,6 +28,14 @@ namespace infernux
 
 class InxMaterial;
 
+struct ImGuiTexturePublication
+{
+    uint64_t textureId = 0;
+    uint64_t uploadVersion = 0;
+    int width = 0;
+    int height = 0;
+};
+
 /// Requested index storage for model/runtime mesh GPU publication. CPU
 /// geometry remains uint32_t so physics and editing never inherit a packed
 /// representation.
@@ -45,6 +54,13 @@ enum class MeshGeometryView : uint8_t
     MergedModelSpace,
     NodeLocal,
 };
+
+inline constexpr char BuiltinMeshGuidPrefix[] = "builtin-mesh:";
+
+inline bool IsBuiltinMeshGuid(std::string_view guid)
+{
+    return guid.rfind(BuiltinMeshGuidPrefix, 0) == 0;
+}
 
 inline MeshIndexFormat ResolveMeshIndexFormat(MeshIndexFormat requested, size_t vertexCount,
                                               const std::vector<uint32_t> &indices)
@@ -197,16 +213,12 @@ struct DrawCall
     std::shared_ptr<rhi::ComputeBuffer> meshVertexBuffer;
     std::string meshAssetGuid;
     uint64_t meshRuntimeVersion = 0;
+    bool meshUsesDetachedStorage = false; // Explicit draws share immutable geometry independently of draw identity.
     MeshGeometryView meshGeometryView = MeshGeometryView::MergedModelSpace;
 
-    // Optional GPU skinning palette. When present, vertex data is the bind-pose
-    // skinned mesh stream and the vertex shader applies these matrices.
-    std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
-    const std::vector<glm::mat4> *skinBoneMatrices = nullptr;
-    // Previous submitted pose for GPU motion evaluation and dynamic Mesh
-    // sampling. On first publication this aliases the current palette.
-    std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
-    const std::vector<glm::mat4> *previousSkinBoneMatrices = nullptr;
+    // Immutable palette for this draw. A binding change starts new motion history.
+    std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatrices;
+    uint64_t skinContinuity = 0;
 
     // When true, forces GPU buffer re-upload even if vertex/index count hasn't
     // changed (e.g. vertex colour change for gizmo highlight).

@@ -14,14 +14,8 @@
 namespace infernux
 {
 
-/// Immutable companion artifact captured before an import worker starts.
-/// Runtime identity is owner GUID + stable local id, never this artifact's path.
-struct SkeletonDefinitionSnapshot
-{
-    std::string ownerGuid;
-    std::string sourceContentHash;
-    std::string artifactBytes;
-};
+class InxSkinnedMesh;
+class AssetSource;
 
 /**
  * @brief Immutable input captured before importer execution.
@@ -33,6 +27,8 @@ struct ImportRequest
     ResourceType resourceType = ResourceType::DefaultText;
     InxResourceMeta metadata;
     bool isReimport = false;
+    // Borrowed for an immediate cook that also prepared metadata from this source.
+    AssetSource *source = nullptr;
     // Editor-owned tool configuration is captured on the owner thread; worker
     // imports never call Python or read mutable editor preferences.
     std::string projectRoot;
@@ -41,7 +37,9 @@ struct ImportRequest
     // Native immutable catalog lookup, captured before worker execution.
     // No AssetDatabase mutation or Python callback is permitted here.
     std::function<std::string(const std::string &, bool linear)> resolveTextureGuid;
-    std::shared_ptr<const SkeletonDefinitionSnapshot> skeletonDefinition;
+    using SkeletonDefinitionReader = std::function<std::shared_ptr<const InxSkinnedMesh>()>;
+    SkeletonDefinitionReader skeletonDefinition;
+    bool retainSkeletonDefinition = false;
 };
 
 /**
@@ -85,6 +83,7 @@ struct ImportArtifact
     };
 
     std::vector<RuntimeCpuArtifact> runtimeCpuArtifacts;
+    std::shared_ptr<const InxSkinnedMesh> skeletonDefinition;
 };
 
 /**

@@ -9,6 +9,7 @@
     "cmake/presets/Windows.json",
     "cmake/presets/Linux.json",
     "cmake/presets/Android.json",
-    "cmake/presets/Workflows.json"
+    "cmake/presets/Workflows.json",
+    "cmake/presets/PlatformPlugins.json"
   ]
 }

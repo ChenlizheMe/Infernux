@@ -269,6 +269,7 @@ class TestPublicJitCompile:
         gpu = object.__new__(inx.Buffer)
         gpu._device = "gpu"
         gpu._closed = False
+        gpu._native = None
         with pytest.raises(RuntimeError, match="GPU buffers require"):
             scale(gpu, 2.0)
 

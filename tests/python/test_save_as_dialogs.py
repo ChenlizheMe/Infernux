@@ -2,6 +2,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from infernux.engine.scene_manager import SceneFileManager
 from infernux.engine.interaction import (
+    DocumentActionStatus,
     DocumentCapability,
     DocumentKind,
     DocumentRegistry,
@@ -74,14 +75,15 @@ def _set_scene_dirty(manager: SceneFileManager, dirty: bool) -> None:
         registry.restore_saved_revision(document.document_id)
 
 
-def test_unsaved_scene_agent_save_uses_editor_owned_save_as_state(tmp_path, monkeypatch):
+def test_unsaved_scene_agent_save_uses_editor_owned_save_as_state(scene, tmp_path, monkeypatch):
     monkeypatch.setattr(scene_save, "_effective_project_root", lambda: str(tmp_path))
     monkeypatch.setattr(scene_save, "is_synthetic_input_frame", lambda: True)
     manager = _scene_manager()
     try:
         manager._current_scene_path = None
-        manager._show_save_as_dialog()
+        result = DocumentRegistry.instance().request_save(manager.document_id, save_as=True)
 
+        assert result.status is DocumentActionStatus.PENDING
         assert manager._save_as_popup_open is True
         assert manager._save_as_popup_requested is True
         assert manager._save_as_focus_name is True
@@ -92,7 +94,7 @@ def test_unsaved_scene_agent_save_uses_editor_owned_save_as_state(tmp_path, monk
         _restore_scene_manager(manager)
 
 
-def test_unsaved_scene_user_save_uses_native_dialog(tmp_path, monkeypatch):
+def test_unsaved_scene_user_save_uses_native_dialog(scene, tmp_path, monkeypatch):
     monkeypatch.setattr(scene_save, "_effective_project_root", lambda: str(tmp_path))
     monkeypatch.setattr(scene_save, "is_synthetic_input_frame", lambda: False)
     target = tmp_path / "Assets" / "Scenes" / "RacingEntry.scene"
@@ -102,8 +104,9 @@ def test_unsaved_scene_user_save_uses_native_dialog(tmp_path, monkeypatch):
     try:
         manager._current_scene_path = None
         manager._do_save = lambda path, **_kwargs: saved.append(path) or True
-        manager._show_save_as_dialog()
+        result = DocumentRegistry.instance().request_save(manager.document_id, save_as=True)
 
+        assert result.status is DocumentActionStatus.PENDING
         assert manager._save_as_popup_open is False
         assert manager._save_as_native_dialog_pending is True
 
@@ -115,7 +118,7 @@ def test_unsaved_scene_user_save_uses_native_dialog(tmp_path, monkeypatch):
         _restore_scene_manager(manager)
 
 
-def test_scene_save_as_nests_under_unsaved_confirmation(tmp_path, monkeypatch):
+def test_scene_save_as_nests_under_unsaved_confirmation(scene, tmp_path, monkeypatch):
     monkeypatch.setattr(scene_save, "_effective_project_root", lambda: str(tmp_path))
     monkeypatch.setattr(scene_save, "is_synthetic_input_frame", lambda: True)
     manager = _scene_manager()
@@ -129,7 +132,8 @@ def test_scene_save_as_nests_under_unsaved_confirmation(tmp_path, monkeypatch):
     )
     try:
         assert modals.activate("editor.unsaved_changes", owner_id="scene")
-        assert manager._show_save_as_dialog()
+        result = DocumentRegistry.instance().request_save(manager.document_id, save_as=True)
+        assert result.status is DocumentActionStatus.PENDING
         assert [entry.modal_id for entry in modals.active_stack] == [
             "editor.unsaved_changes",
             "scene.save_as",

@@ -20,7 +20,7 @@ const std::unordered_set<std::string> RECORD_FIELDS = {
 };
 
 const std::unordered_set<std::string> COMPONENT_BASE_FIELDS = {
-    "type", "component_id", "prefab_source_id", "enabled", "execution_order",
+    "type", "component_id", "prefab_source_id", "prefab_source_guid", "enabled", "execution_order",
 };
 
 void RequireExactFields(const json &document, const std::unordered_set<std::string> &allowed, const char *label)
@@ -29,7 +29,7 @@ void RequireExactFields(const json &document, const std::unordered_set<std::stri
         throw std::invalid_argument(std::string(label) + " must be an object");
     for (const auto &[key, value] : document.items()) {
         (void)value;
-        if (key != "prefab_source_id" && allowed.find(key) == allowed.end())
+        if (key != "prefab_source_id" && key != "prefab_source_guid" && allowed.find(key) == allowed.end())
             throw std::invalid_argument(std::string(label) + " contains unknown field: " + key);
     }
     for (const auto &field : allowed) {
@@ -80,6 +80,8 @@ nlohmann::json SerializeComponentRecord(const Component &component)
     };
     if (component.GetPrefabSourceID())
         record["prefab_source_id"] = component.GetPrefabSourceID();
+    if (component.GetPrefabSourceID() && !component.GetPrefabSourceGuid().empty())
+        record["prefab_source_guid"] = component.GetPrefabSourceGuid();
 
     if (pythonProxy) {
         if (pythonProxy->GetScriptGuid().empty() || pythonProxy->GetTypeGuid().empty() ||
@@ -142,6 +144,12 @@ DecodedComponentRecord DecodeComponentRecord(const nlohmann::json &document)
             throw std::invalid_argument("ComponentRecord.prefab_source_id must be a non-zero unsigned integer");
         record.prefabSourceId = document["prefab_source_id"].get<uint64_t>();
     }
+    if (const auto sourceGuid = document.find("prefab_source_guid"); sourceGuid != document.end()) {
+        if (!record.prefabSourceId || !sourceGuid->is_string() || sourceGuid->get_ref<const std::string &>().empty())
+            throw std::invalid_argument(
+                "ComponentRecord.prefab_source_guid must be a non-empty string with a source ID");
+        record.prefabSourceGuid = sourceGuid->get<std::string>();
+    }
     record.componentId = document["component_id"].get<uint64_t>();
     record.typeId = document["type_id"].get<std::string>();
     record.enabled = document["enabled"].get<bool>();
@@ -186,6 +194,8 @@ nlohmann::json BuildNativeComponentDocument(const DecodedComponentRecord &record
     document["component_id"] = record.componentId;
     if (record.prefabSourceId)
         document["prefab_source_id"] = record.prefabSourceId;
+    if (!record.prefabSourceGuid.empty())
+        document["prefab_source_guid"] = record.prefabSourceGuid;
     document["enabled"] = record.enabled;
     document["execution_order"] = record.executionOrder;
     return document;

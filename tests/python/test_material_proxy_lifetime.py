@@ -56,8 +56,8 @@ def test_renderer_keeps_material_after_python_context_exits(scene):
     with inx.Material.create_unlit() as material:
         material.set_float("proxyLifetimeValue", 0.75)
         renderer.material = material
-        assert renderer.material is material
-    replacement = renderer.material
+        assert renderer.shared_material is material
+    replacement = renderer.shared_material
     assert replacement is not material
     assert not replacement._disposed
     assert replacement.get_float("proxyLifetimeValue") == pytest.approx(0.75)

@@ -69,7 +69,7 @@ def test_scene_transaction_prepares_current_revision_after_old_ticket_is_superse
         assert len(tickets) == 2 and tickets[0].superseded and tickets[1].committed
         assert scene.find("PreparedMaterial") is None
         published = scene.find("PublishedMaterial")
-        assert published.get_component("MeshRenderer").material.guid == case.material_guid
+        assert published.get_component("MeshRenderer").shared_material.guid == case.material_guid
     finally:
         transaction.cancel()
         case.close()

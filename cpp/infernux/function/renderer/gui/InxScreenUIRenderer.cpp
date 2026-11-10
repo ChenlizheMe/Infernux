@@ -18,6 +18,7 @@
  */
 
 #include "InxScreenUIRenderer.h"
+#include "ImageFillDraw.h"
 #include "InxTextGeometry.h"
 #include "InxTextLayout.h"
 #include <algorithm>
@@ -711,14 +712,21 @@ std::shared_ptr<InxScreenUIRenderer::CommandPacket> InxScreenUIRenderer::EndComm
     return std::exchange(m_recordingPacket, {});
 }
 
-void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr<CommandPacket>> &packets)
+void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr<CommandPacket>> &packets,
+                                               const std::vector<float> &opacities)
 {
     if (!m_initialized || m_recordingPacket || m_worldElementStart >= 0)
         throw std::logic_error("UI packets require an initialized renderer outside element capture");
+    if (!opacities.empty() && opacities.size() != packets.size())
+        throw std::invalid_argument("UI packet opacities must match the packet count");
     ++m_materialBindingsRevision;
-    for (const auto &packet : packets) {
+    for (size_t packetIndex = 0; packetIndex < packets.size(); ++packetIndex) {
+        const auto &packet = packets[packetIndex];
         if (!packet)
             throw std::invalid_argument("UI command packets must not be null");
+        const float opacity = opacities.empty() ? 1.0f : opacities[packetIndex];
+        if (opacity <= 0.0f)
+            continue;
         for (int index = 0; index < 3; ++index) {
             const auto &source = packet->m_data->lists[index];
             if (source.vertices.empty())
@@ -738,6 +746,14 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
             destination.VtxBuffer.resize(vertexStart + static_cast<int>(source.vertices.size()));
             std::memcpy(destination.VtxBuffer.Data + vertexStart, source.vertices.data(),
                         source.vertices.size() * sizeof(ImDrawVert));
+            if (opacity < 1.0f) {
+                for (auto *vertex = destination.VtxBuffer.Data + vertexStart; vertex != destination.VtxBuffer.end();
+                     ++vertex) {
+                    const auto alpha =
+                        static_cast<ImU32>(((vertex->col & IM_COL32_A_MASK) >> IM_COL32_A_SHIFT) * opacity + 0.5f);
+                    vertex->col = (vertex->col & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+                }
+            }
             destination.IdxBuffer.resize(indexStart + static_cast<int>(source.indices.size()));
             for (size_t i = 0; i < source.indices.size(); ++i)
                 destination.IdxBuffer.Data[indexStart + i] = static_cast<ImDrawIdx>(source.indices[i] + bias);
@@ -1258,6 +1274,22 @@ void InxScreenUIRenderer::AddImage(ScreenUIList list, uint64_t textureId, float 
     TrackHDRColorRange(list, vtxStart, dl->VtxBuffer.Size, hdrScale);
 }
 
+void InxScreenUIRenderer::AddFilledImage(ScreenUIList list, uint64_t textureId, float minX, float minY, float maxX,
+                                         float maxY, float u0, float v0, float u1, float v1, float r, float g, float b,
+                                         float a, float amount, int method, int origin, bool clockwise, float rotation,
+                                         bool mirrorH, bool mirrorV)
+{
+    auto *draw = GetDrawList(list);
+    if (!draw)
+        return;
+    const int first = draw->VtxBuffer.Size;
+    const float hdrScale = ExtractHDRScale(r, g, b);
+    AppendFilledImage(*draw, ToImTextureID(textureId), minX, minY, maxX, maxY, u0, v0, u1, v1,
+                      ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)), amount, method, origin, clockwise, rotation,
+                      mirrorH, mirrorV);
+    TrackHDRColorRange(list, first, draw->VtxBuffer.Size, hdrScale);
+}
+
 void InxScreenUIRenderer::AddText(ScreenUIList list, float minX, float minY, float maxX, float maxY,
                                   const std::string &text, float r, float g, float b, float a, float alignX,
                                   float alignY, float fontSize, float wrapWidth, float rotation, bool mirrorH,
@@ -1280,7 +1312,7 @@ void InxScreenUIRenderer::AddText(ScreenUIList list, float minX, float minY, flo
     if (scissorClip)
         dl->PushClipRect(ImVec2(minX, minY), ImVec2(maxX, maxY), true);
     dl->PushTextureID(ImGui::GetIO().Fonts->TexRef);
-    textlayout::RenderTextBox(dl, minX, minY, maxX, maxY, layout, col, alignX, alignY, letterSpacing,
+    textlayout::RenderTextBox(dl, minX, minY, maxX, maxY, layout, col, alignX, alignY,
                               clip && !scissorClip ? &textClip : nullptr);
     dl->PopTextureID();
     if (scissorClip)
@@ -2270,6 +2302,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     std::vector<VkDescriptorImageInfo> imageInfos(resource->textures.size());
     std::vector<VkWriteDescriptorSet> writes;
     writes.reserve(imageInfos.size() + 1);
+    vk::SubmissionReads uploadSources;
     if (resource->buffer) {
         bufferInfo.buffer = resource->buffer->GetBuffer();
         bufferInfo.range = resource->buffer->GetSize();
@@ -2284,6 +2317,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         const auto &texture = resource->textures[slot];
         if (!texture.gpuView)
             continue;
+        uploadSources.Add(texture.gpuView->GetUploadSubmission());
         imageInfos[slot] = {texture.sampler, texture.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = resource->set;
@@ -2294,6 +2328,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         writes.push_back(write);
     }
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    m_descriptorManager->SetUploadSources(resource->descriptorLease, uploadSources);
     if (previous != m_materialDescriptors.end())
         RetireMaterialDescriptor(binding.materialGuid);
     const VkDescriptorSet set = resource->set;

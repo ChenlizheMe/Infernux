@@ -35,15 +35,17 @@ def _list_to_vec2(value):
 def _get_width_curve(cpp):
     from infernux.graph.ramp import AnimationCurve, Keyframe
 
-    wrap_names = ("clamp", "repeat", "ping_pong")
-    return AnimationCurve(
-        tuple(
-            Keyframe(key.time, key.value, key.in_tangent, key.out_tangent)
+    wrap_names = ("clamp", "repeat", "ping_pong", "default", "once")
+    curve = AnimationCurve(pre_wrap=wrap_names[int(cpp.width_curve_pre_wrap)],
+                           post_wrap=wrap_names[int(cpp.width_curve_post_wrap)])
+    curve._replace_stored_keys(
+        (
+            Keyframe(key.time, key.value, key.in_tangent, key.out_tangent,
+                     key.in_weight, key.out_weight, key.weighted_mode)
             for key in cpp.width_curve
-        ),
-        wrap_names[int(cpp.width_curve_pre_wrap)],
-        wrap_names[int(cpp.width_curve_post_wrap)],
+        )
     )
+    return curve
 
 
 def _set_width_curve(cpp, value) -> None:
@@ -56,15 +58,18 @@ def _set_width_curve(cpp, value) -> None:
         else AnimationCurve.from_dict(value)
     )
     cpp.width_curve = [
-        LineWidthKey(key.time, key.value, key.in_tangent, key.out_tangent)
+        LineWidthKey(key.time, key.value, key.in_tangent, key.out_tangent,
+                     key.in_weight, key.out_weight, int(key.weighted_mode))
         for key in curve.keys
     ]
     modes = (
         LineCurveWrapMode.Clamp,
         LineCurveWrapMode.Repeat,
         LineCurveWrapMode.PingPong,
+        LineCurveWrapMode.Default,
+        LineCurveWrapMode.Once,
     )
-    wrap_names = ("clamp", "repeat", "ping_pong")
+    wrap_names = ("clamp", "repeat", "ping_pong", "default", "once")
     cpp.width_curve_pre_wrap = modes[wrap_names.index(curve.pre_wrap)]
     cpp.width_curve_post_wrap = modes[wrap_names.index(curve.post_wrap)]
 
@@ -100,17 +105,24 @@ def _get_positions(cpp):
     return list(cpp.get_positions())
 
 
-def _set_positions(cpp, values) -> None:
+def _position_values(values):
+    """Preserve numeric buffers; convert only ordinary Python point iterables."""
+    try:
+        return memoryview(values)
+    except TypeError:
+        pass
     from infernux.lib import Vector3
 
-    cpp.set_positions(
-        [
-            value
-            if isinstance(value, Vector3)
-            else Vector3(float(value[0]), float(value[1]), float(value[2]))
-            for value in values
-        ]
-    )
+    return [
+        value
+        if isinstance(value, Vector3)
+        else Vector3(float(value[0]), float(value[1]), float(value[2]))
+        for value in values
+    ]
+
+
+def _set_positions(cpp, values) -> None:
+    cpp.set_positions(_position_values(values))
 
 
 class LineRenderer(MeshRenderer):
@@ -142,7 +154,7 @@ class LineRenderer(MeshRenderer):
     width_curve = CppProperty(
         "width_curve",
         FieldType.ANIMATION_CURVE,
-        default=AnimationCurve(),
+        default=AnimationCurve.constant(0.0, 1.0, 0.1),
         native_getter=_get_width_curve,
         native_setter=_set_width_curve,
         curve_non_negative=True,
@@ -240,6 +252,11 @@ class LineRenderer(MeshRenderer):
         self._require_cpp_component().set_position(index, position)
 
     def set_positions(self, positions) -> None:
+        """Replace points from an iterable or an (N, 3) float32/float64 buffer.
+
+        Buffer inputs avoid per-point Python objects and may be strided or
+        read-only. Data is copied into the component, not retained by reference.
+        """
         self.positions = positions
 
     def get_positions(self):

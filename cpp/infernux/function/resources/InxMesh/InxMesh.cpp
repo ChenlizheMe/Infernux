@@ -5,6 +5,7 @@
 #include <core/log/InxLog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -12,6 +13,11 @@
 
 namespace infernux
 {
+
+namespace
+{
+std::atomic<uint64_t> g_nextMeshStorageIdentity{1};
+}
 
 void InxMesh::RequireCpuReadable(std::string_view operation) const
 {
@@ -31,6 +37,7 @@ size_t InxMesh::ReleaseCpuGeometry()
         if (!source)
             return std::shared_ptr<const MeshGeometry>{};
         auto metadata = std::make_shared<MeshGeometry>();
+        metadata->storageIdentity = source->storageIdentity;
         metadata->subMeshes = source->subMeshes;
         metadata->boundsMin = source->boundsMin;
         metadata->boundsMax = source->boundsMax;
@@ -130,43 +137,45 @@ std::shared_ptr<InxMesh> InxMesh::CreateModelNodeCopy(const std::vector<std::str
     return result;
 }
 
-size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
+size_t MeshGeometry::GetRuntimeMemoryBytes() const noexcept
+{
+    size_t bytes = sizeof(*this) + vertices.capacity() * sizeof(Vertex) + indices.capacity() * sizeof(uint32_t) +
+                   subMeshes.capacity() * sizeof(SubMesh) + morphTargets.capacity() * sizeof(MeshMorphTarget);
+    for (const auto &subMesh : subMeshes)
+        bytes += subMesh.name.capacity();
+    for (const auto &target : morphTargets)
+        bytes += target.name.capacity() + target.positionDeltas.capacity() * sizeof(glm::vec3) +
+                 target.normalDeltas.capacity() * sizeof(glm::vec3) +
+                 target.tangentDeltas.capacity() * sizeof(glm::vec3);
+    return bytes;
+}
+
+size_t InxMesh::GetObjectMemoryBytes() const noexcept
 {
     size_t bytes = sizeof(*this) + m_name.capacity() + m_guid.capacity() + m_filePath.capacity();
-    bytes += sizeof(MeshGeometry);
-    bytes += m_geometry->vertices.capacity() * sizeof(Vertex);
-    bytes += m_geometry->indices.capacity() * sizeof(uint32_t);
-    bytes += m_geometry->subMeshes.capacity() * sizeof(SubMesh);
-    for (const auto &subMesh : m_geometry->subMeshes)
-        bytes += subMesh.name.capacity();
-    for (const auto &target : m_geometry->morphTargets)
-        bytes +=
-            sizeof(MeshMorphTarget) + target.name.capacity() + target.positionDeltas.capacity() * sizeof(glm::vec3) +
-            target.normalDeltas.capacity() * sizeof(glm::vec3) + target.tangentDeltas.capacity() * sizeof(glm::vec3);
-    if (m_modelSourceGeometry) {
-        bytes += sizeof(MeshGeometry) + m_modelSourceGeometry->vertices.capacity() * sizeof(Vertex) +
-                 m_modelSourceGeometry->indices.capacity() * sizeof(uint32_t) +
-                 m_modelSourceGeometry->subMeshes.capacity() * sizeof(SubMesh);
-        for (const auto &subMesh : m_modelSourceGeometry->subMeshes)
-            bytes += subMesh.name.capacity();
-        for (const auto &target : m_modelSourceGeometry->morphTargets)
-            bytes += sizeof(MeshMorphTarget) + target.name.capacity() +
-                     target.positionDeltas.capacity() * sizeof(glm::vec3) +
-                     target.normalDeltas.capacity() * sizeof(glm::vec3) +
-                     target.tangentDeltas.capacity() * sizeof(glm::vec3);
-    }
     bytes += m_materialSlotNames.capacity() * sizeof(std::string);
     for (const auto &name : m_materialSlotNames)
         bytes += name.capacity();
     bytes += m_materialSlotData.capacity() * sizeof(MaterialSlotData);
-    for (const auto &material : m_materialSlotData)
+    for (const auto &material : m_materialSlotData) {
         bytes += material.sourceId.capacity() + material.materialGuid.capacity();
+        for (const auto &guid : material.textureGuids)
+            bytes += guid.capacity();
+    }
     bytes += m_nodeNames.capacity() * sizeof(std::string);
     for (const auto &name : m_nodeNames)
         bytes += name.capacity();
     bytes += m_modelNodes.capacity() * sizeof(ImportedModelNode);
     for (const auto &node : m_modelNodes)
         bytes += node.name.capacity();
+    return bytes;
+}
+
+size_t InxMesh::GetRuntimeMemoryBytes() const noexcept
+{
+    size_t bytes = GetObjectMemoryBytes() + m_geometry->GetRuntimeMemoryBytes();
+    if (m_modelSourceGeometry && m_modelSourceGeometry != m_geometry)
+        bytes += m_modelSourceGeometry->GetRuntimeMemoryBytes();
     if (m_skinnedData)
         bytes += m_skinnedData->GetRuntimeMemoryBytes();
     return bytes;
@@ -295,10 +304,9 @@ void InxMesh::SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> i
     ++m_generation;
 }
 
-void InxMesh::ReplaceImportedContent(const InxMesh &source)
+void InxMesh::ReplaceImportedContent(InxMesh replacement) noexcept
 {
-    InxMesh replacement(source);
-    replacement.m_guid = m_guid;
+    replacement.m_guid = std::move(m_guid);
     replacement.m_generation = m_generation + 1;
     *this = std::move(replacement);
 }
@@ -306,7 +314,8 @@ void InxMesh::ReplaceImportedContent(const InxMesh &source)
 void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes,
                       std::vector<MeshMorphTarget> morphTargets)
 {
-    std::unordered_set<std::string> morphNames;
+    std::unordered_set<std::string_view> morphNames;
+    morphNames.reserve(morphTargets.size());
     const auto finite = [](const glm::vec3 &value) {
         return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
     };
@@ -321,6 +330,7 @@ void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indice
             throw std::invalid_argument("Mesh morph targets require unique names and finite vertex-aligned deltas");
     }
     auto geometry = std::make_shared<MeshGeometry>();
+    geometry->storageIdentity = g_nextMeshStorageIdentity.fetch_add(1, std::memory_order_relaxed);
     geometry->vertices = std::move(vertices);
     geometry->indices = std::move(indices);
     geometry->subMeshes = std::move(subMeshes);

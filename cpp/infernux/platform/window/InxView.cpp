@@ -293,17 +293,17 @@ bool InxView::HasPendingSyntheticInput() const
 
 void InxView::RequestExternalWake() noexcept
 {
-    m_externalWakeRequested.store(true, std::memory_order_release);
+    if (m_externalWakeRequested.exchange(true, std::memory_order_acq_rel))
+        return;
     SDL_Event event{};
     event.type = SDL_EVENT_USER;
     SDL_PushEvent(&event);
 }
 
-void InxView::ProcessEvent()
+void InxView::ProcessEvent(bool pace)
 {
     const auto inputFrameStart = std::chrono::steady_clock::now();
     // Begin a new input frame: clear transition edges and per-frame deltas.
-    InputManager::Instance().SetWindow(m_window);
     InputManager::Instance().BeginFrame();
     const auto inputFrameReady = std::chrono::steady_clock::now();
     m_needsImmediateGuiRefresh = false;
@@ -336,9 +336,11 @@ void InxView::ProcessEvent()
     SDL_Event firstEvent{};
     bool gotFirstEvent = false;
 
-    const bool isIdle = !m_isPlayMode && m_idling.enableIdling && m_idling.fpsIdle > 0.0f &&
+    const bool isIdle = pace && !m_isPlayMode && m_idling.enableIdling && m_idling.fpsIdle > 0.0f &&
                         pacingStart >= m_activeUntil && !HasPendingSyntheticInput();
-    const float targetFps = m_isPlayMode ? m_idling.playFpsCap : (isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap);
+    float targetFps = 0.0f;
+    if (pace)
+        targetFps = m_isPlayMode ? m_idling.playFpsCap : (isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap);
     pacing.playModeBypass = m_isPlayMode && targetFps <= 0.0f;
 
     pacing.idleMode = isIdle;
@@ -392,7 +394,8 @@ void InxView::ProcessEvent()
     // A high polling-rate mouse can enqueue dozens of consecutive motion
     // events between frames. ImGui only consumes the final absolute position,
     // while InputManager needs the accumulated relative delta. Coalesce only
-    // adjacent motion events so button/wheel/key ordering remains exact.
+    // adjacent motion from the same source. A cursor warp must be observed
+    // before its successor so its synthetic delta can be removed.
     std::optional<SDL_Event> pendingMouseMotion;
     auto flushMouseMotion = [&]() {
         if (!pendingMouseMotion)
@@ -417,10 +420,17 @@ void InxView::ProcessEvent()
         }
         if (queuedEvent.type == SDL_EVENT_MOUSE_MOTION) {
             ++pacing.mouseMotionEventCount;
-            if (pendingMouseMotion)
+            if (InputManager::Instance().HasPendingCursorWarp()) {
+                flushMouseMotion();
+                hadInputEvent = ProcessOneEvent(queuedEvent) || hadInputEvent;
+                ++pacing.dispatchedMouseMotionCount;
+            } else if (pendingMouseMotion && pendingMouseMotion->motion.windowID == queuedEvent.motion.windowID &&
+                       pendingMouseMotion->motion.which == queuedEvent.motion.which) {
                 MergeMouseMotion(*pendingMouseMotion, queuedEvent);
-            else
+            } else {
+                flushMouseMotion();
                 pendingMouseMotion = queuedEvent;
+            }
             return;
         }
         flushMouseMotion();
@@ -465,8 +475,6 @@ void InxView::ProcessEvent()
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
         processQueuedEvent(event);
-        if (m_closeRequested)
-            break;
     }
     flushMouseMotion();
     const auto pollEnd = std::chrono::steady_clock::now();
@@ -890,7 +898,10 @@ void InxView::Quit()
         SDL_RemoveEventWatch(&InxView::WatchApplicationEvents, this);
         m_eventWatchInstalled = false;
     }
-    InputManager::Instance().ShutdownMotionSensors();
+    if (m_ownsMotionSensors) {
+        InputManager::Instance().ShutdownMotionSensors();
+        m_ownsMotionSensors = false;
+    }
     if (m_window) {
         auto &input = InputManager::Instance();
         input.SetCursorLocked(false);
@@ -1114,6 +1125,7 @@ void InxView::SDLInit()
     }
     VerifyRequiredWindowsDpiPolicy();
     InputManager::Instance().InitializeMotionSensors();
+    m_ownsMotionSensors = true;
     INXLOG_DEBUG("SDL_Init succeeded.");
     if (!SDL_AddEventWatch(&InxView::WatchApplicationEvents, this)) {
         INXLOG_WARN("Could not install SDL application lifecycle watch: ", SDL_GetError());
@@ -1185,6 +1197,7 @@ void InxView::SDLInit()
     }
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
     SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
+    InputManager::Instance().SetWindow(m_window);
     // Keep this one startup record in release logs too, without adding noise
     // to the user's Console or enabling verbose per-frame native logging.
     INXLOG_DIAGNOSTIC("INFERNUX_WINDOW_GEOMETRY driver=", SDL_GetCurrentVideoDriver(), " sdl=", SDL_GetVersion(),

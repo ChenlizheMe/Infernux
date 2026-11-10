@@ -41,7 +41,7 @@ class CylinderCollider : public Collider
     }
     void SetDirection(int direction);
 
-    [[nodiscard]] void *CreateJoltShapeRaw() const override;
+    [[nodiscard]] JPH::RefConst<JPH::Shape> CreateJoltShape() const override;
 
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
     static void ValidateSerializedDocument(const nlohmann::json &document);

@@ -431,6 +431,14 @@ class InputManager
         return m_cursorVisible;
     }
 
+    /// Effective visibility while the native window has input focus.
+    [[nodiscard]] bool IsCursorHidden() const
+    {
+        return IsCursorLocked() || IsEditorMouseCaptureActive() ||
+               (!m_cursorVisible &&
+                (!m_editorCursorCaptureManaged || m_editorCursorCaptureAllowed || GetGameMouseButton(0)));
+    }
+
     /// @brief Confine the visible cursor to the game window without enabling relative motion.
     void SetCursorConfined(bool confined);
 
@@ -442,6 +450,10 @@ class InputManager
     /// @brief Warp the visible cursor in logical window coordinates.
     /// @return false when the current host cannot perform a hardware cursor warp.
     bool WarpCursor(float x, float y);
+    [[nodiscard]] bool HasPendingCursorWarp() const
+    {
+        return m_warpMotionPending;
+    }
 
     /// @brief Enable/disable editor-only mouse capture for Scene view camera drag.
     ///        Uses the same SDL relative mouse mode backend but does not report

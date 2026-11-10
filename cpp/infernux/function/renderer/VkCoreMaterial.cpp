@@ -12,7 +12,6 @@
 #include "InxError.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
-#include "TextureUploadBuilder.h"
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
@@ -58,370 +57,6 @@ ShadowViewGpuData PackShadowView(const lighting::ShadowView &view, uint32_t atla
 }
 
 } // namespace
-
-// ============================================================================
-// Shared texture resolution for material Texture2D properties
-// ============================================================================
-
-bool InxVkCoreModular::TrySubmitTextureStaging(const std::string &cacheKey, const PendingTextureStagingLoad &pending)
-{
-    auto staging = AssetRegistry::Instance().TryConsumeTextureUploadStaging(pending.ticket);
-    if (!staging)
-        return false;
-    TextureUploadBatch upload(*staging, pending.sampler);
-    auto ticket = m_resourceManager.BeginTextureUpload(upload.GetRequest());
-    ++m_submittedTextureUploadCount;
-    if (ticket->IsAsync())
-        ++m_asyncTextureUploadCount;
-    m_pendingTextureGpuUploads.emplace(
-        cacheKey,
-        PendingTextureGpuUpload{pending.ticket->GetGuid(), pending.ticket->GetRuntimeVersion(), std::move(ticket)});
-    return true;
-}
-
-void InxVkCoreModular::PumpPendingTextureLoads()
-{
-    auto &registry = AssetRegistry::Instance();
-    std::vector<std::string> changedTextures;
-    for (auto pending = m_pendingTextureAssetLoads.begin(); pending != m_pendingTextureAssetLoads.end();) {
-        try {
-            if (!registry.TryCommitAssetLoad(pending->second)) {
-                ++pending;
-                continue;
-            }
-            changedTextures.push_back(pending->first);
-        } catch (const std::exception &exception) {
-            m_failedTextureUploads[pending->first] = {pending->first, registry.GetAssetVersion(pending->first)};
-            INXLOG_ERROR("Texture CPU load failed for GUID '", pending->first, "': ", exception.what());
-        }
-        pending = m_pendingTextureAssetLoads.erase(pending);
-    }
-
-    for (auto pending = m_pendingTextureStagingLoads.begin(); pending != m_pendingTextureStagingLoads.end();) {
-        const auto &ticket = pending->second.ticket;
-        if (!registry.IsLoaded(ticket->GetGuid()) ||
-            registry.GetAssetVersion(ticket->GetGuid()) != ticket->GetRuntimeVersion()) {
-            pending = m_pendingTextureStagingLoads.erase(pending);
-            continue;
-        }
-        try {
-            if (!TrySubmitTextureStaging(pending->first, pending->second)) {
-                ++pending;
-                continue;
-            }
-        } catch (const std::exception &exception) {
-            m_failedTextureUploads[pending->first] = {ticket->GetGuid(), ticket->GetRuntimeVersion()};
-            changedTextures.push_back(ticket->GetGuid());
-            INXLOG_ERROR("Texture upload staging failed for GUID '", ticket->GetGuid(), "': ", exception.what());
-        }
-        pending = m_pendingTextureStagingLoads.erase(pending);
-    }
-
-    for (auto pending = m_pendingTextureGpuUploads.begin(); pending != m_pendingTextureGpuUploads.end();) {
-        try {
-            if (!m_resourceManager.TryPublishTextureUpload(pending->second.ticket)) {
-                ++pending;
-                continue;
-            }
-            auto texture = pending->second.ticket->GetTexture();
-            if (registry.GetAssetVersion(pending->second.guid) != pending->second.runtimeVersion) {
-                pending = m_pendingTextureGpuUploads.erase(pending);
-                continue;
-            }
-            (void)m_textureCache.Insert(pending->first, std::move(texture), m_ensureFrameCounter, false,
-                                        pending->second.guid, pending->second.runtimeVersion);
-            changedTextures.push_back(pending->second.guid);
-            ++m_completedTextureUploadCount;
-        } catch (const std::exception &exception) {
-            m_failedTextureUploads[pending->first] = {pending->second.guid, pending->second.runtimeVersion};
-            changedTextures.push_back(pending->second.guid);
-            INXLOG_ERROR("Texture GPU upload failed for GUID '", pending->second.guid, "': ", exception.what());
-        }
-        pending = m_pendingTextureGpuUploads.erase(pending);
-    }
-
-    // Material refresh resolves every texture property and can insert/erase
-    // entries in the pending maps. Finish draining before invoking it: even
-    // a different texture's completion can rehash the map being traversed.
-    std::sort(changedTextures.begin(), changedTextures.end());
-    changedTextures.erase(std::unique(changedTextures.begin(), changedTextures.end()), changedTextures.end());
-    for (const auto &guid : changedTextures)
-        m_materialPipelineManager.RefreshMaterialsUsingTexture(guid);
-}
-
-TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::string &textureRef,
-                                                                 const std::string &bindingName,
-                                                                 const MaterialTextureSampler *sampler,
-                                                                 bool waitForPreparation)
-{
-    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr, sampler,
-                               waitForPreparation);
-}
-
-TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::string &textureGuid,
-                                                                    bool linearFiltering, bool repeat,
-                                                                    bool waitForPreparation)
-{
-    return ResolveTextureAsset(textureGuid, "ParticleVectorField", TextureDimension::Texture3D,
-                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp", nullptr,
-                               waitForPreparation);
-}
-
-TextureResolveResult InxVkCoreModular::ResolveTextureForGraph(const std::string &textureGuid, bool volume,
-                                                              bool waitForPreparation)
-{
-    return ResolveTextureAsset(textureGuid, "RenderGraph",
-                               volume ? TextureDimension::Texture3D : TextureDimension::Texture2D, nullptr, nullptr,
-                               nullptr, waitForPreparation);
-}
-
-TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,
-                                                           const std::string &bindingName,
-                                                           TextureDimension expectedDimension,
-                                                           const char *filterOverride, const char *wrapOverride,
-                                                           const MaterialTextureSampler *samplerOverride,
-                                                           bool waitForPreparation)
-{
-    // Material texture properties store asset GUIDs. Path normalization belongs
-    // at the public material/asset boundary, never in the renderer.
-    std::string texturePath;
-    auto &registry = AssetRegistry::Instance();
-    auto *adb = registry.GetAssetDatabase();
-    if (adb)
-        texturePath = adb->GetPathFromGuid(textureGuid);
-
-    if (texturePath.empty()) {
-        INXLOG_WARN("TextureResolver: texture reference '", textureGuid, "' is not a resolvable asset GUID (binding='",
-                    bindingName, "'). Texture properties must hold GUIDs.");
-        return {TextureResolveStatus::Failed, {}};
-    }
-
-    // A published GPU view remains authoritative after its decoded CPU asset
-    // has been evicted. Resolve it first so CPU residency policy cannot turn a
-    // stable material into a per-frame decode/upload loop.
-    const std::string filterIdentity = filterOverride ? filterOverride : "asset";
-    const std::string wrapIdentity = wrapOverride ? wrapOverride : "asset";
-    const std::string samplerIdentity =
-        samplerOverride ? std::to_string(static_cast<uint32_t>(samplerOverride->minFilter)) + "," +
-                              std::to_string(static_cast<uint32_t>(samplerOverride->magFilter)) + "," +
-                              std::to_string(static_cast<uint32_t>(samplerOverride->mipFilter)) + "," +
-                              std::to_string(static_cast<uint32_t>(samplerOverride->addressU)) + "," +
-                              std::to_string(static_cast<uint32_t>(samplerOverride->addressV)) + "," +
-                              std::to_string(static_cast<uint32_t>(samplerOverride->addressW))
-                        : "asset";
-    const std::string cacheKey = textureGuid + "::dim" + std::to_string(static_cast<uint32_t>(expectedDimension)) +
-                                 "::filter=" + filterIdentity + "::wrap=" + wrapIdentity +
-                                 "::bindingSampler=" + samplerIdentity;
-    const uint64_t publishedRuntimeVersion = registry.GetAssetVersion(textureGuid);
-    if (publishedRuntimeVersion != 0) {
-        auto cachedSlot =
-            m_textureCache.FindAsset(cacheKey, textureGuid, publishedRuntimeVersion, m_ensureFrameCounter);
-        auto cached = cachedSlot ? cachedSlot->Acquire() : nullptr;
-        if (cached && cached->IsValid()) {
-            auto &rhiDevice = m_backend.Device().GetRhiDevice();
-            return {TextureResolveStatus::Ready,
-                    {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()),
-                     std::move(cachedSlot), std::move(cached)}};
-        }
-    }
-
-    const auto failed = m_failedTextureUploads.find(cacheKey);
-    if (failed != m_failedTextureUploads.end() && failed->second.runtimeVersion == publishedRuntimeVersion)
-        return {TextureResolveStatus::Failed, {}};
-
-    auto infTex = registry.GetAsset<InxTexture>(textureGuid);
-    if (!infTex) {
-        const auto failedLoad = m_failedTextureUploads.find(textureGuid);
-        if (failedLoad != m_failedTextureUploads.end() && failedLoad->second.runtimeVersion == publishedRuntimeVersion)
-            return {TextureResolveStatus::Failed, {}};
-        auto pending = m_pendingTextureAssetLoads.find(textureGuid);
-        if (pending == m_pendingTextureAssetLoads.end()) {
-            try {
-                pending = m_pendingTextureAssetLoads
-                              .emplace(textureGuid, registry.BeginLoadAsset(textureGuid, ResourceType::Texture))
-                              .first;
-            } catch (const std::exception &exception) {
-                m_failedTextureUploads[textureGuid] = {textureGuid, publishedRuntimeVersion};
-                INXLOG_ERROR("TextureResolver: failed to schedule texture metadata load for '", textureGuid,
-                             "': ", exception.what());
-                return {TextureResolveStatus::Failed, {}};
-            }
-        }
-        try {
-            if (waitForPreparation)
-                pending->second->Wait();
-            if (!registry.TryCommitAssetLoad(pending->second))
-                return {TextureResolveStatus::Pending, {}};
-            m_pendingTextureAssetLoads.erase(pending);
-            infTex = registry.GetAsset<InxTexture>(textureGuid);
-        } catch (const std::exception &exception) {
-            m_failedTextureUploads[textureGuid] = {textureGuid, publishedRuntimeVersion};
-            INXLOG_ERROR("TextureResolver: metadata load failed for '", textureGuid, "': ", exception.what());
-            m_pendingTextureAssetLoads.erase(textureGuid);
-            return {TextureResolveStatus::Failed, {}};
-        }
-    }
-    if (!infTex || infTex->GetMipCount() == 0) {
-        INXLOG_ERROR("TextureResolver: texture asset has no current imported artifact description: ", textureGuid);
-        return {TextureResolveStatus::Failed, {}};
-    }
-    if (infTex->GetDimension() != expectedDimension) {
-        INXLOG_ERROR("TextureResolver: binding '", bindingName, "' expected texture dimension ",
-                     static_cast<uint32_t>(expectedDimension), " but asset uses ",
-                     static_cast<uint32_t>(infTex->GetDimension()), ": ", textureGuid);
-        return {TextureResolveStatus::Failed, {}};
-    }
-
-    const uint64_t runtimeVersion = registry.GetAssetVersion(textureGuid);
-    if (runtimeVersion == 0)
-        throw std::logic_error("TextureResolver resolved a payload without a published runtime version");
-    const std::string filterMode = filterOverride ? filterOverride : infTex->GetFilterMode();
-    const std::string wrapMode = wrapOverride ? wrapOverride : infTex->GetWrapMode();
-    const int anisoLevel = infTex->GetAnisoLevel();
-    rhi::SamplerDesc sampler;
-    sampler.maxLod = static_cast<float>(infTex->GetMipCount() - 1);
-    const auto &capabilities = m_backend.Device().GetCapabilities();
-    const float deviceMaxAnisotropy =
-        capabilities.features.samplerAnisotropy ? (std::max)(1.0f, capabilities.limits.maxSamplerAnisotropy) : 1.0f;
-    const float requestedAnisotropy = anisoLevel < 0 ? deviceMaxAnisotropy : static_cast<float>(anisoLevel);
-    sampler.maxAnisotropy = (std::min)((std::max)(1.0f, requestedAnisotropy), deviceMaxAnisotropy);
-    if (filterMode == "point") {
-        sampler.minFilter = rhi::FilterMode::Nearest;
-        sampler.magFilter = rhi::FilterMode::Nearest;
-        sampler.mipFilter = rhi::FilterMode::Nearest;
-        sampler.maxAnisotropy = 1.0f;
-    } else if (filterMode == "trilinear") {
-        sampler.mipFilter = rhi::FilterMode::Linear;
-    } else if (filterMode == "linear" || filterMode == "bilinear") {
-        sampler.mipFilter = rhi::FilterMode::Nearest;
-    } else {
-        INXLOG_ERROR("TextureResolver: unsupported filter mode '", filterMode, "' for texture ", textureGuid);
-        return {TextureResolveStatus::Failed, {}};
-    }
-
-    if (wrapMode == "clamp")
-        sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
-    else if (wrapMode == "mirror")
-        sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::MirroredRepeat;
-
-    if (samplerOverride) {
-        const auto filter = [](MaterialSamplerFilter value, rhi::FilterMode inherited) {
-            if (value == MaterialSamplerFilter::Nearest)
-                return rhi::FilterMode::Nearest;
-            if (value == MaterialSamplerFilter::Linear)
-                return rhi::FilterMode::Linear;
-            return inherited;
-        };
-        const auto address = [](MaterialSamplerAddress value, rhi::AddressMode inherited) {
-            if (value == MaterialSamplerAddress::Repeat)
-                return rhi::AddressMode::Repeat;
-            if (value == MaterialSamplerAddress::Clamp)
-                return rhi::AddressMode::ClampToEdge;
-            if (value == MaterialSamplerAddress::Mirror)
-                return rhi::AddressMode::MirroredRepeat;
-            return inherited;
-        };
-        sampler.minFilter = filter(samplerOverride->minFilter, sampler.minFilter);
-        sampler.magFilter = filter(samplerOverride->magFilter, sampler.magFilter);
-        sampler.mipFilter = filter(samplerOverride->mipFilter, sampler.mipFilter);
-        sampler.addressU = address(samplerOverride->addressU, sampler.addressU);
-        sampler.addressV = address(samplerOverride->addressV, sampler.addressV);
-        sampler.addressW = address(samplerOverride->addressW, sampler.addressW);
-        if (sampler.minFilter == rhi::FilterMode::Nearest && sampler.magFilter == rhi::FilterMode::Nearest)
-            sampler.maxAnisotropy = 1.0f;
-    }
-
-    // Cache key uses GUID so that a renamed file still shares its cache entry
-    // The cache key identifies a stable consumer slot, not the mutable import
-    // result. Format, color space and asset-controlled sampler settings may
-    // change and must publish a new revision into the same slot.
-    // Check texture cache again after CPU resolution: another consumer may
-    // have completed publication while this request was pending.
-    {
-        auto cachedSlot = m_textureCache.FindAsset(cacheKey, textureGuid, runtimeVersion, m_ensureFrameCounter);
-        auto cached = cachedSlot ? cachedSlot->Acquire() : nullptr;
-        if (cached && cached->IsValid()) {
-            auto &rhiDevice = m_backend.Device().GetRhiDevice();
-            return {TextureResolveStatus::Ready,
-                    {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()),
-                     std::move(cachedSlot), std::move(cached)}};
-        }
-    }
-
-    auto pendingGpu = m_pendingTextureGpuUploads.find(cacheKey);
-    if (pendingGpu == m_pendingTextureGpuUploads.end()) {
-        auto pendingStaging = m_pendingTextureStagingLoads.find(cacheKey);
-        // Reimport supersedes an in-flight preparation. Start the current
-        // generation instead of trying to publish a ticket for the old bytes.
-        if (pendingStaging != m_pendingTextureStagingLoads.end() &&
-            pendingStaging->second.ticket->GetRuntimeVersion() != runtimeVersion) {
-            m_pendingTextureStagingLoads.erase(pendingStaging);
-            pendingStaging = m_pendingTextureStagingLoads.end();
-        }
-        if (pendingStaging == m_pendingTextureStagingLoads.end()) {
-            try {
-                pendingStaging =
-                    m_pendingTextureStagingLoads
-                        .emplace(cacheKey,
-                                 PendingTextureStagingLoad{registry.BeginTextureUploadStaging(textureGuid), sampler})
-                        .first;
-            } catch (const std::exception &exception) {
-                m_failedTextureUploads[cacheKey] = {textureGuid, runtimeVersion};
-                INXLOG_ERROR("TextureResolver: failed to schedule upload staging for '", textureGuid,
-                             "': ", exception.what());
-                return {TextureResolveStatus::Failed, {}};
-            }
-        }
-        try {
-            // A synchronous graph publication owns this CPU preparation dependency.
-            // Wait on its worker ticket, not on a frame, retry timer, or GPU idle.
-            if (waitForPreparation)
-                pendingStaging->second.ticket->Wait();
-            if (!TrySubmitTextureStaging(cacheKey, pendingStaging->second))
-                return {TextureResolveStatus::Pending, {}};
-            m_pendingTextureStagingLoads.erase(pendingStaging);
-            pendingGpu = m_pendingTextureGpuUploads.find(cacheKey);
-        } catch (const std::exception &exception) {
-            m_pendingTextureStagingLoads.erase(cacheKey);
-            m_failedTextureUploads[cacheKey] = {textureGuid, runtimeVersion};
-            INXLOG_ERROR("TextureResolver: failed to schedule GPU upload for '", textureGuid, "': ", exception.what());
-            return {TextureResolveStatus::Failed, {}};
-        }
-    }
-    try {
-        if (!m_resourceManager.TryPublishTextureUpload(pendingGpu->second.ticket))
-            return {TextureResolveStatus::Pending, {}};
-        auto texture = pendingGpu->second.ticket->GetTexture();
-        auto &rhiDevice = m_backend.Device().GetRhiDevice();
-        const VkImageView view = rhiDevice.Resolve(texture->GetView());
-        const VkSampler nativeSampler = rhiDevice.Resolve(texture->GetSampler());
-        if (registry.GetAssetVersion(textureGuid) != pendingGpu->second.runtimeVersion) {
-            m_pendingTextureGpuUploads.erase(pendingGpu);
-            return {TextureResolveStatus::Pending, {}};
-        }
-        auto residentSlot = m_textureCache.Insert(cacheKey, std::move(texture), m_ensureFrameCounter, false,
-                                                  textureGuid, pendingGpu->second.runtimeVersion);
-        auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
-        if (!resident || !resident->IsValid())
-            throw std::logic_error("GPU texture cache published an invalid view");
-        m_pendingTextureGpuUploads.erase(pendingGpu);
-        ++m_completedTextureUploadCount;
-        return {TextureResolveStatus::Ready, {view, nativeSampler, std::move(residentSlot), std::move(resident)}};
-    } catch (const std::exception &exception) {
-        m_failedTextureUploads[cacheKey] = {textureGuid, runtimeVersion};
-        INXLOG_ERROR("TextureResolver: GPU upload failed for '", textureGuid, "': ", exception.what());
-        m_pendingTextureGpuUploads.erase(pendingGpu);
-        return {TextureResolveStatus::Failed, {}};
-    }
-}
-
-std::shared_ptr<const rhi::TextureGpuView>
-InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid)
-{
-    TextureResolveResult resolved = ResolveTextureAsset(textureGuid, "EditorTexturePreview",
-                                                        TextureDimension::Texture2D, nullptr, nullptr, nullptr);
-    return resolved.status == TextureResolveStatus::Ready ? std::move(resolved.binding.gpuView) : nullptr;
-}
 
 // ============================================================================
 // Material UBO Management
@@ -550,15 +185,26 @@ void InxVkCoreModular::InitializeMaterialSystem()
                 return device->PublishBindlessTexture(view);
             });
         materialDescriptors.SetBufferResolver(
-            [device = &rhiDevice](const std::shared_ptr<rhi::ComputeBuffer> &buffer) -> VkDescriptorBufferInfo {
+            [device =
+                 &rhiDevice](const std::shared_ptr<rhi::ComputeBufferAllocation> &buffer) -> VkDescriptorBufferInfo {
                 VkDescriptorBufferInfo result{};
-                if (!buffer || &buffer->GetHost().device != device)
+                if (!buffer || buffer->GetBuffer().Device() != device->GetDeviceId())
                     return result;
                 result.buffer = device->Resolve(buffer->GetBuffer());
                 result.offset = 0;
                 result.range = buffer->GetByteSize();
                 return result;
             });
+        materialDescriptors.SetBufferCapture([this](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+            if (!buffer)
+                return std::shared_ptr<rhi::ComputeBufferAllocation>{};
+            if (!m_drawBufferBindings)
+                return buffer->GetAllocation(); // Standalone material and preview preparation.
+            const auto found = m_drawBufferBindings->find(buffer.get());
+            if (found == m_drawBufferBindings->end())
+                throw std::logic_error("Material compute input was not captured by its render view");
+            return found->second;
+        });
 
         auto whiteSlot = m_textureCache.Find("white", m_ensureFrameCounter);
         auto whiteTex = whiteSlot ? whiteSlot->Acquire() : nullptr;
@@ -709,8 +355,15 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
         m_materialPipelineManager.RemoveRenderData(materialKey);
         forward = nullptr;
     }
-    if (forward && !material->IsPipelineDirty())
-        return forward->isValid && forward->descriptorSet != VK_NULL_HANDLE ? forward : nullptr;
+    if (forward && !material->IsPipelineDirty()) {
+        if ((!material->GetBuffers().empty() || material->IsPropertiesDirty()) &&
+            !m_materialPipelineManager.RefreshMaterialBindings(*material))
+            return nullptr;
+        if (!forward->isValid || forward->descriptorSet == VK_NULL_HANDLE)
+            return nullptr;
+        UpdateMaterialUBO(*material);
+        return forward;
+    }
 
     const ShaderStagePair requestedStages{material->GetVertShaderName(), material->GetFragShaderName()};
     const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
@@ -741,6 +394,7 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
     if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
         !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
         return nullptr;
+    UpdateMaterialUBO(*material);
     return forward;
 }
 
@@ -956,17 +610,32 @@ void InxVkCoreModular::UpdateLightingState()
 // Buffer / Shader Accessors (for OutlineRenderer)
 // ============================================================================
 
-VkBuffer InxVkCoreModular::GetObjectVertexBuffer(uint64_t objectId) const
+bool InxVkCoreModular::BindObjectGeometry(VkCommandBuffer commands, uint64_t objectId) const
 {
-    auto it = m_perObjectBuffers.find(objectId);
-    if (it != m_perObjectBuffers.end())
-        return it->second.GetVertexHandle();
-    return VK_NULL_HANDLE;
+    const auto it = m_perObjectBuffers.find(objectId);
+    if (it == m_perObjectBuffers.end() || !it->second.HasVertexBuffer() || !it->second.indexBuffer)
+        return false;
+    const auto &geometry = it->second;
+    if (auto *reads = vk::SubmissionReadScope::Current(commands)) {
+        if (!geometry.residentVertexHandle)
+            reads->Add(geometry.vertexBuffer->GetUploadSubmission(), VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+        reads->Add(geometry.indexBuffer->GetUploadSubmission(), VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+    }
+    const VkBuffer vertices = geometry.GetVertexHandle();
+    const VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(commands, 0, 1, &vertices, &offset);
+    vkCmdBindIndexBuffer(commands, geometry.indexBuffer->GetBuffer(), 0,
+                         geometry.indexFormat == MeshIndexFormat::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    return true;
 }
 
 void InxVkCoreModular::PrepareMaterialTextureAssets(const std::shared_ptr<InxMaterial> &material)
 {
-    if (!material || !material->NeedsTextureAssetResolution())
+    if (!material)
+        return;
+    const auto graph = AssetDependencyGraph::Current();
+    material->BindDependencyGraph(graph);
+    if (!material->NeedsTextureAssetResolution())
         return;
     auto *database = AssetRegistry::Instance().GetAssetDatabase();
     std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> textures;
@@ -985,14 +654,13 @@ void InxVkCoreModular::PrepareMaterialTextureAssets(const std::shared_ptr<InxMat
     // All target allocations succeed before changing this material's bindings.
     material->PublishTextureAssets(std::move(textures));
     const auto owner = material->GetTextureDependencyOwner();
-    auto &graph = AssetDependencyGraph::Instance();
-    graph.ClearRuntimeDependenciesOf(owner);
+    graph->ClearRuntimeDependenciesOf(owner);
     if (dependencies.empty()) {
         m_materialTextureOwners.erase(owner);
     } else {
         m_materialTextureOwners[owner] = material;
         for (const auto &guid : dependencies)
-            graph.AddRuntimeDependency(owner, guid);
+            graph->AddRuntimeDependency(owner, guid);
     }
 }
 
@@ -1019,14 +687,6 @@ void InxVkCoreModular::CollectUnusedMaterialTextureOwners()
         } else
             ++owner;
     }
-}
-
-VkBuffer InxVkCoreModular::GetObjectIndexBuffer(uint64_t objectId) const
-{
-    auto it = m_perObjectBuffers.find(objectId);
-    if (it != m_perObjectBuffers.end() && it->second.indexBuffer)
-        return it->second.indexBuffer->GetBuffer();
-    return VK_NULL_HANDLE;
 }
 
 VkBuffer InxVkCoreModular::GetFallbackMaterialUbo() const
@@ -1332,6 +992,9 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     }
     vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
+    auto uploadSources = forwardMaterialDesc->GetTextureUploadSources();
+    uploadSources.Add(defaultTex->GetUploadSubmission());
+    rhiDevice.GetDescriptorManager().SetUploadSources(allocation.descriptorLease, uploadSources);
     markBindlessShadowResourcesUsed();
 
     ShadowMaterialBindingEntry replacement{};
@@ -1507,59 +1170,63 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 // GPU Material Preview
 // ============================================================================
 
-std::shared_ptr<vk::ImageReadbackTicket>
-InxVkCoreModular::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending)
+std::shared_ptr<PreviewImage> InxVkCoreModular::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material,
+                                                                        int size, bool &progressed,
+                                                                        bool *texturePending)
 {
     if (!material || size <= 0 || !m_materialPipelineManagerInitialized)
         return nullptr;
 
-    if (!m_gpuMaterialPreview)
+    if (!m_gpuMaterialPreview) {
         m_gpuMaterialPreview = std::make_unique<GPUMaterialPreview>(this);
+        progressed = true;
+    }
 
-    return m_gpuMaterialPreview->BeginRenderToPixels(*material, size, texturePending);
+    return m_gpuMaterialPreview->BeginRender(*material, size, progressed, texturePending);
 }
 
-bool InxVkCoreModular::TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket,
-                                                     int outputSize, std::vector<unsigned char> &outPixels)
+bool InxVkCoreModular::PrepareMeshPreviewMaterials(const std::vector<std::shared_ptr<InxMaterial>> &sources,
+                                                   std::vector<std::shared_ptr<InxMaterial>> &prepared,
+                                                   bool &progressed)
 {
-    if (!m_gpuMaterialPreview)
+    if (!m_materialPipelineManagerInitialized)
         return false;
-    return m_gpuMaterialPreview->TryCompleteRenderToPixels(ticket, outputSize, outPixels);
-}
-
-std::shared_ptr<vk::ImageReadbackTicket>
-InxVkCoreModular::BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                                      int size)
-{
-    if (size <= 0 || !m_materialPipelineManagerInitialized)
-        return nullptr;
-
-    if (!m_gpuMeshPreview)
+    if (!m_gpuMeshPreview) {
         m_gpuMeshPreview = std::make_unique<GPUMeshPreview>(this);
-
-    return m_gpuMeshPreview->BeginRenderToPixels(mesh, materials, size);
+        progressed = true;
+    }
+    return m_gpuMeshPreview->PrepareMaterials(sources, prepared, progressed);
 }
 
-bool InxVkCoreModular::TryCompleteMeshPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
-                                                 std::vector<unsigned char> &outPixels)
+std::shared_ptr<PreviewImage>
+InxVkCoreModular::BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
+                                      int size, std::shared_ptr<PreviewGeometryUpload> &geometry, bool &progressed,
+                                      bool &materialsChanged)
 {
-    if (!m_gpuMeshPreview)
-        return false;
-    return m_gpuMeshPreview->TryCompleteRenderToPixels(ticket, outputSize, outPixels);
+    if (!m_gpuMeshPreview) {
+        materialsChanged = true;
+        return nullptr;
+    }
+    return m_gpuMeshPreview->BeginRender(mesh, materials, size, geometry, progressed, materialsChanged);
 }
 
 uint64_t InxVkCoreModular::RenderMeshPreviewGPUImGuiCamera(const InxMesh &mesh,
                                                            const std::vector<std::shared_ptr<InxMaterial>> &materials,
                                                            int size, const glm::mat4 &view, const glm::mat4 &proj,
-                                                           const glm::vec3 &cameraPos, bool cloneMaterials)
+                                                           const glm::vec3 &cameraPos,
+                                                           std::shared_ptr<PreviewGeometryUpload> &geometry,
+                                                           bool &progressed, bool cloneMaterials)
 {
     if (size <= 0 || !m_materialPipelineManagerInitialized)
         return 0;
 
-    if (!m_gpuMeshPreview)
+    if (!m_gpuMeshPreview) {
         m_gpuMeshPreview = std::make_unique<GPUMeshPreview>(this);
+        progressed = true;
+    }
 
-    return m_gpuMeshPreview->RenderToImGuiTextureCamera(mesh, materials, size, view, proj, cameraPos, cloneMaterials);
+    return m_gpuMeshPreview->RenderToImGuiTextureCamera(mesh, materials, size, view, proj, cameraPos, geometry,
+                                                        progressed, cloneMaterials);
 }
 
 uint64_t InxVkCoreModular::GetMeshPreviewDisplayTextureId() const

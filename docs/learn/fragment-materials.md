@@ -149,13 +149,13 @@ Shadow controls combine the shader and renderer settings. A mesh casts shadows o
 
 `Blend Alpha` expects straight RGB and composites `src.rgb * src.a + dst.rgb * (1-src.a)`; its output alpha is `src.a + dst.a * (1-src.a)`. It updates coverage even when the background alpha is zero. `Blend Premultiplied` expects `shading()` to return RGB already multiplied by alpha and uses the same alpha equation. `Blend Additive` sums source and destination RGB and alpha; alpha can exceed one in a floating-point target. Blending happens after shading and does not discard a fragment. For two unlit, half-alpha quads over transparent black, red in front of green produces linear RGB `(0.5, 0.25, 0)` and alpha `0.75`; reversing their depth swaps the red and green values. Display encoding changes RGB but preserves that alpha in Game and RenderTexture outputs.
 
-Alpha clipping is an earlier, binary decision. `AlphaClip 0.5` stores the threshold in the engine-managed `_AlphaClipThreshold`; `AlphaClip On` uses the same `0.5` default. After `surface()` returns, generated adapters discard when `s.alpha` is below that threshold. The check is shared by Forward, GBuffer, and compatible depth, shadow, motion, normal, base-color, and picking variants. A cutout material normally stays in the opaque queue with depth writes enabled and blending off. A translucent material normally uses the transparent queue, depth writes off, and one of the blend modes.
+Alpha clipping is an earlier, binary decision. `AlphaClip 0.5` stores the threshold in the engine-managed `_AlphaClipThreshold`. After `surface()` returns, generated adapters discard when `s.alpha` is below that threshold. The check is shared by Forward, GBuffer, and compatible depth, shadow, motion, normal, base-color, and picking variants. A cutout material normally stays in the opaque queue with depth writes enabled and blending off. A translucent material normally uses the transparent queue, depth writes off, and one of the blend modes.
 
 State has a concrete priority. `Surface Transparent` is normalized first. The resulting `ShaderInfo` metadata supplies defaults to a Material. Inspector edits set per-field override bits for surface type, culling, depth, blend, Queue, and alpha clip, so those values survive shader reloads. Pass construction has the final route-specific word: variants outside Forward and Forward+ disable blending and derive depth write/test from the pass attachment; a read-only depth pass disables depth writes. A pass whose depth format has no stencil component disables stencil testing.
 
 `Stencil` currently has no Material Inspector control or per-material override bit. Its value comes from `ShaderInfo`, for example `Stencil "less_equal,1,replace,keep,keep"`; it applies the same compare/reference/operations to front and back faces with `0xFF` masks. Invalid or underspecified stencil strings are not backed by a dedicated authoring diagnostic, so keep this field in reviewed shader source and verify it in a pipeline with a stencil-capable depth target.
 
-`Stencil "equal,1,keep,keep,keep"` draws only where the stored stencil value is `1`; `not_equal` draws outside that mask. For a custom attachment, declare a distinct depth texture such as `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)` and bind it to the participating passes. The conventional root texture named `depth` uses the Camera attachment and its format; declaring a stencil format on that name does not add stencil to a Camera whose depth attachment has none.
+`Stencil "equal,1,keep,keep,keep"` draws only where the stored stencil value is `1`; `not_equal` draws outside that mask. For a custom attachment, declare a distinct depth texture such as `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)` and bind it to the participating passes. A depth format with `camera_target=True` binds the Camera depth attachment. The Camera target supplies its actual format and stencil support.
 
 ### Transparent sorting: a reproducible diagnosis
 
@@ -381,13 +381,13 @@ ShaderInfo {
 
 `Blend Alpha` 接收未预乘的 RGB，颜色公式为 `src.rgb * src.a + dst.rgb * (1-src.a)`，输出 Alpha 为 `src.a + dst.a * (1-src.a)`；背景 Alpha 为零时也会更新覆盖率。`Blend Premultiplied` 要求 `shading()` 返回已经乘过 Alpha 的 RGB，Alpha 使用相同公式。`Blend Additive` 累加源与目标的 RGB 和 Alpha，因此浮点目标中的 Alpha 可以超过一。混合发生在着色之后，不会丢弃片元。将两个 Alpha 为 `0.5` 的 Unlit Quad 放在透明黑背景上，红色在绿色前方时，线性 RGB 应为 `(0.5, 0.25, 0)`，Alpha 为 `0.75`；交换深度后红绿数值对调。Display Encode 会改变 RGB，但在 Game 和 RenderTexture 输出中保留该 Alpha。
 
-Alpha Clip 是更早执行的二值判断。`AlphaClip 0.5` 会把阈值写入引擎管理的 `_AlphaClipThreshold`；`AlphaClip On` 同样使用默认值 `0.5`。`surface()` 返回后，生成的适配代码会丢弃 `s.alpha` 低于阈值的片元。Forward、GBuffer 以及兼容的 Depth、Shadow、Motion、Normal、Base Color、Picking 变体共用这项检查。Cutout 材质通常留在不透明 Queue，开启深度写入并关闭混合；半透明材质通常进入透明 Queue，关闭深度写入并选择一种 Blend 模式。
+Alpha Clip 是更早执行的二值判断。`AlphaClip 0.5` 会把阈值写入引擎管理的 `_AlphaClipThreshold`。`surface()` 返回后，生成的适配代码会丢弃 `s.alpha` 低于阈值的片元。Forward、GBuffer 以及兼容的 Depth、Shadow、Motion、Normal、Base Color、Picking 变体共用这项检查。Cutout 材质通常留在不透明 Queue，开启深度写入并关闭混合。半透明材质通常进入透明 Queue，关闭深度写入并选择一种 Blend 模式。
 
 状态优先级是具体的。系统先归一化 `Surface Transparent`，得到的 `ShaderInfo` 元数据为 Material 提供默认值。Inspector 对 Surface Type、Cull、Depth、Blend、Queue 和 Alpha Clip 的编辑会设置逐字段 Override Bit，因此这些值在 Shader 重载后仍会保留。Pass 构建拥有最终的路径级决定权：Forward 与 Forward+ 以外的变体会关闭混合，并根据 Pass Attachment 设置深度写入与测试；只读深度 Pass 会关闭深度写入。深度格式不含 Stencil 分量时，Pass 会关闭 Stencil Test。
 
 `Stencil` 目前没有 Material Inspector 控件，也没有逐 Material Override Bit。它来自 `ShaderInfo`，例如 `Stencil "less_equal,1,replace,keep,keep"`；正反面共用 Compare、Reference 和 Operation，Mask 固定为 `0xFF`。无效或字段不足的 Stencil 字符串缺少专用创作诊断，因此应把它留在经过审查的 Shader 源码中，并在使用 Stencil Depth Target 的管线里验收。
 
-`Stencil "equal,1,keep,keep,keep"` 只绘制 Stencil 存储值为 `1` 的区域；`not_equal` 则绘制遮罩外侧。自定义附件应使用独立的深度纹理名，例如 `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)`，并绑定到参与绘制的 Pass。约定的根纹理名 `depth` 使用 Camera 的附件及格式；仅在这个名字上声明 Stencil 格式，不会为本来不含 Stencil 的 Camera 深度附件添加 Stencil。
+`Stencil "equal,1,keep,keep,keep"` 只绘制 Stencil 存储值为 `1` 的区域；`not_equal` 则绘制遮罩外侧。自定义附件应使用独立的深度纹理名，例如 `graph.create_texture("mask_depth", format=Format.D24_UNORM_S8_UINT)`，并绑定到参与绘制的 Pass。深度格式配合 `camera_target=True` 会绑定 Camera 深度附件。实际格式及 Stencil 支持取自 Camera 的渲染目标。
 
 ### 透明排序：可复现排查
 

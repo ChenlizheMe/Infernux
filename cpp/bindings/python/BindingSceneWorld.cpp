@@ -4,17 +4,172 @@
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/scene/Camera.h"
 #include "function/scene/ComponentFactory.h"
+#include "function/scene/ComponentRecord.h"
 #include "function/scene/GameObject.h"
+#include "function/scene/MeshRenderer.h"
 #include "function/scene/PyComponentProxy.h"
+#include "function/scene/Rigidbody.h"
 #include "function/scene/Scene.h"
 #include "function/scene/SceneManager.h"
+#include "function/scene/SkeletonInstance.h"
 #include "function/scene/Transform.h"
+#include "function/scene/physics/PhysicsWorld.h"
+#include <algorithm>
+#include <optional>
 #include <pybind11/functional.h>
+#include <stdexcept>
+#include <tuple>
+#include <variant>
 
 namespace py = pybind11;
 
 namespace infernux::scene_binding
 {
+
+namespace
+{
+
+enum class ResultTargetStatus
+{
+    Ready,
+    Waiting,
+    Stale,
+    Changed
+};
+
+using RigidbodyEpoch = std::tuple<uint32_t, uint32_t, uint64_t, uint64_t>;
+using ResultTargetEpoch = std::variant<std::monostate, uint64_t, RigidbodyEpoch>;
+
+std::optional<ResultTargetEpoch> ReadResultTargetEpoch(const Component &component, const Rigidbody *body)
+{
+    if (body) {
+        if (auto epoch = body->GetResultTargetEpoch())
+            return *epoch;
+        return std::nullopt;
+    }
+    if (const auto *mesh = dynamic_cast<const MeshRenderer *>(&component))
+        return mesh->GetInlineMeshVersion();
+    if (const auto *skeleton = dynamic_cast<const SkeletonInstance *>(&component)) {
+        if (auto epoch = skeleton->GetResultTargetEpoch())
+            return *epoch;
+        return std::nullopt;
+    }
+    return std::monostate{};
+}
+
+class ResultTargetBatch
+{
+  public:
+    explicit ResultTargetBatch(const std::vector<Component *> &components)
+    {
+        m_targets.reserve(components.size());
+        for (const Component *component : components) {
+            if (!component)
+                throw std::invalid_argument("result target requires a native component");
+            auto epoch = ReadResultTargetEpoch(*component, dynamic_cast<const Rigidbody *>(component));
+            if (!epoch)
+                throw std::invalid_argument("result target has no bound state");
+            m_targets.push_back({component->GetHandle(), *epoch});
+        }
+    }
+
+    py::tuple Handles() const
+    {
+        py::tuple handles(m_targets.size());
+        for (size_t index = 0; index < m_targets.size(); ++index)
+            handles[index] = py::cast(m_targets[index].handle, py::return_value_policy::copy);
+        return handles;
+    }
+
+    py::tuple Inspect(const SceneManager &manager, bool requireBodyReady, bool collect) const
+    {
+        std::vector<Component *> resolved;
+        if (collect)
+            resolved.reserve(m_targets.size());
+        bool waiting = false;
+        uint64_t worldId = 0;
+        Scene *world = nullptr;
+        for (const auto &target : m_targets) {
+            if (worldId != target.handle.worldId) {
+                worldId = target.handle.worldId;
+                world = manager.GetSceneByWorldId(worldId);
+            }
+            Component *component = world ? world->ResolveComponent(target.handle) : nullptr;
+            if (!component || world->IsPendingDestroy(component->GetGameObject()))
+                return py::make_tuple(ResultTargetStatus::Stale, py::tuple());
+
+            const auto *body = dynamic_cast<const Rigidbody *>(component);
+            if (!std::holds_alternative<std::monostate>(target.epoch) &&
+                ReadResultTargetEpoch(*component, body) != target.epoch)
+                return py::make_tuple(ResultTargetStatus::Changed, py::tuple());
+            if (requireBodyReady && body &&
+                !PhysicsWorld::Instance().IsBodyInBroadphase(body->GetParticipatingBodyId()))
+                waiting = true;
+            if (collect)
+                resolved.push_back(component);
+        }
+        if (waiting)
+            return py::make_tuple(ResultTargetStatus::Waiting, py::tuple());
+
+        py::tuple targets(resolved.size());
+        for (size_t index = 0; index < resolved.size(); ++index)
+            targets[index] = ComponentBindingRegistry::Instance().CastToPython(resolved[index]);
+        return py::make_tuple(ResultTargetStatus::Ready, targets);
+    }
+
+  private:
+    struct Target
+    {
+        ObjectHandle handle;
+        ResultTargetEpoch epoch;
+    };
+
+    std::vector<Target> m_targets;
+};
+
+} // namespace
+
+static void ValidatePrefabNativeRecords(const nlohmann::json &node)
+{
+    ComponentFactory::ValidateDocument("Transform", node.at("transform"));
+    std::vector<std::string> types{"Transform"};
+    for (const auto &component : node.at("components")) {
+        const auto record = DecodeComponentRecord(component);
+        if (record.kind != ComponentRecordKind::Native)
+            continue;
+        const auto &type = record.nativeTypeName;
+        ComponentFactory::ValidateDocument(type, BuildNativeComponentDocument(record));
+        const auto blockers = ComponentFactory::GetAttachmentBlockers(type, types);
+        if (!blockers.empty())
+            throw std::invalid_argument(type + ": " + blockers.front());
+        types.push_back(type);
+    }
+    for (size_t i = 1; i < types.size(); ++i) {
+        for (const auto &required : ComponentFactory::GetTypeConstraints(types[i]).requiredTypes) {
+            bool found = false;
+            for (size_t j = 0; j < types.size() && !found; ++j) {
+                if (j == i)
+                    continue;
+                const auto &type = types[j];
+                const auto &aliases = ComponentFactory::GetTypeConstraints(type).satisfiedTypes;
+                found = type == required || "native:infernux." + type == required ||
+                        std::find(aliases.begin(), aliases.end(), required) != aliases.end();
+            }
+            if (!found)
+                throw std::invalid_argument(types[i] + " requires missing component '" + required + "'");
+        }
+    }
+    for (const auto &child : node.at("children"))
+        ValidatePrefabNativeRecords(child);
+}
+
+py::dict ToPythonInstantiationIds(const InstantiationIds &ids)
+{
+    py::dict mapping;
+    for (const auto &[source, published] : ids)
+        mapping[py::int_(source)] = py::make_tuple(published.object, published.transform, published.components);
+    return mapping;
+}
 
 static void BindSceneEnvironment(NativeClass<Scene> &cls)
 {
@@ -168,6 +323,8 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
              py::arg("layer"), "Find all GameObjects in a given layer")
         .def("destroy_game_object", &Scene::DestroyGameObject, py::arg("game_object"),
              "Destroy a GameObject (will be removed at end of frame)")
+        .def("is_pending_destroy", &Scene::IsPendingDestroy, py::arg("game_object"),
+             "Check whether an object or one of its parents is queued for destruction or being destroyed")
         .def(
             "_remove_game_object_immediately",
             [](Scene &scene, GameObject *object) {
@@ -176,9 +333,16 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
                 scene.RemoveGameObject(object);
             },
             py::arg("game_object"), "Remove one transaction-owned object without draining the Scene destroy queue")
-        .def("_clone_game_object", &Scene::InstantiateGameObject, py::return_value_policy::reference, py::arg("source"),
-             py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
-             "Internal native subtree clone; Python callers must preflight first")
+        .def(
+            "_clone_game_object",
+            [](Scene &scene, GameObject *source, GameObject *parent, bool worldSpace) {
+                InstantiationIds ids;
+                auto *root = scene.InstantiateGameObject(source, ids, parent, worldSpace);
+                return py::make_tuple(py::cast(root, py::return_value_policy::reference),
+                                      ToPythonInstantiationIds(ids));
+            },
+            py::arg("source"), py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
+            "Internal native clone and source-to-published object/component identities")
         .def(
             "_clone_game_objects",
             [](Scene &scene, GameObject *source, const FloatArray &positions,
@@ -193,7 +357,10 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
         .def(
             "_instantiate_document",
             [](Scene &scene, const PythonDocument &document, GameObject *parent) {
-                return scene.InstantiateFromDocument(document.value, parent);
+                InstantiationIds ids;
+                auto *root = scene.InstantiateFromDocument(document.value, ids, parent);
+                return py::make_tuple(py::cast(root, py::return_value_policy::reference),
+                                      ToPythonInstantiationIds(ids));
             },
             py::return_value_policy::reference, py::arg("document"), py::arg("parent") = nullptr,
             "Internal native ObjectGraph instantiate; Python callers must preflight first")
@@ -235,15 +402,20 @@ void BindScene(py::module_ &m)
 void BindSceneManager(py::module_ &m)
 {
     py::enum_<SceneManager::RuntimeFrameBarrier>(m, "NativeRuntimeFrameBarrier")
+        .value("FIXED_SCRIPT", SceneManager::RuntimeFrameBarrier::FixedScript)
+        .value("PHYSICS_POST_SCRIPT", SceneManager::RuntimeFrameBarrier::PhysicsPostScript)
         .value("TRANSFORM_TO_PHYSICS", SceneManager::RuntimeFrameBarrier::TransformToPhysics)
         .value("PHYSICS_SIMULATION", SceneManager::RuntimeFrameBarrier::PhysicsSimulation)
         .value("PHYSICS_TO_TRANSFORM", SceneManager::RuntimeFrameBarrier::PhysicsToTransform)
         .value("TRANSFORM_RESOLVE", SceneManager::RuntimeFrameBarrier::TransformResolve)
         .value("FINAL_TRANSFORM_RESOLVE", SceneManager::RuntimeFrameBarrier::FinalTransformResolve)
+        .value("ANIMATION_EVALUATION", SceneManager::RuntimeFrameBarrier::AnimationEvaluation)
         .value("ANIMATION_TIMELINE", SceneManager::RuntimeFrameBarrier::AnimationTimeline)
         .value("RENDER_EXTRACTION", SceneManager::RuntimeFrameBarrier::RenderExtraction)
         .value("RENDER_GRAPH", SceneManager::RuntimeFrameBarrier::RenderGraph)
         .value("SNAPSHOT_PUBLICATION", SceneManager::RuntimeFrameBarrier::SnapshotPublication)
+        .value("RENDER_SUBMITTED", SceneManager::RuntimeFrameBarrier::RenderSubmitted)
+        .value("RENDER_PRESENTED", SceneManager::RuntimeFrameBarrier::RenderPresented)
         .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
 
     py::class_<SceneManager, std::unique_ptr<SceneManager, py::nodelete>>(m, "SceneManager")
@@ -301,8 +473,12 @@ void BindSceneManager(py::module_ &m)
              py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")
         .def("set_runtime_frame_barrier_callback", &SceneManager::SetRuntimeFrameBarrierCallback, py::arg("callback"),
              "Install the native runtime frame barrier bridge")
+        .def("set_runtime_result_consumer_callback", &SceneManager::SetRuntimeResultConsumerCallback,
+             py::arg("callback"))
+        .def("_set_result_consumers_present", &SceneManager::SetRuntimeResultConsumersPresent)
         .def("set_runtime_lifecycle_plan", &SceneManager::SetRuntimeLifecyclePlan, py::arg("revision"),
-             py::arg("fixed_update_count"), py::arg("update_count"), py::arg("late_update_count"),
+             py::arg("fixed_update_count"), py::arg("update_count"), py::arg("animation_update_count"),
+             py::arg("late_update_count"),
              "Publish the immutable Python lifecycle phase plan to the native frame driver")
         .def("set_runtime_lifecycle_work_available", &SceneManager::SetRuntimeLifecycleWorkAvailable,
              py::arg("available"), "Enable lifecycle bridge calls only while Python components exist")
@@ -316,11 +492,25 @@ void BindSceneManager(py::module_ &m)
         .def("stop", &SceneManager::Stop, "Stop play mode")
         .def("pause", &SceneManager::Pause, "Pause play mode")
         .def("is_paused", &SceneManager::IsPaused, "Check if paused")
+        .def("is_stepping", &SceneManager::IsStepping, "Check if an explicit paused simulation step is in progress")
+        .def("_is_executing_step", &SceneManager::IsExecutingStep,
+             "Internal lifecycle permission during native Step dispatch")
+        .def("_retain_step_frame", &SceneManager::RetainStepFrame)
+        .def_property_readonly("_step_permission_index", &SceneManager::GetStepPermissionIndex)
         .def_property_readonly("runtime_frame_count", &SceneManager::GetRuntimeFrameCount,
                                "Completed gameplay frames for the current active runtime scene")
+        .def_property_readonly("simulation_epoch", &SceneManager::GetSimulationEpoch,
+                               "Native simulation session identity; Fresh Play and Stop advance it")
+        .def_property_readonly("fixed_step_index", &SceneManager::GetFixedStepIndex,
+                               "Fixed bundles begun in this session, including empty-body and paused steps")
+        .def_property_readonly("completed_fixed_step_index", &SceneManager::GetCompletedFixedStepIndex,
+                               "Last completed physical integration in this Play session")
+        .def_property_readonly("published_fixed_step_index", &SceneManager::GetPublishedFixedStepIndex)
+        .def_property_readonly("fixed_step_pending", &SceneManager::HasPendingFixedStep)
         .def("get_fixed_time_step", &SceneManager::GetFixedTimeStep, "Get the fixed physics timestep in seconds")
         .def("set_fixed_time_step", &SceneManager::SetFixedTimeStep, py::arg("value"),
              "Set the fixed physics timestep in seconds")
+        .def("get_frame_delta_time", &SceneManager::GetFrameDeltaTime)
         .def("get_max_fixed_delta_time", &SceneManager::GetMaxFixedDeltaTime,
              "Get the max clamped frame delta used by the fixed-step accumulator")
         .def("set_max_fixed_delta_time", &SceneManager::SetMaxFixedDeltaTime, py::arg("value"),
@@ -364,14 +554,32 @@ void BindSceneManager(py::module_ &m)
             },
             "Return normalized timing and candidate counters for the most recent frame")
         .def("dont_destroy_on_load", &SceneManager::DontDestroyOnLoad, py::arg("game_object"),
-             "Mark a root GameObject so it survives scene switches. Unity: DontDestroyOnLoad()")
-        .def("mark_mesh_renderers_dirty", &SceneManager::MarkMeshRenderersDirtyForAsset, py::arg("mesh_guid"),
-             py::arg("mesh_path") = "",
-             "Mark all MeshRenderers referencing a mesh GUID as needing GPU buffer re-upload");
+             "Mark a root GameObject so it survives scene switches. Unity: DontDestroyOnLoad()");
+
+    py::enum_<ResultTargetStatus>(m, "_ResultTargetStatus")
+        .value("Ready", ResultTargetStatus::Ready)
+        .value("Waiting", ResultTargetStatus::Waiting)
+        .value("Stale", ResultTargetStatus::Stale)
+        .value("Changed", ResultTargetStatus::Changed);
+    py::class_<ResultTargetBatch>(m, "_ResultTargetBatch")
+        .def(py::init<const std::vector<Component *> &>(), py::arg("components"))
+        .def_property_readonly("handles", &ResultTargetBatch::Handles)
+        .def("inspect", &ResultTargetBatch::Inspect, py::arg("manager"), py::arg("require_body_ready") = false,
+             py::arg("collect") = false);
 
     // ComponentFactory — query registered native component types
     m.def("get_registered_component_types", &ComponentFactory::GetUserAddableTypeNames,
           "Get user-addable registered native component type names");
+    m.def("_validate_prefab_native_records",
+          [](const PythonDocument &document) { ValidatePrefabNativeRecords(document.value); });
+    m.def("_rewrite_native_component_references", [](const std::string &typeName, const PythonDocument &document,
+                                                     const py::function &rewrite) {
+        auto candidate = document.value;
+        ComponentFactory::RewriteDocumentComponentReferences(typeName, candidate, [&](const nlohmann::json &value) {
+            return PythonToJson(rewrite(JsonToPython(value)));
+        });
+        return JsonToPython(candidate);
+    });
 }
 
 } // namespace infernux::scene_binding

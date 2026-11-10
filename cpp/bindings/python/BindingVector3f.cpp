@@ -8,6 +8,7 @@
  */
 
 #include "BindingRegistration.h"
+#include "VectorBindingMath.h"
 #include <cmath>
 #include <functional>
 #include <glm/glm.hpp>
@@ -31,14 +32,6 @@ inline glm::vec3 Cross(const glm::vec3 &a, const glm::vec3 &b)
 {
     return glm::cross(a, b);
 }
-inline float Magnitude(const glm::vec3 &v)
-{
-    return glm::length(v);
-}
-inline float SqrMagnitude(const glm::vec3 &v)
-{
-    return glm::dot(v, v);
-}
 inline float Angle(const glm::vec3 &from, const glm::vec3 &to)
 {
     const glm::dvec3 a(from), b(to);
@@ -49,16 +42,9 @@ inline float Angle(const glm::vec3 &from, const glm::vec3 &to)
         return 0.f;
     return static_cast<float>(std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b)) * (180.0 / glm::pi<double>()));
 }
-inline glm::vec3 ClampMagnitude(const glm::vec3 &v, float maxLength)
-{
-    float mag = Magnitude(v);
-    if (mag > maxLength && mag > 1e-6f)
-        return v * (maxLength / mag);
-    return v;
-}
 inline float Distance(const glm::vec3 &a, const glm::vec3 &b)
 {
-    return Magnitude(a - b);
+    return glm::length(a - b);
 }
 inline glm::vec3 Lerp(const glm::vec3 &a, const glm::vec3 &b, float t)
 {
@@ -80,17 +66,10 @@ inline glm::vec3 Min(const glm::vec3 &a, const glm::vec3 &b)
 inline glm::vec3 MoveTowards(const glm::vec3 &current, const glm::vec3 &target, float maxDelta)
 {
     glm::vec3 to = target - current;
-    float dist = Magnitude(to);
+    float dist = glm::length(to);
     if (dist <= maxDelta || dist < 1e-6f)
         return target;
     return current + to * (maxDelta / dist);
-}
-inline glm::vec3 Normalize(const glm::vec3 &v)
-{
-    float mag = Magnitude(v);
-    if (mag < 1e-6f)
-        return glm::vec3(0.f);
-    return v / mag;
 }
 inline glm::vec3 Project(const glm::vec3 &v, const glm::vec3 &onNormal)
 {
@@ -171,27 +150,27 @@ inline glm::vec3 Slerp(const glm::vec3 &a, const glm::vec3 &b, float t)
 }
 inline void RotateTowards(glm::vec3 &current, const glm::vec3 &target, float maxRadiansDelta, float maxMagnitudeDelta)
 {
-    float magCur = Magnitude(current);
-    float magTar = Magnitude(target);
+    float magCur = glm::length(current);
+    float magTar = glm::length(target);
     float newMag = std::clamp(magTar, magCur - maxMagnitudeDelta, magCur + maxMagnitudeDelta);
     float ang = Angle(current, target) * (glm::pi<float>() / 180.0f);
     if (ang < 1e-6f) {
-        current = Normalize(target) * newMag;
+        current = vector_binding::Normalize(target) * newMag;
         return;
     }
     float step = maxRadiansDelta / ang;
     step = std::min(step, 1.f);
-    glm::vec3 s = SlerpUnclamped(Normalize(current), Normalize(target), step);
+    glm::vec3 s = SlerpUnclamped(vector_binding::Normalize(current), vector_binding::Normalize(target), step);
     current = s * newMag;
 }
 inline void OrthoNormalize(glm::vec3 &v1, glm::vec3 &v2, glm::vec3 &v3)
 {
-    v1 = Normalize(v1);
+    v1 = vector_binding::Normalize(v1);
     v2 = ProjectOnPlane(v2, v1);
-    v2 = Normalize(v2);
+    v2 = vector_binding::Normalize(v2);
     v3 = ProjectOnPlane(v3, v1);
     v3 = ProjectOnPlane(v3, v2);
-    v3 = Normalize(v3);
+    v3 = vector_binding::Normalize(v3);
 }
 inline float RequireFiniteFloat(float value)
 {
@@ -226,7 +205,7 @@ inline glm::vec3 SmoothDamp(glm::vec3 current, glm::vec3 target, glm::vec3 &curr
     glm::vec3 originalTarget = target;
     glm::vec3 diff = current - target;
     float maxDist = maxSpeed * smoothTime;
-    float dist = Magnitude(diff);
+    float dist = glm::length(diff);
     if (std::isfinite(maxDist) && dist > maxDist && dist > 1e-6f)
         diff = diff * (maxDist / dist);
     target = current - diff;
@@ -379,19 +358,17 @@ void RegisterVector3Bindings(py::module_ &m)
         .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z); })
         .def("__len__", [](const Vec &) { return 3; })
         .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z).attr("__iter__")(); })
-        .def("__bool__", [](const Vec &v) { return vec3_util::SqrMagnitude(v) > 1e-12f; })
+        .def("__bool__", [](const Vec &v) { return glm::dot(v, v) > 1e-12f; })
         .def("__abs__", [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y), std::abs(v.z)); })
         .def("__copy__", [](const Vec &v) { return Vec(v); })
         .def("__deepcopy__", [](const Vec &v, py::dict) { return Vec(v); })
         // ---- Instance properties ----
         .def_property_readonly(
-            "magnitude", [](const Vec &v) { return vec3_util::Magnitude(v); },
-            "Length of this vector. Unity: vector.magnitude")
+            "magnitude", [](const Vec &v) { return glm::length(v); }, "Length of this vector. Unity: vector.magnitude")
+        .def_property_readonly("normalized", &vector_binding::Normalize<Vec>,
+                               "Normalized copy of this vector (unit length). Unity: vector.normalized")
         .def_property_readonly(
-            "normalized", [](const Vec &v) { return vec3_util::Normalize(v); },
-            "Normalized copy of this vector (unit length). Unity: vector.normalized")
-        .def_property_readonly(
-            "sqr_magnitude", [](const Vec &v) { return vec3_util::SqrMagnitude(v); },
+            "sqr_magnitude", [](const Vec &v) { return glm::dot(v, v); },
             "Squared length of this vector. Unity: vector.sqrMagnitude")
         // ---- Instance methods ----
         .def(
@@ -429,9 +406,9 @@ void RegisterVector3Bindings(py::module_ &m)
         .def_static("positive_infinity", []() { return Vec(std::numeric_limits<float>::infinity()); })
         // ---- Static math operations (Unity: Vector3.Dot, Vector3.Cross, etc.) ----
         .def_static("cross", &vec3_util::Cross)
-        .def_static("normalize", &vec3_util::Normalize)
+        .def_static("normalize", &vector_binding::Normalize<Vec>)
         .def_static("angle", &vec3_util::Angle)
-        .def_static("clamp_magnitude", &vec3_util::ClampMagnitude)
+        .def_static("clamp_magnitude", &vector_binding::ClampMagnitude<Vec>)
         .def_static("distance", &vec3_util::Distance)
         .def_static("dot", &vec3_util::Dot)
         .def_static("lerp", &vec3_util::Lerp)

@@ -63,10 +63,12 @@ def test_snapshot_of_absent_file_does_not_authorize_replacing_later_creation(tmp
 def test_backup_contains_previous_complete_generation(tmp_path):
     path = tmp_path / "scene.json"
     write_document_text(str(path), "first")
-    write_document_text(str(path), "second", create_backup=True)
+    previous, state = read_document_text_snapshot(str(path))
+    write_document_text(str(path), "second", expected_file_state=state)
 
+    assert previous == "first"
     assert path.read_text(encoding="utf-8") == "second"
-    assert (tmp_path / "scene.json.bak").read_text(encoding="utf-8") == "first"
+    assert set(tmp_path.iterdir()) == {path}
 
 
 def test_shutdown_drains_accepted_write_and_store_can_restart(tmp_path):
@@ -86,13 +88,15 @@ def test_shutdown_drains_accepted_write_and_store_can_restart(tmp_path):
 
 
 def test_native_write_failure_reaches_ticket(tmp_path):
-    missing_parent = tmp_path / "missing" / "failed.json"
-    ticket = DocumentStore.instance().submit(str(missing_parent), "data")
+    blocked_target = tmp_path / "blocked.json"
+    blocked_target.mkdir()
+    ticket = DocumentStore.instance().submit(str(blocked_target), "data")
 
     with pytest.raises(RuntimeError, match="atomic write failed"):
         ticket.wait()
     assert ticket.status == "failed"
     assert "atomic write failed" in ticket.error
+    assert blocked_target.is_dir()
 
 
 def test_conditional_write_does_not_overwrite_external_content(tmp_path):

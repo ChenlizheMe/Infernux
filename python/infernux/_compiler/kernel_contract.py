@@ -1,4 +1,4 @@
-"""Shared source contract for Infernux GPU kernel declarations.
+"""Shared source contract for Infernux single-work-item declarations.
 
 The Editor compiler, native Player AOT cook, and platform exporters all need
 to identify a kernel the same way.  Keep this module deliberately independent
@@ -9,6 +9,16 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+
+
+# Fixed WorkItem/compute policy; ordinary jit.compile explicit options stay independent.
+WORK_ITEM_FAST_MATH = False
+CPU_WORK_ITEM_ERROR_MODEL = "numpy"  # IEEE floating division, matching compute shaders.
+
+# The same POD array layouts are used by CPU entries, GPU specializations and
+# model recipes. Scalar int32 controls remain distinct from integer arrays.
+ARRAY_DTYPES = {"array_f32": "float32", "array_i32": "int32", "array_u32": "uint32", "array_i64": "int64"}
+ARRAY_KINDS = {dtype: kind for kind, dtype in ARRAY_DTYPES.items()}
 
 
 def attribute_name(node: ast.expr) -> str:
@@ -45,7 +55,7 @@ def execution_domain(definition: ast.FunctionDef, names=_INDEX_NAMES) -> tuple[i
     declarations = [(position, found) for position, statement in enumerate(definition.body)
                     if (found := index_declaration(statement, names)) is not None]
     if len(declarations) != 1:
-        raise TypeError("GPU kernel must declare exactly one execution domain with inx.compute.index(buffer)")
+        raise TypeError("compute kernel must declare exactly one execution domain with inx.compute.index(buffer)")
     position, (index_name, domain_name) = declarations[0]
     parameters = tuple(argument.arg for argument in (*definition.args.posonlyargs, *definition.args.args))
     if domain_name not in parameters:
@@ -132,7 +142,7 @@ def receiver_field_names(
     """Return stable, source-order fields read through ``self``/``cls``.
 
     Receiver lowering is deliberately narrow: the receiver itself never enters
-    the GPU ABI.  Only fields that are explicitly read through the conventional
+    the work-item ABI.  Only fields that are explicitly read through the conventional
     receiver name become ordinary buffer/scalar parameters.  The caller still
     validates their runtime values before compilation.
     """
@@ -160,12 +170,12 @@ def receiver_issue(node: ast.FunctionDef | ast.AsyncFunctionDef):
         if isinstance(item, ast.Name) and item.id == receiver:
             parent = parents.get(item)
             if not isinstance(parent, ast.Attribute) or parent.value is not item:
-                return item, "the receiver object cannot be passed, assigned or captured by GPU code"
+                return item, "the receiver object cannot be passed, assigned or captured by compiled work items"
             if not isinstance(parent.ctx, ast.Load):
-                return parent, "GPU kernels cannot assign receiver fields; write an inx.buffer element instead"
+                return parent, "compute kernels cannot assign receiver fields; write a buffer element instead"
             grandparent = parents.get(parent)
             if isinstance(grandparent, ast.Call) and grandparent.func is parent:
-                return parent, "receiver method calls are not GPU helpers; use @inx.compute.function"
+                return parent, "receiver method calls are not declared compute helpers; use @inx.compute.function"
     return None
 
 
@@ -183,7 +193,7 @@ def kernel_diagnostic(
     location_line = int(line if line is not None else node.lineno)
     location_column = int(column if column is not None else node.col_offset + 1)
     return (
-        f"GPU kernel '{qualified}' at {source_path}:{location_line}:"
+        f"compute kernel '{qualified}' at {source_path}:{location_line}:"
         f"{location_column} is invalid for target '{target}': {reason}. "
         f"Rewrite: {advice}"
     )

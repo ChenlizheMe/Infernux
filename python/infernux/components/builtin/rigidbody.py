@@ -1,8 +1,8 @@
 """
 Rigidbody — Python BuiltinComponent wrapper for C++ Rigidbody.
 
-Mirrors Unity's ``Rigidbody`` component. When attached alongside a Collider,
-the Collider's body becomes dynamic (affected by gravity, forces, etc.).
+Owns a dynamic or kinematic body. Collider components provide collision
+shapes; the body still moves and accepts forces without a Collider.
 
 Example::
 
@@ -139,18 +139,24 @@ class Rigidbody(BuiltinComponent):
         self._render_freeze_row(ctx, "Rotation", "freeze_rotation")
 
     def _render_freeze_row(self, ctx, label: str, prefix: str) -> None:
-        from infernux.engine.ui.inspector_components import _record_builtin_property
+        from infernux.engine.ui.inspector_components import (
+            _collect_cpp_properties, _record_builtin_property,
+        )
+        from infernux.engine.ui.inspector_utils import (
+            field_label, max_label_w, serialized_field_label,
+        )
 
-        ctx.align_text_to_frame_padding()
-        ctx.label(label)
+        label_width = max_label_w(ctx, [
+            serialized_field_label(name, prop.metadata)
+            for name, prop in _collect_cpp_properties(type(self))
+        ])
+        field_label(ctx, label, label_width)
         for i, axis in enumerate('xyz'):
-            if i == 0:
-                ctx.same_line(90)
-            else:
+            if i > 0:
                 ctx.same_line(0, 8)
             attr = f"{prefix}_{axis}"
             current = getattr(self, attr)
-            new_val = ctx.checkbox(f"{axis.upper()}##{attr}", current)
+            new_val = ctx.checkbox_field(f"{axis.upper()}##{attr}", current)
             if new_val != current:
                 _record_builtin_property(self, attr, current, new_val,
                                          f"Set {attr}")
@@ -179,6 +185,23 @@ class Rigidbody(BuiltinComponent):
 
     max_angular_velocity = CppProperty.from_native("Rigidbody", "max_angular_velocity")
     max_linear_velocity = CppProperty.from_native("Rigidbody", "max_linear_velocity")
+
+    def set_mass_properties(self, mass, center, moments, rotation=(0, 0, 0, 1)):
+        """Set mass, local COM and principal inertia (kg m²) at unit scale.
+
+        rotation maps principal axes into body-local axes. World scaling is
+        applied by the native mass pipeline, while total mass remains fixed.
+        """
+        self._require_cpp_component().set_mass_properties(
+            float(mass), coerce_vec3(center), coerce_vec3(moments), coerce_quat(rotation))
+
+    def reset_mass_properties(self):
+        """Use collider-derived COM/inertia again, retaining total mass."""
+        self._require_cpp_component().reset_mass_properties()
+
+    @property
+    def mass_properties(self):
+        return self._require_cpp_component().mass_properties
 
     @property
     def constraints_flags(self) -> RigidbodyConstraints:

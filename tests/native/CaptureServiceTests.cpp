@@ -1,3 +1,4 @@
+#include <core/threading/FrameWorkOwner.h>
 #include <function/renderer/CaptureService.h>
 
 #include <cassert>
@@ -25,7 +26,13 @@ infernux::rhi::RenderViewContext CaptureView()
 int main()
 {
     using namespace std::chrono_literals;
-    infernux::CaptureService service(0ms);
+    infernux::FrameWorkOwner owner;
+    infernux::CaptureService service(owner, 0ms);
+    const auto poll = [&] {
+        owner.BeginOpportunity();
+        owner.AdvanceEarly();
+        owner.EndOpportunity();
+    };
     const auto output = (std::filesystem::temp_directory_path() / "infernux-capture-timeout.png").string();
     {
         std::ofstream existing(output, std::ios::binary | std::ios::trunc);
@@ -35,7 +42,7 @@ int main()
     assert(service.HasPending());
     assert(service.Query(id).status == infernux::CaptureStatus::PendingGpu);
 
-    service.Poll();
+    poll();
     const auto terminal = service.Query(id);
     assert(terminal.status == infernux::CaptureStatus::Failed);
     assert(terminal.error == "Capture source frame was not submitted before timeout");
@@ -53,13 +60,13 @@ int main()
     for (int index = 0; index < 8; ++index) {
         const uint64_t completed = service.Request(infernux::CaptureSource::Editor, CaptureView(), 1,
                                                    43 + static_cast<uint64_t>(index), output + std::to_string(index));
-        service.Poll();
+        poll();
         assert(service.Query(completed).status == infernux::CaptureStatus::Failed);
     }
 
     bool rejectedNegativeTimeout = false;
     try {
-        infernux::CaptureService invalid(-1ms);
+        infernux::CaptureService invalid(owner, -1ms);
     } catch (const std::invalid_argument &) {
         rejectedNegativeTimeout = true;
     }

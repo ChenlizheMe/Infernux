@@ -1,21 +1,8 @@
-"""
-FilmGrainEffect — Physically-inspired photographic grain.
-
-Models the three properties that make film grain read as film rather than
-digital static: grains have a physical size (soft value-noise clumps),
-the grain is multiplicative so blacks stay clean, and the grain plate
-advances at 24 fps like a real print. Runs after tone mapping so the grain
-modulates the final displayed exposure, matching Unity URP ordering.
-
-Parameters:
-    intensity  — grain strength (0 = off, 1 = heavy)
-    response   — luminance response (0 = uniform, 1 = midtones/shadows only)
-    size       — grain size in pixels (1 = fine modern stock, 3+ = coarse)
-    colored    — independent grain per channel like color negative stock
-"""
+"""Film grain applied to the display exposure with a luminance response."""
 
 from __future__ import annotations
 
+from enum import IntEnum
 from typing import List, TYPE_CHECKING
 
 from infernux.renderstack.fullscreen_effect import FullScreenEffect
@@ -26,8 +13,15 @@ if TYPE_CHECKING:
     from infernux.renderstack.resource_bus import ResourceBus
 
 
+class FilmGrainSize(IntEnum):
+    Small = 0
+    Medium = 1
+    Large = 2
+    Custom = 3
+
+
 class FilmGrainEffect(FullScreenEffect):
-    """URP-aligned Film Grain post-processing effect."""
+    """Apply a centered grain plate after tone mapping."""
 
     name = "Film Grain"
     injection_point = "after_post_process"
@@ -38,15 +32,19 @@ class FilmGrainEffect(FullScreenEffect):
 
     intensity: float = serialized_field(default=0.2, range=(0.0, 1.0), slider=False)
     response: float = serialized_field(default=0.8, range=(0.0, 1.0), slider=False)
+    preset: FilmGrainSize = serialized_field(
+        default=FilmGrainSize.Custom,
+        tooltip="Small, medium or large stock. Custom uses the grain size below.",
+    )
     size: float = serialized_field(
-        default=1.6,
+        default=2.4,
         range=(0.5, 4.0),
         slider=False,
-        tooltip="Grain size in pixels (1 = fine modern stock, 3+ = coarse vintage)",
+        tooltip="Scale of soft emulsion clumps in pixels (1 = fine, 3+ = coarse)",
     )
     colored: bool = serialized_field(
         default=False,
-        tooltip="Independent grain per RGB channel, like color negative film",
+        tooltip="Add a subtle independent grain component to each color channel",
     )
 
     def get_shader_list(self) -> List[str]:
@@ -55,6 +53,7 @@ class FilmGrainEffect(FullScreenEffect):
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
 
+        size = self.size if self.preset == FilmGrainSize.Custom else (1.4, 2.4, 3.8)[int(self.preset)]
         self.apply_single_source_effect(
             graph,
             bus,
@@ -65,7 +64,7 @@ class FilmGrainEffect(FullScreenEffect):
             params={
                 "intensity": self.intensity,
                 "response": self.response,
-                "size": self.size,
+                "size": size,
                 "colored": 1.0 if self.colored else 0.0,
             },
         )

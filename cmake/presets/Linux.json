@@ -28,8 +28,7 @@
       "inherits": "linux-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "OFF"
+        "INFERNUX_BUILD_TESTS": "ON"
       }
     },
     {
@@ -38,8 +37,7 @@
       "inherits": "linux-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "ON"
+        "INFERNUX_BUILD_TESTS": "ON"
       }
     },
     {
@@ -48,8 +46,7 @@
       "inherits": "linux-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "OFF"
+        "INFERNUX_BUILD_TESTS": "ON"
       }
     }
   ],
@@ -80,6 +77,12 @@
       "configurePreset": "linux-clang-release",
       "jobs": 8,
       "targets": ["prebuild_player_runtime"]
+    },
+    {
+      "name": "linux-clang-platform-plugins",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["update_native_platform_plugin"]
     },
     {
       "name": "linux-clang-wheel",

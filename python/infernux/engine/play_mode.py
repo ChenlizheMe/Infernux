@@ -505,11 +505,13 @@ class PlayModeManager(PlayModeSerializationMixin):
         # advance Time.frame_count and may not consume a fixed physics step,
         # so automation needs an explicit completion sequence for Step.
         self._step_sequence: int = 0
+        self._step_completion = None
         self._pending_step_requests: int = 0
         
         # Typed scene document captured before entering play mode.
         self._scene_backup: Optional[Any] = None
         self._scene_backups: tuple[_PlaySceneBackup, ...] = ()
+        self._prefab_sources_during_play: dict[str, dict] = {}
         # Original scene file path (to restore correct scene on Stop)
         self._scene_path_backup: Optional[str] = None
         self._scene_document_id_backup: str = ""
@@ -677,6 +679,28 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_warning("Cannot enter Play mode while an editor scene transaction is pending.")
             return False
 
+        from infernux.engine.deferred_task import DeferredTaskRunner
+        runner = DeferredTaskRunner.instance()
+        if runner.is_busy:
+            if runner.active_task_name == "Enter Play Mode":
+                return True
+            Debug.log_warning(
+                "Cannot enter play mode while deferred task "
+                f"'{runner.active_task_name or runner.active_step_label or 'unknown'}' is running"
+            )
+            return False
+
+        # Play must consume saved script revisions before rebuilding the scene.
+        from infernux.engine.resources_manager import ResourcesManager
+
+        resources = ResourcesManager.instance()
+        if resources is not None:
+            try:
+                resources.prepare_play_scripts()
+            except (OSError, RuntimeError, ValueError) as exc:
+                Debug.log_error(f"Play Mode blocked: saved scripts could not be published. {exc}")
+                return False
+
         # Pre-flight check: block play if any script has load errors
         from infernux.components.script_loader import has_script_errors, get_script_errors
         if has_script_errors():
@@ -690,17 +714,6 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_error(
                 f"Play Mode blocked: {len(errors)} script(s) have errors. "
                 "Fix all script errors before playing."
-            )
-            return False
-
-        from infernux.engine.deferred_task import DeferredTaskRunner
-        runner = DeferredTaskRunner.instance()
-        if runner.is_busy:
-            if runner.active_task_name == "Enter Play Mode":
-                return True
-            Debug.log_warning(
-                "Cannot enter play mode while deferred task "
-                f"'{runner.active_task_name or runner.active_step_label or 'unknown'}' is running"
             )
             return False
 
@@ -736,6 +749,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 self._delta_time = 0.0
                 self._step_sequence = 0
                 self._pending_step_requests = 0
+                self._step_completion = None
                 Time._reset()
                 AssetManager._begin_play_data_asset_isolation()
 
@@ -822,6 +836,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                     Material._suppress_auto_save = False
                     RenderEffect._suppress_auto_save = False
                     self._pending_step_requests = 0
+                    self._step_completion = None
                     self._total_play_time = self._delta_time = 0.0
                     Time._reset()
                 except Exception as restore_error:
@@ -929,6 +944,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         # disabled until the retained snapshot has been restored successfully.
         self._state = PlayModeState.RESTORING
         self._pending_step_requests = 0
+        self._step_completion = None
         from infernux.core.material import Material
         from infernux.renderstack.render_effect import RenderEffect
         Material._suppress_auto_save = True
@@ -1039,6 +1055,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             return False
         
         self._pending_step_requests = 0
+        self._step_completion = None
         # Reset timing to avoid large delta_time after unpause
         self._last_frame_time = time.perf_counter()
         
@@ -1073,16 +1090,36 @@ class PlayModeManager(PlayModeSerializationMixin):
         return True
 
     def process_pending_step(self) -> bool:
-        """Run one paused step after the current authoring transaction exits."""
-        if self._state != PlayModeState.PAUSED or self._pending_step_requests <= 0:
+        """Issue one logical step and count it only after its publication completes."""
+        if self._state != PlayModeState.PAUSED:
+            self._step_completion = None
+            return False
+        if self._pending_step_requests <= 0 and self._step_completion is None:
             return False
         scene_manager = self._get_scene_manager()
         if scene_manager is None:
             return False
+        if scene_manager.is_stepping():
+            return False
+        if self._step_completion is not None:
+            epoch, step, frame = self._step_completion
+            if (int(scene_manager.simulation_epoch) == epoch and scene_manager.published_fixed_step_index >= step
+                    and scene_manager.runtime_frame_count >= frame):
+                self._step_sequence += 1
+            self._step_completion = None
+        if self._pending_step_requests <= 0:
+            return False
         self._pending_step_requests -= 1
         dt = self._delta_time if self._delta_time > 0 else (1.0 / 60.0)
+        epoch = int(scene_manager.simulation_epoch)
+        step = int(scene_manager.fixed_step_index) + int(not scene_manager.fixed_step_pending)
+        frame = int(scene_manager.runtime_frame_count) + 1
         scene_manager.step(dt)
-        self._step_sequence += 1
+        if scene_manager.is_stepping():
+            self._step_completion = epoch, step, frame
+        elif (int(scene_manager.simulation_epoch) == epoch and scene_manager.published_fixed_step_index >= step
+                and scene_manager.runtime_frame_count >= frame):
+            self._step_sequence += 1
         return True
 
     def _prepare_active_scene_for_play(self, snapshot: Optional[Any]) -> bool:
@@ -1305,7 +1342,21 @@ class PlayModeManager(PlayModeSerializationMixin):
                 phase_totals[phase] = phase_totals.get(phase, 0.0) + float(duration)
         self._last_rebuild_timings_ms = phase_totals
         self._restore_scene_documents_after_play(restored_scenes)
+        self._restore_reloaded_prefabs(restored_scenes.values())
         return True
+
+    def _restore_reloaded_prefabs(self, scenes) -> None:
+        if not self._prefab_sources_during_play:
+            return
+        from infernux.engine.scene_manager import SceneFileManager
+
+        # Rebase the restored authored scene, keeping its pre-Play overrides.
+        # Retain only documents that successfully reached the live world.
+        sources = self._prefab_sources_during_play
+        SceneFileManager.instance()._sync_prefab_scenes(
+            scenes, affected_guids=sources.keys(), source_documents=sources,
+        )
+        sources.clear()
 
     # ========================================================================
     # Python component helpers (serialization / reload)
@@ -1507,6 +1558,9 @@ class PlayModeManager(PlayModeSerializationMixin):
     def prepare_script_reload_batch(
         self,
         revisions: Iterable[ScriptReloadBatchInput],
+        *,
+        replacing_scene=None,
+        rebuild_helpers: bool = False,
     ) -> ScriptReloadBatch:
         """Collect resident-scene targets and stage one stable-class batch."""
         from infernux.components.script_loader import (
@@ -1614,7 +1668,11 @@ class PlayModeManager(PlayModeSerializationMixin):
                         execution_order=int(getattr(component, "_execution_order", 0)),
                     )
                 )
-        transaction = stage_component_body_reload_batch(tuple(requests))
+        transaction = stage_component_body_reload_batch(
+            tuple(requests),
+            replacing_scene=replacing_scene,
+            rebuild_helpers=rebuild_helpers and self._state is PlayModeState.EDIT,
+        )
         if recovery_members:
             transaction = _MissingScriptRecoveryTransaction(
                 self,
@@ -1788,6 +1846,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 )
             )
         self._scene_backups = tuple(backups)
+        self._prefab_sources_during_play.clear()
         active_backup = next(backup for backup in backups if backup.was_active)
         self._scene_backup = active_backup.snapshot
         self._scene_path_backup = active_backup.resource_path
@@ -1837,11 +1896,13 @@ class PlayModeManager(PlayModeSerializationMixin):
         active_backup = None
         for backup in self._scene_backups:
             if backup.document_id:
+                document = registry.require(backup.document_id)
                 registry.restore_revision_state(
                     backup.document_id,
                     revision=backup.revision,
                     saved_revision=backup.saved_revision,
-                    state=backup.document_state or DocumentState.READY,
+                    state=(document.state if DocumentState.CONFLICT in (document.state, backup.document_state)
+                           else backup.document_state or DocumentState.READY),
                 )
             if backup.was_active:
                 active_backup = backup
@@ -1882,7 +1943,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             document.document_id,
             revision=self._scene_revision_backup,
             saved_revision=self._scene_saved_revision_backup,
-            state=self._scene_document_state_backup or DocumentState.READY,
+            state=(document.state if DocumentState.CONFLICT in (document.state, self._scene_document_state_backup)
+                   else self._scene_document_state_backup or DocumentState.READY),
         )
         if path_changed:
             if sfm.current_scene_path:

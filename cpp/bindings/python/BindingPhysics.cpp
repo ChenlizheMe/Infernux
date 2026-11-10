@@ -21,14 +21,21 @@
 #include "function/scene/Collider.h"
 #include "function/scene/Component.h"
 #include "function/scene/CylinderCollider.h"
+#include "function/scene/DistanceJoint.h"
+#include "function/scene/FixedJoint.h"
 #include "function/scene/GameObject.h"
 #include "function/scene/HingeJoint.h"
 #include "function/scene/MeshCollider.h"
+#include "function/scene/Ragdoll.h"
 #include "function/scene/Rigidbody.h"
 #include "function/scene/SceneManager.h"
+#include "function/scene/SixDOFJoint.h"
+#include "function/scene/SkeletonInstance.h"
 #include "function/scene/SliderJoint.h"
 #include "function/scene/SphereCollider.h"
+#include "function/scene/SwingTwistJoint.h"
 #include "function/scene/TagLayerManager.h"
+#include "function/scene/physics/HingeJointBatch.h"
 #include "function/scene/physics/PhysicsContactListener.h"
 #include "function/scene/physics/PhysicsWorld.h"
 #include <core/config/EngineConfig.h>
@@ -36,10 +43,12 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <pybind11/numpy.h>
@@ -294,63 +303,160 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     return output;
 }
 
-py::array_t<float> RigidbodyStateArray(py::dict &result, const char *name, const std::vector<py::ssize_t> &shape,
-                                       bool create)
+template <typename T>
+py::array_t<T> RigidbodyStateArray(py::dict &result, const char *name, const std::vector<py::ssize_t> &shape,
+                                   bool create)
 {
-    py::array value;
-    if (create) {
-        value = py::array_t<float>(shape);
-        result[py::str(name)] = value;
-    } else {
-        const auto key = py::str(name);
-        if (!result.contains(key))
-            throw py::value_error(std::string("Rigidbody state output is missing '") + name + "'");
-        value = py::cast<py::array>(result[key]);
-    }
-    if (!value.dtype().is(py::dtype::of<float>()) || !(value.flags() & py::array::c_style) || !value.writeable() ||
+    const auto key = py::str(name);
+    if (!create && !result.contains(key))
+        throw py::value_error(std::string("Rigidbody state output is missing '") + name + "'");
+    py::array value = create ? py::array(py::array_t<T>(shape)) : py::cast<py::array>(result[key]);
+    if (create)
+        result[key] = value;
+    if (!value.dtype().is(py::dtype::of<T>()) || !(value.flags() & py::array::c_style) || !value.writeable() ||
+        reinterpret_cast<uintptr_t>(value.data()) % alignof(T) != 0 ||
         value.ndim() != static_cast<py::ssize_t>(shape.size()))
-        throw py::value_error(std::string("Rigidbody state '") + name + "' has the wrong float32 layout");
+        throw py::value_error(std::string("Rigidbody state '") + name + "' has the wrong writable layout");
     if (value.shape(0) < shape[0])
         throw py::value_error(std::string("Rigidbody state '") + name + "' has insufficient capacity");
     for (py::ssize_t axis = 1; axis < value.ndim(); ++axis)
         if (value.shape(axis) != shape[static_cast<size_t>(axis)])
             throw py::value_error(std::string("Rigidbody state '") + name + "' has the wrong shape");
-    return py::reinterpret_borrow<py::array_t<float>>(value);
+    return py::reinterpret_borrow<py::array_t<T>>(value);
 }
 
-py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object output)
+struct RigidbodyStateField
+{
+    const char *name;
+    PhysicsStateFields field;
+    py::ssize_t components;
+};
+
+constexpr RigidbodyStateField kRigidbodyStateFields[] = {
+    {"position", PhysicsStateFields::Position, 3},
+    {"center_of_mass", PhysicsStateFields::CenterOfMass, 3},
+    {"linear_velocity", PhysicsStateFields::LinearVelocity, 3},
+    {"angular_velocity", PhysicsStateFields::AngularVelocity, 3},
+    {"inverse_mass", PhysicsStateFields::InverseMass, 3},
+    {"rotation", PhysicsStateFields::Rotation, 4},
+    {"inverse_inertia", PhysicsStateFields::InverseInertia, 9},
+    {"body_id", PhysicsStateFields::BodyId, 1},
+    {"shape_revision", PhysicsStateFields::ShapeRevision, 1},
+};
+
+py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object output, py::object fields)
 {
     const auto count = static_cast<py::ssize_t>(bodies.size());
     const bool create = output.is_none();
     if (!create && !py::isinstance<py::dict>(output))
         throw py::type_error("Rigidbody state output must be a dictionary of writable arrays");
+    std::vector<const RigidbodyStateField *> selected;
+    uint32_t mask = 0;
+    if (fields.is_none()) {
+        for (const auto &field : kRigidbodyStateFields)
+            if (HasPhysicsStateField(PhysicsStateFields::All, field.field))
+                selected.push_back(&field);
+        mask = static_cast<uint32_t>(PhysicsStateFields::All);
+    } else {
+        if (py::isinstance<py::str>(fields))
+            throw py::type_error("Rigidbody state fields must be a sequence of field names");
+        const auto names = py::cast<std::vector<std::string>>(fields);
+        if (names.empty())
+            throw py::value_error("Rigidbody state fields must not be empty");
+        for (const auto &name : names) {
+            const auto field = std::find_if(std::begin(kRigidbodyStateFields), std::end(kRigidbodyStateFields),
+                                            [&](const auto &candidate) { return name == candidate.name; });
+            if (field == std::end(kRigidbodyStateFields))
+                throw py::value_error("Unknown Rigidbody state field: " + name);
+            const auto bit = static_cast<uint32_t>(field->field);
+            if (mask & bit)
+                throw py::value_error("Duplicate Rigidbody state field: " + name);
+            mask |= bit;
+            selected.push_back(field);
+        }
+    }
     py::dict result = create ? py::dict() : py::reinterpret_borrow<py::dict>(output);
-    const std::vector<py::ssize_t> vectorShape{count, 3};
-    auto position = RigidbodyStateArray(result, "position", vectorShape, create);
-    auto center = RigidbodyStateArray(result, "center_of_mass", vectorShape, create);
-    auto linear = RigidbodyStateArray(result, "linear_velocity", vectorShape, create);
-    auto angular = RigidbodyStateArray(result, "angular_velocity", vectorShape, create);
-    auto mass = RigidbodyStateArray(result, "inverse_mass", vectorShape, create);
-    auto rotation = RigidbodyStateArray(result, "rotation", {count, 4}, create);
-    auto inertia = RigidbodyStateArray(result, "inverse_inertia", {count, 3, 3}, create);
-    auto p = position.mutable_unchecked<2>(), c = center.mutable_unchecked<2>(), v = linear.mutable_unchecked<2>();
-    auto w = angular.mutable_unchecked<2>(), m = mass.mutable_unchecked<2>(), q = rotation.mutable_unchecked<2>();
-    auto tensor = inertia.mutable_unchecked<3>();
+    if (!create && !fields.is_none() && result.size() != selected.size())
+        throw py::value_error("Selected Rigidbody state output must contain exactly the requested fields");
+    struct Writer
+    {
+        const RigidbodyStateField *field;
+        py::array owner;
+        void *data;
+    };
+    std::vector<Writer> writers;
+    writers.reserve(selected.size());
+    for (const auto *field : selected) {
+        std::vector<py::ssize_t> shape{count};
+        if (field->field == PhysicsStateFields::InverseInertia) {
+            shape.push_back(3);
+            shape.push_back(3);
+        } else if (field->components > 1) {
+            shape.push_back(field->components);
+        }
+        py::array array = field->field == PhysicsStateFields::BodyId
+                              ? py::array(RigidbodyStateArray<uint32_t>(result, field->name, shape, create))
+                          : field->field == PhysicsStateFields::ShapeRevision
+                              ? py::array(RigidbodyStateArray<uint64_t>(result, field->name, shape, create))
+                              : py::array(RigidbodyStateArray<float>(result, field->name, shape, create));
+        for (const auto &writer : writers) {
+            const auto first = reinterpret_cast<uintptr_t>(array.data());
+            const auto other = reinterpret_cast<uintptr_t>(writer.owner.data());
+            const auto writtenBytes = count * field->components * array.itemsize();
+            const auto otherWrittenBytes = count * writer.field->components * writer.owner.itemsize();
+            if (writtenBytes && otherWrittenBytes && first < other + otherWrittenBytes && other < first + writtenBytes)
+                throw py::value_error("Rigidbody state output fields must not overlap");
+        }
+        auto *data = array.mutable_data();
+        writers.push_back({field, std::move(array), data});
+    }
     for (py::ssize_t row = 0; row < count; ++row) {
         if (!bodies[row])
             throw py::value_error("rigidbodies must not contain None");
-        const auto state = bodies[row]->GetMotionState();
-        for (int axis = 0; axis < 3; ++axis) {
-            p(row, axis) = state.position[axis];
-            c(row, axis) = state.centerOfMass[axis];
-            v(row, axis) = state.linearVelocity[axis];
-            w(row, axis) = state.angularVelocity[axis];
-            m(row, axis) = state.inverseMass[axis];
-            for (int column = 0; column < 3; ++column)
-                tensor(row, axis, column) = state.inverseInertia[column][axis];
+        const auto state = bodies[row]->GetMotionState(static_cast<PhysicsStateFields>(mask));
+        for (const auto &writer : writers) {
+            const auto field = writer.field->field;
+            if (field == PhysicsStateFields::BodyId) {
+                static_cast<uint32_t *>(writer.data)[row] = state.bodyId;
+                continue;
+            }
+            if (field == PhysicsStateFields::ShapeRevision) {
+                static_cast<uint64_t *>(writer.data)[row] = state.shapeRevision;
+                continue;
+            }
+            auto *destination = static_cast<float *>(writer.data) + row * writer.field->components;
+            const glm::vec3 *vector;
+            switch (field) {
+            case PhysicsStateFields::Position:
+                vector = &state.position;
+                break;
+            case PhysicsStateFields::CenterOfMass:
+                vector = &state.centerOfMass;
+                break;
+            case PhysicsStateFields::LinearVelocity:
+                vector = &state.linearVelocity;
+                break;
+            case PhysicsStateFields::AngularVelocity:
+                vector = &state.angularVelocity;
+                break;
+            case PhysicsStateFields::InverseMass:
+                vector = &state.inverseMass;
+                break;
+            case PhysicsStateFields::Rotation:
+                for (int axis = 0; axis < 4; ++axis)
+                    destination[axis] = state.rotation[axis];
+                continue;
+            case PhysicsStateFields::InverseInertia:
+                for (int axis = 0; axis < 3; ++axis)
+                    for (int column = 0; column < 3; ++column)
+                        destination[axis * 3 + column] = state.inverseInertia[column][axis];
+                continue;
+            default:
+                throw std::logic_error("Invalid Rigidbody state writer");
+            }
+            for (int axis = 0; axis < 3; ++axis)
+                destination[axis] = (*vector)[axis];
         }
-        for (int axis = 0; axis < 4; ++axis)
-            q(row, axis) = state.rotation[axis];
     }
     return result;
 }
@@ -532,26 +638,30 @@ py::array BoxStateArray(py::dict &result, const char *name, const py::dtype &dty
     return value;
 }
 
-py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::object output, bool queryTriggers)
+struct RigidbodyBoxEntry
 {
-    struct Entry
-    {
-        py::ssize_t bodyIndex;
-        BoxCollider *collider;
-    };
-    std::vector<Entry> entries;
-    for (py::ssize_t bodyIndex = 0; bodyIndex < static_cast<py::ssize_t>(bodies.size()); ++bodyIndex) {
-        auto *body = bodies[bodyIndex];
+    uint64_t bodyIndex;
+    PhysicsBoxShapeState shape;
+};
+
+std::vector<RigidbodyBoxEntry> CollectRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, bool queryTriggers)
+{
+    std::vector<RigidbodyBoxEntry> entries;
+    auto &world = PhysicsWorld::Instance();
+    for (uint64_t index = 0; index < bodies.size(); ++index) {
+        auto *body = bodies[index];
         if (!body)
             throw py::value_error("rigidbodies must not contain None");
-        (void)body->GetMotionState();
-        auto *gameObject = body->GetGameObject();
-        if (!gameObject)
-            throw py::value_error("Rigidbody has no GameObject");
-        for (auto *collider : gameObject->GetComponents<BoxCollider>())
-            if (collider && collider->IsEnabled() && (queryTriggers || !collider->IsTrigger()))
-                entries.push_back({bodyIndex, collider});
+        (void)body->GetMotionState(PhysicsStateFields::None);
+        for (const auto &shape : world.GetBodyBoxShapeStates(body->GetBodyId(), queryTriggers))
+            entries.push_back({index, shape});
     }
+    return entries;
+}
+
+py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::object output, bool queryTriggers)
+{
+    const auto entries = CollectRigidbodyBoxStates(bodies, queryTriggers);
 
     const auto count = static_cast<py::ssize_t>(entries.size());
     const bool create = output.is_none();
@@ -571,14 +681,11 @@ py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::objec
     auto extents = extentsArray.mutable_unchecked<float, 2>();
     auto frictions = frictionArray.mutable_unchecked<float, 1>();
     auto bounces = bounceArray.mutable_unchecked<float, 1>();
-    constexpr float kMinHalfExtent = 0.01f;
     for (py::ssize_t row = 0; row < count; ++row) {
         const auto &entry = entries[static_cast<size_t>(row)];
-        auto *transform = entry.collider->GetGameObject()->GetTransform();
-        const auto worldCenter = transform->TransformPoint(entry.collider->GetCenter());
-        const auto worldRotation = glm::normalize(transform->GetWorldRotation());
-        const auto halfExtents = glm::max(entry.collider->GetSize() * 0.5f * glm::abs(transform->GetWorldScale()),
-                                          glm::vec3(kMinHalfExtent));
+        const auto &worldCenter = entry.shape.center;
+        const auto &worldRotation = entry.shape.rotation;
+        const auto &halfExtents = entry.shape.halfExtents;
         indices(row) = static_cast<int32_t>(entry.bodyIndex);
         for (int axis = 0; axis < 3; ++axis) {
             centers(row, axis) = worldCenter[axis];
@@ -588,8 +695,8 @@ py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::objec
         rotations(row, 1) = worldRotation.y;
         rotations(row, 2) = worldRotation.z;
         rotations(row, 3) = worldRotation.w;
-        frictions(row) = entry.collider->GetFriction();
-        bounces(row) = entry.collider->GetBounciness();
+        frictions(row) = entry.shape.friction;
+        bounces(row) = entry.shape.bounciness;
     }
     result[py::str("count")] = count;
     return result;
@@ -599,24 +706,7 @@ uint64_t AppendRigidbodyBoxStateBufferUpdates(const std::vector<Rigidbody *> &bo
                                               bool queryTriggers, std::vector<rhi::ComputeBufferUpdate> &updates,
                                               rhi::ComputeHost *&host)
 {
-    struct Entry
-    {
-        uint64_t bodyIndex;
-        BoxCollider *collider;
-    };
-    std::vector<Entry> entries;
-    for (uint64_t bodyIndex = 0; bodyIndex < bodies.size(); ++bodyIndex) {
-        auto *body = bodies[bodyIndex];
-        if (!body)
-            throw py::value_error("rigidbodies must not contain None");
-        (void)body->GetMotionState();
-        auto *gameObject = body->GetGameObject();
-        if (!gameObject)
-            throw py::value_error("Rigidbody has no GameObject");
-        for (auto *collider : gameObject->GetComponents<BoxCollider>())
-            if (collider && collider->IsEnabled() && (queryTriggers || !collider->IsTrigger()))
-                entries.push_back({bodyIndex, collider});
-    }
+    const auto entries = CollectRigidbodyBoxStates(bodies, queryTriggers);
 
     const auto count = static_cast<uint64_t>(entries.size());
     auto bodyIndex = ComputeOutput(output, "body_index", rhi::ComputeScalarType::Int32, 1, count, host);
@@ -631,14 +721,11 @@ uint64_t AppendRigidbodyBoxStateBufferUpdates(const std::vector<Rigidbody *> &bo
     std::vector<int32_t> indices(count);
     std::vector<float> centers(count * 3), rotations(count * 4), halfExtents(count * 3), frictions(count),
         bounces(count);
-    constexpr float kMinHalfExtent = 0.01f;
     for (uint64_t row = 0; row < count; ++row) {
         const auto &entry = entries[row];
-        auto *transform = entry.collider->GetGameObject()->GetTransform();
-        const auto worldCenter = transform->TransformPoint(entry.collider->GetCenter());
-        const auto worldRotation = glm::normalize(transform->GetWorldRotation());
-        const auto halfExtent = glm::max(entry.collider->GetSize() * 0.5f * glm::abs(transform->GetWorldScale()),
-                                         glm::vec3(kMinHalfExtent));
+        const auto &worldCenter = entry.shape.center;
+        const auto &worldRotation = entry.shape.rotation;
+        const auto &halfExtent = entry.shape.halfExtents;
         indices[row] = static_cast<int32_t>(entry.bodyIndex);
         for (uint64_t axis = 0; axis < 3; ++axis) {
             centers[row * 3 + axis] = worldCenter[axis];
@@ -648,8 +735,8 @@ uint64_t AppendRigidbodyBoxStateBufferUpdates(const std::vector<Rigidbody *> &bo
         rotations[row * 4 + 1] = worldRotation.y;
         rotations[row * 4 + 2] = worldRotation.z;
         rotations[row * 4 + 3] = worldRotation.w;
-        frictions[row] = entry.collider->GetFriction();
-        bounces[row] = entry.collider->GetBounciness();
+        frictions[row] = entry.shape.friction;
+        bounces[row] = entry.shape.bounciness;
     }
     updates.push_back({bodyIndex, 0, ComputeBytes(indices)});
     updates.push_back({center, 0, ComputeBytes(centers)});
@@ -730,7 +817,7 @@ py::tuple QueryRigidbodyStateAndBoxStateArrays(const glm::vec3 &minimum, const g
     if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
         throw py::value_error("minimum must not exceed maximum on any axis");
     const auto bodies = PhysicsWorld::Instance().QueryRigidbodiesInBounds(minimum, maximum, layerMask, queryTriggers);
-    GetRigidbodyStates(bodies, stateOutput);
+    GetRigidbodyStates(bodies, stateOutput, py::none());
     const auto boxes = GetRigidbodyBoxStates(bodies, boxOutput, queryTriggers);
     py::list result;
     for (auto *body : bodies)
@@ -738,17 +825,59 @@ py::tuple QueryRigidbodyStateAndBoxStateArrays(const glm::vec3 &minimum, const g
     return py::make_tuple(result, py::cast<uint64_t>(boxes[py::str("count")]));
 }
 
-void ApplyRigidbodyImpulseValues(const std::vector<Rigidbody *> &bodies, const float *linear, const float *angular)
+void ResetRigidbodies(const std::vector<Rigidbody *> &bodies, const py::dict &input)
+{
+    constexpr const char *names[]{"position", "rotation", "linear_velocity", "angular_velocity"};
+    const auto count = static_cast<py::ssize_t>(bodies.size());
+    if (input.size() != 4)
+        throw py::value_error("reset state requires position, rotation, linear_velocity and angular_velocity");
+    std::array<py::array, 4> arrays;
+    for (size_t i = 0; i < arrays.size(); ++i) {
+        const auto *name = names[i];
+        if (!input.contains(name) || !py::isinstance<py::array>(input[name]))
+            throw py::type_error(std::string("reset field must be a NumPy array: ") + name);
+        arrays[i] = py::reinterpret_borrow<py::array>(input[name]);
+        const auto &array = arrays[i];
+        if (!array.dtype().is(py::dtype::of<float>()) || !(array.flags() & py::array::c_style) || array.ndim() != 2 ||
+            array.shape(0) != count || array.shape(1) != (i == 1 ? 4 : 3) ||
+            reinterpret_cast<uintptr_t>(array.data()) % alignof(float))
+            throw py::value_error(std::string("reset field requires contiguous float32 shape (N,") +
+                                  (i == 1 ? "4): " : "3): ") + name);
+    }
+    std::vector<PhysicsBodyMotionState> states(static_cast<size_t>(count));
+    for (py::ssize_t row = 0; row < count; ++row) {
+        auto &state = states[static_cast<size_t>(row)];
+        const auto vector = [&](size_t field) {
+            const auto *v = static_cast<const float *>(arrays[field].data()) + 3 * row;
+            return glm::vec3(v[0], v[1], v[2]);
+        };
+        state.position = vector(0);
+        const auto *q = static_cast<const float *>(arrays[1].data()) + 4 * row;
+        state.rotation = glm::quat(q[3], q[0], q[1], q[2]);
+        state.linearVelocity = vector(2);
+        state.angularVelocity = vector(3);
+    }
+    Rigidbody::ResetMotionStates(bodies, std::move(states));
+}
+
+void ApplyRigidbodyImpulseValues(const std::vector<Rigidbody *> &bodies, const float *linear, const float *angular,
+                                 const uint32_t *expectedBodyIds = nullptr,
+                                 const uint64_t *expectedShapeRevisions = nullptr)
 {
     const auto count = static_cast<py::ssize_t>(bodies.size());
     for (py::ssize_t i = 0; i < count * 3; ++i)
         if (!std::isfinite(linear[i]) || !std::isfinite(angular[i]))
             throw py::value_error("Impulse buffers must contain finite values");
     // Reject invalid public input before any body receives feedback.
-    for (const auto *body : bodies) {
-        if (!body)
+    const auto fields = expectedShapeRevisions ? PhysicsStateFields::ShapeRevision : PhysicsStateFields::None;
+    for (py::ssize_t row = 0; row < count; ++row) {
+        if (!bodies[row])
             throw py::value_error("rigidbodies must not contain None");
-        (void)body->GetMotionState();
+        const auto state = bodies[row]->GetMotionState(fields);
+        if (expectedBodyIds && state.bodyId != expectedBodyIds[row])
+            throw py::value_error("Rigidbody feedback body identity has changed");
+        if (expectedShapeRevisions && state.shapeRevision != expectedShapeRevisions[row])
+            throw py::value_error("Rigidbody feedback shape has changed");
     }
     for (py::ssize_t row = 0; row < count; ++row) {
         const auto offset = static_cast<size_t>(row) * 3;
@@ -761,15 +890,38 @@ void ApplyRigidbodyImpulseValues(const std::vector<Rigidbody *> &bodies, const f
     }
 }
 
+template <typename T> py::array_t<T> ExpectedRigidbodyIdentity(py::object value, py::ssize_t count, const char *name)
+{
+    if (!py::isinstance<py::array>(value))
+        throw py::type_error(std::string(name) + " must be a NumPy array");
+    auto array = py::reinterpret_borrow<py::array>(value);
+    if (!array.dtype().is(py::dtype::of<T>()) || !(array.flags() & py::array::c_style) || array.ndim() != 1 ||
+        reinterpret_cast<uintptr_t>(array.data()) % alignof(T) != 0 || array.shape(0) != count)
+        throw py::value_error(std::string(name) + " must have the exact integer dtype and shape (body_count,)");
+    return py::reinterpret_borrow<py::array_t<T>>(array);
+}
+
 void ApplyRigidbodyImpulses(const std::vector<Rigidbody *> &bodies,
                             const py::array_t<float, py::array::c_style> &linear,
-                            const py::array_t<float, py::array::c_style> &angular)
+                            const py::array_t<float, py::array::c_style> &angular, py::object expectedBodyIds,
+                            py::object expectedShapeRevisions)
 {
     const auto count = static_cast<py::ssize_t>(bodies.size());
     for (const auto &array : {linear, angular})
-        if (array.ndim() != 2 || array.shape(0) != count || array.shape(1) != 3)
-            throw py::value_error("Impulse arrays must have shape (body_count, 3)");
-    ApplyRigidbodyImpulseValues(bodies, linear.data(), angular.data());
+        if (array.ndim() != 2 || array.shape(0) != count || array.shape(1) != 3 ||
+            reinterpret_cast<uintptr_t>(array.data()) % alignof(float) != 0)
+            throw py::value_error("Impulse arrays require aligned shape (body_count, 3)");
+    if (!expectedShapeRevisions.is_none() && expectedBodyIds.is_none())
+        throw py::value_error("expected_shape_revisions requires expected_body_ids");
+    // The original Python arguments retain these arrays through the full call.
+    const uint32_t *ids = nullptr;
+    const uint64_t *revisions = nullptr;
+    if (!expectedBodyIds.is_none())
+        ids = ExpectedRigidbodyIdentity<uint32_t>(expectedBodyIds, count, "expected_body_ids").data();
+    if (!expectedShapeRevisions.is_none())
+        revisions =
+            ExpectedRigidbodyIdentity<uint64_t>(expectedShapeRevisions, count, "expected_shape_revisions").data();
+    ApplyRigidbodyImpulseValues(bodies, linear.data(), angular.data(), ids, revisions);
 }
 
 void ApplyRigidbodyImpulseBuffers(const std::vector<Rigidbody *> &bodies,
@@ -835,13 +987,40 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // CollisionInfo struct (Unity: Collision)
     // ====================================================================
+    const auto attachedBody = [](const PhysicsTargetReference &target) -> Rigidbody * {
+        auto *collider = target.GetCollider();
+        return collider ? collider->GetAttachedRigidbody() : nullptr;
+    };
+    const auto hitTransform = [attachedBody](const PhysicsTargetReference &target) -> Transform * {
+        if (auto *body = attachedBody(target))
+            return body->GetGameObject()->GetTransform();
+        auto *object = target.GetGameObject();
+        return object ? object->GetTransform() : nullptr;
+    };
+    const auto collisionTransform = [](const CollisionInfo &value) -> Transform * {
+        if (auto *body = dynamic_cast<Rigidbody *>(value.bodyTarget.GetComponent()))
+            return body->GetGameObject()->GetTransform();
+        auto *object = value.target.GetGameObject();
+        return object ? object->GetTransform() : nullptr;
+    };
     py::class_<CollisionInfo>(m, "CollisionInfo")
         .def(py::init<>())
+        .def_property_readonly(
+            "rigidbody",
+            [](const CollisionInfo &value) { return dynamic_cast<Rigidbody *>(value.bodyTarget.GetComponent()); },
+            py::return_value_policy::reference)
+        .def_property_readonly(
+            "transform", [collisionTransform](const CollisionInfo &value) { return collisionTransform(value); },
+            py::return_value_policy::reference)
         .def_property_readonly(
             "collider", [](const CollisionInfo &c) { return c.target.GetCollider(); },
             py::return_value_policy::reference, "The other Collider involved in the collision")
         .def_property_readonly(
-            "game_object", [](const CollisionInfo &c) { return c.target.GetGameObject(); },
+            "game_object",
+            [collisionTransform](const CollisionInfo &c) {
+                auto *transform = collisionTransform(c);
+                return transform ? transform->GetGameObject() : nullptr;
+            },
             py::return_value_policy::reference, "The other GameObject involved in the collision")
         .def_property_readonly(
             "contact_point", [](const CollisionInfo &c) { return c.contactPoint; }, "World-space contact point")
@@ -869,6 +1048,12 @@ void RegisterPhysicsBindings(py::module_ &m)
 
     py::class_<RaycastHit>(m, "RaycastHit")
         .def(py::init<>())
+        .def_property_readonly(
+            "rigidbody", [attachedBody](const RaycastHit &value) { return attachedBody(value.target); },
+            py::return_value_policy::reference)
+        .def_property_readonly(
+            "transform", [hitTransform](const RaycastHit &value) { return hitTransform(value.target); },
+            py::return_value_policy::reference)
         .def_property_readonly(
             "point", [](const RaycastHit &h) { return h.point; }, "World-space hit point")
         .def_property_readonly(
@@ -903,12 +1088,23 @@ void RegisterPhysicsBindings(py::module_ &m)
     // Collider base (abstract — not directly constructible)
     // ====================================================================
     NativeClass<Collider, Component>(m, "Collider")
+        .def_property_readonly("attached_rigidbody", &Collider::GetAttachedRigidbody,
+                               py::return_value_policy::reference,
+                               "The Rigidbody on this object or its nearest ancestor")
         .def_property("is_trigger", &Collider::IsTrigger, &Collider::SetIsTrigger, "Is this collider a trigger volume?")
         .def_property(
             "center", [](Collider *c) { return c->GetCenter(); },
             [](Collider *c, const glm::vec3 &v) { c->SetCenter(v); }, "Center offset in local space")
-        .def_property("physic_material", &Collider::GetPhysicMaterial, &Collider::SetPhysicMaterial,
-                      "Shared PhysicMaterial; None uses engine defaults")
+        .def_property(
+            "physic_material", &Collider::GetPhysicMaterial,
+            [](Collider &c, std::shared_ptr<PhysicMaterial> material) { c.SetPhysicMaterial(std::move(material)); },
+            "Shared PhysicMaterial; None uses engine defaults")
+        .def_property(
+            "material", &Collider::GetMaterial,
+            [](Collider &c, std::shared_ptr<PhysicMaterial> material) { c.SetPhysicMaterial(std::move(material)); },
+            "Private surface instance; first read detaches from the shared material")
+        .def_property_readonly("_material_is_instance", &Collider::IsMaterialInstance)
+        .def("_set_physic_material_binding", &Collider::SetPhysicMaterial, "material"_a, "instance"_a)
         .def_property("physic_material_guid", &Collider::GetPhysicMaterialGuid, &Collider::SetPhysicMaterialGuid,
                       "GUID of the persistent PhysicMaterial asset")
         .def(
@@ -1082,6 +1278,21 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def(py::init<>())
         // ---- Serialized properties ----
         .def_property("mass", &Rigidbody::GetMass, &Rigidbody::SetMass, "Mass in kilograms (default 1)")
+        .def("set_mass_properties", &Rigidbody::SetMassProperties, "mass"_a, "center"_a, "moments"_a,
+             "rotation"_a = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+             "Set local COM and principal inertia at unit object scale; geometry stays fixed.")
+        .def("reset_mass_properties", &Rigidbody::ResetMassProperties,
+             "Return to geometry-derived center of mass and inertia, retaining total mass.")
+        .def_property_readonly(
+            "mass_properties",
+            [](const Rigidbody &body) -> py::object {
+                const auto &properties = body.GetAuthoredMassProperties();
+                if (!properties)
+                    return py::none();
+                return py::dict("center"_a = properties->center, "moments"_a = properties->moments,
+                                "rotation"_a = properties->rotation);
+            },
+            "Explicit unit-scale mass properties, or None for geometry-derived properties.")
         .def_property("drag", &Rigidbody::GetDrag, &Rigidbody::SetDrag, "Linear drag (default 0)")
         .def_property("angular_drag", &Rigidbody::GetAngularDrag, &Rigidbody::SetAngularDrag,
                       "Angular drag (default 0.05)")
@@ -1195,33 +1406,199 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def("serialize", &Rigidbody::Serialize)
         .def("deserialize", &Rigidbody::Deserialize, "json_str"_a);
 
-    NativeClass<HingeJoint, Component>(m, "HingeJoint")
-        .def(py::init<>())
-        .def_property("anchor", &HingeJoint::GetAnchor, &HingeJoint::SetAnchor)
-        .def_property("axis", &HingeJoint::GetAxis, &HingeJoint::SetAxis)
-        .def_property("connected_body", &HingeJoint::GetConnectedBody, &HingeJoint::SetConnectedBody,
+    NativeClass<Joint, Component>(m, "Joint")
+        .def_property("anchor", &Joint::GetAnchor, &Joint::SetAnchor)
+        .def_property("connected_body", &Joint::GetConnectedBody, &Joint::SetConnectedBody,
                       py::return_value_policy::reference)
+        .def_property("enable_collision", &Joint::GetEnableCollision, &Joint::SetEnableCollision);
+
+    py::enum_<JointMotorMode>(m, "JointMotorMode")
+        .value("Off", JointMotorMode::Off)
+        .value("Velocity", JointMotorMode::Velocity)
+        .value("Position", JointMotorMode::Position)
+        .value("PositionAndVelocity", JointMotorMode::PositionAndVelocity);
+    py::enum_<JointSwingType>(m, "JointSwingType")
+        .value("Cone", JointSwingType::Cone)
+        .value("Pyramid", JointSwingType::Pyramid);
+    py::enum_<JointMotion>(m, "JointMotion")
+        .value("Locked", JointMotion::Locked)
+        .value("Limited", JointMotion::Limited)
+        .value("Free", JointMotion::Free);
+    NativeClass<SixDOFJoint, Joint>(m, "SixDOFJoint")
+        .def(py::init<>())
+        .def_property("axis", &SixDOFJoint::GetAxis, &SixDOFJoint::SetAxis)
+        .def_property("secondary_axis", &SixDOFJoint::GetSecondaryAxis, &SixDOFJoint::SetSecondaryAxis)
+        .def_property("x_motion", &SixDOFJoint::GetXMotion, &SixDOFJoint::SetXMotion)
+        .def_property("y_motion", &SixDOFJoint::GetYMotion, &SixDOFJoint::SetYMotion)
+        .def_property("z_motion", &SixDOFJoint::GetZMotion, &SixDOFJoint::SetZMotion)
+        .def_property("angular_x_motion", &SixDOFJoint::GetAngularXMotion, &SixDOFJoint::SetAngularXMotion)
+        .def_property("angular_y_motion", &SixDOFJoint::GetAngularYMotion, &SixDOFJoint::SetAngularYMotion)
+        .def_property("angular_z_motion", &SixDOFJoint::GetAngularZMotion, &SixDOFJoint::SetAngularZMotion)
+        .def_property("linear_limit_minimum", &SixDOFJoint::GetLinearLimitMinimum, &SixDOFJoint::SetLinearLimitMinimum)
+        .def_property("linear_limit_maximum", &SixDOFJoint::GetLinearLimitMaximum, &SixDOFJoint::SetLinearLimitMaximum)
+        .def_property("angular_limit_minimum", &SixDOFJoint::GetAngularLimitMinimum,
+                      &SixDOFJoint::SetAngularLimitMinimum)
+        .def_property("angular_limit_maximum", &SixDOFJoint::GetAngularLimitMaximum,
+                      &SixDOFJoint::SetAngularLimitMaximum)
+        .def_property("linear_limit_stiffness", &SixDOFJoint::GetLinearLimitStiffness,
+                      &SixDOFJoint::SetLinearLimitStiffness)
+        .def_property("linear_limit_damping", &SixDOFJoint::GetLinearLimitDamping, &SixDOFJoint::SetLinearLimitDamping)
+        .def_property("linear_friction_force", &SixDOFJoint::GetLinearFrictionForce,
+                      &SixDOFJoint::SetLinearFrictionForce)
+        .def_property("angular_friction_torque", &SixDOFJoint::GetAngularFrictionTorque,
+                      &SixDOFJoint::SetAngularFrictionTorque)
+        .def_property("linear_motor_stiffness", &SixDOFJoint::GetLinearMotorStiffness,
+                      &SixDOFJoint::SetLinearMotorStiffness)
+        .def_property("linear_motor_damping", &SixDOFJoint::GetLinearMotorDamping, &SixDOFJoint::SetLinearMotorDamping)
+        .def_property("linear_motor_max_force", &SixDOFJoint::GetLinearMotorMaxForce,
+                      &SixDOFJoint::SetLinearMotorMaxForce)
+        .def_property("angular_motor_stiffness", &SixDOFJoint::GetAngularMotorStiffness,
+                      &SixDOFJoint::SetAngularMotorStiffness)
+        .def_property("angular_motor_damping", &SixDOFJoint::GetAngularMotorDamping,
+                      &SixDOFJoint::SetAngularMotorDamping)
+        .def_property("angular_motor_max_torque", &SixDOFJoint::GetAngularMotorMaxTorque,
+                      &SixDOFJoint::SetAngularMotorMaxTorque)
+        .def_property("x_motor_mode", &SixDOFJoint::GetXMotorMode, &SixDOFJoint::SetXMotorMode)
+        .def_property("y_motor_mode", &SixDOFJoint::GetYMotorMode, &SixDOFJoint::SetYMotorMode)
+        .def_property("z_motor_mode", &SixDOFJoint::GetZMotorMode, &SixDOFJoint::SetZMotorMode)
+        .def_property("angular_x_motor_mode", &SixDOFJoint::GetAngularXMotorMode, &SixDOFJoint::SetAngularXMotorMode)
+        .def_property("angular_y_motor_mode", &SixDOFJoint::GetAngularYMotorMode, &SixDOFJoint::SetAngularYMotorMode)
+        .def_property("angular_z_motor_mode", &SixDOFJoint::GetAngularZMotorMode, &SixDOFJoint::SetAngularZMotorMode)
+        .def_property("target_position", &SixDOFJoint::GetTargetPosition, &SixDOFJoint::SetTargetPosition)
+        .def_property("target_orientation", &SixDOFJoint::GetTargetOrientation, &SixDOFJoint::SetTargetOrientation)
+        .def_property("target_velocity", &SixDOFJoint::GetTargetVelocity, &SixDOFJoint::SetTargetVelocity)
+        .def_property("target_angular_velocity", &SixDOFJoint::GetTargetAngularVelocity,
+                      &SixDOFJoint::SetTargetAngularVelocity)
+        .def_property_readonly("current_position", &SixDOFJoint::GetCurrentPosition)
+        .def_property_readonly("current_orientation", &SixDOFJoint::GetCurrentOrientation)
+        .def("set_frame", &SixDOFJoint::SetFrame, "axis"_a, "secondary_axis"_a)
+        .def("set_linear_limits", &SixDOFJoint::SetLinearLimits, "minimum"_a, "maximum"_a)
+        .def("set_angular_limits", &SixDOFJoint::SetAngularLimits, "minimum"_a, "maximum"_a);
+
+    NativeClass<SwingTwistJoint, Joint>(m, "SwingTwistJoint")
+        .def(py::init<>())
+        .def_property("twist_axis", &SwingTwistJoint::GetTwistAxis, &SwingTwistJoint::SetTwistAxis)
+        .def_property("plane_axis", &SwingTwistJoint::GetPlaneAxis, &SwingTwistJoint::SetPlaneAxis)
+        .def_property("swing_type", &SwingTwistJoint::GetSwingType, &SwingTwistJoint::SetSwingType)
+        .def_property("normal_half_cone_angle", &SwingTwistJoint::GetNormalHalfConeAngle,
+                      &SwingTwistJoint::SetNormalHalfConeAngle)
+        .def_property("plane_half_cone_angle", &SwingTwistJoint::GetPlaneHalfConeAngle,
+                      &SwingTwistJoint::SetPlaneHalfConeAngle)
+        .def_property("minimum_twist_angle", &SwingTwistJoint::GetMinimumTwistAngle,
+                      &SwingTwistJoint::SetMinimumTwistAngle)
+        .def_property("maximum_twist_angle", &SwingTwistJoint::GetMaximumTwistAngle,
+                      &SwingTwistJoint::SetMaximumTwistAngle)
+        .def_property("friction_torque", &SwingTwistJoint::GetFrictionTorque, &SwingTwistJoint::SetFrictionTorque)
+        .def_property("swing_motor_mode", &SwingTwistJoint::GetSwingMotorMode, &SwingTwistJoint::SetSwingMotorMode)
+        .def_property("twist_motor_mode", &SwingTwistJoint::GetTwistMotorMode, &SwingTwistJoint::SetTwistMotorMode)
+        .def_property("swing_motor_stiffness", &SwingTwistJoint::GetSwingMotorStiffness,
+                      &SwingTwistJoint::SetSwingMotorStiffness)
+        .def_property("swing_motor_damping", &SwingTwistJoint::GetSwingMotorDamping,
+                      &SwingTwistJoint::SetSwingMotorDamping)
+        .def_property("swing_motor_max_torque", &SwingTwistJoint::GetSwingMotorMaxTorque,
+                      &SwingTwistJoint::SetSwingMotorMaxTorque)
+        .def_property("twist_motor_stiffness", &SwingTwistJoint::GetTwistMotorStiffness,
+                      &SwingTwistJoint::SetTwistMotorStiffness)
+        .def_property("twist_motor_damping", &SwingTwistJoint::GetTwistMotorDamping,
+                      &SwingTwistJoint::SetTwistMotorDamping)
+        .def_property("twist_motor_max_torque", &SwingTwistJoint::GetTwistMotorMaxTorque,
+                      &SwingTwistJoint::SetTwistMotorMaxTorque)
+        .def_property("target_orientation", &SwingTwistJoint::GetTargetOrientation,
+                      &SwingTwistJoint::SetTargetOrientation)
+        .def_property("target_angular_velocity", &SwingTwistJoint::GetTargetAngularVelocity,
+                      &SwingTwistJoint::SetTargetAngularVelocity)
+        .def_property_readonly("current_orientation", &SwingTwistJoint::GetCurrentOrientation)
+        .def("set_frame", &SwingTwistJoint::SetFrame, "twist_axis"_a, "plane_axis"_a)
+        .def("set_twist_limits", &SwingTwistJoint::SetTwistLimits, "minimum"_a, "maximum"_a);
+
+    NativeClass<DistanceJoint, Joint>(m, "DistanceJoint")
+        .def(py::init<>())
+        .def_property("connected_anchor", &DistanceJoint::GetConnectedAnchor, &DistanceJoint::SetConnectedAnchor)
+        .def_property("auto_distance", &DistanceJoint::GetAutoDistance, &DistanceJoint::SetAutoDistance)
+        .def_property("minimum_distance", &DistanceJoint::GetMinimumDistance, &DistanceJoint::SetMinimumDistance)
+        .def_property("maximum_distance", &DistanceJoint::GetMaximumDistance, &DistanceJoint::SetMaximumDistance)
+        .def_property("stiffness", &DistanceJoint::GetStiffness, &DistanceJoint::SetStiffness)
+        .def_property("damping", &DistanceJoint::GetDamping, &DistanceJoint::SetDamping)
+        .def_property_readonly("current_distance", &DistanceJoint::GetCurrentDistance)
+        .def("set_limits", &DistanceJoint::SetLimits, "minimum"_a, "maximum"_a);
+
+    NativeClass<Ragdoll, Component>(m, "Ragdoll")
+        .def(py::init<>())
+        .def_property("active", &Ragdoll::GetActive, &Ragdoll::SetActive)
+        .def_property("drive_animation", &Ragdoll::GetDriveAnimation, &Ragdoll::SetDriveAnimation)
+        .def("set_passive", &Ragdoll::SetPassive)
+        .def_property_readonly("is_bound", &Ragdoll::IsBound)
+        .def_property_readonly("bodies", &Ragdoll::GetBodies)
+        .def_property_readonly("body_count", &Ragdoll::GetBodyCount)
+        .def_property_readonly("constraint_count", &Ragdoll::GetConstraintCount)
+        .def_property_readonly("skeleton", &Ragdoll::GetSkeleton, py::return_value_policy::reference)
+        .def_property("total_mass", &Ragdoll::GetTotalMass, &Ragdoll::SetTotalMass)
+        .def("generate_physics", [](Ragdoll &self) { return self.GeneratePhysics(); })
+        .def("rebuild", &Ragdoll::Rebuild)
+        .def("drive_pose", &Ragdoll::DrivePose, py::arg("world_rotations"));
+
+    NativeClass<FixedJoint, Joint>(m, "FixedJoint").def(py::init<>());
+
+    NativeClass<HingeJoint, Joint>(m, "HingeJoint")
+        .def(py::init<>())
+        .def_property("axis", &HingeJoint::GetAxis, &HingeJoint::SetAxis)
         .def_property("use_limits", &HingeJoint::GetUseLimits, &HingeJoint::SetUseLimits)
         .def_property("minimum_angle", &HingeJoint::GetMinimumAngle, &HingeJoint::SetMinimumAngle)
         .def_property("maximum_angle", &HingeJoint::GetMaximumAngle, &HingeJoint::SetMaximumAngle)
-        .def_property("enable_collision", &HingeJoint::GetEnableCollision, &HingeJoint::SetEnableCollision)
+        .def_property("motor_enabled", &HingeJoint::GetMotorEnabled, &HingeJoint::SetMotorEnabled)
+        .def_property("motor_target_angle", &HingeJoint::GetMotorTargetAngle, &HingeJoint::SetMotorTargetAngle)
+        .def_property("motor_stiffness", &HingeJoint::GetMotorStiffness, &HingeJoint::SetMotorStiffness)
+        .def_property("motor_damping", &HingeJoint::GetMotorDamping, &HingeJoint::SetMotorDamping)
+        .def_property("motor_max_torque", &HingeJoint::GetMotorMaxTorque, &HingeJoint::SetMotorMaxTorque)
+        .def_property("joint_damping", &HingeJoint::GetJointDamping, &HingeJoint::SetJointDamping)
+        .def_property("friction_torque", &HingeJoint::GetFrictionTorque, &HingeJoint::SetFrictionTorque)
+        .def_property("armature", &HingeJoint::GetArmature, &HingeJoint::SetArmature)
         .def_property_readonly("current_angle", &HingeJoint::GetCurrentAngle)
+        .def_property_readonly("current_angular_velocity", &HingeJoint::GetCurrentAngularVelocity)
         .def("serialize", &HingeJoint::Serialize)
         .def("deserialize", &HingeJoint::Deserialize, "json_str"_a);
 
-    NativeClass<SliderJoint, Component>(m, "SliderJoint")
+    NativeClass<SliderJoint, Joint>(m, "SliderJoint")
         .def(py::init<>())
-        .def_property("anchor", &SliderJoint::GetAnchor, &SliderJoint::SetAnchor)
         .def_property("axis", &SliderJoint::GetAxis, &SliderJoint::SetAxis)
-        .def_property("connected_body", &SliderJoint::GetConnectedBody, &SliderJoint::SetConnectedBody,
-                      py::return_value_policy::reference)
         .def_property("use_limits", &SliderJoint::GetUseLimits, &SliderJoint::SetUseLimits)
         .def_property("minimum_distance", &SliderJoint::GetMinimumDistance, &SliderJoint::SetMinimumDistance)
         .def_property("maximum_distance", &SliderJoint::GetMaximumDistance, &SliderJoint::SetMaximumDistance)
-        .def_property("enable_collision", &SliderJoint::GetEnableCollision, &SliderJoint::SetEnableCollision)
         .def_property_readonly("current_position", &SliderJoint::GetCurrentPosition)
         .def("serialize", &SliderJoint::Serialize)
         .def("deserialize", &SliderJoint::Deserialize, "json_str"_a);
+
+    py::class_<HingeJointBatch>(m, "HingeJointBatch")
+        .def(py::init<const std::vector<HingeJoint *> &>(), "joints"_a)
+        .def("__len__", &HingeJointBatch::Size)
+        .def_property_readonly("world_id", &HingeJointBatch::GetWorldId)
+        .def_property_readonly("simulation_epoch", &HingeJointBatch::GetSimulationEpoch)
+        .def("validate", &HingeJointBatch::Validate)
+        .def(
+            "read_motion",
+            [](const HingeJointBatch &batch, py::array output) {
+                if (!output.dtype().is(py::dtype::of<float>()) || !(output.flags() & py::array::c_style) ||
+                    !output.writeable() || output.ndim() != 2 || output.shape(1) != 2 ||
+                    output.shape(0) < static_cast<py::ssize_t>(batch.Size()) ||
+                    reinterpret_cast<uintptr_t>(output.data()) % alignof(float))
+                    throw py::value_error(
+                        "hinge motion requires writable contiguous aligned float32 (capacity,2) storage");
+                return batch.ReadMotion(static_cast<float *>(output.mutable_data()), batch.Size() * 2);
+            },
+            "output"_a)
+        .def(
+            "set_motor_targets",
+            [](const HingeJointBatch &batch, py::array targets, std::optional<uint64_t> expectedStep) {
+                const bool layout =
+                    (targets.ndim() == 1 && targets.shape(0) == static_cast<py::ssize_t>(batch.Size())) ||
+                    (targets.ndim() == 2 && targets.shape(0) == static_cast<py::ssize_t>(batch.Size()) &&
+                     targets.shape(1) == 1);
+                if (!targets.dtype().is(py::dtype::of<float>()) || !(targets.flags() & py::array::c_style) || !layout ||
+                    reinterpret_cast<uintptr_t>(targets.data()) % alignof(float))
+                    throw py::value_error("hinge targets require contiguous aligned float32 (N,) or (N,1) storage");
+                batch.SetMotorTargets(static_cast<const float *>(targets.data()), batch.Size(), expectedStep);
+            },
+            "targets"_a, py::kw_only(), "expected_step"_a = py::none());
 
     // ====================================================================
     // Physics static class (Unity: Physics.Raycast)
@@ -1240,7 +1617,10 @@ void RegisterPhysicsBindings(py::module_ &m)
             "collider_a"_a, "position_a"_a, "rotation_a"_a, "collider_b"_a, "position_b"_a, "rotation_b"_a,
             "Pure primitive geometry query at supplied world poses; returns None or separation/contact data")
         .def_static("get_rigidbody_states", &GetRigidbodyStates, "rigidbodies"_a, "output"_a = py::none(),
-                    "Write current solver state in input body order; output may reuse writable float32 arrays")
+                    "fields"_a = py::none(),
+                    "Write selected solver fields in input body order; None selects the seven float fields")
+        .def_static("reset_rigidbodies", &ResetRigidbodies, "rigidbodies"_a, "state"_a,
+                    "Reset resident body poses/velocities and solver history between completed fixed steps")
         .def_static("_write_rigidbody_state_buffers", &WriteRigidbodyStateBuffers, "rigidbodies"_a, "output"_a,
                     "Upload current solver state directly into resident GPU buffers")
         .def_static("_write_rigidbody_state_and_box_state_buffers", &WriteRigidbodyStateAndBoxStateBuffers,
@@ -1265,7 +1645,8 @@ void RegisterPhysicsBindings(py::module_ &m)
                     "Query candidates and write authoritative rigidbody plus BoxCollider state into CPU arrays")
         .def_static("apply_rigidbody_impulses", &ApplyRigidbodyImpulses, "rigidbodies"_a,
                     py::arg("linear_impulses").noconvert(), py::arg("angular_impulses").noconvert(),
-                    "Apply aggregated world-space impulses; angular impulses are about each body's COM")
+                    "expected_body_ids"_a = py::none(), "expected_shape_revisions"_a = py::none(),
+                    "Apply world-space impulses after all optional body/shape identities have been validated")
         .def_static("_apply_rigidbody_impulse_buffers", &ApplyRigidbodyImpulseBuffers, "rigidbodies"_a,
                     "linear_impulses"_a, "angular_impulses"_a,
                     "Read resident GPU feedback buffers together and apply their valid body prefix")
@@ -1411,6 +1792,20 @@ void RegisterPhysicsBindings(py::module_ &m)
             "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(), "query_triggers"_a = true,
             "Cast a box and return closest RaycastHit or None.")
         .def_static(
+            "sweep_box",
+            [](const BoxCollider &collider, const glm::vec3 &position, const glm::quat &rotation,
+               const glm::vec3 &displacement) -> py::object {
+                RequireFinite(position, "position");
+                RequireFinite(displacement, "displacement");
+                RequireOrientation(rotation);
+                RaycastHit hit;
+                if (PhysicsWorld::Instance().SweepBox(collider, position, rotation, displacement, hit))
+                    return py::cast(hit);
+                return py::none();
+            },
+            "collider"_a, "position"_a, "rotation"_a, "displacement"_a,
+            "Sweep a BoxCollider at a proposed pose and return the first blocking hit.")
+        .def_static(
             "capsule_cast",
             [](const glm::vec3 &point0, const glm::vec3 &point1, float radius, const glm::vec3 &direction,
                float maxDistance, std::optional<uint32_t> requestedMask, bool queryTriggers) -> py::object {
@@ -1482,6 +1877,13 @@ void RegisterPhysicsBindings(py::module_ &m)
             "Call before same-frame physics queries (raycast, overlap) when you have\n"
             "moved objects in Update and need up-to-date collision geometry.\n"
             "Unity equivalent: Physics.SyncTransforms()")
+        .def_static(
+            "_sync_dragged_transforms",
+            []() {
+                auto &manager = SceneManager::Instance();
+                manager.SyncTransforms(manager.IsPlaying() ? manager.GetFixedTimeStep() : 0.0f);
+            },
+            "Editor-only drag drive: publish transform targets with contact velocity during play.")
         .def_static(
             "get_actor_count", []() { return PhysicsECSStore::Instance().GetAliveActorCount(); },
             "Get the number of live PhysicsActor slots.");

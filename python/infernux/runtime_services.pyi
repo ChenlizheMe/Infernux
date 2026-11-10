@@ -1,6 +1,8 @@
 from typing import Any, Callable, Literal
 
-UpdatePhase = Literal["update", "late_update", "fixed_update", "editor_update"]
+UpdatePhase = Literal["update", "late_update", "fixed_update", "editor_update",
+                      "physics_pre_step", "physics_post_step", "service_update", "render_submitted",
+                      "render_presented"]
 
 class UpdateRegistration:
     @property

@@ -188,22 +188,49 @@ void VkDescriptorManager::MarkUsed(VkDescriptorSet set, rhi::SubmissionSerial se
         MarkUsed(&set, 1, serial);
 }
 
-void VkDescriptorManager::MarkUsed(const VkDescriptorSet *sets, uint32_t count, rhi::SubmissionSerial serial) noexcept
+void VkDescriptorManager::MarkUsed(const VkDescriptorSet *sets, uint32_t count, rhi::SubmissionSerial serial,
+                                   VkCommandBuffer commands, VkPipelineStageFlags stages) noexcept
 {
     if (count == 0 || serial == rhi::InvalidSubmissionSerial)
         return;
+    auto *reads = SubmissionReadScope::Current(commands);
     std::lock_guard lock(m_mutex);
     for (uint32_t index = 0; index < count; ++index) {
         const auto native = m_nativeLeaseIds.find(reinterpret_cast<uint64_t>(sets[index]));
-        if (native == m_nativeLeaseIds.end())
+        if (native == m_nativeLeaseIds.end()) {
+            if (reads) {
+                const auto source = m_externalUploadSources.find(sets[index]);
+                if (source != m_externalUploadSources.end())
+                    reads->Add(source->second, stages);
+            }
             continue;
+        }
         const auto found = m_leases.find(native->second);
         if (found == m_leases.end())
             continue;
         found->second.lastUse = (std::max)(found->second.lastUse, serial);
         if (found->second.retired)
             found->second.retireAfter = (std::max)(found->second.retireAfter, serial);
+        if (reads)
+            reads->Add(found->second.uploadSources, stages);
     }
+}
+
+void VkDescriptorManager::SetUploadSources(const DescriptorLease &lease, const SubmissionReads &sources)
+{
+    if (sources.empty)
+        return;
+    std::lock_guard lock(m_mutex);
+    m_leases.at(lease.id).uploadSources = sources;
+}
+
+void VkDescriptorManager::SetExternalUploadSource(VkDescriptorSet set, rhi::SubmissionTicket source)
+{
+    std::lock_guard lock(m_mutex);
+    if (source.IsValid())
+        m_externalUploadSources.insert_or_assign(set, source);
+    else
+        m_externalUploadSources.erase(set);
 }
 
 void VkDescriptorManager::UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource)
@@ -269,6 +296,7 @@ void VkDescriptorManager::Destroy() noexcept
     std::lock_guard lock(m_mutex);
     m_leases.clear();
     m_nativeLeaseIds.clear();
+    m_externalUploadSources.clear();
     if (m_device != VK_NULL_HANDLE) {
         for (auto &arena : m_pools) {
             for (auto &page : arena) {

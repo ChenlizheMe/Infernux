@@ -36,7 +36,8 @@ def test_surface_discard_survives_material_alpha_clip_switch(engine, scene, tmp_
             try:
                 frame += 1
                 assert frame < 180, results
-                if ticket is None and frame >= changed + 8:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 8:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     assert manager.get_active_scene().world_id == scene.world_id
@@ -52,7 +53,7 @@ def test_surface_discard_survives_material_alpha_clip_switch(engine, scene, tmp_
                         engine.exit()
                     else:
                         case.change(STEPS[phase])
-                        ticket, changed = None, frame
+                        ticket, changed = None, execution
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

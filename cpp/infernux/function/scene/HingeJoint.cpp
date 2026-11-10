@@ -1,14 +1,13 @@
 #include "HingeJoint.h"
 
-#include "Collider.h"
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "GameObject.h"
-#include "Rigidbody.h"
 #include "Transform.h"
 #include "physics/PhysicsWorld.h"
 #include <core/log/InxLog.h>
 
+#include <algorithm>
 #include <cmath>
 #include <glm/gtc/constants.hpp>
 #include <stdexcept>
@@ -56,6 +55,14 @@ SemanticTypeDescriptor DescribeHingeJoint()
     add("minimum_angle", "FLOAT", -90.0)["range"] = {-180.0, 0.0};
     add("maximum_angle", "FLOAT", 90.0)["range"] = {0.0, 180.0};
     add("enable_collision", "BOOL", false);
+    add("motor_enabled", "BOOL", false);
+    add("motor_target_angle", "FLOAT", 0.0);
+    add("motor_stiffness", "FLOAT", 10.0);
+    add("motor_damping", "FLOAT", 1.0);
+    add("motor_max_torque", "FLOAT", 1.0);
+    add("joint_damping", "FLOAT", 0.0);
+    add("friction_torque", "FLOAT", 0.0);
+    add("armature", "FLOAT", 0.0);
     return type;
 }
 } // namespace
@@ -67,103 +74,13 @@ const bool registeredHingeJoint = ComponentFactory::Register(
     HingeJoint::GetTypeConstraints(), DescribeHingeJoint);
 } // namespace
 
-HingeJoint::~HingeJoint()
+uint64_t HingeJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
-    ReleaseConstraint();
-}
-
-void HingeJoint::Awake()
-{
-    RebuildConstraint();
-}
-void HingeJoint::OnEnable()
-{
-    RebuildConstraint();
-}
-void HingeJoint::OnDisable()
-{
-    ReleaseConstraint();
-}
-void HingeJoint::OnGameObjectDeactivated()
-{
-    ReleaseConstraint();
-}
-void HingeJoint::OnDestroy()
-{
-    ReleaseConstraint();
-}
-
-void HingeJoint::FixedUpdate(float)
-{
-    RebuildConstraint();
-}
-
-uint32_t HingeJoint::ResolveBodyId(const Rigidbody *body) const
-{
-    if (!body || !body->IsEnabled() || !body->GetGameObject())
-        return 0xFFFFFFFF;
-    return Collider::GetSharedBodyId(body->GetGameObject());
-}
-
-Rigidbody *HingeJoint::GetConnectedBody() const
-{
-    if (m_connectedBodyComponentId == 0)
-        return nullptr;
-    return dynamic_cast<Rigidbody *>(Component::FindByComponentId(m_connectedBodyComponentId));
-}
-
-void HingeJoint::RebuildConstraint()
-{
-    auto &world = PhysicsWorld::Instance();
-    auto *gameObject = GetGameObject();
-    if (!IsEnabled() || !gameObject || !gameObject->IsActiveInHierarchy() || !world.IsInitialized()) {
-        ReleaseConstraint();
-        return;
-    }
-
-    auto *body = gameObject->GetComponent<Rigidbody>();
-    const uint32_t bodyId = ResolveBodyId(body);
-    Rigidbody *connectedBody = GetConnectedBody();
-    const uint32_t connectedBodyId = connectedBody ? ResolveBodyId(connectedBody) : 0xFFFFFFFF;
-    if (bodyId == 0xFFFFFFFF || (m_connectedBodyComponentId != 0 && connectedBodyId == 0xFFFFFFFF)) {
-        ReleaseConstraint();
-        return;
-    }
-    if (m_constraintId != 0 && bodyId == m_boundBodyId && connectedBodyId == m_boundConnectedBodyId)
-        return;
-
-    ReleaseConstraint();
-    auto *transform = gameObject->GetTransform();
-    const glm::vec3 worldAnchor = transform->TransformPoint(m_anchor);
-    const glm::vec3 worldAxis = transform->TransformDirection(m_axis);
-    m_constraintId =
-        world.CreateHingeConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_anchor, m_useLimits,
-                                    glm::radians(m_minimumAngle), glm::radians(m_maximumAngle), m_enableCollision);
-    m_boundBodyId = bodyId;
-    m_boundConnectedBodyId = connectedBodyId;
-}
-
-void HingeJoint::ReleaseConstraint()
-{
-    if (m_constraintId != 0 && PhysicsWorld::Instance().IsInitialized())
-        PhysicsWorld::Instance().DestroyConstraint(m_constraintId);
-    OnPhysicsConstraintDestroyed();
-}
-
-void HingeJoint::OnPhysicsConstraintDestroyed() noexcept
-{
-    m_constraintId = 0;
-    m_boundBodyId = 0xFFFFFFFF;
-    m_boundConnectedBodyId = 0xFFFFFFFF;
-}
-
-void HingeJoint::SetAnchor(const glm::vec3 &anchor)
-{
-    if (!IsFinite(anchor))
-        throw std::invalid_argument("hinge anchor must be finite");
-    m_anchor = anchor;
-    ReleaseConstraint();
-    RebuildConstraint();
+    const auto *transform = GetTransform();
+    const auto worldAnchor = transform->TransformPoint(m_anchor);
+    const auto worldAxis = transform->TransformDirection(m_axis);
+    return world.CreateHingeConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_anchor, m_useLimits,
+                                       glm::radians(m_minimumAngle), glm::radians(m_maximumAngle), m_enableCollision);
 }
 
 void HingeJoint::SetAxis(const glm::vec3 &axis)
@@ -171,15 +88,6 @@ void HingeJoint::SetAxis(const glm::vec3 &axis)
     if (!IsFinite(axis) || glm::dot(axis, axis) <= 1e-12f)
         throw std::invalid_argument("hinge axis must be finite and non-zero");
     m_axis = glm::normalize(axis);
-    ReleaseConstraint();
-    RebuildConstraint();
-}
-
-void HingeJoint::SetConnectedBody(Rigidbody *body)
-{
-    if (body && body->GetGameObject() == GetGameObject())
-        throw std::invalid_argument("hinge connected body must differ from its own Rigidbody");
-    m_connectedBodyComponentId = body ? body->GetComponentID() : 0;
     ReleaseConstraint();
     RebuildConstraint();
 }
@@ -206,12 +114,6 @@ void HingeJoint::SetMaximumAngle(float degrees)
     UpdateConstraintSettings();
 }
 
-void HingeJoint::SetEnableCollision(bool value)
-{
-    m_enableCollision = value;
-    UpdateConstraintSettings();
-}
-
 void HingeJoint::UpdateConstraintSettings()
 {
     if (m_constraintId == 0) {
@@ -220,6 +122,83 @@ void HingeJoint::UpdateConstraintSettings()
     }
     PhysicsWorld::Instance().UpdateHingeConstraintSettings(m_constraintId, m_useLimits, glm::radians(m_minimumAngle),
                                                            glm::radians(m_maximumAngle), m_enableCollision);
+    // Re-clamp the authored target when limits change, without changing zero.
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetMotorEnabled(bool value)
+{
+    m_motorEnabled = value;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetMotorTargetAngle(float degrees)
+{
+    if (!std::isfinite(degrees))
+        throw std::invalid_argument("hinge motor target angle must be finite");
+    m_motorTargetAngle = degrees;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetMotorStiffness(float stiffness)
+{
+    if (!std::isfinite(stiffness) || stiffness < 0.0f)
+        throw std::invalid_argument("hinge motor stiffness must be non-negative and finite (N m / rad)");
+    m_motorStiffness = stiffness;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetMotorDamping(float damping)
+{
+    if (!std::isfinite(damping) || damping < 0.0f)
+        throw std::invalid_argument("hinge motor damping must be non-negative and finite (N m s / rad)");
+    m_motorDamping = damping;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetMotorMaxTorque(float torque)
+{
+    if (!std::isfinite(torque) || torque < 0.0f)
+        throw std::invalid_argument("hinge motor torque limit must be non-negative and finite");
+    m_motorMaxTorque = torque;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetJointDamping(float damping)
+{
+    if (!std::isfinite(damping) || damping < 0.0f)
+        throw std::invalid_argument("hinge joint damping must be non-negative and finite (N m s / rad)");
+    m_jointDamping = damping;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetFrictionTorque(float torque)
+{
+    if (!std::isfinite(torque) || torque < 0.0f)
+        throw std::invalid_argument("hinge friction torque must be non-negative and finite (N m)");
+    m_frictionTorque = torque;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::SetArmature(float inertia)
+{
+    if (!std::isfinite(inertia) || inertia < 0.0f)
+        throw std::invalid_argument("hinge armature must be non-negative and finite (kg m^2)");
+    m_armature = inertia;
+    UpdateConstraintMotor();
+}
+
+void HingeJoint::UpdateConstraintMotor()
+{
+    if (m_constraintId != 0) {
+        // Jolt treats [-pi, pi] as an unlimited hinge. The authored use_limits
+        // contract still clamps the target even at that full-range boundary.
+        const float target =
+            m_useLimits ? std::clamp(m_motorTargetAngle, m_minimumAngle, m_maximumAngle) : m_motorTargetAngle;
+        PhysicsWorld::Instance().UpdateHingeConstraintMotor(m_constraintId, m_motorEnabled, glm::radians(target),
+                                                            m_motorStiffness, m_motorDamping, m_motorMaxTorque,
+                                                            m_jointDamping, m_frictionTorque, m_armature);
+    }
 }
 
 float HingeJoint::GetCurrentAngle() const
@@ -227,16 +206,35 @@ float HingeJoint::GetCurrentAngle() const
     return m_constraintId == 0 ? 0.0f : glm::degrees(PhysicsWorld::Instance().GetHingeConstraintAngle(m_constraintId));
 }
 
+float HingeJoint::GetCurrentAngularVelocity() const
+{
+    return m_constraintId == 0
+               ? 0.0f
+               : glm::degrees(PhysicsWorld::Instance().GetHingeConstraintAngularVelocity(m_constraintId));
+}
+
+glm::vec2 HingeJoint::GetMotionState() const
+{
+    if (m_constraintId == 0)
+        throw std::logic_error("hinge motion state requires an active constraint");
+    return PhysicsWorld::Instance().GetHingeConstraintMotionState(m_constraintId);
+}
+
 nlohmann::json HingeJoint::SerializeDocument() const
 {
-    auto document = Component::SerializeDocument();
-    document["anchor"] = {m_anchor.x, m_anchor.y, m_anchor.z};
+    auto document = Joint::SerializeDocument();
     document["axis"] = {m_axis.x, m_axis.y, m_axis.z};
-    document["connected_body_component_id"] = m_connectedBodyComponentId;
     document["use_limits"] = m_useLimits;
     document["minimum_angle"] = m_minimumAngle;
     document["maximum_angle"] = m_maximumAngle;
-    document["enable_collision"] = m_enableCollision;
+    document["motor_enabled"] = m_motorEnabled;
+    document["motor_target_angle"] = m_motorTargetAngle;
+    document["motor_stiffness"] = m_motorStiffness;
+    document["motor_damping"] = m_motorDamping;
+    document["motor_max_torque"] = m_motorMaxTorque;
+    document["joint_damping"] = m_jointDamping;
+    document["friction_torque"] = m_frictionTorque;
+    document["armature"] = m_armature;
     return document;
 }
 
@@ -245,37 +243,52 @@ void HingeJoint::ValidateSerializedDocument(const nlohmann::json &document)
     using namespace component_document_validation;
     ValidateComponentDocument(document, "HingeJoint",
                               {"anchor", "axis", "connected_body_component_id", "use_limits", "minimum_angle",
-                               "maximum_angle", "enable_collision"});
-    RequireFiniteVector(document, "anchor", 3, "HingeJoint");
+                               "maximum_angle", "enable_collision", "motor_enabled", "motor_target_angle",
+                               "motor_stiffness", "motor_damping", "motor_max_torque", "joint_damping",
+                               "friction_torque", "armature"});
+    ValidateJointDocumentFields(document, "HingeJoint");
     RequireFiniteVector(document, "axis", 3, "HingeJoint");
     const auto &axis = document["axis"];
     const glm::vec3 axisValue(axis[0].get<float>(), axis[1].get<float>(), axis[2].get<float>());
     if (glm::dot(axisValue, axisValue) <= 1e-12f)
         throw std::invalid_argument("HingeJoint.axis must be non-zero");
-    RequireUnsignedInteger(document, "connected_body_component_id", "HingeJoint");
     RequireBoolean(document, "use_limits", "HingeJoint");
     const float minimum = RequireFiniteFloat(document, "minimum_angle", "HingeJoint");
     const float maximum = RequireFiniteFloat(document, "maximum_angle", "HingeJoint");
     if (minimum < -180.0f || minimum > 0.0f || maximum < 0.0f || maximum > 180.0f || minimum > maximum)
         throw std::invalid_argument("HingeJoint angle limits must be ordered, span zero and stay within [-180, 180]");
-    RequireBoolean(document, "enable_collision", "HingeJoint");
+    RequireBoolean(document, "motor_enabled", "HingeJoint");
+    RequireFiniteFloat(document, "motor_target_angle", "HingeJoint");
+    const float stiffness = RequireFiniteFloat(document, "motor_stiffness", "HingeJoint");
+    const float damping = RequireFiniteFloat(document, "motor_damping", "HingeJoint");
+    const float torque = RequireFiniteFloat(document, "motor_max_torque", "HingeJoint");
+    const float passive = RequireFiniteFloat(document, "joint_damping", "HingeJoint");
+    const float friction = RequireFiniteFloat(document, "friction_torque", "HingeJoint");
+    const float armature = RequireFiniteFloat(document, "armature", "HingeJoint");
+    if (armature < 0.0f || stiffness < 0.0f || damping < 0.0f || torque < 0.0f || passive < 0.0f || friction < 0.0f)
+        throw std::invalid_argument("HingeJoint stiffness, damping and torque coefficients must be non-negative");
 }
 
 bool HingeJoint::DeserializeDocument(const nlohmann::json &document)
 {
     try {
         ValidateSerializedDocument(document);
-        const auto &anchor = document["anchor"];
         const auto &axis = document["axis"];
         if (!Component::DeserializeDocument(document))
             return false;
-        m_anchor = {anchor[0].get<float>(), anchor[1].get<float>(), anchor[2].get<float>()};
+        ReadJointDocumentFields(document);
         m_axis = glm::normalize(glm::vec3(axis[0].get<float>(), axis[1].get<float>(), axis[2].get<float>()));
-        m_connectedBodyComponentId = document["connected_body_component_id"].get<uint64_t>();
         m_useLimits = document["use_limits"].get<bool>();
         m_minimumAngle = document["minimum_angle"].get<float>();
         m_maximumAngle = document["maximum_angle"].get<float>();
-        m_enableCollision = document["enable_collision"].get<bool>();
+        m_motorEnabled = document["motor_enabled"].get<bool>();
+        m_motorTargetAngle = document["motor_target_angle"].get<float>();
+        m_motorStiffness = document["motor_stiffness"].get<float>();
+        m_motorDamping = document["motor_damping"].get<float>();
+        m_motorMaxTorque = document["motor_max_torque"].get<float>();
+        m_jointDamping = document["joint_damping"].get<float>();
+        m_frictionTorque = document["friction_torque"].get<float>();
+        m_armature = document["armature"].get<float>();
         ReleaseConstraint();
         RebuildConstraint();
         return true;
@@ -288,28 +301,20 @@ bool HingeJoint::DeserializeDocument(const nlohmann::json &document)
 std::unique_ptr<Component> HingeJoint::Clone() const
 {
     auto clone = std::make_unique<HingeJoint>();
-    clone->m_enabled = m_enabled;
-    clone->m_executionOrder = m_executionOrder;
-    clone->m_anchor = m_anchor;
+    CopyJointFieldsTo(*clone);
     clone->m_axis = m_axis;
-    clone->m_connectedBodyComponentId = m_connectedBodyComponentId;
     clone->m_useLimits = m_useLimits;
     clone->m_minimumAngle = m_minimumAngle;
     clone->m_maximumAngle = m_maximumAngle;
-    clone->m_enableCollision = m_enableCollision;
+    clone->m_motorEnabled = m_motorEnabled;
+    clone->m_motorTargetAngle = m_motorTargetAngle;
+    clone->m_motorStiffness = m_motorStiffness;
+    clone->m_motorDamping = m_motorDamping;
+    clone->m_motorMaxTorque = m_motorMaxTorque;
+    clone->m_jointDamping = m_jointDamping;
+    clone->m_frictionTorque = m_frictionTorque;
+    clone->m_armature = m_armature;
     return clone;
-}
-
-void HingeJoint::RemapComponentReferences(const std::unordered_map<uint64_t, uint64_t> &componentIdRemap)
-{
-    if (m_connectedBodyComponentId == 0)
-        return;
-    const auto remapped = componentIdRemap.find(m_connectedBodyComponentId);
-    if (remapped == componentIdRemap.end())
-        return;
-    m_connectedBodyComponentId = remapped->second;
-    ReleaseConstraint();
-    RebuildConstraint();
 }
 
 } // namespace infernux

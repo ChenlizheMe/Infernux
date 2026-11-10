@@ -250,8 +250,6 @@ def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
     } >= {
         ("operations", ""),
         ("operations", "zh-CN"),
-        ("trust", ""),
-        ("trust", "zh-CN"),
     }
     assert {
         item["logical_path"]
@@ -260,7 +258,6 @@ def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
     } >= {
         "plugin_pages/media/agent_loop.png",
         "plugin_pages/media/system_overview.png",
-        "plugin_pages/media/trust_gates.png",
     }
 
     project = tmp_path / "project"

@@ -42,7 +42,6 @@ from infernux.core.asset_types import MESH_EXTENSIONS
 from infernux.debug import Debug
 from infernux.engine.build_cancellation import BuildCancelled
 from infernux.engine.i18n import t
-from infernux.engine.project_context import is_preload_python_library
 from infernux.engine.player_package_native import (
     ASSET_CATALOG_ARCHIVE_FILENAME,
     ASSET_CATALOG_ENTRY_PATH,
@@ -427,6 +426,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._runtime_type_records: list[dict[str, object]] = []
         self._build_output_transaction: dict[str, str] | None = None
         self._asset_index_entries_snapshot: list[dict] | None = None
+        self._runtime_type_records_snapshot: list[dict] | None = None
         self._build_scene_guids_snapshot = copy.deepcopy(build_scene_guids)
         # Platform cooks set this before content staging.  It controls which
         # native CPU JIT cache is eligible for the immutable Player package.
@@ -960,7 +960,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             self._asset_index_entries_snapshot = load_asset_index(self.project_path)
         return self._asset_index_entries_snapshot
 
-    def freeze_asset_index_entries(self, entries: list[dict]) -> None:
+    def freeze_asset_index_entries(
+        self, entries: list[dict], *, runtime_type_records: list[dict] | None = None,
+    ) -> None:
         """Bind this one Player build to an editor-published AssetIndex.
 
         This is intentionally a copy rather than a path: the editor's file
@@ -969,6 +971,10 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         """
 
         self._asset_index_entries_snapshot = copy.deepcopy(entries)
+        self._runtime_type_records_snapshot = (
+            None if runtime_type_records is None
+            else copy.deepcopy([dict(record) for record in runtime_type_records])
+        )
 
     def _validate_animation_clip_assets(self) -> None:
         """Reject dangling SpriteFrame references before packaging content."""
@@ -1641,9 +1647,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         }
         registry_changed = False
         guid_map = dict(getattr(self, "_runtime_script_guid_map", {}))
-        component_records = list(
-            getattr(self, "_runtime_component_records", ())
-        )
         cooked_sources_by_guid = {
             str(guid).casefold(): self._library_source_entry_path(entry)
             for guid, entry in getattr(self, "_cooked_asset_entries", {}).items()
@@ -1691,15 +1694,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     registry_changed = True
                     source_text = Path(source).read_text(encoding="utf-8")
                     self._player_python_source_texts[resolved_path(authored_source)] = source_text
-                    if not is_preload_python_library(authored_source):
-                        component_records.extend(
-                            self._runtime_component_type_records(
-                                source_text,
-                                script_guid=source_guid,
-                                runtime_path=runtime_path,
-                                data_root=data_root,
-                            )
-                        )
                     guid_map[source_guid] = runtime_path
                     cooked_source = self._cook_compute_source(source_text)
                     if cooked_source != source_text:
@@ -1719,7 +1713,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         if registry_changed:
             _write_json_atomic(registry_path, registry)
         self._runtime_script_guid_map = guid_map
-        self._runtime_component_records = component_records
         self._finalize_runtime_script_catalog(data_root)
 
     def _copy_cooked_assets(
@@ -1887,44 +1880,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             except FileNotFoundError:
                 continue
         self._remove_empty_directory_tree(os.path.join(data_dir, "Logs"))
-
-    @staticmethod
-    def _asset_reference_values(value, known_guids: frozenset[str] = frozenset()):
-        if isinstance(value, dict):
-            if value.get("$type") == "asset_ref":
-                guid = value.get("guid", "")
-                path_hint = value.get("path_hint", "")
-                # A persisted asset reference contributes to the cook closure
-                # only through its GUID.  ``path_hint`` is mutable editor
-                # display metadata: path-only documents are deliberately
-                # ignored, while a current GUID remains valid even when no
-                # hint was serialized.
-                if isinstance(guid, str) and guid.strip():
-                    yield (
-                        guid.strip(),
-                        path_hint if isinstance(path_hint, str) else "",
-                    )
-                # ``asset_ref`` is one typed leaf. Recursing into its GUID and
-                # path fields would publish the same dependency a second time
-                # through the compact native-GUID scanner below.
-                return
-            for nested in value.values():
-                yield from GameBuilder._asset_reference_values(nested, known_guids)
-        elif isinstance(value, list):
-            for nested in value:
-                yield from GameBuilder._asset_reference_values(nested, known_guids)
-        elif isinstance(value, str):
-            if value in known_guids:
-                # Native scene/component serializers use compact GUID scalars
-                # for fields such as MeshRenderer.materials.
-                yield value, ""
-                return
-            if value.startswith("python:"):
-                # Python component identities embed the owning script GUID in
-                # the type id instead of storing a separate asset reference.
-                fields = value.split(":", 2)
-                if len(fields) == 3 and fields[1] in known_guids:
-                    yield fields[1], ""
 
     def _library_source_entry_path(self, entry: dict) -> str:
         raw = str(entry.get("normalized_path", "")).replace("\\", "/")
@@ -2545,10 +2500,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             raise RuntimeError(
                 f"Particle source must declare a non-empty stable_id: {source_path}"
             )
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", stable_id):
-            raise RuntimeError(
-                f"Particle source stable_id is not artifact-safe: {stable_id!r}"
-            )
         return stable_id
 
     @classmethod
@@ -2700,123 +2651,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     # Compile user scripts
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _runtime_script_module_name(
-        runtime_path: str,
-        *,
-        data_root: str = "",
-    ) -> str:
-        normalized = runtime_path.replace("\\", "/")
-        if not normalized.endswith(".pyc"):
-            raise RuntimeError(f"Invalid Player script runtime path: {runtime_path}")
-        if data_root:
-            from infernux.engine.project_context import get_script_module_name
 
-            module_name = get_script_module_name(
-                os.path.join(data_root, *normalized.split("/")),
-                data_root,
-            )
-            if not module_name:
-                raise RuntimeError(
-                    f"Player script has no stable module identity: {runtime_path}"
-                )
-            return module_name
-        if not normalized.startswith("Assets/"):
-            raise RuntimeError(f"Invalid Player script runtime path: {runtime_path}")
-        parts = normalized[len("Assets/"):-4].split("/")
-        if parts and parts[-1] == "__init__":
-            parts.pop()
-        if not parts or any(not part.isidentifier() for part in parts):
-            raise RuntimeError(
-                f"Player component script has no stable module identity: {runtime_path}"
-            )
-        return ".".join(parts)
-
-    @classmethod
-    def _runtime_component_type_records(
-        cls,
-        source_text: str,
-        *,
-        script_guid: str,
-        runtime_path: str,
-        data_root: str = "",
-    ) -> list[dict[str, object]]:
-        """Extract Player component identities without executing author code."""
-        tree = ast.parse(source_text, filename=runtime_path)
-        component_bases = {"InxComponent"}
-        for node in tree.body:
-            if isinstance(node, ast.ImportFrom) and node.module in {
-                "infernux",
-                "infernux.components",
-            }:
-                for alias in node.names:
-                    if alias.name == "InxComponent" or alias.name == "*":
-                        component_bases.add(alias.asname or "InxComponent")
-
-        def base_name(expression: ast.expr) -> str:
-            if isinstance(expression, ast.Name):
-                return expression.id
-            if isinstance(expression, ast.Attribute):
-                return expression.attr
-            return ""
-
-        lifecycle_names = {
-            "awake", "start", "fixed_update", "physics_pre_step",
-            "physics_post_step", "update", "late_update",
-            "on_enable", "on_disable", "on_destroy",
-            "on_collision_enter", "on_collision_stay", "on_collision_exit",
-            "on_trigger_enter", "on_trigger_stay", "on_trigger_exit",
-        }
-        module_name = cls._runtime_script_module_name(
-            runtime_path,
-            data_root=data_root,
-        )
-        from infernux.components.component_identity import component_type_guid
-        from infernux.components.registry import get_type_by_identity
-
-        records: list[dict[str, object]] = []
-        for node in tree.body:
-            if not isinstance(node, ast.ClassDef):
-                continue
-            type_guid = component_type_guid(script_guid, node.name) if script_guid else ""
-            # Imported and aliased bases are resolved by the published registry,
-            # not by executing imports or guessing their names from source.
-            published_type = get_type_by_identity(node.name, script_guid, type_guid)
-            if published_type is None and not any(
-                base_name(base) in component_bases for base in node.bases
-            ):
-                continue
-            if not script_guid:
-                raise RuntimeError(
-                    f"Player component script has no Asset GUID: {runtime_path}"
-                )
-            component_bases.add(node.name)
-            lifecycle = sorted(
-                child.name
-                for child in node.body
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and child.name in lifecycle_names
-            )
-            startup_warmup = any(
-                isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and child.name == "_infernux_startup_warmup"
-                for child in node.body
-            )
-            records.append(
-                {
-                    "script_guid": script_guid,
-                    "type_guid": type_guid,
-                    "type_id": (
-                        f"python:{script_guid}:{type_guid}:{module_name}:{node.name}"
-                    ),
-                    "module": module_name,
-                    "qualname": node.name,
-                    "runtime_path": runtime_path,
-                    "lifecycle": lifecycle,
-                    "startup_warmup": startup_warmup,
-                }
-            )
-        return records
 
     def _cook_compute_source(self, source_text: str) -> str:
         """Freeze the target's CPU model and source-less GPU kernel metadata."""
@@ -2833,145 +2668,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             cooked = build_cpu_compute_source(cooked)
         return embed_compute_sources(cooked)
 
-    @staticmethod
-    def _cook_runtime_component_semantics(
-        records: list[dict[str, object]],
-    ) -> None:
-        """Attach the already-published authoring schema to Player identities."""
-        from infernux.components.fields import get_field_schema, get_serialized_fields
-        from infernux.components.registry import get_type_by_identity
 
-        published_types = {}
-        for record in records:
-            script_guid = str(record["script_guid"])
-            type_guid = str(record["type_guid"])
-            qualname = str(record["qualname"])
-            component_type = get_type_by_identity(
-                qualname.rsplit(".", 1)[-1],
-                script_guid,
-                type_guid,
-            )
-            if component_type is None:
-                raise RuntimeError(
-                    "Player semantic cook cannot resolve the published component "
-                    f"identity: {record['type_id']}"
-                )
-            published_types[component_type] = type_guid
-
-        types_by_guid = {guid: value_type for value_type, guid in published_types.items()}
-        for record in records:
-            script_guid = str(record["script_guid"])
-            type_guid = str(record["type_guid"])
-            qualname = str(record["qualname"])
-            component_type = types_by_guid[type_guid]
-            owner = f"script:{script_guid}"
-            record["semantic"] = {
-                "type_guid": type_guid,
-                "readable_id": str(record["type_id"]),
-                "owner": owner,
-                "origin": "python",
-                "display_name": qualname,
-                "base_type_guid": next(
-                    (published_types[base] for base in component_type.__mro__[1:] if base in published_types),
-                    "",
-                ),
-                "constructible": True,
-                "serializable": True,
-                "runtime_available": True,
-                "runtime_profiles": ["player"],
-                "lifecycle": list(record["lifecycle"]),
-                "fields": [
-                    get_field_schema(component_type, name).to_document()
-                    for name in get_serialized_fields(component_type)
-                ],
-            }
-
-    @staticmethod
-    def _runtime_serializable_type_records(
-        *,
-        script_paths: dict[str, str],
-        data_root: str = "",
-    ) -> list[dict[str, object]]:
-        """Describe project SerializableObject types for the Player catalog.
-
-        Components and authored data used to have different build visibility:
-        components were emitted into ``RuntimeTypeRegistry.json`` while
-        ``DataAsset``/nested ``SerializableObject`` classes were only visible
-        as a side effect of importing a project script.  That made the binary
-        artifact readable in a warm editor but left the Player semantic
-        catalog incomplete.  Reuse the published field schema here and emit
-        the same immutable semantic descriptor used by components.
-        """
-        from infernux.components.fields import get_field_schema, get_serialized_fields
-        from infernux.components.serializable_object import (
-            SerializableObject,
-            get_registered_serializable_types,
-        )
-        from infernux.core.data_asset import DataAsset
-
-        scripts_by_module = {
-            GameBuilder._runtime_script_module_name(
-                path.replace("\\", "/"), data_root=data_root
-            ): (
-                guid, path.replace("\\", "/")
-            )
-            for guid, path in script_paths.items()
-        }
-        project_types = [
-            (type_id, value_type)
-            for type_id, value_type in get_registered_serializable_types()
-            if value_type.__module__ in scripts_by_module
-            and issubclass(value_type, SerializableObject)
-            and value_type is not SerializableObject
-        ]
-        type_guids = {
-            value_type: f"python-data:{type_id}"
-            for type_id, value_type in project_types
-        }
-        records: list[dict[str, object]] = []
-        for type_id, value_type in project_types:
-            script_guid, runtime_path = scripts_by_module[value_type.__module__]
-            type_guid = type_guids[value_type]
-            # Resolve against the whole build closure, using registered class
-            # identity. A parent's script and explicit-ID policy are independent
-            # of the child's; getattr would inherit an ancestor's explicit ID.
-            base_type_guid = next(
-                (type_guids[base] for base in value_type.__mro__[1:] if base in type_guids),
-                "",
-            )
-            fields = [
-                get_field_schema(value_type, name).to_document()
-                for name in get_serialized_fields(value_type)
-            ]
-            semantic = {
-                "type_guid": type_guid,
-                "readable_id": f"python:data:{type_id}",
-                "owner": f"script:{script_guid}",
-                "origin": "python",
-                "display_name": value_type.__qualname__,
-                "base_type_guid": base_type_guid,
-                "constructible": True,
-                "serializable": True,
-                "runtime_available": True,
-                "runtime_profiles": ["player"],
-                "lifecycle": [],
-                "fields": fields,
-            }
-            records.append(
-                {
-                    "kind": "data",
-                    "script_guid": script_guid,
-                    "type_guid": type_guid,
-                    "type_id": f"python:data:{type_id}",
-                    "module": value_type.__module__,
-                    "qualname": value_type.__qualname__,
-                    "runtime_path": runtime_path,
-                    "lifecycle": [],
-                    "semantic": semantic,
-                    "data_asset": issubclass(value_type, DataAsset),
-                }
-            )
-        return records
 
     def _finalize_runtime_script_catalog(self, data_dir: str) -> None:
         """Write the one authoritative Player script and type catalog.
@@ -2981,22 +2678,18 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         pass deterministically replaces the intermediate Assets-only catalog.
         """
         guid_map = dict(getattr(self, "_runtime_script_guid_map", {}))
-        component_records = list(
-            getattr(self, "_runtime_component_records", ())
-        )
         manifest_path = os.path.join(data_dir, "_script_guid_map.json")
         if guid_map:
             _write_json_atomic(manifest_path, guid_map, indent=None)
         elif os.path.exists(manifest_path):
             os.remove(manifest_path)
 
-        self._cook_runtime_component_semantics(component_records)
-        runtime_type_records = component_records + self._runtime_serializable_type_records(
-            script_paths=guid_map,
-            data_root=data_dir,
-        )
+        snapshot = self._runtime_type_records_snapshot
+        if guid_map and snapshot is None:
+            raise RuntimeError("Player script cook requires owner-published runtime type records")
         self._runtime_type_records = sorted(
-            runtime_type_records,
+            (copy.deepcopy(record) for record in snapshot or ()
+             if record["script_guid"] in guid_map),
             key=lambda record: str(record["type_guid"]),
         )
         library_dir = os.path.join(data_dir, "Library")
@@ -3075,7 +2768,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             str(path).replace("\\", "/").casefold(): str(guid)
             for guid, path in guid_map.items()
         }
-        runtime_type_records: list[dict[str, object]] = []
         for root, _dirs, files in os.walk(assets_dir):
             for fname in files:
                 if fname.endswith(".py"):
@@ -3089,15 +2781,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                             self._cooked_asset_entries[script_guid]
                         )
                         self._player_python_source_texts[resolved_path(authored_source)] = source_text
-                        if not is_preload_python_library(authored_source):
-                            runtime_type_records.extend(
-                                self._runtime_component_type_records(
-                                    source_text,
-                                    script_guid=script_guid,
-                                    runtime_path=runtime_path,
-                                    data_root=data_dir,
-                                )
-                            )
                         cooked_source = self._cook_compute_source(source_text)
                         if cooked_source != source_text:
                             with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
@@ -3116,7 +2799,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     os.remove(py_path)
 
         self._runtime_script_guid_map = guid_map
-        self._runtime_component_records = runtime_type_records
         self._finalize_runtime_script_catalog(data_dir)
 
     def _write_runtime_asset_records(

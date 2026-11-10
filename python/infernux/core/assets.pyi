@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, overload
-from infernux.lib import AssetMutationResult
+from infernux.lib import AssetDatabase, AssetMutationResult
 from .sandbox_files import SandboxPath
 
 _META_SUPPRESSION_TIMEOUT: float
@@ -107,9 +107,11 @@ class AssetManager:
     @classmethod
     def begin_model_reimport(cls, path: str, settings_obj: Any) -> Any: ...
     @classmethod
+    def begin_import_settings_apply(cls, category: str, path: str, settings_obj: Any) -> Any: ...
+    @classmethod
     def poll_model_reimport(cls, database: Any) -> AssetMutationResult | None: ...
     @classmethod
-    def import_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ...) -> AssetMutationResult:
+    def import_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ..., write_scope: Any = ...) -> AssetMutationResult:
         """Import a new asset and publish its creation."""
         ...
     @classmethod
@@ -120,13 +122,13 @@ class AssetManager:
     @classmethod
     def move_asset(cls, old_path: str, new_path: str, *, database: Any = ...,
                      suppress_watcher_echo: bool = ..., origin: Any = ...,
-                     operation_id: str = ..., publish_interaction: bool = ...) -> AssetMutationResult:
+                   operation_id: str = ..., publish_interaction: bool = ..., write_scope: Any = ...) -> AssetMutationResult:
         """Move or rename an asset, updating all references."""
         ...
     @classmethod
-    def move_assets_batch(cls, moves: Any, *, database: Any = ..., suppress_watcher_echo: bool = ...) -> Any: ...
+    def move_assets_batch(cls, moves: Any, *, database: Any = ..., suppress_watcher_echo: bool = ..., write_scope: Any = ...) -> Any: ...
     @classmethod
-    def delete_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ..., guid_hint: str = ...) -> AssetMutationResult:
+    def delete_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ..., guid_hint: str = ..., write_scope: Any = ...) -> AssetMutationResult:
         """Delete an asset after evicting loaded state."""
         ...
     @classmethod
@@ -138,7 +140,8 @@ class AssetManager:
     @classmethod
     def local_write_event_state(cls, file_path: str) -> str: ...
     @classmethod
-    def note_imported_disk_change(cls, file_path: str) -> None: ...
+    def note_imported_disk_change(cls, file_path: str, *, source_unchanged: bool = ...,
+                                  capture_file_state: bool = ...) -> None: ...
     @classmethod
     def preview_dependency_signature(cls, file_path: str) -> int: ...
     @classmethod
@@ -166,7 +169,7 @@ class AssetManager:
     @classmethod
     def flush_pending_gpu_texture_reloads(cls, *, paths: Optional[List[str]] = ..., max_items: Optional[int] = ...) -> int: ...
     @classmethod
-    def flush_all_asset_writes(cls) -> None: ...
+    def flush_all_asset_writes(cls, *, database: AssetDatabase | None = None) -> AssetMutationResult | None: ...
     @classmethod
     def set_material_save_snapshot(cls, file_path: str, json_str: str, *, edit_revision: int = ..., document_id: str = ..., expected_file_state: Any = ...) -> None: ...
     @classmethod

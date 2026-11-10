@@ -8,6 +8,7 @@
  */
 
 #include "BindingRegistration.h"
+#include "VectorBindingMath.h"
 #include <cmath>
 #include <functional>
 #include <glm/glm.hpp>
@@ -30,32 +31,17 @@ inline float Cross(const glm::vec2 &a, const glm::vec2 &b)
 {
     return a.x * b.y - a.y * b.x;
 }
-inline float Magnitude(const glm::vec2 &v)
-{
-    return glm::length(v);
-}
-inline float SqrMagnitude(const glm::vec2 &v)
-{
-    return glm::dot(v, v);
-}
 inline float Angle(const glm::vec2 &from, const glm::vec2 &to)
 {
-    float denom = Magnitude(from) * Magnitude(to);
+    float denom = glm::length(from) * glm::length(to);
     if (denom < 1e-6f)
         return 0.f;
     float val = Dot(from, to) / denom;
     return std::acos(std::clamp(val, -1.f, 1.f)) * (180.0f / 3.14159265358979323846f);
 }
-inline glm::vec2 ClampMagnitude(const glm::vec2 &v, float maxLength)
-{
-    float mag = Magnitude(v);
-    if (mag > maxLength && mag > 1e-6f)
-        return v * (maxLength / mag);
-    return v;
-}
 inline float Distance(const glm::vec2 &a, const glm::vec2 &b)
 {
-    return Magnitude(a - b);
+    return glm::length(a - b);
 }
 inline glm::vec2 Lerp(const glm::vec2 &a, const glm::vec2 &b, float t)
 {
@@ -77,17 +63,10 @@ inline glm::vec2 Min(const glm::vec2 &a, const glm::vec2 &b)
 inline glm::vec2 MoveTowards(const glm::vec2 &current, const glm::vec2 &target, float maxDelta)
 {
     glm::vec2 to = target - current;
-    float dist = Magnitude(to);
+    float dist = glm::length(to);
     if (dist <= maxDelta || dist < 1e-6f)
         return target;
     return current + to * (maxDelta / dist);
-}
-inline glm::vec2 Normalize(const glm::vec2 &v)
-{
-    float mag = Magnitude(v);
-    if (mag < 1e-6f)
-        return glm::vec2(0.f);
-    return v / mag;
 }
 inline glm::vec2 Project(const glm::vec2 &v, const glm::vec2 &onNormal)
 {
@@ -117,12 +96,12 @@ inline float SignedAngle(const glm::vec2 &from, const glm::vec2 &to)
 }
 inline glm::vec2 SlerpUnclamped(glm::vec2 a, glm::vec2 b, float t)
 {
-    a = Normalize(a);
-    b = Normalize(b);
+    a = vector_binding::Normalize(a);
+    b = vector_binding::Normalize(b);
     float dotAB = std::clamp(Dot(a, b), -1.f, 1.f);
     float theta = std::acos(dotAB) * t;
-    glm::vec2 rel = Normalize(b - a * dotAB);
-    if (SqrMagnitude(rel) < 1e-12f)
+    glm::vec2 rel = vector_binding::Normalize(b - a * dotAB);
+    if (glm::dot(rel, rel) < 1e-12f)
         return LerpUnclamped(a, b, t);
     return a * std::cos(theta) + rel * std::sin(theta);
 }
@@ -163,7 +142,7 @@ inline glm::vec2 SmoothDamp(glm::vec2 current, glm::vec2 target, glm::vec2 &curr
     glm::vec2 originalTarget = target;
     glm::vec2 diff = current - target;
     float maxDist = maxSpeed * smoothTime;
-    float dist = Magnitude(diff);
+    float dist = glm::length(diff);
     if (std::isfinite(maxDist) && dist > maxDist && dist > 1e-6f)
         diff = diff * (maxDist / dist);
     target = current - diff;
@@ -299,19 +278,17 @@ void RegisterVector2Bindings(py::module_ &m)
         .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y); })
         .def("__len__", [](const Vec &) { return 2; })
         .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y).attr("__iter__")(); })
-        .def("__bool__", [](const Vec &v) { return vec2_util::SqrMagnitude(v) > 1e-12f; })
+        .def("__bool__", [](const Vec &v) { return glm::dot(v, v) > 1e-12f; })
         .def("__abs__", [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y)); })
         .def("__copy__", [](const Vec &v) { return Vec(v); })
         .def("__deepcopy__", [](const Vec &v, py::dict) { return Vec(v); })
         // ---- Instance properties ----
         .def_property_readonly(
-            "magnitude", [](const Vec &v) { return vec2_util::Magnitude(v); },
-            "Length of this vector. Unity: vector.magnitude")
+            "magnitude", [](const Vec &v) { return glm::length(v); }, "Length of this vector. Unity: vector.magnitude")
+        .def_property_readonly("normalized", &vector_binding::Normalize<Vec>,
+                               "Normalized copy of this vector. Unity: vector.normalized")
         .def_property_readonly(
-            "normalized", [](const Vec &v) { return vec2_util::Normalize(v); },
-            "Normalized copy of this vector. Unity: vector.normalized")
-        .def_property_readonly(
-            "sqr_magnitude", [](const Vec &v) { return vec2_util::SqrMagnitude(v); },
+            "sqr_magnitude", [](const Vec &v) { return glm::dot(v, v); },
             "Squared length of this vector. Unity: vector.sqrMagnitude")
         // ---- Instance methods ----
         .def(
@@ -340,9 +317,9 @@ void RegisterVector2Bindings(py::module_ &m)
         .def_static("positive_infinity", []() { return Vec(std::numeric_limits<float>::infinity()); })
         // ---- Static math operations ----
         .def_static("cross", &vec2_util::Cross)
-        .def_static("normalize", &vec2_util::Normalize)
+        .def_static("normalize", &vector_binding::Normalize<Vec>)
         .def_static("angle", &vec2_util::Angle)
-        .def_static("clamp_magnitude", &vec2_util::ClampMagnitude)
+        .def_static("clamp_magnitude", &vector_binding::ClampMagnitude<Vec>)
         .def_static("distance", &vec2_util::Distance)
         .def_static("dot", &vec2_util::Dot)
         .def_static("lerp", &vec2_util::Lerp)

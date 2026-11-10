@@ -2,10 +2,11 @@
 
 #include "VkDeviceContext.h"
 
-#include <SDL3/SDL.h>
 #include <core/error/InxError.h>
 
 #include <algorithm>
+#include <new>
+#include <stdexcept>
 
 namespace infernux::vk
 {
@@ -46,24 +47,39 @@ bool VulkanQueueManager::Initialize(const VkDeviceContext &context, uint32_t gra
             }
         }
     }
-    const uint32_t frameSlotCount = (std::max)(graphicsFrameSlots, 1u);
+    const auto failInitialization = [&] {
+        for (auto &queue : m_queues)
+            if (queue.timeline != VK_NULL_HANDLE)
+                vkDestroySemaphore(m_device, queue.timeline, nullptr);
+        for (const auto fence : m_graphicsFrameFences)
+            if (fence != VK_NULL_HANDLE)
+                vkDestroyFence(m_device, fence, nullptr);
+        m_graphicsFrameFences.clear();
+        m_graphicsFrameSlots.clear();
+        m_queues = {};
+        m_device = VK_NULL_HANDLE;
+        m_deviceId = rhi::InvalidDeviceId;
+        return false;
+    };
+    if (context.IsTimelineSemaphoreEnabled()) {
+        VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+        type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        info.pNext = &type;
+        for (size_t lane = 0; lane < m_queues.size(); ++lane)
+            if (m_roleLanes[lane] == lane && m_queues[lane].queue != VK_NULL_HANDLE &&
+                vkCreateSemaphore(m_device, &info, nullptr, &m_queues[lane].timeline) != VK_SUCCESS)
+                return failInitialization();
+    }
+    const uint32_t frameSlotCount = graphicsFrameSlots;
     m_graphicsFrameSlots.resize(frameSlotCount);
     m_graphicsFrameFences.resize(frameSlotCount, VK_NULL_HANDLE);
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     for (uint32_t index = 0; index < frameSlotCount; ++index) {
-        if (vkCreateFence(m_device, &fenceInfo, nullptr, &m_graphicsFrameFences[index]) != VK_SUCCESS) {
-            for (VkFence fence : m_graphicsFrameFences) {
-                if (fence != VK_NULL_HANDLE)
-                    vkDestroyFence(m_device, fence, nullptr);
-            }
-            m_graphicsFrameFences.clear();
-            m_graphicsFrameSlots.clear();
-            m_device = VK_NULL_HANDLE;
-            m_deviceId = rhi::InvalidDeviceId;
-            return false;
-        }
+        if (vkCreateFence(m_device, &fenceInfo, nullptr, &m_graphicsFrameFences[index]) != VK_SUCCESS)
+            return failInitialization();
     }
     return true;
 }
@@ -73,6 +89,9 @@ void VulkanQueueManager::Destroy() noexcept
     {
         std::lock_guard lock(m_mutex);
         if (m_device != VK_NULL_HANDLE) {
+            for (const auto &queue : m_queues)
+                if (queue.timeline != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, queue.timeline, nullptr);
             for (VkFence fence : m_graphicsFrameFences) {
                 if (fence != VK_NULL_HANDLE)
                     vkDestroyFence(m_device, fence, nullptr);
@@ -106,6 +125,33 @@ rhi::SubmissionTicket VulkanQueueManager::Reserve(rhi::QueueRole role, uint32_t 
     return {m_deviceId, role, serial};
 }
 
+VkSemaphore VulkanQueueManager::GetDependencyTimeline(rhi::QueueRole role) const noexcept
+{
+    std::lock_guard lock(m_mutex);
+    return role != rhi::QueueRole::Count ? m_queues[LaneIndex(role)].timeline : VK_NULL_HANDLE;
+}
+
+VulkanQueueManager::TimelinePoint VulkanQueueManager::DependencyFor(rhi::SubmissionTicket ticket,
+                                                                    rhi::QueueRole consumer) const
+{
+    std::lock_guard lock(m_mutex);
+    if (!ticket.IsValid() || ticket.device != m_deviceId || ticket.queue >= rhi::QueueRole::Count)
+        throw std::invalid_argument("GPU producer belongs to another device or invalid queue");
+    const auto &queue = m_queues[LaneIndex(ticket.queue)];
+    const auto range = std::lower_bound(queue.accepted.begin(), queue.accepted.end(), ticket.serial,
+                                        [](const auto &item, auto serial) { return item.last < serial; });
+    if (range == queue.accepted.end() || ticket.serial < range->first)
+        throw std::invalid_argument("GPU producer has not been accepted");
+    const bool pending = ticket.serial > queue.completed;
+    if (consumer < rhi::QueueRole::Count && LaneIndex(consumer) == LaneIndex(ticket.queue))
+        return {};
+    if (!pending && (consumer == rhi::QueueRole::Count || queue.timeline == VK_NULL_HANDLE))
+        return {};
+    if (queue.timeline == VK_NULL_HANDLE)
+        throw std::logic_error("Pending GPU producer requires a timeline semaphore");
+    return {queue.timeline, ticket.serial, pending};
+}
+
 VkResult VulkanQueueManager::SubmitReserved(rhi::SubmissionTicket ticket, const VkSubmitInfo &submitInfo,
                                             VkFence fence) noexcept
 {
@@ -128,10 +174,71 @@ VkResult VulkanQueueManager::SubmitReserved(rhi::SubmissionTicket ticket, const 
     if (m_device == VK_NULL_HANDLE)
         return VK_ERROR_DEVICE_LOST;
 
-    const VkResult result = vkQueueSubmit(queue.queue, count, submits, fence);
-    queue.nextSubmissionSerial += count;
+    // Add the device-owned completion point to each actual submission. Keep
+    // callers' binary signals, timeline values and downstream pNext nodes.
+    struct SubmissionSync
+    {
+        VkTimelineSemaphoreSubmitInfo timeline{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+        std::vector<VkSemaphore> signals;
+        std::vector<uint64_t> values, binaryWaitValues;
+    };
+    std::vector<VkSubmitInfo> ownedSubmits;
+    std::vector<SubmissionSync> ownedSync;
+    VkResult result = VK_SUCCESS;
+    try {
+        if (queue.timeline != VK_NULL_HANDLE) {
+            ownedSubmits.assign(submits, submits + count);
+            ownedSync.resize(count);
+            for (uint32_t index = 0; index < count; ++index) {
+                auto &submit = ownedSubmits[index];
+                auto &sync = ownedSync[index];
+                if (submit.pNext) {
+                    const auto *next = static_cast<const VkBaseInStructure *>(submit.pNext);
+                    if (next->sType != VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+                        result = VK_ERROR_FEATURE_NOT_PRESENT;
+                        break;
+                    }
+                    sync.timeline = *static_cast<const VkTimelineSemaphoreSubmitInfo *>(submit.pNext);
+                }
+                if (submit.signalSemaphoreCount) {
+                    sync.signals.assign(submit.pSignalSemaphores,
+                                        submit.pSignalSemaphores + submit.signalSemaphoreCount);
+                    sync.values.resize(submit.signalSemaphoreCount, 0);
+                    if (sync.timeline.signalSemaphoreValueCount)
+                        std::copy_n(sync.timeline.pSignalSemaphoreValues, submit.signalSemaphoreCount,
+                                    sync.values.begin());
+                }
+                sync.signals.push_back(queue.timeline);
+                sync.values.push_back(ticket.serial + index);
+                sync.timeline.signalSemaphoreValueCount = static_cast<uint32_t>(sync.values.size());
+                sync.timeline.pSignalSemaphoreValues = sync.values.data();
+                // Binary waits still occupy a zero entry in a timeline submit.
+                if (!sync.timeline.waitSemaphoreValueCount && submit.waitSemaphoreCount) {
+                    sync.binaryWaitValues.resize(submit.waitSemaphoreCount, 0);
+                    sync.timeline.waitSemaphoreValueCount = submit.waitSemaphoreCount;
+                    sync.timeline.pWaitSemaphoreValues = sync.binaryWaitValues.data();
+                }
+                submit.pNext = &sync.timeline;
+                submit.signalSemaphoreCount = static_cast<uint32_t>(sync.signals.size());
+                submit.pSignalSemaphores = sync.signals.data();
+            }
+            submits = ownedSubmits.data();
+        }
+        // Publication cannot allocate after Vulkan has accepted the work.
+        queue.accepted.reserve(queue.accepted.size() + 1);
+    } catch (const std::bad_alloc &) {
+        result = VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
     if (result == VK_SUCCESS)
+        result = vkQueueSubmit(queue.queue, count, submits, fence);
+    queue.nextSubmissionSerial += count;
+    if (result == VK_SUCCESS) {
         queue.lastSubmitted = queue.nextSubmissionSerial - 1;
+        if (!queue.accepted.empty() && queue.accepted.back().last + 1 == ticket.serial)
+            queue.accepted.back().last = queue.lastSubmitted;
+        else
+            queue.accepted.push_back({ticket.serial, queue.lastSubmitted});
+    }
     lock.unlock();
     m_submitCv.notify_all();
     return result;
@@ -271,59 +378,6 @@ void VulkanQueueManager::MarkCompleted(rhi::SubmissionTicket ticket) noexcept
     queue.completed = (std::max)(queue.completed, ticket.serial);
 }
 
-bool VulkanQueueManager::WaitForGraphicsFrameSlot(uint32_t frameSlot, const FrameWaitDiagnostic &diagnostic) noexcept
-{
-    VkDevice device = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    {
-        std::lock_guard lock(m_mutex);
-        if (frameSlot >= m_graphicsFrameFences.size())
-            return false;
-        device = m_device;
-        fence = m_graphicsFrameFences[frameSlot];
-    }
-    if (device == VK_NULL_HANDLE || fence == VK_NULL_HANDLE)
-        return false;
-
-    constexpr uint64_t kPollTimeoutNs = 50'000'000;
-    constexpr uint32_t kInitialDiagnosticPolls = 20;
-    constexpr uint32_t kRepeatedDiagnosticPolls = 100;
-    uint32_t timeoutPolls = 0;
-    while (true) {
-        const VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, kPollTimeoutNs);
-        if (result == VK_SUCCESS)
-            return true;
-        if (result != VK_TIMEOUT) {
-            INXLOG_ERROR("VulkanQueueManager: graphics frame fence wait failed with VkResult ",
-                         static_cast<int>(result));
-            return false;
-        }
-        ++timeoutPolls;
-        if (timeoutPolls == kInitialDiagnosticPolls ||
-            (timeoutPolls > kInitialDiagnosticPolls &&
-             (timeoutPolls - kInitialDiagnosticPolls) % kRepeatedDiagnosticPolls == 0)) {
-            FrameSlotState state{};
-            {
-                std::lock_guard lock(m_mutex);
-                if (frameSlot < m_graphicsFrameSlots.size())
-                    state = m_graphicsFrameSlots[frameSlot];
-            }
-            INXLOG_ERROR("VulkanQueueManager: graphics frame slot ", frameSlot, " has not completed after ",
-                         timeoutPolls * 50, " ms; completion_epoch=", state.completionEpoch,
-                         " terminal_role=", static_cast<uint32_t>(state.terminalTicket.queue),
-                         " terminal_serial=", state.terminalTicket.serial);
-            if (diagnostic) {
-                try {
-                    diagnostic(timeoutPolls * 50);
-                } catch (...) {
-                    INXLOG_ERROR("VulkanQueueManager: frame wait diagnostic callback failed");
-                }
-            }
-        }
-        SDL_PumpEvents();
-    }
-}
-
 bool VulkanQueueManager::ResetGraphicsFrameFence(uint32_t frameSlot) noexcept
 {
     std::lock_guard lock(m_mutex);
@@ -435,6 +489,54 @@ VulkanQueueManager::QueueSnapshot VulkanQueueManager::GetSnapshot(rhi::QueueRole
     const auto &queue = m_queues[LaneIndex(role)];
     return {queue.queue,        queue.family,        static_cast<uint32_t>(LaneIndex(role)),
             queue.lastReserved, queue.lastSubmitted, queue.completed};
+}
+
+bool VulkanQueueManager::PollFrameCompletion(uint32_t frameSlot)
+{
+    std::lock_guard lock(m_mutex);
+    if (frameSlot >= m_graphicsFrameSlots.size())
+        return false;
+    const auto &slot = m_graphicsFrameSlots[frameSlot];
+    if (!slot.terminalTicket.IsValid() || slot.completionEpoch <= m_completedCompletionEpoch ||
+        m_completedOutOfOrderEpochs.count(slot.completionEpoch))
+        return false;
+    const auto status = vkGetFenceStatus(m_device, m_graphicsFrameFences[frameSlot]);
+    if (status == VK_NOT_READY)
+        return false;
+    if (status != VK_SUCCESS)
+        throw std::runtime_error("Graphics completion fence query failed");
+    auto &queue = m_queues[LaneIndex(slot.terminalTicket.queue)];
+    queue.completed = (std::max)(queue.completed, slot.terminalTicket.serial);
+    CompleteCompletionEpochLocked(slot.completionEpoch);
+    return true;
+}
+
+rhi::GpuQueuePressure VulkanQueueManager::GetFramePressure() const
+{
+    std::lock_guard lock(m_mutex);
+    rhi::GpuQueuePressure pressure;
+    pressure.frameSlots = static_cast<uint32_t>(m_graphicsFrameSlots.size());
+    rhi::SubmissionSerial newest = rhi::InvalidSubmissionSerial;
+    for (const auto &slot : m_graphicsFrameSlots)
+        if (slot.terminalTicket.IsValid())
+            newest = (std::max)(newest, slot.completionEpoch);
+    for (size_t index = 0; index < m_graphicsFrameSlots.size(); ++index) {
+        const auto &slot = m_graphicsFrameSlots[index];
+        if (slot.completionEpoch == rhi::InvalidSubmissionSerial)
+            continue;
+        if (!slot.terminalTicket.IsValid()) {
+            ++pressure.recordingFrames;
+            continue;
+        }
+        const auto status = vkGetFenceStatus(m_device, m_graphicsFrameFences[index]);
+        if (status == VK_SUCCESS)
+            continue;
+        if (status != VK_NOT_READY)
+            throw std::runtime_error("Graphics frame pressure fence query failed");
+        ++pressure.pendingFrames;
+        pressure.olderPendingFrames += slot.completionEpoch != newest;
+    }
+    return pressure;
 }
 
 rhi::SubmissionSerial VulkanQueueManager::GetCompletedSerial(rhi::QueueRole role) const noexcept

@@ -209,6 +209,7 @@ def extract_common(
     world_transform_owned: bool = False,
     material_state: dict | None = None,
     material_in_shader: bool = False,
+    defer_group_alpha: bool = False,
 ) -> dict:
     """Extract shared visual attributes from any InxUIScreenComponent."""
     material_state = material_state or material_visual_state(elem)
@@ -216,9 +217,10 @@ def extract_common(
     if not material_in_shader:
         color = _multiply_rgba(color, material_state["color"])
     opacity = max(0.0, min(1.0, float(getattr(elem, "opacity", 1.0))))
-    group_state = getattr(elem, "get_effective_group_state", None)
-    if callable(group_state):
-        opacity *= group_state()[0]
+    if not defer_group_alpha:
+        group_state = getattr(elem, "get_effective_group_state", None)
+        if callable(group_state):
+            opacity *= group_state()[0]
     return {
         "color": color,
         "opacity": opacity,
@@ -266,6 +268,28 @@ def resolve_text_layout(elem, measure_text, scale: float = 1.0) -> bool:
     """Resolve a text element's intrinsic box through the shared layout path."""
     resolver = getattr(elem, "resolve_text_layout", None)
     return bool(resolver(measure_text, scale)) if callable(resolver) else False
+
+
+def resolve_text_layout_for_context(ctx, text_comp) -> bool:
+    """Resolve a text element's layout against one ImGui context's metrics.
+
+    Shared by the inspector and the UI editor so both measure text through the
+    same rules: wrapped measurement when a wrap width is given, intrinsic
+    measurement otherwise.
+    """
+
+    def measure(text, font_size, wrap_width, font_path, line_height, letter_spacing, fallback_font_paths=()):
+        if wrap_width > 0.0:
+            return ctx.calc_text_size_wrapped(
+                text, font_size, wrap_width, font_path, line_height, letter_spacing,
+                fallback_font_paths,
+            )
+        return ctx.calc_text_size(
+            text, font_size, font_path, line_height, letter_spacing,
+            fallback_font_paths,
+        )
+
+    return resolve_text_layout(text_comp, measure, 1.0)
 
 
 # ── Registry ─────────────────────────────────────────────────────────
@@ -529,7 +553,7 @@ def _resolve_renderer(elem_type: type, backend: str) -> Optional[Callable]:
     return fn
 
 
-def dispatch(elem, backend: str, **kwargs):
+def dispatch(elem, backend: str, *, defer_group_alpha=False, **kwargs):
     """Dispatch rendering of *elem* to the registered handler.
 
     Returns True if a handler was found and called, False otherwise.
@@ -537,6 +561,16 @@ def dispatch(elem, backend: str, **kwargs):
     fn = _resolve_renderer(type(elem), backend)
     if fn is None:
         return False
+    if backend == 'editor':
+        from infernux.lib._Infernux import _ScreenRectGeometry
+        pivot = elem.pivot
+        rect = _ScreenRectGeometry(
+            (kwargs['base_sx'], kwargs['base_sy'], kwargs['base_sw'], kwargs['base_sh']),
+            elem.get_layout_rotation(), (float(pivot.x), 1 - float(pivot.y)),
+        ).render_rect
+        kwargs['base_sx'], kwargs['base_sy'] = rect[:2]
+    if defer_group_alpha:
+        kwargs["defer_group_alpha"] = True
     fn(elem, **kwargs)
     return True
 
@@ -592,6 +626,14 @@ def _editor_render_image(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, ge
     rounding = attrs["corner_radius"] * zoom
     if tex_id:
         uv = elem.uv_rect
+        if elem.image_type == elem.Type.FILLED:
+            ctx.draw_filled_image(
+                tex_id,base_sx,base_sy,base_sx+base_sw,base_sy+base_sh,
+                uv.x,uv.y,uv.x+uv.z,uv.y+uv.w,cr,cg,cb,ca,
+                elem.fill_amount,int(elem.fill_method),elem.fill_origin,elem.fill_clockwise,
+                attrs["rotation"],attrs["mirror_h"],attrs["mirror_v"],
+            )
+            return
         ctx.draw_image_rect(
             tex_id, base_sx, base_sy,
             base_sx + base_sw, base_sy + base_sh,
@@ -637,6 +679,7 @@ def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
         world_transform_owned=world_transform_owned,
         material_state=material_state,
         material_in_shader=True,
+        defer_group_alpha=_kw.get("defer_group_alpha", False),
     )
     color = attrs["color"]
     if elem.rich_text or elem.__dict__.get("_text_geometry") is not None:
@@ -689,6 +732,7 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
         world_transform_owned=world_transform_owned,
         material_state=material_state,
         material_in_shader=True,
+        defer_group_alpha=_kw.get("defer_group_alpha", False),
     )
     color = attrs["color"]
     cr, cg, cb = color[0], color[1], color[2]
@@ -697,6 +741,14 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
     if tex_id:
         kind = "image"
         uv = elem.uv_rect
+        if elem.image_type == elem.Type.FILLED:
+            _bind_runtime_material(renderer,ui_list,material_state)
+            renderer.add_filled_image(
+                ui_list,tex_id,sx,sy,sx+sw,sy+sh,uv.x,uv.y,uv.x+uv.z,uv.y+uv.w,
+                cr,cg,cb,ca,elem.fill_amount,int(elem.fill_method),elem.fill_origin,elem.fill_clockwise,
+                attrs["rotation"],attrs["mirror_h"],attrs["mirror_v"],
+            )
+            return
         arguments = (
             ui_list, tex_id,
             sx, sy, sx + sw, sy + sh,
@@ -830,6 +882,7 @@ def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
         world_transform_owned=world_transform_owned,
         material_state=background_material,
         material_in_shader=True,
+        defer_group_alpha=_kw.get("defer_group_alpha", False),
     )
     bg = _get_button_bg(elem, background_material, apply_material=False)
     r, g, b = bg[0], bg[1], bg[2]
@@ -947,6 +1000,7 @@ def _runtime_render_progress(elem, renderer, ui_list, sx, sy, sw, sh,
         world_transform_owned=bool(_kw.get("world_transform_owned", False)),
         material_state=material_state,
         material_in_shader=True,
+        defer_group_alpha=_kw.get("defer_group_alpha", False),
     )
     background = _multiply_rgba(_pad_rgba(elem.background_color), attrs["color"])
     fill = _multiply_rgba(_pad_rgba(elem.fill_color), attrs["color"])
@@ -1004,6 +1058,7 @@ def _runtime_render_slider(elem, renderer, ui_list, sx, sy, sw, sh,
         world_transform_owned=bool(kwargs.get("world_transform_owned", False)),
         material_state=material_state,
         material_in_shader=True,
+        defer_group_alpha=kwargs.get("defer_group_alpha", False),
     )
     handle = _multiply_rgba(_pad_rgba(elem.handle_color), attrs["color"])
     x, y, width, height = _value_fill_rect(elem, sx, sy, sw, sh)

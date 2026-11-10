@@ -10,8 +10,11 @@
 
 #pragma once
 
+#include "core/FoundationApi.h"
+
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +59,13 @@ enum class JobPriority : uint8_t
     Critical = 3,
 };
 
+/** WorkerOnly jobs cannot consume an owner-thread Wait/RunPendingJobs budget. */
+enum class JobAffinity : uint8_t
+{
+    AnyThread,
+    WorkerOnly,
+};
+
 struct JobProfilerCounters
 {
     uint64_t submitted = 0;
@@ -89,12 +99,12 @@ class JobHandle
         return static_cast<bool>(m_state);
     }
 
-    [[nodiscard]] bool IsComplete() const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool IsComplete() const noexcept;
 
     /** Request cooperative cancellation. Queued callbacks are skipped; a
      * callback that has already begun is not
      * preempted. */
-    bool Cancel() noexcept;
+    INFERNUX_FOUNDATION_API bool Cancel() noexcept;
 
     [[nodiscard]] bool IsCancellationRequested() const noexcept
     {
@@ -131,12 +141,28 @@ class JobHandle
 
 using JobFence = JobHandle;
 
+/** One externally completed dependency, independent of an executing callback.
+ * Copies observe the same result. The producer completes it exactly once. */
+class JobCompletionEvent
+{
+  public:
+    INFERNUX_FOUNDATION_API explicit JobCompletionEvent(JobDomain domain);
+    [[nodiscard]] bool IsComplete() const noexcept;
+    INFERNUX_FOUNDATION_API void Complete();
+    INFERNUX_FOUNDATION_API bool WaitUntil(std::chrono::steady_clock::time_point deadline) const;
+
+  private:
+    friend class JobSystem;
+    JobDomain m_domain;
+    std::shared_ptr<JobHandle::State> m_state;
+};
+
 /** A dynamic set of jobs sharing cancellation, error and domain semantics. */
 class TaskGroup
 {
   public:
     explicit TaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
-    ~TaskGroup();
+    INFERNUX_FOUNDATION_API ~TaskGroup();
 
     TaskGroup(const TaskGroup &) = delete;
     TaskGroup &operator=(const TaskGroup &) = delete;
@@ -144,17 +170,17 @@ class TaskGroup
     TaskGroup &operator=(TaskGroup &&other) noexcept;
 
     /** Prevent further submissions. Existing work is still drained. */
-    void Close() noexcept;
-    [[nodiscard]] bool IsClosed() const noexcept;
-    [[nodiscard]] bool IsComplete() const noexcept;
-    [[nodiscard]] bool IsCancellationRequested() const noexcept;
+    INFERNUX_FOUNDATION_API void Close() noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool IsClosed() const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool IsComplete() const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool IsCancellationRequested() const noexcept;
     /** Request cooperative cancellation for the group. Queued callbacks are
      * skipped; callbacks that have already
      * begun are not preempted. */
-    bool Cancel() noexcept;
+    INFERNUX_FOUNDATION_API bool Cancel() noexcept;
 
     /** Returns a fence that completes only after Close() and all jobs. */
-    [[nodiscard]] JobFence Fence() const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API JobFence Fence() const;
     [[nodiscard]] JobDomain GetDomain() const noexcept
     {
         return m_domain;
@@ -187,12 +213,30 @@ class JobSystem
         Stopped,
     };
 
-    static void Initialize(uint32_t workerCount = 0);
+    INFERNUX_FOUNDATION_API static void Initialize(uint32_t workerCount = 0);
     /** Initialize an owner-thread executor for platforms without worker threads. */
-    static void InitializeInline();
-    static void Shutdown();
-    [[nodiscard]] static JobSystem &Get();
-    [[nodiscard]] static bool IsAvailable() noexcept;
+    INFERNUX_FOUNDATION_API static void InitializeInline();
+    INFERNUX_FOUNDATION_API static void Shutdown();
+    [[nodiscard]] INFERNUX_FOUNDATION_API static JobSystem &Get();
+    [[nodiscard]] INFERNUX_FOUNDATION_API static bool IsAvailable() noexcept;
+
+    /// Pin this worker pool while a native asynchronous operation owns a
+    /// continuation. Shutdown joins the workers and then drains these owners.
+    class ExternalWork
+    {
+      public:
+        ExternalWork(ExternalWork &&other) noexcept;
+        ~ExternalWork();
+        JobHandle Schedule(JobFn job, JobDomain domain, JobPriority priority, JobAffinity affinity) const;
+
+      private:
+        friend class JobSystem;
+        explicit ExternalWork(JobSystem &system) noexcept : m_system(&system)
+        {
+        }
+        JobSystem *m_system;
+    };
+    ExternalWork RetainExternalWork();
 
     JobSystem(const JobSystem &) = delete;
     JobSystem &operator=(const JobSystem &) = delete;
@@ -200,50 +244,68 @@ class JobSystem
     JobSystem &operator=(JobSystem &&) = delete;
 
     /** Existing callers retain Default/Normal behavior. */
-    JobHandle Schedule(JobFn job, JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
+    INFERNUX_FOUNDATION_API JobHandle Schedule(JobFn job, JobDomain domain = JobDomain::Default,
+                                               JobPriority priority = JobPriority::Normal,
+                                               JobAffinity affinity = JobAffinity::AnyThread);
 
-    JobHandle Schedule(TaskGroup &group, JobFn job);
-    JobHandle Schedule(TaskGroup &group, JobFn job, JobPriority priority);
+    INFERNUX_FOUNDATION_API JobHandle Schedule(TaskGroup &group, JobFn job);
+    INFERNUX_FOUNDATION_API JobHandle Schedule(TaskGroup &group, JobFn job, JobPriority priority);
 
-    JobHandle ScheduleBatch(uint32_t count, std::function<JobFn(uint32_t index)> factory,
-                            JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
-    JobHandle ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory);
-    JobHandle ScheduleBatch(TaskGroup &group, uint32_t count, std::function<JobFn(uint32_t index)> factory,
-                            JobPriority priority);
+    INFERNUX_FOUNDATION_API JobHandle ScheduleBatch(uint32_t count, std::function<JobFn(uint32_t index)> factory,
+                                                    JobDomain domain = JobDomain::Default,
+                                                    JobPriority priority = JobPriority::Normal);
+    INFERNUX_FOUNDATION_API JobHandle ScheduleBatch(TaskGroup &group, uint32_t count,
+                                                    std::function<JobFn(uint32_t index)> factory);
+    INFERNUX_FOUNDATION_API JobHandle ScheduleBatch(TaskGroup &group, uint32_t count,
+                                                    std::function<JobFn(uint32_t index)> factory, JobPriority priority);
 
-    void ParallelFor(uint32_t count, std::function<void(uint32_t index)> body, JobDomain domain = JobDomain::Default,
-                     JobPriority priority = JobPriority::Normal);
+    INFERNUX_FOUNDATION_API void ParallelFor(uint32_t count, std::function<void(uint32_t index)> body,
+                                             JobDomain domain = JobDomain::Default,
+                                             JobPriority priority = JobPriority::Normal);
     /** Execute contiguous ranges instead of allocating one task per element. */
-    void ParallelForChunks(uint32_t count, uint32_t chunkSize, std::function<void(uint32_t begin, uint32_t end)> body,
-                           JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal);
-    void ParallelFor(TaskGroup &group, uint32_t count, std::function<void(uint32_t index)> body);
+    INFERNUX_FOUNDATION_API void ParallelForChunks(uint32_t count, uint32_t chunkSize,
+                                                   std::function<void(uint32_t begin, uint32_t end)> body,
+                                                   JobDomain domain = JobDomain::Default,
+                                                   JobPriority priority = JobPriority::Normal);
+    INFERNUX_FOUNDATION_API void ParallelFor(TaskGroup &group, uint32_t count,
+                                             std::function<void(uint32_t index)> body);
 
-    TaskGroup CreateTaskGroup(JobDomain domain = JobDomain::Default, JobPriority priority = JobPriority::Normal) const;
+    INFERNUX_FOUNDATION_API TaskGroup CreateTaskGroup(JobDomain domain = JobDomain::Default,
+                                                      JobPriority priority = JobPriority::Normal) const;
 
     /** Wait helps work from the target group/domain while preserving permits. */
-    void Wait(const JobHandle &handle);
-    void Wait(TaskGroup &group);
+    INFERNUX_FOUNDATION_API void Wait(const JobHandle &handle);
+    INFERNUX_FOUNDATION_API void Wait(TaskGroup &group);
+
+    /** Wait and help only this dependency. Use while holding a resource that unrelated work may need. */
+    INFERNUX_FOUNDATION_API void WaitDependency(const JobHandle &handle);
 
     /** Wait without executing work; a worker temporarily releases its permit. */
-    void WaitPassive(const JobHandle &handle);
-    void WaitPassive(TaskGroup &group);
+    INFERNUX_FOUNDATION_API void WaitPassive(const JobHandle &handle);
+    INFERNUX_FOUNDATION_API void WaitPassive(TaskGroup &group);
     /** Wait for completion; the owner reads failure/cancellation from its result ticket. */
-    void WaitPassiveCompletion(const JobHandle &handle);
+    INFERNUX_FOUNDATION_API void WaitPassiveCompletion(const JobHandle &handle);
+
+    /** Owners wait passively; real workers may help the dependency's domain.
+     * A deadline stops new help/waits, not a running atom or permit restoration. */
+    INFERNUX_FOUNDATION_API bool
+    AwaitCompletion(const JobCompletionEvent &event,
+                    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max());
 
     /** 0 means unlimited. Changes affect tasks not yet dequeued. */
-    void SetDomainConcurrency(JobDomain domain, uint32_t maxConcurrency);
-    [[nodiscard]] uint32_t GetDomainConcurrency(JobDomain domain) const;
-    [[nodiscard]] uint32_t GetDomainActiveCount(JobDomain domain) const;
+    INFERNUX_FOUNDATION_API void SetDomainConcurrency(JobDomain domain, uint32_t maxConcurrency);
+    [[nodiscard]] INFERNUX_FOUNDATION_API uint32_t GetDomainConcurrency(JobDomain domain) const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API uint32_t GetDomainActiveCount(JobDomain domain) const;
 
-    [[nodiscard]] JobProfilerCounters GetProfilerCounters() const;
-    [[nodiscard]] JobProfilerCounters GetProfilerCounters(JobDomain domain) const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API JobProfilerCounters GetProfilerCounters() const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API JobProfilerCounters GetProfilerCounters(JobDomain domain) const;
     /** Clear accumulated observations while preserving queued/running gauges.
      * Jobs crossing this boundary count when they start/finish; totals are not
      * a cohort of jobs submitted since reset. Safe while work is in flight. */
-    void ResetProfilerCounters();
+    INFERNUX_FOUNDATION_API void ResetProfilerCounters();
 
     /** Execute queued work on the calling thread. Zero drains the queue. */
-    uint32_t RunPendingJobs(uint32_t maxJobs = 0);
+    INFERNUX_FOUNDATION_API uint32_t RunPendingJobs(uint32_t maxJobs = 0);
 
     [[nodiscard]] bool IsInline() const noexcept
     {
@@ -258,7 +320,7 @@ class JobSystem
     {
         return m_state.load(std::memory_order_acquire);
     }
-    [[nodiscard]] size_t GetQueuedTaskCount() const;
+    [[nodiscard]] INFERNUX_FOUNDATION_API size_t GetQueuedTaskCount() const;
     [[nodiscard]] uint32_t GetActiveTaskCount() const noexcept
     {
         return m_activeTasks.load(std::memory_order_acquire);
@@ -266,7 +328,13 @@ class JobSystem
 
   private:
     JobSystem() = default;
-    void WaitForCompletion(const JobHandle &handle, bool executePendingWork);
+    enum class WaitPolicy : uint8_t
+    {
+        Passive,
+        HelpEligible,
+        HelpDependency
+    };
+    void WaitForCompletion(const JobHandle &handle, WaitPolicy policy);
     ~JobSystem();
 
     struct ProfilerState
@@ -291,6 +359,7 @@ class JobSystem
         JobDomain domain = JobDomain::Default;
         JobPriority priority = JobPriority::Normal;
         uint64_t sequence = 0;
+        JobAffinity affinity = JobAffinity::AnyThread;
     };
 
     struct ExecutionContext
@@ -303,15 +372,18 @@ class JobSystem
     };
 
     static thread_local ExecutionContext *s_currentContext;
+    // Unlike ExecutionContext, only WorkerLoop establishes this identity.
+    static thread_local JobSystem *s_workerSystem;
 
     void WorkerLoop();
     bool TryRunOne();
-    bool TryRunOneForWait(const JobHandle &handle);
+    bool TryRunOneForWait(const JobHandle &handle, WaitPolicy policy);
     void Execute(Task task, bool helped) noexcept;
     void StopAndJoin() noexcept;
 
     JobHandle ScheduleInternal(JobFn job, JobDomain domain, JobPriority priority,
-                               std::shared_ptr<JobHandle::State> groupState);
+                               std::shared_ptr<JobHandle::State> groupState,
+                               JobAffinity affinity = JobAffinity::AnyThread);
     JobHandle ScheduleBatchInternal(uint32_t count, std::function<JobFn(uint32_t index)> factory, JobDomain domain,
                                     JobPriority priority, std::shared_ptr<JobHandle::State> groupState,
                                     std::mutex *groupMutex);
@@ -336,6 +408,7 @@ class JobSystem
     std::condition_variable m_queueCv;
     std::atomic<State> m_state{State::Stopped};
     std::atomic<uint32_t> m_activeTasks{0};
+    uint32_t m_externalWork = 0;
     bool m_accepting = true;
     bool m_stopRequested = false;
     bool m_inline = false;
@@ -346,6 +419,7 @@ class JobSystem
     std::shared_ptr<ProfilerState> m_globalProfiler = std::make_shared<ProfilerState>();
     mutable std::mutex m_profilerMutex;
     std::unordered_map<uint16_t, std::shared_ptr<ProfilerState>> m_domainProfilers;
+    std::condition_variable m_permitCv;
 };
 
 } // namespace infernux

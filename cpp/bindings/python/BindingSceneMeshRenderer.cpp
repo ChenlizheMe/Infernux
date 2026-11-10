@@ -15,7 +15,12 @@ namespace infernux::scene_binding
 
 static void BindRendererMaterials(NativeClass<MeshRenderer, Component> &cls)
 {
+    py::class_<MeshRenderer::MaterialBindingsSnapshot>(cls, "_MaterialBindingsSnapshot");
     cls.def("has_inline_mesh", &MeshRenderer::HasInlineMesh)
+        .def("get_instanced_material", &MeshRenderer::GetInstancedMaterial, py::arg("slot") = 0)
+        .def("_is_material_instantiated", &MeshRenderer::IsMaterialInstantiated, py::arg("slot") = 0)
+        .def("_capture_material_bindings", &MeshRenderer::CaptureMaterialBindings)
+        .def("_restore_material_bindings", &MeshRenderer::RestoreMaterialBindings, py::arg("snapshot"))
         .def_property("inline_mesh_name", &MeshRenderer::GetInlineMeshName, &MeshRenderer::SetInlineMeshName,
                       "Display name for inline (primitive) meshes, e.g. 'Cube', 'Sphere'")
         .def(
@@ -364,7 +369,7 @@ static void BindRendererGeometry(NativeClass<MeshRenderer, Component> &cls)
                 (void)mesh->RequireModelNode(path);
                 renderer.SetMeshAsset(guid, mesh);
                 renderer.SetModelNodePath(path);
-                renderer.SetModelSubresourceId(GetModelSubresourceId(GetModelMeta(guid, mesh), path));
+                renderer.SetModelSubresourceId(GetModelSubresourceId(mesh->GetImportMetadata(), path));
             },
             py::arg("guid"), py::arg("node_path"));
 }

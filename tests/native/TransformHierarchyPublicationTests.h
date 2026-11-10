@@ -46,17 +46,26 @@ inline void TestTransformHierarchyPublication(infernux::Scene &scene)
                 if (authored) {
                     transform->SetWorldPosition(targets[i]);
                     transform->SetWorldRotation(rotations[i]);
+                    if (std::abs(glm::dot(transform->GetWorldRotation(), rotations[i])) < 1.0f - 2e-5f)
+                        throw std::runtime_error("authored world rotation was not resolved against its parent");
                 } else {
                     store.SetCachedWorldPoseFromPhysics(transform->GetECSHandle().index, targets[i], rotations[i],
                                                         true);
                 }
+            }
+            // Authored rotation resolves at the setter. Subsequent parent writes
+            // affect the child, while solver world rotations stay pinned.
+            auto expectedRotations = rotations;
+            if (authored) {
+                for (size_t i = 0; i < objects.size(); ++i)
+                    expectedRotations[i] = objects[i]->GetTransform()->GetWorldRotation();
             }
             if (store.EndFrameCache() == authored)
                 throw std::runtime_error("frame publication lost mutation origin");
             for (size_t i = 0; i < objects.size(); ++i) {
                 const auto *transform = objects[i]->GetTransform();
                 if (glm::length(transform->GetWorldPosition() - targets[i]) > 2e-5f ||
-                    std::abs(glm::dot(transform->GetWorldRotation(), rotations[i])) < 1.0f - 2e-5f)
+                    std::abs(glm::dot(transform->GetWorldRotation(), expectedRotations[i])) < 1.0f - 2e-5f)
                     throw std::runtime_error("world pose depends on frame-cache write order");
             }
             const glm::vec3 expectedFollower = objects[0]->GetTransform()->TransformPoint(glm::vec3(1, 2, 3));

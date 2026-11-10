@@ -142,6 +142,13 @@ def _cds_slots(targets: Sequence, class_id: int):
     return _get_np().asarray(packed, dtype='uint32').reshape(-1, 2)
 
 
+def _native_field_batch(targets, prop_name):
+    """Ask a declared field for its native storage route once per operation."""
+    descriptor = getattr(type(targets[0]), prop_name, None)
+    create = getattr(descriptor, 'create_field_batch', None)
+    return create(targets) if create is not None else None
+
+
 # ── ComponentDataStore fast path ────────────────────────────────────────
 
 def _try_cds_gather(targets: Sequence, prop_name: str):
@@ -252,6 +259,9 @@ def create_component_batch_handle(targets: Sequence, prop: Any) -> ComponentFiel
 
     prop_name = _resolve_property_name(prop)
     _validate_targets(targets)
+    native = _native_field_batch(targets, prop_name)
+    if native is not None:
+        return native
     cls = type(targets[0])
     info = get_class_info(cls)
     if info is None:
@@ -430,7 +440,10 @@ def batch_read(targets: Sequence, prop: Any = None) -> NDArray:
             f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
         )
 
-    # Try CDS C++ fast path for InxComponent numeric fields.
+    # Native property fields own their route; they must not read a CDS mirror.
+    native = _native_field_batch(targets, prop_name)
+    if native is not None:
+        return native.read()
     result = _try_cds_gather(targets, prop_name)
     if result is not None:
         return result
@@ -487,7 +500,10 @@ def batch_write(targets: Sequence, data: NDArray, prop: Any = None):
             f"Supported: {sorted(_TRANSFORM_ALL_PROPS)}"
         )
 
-    # Try CDS C++ fast path for InxComponent numeric fields.
+    native = _native_field_batch(targets, prop_name)
+    if native is not None:
+        native.write(data)
+        return
     data = _prepare_component_data(targets, data, prop_name)
     if _try_cds_scatter(targets, data, prop_name):
         return

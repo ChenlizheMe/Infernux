@@ -15,15 +15,15 @@ class MaterialLoader final : public IAssetLoader
     }
     bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
                 AssetDatabase *adb) override;
+    void OnPublished(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb) override;
+    void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
     [[nodiscard]] size_t EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const override;
     std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) override;
 
-    void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                    InxResourceMeta &metaData) const override;
+    void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const override;
 
   private:
     static bool PrepareDocument(class InxMaterial &staged, const std::string &filePath, AssetDatabase *adb);
-    static void RegisterDependencies(const std::string &materialGuid, const class InxMaterial &mat, AssetDatabase *adb);
 };
 
 } // namespace infernux

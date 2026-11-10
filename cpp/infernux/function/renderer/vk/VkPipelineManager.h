@@ -33,6 +33,8 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include "VkTypes.h"
 #include <string>
 #include <unordered_map>
@@ -173,7 +175,7 @@ class VkPipelineManager
 {
   public:
     VkPipelineManager() = default;
-    ~VkPipelineManager();
+    INFERNUX_VULKAN_BACKEND_API ~VkPipelineManager();
 
     // Non-copyable, movable
     VkPipelineManager(const VkPipelineManager &) = delete;
@@ -189,12 +191,12 @@ class VkPipelineManager
      * @brief Initialize the pipeline manager
      * @param device Vulkan device handle
      */
-    void Initialize(VkDevice device);
+    INFERNUX_VULKAN_BACKEND_API void Initialize(VkDevice device);
 
     /**
      * @brief Cleanup all managed resources
      */
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
     /// @brief Check if initialized
     [[nodiscard]] bool IsValid() const
@@ -212,7 +214,7 @@ class VkPipelineManager
      * @param code SPIR-V bytecode
      * @return Shader module handle, or VK_NULL_HANDLE on failure
      */
-    [[nodiscard]] VkShaderModule CreateShaderModule(const std::vector<uint32_t> &code);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkShaderModule CreateShaderModule(const std::vector<uint32_t> &code);
 
     /**
      * @brief Load a shader module from file
@@ -225,7 +227,7 @@ class VkPipelineManager
     /**
      * @brief Destroy a shader module
      */
-    void DestroyShaderModule(VkShaderModule module);
+    INFERNUX_VULKAN_BACKEND_API void DestroyShaderModule(VkShaderModule module);
 
     // ========================================================================
     // Render Pass Management
@@ -320,17 +322,6 @@ class VkPipelineManager
      * @brief Destroy a descriptor set layout
      */
     void DestroyDescriptorSetLayout(VkDescriptorSetLayout layout);
-
-    // ========================================================================
-    // Standard Vertex Input Configurations
-    // ========================================================================
-
-    /**
-     * @brief Get standard vertex input for 3D mesh rendering
-     *
-     * Layout: position (vec3), normal (vec3), texCoord (vec2)
-     */
-    [[nodiscard]] static VertexInputConfig GetStandardMeshVertexInput();
 
   private:
     // ========================================================================

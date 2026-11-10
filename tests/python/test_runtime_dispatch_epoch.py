@@ -249,7 +249,7 @@ def test_direct_lifecycle_entry_requires_a_published_epoch_descriptor():
         probe._call_fixed_update(0.1)
         probe._call_late_update(0.1)
         descriptor = current_runtime_epoch().require_descriptor(DirectEntryProbe)
-        assert len(descriptor.phase_invokers) == 5
+        assert len(descriptor.phase_invokers) == 6
         descriptor.phase_invokers[3](probe, 0.2)
         descriptor.phase_invokers[4](probe, 0.3)
         assert extra_calls == [("static", 0.2), (DirectEntryProbe, 0.3)]

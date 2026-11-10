@@ -2,19 +2,28 @@
 
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
-#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
+#include <function/resources/InxTexture/TextureDecoder.h>
 #include <platform/filesystem/InxPath.h>
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 
 namespace infernux
 {
+void TextureLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
+{
+    const auto texture = payload.Get<InxTexture>();
+    texture->SetFilePath(filePath);
+    const auto subasset = filePath.find("::subtex:");
+    if (subasset == std::string::npos)
+        texture->SetName(FromFsPath(ToFsPath(filePath).stem()));
+}
+
 namespace
 {
 struct TextureArtifactInputs
@@ -41,56 +50,60 @@ TextureArtifactInputs ResolveArtifactInputs(const std::string &filePath, const s
     return {metadata->GetDataAs<std::string>("content_hash"), artifactPath};
 }
 
-std::string ReadArtifactBytes(const std::string &artifactPath)
+std::string SourceExtension(const std::string &path)
 {
-    std::ifstream artifactFile(ToFsPath(artifactPath), std::ios::binary | std::ios::ate);
-    if (!artifactFile.is_open())
-        throw std::runtime_error("failed to open texture artifact");
-    const auto artifactSize = artifactFile.tellg();
-    if (artifactSize <= 0)
-        throw std::runtime_error("texture artifact is empty");
-    std::string bytes(static_cast<size_t>(artifactSize), '\0');
-    artifactFile.seekg(0);
-    artifactFile.read(bytes.data(), artifactSize);
-    if (!artifactFile)
-        throw std::runtime_error("failed to read texture artifact");
-    return bytes;
+    auto extension = FromFsPath(ToFsPath(path).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char value) { return std::tolower(value); });
+    return extension;
 }
+
 } // namespace
 
 // =============================================================================
 // CreateMeta — texture-specific .meta creation (dimensions, format)
 // =============================================================================
 
-void TextureLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
-                               InxResourceMeta &metaData) const
+void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
-    metaData.Init(content, contentSize, filePath, ResourceType::Texture);
-
-    std::filesystem::path path = ToFsPath(filePath);
-    std::string extension = FromFsPath(path.extension());
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-    const bool isTextVolume = extension == ".inxvfield" || extension == ".inxsdf";
-    const bool isSvg = extension == ".svg";
+    const auto extension = SourceExtension(source.Path());
+    const bool isRaster = extension != ".inxvfield" && extension != ".inxsdf" && extension != ".svg";
+    const bool sequential = source.IsSequential();
+    const auto content = isRaster && !sequential ? source.Bytes() : std::string_view{};
+    CreateSourceMeta(source, metaData);
 
     // Get image dimensions without fully loading the pixel data
     int width = 0, height = 0, channels = 0;
-    const auto *fileBytes = reinterpret_cast<const unsigned char *>(content);
-    if (!isTextVolume && !isSvg && fileBytes && contentSize > 0 &&
-        contentSize <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
-        stbi_info_from_memory(fileBytes, static_cast<int>(contentSize), &width, &height, &channels)) {
-        metaData.AddMetadata("width", width);
-        metaData.AddMetadata("height", height);
-        metaData.AddMetadata("channels", channels);
-    } else if (!isTextVolume && !isSvg && fileBytes && contentSize > 0) {
-        InxTextureData pnmInfo = InxTextureLoader::LoadFromMemory(fileBytes, contentSize, filePath);
-        if (pnmInfo.IsValid()) {
-            metaData.AddMetadata("width", pnmInfo.width);
-            metaData.AddMetadata("height", pnmInfo.height);
-            metaData.AddMetadata("channels", pnmInfo.channels);
+    const auto *fileBytes = reinterpret_cast<const unsigned char *>(content.data());
+    if (sequential) {
+        const auto info = TextureDecoder::ReadSequentialSourceInfo(source);
+        if (!info.width)
+            throw std::runtime_error("texture source changed during metadata preparation");
+        metaData.AddMetadata("width", static_cast<int>(info.width));
+        metaData.AddMetadata("height", static_cast<int>(info.height));
+        if (info.channels)
+            metaData.AddMetadata("channels", static_cast<int>(info.channels));
+    } else if (!content.empty() && content.size() <= static_cast<size_t>(std::numeric_limits<int>::max())) {
+        if (stbi_info_from_memory(fileBytes, static_cast<int>(content.size()), &width, &height, &channels)) {
+            metaData.AddMetadata("width", width);
+            metaData.AddMetadata("height", height);
+            metaData.AddMetadata("channels", channels);
+        } else if (const auto info = detail::ReadPnmInfo(content); info.width) {
+            metaData.AddMetadata("width", static_cast<int>(info.width));
+            metaData.AddMetadata("height", static_cast<int>(info.height));
+            metaData.AddMetadata("channels", static_cast<int>(info.channels));
         }
     }
+}
 
+void TextureLoader::CreateSourceMeta(AssetSource &source, InxResourceMeta &metaData, bool identityOnly)
+{
+    if (identityOnly || source.IsSequential())
+        metaData.InitSourceIdentity(source.Path(), ResourceType::Texture);
+    else
+        metaData.InitFromSource(source, ResourceType::Texture);
+
+    const auto extension = SourceExtension(source.Path());
     metaData.AddMetadata("file_type", std::string("texture"));
     metaData.AddMetadata("file_extension", extension);
 
@@ -99,6 +112,7 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
         {".svg", "SVG"},
         {".jpg", "JPEG"},
         {".jpeg", "JPEG"},
+        {".jpe", "JPEG"},
         {".bmp", "BMP"},
         {".tga", "TGA"},
         {".gif", "GIF"},
@@ -113,9 +127,9 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
     };
     auto fmtIt = formatMap.find(extension);
     metaData.AddMetadata("source_container", fmtIt != formatMap.end() ? fmtIt->second : std::string("Unknown"));
-    metaData.AddMetadata("is_binary", !isTextVolume && !isSvg);
+    metaData.AddMetadata("is_binary", extension != ".inxvfield" && extension != ".inxsdf" && extension != ".svg");
 
-    metaData.AddMetadata("file_size", contentSize);
+    metaData.AddMetadata("file_size", static_cast<size_t>(source.Size()));
 }
 
 // =============================================================================
@@ -138,16 +152,16 @@ RuntimeAssetPayload TextureLoader::Load(const std::string &filePath, const std::
     return texture;
 }
 
-RuntimeAssetPayload TextureLoader::LoadStaging(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
-{
-    const TextureArtifactInputs artifact = ResolveArtifactInputs(filePath, guid, adb);
-    return std::const_pointer_cast<TextureCpuData>(
-        TextureArtifact::Deserialize(ReadArtifactBytes(artifact.artifactPath), artifact.sourceHash));
-}
-
 // =============================================================================
 // Reload — refresh import settings in-place (pointer identity preserved)
 // =============================================================================
+
+std::shared_ptr<const TextureCpuData> TextureLoader::ReadPixels(const std::string &filePath, const std::string &guid,
+                                                                AssetDatabase *adb)
+{
+    const auto artifact = ResolveArtifactInputs(filePath, guid, adb);
+    return TextureArtifact::Read(artifact.artifactPath, artifact.sourceHash);
+}
 
 bool TextureLoader::Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
                            AssetDatabase *adb)

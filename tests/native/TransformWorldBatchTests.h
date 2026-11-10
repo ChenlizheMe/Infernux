@@ -196,9 +196,9 @@ inline void TestTransformWorldBatchPublication(infernux::Scene &scene)
                 throw std::runtime_error("provisional descendant dirtiness hid its real world commit");
         }
     }
-    // Local ancestor writes must not invalidate a descendant's still-explicit
-    // world rotation or its authored Euler representation, including gimbal
-    // representations for which quaternion round-tripping loses information.
+    // Authored Euler writes resolve to a local pose immediately. A later local
+    // ancestor write moves that pose; writing the child last retains its exact
+    // authored representation, including non-canonical/gimbal Euler values.
     auto *localParent = scene.CreateGameObject("BatchMixedLocalParent");
     auto *worldChild = scene.CreateGameObject("BatchMixedWorldChild");
     worldChild->SetParent(localParent, false);
@@ -219,15 +219,22 @@ inline void TestTransformWorldBatchPublication(infernux::Scene &scene)
                     else
                         transform->SetLocalTRS(glm::vec3(3, -2, 4), localEuler, glm::vec3(1.25f));
                 };
-                if (worldFirst)
+                glm::quat childLocal;
+                if (worldFirst) {
                     writeWorld();
+                    childLocal = worldChild->GetTransform()->GetLocalRotation();
+                }
                 writeLocal();
                 if (!worldFirst)
                     writeWorld();
+                const glm::quat expectedRotation = worldFirst
+                    ? localParent->GetTransform()->GetWorldRotation() * childLocal : rotation(target);
                 const auto checkMixed = [&] {
-                    if (!sameRotation(worldChild->GetTransform()->GetWorldRotation(), rotation(target)) ||
-                        glm::length(worldChild->GetTransform()->GetWorldEulerAngles() - target) > 1e-4f)
-                        throw std::runtime_error("local ancestor write invalidated an explicit world Euler target");
+                    const auto actualEuler = worldChild->GetTransform()->GetWorldEulerAngles();
+                    if (!sameRotation(worldChild->GetTransform()->GetWorldRotation(), expectedRotation) ||
+                        (worldFirst ? !sameRotation(rotation(actualEuler), expectedRotation)
+                                    : glm::length(actualEuler - target) > 1e-4f))
+                        throw std::runtime_error("authored Euler write changed across parent update/publication");
                 };
                 checkMixed();
                 (void)store.EndFrameCache();
@@ -253,7 +260,7 @@ inline void TestTransformWorldBatchPublication(infernux::Scene &scene)
         }
     }
 
-    // A no-op quaternion override still pins the current world rotation, but
+    // A no-op quaternion write preserves the current world rotation and
     // must preserve both the target's and inherited descendants' authored
     // Euler representations. Half-turn quaternions normalize bit-exactly.
     auto *noopParent = scene.CreateGameObject("BatchNoopEulerParent");

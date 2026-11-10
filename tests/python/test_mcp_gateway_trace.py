@@ -27,7 +27,6 @@ def gateway(tmp_path):
     (tmp_path / "Assets").mkdir()
     transport = GatewayRecorder()
     adapter.register_gateways(transport, str(tmp_path), {
-        "profile": "global_validation", "granted_capabilities": ["session.*"],
         "session": {"managed_checkpoints_required": False},
         "features": {"trace_recorder": True, "session_call_log": True},
     })
@@ -154,20 +153,6 @@ def test_trace_and_session_log_redact_secrets_on_every_route(gateway, route, fai
     assert secret not in json.dumps(log)
     assert len([step for step in saved["steps"] if step["operation"] == name]) == 1
     assert len([step for step in log["entries"] if step.get("operation") == name]) == 1
-
-
-@pytest.mark.parametrize("route", ["direct", "batch", "job"])
-def test_permission_failures_are_recorded_without_running_handler(gateway, route):
-    tools, project = gateway
-    def forbidden():
-        pytest.fail("permission-denied handler ran")
-    name = "test.trace.forbidden"
-    adapter._registry.register(operation(name, OperationKind.QUERY, "Denied operation", forbidden, capability="denied.read"))
-    start(tools)
-    result = invoke(tools, route, name, {})
-    assert result["ok"] is False and result["error"]["code"] == "operation.permission_denied"
-    matching = [step for step in stop(tools, project)["steps"] if step["operation"] == name]
-    assert len(matching) == 1 and matching[0]["ok"] is False
 
 
 @pytest.mark.parametrize("origin", ["outside_attempt", "capacity", "shutdown"])

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <core/math/DepthConvention.h>
+#include <core/math/ViewportRect.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <limits>
@@ -61,6 +62,16 @@ constexpr float MinAperture = 0.7f;
 constexpr float MaxAperture = 32.0f;
 constexpr int MinBladeCount = 3;
 constexpr int MaxBladeCount = 11;
+
+glm::uvec2 MemoryOutputPixels(const glm::vec2 &size)
+{
+    const double width = std::round(static_cast<double>(size.x));
+    const double height = std::round(static_cast<double>(size.y));
+    constexpr double limit = std::numeric_limits<int32_t>::max();
+    if (!(width >= 1 && width <= limit && height >= 1 && height <= limit))
+        throw std::invalid_argument("Camera memory output requires positive pixel dimensions");
+    return {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+}
 
 struct SensorPreset
 {
@@ -169,7 +180,7 @@ SemanticTypeDescriptor DescribeCamera()
     // Keep the semantic catalog's default in lockstep with the actual C++
     // object rather than inheriting the first enum member (None).
     type.fields.back().attributes["default"]["name"] = "Horizontal";
-    add("aspect_ratio", "aspectRatio", "FLOAT", 16.0 / 9.0);
+    add("rect", "rect", "VEC4", {0.0, 0.0, 1.0, 1.0})["document_required"] = false;
     add("orthographic_size", "orthoSize", "FLOAT", 5.0);
     auto &nearClip = add("near_clip", "nearClip", "FLOAT", 0.01);
     nearClip["header"] = "camera.section.clipping";
@@ -191,12 +202,17 @@ SemanticTypeDescriptor DescribeCamera()
     stopNaNs["header"] = "camera.section.output";
     stopNaNs["document_required"] = false;
     add("dithering", "dithering", "BOOL", false)["document_required"] = false;
+    add("render_to_texture", "renderToTexture", "BOOL", false)["document_required"] = false;
+    add("render_on_demand", "renderOnDemand", "BOOL", false)["document_required"] = false;
     auto &target = add("target_texture", "targetTextureGuid", "ASSET",
                        {{"$type", "asset_ref"}, {"asset_type", "RenderTexture"}, {"guid", ""}});
     target["asset_type"] = "RenderTexture";
     target["document_required"] = false;
     target["nullable"] = true;
     target["setter_owns_document_shape"] = true;
+    auto &size = add("memory_output_size", "memoryOutputSize", "VEC2", {128, 96});
+    size["document_required"] = false;
+    size["setter_owns_document_shape"] = true;
     return type;
 }
 
@@ -367,7 +383,92 @@ void Camera::SetAspectRatio(float aspect)
 {
     RequirePositive(aspect, "aspectRatio");
     m_aspectRatio = std::max(0.01f, aspect);
+    m_hasCustomAspectRatio = true;
     m_projectionDirty = true;
+}
+
+void Camera::ResetAspectRatio()
+{
+    m_hasCustomAspectRatio = false;
+    m_aspectRatio = m_automaticAspectRatio;
+    m_projectionDirty = true;
+}
+
+void Camera::UpdateAutomaticAspectRatio(float aspect)
+{
+    RequirePositive(aspect, "viewportAspectRatio");
+    m_outputAspectRatio = aspect;
+    RefreshViewportAspect();
+}
+
+void Camera::RefreshViewportAspect()
+{
+    const auto rect = ClipViewportRect(m_rect);
+    m_automaticAspectRatio = rect.w > 0 ? m_outputAspectRatio * rect.z / rect.w : 0.0f;
+    if (!m_hasCustomAspectRatio && m_aspectRatio != m_automaticAspectRatio) {
+        m_aspectRatio = m_automaticAspectRatio;
+        m_projectionDirty = true;
+        m_inverseRayProjectionDirty = true;
+    }
+}
+
+glm::vec2 Camera::GetOutputDimensions() const
+{
+    if (const auto target = GetOutputTexture()) {
+        if (const auto allocation = target->Acquire())
+            return glm::vec2(allocation->width, allocation->height);
+    }
+    return glm::vec2(m_screenWidth, m_screenHeight);
+}
+
+void Camera::SetRect(const glm::vec4 &rect)
+{
+    for (int index = 0; index < 4; ++index)
+        if (!std::isfinite(rect[index]))
+            throw std::invalid_argument("Camera.rect must contain finite values");
+    if (m_rect == rect)
+        return;
+    const bool wasVisible = GetPixelWidth() != 0 && GetPixelHeight() != 0;
+    m_rect = rect;
+    RefreshViewportAspect();
+    ResetHistory();
+    if (wasVisible != (GetPixelWidth() != 0 && GetPixelHeight() != 0))
+        InvalidateOutput();
+}
+
+glm::vec4 Camera::GetPixelRect() const
+{
+    const auto size = GetOutputDimensions();
+    const auto rect = ClipViewportRect(m_rect);
+    return glm::vec4(glm::vec2(rect) * size, glm::vec2(rect.z, rect.w) * size);
+}
+
+void Camera::SetPixelRect(const glm::vec4 &rect)
+{
+    const auto size = GetOutputDimensions();
+    if (size.x <= 0 || size.y <= 0)
+        throw std::invalid_argument("Camera.pixel_rect requires nonzero output dimensions");
+    SetRect(glm::vec4(rect.x / size.x, rect.y / size.y, rect.z / size.x, rect.w / size.y));
+}
+
+uint32_t Camera::GetPixelWidth() const
+{
+    return static_cast<uint32_t>(std::round(GetPixelRect().z));
+}
+
+uint32_t Camera::GetPixelHeight() const
+{
+    return static_cast<uint32_t>(std::round(GetPixelRect().w));
+}
+
+void Camera::SetScreenDimensions(uint32_t width, uint32_t height)
+{
+    if (m_screenWidth == width && m_screenHeight == height)
+        return;
+    m_screenWidth = width;
+    m_screenHeight = height;
+    if (width && height)
+        UpdateAutomaticAspectRatio(static_cast<float>(width) / height);
 }
 
 void Camera::SetOrthographicSize(float size)
@@ -422,7 +523,8 @@ nlohmann::json Camera::SerializeDocument() const
     j["sensorSize"] = {m_sensorSize.x, m_sensorSize.y};
     j["lensShift"] = {m_lensShift.x, m_lensShift.y};
     j["gateFit"] = static_cast<int>(m_gateFit);
-    j["aspectRatio"] = m_aspectRatio;
+    // Aspect belongs to the live output or script override, not author data.
+    j["rect"] = {m_rect.x, m_rect.y, m_rect.z, m_rect.w};
     j["orthoSize"] = m_orthoSize;
     j["nearClip"] = m_nearClip;
     j["farClip"] = m_farClip;
@@ -433,6 +535,9 @@ nlohmann::json Camera::SerializeDocument() const
     j["dithering"] = m_dithering;
     j["stopNaNs"] = m_stopNaNs;
     j["targetTextureGuid"] = m_targetTextureGuid;
+    j["renderToTexture"] = m_renderToTexture;
+    j["renderOnDemand"] = m_renderOnDemand;
+    j["memoryOutputSize"] = {m_memoryOutputSize.x, m_memoryOutputSize.y};
 
     return j;
 }
@@ -453,7 +558,6 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     const int bladeCount = RequireInteger(j, "bladeCount", "Camera");
     const float barrelClipping = RequireFiniteFloat(j, "barrelClipping", "Camera");
     const float anamorphism = RequireFiniteFloat(j, "anamorphism", "Camera");
-    const float aspectRatio = RequireFiniteFloat(j, "aspectRatio", "Camera");
     const float orthoSize = RequireFiniteFloat(j, "orthoSize", "Camera");
     const float nearClip = RequireFiniteFloat(j, "nearClip", "Camera");
     const float farClip = RequireFiniteFloat(j, "farClip", "Camera");
@@ -481,12 +585,17 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     RequirePositive(j["sensorSize"][1].get<float>(), "sensorSize.y");
     RequireGateFit(RequireInteger(j, "gateFit", "Camera"));
     RequirePositive(orthoSize, "orthoSize");
-    if (aspectRatio < 0.01f)
-        throw std::invalid_argument("Camera.aspectRatio must be at least 0.01");
     RequireClipPlanes(nearClip, farClip);
     if (cullingMask > std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("Camera.cullingMask exceeds 32 bits");
     RequireClearFlags(clearFlags);
+    if (const auto size = j.find("memoryOutputSize"); size != j.end())
+        (void)MemoryOutputPixels({(*size)[0].get<float>(), (*size)[1].get<float>()});
+    if (j.contains("rect")) {
+        for (const auto &entry : j["rect"])
+            if (!entry.is_number() || !std::isfinite(entry.get<float>()))
+                throw std::invalid_argument("Camera.rect must contain finite values");
+    }
 }
 
 bool Camera::DeserializeDocument(const nlohmann::json &j)
@@ -511,7 +620,9 @@ bool Camera::DeserializeDocument(const nlohmann::json &j)
         m_sensorSize = glm::vec2(j["sensorSize"][0].get<float>(), j["sensorSize"][1].get<float>());
         m_lensShift = glm::vec2(j["lensShift"][0].get<float>(), j["lensShift"][1].get<float>());
         m_gateFit = static_cast<PhysicalGateFit>(j["gateFit"].get<int>());
-        m_aspectRatio = j["aspectRatio"].get<float>();
+        const auto rect = j.value("rect", json::array({0.0, 0.0, 1.0, 1.0}));
+        m_rect = glm::vec4(rect[0].get<float>(), rect[1].get<float>(), rect[2].get<float>(), rect[3].get<float>());
+        RefreshViewportAspect();
         m_orthoSize = j["orthoSize"].get<float>();
         m_nearClip = j["nearClip"].get<float>();
         m_farClip = j["farClip"].get<float>();
@@ -523,7 +634,12 @@ bool Camera::DeserializeDocument(const nlohmann::json &j)
                                       background[2].get<float>(), background[3].get<float>());
         m_dithering = j.value("dithering", false);
         m_stopNaNs = j.value("stopNaNs", false);
+        const auto size = j.find("memoryOutputSize");
+        SetMemoryOutputSize(size == j.end() ? glm::vec2(128, 96)
+                                            : glm::vec2((*size)[0].get<float>(), (*size)[1].get<float>()));
         SetTargetTextureGuid(j.value("targetTextureGuid", std::string{}));
+        SetRenderToTexture(j.value("renderToTexture", false));
+        SetRenderOnDemand(j.value("renderOnDemand", false));
         m_projectionDirty = true;
 
         return true;
@@ -685,6 +801,8 @@ void Camera::ResetProjectionMatrix()
 
 const glm::dmat4 &Camera::GetInverseRayProjection(float aspect) const
 {
+    if (m_hasCustomAspectRatio)
+        aspect = m_aspectRatio;
     const auto projection = GetProjectionMatrix();
     if (m_inverseRayProjectionDirty || m_rayProjectionAspect != aspect) {
         // Explicit viewport dimensions change the default aspect only; an
@@ -730,8 +848,13 @@ glm::vec3 Camera::ScreenToWorldPoint(const glm::vec2 &screenPos, float depth) co
     // Normalise screen coords to NDC [-1, 1]
     // Vulkan uses top-left origin → invert Y in projection (already done),
     // so we keep standard NDC conversion here.
-    float ndcX = (2.0f * screenPos.x / static_cast<float>(m_screenWidth)) - 1.0f;
-    float ndcY = (2.0f * screenPos.y / static_cast<float>(m_screenHeight)) - 1.0f;
+    const auto rect = GetPixelRect();
+    const auto output = GetOutputDimensions();
+    if (rect.z <= 0 || rect.w <= 0)
+        throw std::invalid_argument("Camera unprojection requires a non-empty viewport");
+    const float top = output.y - rect.y - rect.w;
+    float ndcX = (2.0f * (screenPos.x - rect.x) / rect.z) - 1.0f;
+    float ndcY = (2.0f * (screenPos.y - top) / rect.w) - 1.0f;
 
     // Vulkan depth range [0, 1] — depth parameter is already in this range
     float ndcZ = depth;
@@ -765,15 +888,18 @@ glm::vec2 Camera::WorldToScreenPoint(const glm::vec3 &worldPos) const
     glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
 
     // NDC → top-left screen coordinates (projection already contains Y-flip).
-    float screenX = (ndc.x + 1.0f) * 0.5f * static_cast<float>(m_screenWidth);
-    float screenY = (ndc.y + 1.0f) * 0.5f * static_cast<float>(m_screenHeight);
+    const auto rect = GetPixelRect();
+    const float top = GetOutputDimensions().y - rect.y - rect.w;
+    float screenX = rect.x + (ndc.x + 1.0f) * 0.5f * rect.z;
+    float screenY = top + (ndc.y + 1.0f) * 0.5f * rect.w;
 
     return glm::vec2(screenX, screenY);
 }
 
 std::pair<glm::vec3, glm::vec3> Camera::ScreenPointToRay(const glm::vec2 &screenPos) const
 {
-    return ScreenPointToRay(screenPos, static_cast<float>(m_screenWidth), static_cast<float>(m_screenHeight));
+    const auto dimensions = GetOutputDimensions();
+    return ScreenPointToRay(screenPos, dimensions.x, dimensions.y);
 }
 
 std::pair<glm::vec3, glm::vec3> Camera::ScreenPointToRay(const glm::vec2 &screenPos, float viewportWidth,
@@ -783,9 +909,14 @@ std::pair<glm::vec3, glm::vec3> Camera::ScreenPointToRay(const glm::vec2 &screen
     RequirePositive(viewportHeight, "ray viewport height");
     if (!m_gameObject)
         throw std::logic_error("Camera ray requires an attached camera");
-    const auto &inverse = GetInverseRayProjection(viewportWidth / viewportHeight);
-    const double x = 2.0 * screenPos.x / viewportWidth - 1.0;
-    const double y = 2.0 * screenPos.y / viewportHeight - 1.0;
+    const auto rect = ClipViewportRect(m_rect);
+    const double width = viewportWidth * rect.z;
+    const double height = viewportHeight * rect.w;
+    if (width <= 0 || height <= 0)
+        throw std::invalid_argument("Camera ray requires a non-empty viewport");
+    const auto &inverse = GetInverseRayProjection(static_cast<float>(width / height));
+    const double x = 2.0 * (screenPos.x - viewportWidth * rect.x) / width - 1.0;
+    const double y = 2.0 * (screenPos.y - viewportHeight * (1.0 - rect.y - rect.w)) / height - 1.0;
     const glm::dvec4 nearH = inverse * glm::dvec4(x, y, depth::Near, 1.0);
     const glm::dvec4 middleH = inverse * glm::dvec4(x, y, 0.5, 1.0);
     if (nearH.w == 0.0 || middleH.w == 0.0)
@@ -833,8 +964,45 @@ void Camera::AssignTargetTexture(std::shared_ptr<rhi::RenderTexture> target, con
             graph.AddRuntimeDependency(GetInstanceGuid(), guid);
         m_targetTextureGuid = guid;
     }
+    if (target || !guid.empty())
+        m_memoryOutputTexture.reset();
     m_targetTexture = std::move(target);
+    const auto outputSize = GetOutputDimensions();
+    if (outputSize.y > 0)
+        UpdateAutomaticAspectRatio(outputSize.x / outputSize.y);
     InvalidateOutput();
+}
+
+void Camera::SetRenderToTexture(bool enabled)
+{
+    if (m_renderToTexture == enabled)
+        return;
+    m_renderToTexture = enabled;
+    m_requestedRenderSerials = {};
+    if (!enabled)
+        m_memoryOutputTexture.reset();
+    ResetHistory();
+    InvalidateOutput();
+}
+
+void Camera::SetRenderOnDemand(bool enabled) noexcept
+{
+    if (m_renderOnDemand == enabled)
+        return;
+    m_renderOnDemand = enabled;
+    m_requestedRenderSerials = {};
+}
+
+void Camera::SetMemoryOutputSize(const glm::vec2 &size)
+{
+    const auto pixels = MemoryOutputPixels(size);
+    if (m_memoryOutputSize == pixels)
+        return;
+    m_memoryOutputSize = pixels;
+    if (WantsMemoryOutput()) {
+        ResetHistory();
+        InvalidateOutput();
+    }
 }
 
 void Camera::OnTargetTextureAssetChanged(bool deleted)
@@ -876,11 +1044,20 @@ std::unique_ptr<Component> Camera::Clone() const
     clone->m_lensShift = m_lensShift;
     clone->m_gateFit = m_gateFit;
     clone->m_aspectRatio = m_aspectRatio;
+    clone->m_automaticAspectRatio = m_automaticAspectRatio;
+    clone->m_outputAspectRatio = m_outputAspectRatio;
+    clone->m_rect = m_rect;
+    clone->m_hasCustomAspectRatio = m_hasCustomAspectRatio;
     clone->m_orthoSize = m_orthoSize;
     clone->m_nearClip = m_nearClip;
     clone->m_farClip = m_farClip;
     clone->m_depth = m_depth;
     clone->m_cullingMask = m_cullingMask;
+    clone->m_screenWidth = m_screenWidth;
+    clone->m_screenHeight = m_screenHeight;
+    clone->m_memoryOutputSize = m_memoryOutputSize;
+    clone->m_renderToTexture = m_renderToTexture;
+    clone->m_renderOnDemand = m_renderOnDemand;
     clone->AssignTargetTexture(m_targetTexture, m_targetTextureGuid);
     clone->m_projectionOverride = m_projectionOverride;
     clone->m_viewOverride = m_viewOverride;
@@ -890,8 +1067,6 @@ std::unique_ptr<Component> Camera::Clone() const
     clone->m_backgroundColor = m_backgroundColor;
     clone->m_dithering = m_dithering;
     clone->m_stopNaNs = m_stopNaNs;
-    clone->m_screenWidth = m_screenWidth;
-    clone->m_screenHeight = m_screenHeight;
     return clone;
 }
 

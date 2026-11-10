@@ -294,7 +294,12 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             StorageBufferInfo info;
             info.binding = compiler.get_decoration(buffer.id, spv::DecorationBinding);
             info.set = compiler.get_decoration(buffer.id, spv::DecorationDescriptorSet);
-            info.name = compiler.get_name(buffer.base_type_id);
+            // An instantiated block is bound by its shader variable, including
+            // ShaderInfo Resources generated blocks. A block without an instance
+            // exposes only its declared block name.
+            info.name = compiler.get_name(buffer.id);
+            if (info.name.empty())
+                info.name = compiler.get_name(buffer.base_type_id);
             if (info.name.empty())
                 throw std::runtime_error("Storage buffer interface block at set " + std::to_string(info.set) +
                                          ", binding " + std::to_string(info.binding) + " has no declared name");
@@ -304,6 +309,17 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             const auto accessFlags = compiler.get_buffer_block_flags(buffer.id);
             info.readOnly = accessFlags.get(spv::DecorationNonWritable);
             info.writeOnly = accessFlags.get(spv::DecorationNonReadable);
+            const auto &block = compiler.get_type(buffer.base_type_id);
+            if (block.member_types.size() == 1) {
+                const auto &member = compiler.get_type(block.member_types.front());
+                if (member.width == 32 && member.vecsize == 1 && member.columns == 1 && member.array.size() == 1 &&
+                    member.array_size_literal.front()) {
+                    info.scalarArrayFormat = StageIoFormat(member);
+                    info.arrayMemberOffset = compiler.type_struct_member_offset(block, 0);
+                    info.arrayStride = compiler.type_struct_member_array_stride(block, 0);
+                    info.arrayElementCount = member.array.front();
+                }
+            }
             m_storageBuffers.push_back(info);
         }
 

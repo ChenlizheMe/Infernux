@@ -10,6 +10,34 @@
 namespace infernux::rhi
 {
 
+enum class ComputeScalarType : uint8_t
+{
+    Float32,
+    Int32,
+    UInt32,
+    Int64,
+};
+
+struct ComputeBufferDesc
+{
+    uint64_t elementCount = 0;
+    ComputeScalarType scalarType = ComputeScalarType::Float32;
+    uint8_t lanes = 1;
+
+    [[nodiscard]] uint32_t GetScalarBytes() const noexcept
+    {
+        return scalarType == ComputeScalarType::Int64 ? 8 : 4;
+    }
+    [[nodiscard]] uint32_t GetElementStride() const noexcept
+    {
+        return GetScalarBytes() * lanes;
+    }
+    [[nodiscard]] uint64_t GetByteSize() const noexcept
+    {
+        return elementCount * GetElementStride();
+    }
+};
+
 enum class ShaderStage : uint8_t
 {
     None = 0,
@@ -128,13 +156,14 @@ enum class BindingType : uint8_t
 enum class BufferUsageFlags : uint16_t
 {
     None = 0,
+    // The graph description carries the first five bits through its authoring interface.
     Storage = 1u << 0,
-    Uniform = 1u << 1,
-    Vertex = 1u << 2,
-    Index = 1u << 3,
-    Indirect = 1u << 4,
-    TransferSource = 1u << 5,
-    TransferDestination = 1u << 6,
+    Indirect = 1u << 1,
+    TransferSource = 1u << 2,
+    TransferDestination = 1u << 3,
+    Uniform = 1u << 4,
+    Vertex = 1u << 5,
+    Index = 1u << 6,
 };
 
 [[nodiscard]] constexpr BufferUsageFlags operator|(BufferUsageFlags lhs, BufferUsageFlags rhs) noexcept

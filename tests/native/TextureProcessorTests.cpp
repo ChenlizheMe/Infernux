@@ -180,22 +180,21 @@ int main()
                               infernux::TextureTargetFormat::Rgba32Float}) {
         const std::vector<uint8_t> expected = {255, 136, 0, 17, 34, 68, 102, 255};
         auto texture = MakeRgba8(2, 1, infernux::TextureSemantic::Data, infernux::TextureFormat::Rgba8UNorm, expected);
-        auto options = NoCompression(false);
+        auto options = NoCompression(true);
         options.targetFormat = format;
         const auto processed = infernux::TextureProcessor::Process(std::move(texture), options);
-        const auto decoded = infernux::texture_pixels::ToRgba8(*processed);
-        assert(decoded.mipLevels.front().width == 2 && decoded.bytes == expected);
+        assert(processed->mipLevels.front().width == 2);
+        assert(infernux::texture_pixels::BaseMipRgba8(*processed) == expected);
     }
     for (const auto compression : {infernux::TextureCompression::BC1, infernux::TextureCompression::BC3,
                                    infernux::TextureCompression::BC4, infernux::TextureCompression::BC5}) {
         const std::vector<uint8_t> expected(3 * 5 * 4, 255);
         auto texture = MakeRgba8(3, 5, infernux::TextureSemantic::Data, infernux::TextureFormat::Rgba8UNorm, expected);
-        auto options = NoCompression(false);
+        auto options = NoCompression(true);
         options.compression = compression;
         const auto processed = infernux::TextureProcessor::Process(std::move(texture), options);
-        const auto decoded = infernux::texture_pixels::ToRgba8(*processed);
-        assert(decoded.mipLevels.front().width == 3 && decoded.mipLevels.front().height == 5);
-        assert(decoded.bytes == expected);
+        assert(processed->mipLevels.front().width == 3 && processed->mipLevels.front().height == 5);
+        assert(infernux::texture_pixels::BaseMipRgba8(*processed) == expected);
     }
     std::cout << "Texture processor tests passed\n";
     return 0;

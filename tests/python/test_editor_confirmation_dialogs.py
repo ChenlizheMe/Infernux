@@ -30,7 +30,11 @@ def test_dependency_restart_uses_shared_modal_and_cancelling_save_prevents_resta
     ))
     monkeypatch.setattr(scene, "_is_play_mode", lambda: False)
     dirty = DirtyPanelConfirmationCoordinator.instance()
-    monkeypatch.setattr(dirty, "request_exit", lambda complete, cancel: confirmations.append((complete, cancel)))
+    def request_exit(complete, cancel):
+        confirmations.append((complete, cancel))
+        return True
+
+    monkeypatch.setattr(dirty, "request_exit", request_exit)
     monkeypatch.setattr(infernux_editor, "restart_after_exit", lambda project: restarts.append(project))
     manager = SimpleNamespace(project_root=str(tmp_path), pending_install={"loaded": ["anyio"]})
     coordinator = PluginInstallConfirmationCoordinator(core.modals)
@@ -254,6 +258,10 @@ def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(m
         @staticmethod
         def get_guid_from_path(_path):
             return ""
+
+        @staticmethod
+        def get_deletion_write_paths(paths):
+            return [target for path in paths for target in (path, path + ".meta")]
 
     from infernux.core.assets import AssetManager
 

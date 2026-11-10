@@ -1438,6 +1438,13 @@ def render_py_component(ctx: InxGUIContext, py_comp):
     if _try_custom_py_renderer(ctx, py_comp):
         return
 
+    render_py_component_fields(ctx, py_comp)
+
+
+def render_py_component_fields(ctx: InxGUIContext, py_comp, field_names=None, *, include_hidden=False, render_extra=True):
+    """Reuse standard field widgets/Undo in a custom component Inspector."""
+    if _component_is_passively_retired(py_comp):
+        return
     from infernux.components.fields import get_serialized_fields, FieldType
 
     cache_entry, rebuild_plan, refresh_values = _begin_component_value_cache("py", py_comp)
@@ -1448,8 +1455,11 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         if len(_PY_FIELDS_CACHE) >= 256:
             _PY_FIELDS_CACHE.clear()
         _PY_FIELDS_CACHE[fields_key] = fields
+    if field_names is not None:
+        fields = {name: fields[name] for name in field_names}
     layout = cache_entry.get("py_layout")
-    if rebuild_plan or layout is None:
+    layout_key = tuple(fields)
+    if rebuild_plan or layout is None or cache_entry.get("py_layout_fields") != layout_key:
         layout = {
             "label_width": max_label_w(
                 ctx,
@@ -1457,6 +1467,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             ) if fields else 0.0,
         }
         cache_entry["py_layout"] = layout
+        cache_entry["py_layout_fields"] = layout_key
     lw = layout["label_width"]
     capture_semantics = semantic_capture_enabled(ctx)
     _record_profile_count("bodyPyGenericTotal_count")
@@ -1499,7 +1510,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         if not _group_visible:
             continue
 
-        if getattr(metadata, 'hidden', False):
+        if getattr(metadata, 'hidden', False) and not include_hidden:
             continue
 
         if metadata.visible_when is not None and not metadata.visible_when(py_comp):
@@ -1562,7 +1573,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
 
     _flush()
     extra_renderer = _PY_COMPONENT_EXTRA_RENDERERS.get(py_comp.type_name)
-    if extra_renderer is not None:
+    if render_extra and extra_renderer is not None:
         extra_renderer(ctx, py_comp)
     _record_profile_timing("bodyPyGenericTotal", _py_generic_t0)
 

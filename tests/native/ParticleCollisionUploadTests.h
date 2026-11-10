@@ -4,7 +4,8 @@ bool VerifyParticleCollisionUploads(TestResources &resources, infernux::InxShade
 {
     using namespace infernux;
     constexpr uint32_t staticCount = 513, colliderCount = staticCount + 1;
-    constexpr uint32_t colliderWords = colliderCount * sizeof(particle::GpuParticleColliderRecord) / 4;
+    constexpr uint32_t wordsPerCollider = sizeof(particle::GpuParticleColliderRecord) / sizeof(uint32_t);
+    constexpr uint32_t colliderWords = colliderCount * wordsPerCollider;
     constexpr uint32_t wordCount = 16 + colliderWords + 2 + colliderCount + 12 + 3 + 12;
     constexpr uint64_t byteSize = wordCount * 4;
     auto &device = resources.context.GetRhiDevice();
@@ -52,8 +53,8 @@ bool VerifyParticleCollisionUploads(TestResources &resources, infernux::InxShade
                      owner.executor.Initialize(resources.context, owner.queues, 2),
                  "Collision executor creation failed"))
         return false;
-    const auto code = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
+    const auto code = SpirvWords(compiler.CompileComputeGlsl(
+        "#version 450\n#define COLLIDER_WORD_COUNT " + std::to_string(colliderWords) + "u\n" + R"glsl(
 layout(local_size_x = 64) in;
 layout(std430, set=0, binding=0) readonly buffer Header { uint header[]; };
 layout(std430, set=0, binding=1) readonly buffer Colliders { uint colliders[]; };
@@ -66,7 +67,7 @@ layout(std430, set=0, binding=7) writeonly buffer Output { uint result[]; };
 void main() {
     uint outIndex = gl_GlobalInvocationID.x, i = outIndex;
     if (i < 16u) { result[outIndex] = header[i]; return; } i -= 16u;
-    if (i < 514u * 76u) { result[outIndex] = colliders[i]; return; } i -= 514u * 76u;
+    if (i < COLLIDER_WORD_COUNT) { result[outIndex] = colliders[i]; return; } i -= COLLIDER_WORD_COUNT;
     if (i < 2u) { result[outIndex] = offsets[i]; return; } i -= 2u;
     if (i < 514u) { result[outIndex] = grid[i]; return; } i -= 514u;
     if (i < 12u) { result[outIndex] = vertices[i]; return; } i -= 12u;
@@ -172,7 +173,7 @@ void main() {
             expected[frame].resize(colliderWords);
             std::memcpy(expected[frame].data(), snapshot.staticColliders.data(),
                         staticCount * sizeof(particle::GpuParticleColliderRecord));
-            std::memcpy(expected[frame].data() + staticCount * 76, snapshot.dynamicColliders.data(),
+            std::memcpy(expected[frame].data() + staticCount * wordsPerCollider, snapshot.dynamicColliders.data(),
                         sizeof(particle::GpuParticleColliderRecord));
             if (!Require(vkResetFences(resources.context.GetDevice(), 1, &owner.fences[frame]) == VK_SUCCESS,
                          "Collision fence reset failed"))
@@ -180,8 +181,7 @@ void main() {
             vk::VulkanSubmissionExecutor::ExternalSync sync;
             sync.completionEpoch = epochs[frame] = owner.queues.ReserveCompletionEpoch();
             sync.completionFence = owner.fences[frame];
-            sync.uploadTimeline = owner.gate;
-            sync.uploadTimelineValue = cycle + 1;
+            sync.producers = {{owner.gate, cycle + 1}};
             const auto result = owner.executor.Execute(
                 frame, plan,
                 [&](uint32_t, VkCommandBuffer commands) {

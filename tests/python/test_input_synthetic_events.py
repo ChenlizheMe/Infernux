@@ -389,7 +389,7 @@ def test_synthetic_pointer_click_invokes_python_button_callback(engine, close_ti
             ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
             ctx.set_next_window_size(64.0, 64.0, 0)
             if ctx.begin_window("Synthetic Button Probe###synthetic_button_probe", True, 0):
-                ctx.button("Activate##synthetic_callback", self._on_click)
+                ctx.button("Activate##synthetic_callback", self._on_click, width=40.0)
                 ctx.record_semantic_item("button", "Activate", True, "test.synthetic.button.callback")
             ctx.end_window()
 
@@ -455,7 +455,7 @@ def test_synthetic_pointer_click_invokes_callback_when_events_span_frames(engine
             ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
             ctx.set_next_window_size(64.0, 64.0, 0)
             if ctx.begin_window("Synthetic Split-Frame Button Probe###synthetic_split_frame_button_probe", True, 0):
-                if ctx.button("Activate##synthetic_split_frame_callback"):
+                if ctx.button("Activate##synthetic_split_frame_callback", width=40.0):
                     self.clicks += 1
                 ctx.record_semantic_item("button", "Activate", True, "test.synthetic.button.split_frame_callback")
             ctx.end_window()

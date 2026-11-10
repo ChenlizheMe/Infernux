@@ -36,8 +36,9 @@ class PhysicsMaterialCombine(IntEnum):
 
 
 def _wrap_physic_material_state(state) -> PhysicMaterialRef:
-    guid, native = state
+    guid, native, instance = state
     ref = PhysicMaterialRef(guid=str(guid or ""))
+    ref._is_instance = instance
     if native is not None:
         from infernux.core.physic_material import PhysicMaterial
 
@@ -46,24 +47,22 @@ def _wrap_physic_material_state(state) -> PhysicMaterialRef:
 
 
 def _set_native_physic_material(cpp, value) -> None:
-    if value is None:
-        cpp.physic_material = None
-        return
+    instance = False
     if isinstance(value, PhysicMaterialRef):
-        if value._cached is not None:
-            cpp.physic_material = value._cached.native
-        elif value.guid:
+        if value.guid:
             cpp.physic_material_guid = str(value.guid)
+            return
+        if value._cached is not None:
+            instance = value._is_instance and not value.guid
+            value = value._cached
         else:
-            cpp.physic_material = None
-        return
+            value = None
     from infernux.core.physic_material import PhysicMaterial
     if isinstance(value, PhysicMaterial):
-        cpp.physic_material = value.native
-        return
+        value = value.native
     from infernux.lib import InxPhysicMaterial as NativePhysicMaterial
-    if isinstance(value, NativePhysicMaterial):
-        cpp.physic_material = value
+    if value is None or isinstance(value, NativePhysicMaterial):
+        cpp._set_physic_material_binding(value, instance)
         return
     raise TypeError("physic_material must be PhysicMaterial, PhysicMaterialRef, or None")
 
@@ -76,7 +75,7 @@ def _native_collider_properties(type_name: str):
         CppProperty.from_native(
             type_name,
             "physic_material",
-            native_getter=lambda cpp: (cpp.physic_material_guid, cpp.physic_material),
+            native_getter=lambda cpp: (cpp.physic_material_guid, cpp.physic_material, cpp._material_is_instance),
             get_converter=_wrap_physic_material_state,
             native_setter=_set_native_physic_material,
         ),
@@ -95,6 +94,12 @@ class Collider(BuiltinComponent):
     _cpp_type_name = ""
 
     _component_category_ = "Physics"
+
+    @property
+    def attached_rigidbody(self):
+        """The Rigidbody owning this shape, including a Rigidbody on a parent."""
+        from infernux.lib import _wrap_native_builtin_component
+        return _wrap_native_builtin_component(self._require_cpp_component().attached_rigidbody)
 
     # Always-draw flag inherited by subclasses
     _always_show = False
@@ -118,10 +123,25 @@ class Collider(BuiltinComponent):
         default=PhysicMaterialRef(),
         asset_type="PhysicMaterial",
         tooltip="Shared physics surface material.",
-        native_getter=lambda cpp: (cpp.physic_material_guid, cpp.physic_material),
+        native_getter=lambda cpp: (cpp.physic_material_guid, cpp.physic_material, cpp._material_is_instance),
         get_converter=_wrap_physic_material_state,
         native_setter=_set_native_physic_material,
     )
+
+    @property
+    def material(self):
+        """Private surface material, copied from physic_material on first read.
+
+        physic_material is the shared asset entry (Unity sharedMaterial).
+        material lets this collider change its surface without changing others.
+        Its values remain inside the ordinary Scene/Prefab component document.
+        """
+        from infernux.core.physic_material import PhysicMaterial
+        return PhysicMaterial(self._require_cpp_component().material)
+
+    @material.setter
+    def material(self, value):
+        _set_native_physic_material(self._require_cpp_component(), value)
 
     def raycast(self, origin, direction, max_distance: float = 1000.0):
         """Cast a world-space ray against this collider only."""

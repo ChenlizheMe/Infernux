@@ -59,6 +59,24 @@ static bool MatchesPythonComponentType(const PyComponentProxy &proxy, const py::
     return !requestedGuid.empty() && requestedGuid == proxy.GetTypeGuid();
 }
 
+// One matching rule for direct and hierarchy queries, including abstract native aliases.
+static py::object FindMatchingComponent(GameObject &object, const py::object &requestedType,
+                                        const std::string &typeName)
+{
+    if (typeName == "Transform")
+        return py::cast(object.GetTransform(), py::return_value_policy::reference);
+    for (const auto &component : object.GetAllComponents()) {
+        if (auto *proxy = dynamic_cast<PyComponentProxy *>(component.get())) {
+            auto value = proxy->GetPyComponent();
+            if (!value.is_none() && MatchesPythonComponentType(*proxy, value, requestedType, typeName))
+                return value;
+        } else if (component->IsComponentType(typeName)) {
+            return ComponentBindingRegistry::Instance().CastToPython(component.get());
+        }
+    }
+    return py::none();
+}
+
 static void BindObjectIdentity(NativeClass<GameObject> &cls)
 {
     cls.def_property("name", &GameObject::GetName, &GameObject::SetName)
@@ -191,26 +209,8 @@ static void BindNativeComponentAccess(NativeClass<GameObject> &cls)
             py::arg("component"), "Build a default document while preserving component identity")
         .def(
             "get_component",
-            [](GameObject *obj, const std::string &typeName) -> py::object {
-                auto &reg = ComponentBindingRegistry::Instance();
-                if (typeName == "Transform") {
-                    return py::cast(obj->GetTransform(), py::return_value_policy::reference);
-                }
-                for (const auto &comp : obj->GetAllComponents()) {
-                    if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
-                        if (proxy->GetPyTypeName() == typeName) {
-                            py::object pyComponent = proxy->GetPyComponent();
-                            if (!pyComponent.is_none()) {
-                                return pyComponent;
-                            }
-                        }
-                        continue;
-                    }
-                    if (comp->GetTypeName() == typeName) {
-                        return reg.CastToPython(comp.get());
-                    }
-                }
-                return py::none();
+            [](GameObject *object, const std::string &typeName) {
+                return FindMatchingComponent(*object, py::str(typeName), typeName);
             },
             py::arg("type_name"), "Get a component by type name (e.g., 'Transform', 'MeshRenderer', 'Light')")
         .def(
@@ -226,7 +226,7 @@ static void BindNativeComponentAccess(NativeClass<GameObject> &cls)
                     if (dynamic_cast<PyComponentProxy *>(comp.get())) {
                         continue;
                     }
-                    if (comp->GetTypeName() == typeName) {
+                    if (comp->IsComponentType(typeName)) {
                         return reg.CastToPython(comp.get());
                     }
                 }
@@ -248,7 +248,7 @@ static void BindNativeComponentAccess(NativeClass<GameObject> &cls)
                     if (dynamic_cast<PyComponentProxy *>(comp.get())) {
                         continue;
                     }
-                    if (comp->GetTypeName() == typeName) {
+                    if (comp->IsComponentType(typeName)) {
                         result.append(reg.CastToPython(comp.get()));
                     }
                 }
@@ -275,7 +275,7 @@ static void BindPythonComponentAttachment(NativeClass<GameObject> &cls)
                     return true;
                 }
                 for (const auto &comp : obj->GetAllComponents()) {
-                    if (comp && comp->GetTypeName() == typeName) {
+                    if (comp && comp->IsComponentType(typeName)) {
                         return true;
                     }
                 }
@@ -492,6 +492,8 @@ static void BindObjectHierarchy(NativeClass<GameObject> &cls)
     cls.def("get_parent", &GameObject::GetParent, py::return_value_policy::reference, "Get the parent GameObject")
         .def("set_parent", &GameObject::SetParent, py::arg("parent"), py::arg("world_position_stays") = true,
              "Set the parent GameObject (None for root). world_position_stays preserves world transform.")
+        .def("_set_prefab_instance_parent", &GameObject::SetPrefabInstanceParent, py::arg("parent"))
+        .def("_retire_external_prefab_links", &GameObject::RetireExternalPrefabLinks, py::arg("keep_root"))
         .def(
             "get_children",
             [](GameObject *obj) {
@@ -519,7 +521,9 @@ static void BindObjectHierarchy(NativeClass<GameObject> &cls)
         .def(
             "_commit_document",
             [](GameObject &object, const PythonDocument &document, bool preserveDocumentIds) {
-                return object.DeserializeDocument(document.value, preserveDocumentIds);
+                InstantiationIds ids;
+                const bool committed = object.DeserializeDocument(document.value, ids, preserveDocumentIds);
+                return py::make_tuple(committed, ToPythonInstantiationIds(ids));
             },
             py::arg("document"), py::arg("preserve_document_ids") = true,
             "Internal native subtree commit; Python callers must preflight first");
@@ -529,98 +533,35 @@ static void BindHierarchyComponentSearch(NativeClass<GameObject> &cls)
 {
     cls.def(
            "get_component_in_children",
-           [](GameObject *obj, py::object componentType, bool includeInactive) -> py::object {
-               if (!obj)
-                   return py::none();
-
-               std::string typeName = ResolveComponentTypeName(componentType);
-
-               bool isCpp = (typeName == "Transform" || ComponentFactory::IsRegistered(typeName));
-               auto &reg = ComponentBindingRegistry::Instance();
-
-               std::function<py::object(GameObject *)> search = [&](GameObject *go) -> py::object {
-                   if (!go)
+           [](GameObject *object, py::object componentType, bool includeInactive) -> py::object {
+               const auto typeName = ResolveComponentTypeName(componentType);
+               std::function<py::object(GameObject *)> search = [&](GameObject *current) -> py::object {
+                   if (!includeInactive && !current->IsActiveInHierarchy())
                        return py::none();
-                   // Unity: by default, skip inactive objects
-                   if (!includeInactive && !go->IsActiveInHierarchy())
-                       return py::none();
-
-                   if (isCpp) {
-                       if (typeName == "Transform") {
-                           return py::cast(go->GetTransform(), py::return_value_policy::reference);
-                       }
-                       for (const auto &comp : go->GetAllComponents()) {
-                           if (!dynamic_cast<PyComponentProxy *>(comp.get()) && comp->GetTypeName() == typeName) {
-                               return reg.CastToPython(comp.get());
-                           }
-                       }
-                   } else {
-                       for (const auto &comp : go->GetAllComponents()) {
-                           if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
-                               py::object pyComp = proxy->GetPyComponent();
-                               if (!pyComp.is_none()) {
-                                   const bool match =
-                                       MatchesPythonComponentType(*proxy, pyComp, componentType, typeName);
-                                   if (match)
-                                       return pyComp;
-                               }
-                           }
-                       }
-                   }
-
-                   for (const auto &child : go->GetChildren()) {
-                       py::object r = search(child.get());
-                       if (!r.is_none())
-                           return r;
+                   auto result = FindMatchingComponent(*current, componentType, typeName);
+                   if (!result.is_none())
+                       return result;
+                   for (const auto &child : current->GetChildren()) {
+                       result = search(child.get());
+                       if (!result.is_none())
+                           return result;
                    }
                    return py::none();
                };
-
-               return search(obj);
+               return search(object);
            },
            py::arg("component_type"), py::arg("include_inactive") = false,
            "Get a component on this or any child GameObject. Unity: GetComponentInChildren<T>()")
         .def(
             "get_component_in_parent",
-            [](GameObject *obj, py::object componentType, bool includeInactive) -> py::object {
-                if (!obj)
-                    return py::none();
-
-                std::string typeName = ResolveComponentTypeName(componentType);
-
-                bool isCpp = (typeName == "Transform" || ComponentFactory::IsRegistered(typeName));
-                auto &reg = ComponentBindingRegistry::Instance();
-
-                GameObject *current = obj;
-                while (current) {
-                    // Unity: by default, skip inactive objects
-                    if (!includeInactive && !current->IsActiveInHierarchy()) {
-                        current = current->GetParent();
+            [](GameObject *object, py::object componentType, bool includeInactive) -> py::object {
+                const auto typeName = ResolveComponentTypeName(componentType);
+                for (auto *current = object; current; current = current->GetParent()) {
+                    if (!includeInactive && !current->IsActiveInHierarchy())
                         continue;
-                    }
-                    if (isCpp) {
-                        if (typeName == "Transform") {
-                            return py::cast(current->GetTransform(), py::return_value_policy::reference);
-                        }
-                        for (const auto &comp : current->GetAllComponents()) {
-                            if (!dynamic_cast<PyComponentProxy *>(comp.get()) && comp->GetTypeName() == typeName) {
-                                return reg.CastToPython(comp.get());
-                            }
-                        }
-                    } else {
-                        for (const auto &comp : current->GetAllComponents()) {
-                            if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
-                                py::object pyComp = proxy->GetPyComponent();
-                                if (!pyComp.is_none()) {
-                                    const bool match =
-                                        MatchesPythonComponentType(*proxy, pyComp, componentType, typeName);
-                                    if (match)
-                                        return pyComp;
-                                }
-                            }
-                        }
-                    }
-                    current = current->GetParent();
+                    auto result = FindMatchingComponent(*current, componentType, typeName);
+                    if (!result.is_none())
+                        return result;
                 }
                 return py::none();
             },
@@ -663,7 +604,17 @@ static void BindObjectRuntimeQueries(NativeClass<GameObject> &cls)
 
 void BindGameObject(py::module_ &m)
 {
+    py::class_<PrefabComponentEdit, std::shared_ptr<PrefabComponentEdit>>(m, "_PrefabComponentEdit")
+        .def("validate", &PrefabComponentEdit::Validate)
+        .def("finish", &PrefabComponentEdit::Finish)
+        .def("rollback", &PrefabComponentEdit::Rollback);
     NativeClass<GameObject> cls(m, "GameObject");
+    cls.def(
+        "_stage_prefab_component_edit",
+        [](GameObject &owner, const PythonDocument &additions, const std::vector<uint64_t> &removedIds) {
+            return owner.StagePrefabComponentEdit(additions.value, removedIds);
+        },
+        py::arg("additions"), py::arg("removed_ids"));
     BindObjectIdentity(cls);
     BindNativeComponentAccess(cls);
     BindPythonComponentAttachment(cls);

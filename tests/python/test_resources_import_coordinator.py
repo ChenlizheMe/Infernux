@@ -17,7 +17,6 @@ from infernux.engine.interaction import ActionOrigin, action_origin_scope
 from infernux.engine.resources_manager import (
     ResourceChangeHandler,
     ResourcesManager,
-    _AssetImportNotReady,
     _is_plugin_editor_translation_catalog,
 )
 from infernux.engine.path_utils import path_key
@@ -43,6 +42,7 @@ class _AssetDatabaseProbe:
         self.guid_by_path = {}
         self.queries = []
         self.mutations = []
+        self._watcher_import = None
 
     def complete_pending_refresh(self):
         if not self.refresh_pending:
@@ -53,7 +53,7 @@ class _AssetDatabaseProbe:
         self.queries.append((path, threading.get_ident()))
         return self.guid_by_path.get(path, "")
 
-    def import_asset(self, path):
+    def import_asset(self, path, *, write_scope=None):
         self.mutations.append(("import", path, threading.get_ident()))
         self.guid_by_path[path] = "created-guid"
         return _mutation("import", path, "created-guid")
@@ -64,16 +64,46 @@ class _AssetDatabaseProbe:
     def get_meta_by_path(self, path):
         return None
 
+    def get_meta_by_guid(self, guid):
+        return None
+
+    def _begin_watcher_import(self, path, on_ready, on_finished, *, metadata_only=False):
+        assert self._watcher_import is None
+        self._watcher_import = path, on_ready, on_finished, metadata_only
+        return True
+
+    def _complete_pending_watcher_import(self):
+        from infernux.core.document_store import capture_document_file_state
+
+        path, on_ready, on_finished, metadata_only = self._watcher_import
+        self._watcher_import = None
+        guid = self.guid_by_path.get(path, "")
+        proposed = SimpleNamespace(
+            operation="reimport" if guid else "import",
+            guid=guid,
+            _authored_metadata_guid="",
+            _observed_metadata=capture_document_file_state(path + ".meta") if metadata_only else None,
+        )
+        if not on_ready(proposed, True):
+            on_finished("skipped", proposed, 0, None)
+            return
+        result = self.reimport_asset(path) if guid else self.import_asset(path)
+        if result:
+            outcome = "published" if on_ready(result, False) else "superseded"
+        else:
+            outcome = "failed"
+        on_finished(outcome, result, 0, None)
+
     def reimport_asset(self, path):
         self.mutations.append(("modified", path, threading.get_ident()))
         return _mutation("reimport", path, self.guid_by_path.get(path, ""))
 
-    def delete_asset(self, path):
+    def delete_asset(self, path, *, write_scope=None):
         self.mutations.append(("deleted", path, threading.get_ident()))
         self.guid_by_path.pop(path, None)
         return _mutation("delete", path)
 
-    def move_asset(self, old_path, new_path):
+    def move_asset(self, old_path, new_path, *, write_scope=None):
         self.mutations.append(("moved", old_path, new_path, threading.get_ident()))
         guid = self.guid_by_path.pop(old_path, "")
         if guid:
@@ -319,11 +349,11 @@ def test_rejected_dependency_move_is_terminal_and_exact_revert_can_recover(monke
     # rejected candidate still requires one successful runtime publication.
     monkeypatch.setattr(DocumentRegistry.instance(), "durable_resource_content_changed", lambda *_a, **_kw: False)
     reimports = []
-    monkeypatch.setattr(
-        AssetManager,
-        "reimport_asset",
-        classmethod(lambda _cls, path, **_kw: reimports.append(path) or _mutation("reimport", path, "stable-guid")),
-    )
+    def reimport(path):
+        reimports.append(path)
+        return _mutation("reimport", path, "stable-guid")
+
+    monkeypatch.setattr(database, "reimport_asset", reimport)
     new.write_text("valid original source", encoding="utf-8")
     handler.on_modified(_event(new))
     assert handler.process_pending_reloads(force=True) == 1
@@ -339,7 +369,7 @@ def test_document_store_atomic_replace_ignores_temp_events_and_reimports_target(
     _patch_asset_manager(monkeypatch, asset_calls)
 
     target = tmp_path / "atomic.mat"
-    temporary = tmp_path / "atomic.mat.tmp.123456.7"
+    temporary = tmp_path / "atomic.mat.inx-tmp.123.123456.7"
     temporary.write_text("staged", encoding="utf-8")
     database.guid_by_path[str(target)] = "stable-guid"
 
@@ -509,15 +539,22 @@ def test_failed_external_import_retries_without_acknowledging_unpublished_bytes(
     )
     loaded_baseline = document.durable_file_state
     attempts = []
-    reimport = AssetManager.reimport_asset
+    reimport = database.reimport_asset
 
-    def fail_first_import(asset_path, **kwargs):
+    def fail_first_import(asset_path):
         attempts.append(asset_path)
         if len(attempts) == 1:
-            raise _AssetImportNotReady("source is temporarily unavailable")
-        return reimport(asset_path, **kwargs)
+            from infernux.lib import AssetMutationErrorCode
 
-    monkeypatch.setattr(AssetManager, "reimport_asset", fail_first_import)
+            result = _mutation("reimport", asset_path, "retry-guid")
+            result.succeeded = False
+            result.database_committed = False
+            result.error_code = AssetMutationErrorCode.IMPORT_FAILED
+            result.error = f"failed to open source file: {asset_path}"
+            return result
+        return reimport(asset_path)
+
+    monkeypatch.setattr(database, "reimport_asset", fail_first_import)
     path.write_text(json.dumps(content, indent=2), encoding="utf-8")
     handler.on_modified(_event(path))
     assert handler.process_pending_reloads(force=True) == 1
@@ -867,43 +904,61 @@ def test_real_observer_is_owned_joinable_and_commits_on_main(monkeypatch, tmp_pa
     asset_calls = []
     _patch_asset_manager(monkeypatch, asset_calls)
 
-    manager.start()
-    deadline = time.monotonic() + 3.0
-    while manager._observer is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert manager._observer is not None
-    assert manager._observer.daemon is False
-    assert manager._thread.daemon is False
+    try:
+        manager.start()
+        deadline = time.monotonic() + 3.0
+        observer = manager._observer
+        while (observer is None or not observer.is_alive()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+            observer = manager._observer
+        assert observer is not None and observer.is_alive()
+        assert observer.daemon is False
+        assert manager._thread.daemon is False
 
-    path = assets / "watched.txt"
-    path.write_text("content", encoding="utf-8")
-    while (manager._event_handler is None or manager._event_handler.pending_count == 0) and time.monotonic() < deadline:
-        time.sleep(0.01)
+        path = assets / "watched.txt"
+        path.write_text("content", encoding="utf-8")
+        deadline = time.monotonic() + 3.0
+        while manager._event_handler.pending_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
 
-    assert manager._event_handler.pending_count > 0
-    assert database.mutations == []
-    manager.process_pending_reloads(force=True)
-    assert database.mutations
-    assert all(entry[-1] == threading.get_ident() for entry in database.mutations)
+        assert manager._event_handler.pending_count > 0
+        assert database.mutations == []
+        # A later filesystem event can supersede the first claimed import.
+        deadline = time.monotonic() + 3.0
+        while not database.mutations and time.monotonic() < deadline:
+            manager.process_pending_reloads(force=True)
+            if not database.mutations:
+                time.sleep(0.01)
+        assert any(entry[0] == "import" and path_key(entry[1]) == path_key(path) for entry in database.mutations)
+        assert all(entry[-1] == threading.get_ident() for entry in database.mutations)
+    finally:
+        manager.cleanup()
 
-    manager.cleanup()
     assert manager._thread is None
     assert manager._observer is None
 
 
 def test_engine_exit_drains_resources_before_plugin_and_native_cleanup(monkeypatch):
+    from infernux.application import Application
+
     order = []
     engine = Engine.__new__(Engine)
     engine._mode = RuntimeMode.Headless
     engine._process_owned_exit = False
+    engine._cpu_work_owner = None
+    engine._cpu_range_tasks = []
+    engine._result_consumers = []
     engine._before_exit_callback = None
     engine._play_mode_manager = None
+    engine._player_runtime = None
     engine._runtime_scene_manager = None
     engine._runtime_scheduler = SimpleNamespace(clear=lambda: None)
     engine._resources_manager = SimpleNamespace(cleanup=lambda: order.append("resources"))
-    engine._engine = SimpleNamespace(cleanup=lambda: order.append("native"))
+    engine._engine = SimpleNamespace(_require_cleanup_boundary=lambda: None,
+                                     cleanup=lambda: order.append("native"))
     engine._gui_objects = {}
     monkeypatch.setattr(engine, "_shutdown_plugins_for_exit", lambda: order.append("plugins"))
+    monkeypatch.setattr(Application, "_current_engine", lambda: engine)
 
     engine.exit()
 
@@ -1083,9 +1138,8 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
     assert handler._script_change_collector.last_known_good(str(first)) is None
     assert handler._script_change_collector.last_known_good(str(second)) is None
 
-    assert len(errors) == int(raises), errors
-    if raises:
-        assert "second Edit member rejected" in errors[0]
+    assert len(errors) == 1, errors
+    assert "second Edit member rejected" in errors[0]
     assert handler._script_transactions == {}
     assert handler._script_change_collector.current_result(str(first)) is None
     assert handler._script_change_collector.current_result(str(second)) is None

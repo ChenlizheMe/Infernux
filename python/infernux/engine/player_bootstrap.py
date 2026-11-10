@@ -107,26 +107,14 @@ class PlayerBootstrap:
         phase("register player GUI", self._register_player_gui)
         self._pump_startup_events()
         phase("schedule initial scene", self._load_initial_scene)
-        # Do not activate Play here. The caller reveals the initialized native
-        # window after bootstrap; PlayerGUI starts Play after any project
-        # splash has finished.
         if self.engine is not None:
             phase("prepare runtime scripts", self.engine.prepare_startup_refresh)
         self._pump_startup_events()
-        # A Player without a splash must enter Play before the first GUI draw.
-        # Waiting for PlayerGUI.on_render() makes simulation startup depend on
-        # the first present/camera texture, leaving a live window with a
-        # non-playing scene (notably GPU compute/soft-body components).
-        # Splash-backed products intentionally keep their deferred activation
-        # contract and are started by PlayerGUI after the splash completes.
-        start_before_reveal = not self.splash_items
-        if start_before_reveal:
+        # Splash products activate from PlayerGUI after the authored splash.
+        if not self.splash_items:
             phase("activate runtime scene", self._enter_play_mode)
             self._pump_startup_events()
         phase("finish project CPU and GPU declarations", self._finish_project_warmup)
-        if start_before_reveal:
-            phase("prewarm first GPU frame", self._prewarm_first_frame)
-            self._pump_startup_events()
         _plog(
             f"[Startup] bootstrap ready: "
             f"{(time.perf_counter() - startup_started) * 1000.0:.1f} ms"
@@ -151,35 +139,6 @@ class PlayerBootstrap:
         _plog(
             "[Startup] builtin GPU material pipelines prewarmed "
             "default_lit=engine-init skybox=explicit"
-        )
-
-    def _prewarm_first_frame(self) -> None:
-        """Prepare the Player target and finish its initial resource uploads."""
-        if self.engine is None:
-            raise RuntimeError("Player first-frame GPU prewarm requires an Engine")
-        started = time.perf_counter()
-        # The first hidden GUI pass creates the target; the following render
-        # pass submits the scene's resource requests.
-        self.engine.tick(0.0)
-        self.engine.tick(0.0)
-        native = self.engine.get_native_engine()
-        if not native.game_presentation_ready:
-            # Extra upload frames must not advance gameplay or frame counters.
-            from infernux.lib import SceneManager
-            scene_manager = SceneManager.instance()
-            pause_for_uploads = not scene_manager.is_paused()
-            if pause_for_uploads:
-                scene_manager.pause()
-            try:
-                while not native.game_presentation_ready:
-                    self._pump_startup_events()
-                    self.engine.tick(0.0)
-            finally:
-                if pause_for_uploads:
-                    scene_manager.pause()
-        _plog(
-            "[Startup] initial GPU frame preparation: "
-            f"{(time.perf_counter() - started) * 1000.0:.1f} ms"
         )
 
     def _schedule_project_warmup(self) -> None:

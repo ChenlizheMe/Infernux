@@ -15,17 +15,17 @@ def test_affine_world_ui_visible_pixels_receive_clicks(engine, scene, tmp_path):
     pipeline = RuntimeScreenUIRenderPipeline(submission, case.pipeline)
     engine.set_render_pipeline(pipeline)
     engine.set_game_camera_enabled(True)
-    phase, frames, ticket = 0, 0, None
+    phase, changed, ticket = 0, 0, None
     failures, observations = [], []
     deadline = time.monotonic() + 30
     try:
         def tick():
-            nonlocal phase, frames, ticket
+            nonlocal phase, changed, ticket
             try:
                 engine.request_full_speed_frame()
-                frames += 1
                 assert time.monotonic() < deadline
-                if ticket is None and frames >= 3:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 3:
                     ticket = engine.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     assert not ticket.error, ticket.error
@@ -35,7 +35,7 @@ def test_affine_world_ui_visible_pixels_receive_clicks(engine, scene, tmp_path):
                         engine.exit()
                     else:
                         case.change(phase)
-                        ticket, frames = None, 0
+                        ticket, changed = None, execution
             except BaseException as error:
                 failures.append(error)
                 engine.exit()

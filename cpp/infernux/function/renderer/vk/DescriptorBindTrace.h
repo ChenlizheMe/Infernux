@@ -1,5 +1,7 @@
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include <array>
 #include <cstdint>
 
@@ -34,7 +36,7 @@ void SetDescriptorRecordingContext(vk::VkDescriptorManager *manager, rhi::Submis
 void ClearDescriptorRecordingContext() noexcept;
 void PushDescriptorRecordingContext(vk::VkDescriptorManager *manager, rhi::SubmissionSerial submissionSerial) noexcept;
 void PopDescriptorRecordingContext() noexcept;
-[[nodiscard]] rhi::SubmissionSerial GetDescriptorRecordingSubmissionSerial() noexcept;
+[[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionSerial GetDescriptorRecordingSubmissionSerial() noexcept;
 
 class DescriptorRecordingScope
 {
@@ -90,9 +92,10 @@ inline void RecordDescriptorBind(const char *, VkCommandBuffer, VkPipelineLayout
 
 #endif
 
-void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
-                                  VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
-                                  const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
-                                  const uint32_t *dynamicOffsets);
+INFERNUX_VULKAN_BACKEND_API void
+CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
+                             VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
+                             const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
+                             const uint32_t *dynamicOffsets);
 
 } // namespace infernux::vkdebug

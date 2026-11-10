@@ -50,15 +50,16 @@ class VkTextureCache
     // ── Cache Operations ───────────────────────────────────────────────────
 
     /// Insert a pre-loaded texture into the cache (thread-safe, shares ownership).
-    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot> Insert(const std::string &key,
-                                                                  std::shared_ptr<rhi::TextureResource> texture,
-                                                                  uint64_t lastUsedFrame, bool permanentlyPinned,
-                                                                  std::string assetGuid, uint64_t runtimeVersion);
+    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot>
+    Insert(const std::string &key, std::shared_ptr<rhi::TextureResource> texture, uint64_t lastUsedFrame,
+           bool permanentlyPinned, std::string assetGuid, uint64_t runtimeVersion, uint64_t contentGeneration);
 
     /// Look up and lease a cached texture; returns nullptr if not found.
     [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot> Find(const std::string &key, uint64_t frame = 0);
-    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot>
-    FindAsset(const std::string &key, const std::string &assetGuid, uint64_t runtimeVersion, uint64_t frame);
+    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot> FindAsset(const std::string &key,
+                                                                     const std::string &assetGuid,
+                                                                     uint64_t runtimeVersion,
+                                                                     uint64_t contentGeneration, uint64_t frame);
 
     /// Advance the renderer-owned residency clock even when no texture lookup
     /// occurs, so current-frame protection never turns into permanent pinning.
@@ -101,6 +102,7 @@ class VkTextureCache
         bool permanentlyPinned = false;
         std::string assetGuid;
         uint64_t runtimeVersion = 0;
+        uint64_t contentGeneration = 0;
     };
 
     struct RetiredLease

@@ -38,6 +38,11 @@ class ComponentFactory
 
     static const ComponentTypeConstraints &GetTypeConstraints(const std::string &typeName);
 
+    /// Rewrite only declared component-reference values; callers own the ID domain.
+    static void
+    RewriteDocumentComponentReferences(const std::string &typeName, nlohmann::json &document,
+                                       const std::function<nlohmann::json(const nlohmann::json &)> &rewrite);
+
     static std::vector<std::string> GetAttachmentBlockers(const std::string &typeName,
                                                           const std::vector<std::string> &attachedTypes);
 

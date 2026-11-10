@@ -17,6 +17,12 @@ _DEFAULT_ALPHA_CLIP_THRESHOLD: float
 class Material:
     """Pythonic wrapper around C++ InxMaterial."""
 
+    @staticmethod
+    def property_to_id(name: str) -> int: ...
+    @staticmethod
+    def property_name(name_or_id: str | int) -> str: ...
+    def remove_property(self, name: str | int) -> bool: ...
+
     def __init__(self, native: InxMaterial) -> None:
         """Wrap an existing C++ InxMaterial."""
         ...
@@ -175,57 +181,61 @@ class Material:
     def alpha_clip_threshold(self, value: float) -> None: ...
 
     # Shader property setters
-    def set_float(self, name: str, value: float) -> None:
+    def set_float(self, name: str | int, value: float) -> None:
         """Set a float uniform property on the material."""
         ...
-    def set_int(self, name: str, value: int) -> None:
+    def set_int(self, name: str | int, value: int) -> None:
         """Set an integer uniform property on the material."""
         ...
-    def set_color(self, name: str, r: float, g: float, b: float, a: float = ...) -> None:
+    def set_color(self, name: str | int, r: float, g: float, b: float, a: float = ...) -> None:
         """Set a color uniform property on the material."""
         ...
-    def set_vector2(self, name: str, x: float, y: float) -> None:
+    def set_vector2(self, name: str | int, x: float, y: float) -> None:
         """Set a 2D vector uniform property on the material."""
         ...
-    def set_vector3(self, name: str, x: float, y: float, z: float) -> None:
+    def set_vector3(self, name: str | int, x: float, y: float, z: float) -> None:
         """Set a 3D vector uniform property on the material."""
         ...
-    def set_vector4(self, name: str, x: float, y: float, z: float, w: float) -> None:
+    def set_vector4(self, name: str | int, x: float, y: float, z: float, w: float) -> None:
         """Set a 4D vector uniform property on the material."""
         ...
-    def set_texture_guid(self, name: str, texture_guid: str) -> None:
+    def set_texture_guid(self, name: str | int, texture_guid: str) -> None:
         """Assign a texture to a sampler slot by GUID."""
         ...
-    def clear_texture(self, name: str) -> None:
+    def clear_texture(self, name: str | int) -> None:
         """Remove the texture assigned to a sampler slot."""
         ...
 
     # Shader property getters
-    def get_float(self, name: str, default: float = ...) -> float:
+    def get_float(self, name: str | int, default: float = ...) -> float:
         """Get a float uniform property value."""
         ...
-    def get_int(self, name: str, default: int = ...) -> int:
+    def get_int(self, name: str | int, default: int = ...) -> int:
         """Get an integer uniform property value."""
         ...
-    def get_color(self, name: str) -> Tuple[float, float, float, float]:
+    def get_color(self, name: str | int) -> Tuple[float, float, float, float]:
         """Get a color property as an (R, G, B, A) tuple."""
         ...
-    def get_vector2(self, name: str) -> Tuple[float, float]:
+    def get_texture_offset(self, name: str | int) -> Any: ...
+    def set_texture_offset(self, name: str | int, offset: Any) -> None: ...
+    def get_texture_scale(self, name: str | int) -> Any: ...
+    def set_texture_scale(self, name: str | int, scale: Any) -> None: ...
+    def get_vector2(self, name: str | int) -> Tuple[float, float]:
         """Get a 2D vector property as an (X, Y) tuple."""
         ...
-    def get_vector3(self, name: str) -> Tuple[float, float, float]:
+    def get_vector3(self, name: str | int) -> Tuple[float, float, float]:
         """Get a 3D vector property as an (X, Y, Z) tuple."""
         ...
-    def get_vector4(self, name: str) -> Tuple[float, float, float, float]:
+    def get_vector4(self, name: str | int) -> Tuple[float, float, float, float]:
         """Get a 4D vector property as an (X, Y, Z, W) tuple."""
         ...
-    def get_texture(self, name: str) -> Optional[str]:
+    def get_texture(self, name: str | int) -> Optional[str]:
         """Get the GUID of the texture assigned to a sampler slot."""
         ...
-    def has_property(self, name: str) -> bool:
+    def has_property(self, name: str | int) -> bool:
         """Check whether a shader property exists on this material."""
         ...
-    def get_property(self, name: str) -> Any:
+    def get_property(self, name: str | int) -> Any:
         """Get a shader property value by name."""
         ...
     def get_all_properties(self) -> dict:
@@ -241,13 +251,13 @@ class Material:
         ...
 
     # High-level property setters
-    def set_matrix(self, name: str, value: Any) -> None:
+    def set_matrix(self, name: str | int, value: Any) -> None:
         """Set a NumPy (4,4) matrix indexed as [row, column]."""
         ...
-    def set_param(self, name: str, value: Any) -> None:
+    def set_param(self, name: str | int, value: Any) -> None:
         """Set a non-texture material property using type/shape dispatch."""
         ...
-    def set_texture(self, name: str, value: Any) -> None:
+    def set_texture(self, name: str | int, value: Any) -> None:
         """Bind a texture asset or builtin. Imported RenderTextures save their GUID;
         anonymous RenderTextures only override the runtime binding. None clears it.
         """

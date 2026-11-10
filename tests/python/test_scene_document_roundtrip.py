@@ -895,7 +895,8 @@ class TestSceneSerialization:
         if collision == "python_component_id":
             assert deserialize_game_object_document_transactionally(root, candidate) is False
         else:
-            assert root._commit_document(candidate) is False
+            committed, _ = root._commit_document(candidate)
+            assert committed is False
         assert root.serialize_document() == original_document
         assert scene.find("CollisionCheckedRoot") is root
         assert root.get_component("Rigidbody") is rigidbody

@@ -1,5 +1,6 @@
 """One published revision must own native, Python and serialized particle state."""
 import json
+import time
 
 import pytest
 
@@ -7,6 +8,17 @@ from infernux.components import ParticleSystem
 from infernux.core.assets import AssetManager
 from infernux.runtime_services import install_runtime_service, remove_runtime_service
 from tests.gpu.particle_publication_case import ParticlePublicationCase
+
+
+def _finish_publication(engine, *components):
+    deadline = time.monotonic() + 10.0
+    while any(component._pending_gpu_publication is not None for component in components):
+        assert time.monotonic() < deadline, "particle publication did not complete"
+        engine.tick(0.016)
+        for component in components:
+            component._advance_pending_gpu_publication()
+        time.sleep(0.001)
+    assert not any(component.last_compile_error for component in components)
 
 
 @pytest.mark.parametrize('deferred,failure', [
@@ -61,6 +73,7 @@ def test_particle_publication_keeps_accepted_instance_state(
                 assert component.last_compile_error
                 monkeypatch.setattr(component, '_submit_gpu_publication', submit)
             assert component._load_saved_artifact(force=True), component.last_compile_error
+        _finish_publication(engine, component)
         after = case.snapshot()
         assert after['artifact_revision'] >= revision
         assert len(set(after['native_revisions'].values())) == 1
@@ -130,6 +143,7 @@ def test_multi_component_publication_is_atomic_and_coalesces_candidates(engine, 
         assert first._load_saved_artifact(force=True)
         assert second._load_saved_artifact(force=True)
         ParticleSystem._end_native_publication_batch(commit=True)
+        _finish_publication(engine, first, second)
         for case in cases:
             snapshot = case.snapshot()
             assert json.loads(snapshot['parameter_json']) == {'keep':5.}

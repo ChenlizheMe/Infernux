@@ -159,6 +159,7 @@ def test_authoring_window_save_close_and_history_matrix(
         capabilities=(DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD),
         controller=controller,
     )
+    view.document_id = document.document_id
     registry.attach_view(document.document_id, view_id)
 
     # Save As owns identity publication only after durable completion.

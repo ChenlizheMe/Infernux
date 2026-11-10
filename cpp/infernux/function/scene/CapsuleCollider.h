@@ -49,7 +49,7 @@ class CapsuleCollider : public Collider
     // Jolt shape
     // ====================================================================
 
-    [[nodiscard]] void *CreateJoltShapeRaw() const override;
+    [[nodiscard]] JPH::RefConst<JPH::Shape> CreateJoltShape() const override;
 
     // ====================================================================
     // Serialization

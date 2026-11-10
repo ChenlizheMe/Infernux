@@ -11,6 +11,7 @@ from test_game_builder import (
     _bind_staged_script_to_asset_index,
     _collect_fixture_dependencies,
     _fnv1a64,
+    _freeze_player_script_types,
     _make_builder,
     _make_project,
     _prepare_runtime_catalog_inputs,
@@ -79,6 +80,7 @@ def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path
     builder._runtime_artifact_bindings = {}
     builder._runtime_artifact_source_paths = set()
     builder._stage_library_runtime_documents(str(data_dir))
+    _freeze_player_script_types(builder)
     builder._compile_user_scripts(str(final_dir))
     builder._write_runtime_asset_records(str(final_dir))
 
@@ -228,6 +230,7 @@ def test_player_component_inheritance_keeps_cross_script_identity(tmp_path, monk
         script.write_text(source, encoding="utf-8")
         _bind_staged_script_to_asset_index(builder, output, script, guid=guid)
 
+    _freeze_player_script_types(builder)
     builder._compile_user_scripts(str(output))
     registry_path = output / "Data" / "Library" / "RuntimeTypeRegistry.json"
     records = {record["qualname"]: record for record in json.loads(registry_path.read_text())["types"]}
@@ -314,6 +317,7 @@ def test_player_data_inheritance_survives_cook_and_catalog_publication(
         script.write_text(source, encoding="utf-8")
         _bind_staged_script_to_asset_index(builder, output, script, guid=f"data-script-{index}")
 
+    _freeze_player_script_types(builder)
     builder._compile_user_scripts(str(output))
     registry_path = output / "Data" / "Library" / "RuntimeTypeRegistry.json"
     records = {record["qualname"]: record for record in json.loads(registry_path.read_text())["types"]}
@@ -391,6 +395,7 @@ def test_render_texture_cook_ships_guid_binary_description_not_authoring_source(
 def test_ui_font_chain_is_a_guid_backed_player_cook_dependency(component_type):
     from infernux.core.asset_ref import create_asset_ref
     from infernux.ui import UIButton, UIText
+    from infernux.engine.runtime_artifact_catalog import _asset_refs
 
     primary_guid = "ui-primary-font-guid"
     fallback_guid = "ui-fallback-font-guid"
@@ -399,7 +404,7 @@ def test_ui_font_chain_is_a_guid_backed_player_cook_dependency(component_type):
     component.fallback_fonts = [create_asset_ref("Font", guid=fallback_guid, path_hint="Assets/Fonts/Fallback.otf")]
 
     document = component._serialize_fields_document()
-    references = list(GameBuilder._asset_reference_values(document, frozenset({primary_guid, fallback_guid})))
+    references = list(_asset_refs(document))
 
     assert references == [
         (primary_guid, ""),
@@ -635,6 +640,7 @@ class TestGameBuilderAutoParallelExport:
         monkeypatch.setattr(game_builder_module.py_compile, "compile", reject_compile)
 
         with pytest.raises(py_compile.PyCompileError):
+            _freeze_player_script_types(builder)
             builder._compile_user_scripts(str(output_dir))
 
         assert script_path.is_file()
@@ -667,6 +673,7 @@ class TestGameBuilderAutoParallelExport:
             script_path,
             guid="auto-parallel-script-guid",
         )
+        _freeze_player_script_types(builder)
         builder._compile_user_scripts(str(output_dir))
 
         assert not script_path.exists()
@@ -724,6 +731,7 @@ class TestGameBuilderAutoParallelExport:
             guid="unsafe-parallel-script-guid",
         )
         with pytest.raises(RuntimeError, match="compute compilation rejected"):
+            _freeze_player_script_types(builder)
             builder._compile_user_scripts(str(output_dir))
 
     def test_compile_user_scripts_without_jit_keeps_cpu_function_as_plain_python(self, tmp_path):
@@ -743,6 +751,7 @@ class TestGameBuilderAutoParallelExport:
             script_path,
             guid="cpu-compute-script-guid",
         )
+        _freeze_player_script_types(builder)
         builder._compile_user_scripts(str(output_dir))
 
         assert not script_path.exists()

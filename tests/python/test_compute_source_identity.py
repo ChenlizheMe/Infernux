@@ -50,21 +50,27 @@ def test_warm_and_cold_compilation_agree_after_constant_edit(tmp_path, engine, m
     assert artifacts[-1].spirv_tasks == cold.spirv_tasks
     assert len(list((tmp_path / 'warm/Library/Artifacts/Compute').glob('*.inxgpu'))) == 2
 
-    # Execute the selected actual artifact through the native Vulkan host.
+    # Public launch must select the latest warmed artifact without recompiling.
     host = engine._acquire_compute_host()
     monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
     values = compute.buffer(shape=4, dtype=np.int32, device='gpu', data=[10, 20, 30, 40])
-    executable = compute._KernelExecutable(artifacts[-1], host, (values,))
+    declaration = compute.Kernel(latest)
     try:
-        executable.launch((values,))
+        with using_project_root(tmp_path / 'warm'), monkeypatch.context() as guard:
+            guard.setattr(frontend, '_load_vendor', lambda: pytest.fail('public launch must use the warmed current artifact'))
+            compute.launch(declaration, (values,))
+        used = next(iter(declaration._executables.values()))
+        assert used.artifact.spirv_tasks == artifacts[-1].spirv_tasks
+        assert len(list((tmp_path / 'warm/Library/Artifacts/Compute').glob('*.inxgpu'))) == 2
         snapshot = values.get_data()
         try:
             np.testing.assert_array_equal(snapshot.numpy(), [12, 22, 32, 42])
         finally:
             snapshot.close()
     finally:
-        executable.close()
+        declaration._release_engine_resources()
         values.close()
+        host._release_lease()
 
 
 def test_unused_and_shadowed_globals_do_not_invalidate_compilation(tmp_path):

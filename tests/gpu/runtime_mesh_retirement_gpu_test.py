@@ -17,6 +17,7 @@ def main(multiple_cameras=False):
         frontend = Engine()
         engine = frontend.get_native_engine()
         frames, settled = 0, False
+        baseline_frame = None
         baseline_count, baseline_bytes = 0, 0
         failures = []
         try:
@@ -47,24 +48,31 @@ def main(multiple_cameras=False):
             initial_evictions = engine.mesh_gpu_eviction_count
 
             def after_draw():
-                nonlocal frames, settled, baseline_count, baseline_bytes
+                nonlocal frames, settled, baseline_frame, baseline_count, baseline_bytes
                 try:
                     frames += 1
-                    if frames == 10:
+                    if baseline_frame is None:
                         frame = engine.renderer_frame_snapshot
                         assert (frame["scene_target_width"], frame["scene_target_height"]) == (64, 64), frame
-                        assert frame["scene_draw_call_count"] > 0, frame
                         baseline = engine.gpu_residency_snapshot
-                        baseline_count = baseline["runtime_mesh_entry_count"]
-                        baseline_bytes = baseline["runtime_mesh_bytes"]
-                        print(f"mesh retirement: baseline captured at frame {frames}", flush=True)
-                    if 10 < frames <= 202:
-                        positions[:, 1] = frames * 0.001
+                        if (frame["scene_draw_call_count"] > 0
+                                and baseline["runtime_mesh_entry_count"] > 0
+                                and engine.pending_mesh_gpu_upload_count == 0):
+                            baseline_frame = frames
+                            baseline_count = baseline["runtime_mesh_entry_count"]
+                            baseline_bytes = baseline["runtime_mesh_bytes"]
+                            print(f"mesh retirement: baseline captured at frame {frames}", flush=True)
+                        elif frames >= 180:
+                            raise AssertionError("Startup mesh uploads did not settle")
+                        return
+                    elapsed = frames - baseline_frame
+                    if elapsed <= 192:
+                        positions[:, 1] = elapsed * 0.001
                         for renderer in renderers:
                             renderer.set_inline_mesh_data(positions, normals, uvs, indices, "changing triangle")
-                        if frames == 202:
+                        if elapsed == 192:
                             print("mesh retirement: all 192 mesh generations published", flush=True)
-                    if frames in (220, 240):
+                    if elapsed in (210, 230):
                         if multiple_cameras:
                             frame = engine.renderer_frame_snapshot
                             assert frame["game_camera_count"] == 2, frame
@@ -72,12 +80,12 @@ def main(multiple_cameras=False):
                             assert len(frame["game_render_view_ids"]) == 2, frame
                             assert frame["game_draw_call_count"] > 0, frame
                         snapshot = engine.gpu_residency_snapshot
-                        expected_entries = baseline_count + (2 if frames == 220 else 1)
+                        expected_entries = baseline_count + (2 if elapsed == 210 else 1)
                         assert snapshot["runtime_mesh_entry_count"] == expected_entries, snapshot
                         assert snapshot["runtime_mesh_bytes"] > baseline_bytes
-                        scene.destroy_game_object(objects[0 if frames == 220 else 1])
+                        scene.destroy_game_object(objects[0 if elapsed == 210 else 1])
                         print(f"mesh retirement: object retired at frame {frames}", flush=True)
-                    if frames == 260:
+                    if elapsed == 250:
                         snapshot = engine.gpu_residency_snapshot
                         assert snapshot["runtime_mesh_entry_count"] == baseline_count, snapshot
                         assert snapshot["runtime_mesh_bytes"] == baseline_bytes

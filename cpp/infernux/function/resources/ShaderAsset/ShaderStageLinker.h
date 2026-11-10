@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ShaderCompilerApi.h"
 #include <core/types/ShaderTypes.h>
 #include <cstdint>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
@@ -116,7 +117,7 @@ struct ShaderProgramInterfaceArtifact
     uint64_t compatibilitySignature = 0;
     std::vector<ShaderLinkDiagnostic> diagnostics;
 
-    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API bool IsValid() const noexcept;
 };
 
 struct ShaderStageLinkOptions
@@ -130,11 +131,13 @@ struct ShaderStageLinkOptions
 class ShaderStageLinker final
 {
   public:
-    [[nodiscard]] static bool IsUIStagePair(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment);
-    [[nodiscard]] static bool ShouldPrewarmSceneMaterial(const ShaderDescriptor &vertex,
-                                                         const ShaderDescriptor &fragment);
-    [[nodiscard]] static bool ShouldPublishScenePrewarmArtifact(const ShaderProgramArtifact &artifact) noexcept;
-    [[nodiscard]] static ShaderProgramInterfaceArtifact
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API static bool IsUIStagePair(const ShaderDescriptor &vertex,
+                                                                         const ShaderDescriptor &fragment);
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API static bool ShouldPrewarmSceneMaterial(const ShaderDescriptor &vertex,
+                                                                                      const ShaderDescriptor &fragment);
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API static bool
+    ShouldPublishScenePrewarmArtifact(const ShaderProgramArtifact &artifact) noexcept;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API static ShaderProgramInterfaceArtifact
     Link(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment, const ShaderStageLinkOptions &options = {});
 };
 

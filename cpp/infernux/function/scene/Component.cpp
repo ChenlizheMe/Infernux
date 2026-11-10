@@ -3,6 +3,7 @@
 #include "ComponentFactory.h"
 #include "GameObject.h"
 #include "Scene.h"
+#include "SceneManager.h"
 #include "Transform.h"
 #include <algorithm>
 #include <atomic>
@@ -58,7 +59,8 @@ Component::Component(Component &&other) noexcept
     : m_gameObject(other.m_gameObject), m_enabled(other.m_enabled), m_wasEnabled(other.m_wasEnabled),
       m_hasAwake(other.m_hasAwake), m_hasStarted(other.m_hasStarted), m_hasDestroyed(other.m_hasDestroyed),
       m_isBeingDestroyed(other.m_isBeingDestroyed), m_executionOrder(other.m_executionOrder),
-      m_componentId(other.m_componentId), m_lifetimeGeneration(other.m_lifetimeGeneration)
+      m_componentId(other.m_componentId), m_prefabSourceId(std::exchange(other.m_prefabSourceId, 0)),
+      m_prefabSourceGuid(std::move(other.m_prefabSourceGuid)), m_lifetimeGeneration(other.m_lifetimeGeneration)
 {
     // Update registry to point to this new address
     GetInstanceRegistry()[m_componentId] = this;
@@ -79,6 +81,8 @@ Component &Component::operator=(Component &&other) noexcept
         m_isBeingDestroyed = other.m_isBeingDestroyed;
         m_executionOrder = other.m_executionOrder;
         m_componentId = other.m_componentId;
+        m_prefabSourceId = std::exchange(other.m_prefabSourceId, 0);
+        m_prefabSourceGuid = std::move(other.m_prefabSourceGuid);
         m_lifetimeGeneration = other.m_lifetimeGeneration;
         GetInstanceRegistry()[m_componentId] = this;
         other.m_componentId = 0;
@@ -127,14 +131,19 @@ void Component::CallAwake()
     if (const Scene *scene = m_gameObject ? m_gameObject->GetScene() : nullptr;
         scene && (scene->IsPreview() || (!scene->IsPlaying() && !WantsEditModeLifecycle())))
         return;
-    if (m_hasAwake || m_hasDestroyed) {
+    if (m_hasDestroyed) {
         return;
     }
-    m_hasAwake = true;
+    const auto admittedState = SceneManager::Instance().GetSimulationState();
     const auto identity = GetHandle();
-    Awake();
+    if (!m_hasAwake) {
+        m_hasAwake = true;
+        Awake();
+    }
     const auto *current = FindByComponentId(identity.id);
     if (current != this || current->GetLifetimeGeneration() != identity.generation)
+        return;
+    if (SceneManager::Instance().GetSimulationState() != admittedState)
         return;
     // After awake, if enabled AND active in hierarchy, call OnEnable.
     if (m_enabled && m_gameObject && m_gameObject->IsActiveInHierarchy()) {
@@ -233,7 +242,10 @@ void Component::SetEnabled(bool enabled)
     const bool effectiveActive = m_enabled && m_gameObject->IsActiveInHierarchy();
     if (effectiveActive) {
         const auto identity = GetHandle();
+        const auto epoch = SceneManager::Instance().GetSimulationEpoch();
         CallOnEnable();
+        if (SceneManager::Instance().GetSimulationEpoch() != epoch)
+            return;
         const auto *current = FindByComponentId(identity.id);
         if (current != this || current->GetLifetimeGeneration() != identity.generation)
             return;
@@ -296,6 +308,8 @@ nlohmann::json Component::SerializeDocument() const
     j["component_id"] = m_componentId;
     if (m_prefabSourceId)
         j["prefab_source_id"] = m_prefabSourceId;
+    if (m_prefabSourceId && !m_prefabSourceGuid.empty())
+        j["prefab_source_guid"] = m_prefabSourceGuid;
     return j;
 }
 
@@ -324,7 +338,7 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
         const int executionOrder = RequireInteger(j, "execution_order", GetTypeName());
         if (j.contains("component_id"))
             SetComponentID(j["component_id"].get<uint64_t>());
-        m_prefabSourceId = prefabSourceId;
+        SetPrefabSource(prefabSourceId, j.value("prefab_source_guid", std::string{}));
         m_enabled = enabled;
         m_executionOrder = executionOrder;
         return true;
@@ -332,6 +346,26 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
         INXLOG_ERROR("Component::Deserialize failed for '", GetTypeName(), "' (id=", m_componentId, "): ", e.what());
         return false;
     }
+}
+
+nlohmann::json Component::PrepareAuthoringDocument(const nlohmann::json &document) const
+{
+    auto candidate = document;
+    candidate["component_id"] = m_componentId;
+    if (m_prefabSourceId)
+        candidate["prefab_source_id"] = m_prefabSourceId;
+    else
+        candidate.erase("prefab_source_id");
+    if (m_prefabSourceId && !m_prefabSourceGuid.empty())
+        candidate["prefab_source_guid"] = m_prefabSourceGuid;
+    else
+        candidate.erase("prefab_source_guid");
+    return candidate;
+}
+
+bool Component::ApplyAuthoringDocument(const nlohmann::json &document)
+{
+    return DeserializeDocument(PrepareAuthoringDocument(document));
 }
 
 std::unique_ptr<Component> Component::Clone() const

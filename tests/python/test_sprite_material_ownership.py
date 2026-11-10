@@ -37,6 +37,7 @@ def sprite_assets(engine, scene, tmp_path, monkeypatch):
     material_path = folder / "Shared.mat"
     material = Material.load(str(material_path))
     material.frag_shader_name = "Sprite Unlit"
+    assert engine.refresh_material_pipeline(material.native)
     material.set_color("baseColor", .25, .5, .75, 1.)
     material.set_texture("texSampler", textures[0])
     material.flush()
@@ -82,7 +83,7 @@ def test_sprite_instances_keep_shared_document_and_parameters_independent(scene,
     Material.flush_all_pending()
     assert path.read_bytes() == before
     assert material.serialize_document() == authored
-    assert left.material is material and right.material is material
+    assert left.shared_material is material and right.shared_material is material
     assert left.get_parameter("baseColor") == pytest.approx((1, 0, 0, 1))
     assert right.get_parameter("baseColor") == pytest.approx((0, 0, 1, 1))
     assert left.get_parameter("uvRect") == pytest.approx((0, 1, .5, -1))
@@ -176,7 +177,7 @@ def test_sprite_copy_rebuilds_instance_parameters(scene, sprite_assets, operatio
     assert renderer.component_id != original.component_id
     assert renderer.game_object.id == copied.id
     assert original.game_object.name == "Source"
-    assert renderer.material is material
+    assert renderer.shared_material is material
     assert renderer.get_parameter("texSampler") == textures[1]
     assert renderer.get_parameter("uvRect") == pytest.approx((.5, 1, .5, -1))
     assert renderer.get_parameter("baseColor") == pytest.approx((.2, .4, .6, 1))

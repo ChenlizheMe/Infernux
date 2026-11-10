@@ -40,7 +40,7 @@ from infernux.engine.path_utils import (
 )
 from infernux.engine.player_package_native import read_entry
 from infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_COMPATIBILITY_VERSION, ENGINE_VERSION
 
 from .content import (
     PAGE_EXTENSIONS,
@@ -565,9 +565,9 @@ class PluginManager:
             preview.metadata, expected_reference=expected_reference, expected_version=expected_version,
         )
         compatibility = str(preview.metadata.get("engine", "")).strip()
-        if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(compatibility):
+        if compatibility and Version(ENGINE_COMPATIBILITY_VERSION) not in SpecifierSet(compatibility):
             raise RuntimeError(
-                f"InxPackage requires Infernux {compatibility}, current engine is {ENGINE_VERSION}"
+                f"InxPackage requires Infernux {compatibility}, current engine is {ENGINE_COMPATIBILITY_VERSION}"
             )
         key = reference.casefold()
         if key in self._installing:
@@ -979,9 +979,14 @@ class PluginManager:
         install_dependencies: bool = True,
         progress: _InstallProgress | None = None,
     ) -> PluginState:
-        if self.registry.installed_record(reference) is not None:
-            return self.reload(reference)
+        current = self.registry.installed_record(reference)
         record = self.registry.find(reference)
+        if current is not None:
+            compatible = Version(ENGINE_COMPATIBILITY_VERSION) in SpecifierSet(str(current.get("engine", "")))
+            if record is None or (compatible and Version(str(record["version"])) <= Version(str(current["version"]))):
+                if not compatible:
+                    raise RuntimeError(f"No compatible release is available for {reference} on Infernux {ENGINE_COMPATIBILITY_VERSION}")
+                return self.reload(reference)
         if record is None:
             raise KeyError(
                 f"Plugin reference was not found in the official registry: {reference}"
@@ -991,12 +996,17 @@ class PluginManager:
             raise ValueError(f"Plugin registry source is invalid: {reference}")
         descriptor = dict(source)
         pinned_version = str(record.get("version", "")).strip()
+        requirement = str(record.get("engine", ""))
+        if Version(ENGINE_COMPATIBILITY_VERSION) not in SpecifierSet(requirement):
+            raise RuntimeError(f"No compatible release is available for {reference} on Infernux {ENGINE_COMPATIBILITY_VERSION}")
+        updating = current is not None
         if (
             str(descriptor.get("type", "")).strip().casefold() == "local"
             and descriptor.get("builtin") is True
         ):
             return self.install_source(
                 descriptor,
+                update=updating,
                 install_dependencies=install_dependencies,
                 progress=progress,
                 expected_reference=reference,
@@ -1006,6 +1016,7 @@ class PluginManager:
         if cache_path:
             return self.install_package(
                 cache_path,
+                update=updating,
                 source=descriptor,
                 install_dependencies=install_dependencies,
                 progress=progress,
@@ -1014,6 +1025,7 @@ class PluginManager:
             )
         return self.install_source(
             descriptor,
+            update=updating,
             install_dependencies=install_dependencies,
             progress=progress,
             expected_reference=reference,
@@ -1178,12 +1190,12 @@ class PluginManager:
                 expected_version="" if release_tag else str(record.get("version", "")).strip(),
             )
             compatibility = str(preview.metadata.get("engine", "")).strip()
-            if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(
+            if compatibility and Version(ENGINE_COMPATIBILITY_VERSION) not in SpecifierSet(
                 compatibility
             ):
                 raise RuntimeError(
                     f"InxPackage requires Infernux {compatibility}, current engine "
-                    f"is {ENGINE_VERSION}"
+                    f"is {ENGINE_COMPATIBILITY_VERSION}"
                 )
             version = str(preview.metadata.get("version", ""))
             cache = self._package_cache()

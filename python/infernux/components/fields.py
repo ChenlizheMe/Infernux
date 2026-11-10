@@ -341,6 +341,12 @@ class SerializedFieldDescriptor:
         if '_serialized_fields_' not in owner.__dict__:
             owner._serialized_fields_ = {}
         owner._serialized_fields_[name] = self.metadata
+
+    def clone_for_owner(self):
+        """Keep storage specializations when a concrete component binds a field."""
+        descriptor = type(self)(self.metadata)
+        descriptor._explicit_type_options = self._explicit_type_options
+        return descriptor
     
     def _python_value(self, instance):
         """Read instance-owned storage, initializing an unset/deleted declaration.
@@ -528,7 +534,8 @@ def _ensure_texture_ref(value):
     guid, path_hint = _extract_guid_and_path(value, ('source_path', 'file_path'))
     ref.guid = guid
     ref.path_hint = path_hint
-    ref._cached = None if isinstance(value, str) else value
+    if not isinstance(value, str):
+        ref._seed_cache(value)
     return ref
 
 
@@ -542,7 +549,8 @@ def _ensure_shader_ref(value):
     guid, path_hint = _extract_guid_and_path(value, ('source_path', 'file_path'))
     ref.guid = guid
     ref.path_hint = path_hint
-    ref._cached = None if isinstance(value, str) else value
+    if not isinstance(value, str):
+        ref._seed_cache(value)
     return ref
 
 
@@ -594,7 +602,8 @@ def _ensure_asset_ref(value, asset_type: str):
     guid, path_hint = _extract_guid_and_path(value, ('file_path', 'source_path'))
     ref.guid = guid
     ref.path_hint = path_hint
-    ref._cached = None if isinstance(value, str) else value
+    if not isinstance(value, str):
+        ref._seed_cache(value)
     return ref
 
 
@@ -739,23 +748,14 @@ def coerce_serialized_field_input(
         if not members:
             raise TypeError(f"{path}: ENUM field has no concrete enum type")
         if isinstance(value, str):
-            member = members.get(value)
-            if member is None:
-                folded = value.casefold()
-                matches = [
-                    candidate
-                    for name, candidate in members.items()
-                    if name.casefold() == folded
-                ]
-                member = matches[0] if len(matches) == 1 else None
-            if member is None:
-                raise ValueError(
-                    f"{path}: unknown {enum_type.__qualname__} member {value!r}"
-                )
-            return member
+            from ._enum_values import resolve_enum_name
+            return resolve_enum_name(enum_type,value,path,casefold=True)
         if type(value) is int:
             try:
-                return enum_type(value)
+                from ._enum_values import enum_value_name
+                member=enum_type(value)
+                enum_value_name(member,path)
+                return member
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"{path}: unknown {enum_type.__qualname__} value {value}"

@@ -134,7 +134,7 @@ def test_public_mesh_resource_create_share_copy_and_publish(engine, scene):
         assert wrapper.mesh.native is mesh.native
         assert wrapper.shared_mesh.native is mesh.native
         assert first_renderer.get_mesh_asset() is second_renderer.get_mesh_asset()
-        cloned = scene._clone_game_object(first)
+        cloned, _ = scene._clone_game_object(first)
         cloned_renderer = cloned.get_component("MeshRenderer")
         assert cloned_renderer.get_mesh_asset() is mesh
 

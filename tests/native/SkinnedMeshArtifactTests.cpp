@@ -173,15 +173,19 @@ void CheckSkeletonPoseQueries()
     additive.boneMask = {"Socket"};
     const auto stack = std::make_shared<const EvaluatedSkinPose>(model.EvaluatePoseStack({first, second, additive}));
     SkinPoseHistory history;
-    history.Publish(blend, true);
+    const SkinPoseHistory::PalettePtr blendPalette(blend, &blend->palette);
+    const SkinPoseHistory::PalettePtr stackPalette(stack, &stack->palette);
+    history.Publish(blendPalette, true);
     const auto retained = history.Acquire();
-    history.Publish(stack, false);
-    check(*history.Acquire()->evaluated, 8, 7);
-    check(*retained->evaluated, 6, 5);
-    assert(history.Acquire()->previous.get() == &blend->palette);
+    history.Publish(stackPalette, false);
+    check(*stack, 8, 7);
+    check(*blend, 6, 5);
+    assert(history.Acquire()->current == stackPalette);
+    assert(retained->current == blendPalette);
+    assert(history.Acquire()->previous == blendPalette);
     assert(history.CommitFrame());
-    assert(history.Acquire()->evaluated == stack);
-    assert(history.Acquire()->current.get() == &stack->palette);
+    assert(history.Acquire()->current == stackPalette);
+    assert(history.Acquire()->previous == stackPalette);
 }
 } // namespace
 
@@ -653,14 +657,14 @@ int main()
 
     infernux::SkinPoseHistory poseHistory;
     auto firstPose = restored->GetOrBuildGpuBonePalette({"Move", 0.0f});
-    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.0f}), true);
+    poseHistory.Publish(firstPose, true);
     const auto firstSnapshot = poseHistory.Acquire();
     assert(firstSnapshot && firstSnapshot->IsValid());
     assert(firstSnapshot->current == firstPose);
     assert(firstSnapshot->previous == firstPose);
 
     auto secondPose = restored->GetOrBuildGpuBonePalette({"Move", 0.25f});
-    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.25f}), false);
+    poseHistory.Publish(secondPose, false);
     const auto secondSnapshot = poseHistory.Acquire();
     assert(secondSnapshot && secondSnapshot->IsValid());
     assert(secondSnapshot->current == secondPose);
@@ -668,7 +672,7 @@ int main()
     assert(secondSnapshot->revision > firstSnapshot->revision);
 
     auto thirdPose = restored->GetOrBuildGpuBonePalette({"Move", 0.4f});
-    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.4f}), false);
+    poseHistory.Publish(thirdPose, false);
     const auto thirdSnapshot = poseHistory.Acquire();
     assert(thirdSnapshot->current == thirdPose);
     assert(thirdSnapshot->previous == firstPose); // Two submissions, one frame.
@@ -680,17 +684,15 @@ int main()
     assert(secondSnapshot->previous == firstPose); // In-flight snapshots stay immutable.
     assert(!poseHistory.CommitFrame());
     assert(poseHistory.Acquire() == committedSnapshot); // A stopped pose stays stable.
-    poseHistory.Publish(restored->GetOrBuildEvaluatedPose({"Move", 0.25f}), false);
+    poseHistory.Publish(secondPose, false);
     assert(poseHistory.Acquire()->previous == thirdPose);
 
-    auto differentSkeleton = std::make_shared<infernux::EvaluatedSkinPose>();
-    differentSkeleton->palette.resize(2, glm::mat4(1.0f));
-    differentSkeleton->nodeGlobals.resize(2, glm::mat4(1.0f));
+    auto differentSkeleton = std::make_shared<infernux::SkinPoseHistory::Palette>(2, glm::mat4(1.0f));
     poseHistory.Publish(differentSkeleton, false);
     const auto resizedSnapshot = poseHistory.Acquire();
     assert(resizedSnapshot && resizedSnapshot->IsValid());
-    assert(resizedSnapshot->current.get() == &differentSkeleton->palette);
-    assert(resizedSnapshot->previous.get() == &differentSkeleton->palette);
+    assert(resizedSnapshot->current == differentSkeleton);
+    assert(resizedSnapshot->previous == differentSkeleton);
     assert(resizedSnapshot->revision > secondSnapshot->revision);
 
     poseHistory.Reset();

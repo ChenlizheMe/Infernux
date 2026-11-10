@@ -99,9 +99,8 @@ class ValueCodecRegistry:
             is_enum = getattr(_Infernux, value_type.__name__, None) is value_type
         if is_enum:
             from .value_document import make_enum
-            if value.name not in value_type.__members__:
-                raise ValueError(f"{path}: unknown {value_type.__qualname__} enum member")
-            return make_enum(value_type.__qualname__, value.name)
+            from ._enum_values import enum_value_name
+            return make_enum(value_type.__qualname__, enum_value_name(value,path))
         from infernux.graph.ramp import AnimationCurve, Gradient
         if isinstance(value, (AnimationCurve, Gradient)):
             return self._encode_builtin(value.to_dict(), path)
@@ -321,7 +320,8 @@ class ValueCodecRegistry:
         if field_type == FieldType.COLOR:
             return normalize_rgba(self._require_numbers(value, path, "COLOR"))
         if field_type == FieldType.ENUM:
-            return field_meta_or_type.enum_type.__members__[value["name"]]
+            from ._enum_values import resolve_enum_name
+            return resolve_enum_name(field_meta_or_type.enum_type,value["name"],path)
 
         if isinstance(value, list):
             return [self.decode(item, FieldType.UNKNOWN, f"{path}[{index}]") for index, item in enumerate(value)]
@@ -388,8 +388,8 @@ class ValueCodecRegistry:
         enum_type = getattr(field_meta, "enum_type", None)
         if enum_type is None or enum_type.__qualname__ != value["enum_type"]:
             raise ValueError(f"{path}: unknown enum type {value['enum_type']!r}")
-        if value["name"] not in enum_type.__members__:
-            raise ValueError(f"{path}: unknown {enum_type.__qualname__} member {value['name']!r}")
+        from ._enum_values import resolve_enum_name
+        resolve_enum_name(enum_type,value["name"],path)
 
     @staticmethod
     def _validate_encoded_document(value: Any, path: str, *, allow_custom_type: bool = False) -> None:

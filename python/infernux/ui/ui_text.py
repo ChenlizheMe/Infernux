@@ -54,7 +54,7 @@ class UIText(InxUIScreenComponent):
         group="Typography", range=(0.5, 5.0), slider=False, drag_speed=0.01,
     )
     letter_spacing: float = serialized_field(
-        default=0.0, tooltip="Extra letter spacing in px",
+        default=0.0, tooltip="Extra spacing per character in px. Use 0 to preserve the font's CJK/Latin cell alignment.",
         group="Typography", range=(-20.0, 100.0), slider=False, drag_speed=0.1,
     )
 
@@ -100,7 +100,7 @@ class UIText(InxUIScreenComponent):
         super().__setattr__(name, value)
         if previous != get_raw_field_value(self, name):
             object.__setattr__(self, "_text_layout_key", None)
-            if name == 'resize_mode':
+            if name == 'resize_mode' or self.is_auto_width() or self.is_auto_height():
                 from .inx_ui_screen_component import _invalidate_rect_cache
 
                 _invalidate_rect_cache()
@@ -261,6 +261,10 @@ class UIText(InxUIScreenComponent):
 
     def _layout_desired_size(self) -> tuple[float, float]:
         width, height = self.get_resolved_size()
+        if not self.is_auto_width():
+            width = get_raw_field_value(self, 'width')
+        if not self.is_auto_height():
+            height = get_raw_field_value(self, 'height')
         return (
             self._clamp_layout_extent(width, self.min_width, self.max_width),
             self._clamp_layout_extent(height, self.min_height, self.max_height),

@@ -10,6 +10,7 @@
 
 namespace infernux
 {
+class AssetSource;
 // ----------------------------------
 // InxResourceMeta Class
 // ----------------------------------
@@ -27,6 +28,8 @@ class InxResourceMeta
 
     INFERNUX_ASSET_RUNTIME_API void Init(const char *content, size_t contentSize, const std::string &filePath,
                                          ResourceType type);
+    INFERNUX_ASSET_RUNTIME_API void InitFromSource(AssetSource &source, ResourceType type);
+    INFERNUX_ASSET_RUNTIME_API void InitSourceIdentity(const std::string &path, ResourceType type);
 
     // Copy constructor and assignment operator
     InxResourceMeta(const InxResourceMeta &other) = default;
@@ -46,10 +49,10 @@ class InxResourceMeta
     INFERNUX_ASSET_RUNTIME_API void AddMetadata(const std::string &key, ResourceType value);
     INFERNUX_ASSET_RUNTIME_API void AddMetadata(const std::string &key, const nlohmann::json &value);
 
-    /// Copy one metadata entry without changing its persisted type tag.
-    /// Returns false when the source has no such key or this instance already
-    /// contains it.
-    INFERNUX_ASSET_RUNTIME_API bool CopyMetadataIfMissing(const InxResourceMeta &source, const std::string &key);
+    /// Retain authored settings absent from freshly prepared source metadata.
+    /// GUID ownership and local source observations are not inherited.
+    INFERNUX_ASSET_RUNTIME_API void InheritSettings(const InxResourceMeta &source);
+    INFERNUX_ASSET_RUNTIME_API void ApplySettings(InxResourceMeta settings);
 
     /// @brief Get metadata value with type registry
     /// @tparam T The type to retrieve

@@ -13,10 +13,13 @@ than optimization opportunities.
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import inspect
 import json
 import math
+import operator
+import sys
 import textwrap
 from dataclasses import dataclass
 from enum import Enum
@@ -195,6 +198,8 @@ class BufferAccess:
     same_iteration: bool = False
     unique: bool = False
     axes: tuple[AffineExpr | None, ...] = ()
+    bounds: tuple = ()
+    multiplicity: int = 1
 
 
 @dataclass(frozen=True)
@@ -281,6 +286,80 @@ class BasicBlock:
     loop_id: str | None = None
 
 
+def _operation_cost(tree):
+    return sum(2 if isinstance(item, ast.Subscript) else 8 if isinstance(item, ast.Call) else 1 if isinstance(
+        item, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp, ast.Assign, ast.AugAssign, ast.If)) else 0
+        for item in ast.walk(tree))
+
+
+@dataclass(frozen=True)
+class OrderedReductionRegion:
+    inner_index: str
+    count: int
+    accumulator: str
+    initializer_statement: int
+    loop_statement: int
+    body_identity: str
+    prefix_cost: int
+    term_cost: int
+    epilogue_cost: int
+    control_cost: int
+    term_reads: int
+    prefix_reads: int
+    epilogue_reads: int
+    diagnostics: tuple[str, ...] = ()
+
+    @property
+    def eligible(self):
+        return not self.diagnostics
+
+    def operation_cost(self, kind="whole", inner_count=None):
+        count = self.count if inner_count is None else inner_count
+        return (self.prefix_cost + count * self.term_cost + self.control_cost
+                + (self.epilogue_cost if kind in ("whole", "final") else 3)
+                + (2 if kind in ("resume", "final") else 0))
+
+
+@dataclass(frozen=True)
+class InnerRangeContract:
+    kind: str
+    count: int
+    begin_parameter: int
+    end_parameter: int
+
+    def __post_init__(self):
+        if (self.kind not in {"initial", "resume", "final"}
+                or type(self.count) is not int or not (3 if self.kind == "resume" else 2) <= self.count <= 0x7fffffff
+                or type(self.begin_parameter) is not int or type(self.end_parameter) is not int
+                or self.begin_parameter < 0 or self.end_parameter != self.begin_parameter + 1):
+            raise ValueError("invalid ordered inner range contract")
+
+    def guards(self, begin, end):
+        conditions = [f"not (0 <= {begin} < {end} <= {self.count})"]
+        if self.kind == "initial":
+            conditions.append(f"{begin} != 0 or {end} >= {self.count}")
+        elif self.kind == "resume":
+            conditions.append(f"{begin} <= 0 or {end} >= {self.count}")
+        elif self.kind == "final":
+            conditions.append(f"{begin} <= 0 or {end} != {self.count}")
+        else:
+            raise ValueError("unknown ordered reduction variant")
+        return tuple(conditions)
+
+    def validate(self, begin, end):
+        from numbers import Integral
+
+        if any(isinstance(value, bool) or not isinstance(value, Integral)
+               or not -0x80000000 <= int(value) <= 0x7fffffff for value in (begin, end)):
+            raise TypeError("ordered inner controls require exact signed int32 values")
+        valid = 0 <= begin < end <= self.count
+        valid = valid and ({"initial": begin == 0 and end < self.count,
+                           "resume": begin > 0 and end < self.count,
+                           "final": begin > 0 and end == self.count}[self.kind])
+        if not valid:
+            raise ValueError(f"invalid {self.kind} inner range [{begin},{end}) for [0,{self.count})")
+
+
 @dataclass(frozen=True)
 class RangeLoopHIR:
     """Typed summary of one candidate range loop."""
@@ -301,6 +380,8 @@ class RangeLoopHIR:
     parallel_eligible: bool
     reason: str
     operation_cost: int = 1
+    local_reductions: tuple[OrderedReductionRegion, ...] = ()
+    fully_written_outputs: tuple[str, ...] = ()
 
     @property
     def loop_id(self) -> str:
@@ -313,6 +394,220 @@ class RangeLoopHIR:
     @property
     def parallel_reason(self) -> str:
         return self.reason
+
+
+_EXTENT_OPERATORS = {"add": (operator.add, "+"), "sub": (operator.sub, "-"),
+                     "mul": (operator.mul, "*"), "div": (operator.floordiv, "//"),
+                     "min": (min, "min"), "max": (max, "max")}
+
+
+def _extent_expression(value):
+    """Validate structured compiler expressions, never evaluate source strings."""
+    if not isinstance(value, (tuple, list)) or not value:
+        raise ValueError("invalid resource extent expression")
+    if value[0] == "n" and len(value) == 1:
+        return ("n",)
+    if value[0] == "c" and len(value) == 2 and type(value[1]) is int and 0 <= value[1] <= 0x7fffffff:
+        return ("c", value[1])
+    if value[0] in _EXTENT_OPERATORS and len(value) == 3:
+        left, right = _extent_expression(value[1]), _extent_expression(value[2])
+        if value[0] == "div" and (right[0] != "c" or right[1] <= 0):
+            raise ValueError("resource extent divisor must be a positive constant")
+        return (value[0], left, right)
+    raise ValueError("invalid resource extent expression")
+
+
+def _extent_value(expression, count):
+    if expression[0] == "c":
+        return expression[1]
+    if expression[0] == "n":
+        return count
+    return _EXTENT_OPERATORS[expression[0]][0](_extent_value(expression[1], count),
+                                             _extent_value(expression[2], count))
+
+
+def _extent_source(expression, count):
+    if expression[0] == "c":
+        return str(expression[1])
+    if expression[0] == "n":
+        return count
+    if expression[0] in ("min", "max"):
+        return f"{expression[0]}({_extent_source(expression[1], count)}, {_extent_source(expression[2], count)})"
+    return f"({_extent_source(expression[1], count)} {_EXTENT_OPERATORS[expression[0]][1]} {_extent_source(expression[2], count)})"
+
+
+def _extent_has_domain(expression):
+    return expression[0] == "n" or (len(expression) == 3 and
+        (_extent_has_domain(expression[1]) or _extent_has_domain(expression[2])))
+
+
+@dataclass(frozen=True)
+class ResourceExtent:
+    """Per-parameter address proof consumed by CPU, Vulkan and C ABI lowering.
+
+    Bounds are in evaluation order, including intermediate integer operations;
+    guards prevent i32 overflow before a shader or native row reads any data.
+    """
+    parameter: int
+    exact_domain: bool
+    bounds: tuple
+    upper_indices: tuple
+
+    @classmethod
+    def from_record(cls, value):
+        if (not isinstance(value, dict) or set(value) != {"parameter", "exact_domain", "bounds", "upper_indices"}
+                or type(value["parameter"]) is not int or value["parameter"] < 0
+                or type(value["exact_domain"]) is not bool):
+            raise ValueError("invalid resource extent contract")
+        pairs = tuple(tuple(_extent_expression(part) for part in pair) for pair in value["bounds"])
+        if any(len(pair) != 2 for pair in pairs):
+            raise ValueError("resource extent requires lower/upper bounds")
+        upper = tuple(_extent_expression(item) for item in value["upper_indices"])
+        if any(item not in {pair[1] for pair in pairs} for item in upper):
+            raise ValueError("resource extent omitted an index proof")
+        return cls(value["parameter"], value["exact_domain"], pairs, upper)
+
+    def validate(self, count, length):
+        if type(length) is not int or not 0 <= length <= 0x7fffffff:
+            raise ValueError("continuation resource length exceeds the i32 ABI")
+        if self.exact_domain and length != count:
+            raise ValueError("pointwise continuation requires same-length buffers in its domain")
+        if count:
+            for low, high in self.bounds:
+                lo, hi = _extent_value(low, count), _extent_value(high, count)
+                if not 0 <= lo <= hi <= 0x7fffffff:
+                    raise ValueError("continuation resource index is negative or exceeds i32")
+        for upper in self.upper_indices:
+            required = 0 if count == 0 and _extent_has_domain(upper) else _extent_value(upper, count) + 1
+            if length < required:
+                raise ValueError(f"continuation resource {self.parameter} requires at least {required} elements, got {length}")
+
+    def guards(self, count, length):
+        """Emit this same proof for a no-GIL native wrapper; count is int64."""
+        result = [f"{length} < 0"]
+        if self.exact_domain:
+            result.append(f"{length} != {count}")
+        for low, high in self.bounds:
+            lo, hi = _extent_source(low, count), _extent_source(high, count)
+            result.append(f"{count} > 0 and not (0 <= {lo} <= {hi} <= 2147483647)")
+        for upper in self.upper_indices:
+            required = f"({_extent_source(upper, count)} + 1)"
+            prefix = f"{count} > 0 and " if _extent_has_domain(upper) else ""
+            result.append(f"{prefix}{length} < {required}")
+        return result
+
+
+def _bounded_index(node, index_name, local_bounds, local_indices=None):
+    """Conservative nonnegative intervals, with exact runtime domain N."""
+    bounds = []
+    zero = ("c", 0)
+
+    def clipped_float(value):
+        # A dynamic f32 address is admitted only after explicit NaN handling
+        # and clipping. Every integer up to 2**24-1 is exact in f32.
+        def call(part, name):
+            return (isinstance(part, ast.Call) and isinstance(part.func, ast.Name)
+                    and part.func.id == name and len(part.args) == 2 and not part.keywords)
+        if not call(value, "min"):
+            raise ValueError
+        upper, lower = value.args
+        maximum = upper.value if isinstance(upper, ast.Constant) and type(upper.value) in (int, float) else None
+        if (isinstance(upper, ast.Call) and isinstance(upper.func, ast.Name) and upper.func.id == "float"
+                and len(upper.args) == 1 and not upper.keywords):
+            maximum = _constant_int(upper.args[0])
+        if maximum is None or not 0 <= maximum <= 0xffffff or int(maximum) != maximum or not call(lower, "max"):
+            raise ValueError
+        floor, clean = lower.args
+        if (not isinstance(floor, ast.Constant) or floor.value != 0
+                or not isinstance(clean, ast.IfExp) or not isinstance(clean.orelse, ast.Constant)
+                or clean.orelse.value != 0 or not isinstance(clean.test, ast.Compare)
+                or len(clean.test.ops) != 1 or not isinstance(clean.test.ops[0], ast.Eq)
+                or len(clean.test.comparators) != 1):
+            raise ValueError
+        expressions = (clean.body, clean.test.left, clean.test.comparators[0])
+        if len({ast.dump(part, include_attributes=False) for part in expressions}) != 1:
+            raise ValueError
+        return zero, ("c", int(maximum))
+
+    def visit(value):
+        literal = _constant_int(value)
+        if literal is not None and 0 <= literal <= 0x7fffffff:
+            pair = (("c", literal), ("c", literal))
+        elif isinstance(value, ast.Name) and value.id == index_name:
+            pair = (zero, ("sub", ("n",), ("c", 1)))
+        elif isinstance(value, ast.Name) and value.id in local_bounds:
+            pair = (zero, ("c", local_bounds[value.id] - 1))
+        elif isinstance(value, ast.Name) and local_indices is not None and value.id in local_indices:
+            bounds.extend(local_indices[value.id][:-1])
+            pair = local_indices[value.id][-1]
+        elif (isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "int"
+              and len(value.args) == 1 and not value.keywords):
+            pair = clipped_float(value.args[0])
+        elif isinstance(value, ast.IfExp):
+            left, right = visit(value.body), visit(value.orelse)
+            pair = (("min", left[0], right[0]), ("max", left[1], right[1]))
+        elif (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+              and value.func.id in ("min", "max") and len(value.args) == 2 and not value.keywords):
+            left, right = (visit(arg) for arg in value.args)
+            pair = ((value.func.id, left[0], right[0]), (value.func.id, left[1], right[1]))
+        elif isinstance(value, ast.BinOp):
+            left = visit(value.left)
+            if isinstance(value.op, (ast.FloorDiv, ast.Mod)):
+                divisor = _constant_int(value.right)
+                if divisor is None or not 0 < divisor <= 0x7fffffff:
+                    raise ValueError
+                pair = (("div", left[0], ("c", divisor)), ("div", left[1], ("c", divisor))) \
+                    if isinstance(value.op, ast.FloorDiv) else (zero, ("c", divisor - 1))
+            else:
+                right = visit(value.right)
+                if isinstance(value.op, ast.Add):
+                    pair = (("add", left[0], right[0]), ("add", left[1], right[1]))
+                elif isinstance(value.op, ast.Sub):
+                    pair = (("sub", left[0], right[1]), ("sub", left[1], right[0]))
+                elif isinstance(value.op, ast.Mult) and (
+                        _constant_int(value.left) is not None or _constant_int(value.right) is not None):
+                    pair = (("mul", left[0], right[0]), ("mul", left[1], right[1]))
+                else:
+                    raise ValueError
+        else:
+            raise ValueError
+        bounds.append(pair)
+        return pair
+
+    try:
+        visit(node)
+        if any(not 0 <= _extent_value(low, 1) <= _extent_value(high, 1) <= 0x7fffffff for low, high in bounds):
+            return ()
+        return tuple(bounds)
+    except ValueError:
+        return ()
+
+
+@dataclass(frozen=True)
+class ContinuationPlan:
+    """A row-boundary proof, independent of parallel selection or a scheduler."""
+
+    eligible: bool
+    diagnostics: tuple[Diagnostic, ...]
+    index_name: str = ""
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    fixed_parameters: tuple[str, ...] = ()
+    operation_cost: int = 0
+    read_elements_per_iteration: int = 0
+    write_elements_per_iteration: int = 0
+    cost_source: str = "hir_ast_weight"
+    granularity: str = "complete_logical_iteration"
+    cross_slice_state: tuple = ()
+    resource_extents: tuple[ResourceExtent, ...] = ()
+    gathered: bool = False
+    fully_written_outputs: tuple[str, ...] = ()
+    ordered_reduction: OrderedReductionRegion | None = None
+    inner_range: InnerRangeContract | None = None
+
+    def require(self) -> None:
+        if not self.eligible:
+            raise TypeError("work item cannot continue: " + "; ".join(item.format() for item in self.diagnostics))
 
 
 @dataclass(frozen=True)
@@ -354,6 +649,72 @@ class FunctionHIR:
     def exit_block(self) -> BasicBlock:
         return self.blocks[-1]
 
+    @property
+    def continuation_plan(self) -> ContinuationPlan:
+        # Continuation rejects every overlapping output at actual binding.
+        # Parallel lowering retains its separate conservative alias diagnostic.
+        diagnostics = list(item for item in self.diagnostics if item.is_error and item.code != DiagnosticCode.ALIAS_RISK)
+
+        def reject(code, reason, location=None):
+            diagnostics.append(Diagnostic(DiagnosticSeverity.ERROR, code, reason, location))
+
+        if len(self.loops) != 1:
+            reject(DiagnosticCode.UNSUPPORTED_RANGE, "continuation requires exactly one logical range loop")
+            return ContinuationPlan(False, tuple(diagnostics))
+        loop = self.loops[0]
+        gathered = bool(loop.local_reductions) or any(
+            access.index != AffineExpr.variable(loop.index_name) for access in loop.buffer_reads)
+        if loop.reductions:
+            reject(DiagnosticCode.INVALID_REDUCTION, "continuation has no cross-slice reduction state or merge",
+                   loop.reductions[0].location)
+        if any(effect.kind == EffectKind.CONTROL_FLOW for effect in loop.effects):
+            reject(DiagnosticCode.UNSUPPORTED_CONTROL_FLOW,
+                   "loop finalizer/control flow is not part of row continuation", loop.source_location)
+        if any(block.kind == BasicBlockKind.LINEAR for block in self.blocks):
+            reject(DiagnosticCode.UNSUPPORTED_STATEMENT, "preheader/finalizer state is not part of row continuation")
+        spec = loop.range_spec
+        if spec is None or spec.start_affine != AffineExpr.literal(0) or spec.step_value != 1:
+            reject(DiagnosticCode.UNSUPPORTED_RANGE, "continuation requires a zero-based, unit-step logical domain",
+                   loop.source_location)
+        arguments = tuple(argument.name for argument in self.arguments)
+        argument_types = {argument.name: argument.type_ref.value_type for argument in self.arguments}
+        if any(argument.type_ref.value_type == ValueType.UNKNOWN for argument in self.arguments):
+            reject(DiagnosticCode.INVALID_ARGUMENT, "continuation requires bound array/scalar type facts")
+        for access in (*loop.buffer_reads, *loop.buffer_writes):
+            if access.buffer in argument_types and argument_types[access.buffer] != ValueType.ARRAY:
+                reject(DiagnosticCode.INVALID_ARGUMENT, f"buffer '{access.buffer}' requires an array binding", access.location)
+            if (access.buffer not in arguments or len(access.axes) != 1 or not access.bounds or
+                    (access.kind != BufferAccessKind.READ and access.index != AffineExpr.variable(loop.index_name))):
+                reject(DiagnosticCode.NON_AFFINE_INDEX,
+                       f"continuation requires a proven one-dimensional parameter index and direct output[{loop.index_name}]: {access.syntax}",
+                       access.location)
+        inputs = tuple(sorted({access.buffer for access in loop.buffer_reads}))
+        outputs = tuple(sorted({access.buffer for access in loop.buffer_writes}))
+        if not outputs:
+            reject(DiagnosticCode.INDIRECT_WRITE, "continuation requires an output row")
+        if set(inputs) & set(outputs):
+            reject(DiagnosticCode.ALIAS_RISK, "continuation inputs must be immutable and outputs write-only")
+        if gathered and (len(loop.buffer_writes) != 1 or outputs != loop.fully_written_outputs):
+            reject(DiagnosticCode.INDIRECT_WRITE, "gather/reduce requires one unconditional write-only output row")
+        extents = []
+        for parameter, name in enumerate(arguments):
+            if argument_types[name] != ValueType.ARRAY:
+                continue
+            accesses = [item for item in (*loop.buffer_reads, *loop.buffer_writes) if item.buffer == name]
+            bounds = tuple(dict.fromkeys(pair for access in accesses for pair in access.bounds))
+            upper = tuple(dict.fromkeys(access.bounds[-1][1] for access in accesses if access.bounds))
+            extents.append(ResourceExtent(parameter, not gathered, bounds, upper))
+        return ContinuationPlan(not diagnostics, tuple(diagnostics), loop.index_name, inputs, outputs, arguments,
+                                loop.operation_cost, sum(access.multiplicity for access in loop.buffer_reads),
+                                len(loop.buffer_writes), resource_extents=tuple(extents), gathered=gathered,
+                                fully_written_outputs=loop.fully_written_outputs if not diagnostics else (),
+                                ordered_reduction=loop.local_reductions[0]
+                                if not diagnostics and len(loop.local_reductions) == 1 else None)
+
+    @property
+    def continuable(self) -> bool:
+        return self.continuation_plan.eligible
+
 
 # Familiar aliases for callers that prefer the long names.
 HIRFunction = FunctionHIR
@@ -362,7 +723,7 @@ BufferReadWrite = BufferAccess
 ReductionSpec = Reduction
 
 
-_PURE_BUILTINS = frozenset({"abs", "min", "max", "round"})
+_PURE_BUILTINS = frozenset({"abs", "min", "max", "round", "float", "int"})
 _PURE_MATH = frozenset({
     "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "ceil",
     "copysign", "cos", "cosh", "degrees", "exp", "expm1", "fabs", "floor",
@@ -400,6 +761,14 @@ def _constant_int(node: ast.AST) -> int | None:
         value = _constant_int(node.operand)
         if value is not None:
             return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp):
+        left, right = _constant_int(node.left), _constant_int(node.right)
+        if left is not None and right is not None:
+            operations = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+                          ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod}
+            operation = operations.get(type(node.op))
+            if operation is not None and (right != 0 or not isinstance(node.op, (ast.FloorDiv, ast.Mod))):
+                return operation(left, right)
     return None
 
 
@@ -634,17 +1003,27 @@ def analyze_buffer_aliases(hir: FunctionHIR, groups: tuple[tuple[str, ...], ...]
 
 
 class _Analyzer:
-    def __init__(self, tree: ast.Module, source: str, function: ast.FunctionDef | ast.AsyncFunctionDef):
+    def __init__(self, tree: ast.Module, source: str, function: ast.FunctionDef | ast.AsyncFunctionDef,
+                 call_bindings: Mapping[str, object] | None = None,
+                 argument_types: Mapping[str, TypeRef] | None = None):
         self.tree = tree
         self.source = source
         self.function = function
+        self.call_bindings = call_bindings
+        self.bound_arguments = argument_types is not None
+        self.local_names = {node.id for node in ast.walk(function)
+                            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
         self.diagnostics: list[Diagnostic] = []
         self.imports: dict[str, str] = {"math": "math", "np": "numpy", "numpy": "numpy"}
         self._collect_imports()
         self.arg_types: dict[str, TypeRef] = {}
         self.initialized_scalars: dict[str, str] = {}
         self._collect_arguments()
+        self.arg_types.update(argument_types or {})
         self._collect_scalar_initializers()
+        self._local_bounds = {}
+        self._local_reductions = []
+        self._local_loop_extra_cost = 0
 
     def _collect_imports(self) -> None:
         for node in self.tree.body:
@@ -731,6 +1110,9 @@ class _Analyzer:
             return TypeRef(ValueType.SCALAR)
         if isinstance(node, ast.UnaryOp):
             return self._expr_type(node.operand)
+        if isinstance(node, ast.IfExp):
+            left, right = self._expr_type(node.body), self._expr_type(node.orelse)
+            return left if left == right else TypeRef(ValueType.SCALAR if left.is_scalar and right.is_scalar else ValueType.UNKNOWN)
         if isinstance(node, ast.BinOp):
             left, right = self._expr_type(node.left), self._expr_type(node.right)
             if ValueType.FLOAT in {left.value_type, right.value_type}:
@@ -756,6 +1138,16 @@ class _Analyzer:
 
     def _is_pure_call(self, node: ast.Call) -> bool:
         name, attr = _call_name(node)
+        if self.call_bindings is not None:
+            if name in self.arg_types or name in self.local_names:
+                return False
+            if attr is None and name in _PURE_BUILTINS | {"len"}:
+                return self.call_bindings.get(name, getattr(builtins, name)) is getattr(builtins, name)
+            module = self.imports.get(name or "")
+            if module in {"math", "numpy", "np"}:
+                expected = math if module == "math" else sys.modules.get("numpy")
+                if expected is None or self.call_bindings.get(name) is not expected:
+                    return False
         if attr is None and name in _PURE_BUILTINS:
             return True
         module = self.imports.get(name or "")
@@ -797,9 +1189,11 @@ class _Analyzer:
             else:
                 index = _affine(_index_node(node), known_calls=self.imports)
                 axes = _access_axes(node, self.imports)
+                bounds = _bounded_index(_index_node(node), loop.target.id, self._local_bounds, self._local_indices) \
+                    if isinstance(loop.target, ast.Name) else ()
                 row_local = _row_local(axes, loop)
                 loop_name = loop.target.id if isinstance(loop.target, ast.Name) else ""
-                if not row_local and (index is None or any(name != loop_name for name in index.variables)):
+                if not row_local and not bounds and (index is None or any(name != loop_name for name in index.variables)):
                     self.diagnostic(
                         DiagnosticCode.NON_AFFINE_INDEX,
                         f"read from {node.value.id}[...] is not indexed by the loop induction variable",
@@ -807,10 +1201,19 @@ class _Analyzer:
                         loop_id=loop_id,
                     )
                 same = row_local or _is_same_iteration_index(index, loop_name=loop_name)
-                reads.append(BufferAccess(node.value.id, index, BufferAccessKind.READ, _location(node), _unparse(node), same, row_local or _index_is_unique(index, loop_name), axes))
+                reads.append(BufferAccess(node.value.id, index, BufferAccessKind.READ, _location(node), _unparse(node),
+                    same, row_local or _index_is_unique(index, loop_name), axes, bounds,
+                    next(iter(self._local_bounds.values()), 1)))
                 effects.append(Effect(EffectKind.BUFFER_READ, f"read {node.value.id}[{_unparse(_index_node(node))}]", _location(node), node.value.id))
             for child in ast.iter_child_nodes(node):
-                self._visit_expression(child, loop, loop_id, reads, effects)
+                if child is not node.value:
+                    self._visit_expression(child, loop, loop_id, reads, effects)
+            return
+        if (self.bound_arguments and isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and
+                self.arg_types.get(node.id, TypeRef(ValueType.UNKNOWN)).value_type == ValueType.ARRAY):
+            self.diagnostic(DiagnosticCode.UNSUPPORTED_EXPRESSION,
+                            f"array '{node.id}' must use an indexed row access, not escape into a scalar call/value",
+                            node, loop_id=loop_id)
             return
         if isinstance(node, ast.Call):
             name, attr = _call_name(node)
@@ -861,11 +1264,13 @@ class _Analyzer:
                 loop_id=loop_id,
             )
         access_kind = BufferAccessKind.READ_WRITE if aug else BufferAccessKind.WRITE
-        access = BufferAccess(buffer_name, index, access_kind, _location(target), _unparse(target), same, unique, axes)
+        bounds = _bounded_index(_index_node(target), loop.target.id, self._local_bounds, self._local_indices) \
+            if isinstance(loop.target, ast.Name) else ()
+        access = BufferAccess(buffer_name, index, access_kind, _location(target), _unparse(target), same, unique, axes, bounds)
         writes.append(access)
         effects.append(Effect(EffectKind.BUFFER_WRITE, f"write {buffer_name}[{_unparse(_index_node(target))}]", _location(target), buffer_name))
         if aug:
-            reads.append(BufferAccess(buffer_name, index, BufferAccessKind.READ, _location(target), _unparse(target), same, unique, axes))
+            reads.append(BufferAccess(buffer_name, index, BufferAccessKind.READ, _location(target), _unparse(target), same, unique, axes, bounds))
             effects.append(Effect(EffectKind.BUFFER_READ, f"read for update {buffer_name}[{_unparse(_index_node(target))}]", _location(target), buffer_name))
 
     def _is_scalar_reduction(
@@ -926,8 +1331,16 @@ class _Analyzer:
             else:
                 self.diagnostic(DiagnosticCode.INDIRECT_WRITE, "attribute or computed targets are not writable in a parallel loop", target, loop_id=loop_id)
             self._visit_expression(node.value, loop, loop_id, reads, effects)
+            if isinstance(target, ast.Name):
+                bounds = _bounded_index(node.value, loop.target.id, self._local_bounds, self._local_indices)
+                if node in loop.body and bounds:
+                    self._local_indices[target.id] = bounds
+                else:
+                    self._local_indices.pop(target.id, None)
             return
         if isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name):
+                self._local_indices.pop(node.target.id, None)
             if self._is_scalar_reduction(node, loop, loop_id, statements, reductions, effects):
                 self._visit_expression(node.value, loop, loop_id, reads, effects)
                 return
@@ -953,6 +1366,9 @@ class _Analyzer:
         if isinstance(node, ast.Pass):
             statements.append(HIRStatement(HIRStatementKind.PASS, None, "pass", TypeRef(ValueType.VOID), _location(node)))
             return
+        if isinstance(node, ast.For) and (self._local_reduce(node, loop, loop_id, reads, effects, statements)
+                                        or self._local_scan(node, loop, loop_id, reads, effects, statements)):
+            return
         if isinstance(node, (ast.For, ast.While)):
             self.diagnostic(DiagnosticCode.UNSUPPORTED_NESTED_LOOP, "nested loops are outside the minimal HIR", node, loop_id=loop_id)
             return
@@ -962,6 +1378,159 @@ class _Analyzer:
             return
         self.diagnostic(DiagnosticCode.UNSUPPORTED_STATEMENT, f"statement '{type(node).__name__}' is not supported", node, loop_id=loop_id)
 
+    def _local_loop_count(self, node, loop):
+        call = node.iter
+        if (node not in loop.body or node.orelse or not node.body
+                or not isinstance(node.target, ast.Name) or node.target.id == loop.target.id
+                or node.target.id in self.arg_types or not isinstance(call, ast.Call)
+                or not isinstance(call.func, ast.Name) or call.func.id != "range"
+                or len(call.args) != 1 or call.keywords
+                or "range" in self.arg_types or "range" in self.local_names
+                or (self.call_bindings is not None and self.call_bindings.get("range", builtins.range) is not builtins.range)):
+            return None
+        count = _constant_int(call.args[0])
+        if count is None or not 0 < count <= 0x7fffffff:
+            return None
+        return count
+
+    def _local_scan(self, node, loop, loop_id, reads, effects, statements):
+        """A bounded pure scalar fold stays indivisible within one output row."""
+        count = self._local_loop_count(node, loop)
+        if count is None:
+            return False
+        assigned = set()
+        for item in node.body:
+            if (not isinstance(item, ast.Assign) or len(item.targets) != 1
+                    or not isinstance(item.targets[0], ast.Name) or not self._expr_type(item.value).is_scalar):
+                return False
+            name = item.targets[0].id
+            if name in self.arg_types or name in (loop.target.id, node.target.id):
+                return False
+            if any((isinstance(part, ast.Call) and not self._is_pure_call(part))
+                   or isinstance(part, (ast.NamedExpr, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp))
+                   for part in ast.walk(item.value)):
+                return False
+            assigned.add(name)
+        # A carried value can change on every term; its old address proof is
+        # invalid both inside this fold and after it. Unchanged row locals keep
+        # their facts. Runtime code generation still uses the authored loop.
+        for name in (*assigned, node.target.id):
+            self._local_indices.pop(name, None)
+        outer_indices = dict(self._local_indices)
+        self._local_bounds = {node.target.id: count}
+        try:
+            for item in node.body:
+                self._statement(item, loop, loop_id, reads, [], [], effects, statements)
+                bound = _bounded_index(item.value, loop.target.id, self._local_bounds, self._local_indices)
+                if bound:
+                    self._local_indices[item.targets[0].id] = bound
+        finally:
+            self._local_bounds = {}
+            self._local_indices = outer_indices
+        self._local_loop_extra_cost += (count - 1) * _operation_cost(ast.Module(body=node.body, type_ignores=[]))
+        return True
+
+    def _local_reduce(self, node, loop, loop_id, reads, effects, statements):
+        count = self._local_loop_count(node, loop)
+        if count is None:
+            return False
+        update = node.body[-1]
+        term_prefix = node.body[:-1]
+        operation = "add"
+        if isinstance(update, ast.AugAssign) and isinstance(update.op, ast.Add) and isinstance(update.target, ast.Name):
+            target, value = update.target.id, update.value
+        elif (isinstance(update, ast.Assign) and len(update.targets) == 1 and isinstance(update.targets[0], ast.Name)
+                and isinstance(update.value, ast.BinOp) and isinstance(update.value.op, ast.Add)
+                and isinstance(update.value.left, ast.Name) and update.value.left.id == update.targets[0].id):
+            target, value = update.targets[0].id, update.value.right
+        elif (isinstance(update, ast.Assign) and len(update.targets) == 1 and isinstance(update.targets[0], ast.Name)
+                and isinstance(update.value, ast.Call) and isinstance(update.value.func, ast.Name)
+                and update.value.func.id in ("max", "min") and self._is_pure_call(update.value)
+                and len(update.value.args) == 2 and not update.value.keywords
+                and isinstance(update.value.args[0], ast.Name)
+                and update.value.args[0].id == update.targets[0].id):
+            target, value, operation = update.targets[0].id, update.value.args[1], update.value.func.id
+        else:
+            return False
+        # Per-term temporaries must be pure, single-assignment values confined
+        # to this inner loop. They are recomputed on every resumed term; only
+        # the reduction accumulator crosses a cut.
+        temporaries = []
+        for item in term_prefix:
+            if (not isinstance(item, ast.Assign) or len(item.targets) != 1
+                    or not isinstance(item.targets[0], ast.Name) or not self._expr_type(item.value).is_scalar):
+                return False
+            name = item.targets[0].id
+            if name in {*self.arg_types, target, loop.target.id, node.target.id, *temporaries}:
+                return False
+            temporaries.append(name)
+        if any(isinstance(item, ast.Name) and item.id in temporaries
+               for statement in loop.body if statement is not node for item in ast.walk(statement)):
+            return False
+        defined = set()
+        for item in term_prefix:
+            if any(isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load)
+                   and (part.id == target or part.id in set(temporaries) - defined) for part in ast.walk(item.value)):
+                return False
+            defined.add(item.targets[0].id)
+        initializers = [item for item in loop.body[:loop.body.index(node)] if isinstance(item, ast.Assign)
+                        and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name) and item.targets[0].id == target]
+        if (target in self.arg_types or target in {node.target.id, loop.target.id} or not initializers
+                or not self._expr_type(initializers[-1].value).is_scalar
+                or any(isinstance(item, ast.Name) and item.id == target for item in ast.walk(value))):
+            return False
+        self._local_indices.pop(target, None)
+        self._local_indices.pop(node.target.id, None)
+        outer_indices = dict(self._local_indices)
+        self._local_bounds = {node.target.id: count}
+        for item in term_prefix:
+            self._statement(item, loop, loop_id, reads, [], [], effects, statements)
+            bound = _bounded_index(item.value, loop.target.id, self._local_bounds, self._local_indices)
+            if bound:
+                self._local_indices[item.targets[0].id] = bound
+        self._visit_expression(value, loop, loop_id, reads, effects)
+        self._local_bounds = {}
+        self._local_indices = outer_indices
+        position = loop.body.index(node)
+        initializer = loop.body.index(initializers[-1])
+        prefix = ast.Module(body=loop.body[:position], type_ignores=[])
+        epilogue = ast.Module(body=loop.body[position + 1:], type_ignores=[])
+        diagnostics = []
+        if operation != "add":
+            diagnostics.append("non-additive local reductions continue at row boundaries")
+        initial = initializers[-1].value
+        if len(initializers) != 1 or not (isinstance(initial, ast.Constant) and type(initial.value) is float and initial.value == 0.0):
+            diagnostics.append("inner continuation requires one dominating floating zero initializer")
+        if len([item for item in ast.walk(loop) if isinstance(item, ast.Name)
+                and isinstance(item.ctx, ast.Store) and item.id == target]) != 2:
+            diagnostics.append("inner continuation cannot carry other accumulator assignments")
+        if any(isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load) and item.id == target
+               for item in ast.walk(prefix)):
+            diagnostics.append("inner continuation prefix cannot depend on the evolving accumulator")
+        if any(not isinstance(item, ast.Assign) or len(item.targets) != 1
+               or not isinstance(item.targets[0], ast.Name) or not self._expr_type(item.value).is_scalar
+               or item.targets[0].id in {loop.target.id, node.target.id} for item in prefix.body):
+            diagnostics.append("inner continuation prefix requires pure scalar assignments")
+        if any(not isinstance(item, ast.Assign) or len(item.targets) != 1 for item in epilogue.body):
+            diagnostics.append("inner continuation epilogue requires unconditional assignments")
+        term = ast.Module(body=node.body, type_ignores=[])
+        if any((isinstance(item, ast.Call) and not self._is_pure_call(item))
+               or isinstance(item, (ast.NamedExpr, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp))
+               for part in (prefix, term, epilogue) for item in ast.walk(part)):
+            diagnostics.append("inner continuation requires directly proved pure arithmetic")
+        self._local_reductions.append(OrderedReductionRegion(
+            node.target.id, count, target, initializer, position,
+            ast.dump(ast.Module(body=loop.body, type_ignores=[]), include_attributes=False),
+            _operation_cost(prefix), _operation_cost(term), _operation_cost(epilogue),
+            _operation_cost(loop) - _operation_cost(prefix) - _operation_cost(term) - _operation_cost(epilogue),
+            sum(isinstance(item, ast.Subscript) and isinstance(item.ctx, ast.Load) for item in ast.walk(term)),
+            sum(isinstance(item, ast.Subscript) and isinstance(item.ctx, ast.Load) for item in ast.walk(prefix)),
+            sum(isinstance(item, ast.Subscript) and isinstance(item.ctx, ast.Load) for item in ast.walk(epilogue)),
+            tuple(diagnostics)))
+        statements.append(HIRStatement(HIRStatementKind.AUG_ASSIGN, target, _unparse(value), self._expr_type(value), _location(node)))
+        self._local_loop_extra_cost += (count - 1) * _operation_cost(ast.Module(body=node.body, type_ignores=[]))
+        return True
+
     def _inspect_function_controls(self) -> None:
         if isinstance(self.function, ast.AsyncFunctionDef):
             self.diagnostic(DiagnosticCode.ASYNC_FUNCTION, "async functions cannot be lowered to this synchronous HIR", self.function)
@@ -969,9 +1538,11 @@ class _Analyzer:
     @staticmethod
     def _scalar_flow(
         nodes: Sequence[ast.stmt],
-        defined: set[str],
-        on_read: Callable[[ast.Name, set[str]], None],
-    ) -> set[str] | None:
+        defined: set,
+        on_read: Callable[[ast.Name, set], None],
+        *, on_write: Callable[[ast.expr, set], None] | None = None,
+        on_exit: Callable[[ast.stmt, set], None] | None = None,
+    ) -> set | None:
         """Visit structured paths with a must-defined set, without another IR.
 
         A terminating branch does not reach its sibling's merge. Unsupported
@@ -988,7 +1559,7 @@ class _Analyzer:
             if isinstance(node, ast.If):
                 read(node.test)
                 branches = [
-                    _Analyzer._scalar_flow(branch, defined, on_read)
+                    _Analyzer._scalar_flow(branch, defined, on_read, on_write=on_write, on_exit=on_exit)
                     for branch in (node.body, node.orelse)
                 ]
                 reachable = [branch for branch in branches if branch is not None]
@@ -1003,17 +1574,57 @@ class _Analyzer:
                         read(target)
                         defined.update(child.id for child in ast.walk(target)
                                        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store))
+                        if on_write is not None:
+                            on_write(target, defined)
             elif isinstance(node, ast.AugAssign):
                 read(node.value)
                 read(node.target)
                 if isinstance(node.target, ast.Name):
                     on_read(node.target, defined)
                     defined.add(node.target.id)
+                if on_write is not None:
+                    on_write(node.target, defined)
+            elif (isinstance(node, ast.For) and isinstance(node.target, ast.Name) and not node.orelse
+                    and isinstance(node.iter, ast.Call) and len(node.iter.args) == 1
+                    and (_constant_int(node.iter.args[0]) or 0) > 0):
+                read(node.iter)
+                # Its exits belong to the local loop, not the logical row.
+                inner = _Analyzer._scalar_flow(node.body, defined | {node.target.id}, on_read,
+                                               on_write=on_write)
+                if inner is not None:
+                    defined.update(inner)
             else:
                 read(node)
                 if isinstance(node, (ast.Continue, ast.Break, ast.Return, ast.Raise)):
+                    if on_exit is not None:
+                        on_exit(node, defined)
                     return None
         return defined
+
+    def _row_output_coverage(self, loop, writes):
+        """Must-write facts at normal row exits, using the existing path walk."""
+        index = AffineExpr.variable(loop.target.id)
+        direct = {access.buffer for access in writes if access.index == index and len(access.axes) == 1}
+        tag, exits = object(), []
+
+        def output_facts(defined):
+            return {value[1] for value in defined if isinstance(value, tuple)
+                    and len(value) == 2 and value[0] is tag}
+
+        def write(target, defined):
+            if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
+                    and target.value.id in direct and len(_access_axes(target, self.imports)) == 1
+                    and _affine(_index_node(target), known_calls=self.imports) == index):
+                defined.add((tag, target.value.id))
+
+        def row_exit(statement, defined):
+            exits.append(output_facts(defined) if isinstance(statement, ast.Continue) else set())
+
+        fallthrough = self._scalar_flow(loop.body, set(), lambda *_: None,
+                                        on_write=write, on_exit=row_exit)
+        if fallthrough is not None:
+            exits.append(output_facts(fallthrough))
+        return tuple(sorted(set.intersection(*exits))) if exits else ()
 
     def _scalar_dependencies(self, node: ast.For, loop_id: str, reductions: Sequence[Reduction]) -> None:
         assigned = {child.id for statement in node.body for child in ast.walk(statement)
@@ -1051,6 +1662,10 @@ class _Analyzer:
         self._scalar_flow([*node.orelse, *self.function.body[position + 1:]], set(), read_after)
 
     def _loop(self, node: ast.For, ordinal: int) -> RangeLoopHIR:
+        self._local_bounds = {}
+        self._local_indices = {}
+        self._local_reductions = []
+        self._local_loop_extra_cost = 0
         loop_id = self._loop_id(node, ordinal)
         range_spec = self._range_spec(node, loop_id)
         index_name = node.target.id if isinstance(node.target, ast.Name) else "<non-name>"
@@ -1061,6 +1676,9 @@ class _Analyzer:
         reductions: list[Reduction] = []
         effects: list[Effect] = []
         statements: list[HIRStatement] = []
+        if node.orelse:
+            effects.append(Effect(EffectKind.CONTROL_FLOW, "loop else/finalizer",
+                                  _location(node.orelse[0])))
         for statement in node.body:
             self._statement(statement, node, loop_id, reads, writes, reductions, effects, statements)
         self._scalar_dependencies(node, loop_id, reductions)
@@ -1083,6 +1701,12 @@ class _Analyzer:
                 )
         for statement in node.body:
             for child in ast.walk(statement):
+                if isinstance(child, ast.NamedExpr):
+                    self.diagnostic(
+                        DiagnosticCode.UNSUPPORTED_EXPRESSION,
+                        "assignment expression can invalidate row bounds. Use a separate assignment statement",
+                        child, loop_id=loop_id,
+                    )
                 if isinstance(child, (ast.Assign, ast.AnnAssign)):
                     targets = child.targets if isinstance(child, ast.Assign) else [child.target]
                     if child.value is not None:
@@ -1136,16 +1760,7 @@ class _Analyzer:
             reason = "eligible: independent affine iterations with unique writes and/or standard scalar reductions"
         eligible = not error_codes and range_spec is not None and range_spec.is_affine and bool(writes or reductions)
         source = ast.get_source_segment(self.source, node) or _unparse(node)
-        operation_cost = 0
-        for item in ast.walk(node):
-            if isinstance(item, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp)):
-                operation_cost += 1
-            elif isinstance(item, ast.Subscript):
-                operation_cost += 2
-            elif isinstance(item, ast.Call):
-                operation_cost += 8
-            elif isinstance(item, (ast.Assign, ast.AugAssign, ast.If)):
-                operation_cost += 1
+        operation_cost = _operation_cost(node) + self._local_loop_extra_cost
         return RangeLoopHIR(
             stable_id=loop_id,
             function_name=self.function.name,
@@ -1163,6 +1778,9 @@ class _Analyzer:
             parallel_eligible=eligible,
             reason=reason,
             operation_cost=max(1, operation_cost),
+            local_reductions=tuple(self._local_reductions),
+            fully_written_outputs=self._row_output_coverage(node, writes)
+                if not (error_codes - {DiagnosticCode.ALIAS_RISK}) else (),
         )
 
     def _block_id(self, kind: BasicBlockKind, node: ast.AST | None, ordinal: int) -> str:
@@ -1306,18 +1924,22 @@ def _find_function(tree: ast.Module, function_name: str | None) -> ast.FunctionD
     return functions[0]
 
 
-def build_hir(source: str, function_name: str | None = None) -> FunctionHIR:
+def build_hir(source: str, function_name: str | None = None, *,
+              call_bindings: Mapping[str, object] | None = None,
+              argument_types: Mapping[str, TypeRef] | None = None) -> FunctionHIR:
     """Parse source and build the minimal typed HIR for one function."""
 
     tree = _parse(source)
     function = _find_function(tree, function_name)
-    return _Analyzer(tree, textwrap.dedent(source), function).build()
+    return _Analyzer(tree, textwrap.dedent(source), function, call_bindings, argument_types).build()
 
 
-def analyze_source(source: str, function_name: str | None = None) -> FunctionHIR:
+def analyze_source(source: str, function_name: str | None = None, *,
+                   call_bindings: Mapping[str, object] | None = None,
+                   argument_types: Mapping[str, TypeRef] | None = None) -> FunctionHIR:
     """Alias for :func:`build_hir`, named for analysis-oriented callers."""
 
-    return build_hir(source, function_name)
+    return build_hir(source, function_name, call_bindings=call_bindings, argument_types=argument_types)
 
 
 def analyze_function(function: Any, *, function_name: str | None = None) -> FunctionHIR:
@@ -1402,6 +2024,9 @@ __all__ = [
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticSeverity",
+    "ContinuationPlan",
+    "InnerRangeContract",
+    "OrderedReductionRegion",
     "Effect",
     "EffectKind",
     "FunctionHIR",

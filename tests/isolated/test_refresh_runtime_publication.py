@@ -4,7 +4,6 @@ import os
 import struct
 import subprocess
 import sys
-import time
 import zlib
 
 import pytest
@@ -39,7 +38,7 @@ def write_png(path, size):
 def exercise(project, case):
     from infernux.engine.engine import Engine
     from infernux.engine.preferences_store import PreferencesStore
-    from infernux.lib import AssetRegistry, LogLevel, RuntimeMode
+    from infernux.lib import AssetLoadSuperseded, AssetRegistry, LogLevel, RuntimeMode
 
     assets = project / "Assets"
     assets.mkdir()
@@ -65,10 +64,8 @@ def exercise(project, case):
         ticket = texture = None
         if case.startswith("ticket-"):
             ticket = registry.begin_load_texture_by_guid(guid)
-            deadline = time.monotonic() + 15
-            while not ticket.complete and time.monotonic() < deadline:
-                time.sleep(.001)
-            assert ticket.complete
+            ticket.wait()
+            assert ticket.complete and not ticket.committed
         else:
             texture = registry.load_texture_by_guid(guid)
             assert texture.pixel_width == 2
@@ -115,7 +112,7 @@ def exercise(project, case):
                 assert registry.try_commit_asset_load(ticket, allow_stale_if_unloaded=True)
                 assert registry.load_texture_by_guid(guid).pixel_width == 2
             else:
-                with pytest.raises(RuntimeError, match="stale"):
+                with pytest.raises(AssetLoadSuperseded):
                     registry.try_commit_asset_load(ticket, allow_stale_if_unloaded=case == "ticket-preview")
                 current = registry.load_texture_by_guid(guid)
                 if case == "ticket-deleted":

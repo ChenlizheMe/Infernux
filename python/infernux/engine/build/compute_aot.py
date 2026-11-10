@@ -8,7 +8,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
-import struct
 import time
 
 import numpy as np
@@ -17,15 +16,13 @@ from infernux.engine.path_utils import resolved_path
 from infernux.engine.project_context import get_script_module_name
 from infernux._compiler.source_metadata import compute_decorator_names, embed_compute_sources
 from infernux._compiler.kernel_contract import (
+    WORK_ITEM_FAST_MATH,
     attribute_name,
     implicit_receiver_attribute,
     implicit_receiver_name,
     kernel_diagnostic,
     receiver_field_names,
 )
-
-
-_ARTIFACT_MAGIC = b"INXGPU\x01"
 
 
 class ComputeAotBuildError(RuntimeError):
@@ -280,34 +277,22 @@ def declared_kernel_names(
 
 
 def _artifact_record(path: Path) -> tuple[tuple[str, ...], str]:
+    from infernux._compiler.taichi.frontend import _read_artifact
+
     try:
-        payload = path.read_bytes()
-        if not payload.startswith(_ARTIFACT_MAGIC):
-            raise ValueError("invalid magic")
-        header_size = struct.unpack_from("<I", payload, len(_ARTIFACT_MAGIC))[0]
-        header_begin = len(_ARTIFACT_MAGIC) + 4
-        header_end = header_begin + header_size
-        if header_end > len(payload):
-            raise ValueError("truncated header")
-        header = json.loads(payload[header_begin:header_end].decode("utf-8"))
-        cursor = header_end
-        for size in header["task_sizes"]:
-            cursor += int(size)
-        if cursor != len(payload):
-            raise ValueError("invalid task payload size")
-        locations = header["diagnostic_locations"]
+        result = _read_artifact(path)
+        if result is None:
+            raise FileNotFoundError(path)
+        header, artifact = result
         functions = tuple(
             str(item["function"])
-            for item in locations
+            for item in artifact.diagnostic_locations
             if isinstance(item, dict) and str(item.get("function", ""))
         )
         if not functions:
             raise ValueError("missing kernel identity")
-        specialization = header.get("specialization")
-        if not isinstance(specialization, str) or not specialization:
-            raise ValueError("missing direct specialization identity; warm the kernel again")
-        return functions, specialization
-    except (KeyError, OSError, TypeError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        return functions, header["specialization"]
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError, RuntimeError) as error:
         raise ComputeAotBuildError(
             f"GPU AOT artifact is unreadable: {path}: {error}"
         ) from error
@@ -317,9 +302,15 @@ def _specialization_parameters(specialization: str) -> tuple:
     """Recreate ABI descriptors, never runtime buffers or guessed scalar values."""
     result = []
     from infernux.math import vector2, vector3, vector4
+    from infernux._compiler.taichi.frontend import _compilation_request
 
     dtypes = {"int": int, "float": float, "vector2": vector2, "vector3": vector3, "vector4": vector4}
-    records = json.loads(specialization)
+    identity = json.loads(specialization)
+    if not isinstance(identity, dict) or set(identity) != {"parameters", "autodiff_mode", "gradient_parameters", "fast_math"}:
+        raise ValueError("invalid GPU specialization identity")
+    if type(identity["fast_math"]) is not bool or identity["fast_math"] is not WORK_ITEM_FAST_MATH:
+        raise ValueError("GPU specialization changed the fixed WorkItem floating-point policy")
+    records = identity["parameters"]
     if not isinstance(records, list):
         raise ValueError("invalid GPU specialization")
     for record in records:
@@ -332,7 +323,9 @@ def _specialization_parameters(specialization: str) -> tuple:
             result.append(_gpu_buffer_descriptor((1,) * record[2], dtypes.get(record[1], record[1])))
         else:
             raise ValueError(f"invalid GPU specialization parameter: {record!r}")
-    return tuple(result)
+    params = tuple(result)
+    gradients = _compilation_request(params, identity["autodiff_mode"], identity["gradient_parameters"])
+    return params, {"autodiff_mode": identity["autodiff_mode"], "gradient_parameters": gradients}
 
 
 def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: tuple[str, ...]):
@@ -355,7 +348,14 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     cache = root / "Library/Artifacts/Compute"
     specializations: dict[str, set[str]] = {name: set() for name in expected}
     for path in sorted(cache.glob("*.inxgpu")):
-        functions, specialization = _artifact_record(path)
+        try:
+            functions, specialization = _artifact_record(path)
+        except ComputeAotBuildError as error:
+            # Historical ABIs cannot describe this build's current closure.
+            # Missing contracts/corrupt current artifacts still fail strictly.
+            if isinstance(error.__cause__, frontend.ArtifactAbiMismatchError):
+                continue
+            raise
         for name in set(functions).intersection(specializations):
             specializations[name].add(specialization)
 
@@ -363,14 +363,15 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     manifest = []
     missing: set[str] = set()
 
-    def select(function, params, *, bindings=None):
+    def select(function, params, *, bindings=None, autodiff_mode="none", gradient_parameters=()):
         name = f"{function.__module__}.{function.__qualname__}"
-        plan = frontend.prepare_kernel(function, params, receiver_fields=bindings)
+        request = {"autodiff_mode": autodiff_mode, "gradient_parameters": gradient_parameters}
+        plan = frontend.prepare_kernel(function, params, receiver_fields=bindings, **request)
         path = cache / f"{plan.artifact_key}.inxgpu"
         if not path.is_file():
             return False
         functions, specialization = _artifact_record(path)
-        if name not in functions or specialization != frontend._specialization_identity(params):
+        if name not in functions or specialization != frontend._specialization_identity(params, **request):
             raise ComputeAotBuildError(f"GPU AOT artifact identity disagrees with its source: {path}")
         selected[path.name] = path
         manifest.append({"function": name, "specialization": specialization, "artifact": path.name})
@@ -413,7 +414,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                     function.__qualname__ = qualified
                     matched = False
                     for specialization in sorted(specializations[name]):
-                        params = _specialization_parameters(specialization)
+                        params, request = _specialization_parameters(specialization)
                         bindings = tuple(zip(fields, params)) if fields is not None else None
                         expected_count = len(definition.args.posonlyargs) + len(definition.args.args)
                         if fields is not None:
@@ -421,7 +422,11 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                         # Historical arities do not describe the current declaration.
                         if len(params) != expected_count:
                             continue
-                        matched = select(function, params, bindings=bindings) or matched
+                        selected_request = select(function, params, bindings=bindings, **request)
+                        # Public @compute.kernel launches the default primal.
+                        # Additional AD requests cannot satisfy that closure.
+                        if request["autodiff_mode"] == "none" and not request["gradient_parameters"]:
+                            matched = selected_request or matched
                     if not matched:
                         missing.add(name)
             for declaration, params in _engine_specializations():

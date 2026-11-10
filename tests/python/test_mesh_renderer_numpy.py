@@ -84,7 +84,7 @@ def test_renderer_parameter_slots_clone_and_field_removal_are_isolated(scene):
     assert document["parameterOverrides"][1]["baseColor"]["value"] == pytest.approx([0.1, 0.8, 0.1, 1.0])
     assert "metallic" not in document["parameterOverrides"][1]
 
-    clone_object = scene._clone_game_object(source_object)
+    clone_object, _ = scene._clone_game_object(source_object)
     clone = clone_object.get_component("MeshRenderer")
     assert clone.get_parameter("baseColor", material_slot=0) == pytest.approx((0.8, 0.1, 0.1, 1.0))
     assert clone.get_parameter("baseColor", material_slot=1) == pytest.approx((0.1, 0.8, 0.1, 1.0))

@@ -1,4 +1,6 @@
 """Live Python -> native particle bindings survive Scene residency changes."""
+import time
+
 import pytest
 
 from infernux.components import ParticleSystem
@@ -62,20 +64,17 @@ def test_live_skin_binding_follows_scene_moves_without_republishing(model, scene
         manager.pause()
         # Let the renderer consume this fixture's initial Scene/Play boundary
         # before publishing the graph whose continuity is under test.
-        boundary_frames = 0
-
-        def prepare_frame(_delta):
-            nonlocal boundary_frames
-            boundary_frames += 1
-            if boundary_frames == 3:
-                engine.exit()
-
-        engine.set_pre_scene_update_callback(prepare_frame)
-        engine.run()
+        for _ in range(3):
+            engine.tick(1. / 120.)
         component.graph = ParticleGraphRef(guid=imported.guid)
         component.awake()
         component.set_parameter("surface", ComponentRef(skin))
-        assert component.play()
+        if not component.play():
+            deadline = time.monotonic() + 5.0
+            while component._has_unpublished_candidate() and time.monotonic() < deadline:
+                engine.tick(0.0)
+                component.update(0.0)
+            assert component.play(), component.last_compile_error or component.runtime_diagnostics()
         controller = component._gpu_controllers[0]
         emitter_id = component._gpu_emitter_ids[0]
         revision = engine._gpu_particle_artifact_revision(emitter_id)
@@ -114,7 +113,6 @@ def test_live_skin_binding_follows_scene_moves_without_republishing(model, scene
                             assert source_object.scene is manager.get_runtime_persistent_scene()
                             source_object.transform.position = Vector3(200., 0., 0.)
                         else:
-                            engine.exit()
                             return
                 component.update(1. / 120.)
                 if request is None and frames >= capture_after:
@@ -124,10 +122,12 @@ def test_live_skin_binding_follows_scene_moves_without_republishing(model, scene
                 assert manager.get_active_scene() is scene
             except BaseException as error:
                 errors.append(error)
-                engine.exit()
 
         engine.set_pre_scene_update_callback(update_frame)
-        engine.run()
+        for _ in range(240):
+            engine.tick(1. / 120.)
+            if errors or len(results) == 3:
+                break
         assert not errors, repr(errors)
         assert len(results) == 3
         baseline = results[0]["attributes"]["builtin.position"]

@@ -76,6 +76,7 @@ def _bound_document(
         capabilities=(DocumentCapability.SAVE | DocumentCapability.SAVE_AS | DocumentCapability.DISCARD),
         controller=controller,
     )
+    view.document_id = document.document_id
     return document, controller
 
 

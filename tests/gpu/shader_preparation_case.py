@@ -6,6 +6,7 @@ import uuid
 
 from infernux.core.assets import AssetManager
 from infernux.lib import AssetRegistry, InxMaterial
+from tests.gpu.mesh_preview_dependency_case import measure_preview_pixels
 
 
 class ShaderPreparationCase:
@@ -48,6 +49,7 @@ class ShaderPreparationCase:
         self.deadline = time.monotonic() + 45
         self.proof = dict(mode=mode)
         self.preview_keys = []
+        self.pixel_reads = {}
 
     def _change_source(self):
         if self.mode == 'unchanged':
@@ -96,7 +98,10 @@ class ShaderPreparationCase:
         self.native.poll_gpu_completions()
         row = next((dict(r) for r in self.native.preview_task_snapshots if r['resource_key'] == key), None)
         if row and row['texture_id'] and row['ready_generation'] == row['generation'] and not row['in_flight']:
-            assert row['non_transparent_pixel_count'] > 100, row
+            row = measure_preview_pixels(self.native, row, self.pixel_reads)
+            if row is None:
+                return None
+            assert row['measured_nontransparent_pixels'] > 100, row
             return row
         return None
 
@@ -145,7 +150,7 @@ class ShaderPreparationCase:
             if row is None:
                 return dict(done=False)
             self.proof['after_pixels'] = row
-            assert row['pixel_hash'] == self.proof['current_pixels']['pixel_hash'], self.proof
+            assert row['measured_hash'] == self.proof['current_pixels']['measured_hash'], self.proof
             if self.mode not in ('unchanged', 'cached'):
                 assert not self.proof['old_commit'] and not self.old.committed, self.proof
                 if self.mode != 'cancel':
@@ -155,6 +160,9 @@ class ShaderPreparationCase:
         return dict(done=False)
 
     def close(self):
+        for reading in self.pixel_reads.values():
+            if not reading['ticket'].done:
+                reading['ticket'].cancel()
         self.old.cancel()
         if hasattr(self, 'new'):
             self.new.cancel()

@@ -9,7 +9,10 @@ from infernux.lib import (
     DocumentWriteOptions,
     DocumentWriteSuperseded,
     DocumentWriteTicket,
+    FileWriteMode,
     NativeDocumentStore,
+    PathWriteBusy,
+    PathWriteScope,
 )
 
 
@@ -50,20 +53,23 @@ def read_document_text_snapshot(path: str):
 
 def write_document_text(
     path: str,
-    content: str,
+    content: str | bytes | bytearray,
     *,
-    create_backup: bool = False,
+    mode: FileWriteMode = FileWriteMode.Replace,
     expected_file_state=None,
     commit_chain_token: str = "",
     chain_id: str = "",
+    write_scope: PathWriteScope | None = None,
 ) -> int:
     """Write one UTF-8 document and return its path generation."""
     if Path(path).suffix.casefold() == ".inxdoc":
         raise ValueError("Cooked asset documents are read-only; save an authoring copy instead")
     options = DocumentWriteOptions()
-    options.create_backup = create_backup
+    options.mode = mode
     options.expected_file_state = expected_file_state
     options.commit_chain_token = str(commit_chain_token or chain_id or "")
+    if write_scope is not None:
+        options.write_scope = write_scope
     return NativeDocumentStore.instance().write_and_wait(path, content, options)
 
 
@@ -71,10 +77,11 @@ def submit_document_text(
     path: str,
     content: str,
     *,
-    create_backup: bool = False,
+    mode: FileWriteMode = FileWriteMode.Replace,
     expected_file_state=None,
     commit_chain_token: str = "",
     chain_id: str = "",
+    write_scope: PathWriteScope | None = None,
 ) -> DocumentWriteTicket:
     """Queue one UTF-8 document write without blocking the caller.
 
@@ -85,9 +92,11 @@ def submit_document_text(
     if Path(path).suffix.casefold() == ".inxdoc":
         raise ValueError("Cooked asset documents are read-only; save an authoring copy instead")
     options = DocumentWriteOptions()
-    options.create_backup = create_backup
+    options.mode = mode
     options.expected_file_state = expected_file_state
     options.commit_chain_token = str(commit_chain_token or chain_id or "")
+    if write_scope is not None:
+        options.write_scope = write_scope
     return NativeDocumentStore.instance().submit(path, content, options)
 
 
@@ -97,6 +106,8 @@ __all__ = [
     "DocumentWriteOptions",
     "DocumentWriteSuperseded",
     "DocumentWriteTicket",
+    "PathWriteBusy",
+    "PathWriteScope",
     "capture_document_file_state",
     "read_document_text_snapshot",
     "submit_document_text",

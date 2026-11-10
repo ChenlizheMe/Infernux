@@ -226,7 +226,9 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("project_root", &AssetDatabase::GetProjectRoot);
 #endif
 
+    py::register_exception<AssetLoadSuperseded>(m, "AssetLoadSuperseded", PyExc_RuntimeError);
     py::class_<AssetLoadTicket, std::shared_ptr<AssetLoadTicket>>(m, "AssetLoadTicket")
+        .def("wait", &AssetLoadTicket::Wait, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("guid", &AssetLoadTicket::GetGuid)
         .def_property_readonly("resource_type", &AssetLoadTicket::GetResourceType)
         .def_property_readonly("complete", &AssetLoadTicket::IsComplete)
@@ -324,6 +326,9 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("has_skinned_data", &InxMesh::HasSkinnedData,
                                "Whether this Mesh carries immutable skin/animation data")
         .def_property_readonly("generation", &InxMesh::GetGeneration, "Monotonic immutable geometry generation")
+        .def_property_readonly("imported_scale", &InxMesh::GetImportedScale)
+        .def_property_readonly("import_metadata",
+                               [](const InxMesh &mesh) { return ResourceMetaView::From(mesh.GetImportMetadata()); })
         .def_property_readonly("skinned_bone_count",
                                [](const InxMesh &mesh) {
                                    const auto &skinned = mesh.GetSkinnedData();
@@ -793,30 +798,34 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             py::arg("guid"), "Get a cached mesh by GUID (returns None if not loaded)")
         .def(
             "begin_load_mesh_by_guid",
-            [](AssetRegistry &self, const std::string &guid) { return self.BeginLoadAsset(guid, ResourceType::Mesh); },
-            py::arg("guid"), "Schedule Assimp CPU mesh preparation on JobSystem")
+            [](AssetRegistry &self, const std::string &guid, bool preferPublished) {
+                return self.BeginLoadAsset(guid, ResourceType::Mesh, preferPublished);
+            },
+            py::arg("guid"), py::kw_only(), py::arg("prefer_published") = false,
+            "Prepare a mesh load or retain the published revision for synchronous scene restoration")
+        .def("pending_mesh_reload", &AssetRegistry::GetPendingMeshReload, py::arg("guid"))
         .def(
             "begin_load_material_by_guid",
             [](AssetRegistry &self, const std::string &guid) {
                 return self.BeginLoadAsset(guid, ResourceType::Material);
             },
-            py::arg("guid"), "Schedule material parsing on JobSystem")
+            py::arg("guid"), "Prepare material parsing for frame admission")
         .def(
             "begin_load_physic_material_by_guid",
             [](AssetRegistry &self, const std::string &guid) {
                 return self.BeginLoadAsset(guid, ResourceType::PhysicMaterial);
             },
-            py::arg("guid"), "Schedule physics material parsing on JobSystem")
+            py::arg("guid"), "Prepare physics material parsing for frame admission")
         .def(
             "begin_load_shader_by_guid",
             [](AssetRegistry &self, const std::string &guid) {
                 return self.BeginLoadAsset(guid, ResourceType::Shader);
             },
-            py::arg("guid"), "Schedule authored shader compilation on JobSystem")
+            py::arg("guid"), "Prepare shader compilation for frame admission")
         .def(
             "begin_load_audio_by_guid",
             [](AssetRegistry &self, const std::string &guid) { return self.BeginLoadAsset(guid, ResourceType::Audio); },
-            py::arg("guid"), "Schedule audio decode on JobSystem")
+            py::arg("guid"), "Prepare audio decoding for frame admission")
         .def(
             "load_texture_by_guid",
             [](AssetRegistry &self, const std::string &guid) {
@@ -832,10 +841,12 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             [](AssetRegistry &self, const std::string &guid) {
                 return self.BeginLoadAsset(guid, ResourceType::Texture);
             },
-            py::arg("guid"), "Schedule texture artifact load/decode on JobSystem")
+            py::arg("guid"), "Prepare texture metadata loading for frame admission")
         .def("try_commit_asset_load", &AssetRegistry::TryCommitAssetLoad, py::arg("ticket"),
              py::arg("allow_stale_if_unloaded") = false,
              "Publish a completed typed CPU payload; false means still pending")
+        .def("try_submit_asset_load", &AssetRegistry::TrySubmitAssetLoad, py::arg("ticket"),
+             "Explicit cold-boundary admission; normal runtime uses the frame owner")
 
         // Hot-reload / invalidation
         .def("reload_asset", &AssetRegistry::ReloadAsset, py::arg("guid"),
@@ -860,6 +871,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def("get_all_asset_residency", &AssetRegistry::GetAllAssetResidency)
         .def_property("cpu_budget_bytes", &AssetRegistry::GetCpuBudgetBytes, &AssetRegistry::SetCpuBudgetBytes)
         .def_property_readonly("total_cpu_bytes", &AssetRegistry::GetTotalCpuBytes)
+        .def_property_readonly("texture_read_retained_bytes", &AssetRegistry::GetTextureReadRetainedBytes)
+        .def_property_readonly("has_texture_reads", &AssetRegistry::HasTextureReads)
         .def_property_readonly("cpu_eviction_count", &AssetRegistry::GetCpuEvictionCount)
         .def("trim_cpu_budget", &AssetRegistry::TrimCpuBudget)
         .def("pin_asset", &AssetRegistry::PinAsset, py::arg("guid"))

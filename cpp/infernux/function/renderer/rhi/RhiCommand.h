@@ -90,10 +90,11 @@ class ComputeCommandEncoder
         void (*pushConstants)(void *, ComputePipelineHandle, uint32_t, const void *) = nullptr;
         void (*dispatch)(void *, uint32_t, uint32_t, uint32_t) = nullptr;
         void (*dispatchIndirect)(void *, BufferHandle, uint64_t) = nullptr;
+        bool (*canRecord)(void *, ComputePipelineHandle, BindGroupHandle) = nullptr;
 
         [[nodiscard]] constexpr bool IsComplete() const noexcept
         {
-            return bindPipeline && bindGroup && pushConstants && dispatch && dispatchIndirect;
+            return bindPipeline && bindGroup && pushConstants && dispatch && dispatchIndirect && canRecord;
         }
     };
 
@@ -111,6 +112,15 @@ class ComputeCommandEncoder
     [[nodiscard]] constexpr bool HasCompleteDispatch() const noexcept
     {
         return IsValid() && m_dispatch->IsComplete();
+    }
+
+    /// Check the actual recording context and the set-zero pipeline/group
+    /// contract before emitting any commands. A dispatch table alone does not
+    /// prove that a native command buffer or matching device exists.
+    [[nodiscard]] bool CanRecord(ComputePipelineHandle pipeline, BindGroupHandle group) const
+    {
+        return HasCompleteDispatch() && pipeline.IsValid() && group.IsValid() &&
+               m_dispatch->canRecord(m_context, pipeline, group);
     }
 
     void BindPipeline(ComputePipelineHandle pipeline) const
@@ -165,6 +175,48 @@ struct TextureCopyRegion
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t depth = 1;
+    uint32_t sourceX = 0;
+    uint32_t sourceY = 0;
+    uint32_t sourceZ = 0;
+    uint32_t destinationX = 0;
+    uint32_t destinationY = 0;
+    uint32_t destinationZ = 0;
+};
+
+/// Tightly packed, single-aspect texels at the origin of one 2D mip/layer.
+struct TextureBufferCopyRegion
+{
+    TextureAspect aspect = TextureAspect::Color;
+    uint32_t textureMip = 0;
+    uint32_t textureLayer = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t bufferOffset = 0;
+
+    [[nodiscard]] static constexpr uint32_t TexelBytes(PixelFormat format) noexcept
+    {
+        const auto layout = GetPixelFormatLayout(format);
+        return layout.blockWidth == 1 && layout.blockHeight == 1 && !IsStencilFormat(format) ? layout.bytesPerBlock : 0;
+    }
+
+    [[nodiscard]] static constexpr TextureAspect AspectFor(PixelFormat format) noexcept
+    {
+        return IsDepthFormat(format) ? TextureAspect::Depth : TextureAspect::Color;
+    }
+
+    [[nodiscard]] static constexpr uint64_t ByteSize(PixelFormat format, uint32_t width, uint32_t height) noexcept
+    {
+        const auto rowBytes = uint64_t{width} * TexelBytes(format);
+        return rowBytes && height <= UINT64_MAX / rowBytes ? rowBytes * height : 0;
+    }
+
+    [[nodiscard]] constexpr bool Fits(PixelFormat format, uint64_t bytes) const noexcept
+    {
+        const auto size = ByteSize(format, width, height);
+        const auto texelBytes = TexelBytes(format);
+        return aspect == AspectFor(format) && size && size <= bytes &&
+               bufferOffset % (texelBytes > 4u ? texelBytes : 4u) == 0;
+    }
 };
 
 struct TextureResolveRegion
@@ -189,10 +241,13 @@ class TransferCommandEncoder
         void (*resolveTexture)(void *, TextureHandle, TextureHandle, const TextureResolveRegion &) = nullptr;
         bool (*fillBuffer)(void *, BufferHandle, uint64_t, uint64_t, uint32_t) = nullptr;
         bool (*updateBuffer)(void *, BufferHandle, uint64_t, const void *, uint64_t) = nullptr;
+        bool (*copyTextureToBuffer)(void *, TextureHandle, BufferHandle, const TextureBufferCopyRegion &) = nullptr;
+        bool (*copyBufferToTexture)(void *, BufferHandle, TextureHandle, const TextureBufferCopyRegion &) = nullptr;
 
         [[nodiscard]] constexpr bool IsComplete() const noexcept
         {
-            return copyBuffer && copyTexture && resolveTexture && fillBuffer && updateBuffer;
+            return copyBuffer && copyTexture && resolveTexture && fillBuffer && updateBuffer && copyTextureToBuffer &&
+                   copyBufferToTexture;
         }
     };
 
@@ -251,6 +306,31 @@ class TransferCommandEncoder
             m_dispatch->copyTexture(m_context, source, destination, region);
     }
 
+    /// Record image-to-buffer transfer without submission, host mapping or
+    /// implicit barriers. Source requires a single-sample image with a tightly
+    /// packed color or depth aspect and TransferSource usage. The buffer needs
+    /// TransferDestination usage. Depth copies require a graphics queue. The caller
+    /// chooses buffer memory, including explicit Readback, and owns any host
+    /// visibility barrier and completion wait before mapping it.
+    /// The caller owns both resources through actual GPU completion and must
+    /// establish the transfer layouts/accesses outside a render pass.
+    /// Returns false without recording when any resource or range is invalid.
+    [[nodiscard]] bool CopyTextureToBuffer(TextureHandle source, BufferHandle destination,
+                                           const TextureBufferCopyRegion &region) const
+    {
+        return CanCopyTextureBuffer(source, destination, region) && m_dispatch->copyTextureToBuffer &&
+               m_dispatch->copyTextureToBuffer(m_context, source, destination, region);
+    }
+
+    /// Record the reverse transfer using the same texel layout. The source is
+    /// TransferSource and the texture must be in its transfer-destination layout.
+    [[nodiscard]] bool CopyBufferToTexture(BufferHandle source, TextureHandle destination,
+                                           const TextureBufferCopyRegion &region) const
+    {
+        return CanCopyTextureBuffer(destination, source, region) && m_dispatch->copyBufferToTexture &&
+               m_dispatch->copyBufferToTexture(m_context, source, destination, region);
+    }
+
     void ResolveTexture(TextureHandle source, TextureHandle destination, const TextureResolveRegion &region) const
     {
         if (IsValid() && m_dispatch->resolveTexture && source.IsValid() && destination.IsValid() &&
@@ -259,6 +339,14 @@ class TransferCommandEncoder
     }
 
   private:
+    [[nodiscard]] bool CanCopyTextureBuffer(TextureHandle texture, BufferHandle buffer,
+                                            const TextureBufferCopyRegion &region) const noexcept
+    {
+        return IsValid() && texture.IsValid() && buffer.IsValid() &&
+               (region.aspect == TextureAspect::Color || region.aspect == TextureAspect::Depth) && region.width > 0 &&
+               region.height > 0 && region.bufferOffset % 4u == 0;
+    }
+
     void *m_context = nullptr;
     const DispatchTable *m_dispatch = nullptr;
 };

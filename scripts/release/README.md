@@ -14,9 +14,14 @@ packagers derive this version from package metadata; Web CMake derives it
 from the engine's version source. Publish a new plugin version when its
 payload changes.
 
-`build_release_catalog.py --check-version` checks the Hub publication identity,
-and recovery is reserved for a failed gated publication. Public download pages
-and catalogs change only after the actual artifacts have been published.
+After builds and tests, the publisher uses
+`build_release_catalog.py --publication-status` to skip publication successfully
+when the current Hub version/build is already published. A newer identity proceeds
+to publication; a version regression or invalid release metadata still fails.
+`--check-version` and catalog generation keep their strict checks against
+replacing published identities. Recovery is reserved for a failed gated
+publication and bypasses the unchanged-version skip. Public download pages and
+catalogs change only after the actual artifacts have been published.
 
 ## Release sequence
 
@@ -127,9 +132,10 @@ certificate. Only SignPath can finish that external step.
 `r2-upload-worker.mjs` is the source of `upload.infernux-engine.com`, currently
 deployed under the existing Cloudflare Worker name `infernux-r2-upload-040`.
 The name is an infrastructure identifier, not the engine release version.
-Its `BUCKET` and `UPLOAD_TOKEN` bindings remain server-side. New plugin releases
-must be added to its exact destination/source lists before publication. Hub
-destinations use a validated version/build/filename contract. Unauthorized
+Its `BUCKET` and `UPLOAD_TOKEN` bindings remain server-side. Ordinary plugin
+releases use its exact destination/source lists. Engine wheels, versioned Player
+plugins and Hub destinations use validated version/build/filename contracts,
+so a new engine release or hotfix does not require another wheel allowlist edit. Unauthorized
 object paths return HTTP 400 instead of an opaque upload failure.
 
 Deploy source changes through Cloudflare's Worker script-content endpoint,

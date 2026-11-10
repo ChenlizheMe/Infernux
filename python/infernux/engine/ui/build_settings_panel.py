@@ -1441,7 +1441,7 @@ class BuildSettingsPanel(EditorPanel):
         if self._cancel_event.is_set():
             raise BuildCancelled()
 
-    def _prepare_asset_catalog_for_build(self) -> str:
+    def _prepare_asset_catalog_for_build(self) -> dict:
         """Publish a durable asset catalog before the worker reads the project.
 
         Asset writes intentionally invalidate ``Library/AssetIndex.json`` until
@@ -1454,41 +1454,9 @@ class BuildSettingsPanel(EditorPanel):
         project_root = get_project_root()
         from infernux.engine.player_build_preflight import publish_player_asset_catalog
 
-        return str(publish_player_asset_catalog(project_root, database)["path"])
-
-    def _published_player_catalog_entries(self, catalog) -> list[dict]:
-        """Return the exact AssetIndex snapshot published by editor preflight."""
-
-        entries = None
-        index_path = ""
-        if isinstance(catalog, dict):
-            index_path = str(catalog.get("path") or "")
-            raw_entries = catalog.get("entries")
-            if isinstance(raw_entries, list):
-                entries = raw_entries
-        else:
-            index_path = str(catalog or "")
-        if entries is None:
-            if not index_path or not os.path.isfile(index_path):
-                database = getattr(self.services, "asset_database", None)
-                if database is not None:
-                    database.flush_derived_index()
-                    index_path = str(getattr(database, "asset_index_path", "") or "")
-            if not index_path or not os.path.isfile(index_path):
-                raise RuntimeError(
-                    "Library/AssetIndex.json is missing after Player catalog "
-                    "preflight. Save pending assets and try again."
-                )
-            from infernux.engine.runtime_artifact_catalog import load_asset_index
-
-            project_root = get_project_root()
-            if not project_root:
-                raise RuntimeError("No project root found")
-            entries = load_asset_index(project_root)
-        return [dict(item) for item in entries]
+        return publish_player_asset_catalog(project_root, database)
 
     def _make_build_request(self, catalog, target_id: str) -> BuildRequest:
-        entries = self._published_player_catalog_entries(catalog)
         cancellation = BuildCancellationToken()
         self._build_cancellation = cancellation
         configuration = (
@@ -1513,7 +1481,8 @@ class BuildSettingsPanel(EditorPanel):
                     "build_settings": self._capture_build_settings(),
                 },
             ),
-            asset_catalog_entries=entries,
+            asset_catalog_entries=catalog["entries"],
+            runtime_type_records=catalog["runtime_type_records"],
             cancellation=cancellation,
             progress=self._on_platform_build_progress,
         )
@@ -1620,10 +1589,11 @@ class BuildSettingsPanel(EditorPanel):
         # Snapshot now. A later document transaction can invalidate
         # AssetIndex.json before the worker starts; the frozen entries are
         # the published catalog, not the live file.
-        return {
-            "path": index_path,
-            "entries": load_asset_index(project_root),
-        }
+        from infernux.engine.player_build_preflight import capture_player_build_inputs
+
+        return capture_player_build_inputs(
+            project_root, load_asset_index(project_root), path=index_path,
+        )
 
     def _do_build(self, *, run_after: bool) -> bool:
         if self._building:

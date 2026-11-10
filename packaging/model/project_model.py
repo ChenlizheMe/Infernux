@@ -16,6 +16,8 @@ from hub_utils import remove_directory_tree as _remove_tree
 from project_paths import inspect_existing_project, new_project_target
 from project_python_runtime import (
     project_runtime_directory,
+    project_runtime_executable,
+    project_runtime_exists,
     project_runtime_settings_path,
     read_project_python_version,
     write_project_python_version,
@@ -449,8 +451,7 @@ class ProjectModel:
 
             # Virtual environments can contain absolute paths and must be
             # created at their final location instead of being moved there.
-            self._create_project_runtime(final_dir, on_status=on_status)
-            self._install_infernux_in_runtime(final_dir, engine_version, on_status=on_status)
+            self._provision_project_runtime(final_dir, engine_version, on_status=on_status)
 
             self._install_default_libraries(final_dir, on_status=on_status)
 
@@ -540,33 +541,34 @@ class ProjectModel:
         classic .venv.
         """
         if is_frozen():
-            python_version = _project_python_version(project_dir)
-            runtime_dir = project_runtime_directory(project_dir, python_version)
-            if sys.platform == "win32":
-                return os.path.join(runtime_dir, "python.exe")
-            return os.path.join(runtime_dir, "bin", "python")
+            return project_runtime_executable(project_dir, _project_python_version(project_dir))
         # Dev mode: classic .venv
         venv_dir = os.path.join(project_dir, ".venv")
         if sys.platform == "win32":
             return os.path.join(venv_dir, "Scripts", "python.exe")
         return os.path.join(venv_dir, "bin", "python")
 
+    def _provision_project_runtime(self, project_dir: str, engine_version: str, *, on_status=None) -> None:
+        created_runtime = self._create_project_runtime(project_dir, on_status=on_status)
+        try:
+            self._install_infernux_in_runtime(project_dir, engine_version, on_status=on_status)
+        except Exception:
+            if created_runtime is not None:
+                # Only the Python tree created by this provisioning attempt is ours.
+                _remove_tree(created_runtime)
+            raise
+
     def _create_project_runtime(
         self,
         project_dir: str,
         *,
         on_status=None,
-        replace_existing: bool = False,
-    ) -> None:
+    ) -> str | None:
         if is_frozen():
             target_version = read_project_python_version(project_dir)
             runtime_path = project_runtime_directory(project_dir, target_version)
-            if replace_existing and os.path.exists(runtime_path):
-                # The project runtime is generated state and is deliberately
-                # ignored by Git.  A missing executable means a partial clone
-                # or interrupted copy; rebuild that cache from the Hub-owned
-                # runtime before launch.
-                _remove_tree(runtime_path)
+            if project_runtime_exists(project_dir, target_version):
+                raise RuntimeError(f"The project already owns a Python runtime at {runtime_path}.")
             try:
                 self.runtime_manager.create_project_runtime(
                     runtime_path,
@@ -575,7 +577,7 @@ class ProjectModel:
                 )
             except PythonRuntimeError as exc:
                 raise RuntimeError(str(exc)) from exc
-            return
+            return runtime_path
 
         # Dev mode: create a classic .venv
         venv_path = os.path.join(project_dir, ".venv")
@@ -650,29 +652,13 @@ class ProjectModel:
 
         if on_status:
             on_status("Checking the project runtime...")
+        site_packages = ProjectModel._get_site_packages(project_dir)
+        if _distribution_files_present(site_packages, "infernux"):
+            raise RuntimeError(f"The project already owns Infernux engine files at {site_packages}.")
         prepare_private_runtime_paths(os.path.dirname(project_python) if sys.platform == "win32"
                                       else os.path.dirname(os.path.dirname(project_python)))
-        site_packages = ProjectModel._get_site_packages(project_dir)
-        distribution_present = _distribution_files_present(site_packages, "infernux")
         marker_path = _project_wheel_marker(project_dir)
         expected_fingerprint = _wheel_install_fingerprint(wheel)
-        installed_fingerprint = ""
-        try:
-            with open(marker_path, "r", encoding="utf-8") as marker:
-                installed_fingerprint = marker.read()
-        except FileNotFoundError:
-            pass
-        wheel_is_current = bool(
-            expected_fingerprint and installed_fingerprint == expected_fingerprint
-        )
-        if distribution_present and wheel_is_current:
-            if not validate_current:
-                return
-            try:
-                ProjectModel.validate_python_runtime(project_python)
-                return
-            except RuntimeError:
-                pass
 
         if on_status:
             on_status("Installing Infernux engine files...")

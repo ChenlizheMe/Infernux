@@ -2,9 +2,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <core/threading/FrameWorkOwner.h>
 #include <core/threading/JobSystem.h>
 #include <core/types/InxFwdType.h>
 #include <core/types/ShaderProgramArtifact.h>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -32,12 +34,29 @@ namespace infernux
 {
 
 class AssetLoadTicket;
+struct MeshPreviewPreparation;
+struct TimelineCubePreviewCandidate;
 class LinkedShaderProgramLoadTicket;
+
+struct PreviewPixelSummary
+{
+    uint64_t hash = 0;
+    uint32_t nonTransparentPixelCount = 0;
+    uint8_t minRgb = 0;
+    uint8_t maxRgb = 0;
+};
 
 enum class RuntimeMode
 {
     Graphical,
     Headless,
+};
+
+struct PresentationReceipt
+{
+    uint64_t sequence = 0;
+    uint64_t hostOpportunity = 0;
+    uint64_t acceptedNs = 0;
 };
 
 /// Two-phase linked-program preload. Worker jobs only produce CPU artifacts;
@@ -74,19 +93,36 @@ class Infernux
     void Run();
     void Tick(float deltaTime);
     void SetPreSceneUpdateCallback(std::function<void(float)> callback);
+    void SetEndFrameCallback(std::function<void(bool)> callback);
+    void SetRuntimeFrameCallbacks(std::function<void(float)> beforeWork, std::function<void()> afterWork);
+    [[nodiscard]] FrameWorkOwner &GetFrameWorkOwner() noexcept
+    {
+        return m_frameWork;
+    }
+    [[nodiscard]] uint64_t GetSubmittedRenderFrameCount() const noexcept
+    {
+        return m_submittedRenderFrames;
+    }
+    [[nodiscard]] const PresentationReceipt &GetLastPresentation() const noexcept
+    {
+        return m_lastPresentation;
+    }
     void Exit();
     [[nodiscard]] bool IsExitRequested() const
     {
         return m_exitRequested.load(std::memory_order_acquire);
     }
     void Cleanup();
+    void RequireCleanupBoundary() const;
     void RequireFrameInactive() const;
     [[nodiscard]] std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
+    [[nodiscard]] bool HasGpuCompute() const noexcept;
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> CreateRenderTexture(const rhi::RenderTextureDesc &description);
     [[nodiscard]] std::shared_ptr<rhi::RenderTexture> LoadRenderTexture(const std::string &guid);
     void RequireComputeHostsReleased() const;
 
-    void InitHeadless(const std::string &projectPath, const std::string &builtinResourcePath = "");
+    void InitHeadless(const std::string &projectPath, const std::string &builtinResourcePath = "",
+                      std::function<void()> prepareSettings = {}, bool gpu = false);
 
     [[nodiscard]] RuntimeMode GetRuntimeMode() const noexcept
     {
@@ -101,7 +137,7 @@ class Infernux
 
     // renderer
     void InitRenderer(int width, int height, const std::string &projectPath,
-                      const std::string &builtinResourcePath = "");
+                      const std::string &builtinResourcePath = "", std::function<void()> prepareSettings = {});
     void ResetImGuiLayout();
     void SelectDockedWindow(const std::string &windowId, bool allowDuringModal = false);
 
@@ -265,12 +301,11 @@ class Infernux
 
     /// @brief Combined query + schedule for material preview.
     ///
-    /// Returns the current ImGui texture id (stale-return for anti-flicker).
-    /// Internally manages a monotonic generation counter; re-renders only
-    /// when the content actually changes (JSON hash or file mtime).
+    /// The last published image stays visible while the current content is prepared.
     ///
-    /// @param materialJson  If non-empty, render from this JSON (Inspector live edits).
-    /// @param fileMtimeHint If != 0 and materialJson is empty, used to detect file changes (ProjectPanel).
+    /// @param matFilePath Imported material or model material slot when materialJson is empty.
+    /// @param materialJson Inline document for live edits.
+    /// @param fileMtimeHint Optional file change hint for the imported source.
     uint64_t QueryOrScheduleMaterialPreview(const std::string &resourceKey, const std::string &matFilePath,
                                             const std::string &materialJson = "", uint64_t fileMtimeHint = 0,
                                             bool authoring = false);
@@ -314,6 +349,7 @@ class Infernux
 
     /// @brief Poll asynchronous GPU completion without waiting for the device.
     void PollGpuCompletions();
+    [[nodiscard]] bool IsGpuSubmissionCompleted(rhi::SubmissionTicket ticket) const noexcept;
 
     /// @brief Get uploaded texture id for a material preview key.
     /// @return Non-zero ImGui texture id when available (stale-return for anti-flicker).
@@ -388,7 +424,8 @@ class Infernux
     /// @return ImGui texture id (0 if not ready yet)
     uint64_t QueryOrScheduleMeshPreview(const std::string &resourceKey, const std::string &meshFilePath,
                                         uint64_t fileMtimeHint = 0);
-    [[nodiscard]] uint64_t GetMeshPreviewDependencyRevision(const std::string &meshFilePath) const;
+    /// Read the revision of an imported catalog path (including model subresources), without disk IO.
+    [[nodiscard]] uint64_t GetPreviewDependencyRevision(const std::string &path) const;
 
     /// @brief Queue a Timeline cube preview render (non-blocking). Returns the latest
     ///        ImGui texture id immediately; GPU work runs in PumpPreviewTasks().
@@ -396,11 +433,12 @@ class Infernux
                                        float sz, float camYaw, float camPitch, float camDistance, int size);
 
     /// @brief Execute a pending Timeline cube preview render if one was queued this frame.
-    void PumpTimelineCubePreviewIfDirty();
+    bool PumpTimelineCubePreviewIfDirty();
     uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
                                          int size, uint64_t dependencyRevision);
-    /// Process queued material preview renders (returns uploads consumed).
-    int PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown);
+    int AdvanceMaterialPreview(bool gpu, int uploadBudget, bool &progressed);
+    bool AdvancePreviewTasks(bool gpu, uint64_t lane);
+    FrameWorkFacts DescribePreviewWork();
 
     // debug
     void SetLogLevel(LogLevel engineLevel);
@@ -427,8 +465,12 @@ class Infernux
     }
 
   private:
+    void StartFrameDriver();
+    void TickFrame(float deltaTime);
     /// @brief Check if engine is valid for operations
     [[nodiscard]] bool CheckEngineValid(const char *operation) const;
+    void RegisterAssetLoaders();
+    void RegisterAssetCallbacks();
 
     /// @brief Ensure a shader is loaded in the renderer
     /// @param shaderId The shader_id to check/load
@@ -490,25 +532,28 @@ class Infernux
     {
         std::string resourceKey;
         uint64_t generation = 0;
-        int width = 0;
-        int height = 0;
         bool nearest = false;
-        bool success = false;
-        std::vector<unsigned char> pixels;
-        std::shared_ptr<const TextureCpuData> sourcePixels;
-        uint64_t pixelHash = 0;
-        uint32_t nonTransparentPixelCount = 0;
-        uint8_t minRgb = 0;
-        uint8_t maxRgb = 0;
+        bool displayEncoding = false;
+        std::shared_ptr<FrameCpuStorageClaim> storage;
+        std::shared_ptr<const TextureCpuData> pixels;
+        PreviewPixelSummary summary;
     };
+
+    struct MaterialPreviewRaster;
 
     struct MaterialPreviewRequest
     {
         std::string resourceKey;
         std::string matFilePath;
         uint64_t generation = 0;
-        std::string materialJson; ///< If non-empty, render from this JSON instead of reading matFilePath from disk.
-        uint16_t transientGpuFailures = 0;
+        std::string materialJson; ///< Live document when the asset is being edited.
+        std::shared_ptr<AssetLoadTicket> loadTicket;
+        std::shared_ptr<InxMaterial> material;
+        std::shared_ptr<MaterialPreviewRaster> raster;
+        std::string assetGuid;
+        uint64_t assetContentGeneration = 0;
+        uint64_t materialVersion = 0;
+        std::vector<std::pair<std::string, uint64_t>> inputRevisions;
     };
 
     struct TexturePreviewRequest
@@ -523,11 +568,24 @@ class Infernux
         std::string textureType = "default";
     };
 
+    struct TexturePreviewSource;
+
     struct MeshPreviewRequest
     {
         std::string resourceKey;
         std::string meshFilePath;
         uint64_t generation = 0;
+        std::shared_ptr<MeshPreviewPreparation> preparation;
+        std::shared_ptr<PreviewGeometryUpload> geometry;
+    };
+
+    struct PendingPreviewUpload
+    {
+        uint64_t version = 0;
+        uint64_t generation = 0;
+        int width = 0;
+        int height = 0;
+        PreviewPixelSummary summary;
     };
 
     struct MaterialPreviewState
@@ -535,30 +593,27 @@ class Infernux
         uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
         uint64_t readyGeneration = 0;  ///< Generation of last completed render
         uint64_t failedGeneration = 0; ///< Rejected source is retried only after a change
-        uint64_t lastJsonHash = 0;     ///< std::hash of last JSON string seen
         uint64_t lastFileMtime = 0;    ///< Last file mtime seen from ProjectPanel
-        uint64_t pendingUploadVersion = 0;
-        uint64_t pendingPreviewGeneration = 0;
-        bool inFlight = false;
+        uint64_t lastDependencyRevision = 0;
+        PendingPreviewUpload upload;
+        uint64_t pendingGeneration = 0;
         bool authoring = false;
         uint64_t renderGeneration = 0;
-        std::shared_ptr<vk::ImageReadbackTicket> renderTicket;
-        std::shared_ptr<InxMaterial> renderMaterial;
-        int pendingSize = 0;
-        int readySize = 0;
+        std::shared_ptr<PreviewImage> renderTicket;
+        std::shared_ptr<const std::vector<std::pair<std::string, uint64_t>>> submittedInputs;
         std::string textureName;
-        uint64_t textureId = 0;
-        uint64_t pixelGeneration = 0;
-        uint64_t pixelHash = 0;
-        uint32_t nonTransparentPixelCount = 0;
-        uint8_t minRgb = 0;
-        uint8_t maxRgb = 0;
+        std::optional<PreviewPixelSummary> readyPixels;
         // Latest accepted source for this key. A newer authoring revision may
         // arrive while an older GPU readback/upload is still in flight; keep
         // the source here so the preview pump can immediately continue with
         // the newest generation instead of waiting for another UI query.
         std::string latestMatFilePath;
         std::string latestMaterialJson;
+
+        bool HasPendingWork() const noexcept
+        {
+            return pendingGeneration || renderTicket || upload.version;
+        }
     };
 
     struct TexturePreviewState
@@ -567,28 +622,27 @@ class Infernux
         uint64_t readyGeneration = 0;  ///< Generation of last completed render
         uint64_t failedGeneration = 0; ///< Retry decode only when the source/settings change
         uint64_t lastContentStamp = 0; ///< Last content stamp seen from caller
-        uint64_t pendingUploadVersion = 0;
-        uint64_t pendingPreviewGeneration = 0;
-        bool inFlight = false;
+        uint64_t decodeGeneration = 0;
+        std::shared_ptr<const TexturePreviewRequest> fileRequest;
+        PendingPreviewUpload upload;
         bool authoring = false;
-        int pendingWidth = 0;
-        int pendingHeight = 0;
-        int readyWidth = 0;
-        int readyHeight = 0;
         std::string textureName;
+        std::string sourcePath;
         std::string importedTextureGuid;
+        uint64_t importedContentGeneration = 0;
+        uint64_t importedRuntimeVersion = 0;
         bool importedGpuPending = false;
-        uint64_t textureId = 0;
         bool nearest = false;
         bool srgb = false;
         int maxSize = 256;
         std::string textureFormat = "auto";
         std::string textureType = "default";
-        uint64_t pixelGeneration = 0;
-        uint64_t pixelHash = 0;
-        uint32_t nonTransparentPixelCount = 0;
-        uint8_t minRgb = 0;
-        uint8_t maxRgb = 0;
+        std::optional<PreviewPixelSummary> readyPixels;
+
+        bool HasPendingWork() const noexcept
+        {
+            return decodeGeneration || upload.version || importedGpuPending;
+        }
     };
 
     struct MeshPreviewState
@@ -598,53 +652,86 @@ class Infernux
         uint64_t failedGeneration = 0;
         uint64_t lastFileMtime = 0;
         uint64_t lastDependencyRevision = 0;
-        uint64_t pendingUploadVersion = 0;
-        uint64_t pendingPreviewGeneration = 0;
-        bool inFlight = false;
+        uint64_t pendingGeneration = 0;
         uint64_t renderGeneration = 0;
-        std::shared_ptr<vk::ImageReadbackTicket> renderTicket;
-        std::shared_ptr<AssetLoadTicket> loadTicket;
-        std::string loadGuid;
-        uint64_t loadGeneration = 0;
-        int pendingSize = 0;
-        int readySize = 0;
+        std::shared_ptr<PreviewImage> renderTicket;
         std::string textureName;
-        uint64_t textureId = 0;
         std::string meshFilePath; ///< Absolute path to model file
-        uint64_t pixelGeneration = 0;
-        uint64_t pixelHash = 0;
-        uint32_t nonTransparentPixelCount = 0;
-        uint8_t minRgb = 0;
-        uint8_t maxRgb = 0;
     };
 
-    void EnqueuePreviewTask(std::function<void()> fn);
+    enum class PreviewStep
+    {
+        Wait,
+        Host,
+        Gpu
+    };
+    // Caller holds m_previewResultMutex.
+    PreviewStep DescribeMaterialPreviewRequest(const MaterialPreviewRequest &request) const;
+    PreviewStep DescribeMeshPreviewRequest(const MeshPreviewRequest &request) const;
+    bool IsMaterialPreviewSourceCurrent(const MaterialPreviewRequest &request) const;
+    void BumpMaterialPreviewGeneration(MaterialPreviewState &state);
+    bool RefreshMaterialPreviewDependency(MaterialPreviewState &state);
+    bool RefreshMeshPreviewDependency(MeshPreviewState &state) const;
+    void ObserveSubmittedPreviews();
+    bool PrepareMaterialPreview(MaterialPreviewRequest &request, bool &progressed);
+    bool FinishMeshPreviewPreparation(const MeshPreviewRequest &request, std::shared_ptr<PreviewImage> image);
+    bool PrepareMeshPreview(MeshPreviewRequest &request, bool gpu, std::shared_ptr<InxMesh> &mesh,
+                            std::vector<std::shared_ptr<InxMaterial>> &materials, bool &progressed);
+    void EnqueuePreviewTask(std::function<void()> fn, std::optional<std::weak_ptr<const void>> owner = std::nullopt);
+    void EnqueuePreviewTask(std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> fn, uint64_t storageBytes,
+                            std::optional<std::weak_ptr<const void>> owner);
+    void QueueTextureFilePreview(const std::shared_ptr<const TexturePreviewRequest> &request);
+    void DecodeTextureFilePreview(const TexturePreviewRequest &request, int decodeSize,
+                                  const TexturePreviewSource *source = nullptr,
+                                  std::shared_ptr<FrameCpuStorageClaim> storage = {},
+                                  const std::function<bool()> &retired = {});
+    void CompleteTexturePreview(TexturePreviewCompleted completed);
+    void RetireTexturePreviewDecode(const std::string &key, TexturePreviewState &state);
+    FrameWorkSource GetPreviewIoWorkSource();
+    void ObservePreviewJob();
     static std::string BuildPreviewTextureName(const std::string &resourceKey);
     static std::string BuildTexturePreviewTextureName(const std::string &resourceKey);
     static std::string BuildMeshPreviewTextureName(const std::string &resourceKey);
-    void CommitPublishedPreviewTextures();
-    // Caller holds m_previewResultMutex; one task owns each mesh's latest request.
+    bool CommitPublishedPreviewTextures();
+    // Caller holds m_previewResultMutex. Each key has one pending preparation.
+    void ScheduleDirtyMaterialPreview(const std::string &key, MaterialPreviewState &state);
     void ScheduleDirtyMeshPreview(const std::string &key, MeshPreviewState &state);
     void DrainPreviewJobs();
+    void AcquireRuntimeServices();
+    void StartRuntimeServices();
+    void ReleaseRuntimeServices() noexcept;
+    void CreateRenderer();
+    void FinishFrame(const RenderFrameResult &result);
+    void BeginRuntimeFrame(float deltaTime);
+    [[nodiscard]] FrameGpuAvailability BackgroundGpuAvailability(bool foregroundReady);
 
     InxAppMetadata m_metadata{"Infernux", 0, 1, 0, "com.infrenderer.Infernux"};
     RuntimeMode m_runtimeMode = RuntimeMode::Graphical;
 
     std::unique_ptr<AssetDatabase> m_assetDatabase;
+    std::unique_ptr<vk::VulkanBackendContext> m_gpuServices;
     std::unique_ptr<InxRenderer> m_renderer;
 
     LogLevel m_logLevel = LogLevel::LOG_INFO;
     bool m_isCleanedUp = false;
     bool m_isCleaningUp = false;
     bool m_isInitialized = false;
+    bool m_ownsRuntimeServices = false;
+    bool m_ownsJobSystem = false;
     std::unordered_map<std::string, double> m_startupPhaseTimingsMs;
     std::atomic<bool> m_exitRequested{false};
-    /// True while Run() owns the graphical frame loop; blocks manual Tick().
+    /// True while Run() owns the frame loop, including its headless Tick calls.
     std::atomic<bool> m_runLoopActive{false};
     bool m_tickActive = false;
     std::mutex m_runMutex;
     std::condition_variable m_runCv;
     std::function<void(float)> m_preSceneUpdateCallback;
+    std::function<void(bool)> m_endFrameCallback;
+    std::function<void(float)> m_runtimeBeforeWork;
+    std::function<void()> m_runtimeAfterWork;
+    FrameWorkOwner m_frameWork;
+    uint64_t m_submittedRenderFrames = 0;
+    PresentationReceipt m_lastPresentation;
 
     // Selection tracking for outline updates
     uint64_t m_selectedObjectId = 0;
@@ -654,23 +741,42 @@ class Infernux
     std::filesystem::path m_imguiIniPath;
     std::filesystem::path m_imguiLayoutMetadataPath;
 
-    std::queue<std::function<void()>> m_previewJobs;
+    struct PendingPreviewJob
+    {
+        std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> run;
+        std::optional<std::weak_ptr<const void>> owner;
+        uint64_t storageBytes = 0;
+        bool IsRetired() const noexcept
+        {
+            return owner && owner->expired();
+        }
+    };
+    std::deque<PendingPreviewJob>::iterator FindReadyPreviewJob();
+    std::deque<PendingPreviewJob> m_previewJobs;
     JobHandle m_previewDispatcherJob;
     std::mutex m_previewJobMutex;
     bool m_acceptPreviewJobs = true;
-    bool m_previewDispatcherScheduled = false;
+    uint64_t m_previewExecutionNanoseconds = 0;
+    uint64_t m_previewJobFrame = 0, m_previewJobGrant = 0;
 
     mutable std::mutex m_previewResultMutex;
-    std::queue<TexturePreviewCompleted> m_texturePreviewCompletedQueue;
-    std::queue<MaterialPreviewRequest> m_previewRequestQueue;
-    std::queue<MeshPreviewRequest> m_meshPreviewRequestQueue;
+    std::deque<TexturePreviewCompleted> m_texturePreviewCompletedQueue;
+    std::deque<MaterialPreviewRequest> m_materialPreviewRequestQueue;
+    std::deque<MeshPreviewRequest> m_meshPreviewRequestQueue;
     std::unordered_map<std::string, MaterialPreviewState> m_materialPreviewStates;
     std::unordered_map<std::string, TexturePreviewState> m_texturePreviewStates;
     std::unordered_map<std::string, MeshPreviewState> m_meshPreviewStates;
     std::atomic_bool m_hasPendingPreviewUploads{false};
     std::atomic_bool m_hasPreviewPumpWork{false};
-    int m_lastPumpFrame = -1;
-    std::chrono::steady_clock::time_point m_lastMaterialRenderTime{};
+    FrameWorkOwner::SourceId m_previewWorkSource = 0;
+    FrameWorkOwner::SourceId m_previewIoWorkSource = 0;
+    FrameWorkOwner::SourceId m_textureWorkSource = 0;
+    FrameWorkOwner::SourceId m_assetLoadWorkSource = 0;
+    FrameWorkOwner::SourceId m_assetCatalogWorkSource = 0;
+    FrameWorkOwner::SourceId m_documentWriteWorkSource = 0;
+    uint64_t m_nextPreviewLane = 0;
+    bool m_preferMeshPreviewHost = false;
+    std::string m_lastImportedPreviewKey;
 
     // Timeline-editor cube preview: query schedules, PumpTimelineCubePreviewIfDirty renders.
     uint64_t m_cubePreviewTexId = 0;
@@ -684,13 +790,14 @@ class Infernux
     int m_pendingCubeSize = 240;
     std::shared_ptr<InxMaterial> m_cubePreviewCubeMat;
     std::shared_ptr<InxMaterial> m_cubePreviewFloorMat;
+    std::unique_ptr<TimelineCubePreviewCandidate> m_cubePreviewCandidate;
     std::vector<Vertex> m_cubePreviewFloorVerts;
     std::vector<uint32_t> m_cubePreviewFloorIndices;
     bool m_cubePreviewFloorBuilt = false;
 
     bool ExecuteTimelineCubePreviewRender(float px, float py, float pz, float rx, float ry, float rz, float sx,
                                           float sy, float sz, float camYaw, float camPitch, float camDistance, int size,
-                                          uint64_t hash);
+                                          uint64_t hash, bool &progressed);
 
     void LoadImGuiLayout();
     void SaveImGuiLayout();

@@ -10,7 +10,6 @@ import pytest
 import infernux as inx
 from infernux._compiler.source_metadata import embed_compute_sources
 from infernux._compiler.taichi import frontend
-from infernux.engine.build.compute_aot import _gpu_buffer_descriptor
 from infernux.engine.build.compute_cpu import build_cpu_compute_source
 from infernux.engine.project_context import using_project_root
 
@@ -51,11 +50,6 @@ def test_source_less_web_and_native_dispatch_agree(tmp_path, engine, monkeypatch
     text = source(order, decorator)
     namespace = {"__name__": "DomainProbe"}
     exec(compile(embed_compute_sources(text), "<domain-native>", "exec"), namespace)
-    descriptors = [_gpu_buffer_descriptor((5,), np.int32), _gpu_buffer_descriptor((5,), np.int32), 2]
-    descriptors.insert(order, _gpu_buffer_descriptor((domain_size,), np.int32))
-    with using_project_root(tmp_path):
-        artifact = frontend.compile_kernel(namespace["solve"].function, tuple(descriptors))
-    assert artifact.domain_parameter == order
     expected = np.zeros(5, dtype=np.int32)
     expected[:domain_size] = np.arange(1, domain_size + 1) * 2
 
@@ -67,16 +61,18 @@ def test_source_less_web_and_native_dispatch_agree(tmp_path, engine, monkeypatch
                inx.buffer(shape=domain_size, dtype=np.int32, device="gpu")]
     params = [buffers[0], buffers[1], 2]
     params.insert(order, buffers[2])
-    executable = inx.compute._KernelExecutable(artifact, host, tuple(params))
     try:
-        executable.launch(tuple(params))
+        with using_project_root(tmp_path):
+            inx.compute.launch(namespace["solve"], tuple(params))
+        used = next(iter(namespace["solve"]._executables.values()))
+        assert used.artifact.domain_parameter == order
         readback = buffers[0].get_data()
         try:
             np.testing.assert_array_equal(readback.numpy(), expected)
         finally:
             readback.close()
     finally:
-        executable.close()
+        namespace["solve"]._release_engine_resources()
         for buffer in buffers:
             buffer.close()
         host._release_lease()

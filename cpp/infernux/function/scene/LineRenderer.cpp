@@ -1,11 +1,14 @@
 #include "LineRenderer.h"
 #include "Camera.h"
 #include "ComponentFactory.h"
+#include "SceneManager.h"
 #include "Transform.h"
+#include "infernux/core/math/CurveInterpolation.h"
 #include <algorithm>
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/CurveJson.h>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -85,17 +88,12 @@ float RequireNonNegative(float value, const char *name)
 
 void ValidateWidthCurve(const std::vector<LineWidthKey> &keys)
 {
-    if (keys.empty())
-        throw std::invalid_argument("LineRenderer width curve requires at least one key");
     for (size_t index = 0; index < keys.size(); ++index) {
         const auto &key = keys[index];
-        if (!std::isfinite(key.time) || !std::isfinite(key.value) || !std::isfinite(key.inTangent) ||
-            !std::isfinite(key.outTangent))
-            throw std::invalid_argument("LineRenderer width curve keys must be finite");
-        if (key.value < 0.0f)
-            throw std::invalid_argument("LineRenderer width curve values must be non-negative");
-        if (index > 0 && keys[index - 1].time >= key.time)
-            throw std::invalid_argument("LineRenderer width curve key times must be strictly increasing");
+        if (std::isnan(key.time))
+            throw std::invalid_argument("LineRenderer width curve key times cannot be NaN");
+        if (index > 0 && keys[index - 1].time > key.time)
+            throw std::invalid_argument("LineRenderer width curve key times must be nondecreasing");
     }
 }
 
@@ -115,40 +113,41 @@ void ValidateColorGradient(const std::vector<LineColorKey> &keys)
 
 float WrapCurveTime(float time, float first, float last, LineCurveWrapMode mode)
 {
-    const float duration = last - first;
-    if (duration <= DIRECTION_EPSILON || mode == LineCurveWrapMode::Clamp)
-        return std::clamp(time, first, last);
-    const float cycles = (time - first) / duration;
-    float fraction = cycles - std::floor(cycles);
-    if (mode == LineCurveWrapMode::PingPong && (static_cast<int64_t>(std::floor(cycles)) & 1LL) != 0)
-        fraction = 1.0f - fraction;
-    return first + fraction * duration;
+    const double duration = static_cast<double>(last) - first;
+    if (duration <= 0.0 || mode == LineCurveWrapMode::Clamp || mode == LineCurveWrapMode::Once)
+        return time;
+    const double period = mode == LineCurveWrapMode::PingPong ? duration * 2.0 : duration;
+    double phase = std::fmod(static_cast<double>(time) - first, period);
+    if (phase < 0.0)
+        phase += period;
+    if (mode == LineCurveWrapMode::PingPong && phase > duration)
+        phase = period - phase;
+    return static_cast<float>(first + phase);
 }
 
 float EvaluateWidthCurve(const std::vector<LineWidthKey> &keys, float time, LineCurveWrapMode preWrap,
                          LineCurveWrapMode postWrap)
 {
+    if (keys.empty())
+        return 0.0f;
     if (keys.size() == 1)
         return keys.front().value;
     if (time < keys.front().time)
         time = WrapCurveTime(time, keys.front().time, keys.back().time, preWrap);
-    else if (time > keys.back().time)
+    else if (time >= keys.back().time)
         time = WrapCurveTime(time, keys.front().time, keys.back().time, postWrap);
-    if (time <= keys.front().time)
-        return keys.front().value;
+    if (std::isnan(time))
+        return time;
     if (time >= keys.back().time)
         return keys.back().value;
+    if (time < keys.front().time || (time == keys.front().time && keys[1].time == keys.front().time))
+        return keys.front().value;
     const auto right = std::upper_bound(keys.begin(), keys.end(), time, [](float sampleTime, const LineWidthKey &key) {
         return sampleTime < key.time;
     });
     const auto &rightKey = *right;
     const auto &leftKey = *(right - 1);
-    const float duration = rightKey.time - leftKey.time;
-    const float t = (time - leftKey.time) / duration;
-    const float t2 = t * t;
-    const float t3 = t2 * t;
-    return (2.0f * t3 - 3.0f * t2 + 1.0f) * leftKey.value + (t3 - 2.0f * t2 + t) * duration * leftKey.outTangent +
-           (-2.0f * t3 + 3.0f * t2) * rightKey.value + (t3 - t2) * duration * rightKey.inTangent;
+    return curve::EvaluateSegment(leftKey, rightKey, time);
 }
 
 glm::vec3 LinearRgbToOklab(const glm::vec3 &color)
@@ -174,7 +173,8 @@ glm::vec3 OklabToLinearRgb(const glm::vec3 &color)
             -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s};
 }
 
-glm::vec4 EvaluateColorGradient(const std::vector<LineColorKey> &keys, float time, LineGradientMode mode)
+glm::vec4 EvaluateColorGradient(const std::vector<LineColorKey> &keys, float time, LineGradientMode mode,
+                                const std::vector<glm::vec3> *perceptualKeys = nullptr)
 {
     if (keys.size() == 1 || time <= keys.front().time)
         return keys.front().color;
@@ -189,8 +189,12 @@ glm::vec4 EvaluateColorGradient(const std::vector<LineColorKey> &keys, float tim
         return leftKey.color;
     const float t = (time - leftKey.time) / (rightKey.time - leftKey.time);
     if (mode == LineGradientMode::PerceptualBlend) {
-        const glm::vec3 color = OklabToLinearRgb(
-            glm::mix(LinearRgbToOklab(glm::vec3(leftKey.color)), LinearRgbToOklab(glm::vec3(rightKey.color)), t));
+        const auto rightIndex = static_cast<size_t>(right - keys.begin());
+        const glm::vec3 leftColor =
+            perceptualKeys ? (*perceptualKeys)[rightIndex - 1] : LinearRgbToOklab(glm::vec3(leftKey.color));
+        const glm::vec3 rightColor =
+            perceptualKeys ? (*perceptualKeys)[rightIndex] : LinearRgbToOklab(glm::vec3(rightKey.color));
+        const glm::vec3 color = OklabToLinearRgb(glm::mix(leftColor, rightColor, t));
         return glm::vec4(color, glm::mix(leftKey.color.a, rightKey.color.a, t));
     }
     return glm::mix(leftKey.color, rightKey.color, t);
@@ -210,22 +214,29 @@ float PointSegmentDistanceSquared(const glm::vec3 &point, const glm::vec3 &start
 void SimplifyRange(const std::vector<glm::vec3> &points, size_t first, size_t last, float toleranceSquared,
                    std::vector<bool> &keep)
 {
-    if (last <= first + 1)
-        return;
-    float maximumDistance = -1.0f;
-    size_t furthest = first;
-    for (size_t index = first + 1; index < last; ++index) {
-        const float distance = PointSegmentDistanceSquared(points[index], points[first], points[last]);
-        if (distance > maximumDistance) {
-            maximumDistance = distance;
-            furthest = index;
+    // A deeply jagged path can require one split per point. Use explicit
+    // storage instead of overflowing the native/wasm call stack recursively.
+    std::vector<std::pair<size_t, size_t>> pending{{first, last}};
+    while (!pending.empty()) {
+        const auto [begin, end] = pending.back();
+        pending.pop_back();
+        if (end <= begin + 1)
+            continue;
+        float maximumDistance = -1.0f;
+        size_t furthest = begin;
+        for (size_t index = begin + 1; index < end; ++index) {
+            const float distance = PointSegmentDistanceSquared(points[index], points[begin], points[end]);
+            if (distance > maximumDistance) {
+                maximumDistance = distance;
+                furthest = index;
+            }
         }
+        if (maximumDistance <= toleranceSquared)
+            continue;
+        keep[furthest] = true;
+        pending.emplace_back(furthest, end);
+        pending.emplace_back(begin, furthest);
     }
-    if (maximumDistance <= toleranceSquared)
-        return;
-    keep[furthest] = true;
-    SimplifyRange(points, first, furthest, toleranceSquared, keep);
-    SimplifyRange(points, furthest, last, toleranceSquared, keep);
 }
 } // namespace
 
@@ -235,7 +246,7 @@ LineRenderer::LineRenderer()
 {
     SetCastShadows(false);
     SetInlineMeshName("Line");
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetPositionCount(size_t count)
@@ -243,7 +254,7 @@ void LineRenderer::SetPositionCount(size_t count)
     if (m_positions.size() == count)
         return;
     m_positions.resize(count, glm::vec3(0.0f));
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 glm::vec3 LineRenderer::GetPosition(size_t index) const
@@ -261,55 +272,55 @@ void LineRenderer::SetPosition(size_t index, const glm::vec3 &position)
     if (m_positions[index] == position)
         return;
     m_positions[index] = position;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
-void LineRenderer::SetPositions(const std::vector<glm::vec3> &positions)
+void LineRenderer::SetPositions(std::vector<glm::vec3> positions)
 {
     for (const auto &position : positions)
         RequireFinite(position, "LineRenderer position");
     if (m_positions == positions)
         return;
-    m_positions = positions;
-    RebuildMesh();
+    m_positions = std::move(positions);
+    MarkGeometryDirty();
 }
 
 float LineRenderer::GetStartWidth() const
 {
-    return EvaluateWidthCurve(m_widthCurve, 0.0f, m_widthCurvePreWrap, m_widthCurvePostWrap);
+    return m_widthMultiplier * EvaluateWidthCurve(m_widthCurve, 0.0f, m_widthCurvePreWrap, m_widthCurvePostWrap);
 }
 
 void LineRenderer::SetStartWidth(float width)
 {
     width = RequireNonNegative(width, "LineRenderer start width");
-    if (std::abs(GetStartWidth() - width) <= DIRECTION_EPSILON)
+    if (m_widthMultiplier != 0 && GetStartWidth() == width)
         return;
     const auto key = std::lower_bound(m_widthCurve.begin(), m_widthCurve.end(), 0.0f,
                                       [](const LineWidthKey &entry, float time) { return entry.time < time; });
     if (key != m_widthCurve.end() && std::abs(key->time) <= DIRECTION_EPSILON)
-        key->value = width;
+        key->value = width / m_widthMultiplier;
     else
-        m_widthCurve.insert(key, LineWidthKey{0.0f, width, 0.0f, 0.0f});
-    RebuildMesh();
+        m_widthCurve.insert(key, LineWidthKey{0.0f, width / m_widthMultiplier, 0.0f, 0.0f});
+    MarkGeometryDirty();
 }
 
 float LineRenderer::GetEndWidth() const
 {
-    return EvaluateWidthCurve(m_widthCurve, 1.0f, m_widthCurvePreWrap, m_widthCurvePostWrap);
+    return m_widthMultiplier * EvaluateWidthCurve(m_widthCurve, 1.0f, m_widthCurvePreWrap, m_widthCurvePostWrap);
 }
 
 void LineRenderer::SetEndWidth(float width)
 {
     width = RequireNonNegative(width, "LineRenderer end width");
-    if (std::abs(GetEndWidth() - width) <= DIRECTION_EPSILON)
+    if (m_widthMultiplier != 0 && GetEndWidth() == width)
         return;
     const auto key = std::lower_bound(m_widthCurve.begin(), m_widthCurve.end(), 1.0f,
                                       [](const LineWidthKey &entry, float time) { return entry.time < time; });
     if (key != m_widthCurve.end() && std::abs(key->time - 1.0f) <= DIRECTION_EPSILON)
-        key->value = width;
+        key->value = width / m_widthMultiplier;
     else
-        m_widthCurve.insert(key, LineWidthKey{1.0f, width, 0.0f, 0.0f});
-    RebuildMesh();
+        m_widthCurve.insert(key, LineWidthKey{1.0f, width / m_widthMultiplier, 0.0f, 0.0f});
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetWidthMultiplier(float multiplier)
@@ -318,14 +329,21 @@ void LineRenderer::SetWidthMultiplier(float multiplier)
     if (m_widthMultiplier == multiplier)
         return;
     m_widthMultiplier = multiplier;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetWidthCurve(const std::vector<LineWidthKey> &keys)
 {
     ValidateWidthCurve(keys);
+    if (keys.size() == m_widthCurve.size() &&
+        std::equal(keys.begin(), keys.end(), m_widthCurve.begin(), [](const auto &a, const auto &b) {
+            return a.time == b.time && a.value == b.value && a.inTangent == b.inTangent &&
+                   a.outTangent == b.outTangent && a.inWeight == b.inWeight && a.outWeight == b.outWeight &&
+                   a.weightedMode == b.weightedMode;
+        }))
+        return;
     m_widthCurve = keys;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetWidthCurvePreWrap(LineCurveWrapMode mode)
@@ -333,7 +351,7 @@ void LineRenderer::SetWidthCurvePreWrap(LineCurveWrapMode mode)
     if (m_widthCurvePreWrap == mode)
         return;
     m_widthCurvePreWrap = mode;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetWidthCurvePostWrap(LineCurveWrapMode mode)
@@ -341,7 +359,7 @@ void LineRenderer::SetWidthCurvePostWrap(LineCurveWrapMode mode)
     if (m_widthCurvePostWrap == mode)
         return;
     m_widthCurvePostWrap = mode;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 glm::vec4 LineRenderer::GetStartColor() const
@@ -358,7 +376,7 @@ void LineRenderer::SetStartColor(const glm::vec4 &color)
         m_colorGradient.front().color = color;
     else
         m_colorGradient.insert(m_colorGradient.begin(), LineColorKey{0.0f, color});
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 glm::vec4 LineRenderer::GetEndColor() const
@@ -375,14 +393,18 @@ void LineRenderer::SetEndColor(const glm::vec4 &color)
         m_colorGradient.back().color = color;
     else
         m_colorGradient.push_back(LineColorKey{1.0f, color});
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetColorGradient(const std::vector<LineColorKey> &keys)
 {
     ValidateColorGradient(keys);
+    if (keys.size() == m_colorGradient.size() &&
+        std::equal(keys.begin(), keys.end(), m_colorGradient.begin(),
+                   [](const auto &a, const auto &b) { return a.time == b.time && a.color == b.color; }))
+        return;
     m_colorGradient = keys;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetColorGradientMode(LineGradientMode mode)
@@ -390,7 +412,7 @@ void LineRenderer::SetColorGradientMode(LineGradientMode mode)
     if (m_colorGradientMode == mode)
         return;
     m_colorGradientMode = mode;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetLoop(bool loop)
@@ -398,7 +420,7 @@ void LineRenderer::SetLoop(bool loop)
     if (m_loop == loop)
         return;
     m_loop = loop;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetUseWorldSpace(bool useWorldSpace)
@@ -406,7 +428,7 @@ void LineRenderer::SetUseWorldSpace(bool useWorldSpace)
     if (m_useWorldSpace == useWorldSpace)
         return;
     m_useWorldSpace = useWorldSpace;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetAlignment(LineAlignment alignment)
@@ -414,7 +436,7 @@ void LineRenderer::SetAlignment(LineAlignment alignment)
     if (m_alignment == alignment)
         return;
     m_alignment = alignment;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetTextureMode(LineTextureMode mode)
@@ -422,7 +444,7 @@ void LineRenderer::SetTextureMode(LineTextureMode mode)
     if (m_textureMode == mode)
         return;
     m_textureMode = mode;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetTextureScale(const glm::vec2 &scale)
@@ -431,7 +453,7 @@ void LineRenderer::SetTextureScale(const glm::vec2 &scale)
     if (m_textureScale == scale)
         return;
     m_textureScale = scale;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetNumCornerVertices(uint32_t count)
@@ -441,7 +463,7 @@ void LineRenderer::SetNumCornerVertices(uint32_t count)
     if (m_numCornerVertices == count)
         return;
     m_numCornerVertices = count;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetNumCapVertices(uint32_t count)
@@ -451,7 +473,7 @@ void LineRenderer::SetNumCapVertices(uint32_t count)
     if (m_numCapVertices == count)
         return;
     m_numCapVertices = count;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetShadowBias(float bias)
@@ -460,7 +482,7 @@ void LineRenderer::SetShadowBias(float bias)
     if (m_shadowBias == bias)
         return;
     m_shadowBias = bias;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::SetGenerateLightingData(bool generate)
@@ -468,11 +490,12 @@ void LineRenderer::SetGenerateLightingData(bool generate)
     if (m_generateLightingData == generate)
         return;
     m_generateLightingData = generate;
-    RebuildMesh();
+    MarkGeometryDirty();
 }
 
 void LineRenderer::BakeMesh(MeshRenderer &target, const Camera *camera, bool useTransform) const
 {
+    EnsureProceduralGeometryCurrent();
     glm::mat4 cameraWorld(1.0f);
     if (camera) {
         // The view override is authoritative, including reflected/custom
@@ -488,8 +511,8 @@ void LineRenderer::BakeMesh(MeshRenderer &target, const Camera *camera, bool use
     const glm::vec3 viewFacing = glm::normalize(-glm::vec3(cameraWorld[2]));
     const glm::vec3 cameraRight = glm::normalize(glm::vec3(cameraWorld[0]));
     const glm::vec3 cameraUp = glm::normalize(glm::vec3(cameraWorld[1]));
-    const std::vector<Vertex> sourceVertices = GetInlineVertices();
-    const std::vector<uint32_t> sourceIndices = GetInlineIndices();
+    const auto &sourceVertices = GetInlineVertices();
+    const auto &sourceIndices = GetInlineIndices();
     std::vector<Vertex> bakedVertices;
     bakedVertices.reserve(sourceVertices.size());
 
@@ -559,8 +582,10 @@ void LineRenderer::Simplify(float tolerance)
         if (keep[index])
             simplified.push_back(m_positions[index]);
     }
-    m_positions = std::move(simplified);
-    RebuildMesh();
+    if (simplified.size() != m_positions.size()) {
+        m_positions = std::move(simplified);
+        MarkGeometryDirty();
+    }
 }
 
 std::shared_ptr<InxMaterial> LineRenderer::GetEffectiveMaterial(uint32_t slot) const
@@ -577,20 +602,60 @@ glm::mat4 LineRenderer::ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMat
     return m_useWorldSpace ? glm::mat4(1.0f) : objectWorldMatrix;
 }
 
+void LineRenderer::EnsureProceduralGeometryCurrent() const
+{
+    if (m_geometryBuilding || (!m_geometryDirty && (m_useWorldSpace || m_textureMode != LineTextureMode::Tile)))
+        return;
+    const auto *transform = GetTransform();
+    const auto world = transform ? transform->GetWorldMatrix() : glm::mat4(1.0f);
+    const_cast<LineRenderer *>(this)->RefreshProceduralGeometry(world);
+}
+
+void LineRenderer::MarkGeometryDirty()
+{
+    if (m_geometryDirty)
+        return;
+    m_geometryDirty = true;
+    // Wake static-world caches once for the whole edit batch. An empty
+    // renderer must reenter structural collection when it becomes drawable.
+    auto &scenes = SceneManager::Instance();
+    if (m_hasPublishedDrawableGeometry)
+        scenes.NotifyMeshRendererGeometryChanged(this);
+    else
+        scenes.NotifyMeshRendererChanged(this);
+}
+
 void LineRenderer::RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix)
 {
-    if (m_useWorldSpace || m_textureMode != LineTextureMode::Tile)
+    if (m_geometryBuilding)
         return;
-    const glm::mat3 linearTransform(objectWorldMatrix);
-    const glm::mat3 metric = glm::transpose(linearTransform) * linearTransform;
-    if (ApproximatelyEqual(m_geometryMetric, metric))
+    if (!m_useWorldSpace && m_textureMode == LineTextureMode::Tile) {
+        const glm::mat3 linearTransform(objectWorldMatrix);
+        const glm::mat3 metric = glm::transpose(linearTransform) * linearTransform;
+        if (!ApproximatelyEqual(m_geometryMetric, metric)) {
+            m_geometryMetric = metric;
+            m_geometryDirty = true;
+        }
+    }
+    if (!m_geometryDirty)
         return;
-    m_geometryMetric = metric;
-    RebuildMesh();
+    // Publication calls mesh queries internally. Clear first to prevent those
+    // reads from reentering the builder; a failed build remains retryable.
+    m_geometryDirty = false;
+    m_geometryBuilding = true;
+    try {
+        RebuildMesh();
+        m_geometryBuilding = false;
+    } catch (...) {
+        m_geometryDirty = true;
+        m_geometryBuilding = false;
+        throw;
+    }
 }
 
 void LineRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const
 {
+    const_cast<LineRenderer *>(this)->RefreshProceduralGeometry(worldMatrix);
     if (m_positions.empty()) {
         outMin = outMax = glm::vec3(ResolveRenderWorldMatrix(worldMatrix)[3]);
         return;
@@ -624,6 +689,7 @@ void LineRenderer::RebuildMesh()
         geometryPositions.pop_back();
 
     if (geometryPositions.size() < 2) {
+        m_hasPublishedDrawableGeometry = false;
         SetProceduralMesh(std::move(vertices), std::move(indices));
         return;
     }
@@ -756,6 +822,14 @@ void LineRenderer::RebuildMesh()
 
     vertices.reserve(samples.size() * 2u);
     indices.reserve((samples.size() - 1u) * 6u);
+    // Convert gradient keys once, not both segment endpoints for every sample.
+    // A dense line often has thousands of samples and only two colour keys.
+    std::vector<glm::vec3> perceptualKeys;
+    if (m_colorGradientMode == LineGradientMode::PerceptualBlend) {
+        perceptualKeys.reserve(m_colorGradient.size());
+        for (const auto &key : m_colorGradient)
+            perceptualKeys.push_back(LinearRgbToOklab(glm::vec3(key.color)));
+    }
     for (const auto &sample : samples) {
         const float t = sample.normalizedDistance;
         const float halfWidth =
@@ -765,7 +839,7 @@ void LineRenderer::RebuildMesh()
         // overshoot and rounded samples. Fixed curve sampling can miss peaks.
         // Centers (including cap offsets) are bounded by SetProceduralMesh.
         m_maximumHalfWidth = std::max(m_maximumHalfWidth, halfWidth);
-        const glm::vec4 color = EvaluateColorGradient(m_colorGradient, t, m_colorGradientMode);
+        const glm::vec4 color = EvaluateColorGradient(m_colorGradient, t, m_colorGradientMode, &perceptualKeys);
         float u = t;
         switch (m_textureMode) {
         case LineTextureMode::Tile:
@@ -801,11 +875,13 @@ void LineRenderer::RebuildMesh()
         const uint32_t base = segment * 2;
         indices.insert(indices.end(), {base, base + 2, base + 1, base + 1, base + 2, base + 3});
     }
+    m_hasPublishedDrawableGeometry = !indices.empty();
     SetProceduralMesh(std::move(vertices), std::move(indices));
 }
 
 nlohmann::json LineRenderer::SerializeDocument() const
 {
+    EnsureProceduralGeometryCurrent();
     json document = MeshRenderer::SerializeDocument();
     document["type"] = "LineRenderer";
     document["meshId"] = 0u;
@@ -824,8 +900,13 @@ nlohmann::json LineRenderer::SerializeDocument() const
                               {"preWrap", static_cast<int>(m_widthCurvePreWrap)},
                               {"postWrap", static_cast<int>(m_widthCurvePostWrap)}};
     for (const auto &key : m_widthCurve) {
-        document["widthCurve"]["keys"].push_back(
-            {{"time", key.time}, {"value", key.value}, {"inTangent", key.inTangent}, {"outTangent", key.outTangent}});
+        document["widthCurve"]["keys"].push_back({{"time", curvejson::Write(key.time)},
+                                                  {"value", curvejson::Write(key.value)},
+                                                  {"inTangent", curvejson::Write(key.inTangent)},
+                                                  {"outTangent", curvejson::Write(key.outTangent)},
+                                                  {"inWeight", curvejson::Write(key.inWeight)},
+                                                  {"outWeight", curvejson::Write(key.outWeight)},
+                                                  {"weightedMode", key.weightedMode}});
     }
     document["colorGradient"] = {{"keys", json::array()}, {"mode", static_cast<int>(m_colorGradientMode)}};
     for (const auto &key : m_colorGradient)
@@ -862,8 +943,10 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
         m_widthMultiplier = document["widthMultiplier"].get<float>();
         std::vector<LineWidthKey> widthCurve;
         for (const auto &entry : document["widthCurve"]["keys"]) {
-            widthCurve.push_back({entry["time"].get<float>(), entry["value"].get<float>(),
-                                  entry["inTangent"].get<float>(), entry["outTangent"].get<float>()});
+            widthCurve.push_back(
+                {curvejson::Read(entry["time"]), curvejson::Read(entry["value"]), curvejson::Read(entry["inTangent"]),
+                 curvejson::Read(entry["outTangent"]), curvejson::Read(entry.value("inWeight", json(0.0f))),
+                 curvejson::Read(entry.value("outWeight", json(0.0f))), entry.value("weightedMode", int32_t{0})});
         }
         std::vector<LineColorKey> colorGradient;
         for (const auto &entry : document["colorGradient"]["keys"]) {
@@ -887,7 +970,7 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
         m_shadowBias = document["shadowBias"].get<float>();
         m_generateLightingData = document["generateLightingData"].get<bool>();
         SetInlineMeshName("Line");
-        RebuildMesh();
+        MarkGeometryDirty();
         return true;
     } catch (const std::exception &error) {
         INXLOG_ERROR("LineRenderer::Deserialize failed: ", error.what());
@@ -902,6 +985,7 @@ std::unique_ptr<Component> LineRenderer::Clone() const
     document.erase("component_id");
     if (!clone->DeserializeDocument(document))
         throw std::runtime_error("LineRenderer clone could not restore its authored state");
+    CopyMaterialBindingsTo(*clone);
     return clone;
 }
 

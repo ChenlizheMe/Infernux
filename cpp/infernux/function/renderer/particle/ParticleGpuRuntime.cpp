@@ -269,10 +269,6 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
             return device.CreateBuffer(bufferDesc);
         };
-        // State snapshots are copied asynchronously into a readback buffer by
-        // ParticleGpuSystemManager diagnostics. Keep the transfer capability
-        // on the resident allocation itself; the copy source cannot acquire
-        // usage flags retroactively when a diagnostic request arrives.
         // Simulation records on the independent compute family. Default
         // Graphics-only exclusive buffers hang that queue the first time
         // Game-only preview or a newly selected six-way system touches them.
@@ -889,11 +885,8 @@ void ParticleGpuRuntime::MarkStateInitialized() noexcept
 {
     if (m_residentState) {
         m_residentState->bootstrapRecorded = true;
-        // A migration restores states/free-list data but does not yet own a
-        // compact alive list. The next Update performs one GPU capacity scan
-        // and publishes the resident list without any CPU readback.
         m_residentState->aliveReadSlot = 0;
-        m_residentState->aliveListReady = false;
+        m_residentState->aliveListReady = true;
     }
 }
 

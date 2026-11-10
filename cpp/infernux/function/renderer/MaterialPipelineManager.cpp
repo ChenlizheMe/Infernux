@@ -461,7 +461,7 @@ bool MaterialPipelineManager::IsMaterialDescriptorSetCompatible(const ShaderProg
         const auto &lhs = *forwardBindings[i];
         const auto &rhs = *passBindings[i];
         if (lhs.binding != rhs.binding || lhs.type != rhs.type || lhs.descriptorCount != rhs.descriptorCount ||
-            lhs.stageFlags != rhs.stageFlags || lhs.name != rhs.name)
+            lhs.stageFlags != rhs.stageFlags || lhs.name != rhs.name || lhs.readOnly != rhs.readOnly)
             return false;
     }
     return true;
@@ -858,17 +858,29 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     return pipeline;
 }
 
+bool MaterialPipelineManager::RefreshMaterialBindings(const InxMaterial &material)
+{
+    const auto forward = m_renderDataMap.find(material.GetMaterialKey());
+    if (forward == m_renderDataMap.end() || !forward->second || !forward->second->shaderProgram)
+        return false;
+    auto &data = *forward->second;
+    auto *descriptor = m_descriptorManager.GetOrCreateDescriptorSet(material, *data.shaderProgram);
+    if (!descriptor || !descriptor->isValid)
+        return false;
+    if (data.materialDescSet != descriptor || data.descriptorSet != descriptor->descriptorSet) {
+        data.materialDescSet = descriptor;
+        RefreshPublishedDescriptorHandle(material.GetMaterialKey());
+    }
+    return true;
+}
+
 bool MaterialPipelineManager::UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material)
 {
-    if (!m_descriptorManager.UpdateMaterialUBO(materialName, material))
+    const auto forward = m_renderDataMap.find(materialName);
+    if (forward == m_renderDataMap.end() || !forward->second || !forward->second->shaderProgram ||
+        !m_descriptorManager.UpdateMaterialProperties(material, *forward->second->shaderProgram))
         return false;
-
-    // Re-resolve Texture2D properties in case set_texture was called
-    auto it = m_renderDataMap.find(materialName);
-    if (it != m_renderDataMap.end() && it->second && it->second->shaderProgram) {
-        m_descriptorManager.ResolveTextureProperties(materialName, material, *it->second->shaderProgram);
-        RefreshPublishedDescriptorHandle(materialName);
-    }
+    RefreshPublishedDescriptorHandle(materialName);
     return true;
 }
 

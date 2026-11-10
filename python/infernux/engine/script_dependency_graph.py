@@ -232,6 +232,21 @@ class StagedDependencyGraphTransaction:
 
         return self._ordered_modules
 
+    def dependency_paths(self, roots: Iterable[PathLike]) -> set[str]:
+        """Return path identities reachable from the supplied candidate roots."""
+        modules = dict(self._snapshot.modules)
+        pending = [path_key(root) for root in roots]
+        seen = set()
+        while pending:
+            key = pending.pop()
+            if key in seen:
+                continue
+            seen.add(key)
+            record = modules.get(key)
+            if record is not None:
+                pending.extend(edge.target.path_key for edge in record.dependencies if edge.target is not None)
+        return seen
+
 
 @dataclass(frozen=True)
 class _RawImport:
@@ -677,6 +692,10 @@ class ScriptDependencyGraph:
         key = path_key(path)
         with self._lock:
             return self._modules.get(key)
+
+    def published_source(self, path: PathLike) -> bytes | None:
+        with self._lock:
+            return self._sources.get(path_key(path))
 
     def module_for_name(self, module_name: str) -> Optional[ModuleRecord]:
         with self._lock:

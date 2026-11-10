@@ -4,13 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infernux"
-version = "0.4.3"
+version = "0.4.8"
 description = "Infernux (熔炉) — a Python-first game engine advancing toward Neural Network-Native Engine (3N), powered by C++, Vulkan and WebGPU."
 authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "MIT"
-license-files = ["LICENSE", "licenses/utf8proc/*.md"]
+license-files = [
+    "LICENSE",
+    "licenses/utf8proc/*.md",
+    "python/infernux/resources/fonts/MapleMono-LICENSE.txt",
+]
 keywords = ["game-engine", "vulkan", "python", "rendergraph", "editor"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -48,7 +52,7 @@ infernux-editor = "infernux_editor:main"
 launcher = ["PySide6>=6.5.0"]
 
 [tool.infernux.hub]
-build-number = 9
+build-number = 1
 
 [tool.ruff]
 target-version = "py313"
@@ -91,6 +95,8 @@ infernux = [
     "templates/project/*.txt",
     "templates/project/*.json",
     "resources/*.inxpkg",
+    "resources/player-build-source.json",
+    "resources/platform-players.json",
     "resources/official_packages/*.json",
 ]
 

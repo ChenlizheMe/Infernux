@@ -134,11 +134,14 @@ def persisted_scene(scene, engine, tmp_path, monkeypatch):
     path.write_text(json.dumps(encode_scene_document(scene.serialize_document())), encoding="utf-8")
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
-    manager._current_scene_path = str(path)
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     assert database.import_asset(str(path)).succeeded
     manager.set_asset_database(database)
+    manager.unregister_loaded_scene(scene)
+    manager.register_loaded_scene(scene, str(path))
+    assert manager.activate_loaded_scene(scene)
+    assert manager._binding_for_document(manager.document_id).resource_path == str(path.resolve())
     monkeypatch.setattr(manager, "_is_under_assets", lambda _path: True)
     monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
     monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
@@ -174,7 +177,11 @@ def test_keep_local_then_scene_save_uses_only_observed_conflict_version(
     newer_bytes = '{"broken": "newer-unobserved-version"}'
     if newer_write == "before_choice":
         path.write_text(newer_bytes, encoding="utf-8")
-    assert conflicts.keep_local(conflicts.active.conflict_id).accepted
+    if dirty:
+        assert conflicts.keep_local(conflicts.active.conflict_id).accepted
+    else:
+        assert conflicts.active is None
+        assert registry.resolve_conflict_keep_local(document.document_id).accepted
     assert document.is_dirty
     assert document.durable_file_state is observed
     if newer_write == "after_choice":
@@ -221,7 +228,7 @@ def test_queued_external_reload_reports_newer_disk_revision_as_conflict(
     manager._deferred_load_path = str(path)
     result = registry.request_reload_external(document.document_id)
     assert result.status is DocumentActionStatus.PENDING
-    assert manager._pending_external_reload is not None
+    assert manager._pending_external_reloads == {document.document_id: False}
     manager._deferred_load_path = None
     newer = json.loads(json.dumps(read_version))
     newer["objects"][0]["name"] = "QueuedLaterDiskVersion"
@@ -239,7 +246,7 @@ def test_queued_external_reload_reports_newer_disk_revision_as_conflict(
     result = registry.take_external_reload_result(document.document_id)
     assert result.status is DocumentActionStatus.FAILED
     assert "changed again while it was loading" in result.message
-    assert manager._pending_external_reload is None
+    assert manager._pending_external_reloads == {document.document_id: True}
     assert document.state is DocumentState.CONFLICT
     assert scene.find("QueuedReadVersion") is not None
     assert scene.find("QueuedLaterDiskVersion") is None
@@ -344,8 +351,7 @@ def test_watcher_publishes_disk_change_after_scene_read_before_open_completes(
         assert (document.document_id == previous_document_id) is (entry == "same_path")
         assert scene.find("ReadVersion") is not None
         assert scene.find("LaterDiskVersion") is None
-        # Even an already-consumed watcher event cannot make stale A appear
-        # current: the publication boundary presents the newer B conflict.
+        # A watcher event consumed during the open still queues the newer B.
         assert document.state is DocumentState.CONFLICT
         if dirty:
             scene.find("ReadVersion").name = "LocalAfterLoad"
@@ -356,9 +362,10 @@ def test_watcher_publishes_disk_change_after_scene_read_before_open_completes(
         if watcher_delivery == "after_publish":
             handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(path)))
             assert handler.process_pending_reloads(force=True) == 1
+        manager.poll_pending_writes()
         assert handler.pending_count == 0
         assert path.read_text(encoding="utf-8") == newer_bytes
-        if dirty or watcher_delivery == "before_publish":
+        if dirty:
             assert document.state is DocumentState.CONFLICT
             assert scene.find("LocalAfterLoad" if dirty else "ReadVersion") is not None
             assert scene.find("LaterDiskVersion") is None

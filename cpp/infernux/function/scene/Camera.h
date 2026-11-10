@@ -2,6 +2,7 @@
 
 #include "Component.h"
 #include "Transform.h"
+#include <array>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <optional>
@@ -183,6 +184,22 @@ class Camera : public Component
         return m_aspectRatio;
     }
     void SetAspectRatio(float aspect);
+    /// Runtime author override; automatic viewport updates cannot overwrite it.
+    void ResetAspectRatio();
+    void UpdateAutomaticAspectRatio(float aspect);
+    [[nodiscard]] glm::vec4 GetRect() const
+    {
+        return m_rect;
+    }
+    void SetRect(const glm::vec4 &rect);
+    [[nodiscard]] glm::vec4 GetPixelRect() const;
+    void SetPixelRect(const glm::vec4 &rect);
+    [[nodiscard]] uint32_t GetPixelWidth() const;
+    [[nodiscard]] uint32_t GetPixelHeight() const;
+    [[nodiscard]] bool HasCustomAspectRatio() const
+    {
+        return m_hasCustomAspectRatio;
+    }
 
     // Orthographic settings
     [[nodiscard]] float GetOrthographicSize() const
@@ -249,6 +266,31 @@ class Camera : public Component
         return m_targetTexture || !m_targetTextureGuid.empty();
     }
     void OnTargetTextureAssetChanged(bool deleted);
+    [[nodiscard]] bool GetRenderToTexture() const
+    {
+        return m_renderToTexture;
+    }
+    void SetRenderToTexture(bool enabled);
+    [[nodiscard]] bool GetRenderOnDemand() const noexcept
+    {
+        return m_renderOnDemand;
+    }
+    void SetRenderOnDemand(bool enabled) noexcept;
+    [[nodiscard]] glm::uvec2 GetMemoryOutputSize() const
+    {
+        return m_memoryOutputSize;
+    }
+    void SetMemoryOutputSize(const glm::vec2 &size);
+    [[nodiscard]] bool WantsMemoryOutput() const
+    {
+        return m_renderToTexture && !HasTargetTexture();
+    }
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> GetOutputTexture() const
+    {
+        if (!m_renderToTexture)
+            return {};
+        return HasTargetTexture() ? m_targetTexture : m_memoryOutputTexture;
+    }
 
     // ========================================================================
     // Clear flags & background color
@@ -288,19 +330,7 @@ class Camera : public Component
     // Screen dimensions used by ScreenToWorld / WorldToScreen
     // ========================================================================
 
-    [[nodiscard]] uint32_t GetPixelWidth() const
-    {
-        return m_screenWidth;
-    }
-    [[nodiscard]] uint32_t GetPixelHeight() const
-    {
-        return m_screenHeight;
-    }
-    void SetScreenDimensions(uint32_t width, uint32_t height)
-    {
-        m_screenWidth = width;
-        m_screenHeight = height;
-    }
+    void SetScreenDimensions(uint32_t width, uint32_t height);
 
     // ========================================================================
     // Matrices
@@ -377,9 +407,12 @@ class Camera : public Component
                                                                    float viewportHeight) const;
 
   private:
+    friend class InxRenderer;
     void AssignTargetTexture(std::shared_ptr<rhi::RenderTexture> target, const std::string &guid);
     void InvalidateOutput();
     void UpdateProjectionMatrix() const;
+    [[nodiscard]] glm::vec2 GetOutputDimensions() const;
+    void RefreshViewportAspect();
     [[nodiscard]] glm::dmat4 BuildProjectionMatrix(double aspect) const;
     [[nodiscard]] const glm::dmat4 &GetInverseRayProjection(float aspect) const;
 
@@ -388,6 +421,10 @@ class Camera : public Component
     // Perspective
     float m_fov = 60.0f; // Field of view in degrees
     float m_aspectRatio = 16.0f / 9.0f;
+    float m_automaticAspectRatio = 16.0f / 9.0f;
+    float m_outputAspectRatio = 16.0f / 9.0f;
+    glm::vec4 m_rect{0.0f, 0.0f, 1.0f, 1.0f};
+    bool m_hasCustomAspectRatio = false;
     bool m_usePhysicalProperties = false;
     int m_iso = 200;
     float m_shutterSpeed = 0.005f; // seconds (1/200)
@@ -416,6 +453,11 @@ class Camera : public Component
     uint32_t m_cullingMask = 0xFFFFFFFF;
     std::shared_ptr<rhi::RenderTexture> m_targetTexture;
     std::string m_targetTextureGuid;
+    std::shared_ptr<rhi::RenderTexture> m_memoryOutputTexture;
+    bool m_renderToTexture = false;
+    bool m_renderOnDemand = false;
+    std::array<uint64_t, 2> m_requestedRenderSerials{};
+    glm::uvec2 m_memoryOutputSize{128, 96};
 
     // Clear flags
     CameraClearFlags m_clearFlags = CameraClearFlags::Skybox;

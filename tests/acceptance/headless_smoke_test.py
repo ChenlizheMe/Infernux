@@ -185,6 +185,8 @@ def main() -> None:
             else:
                 raise AssertionError("headless refresh never entered its importer phase")
             assert database.refresh_pending
+            assert not shutdown_load.committed
+            assert AssetRegistry.instance().try_submit_asset_load(shutdown_load)
 
             engine.request_exit()
             assert native.exit_requested

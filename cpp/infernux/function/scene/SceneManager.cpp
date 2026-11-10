@@ -9,6 +9,7 @@
 #include "MeshCollider.h"
 #include "MeshRenderer.h"
 #include "Rigidbody.h"
+#include "SkeletonInstance.h"
 #include "SkinnedMeshRenderer.h"
 #include "Transform.h"
 #include "TransformECSStore.h"
@@ -72,11 +73,13 @@ SceneManager &SceneManager::Instance()
 
 SceneManager::SceneManager()
 {
-    TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform) {
+    TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform, const Transform *physicsSource) {
         auto *gameObject = transform ? transform->GetGameObject() : nullptr;
         if (!gameObject)
             return;
-        PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject);
+        PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject, physicsSource);
+        if (const auto bone = m_skeletonBoneOwners.find(transform); bone != m_skeletonBoneOwners.end())
+            bone->second->MarkPoseDirty();
         Scene *scene = gameObject->GetScene();
         // A moving camera, light, audio source, or UI element must not force
         // the renderer to rescan every geometry proxy. Invalidate the shared
@@ -106,6 +109,7 @@ uint64_t SceneManager::GetGlobalTransformSerial() const
 
 void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     ++m_renderTransformRevision;
     if (m_renderTransformRevision == 0)
         m_renderTransformRevision = 1;
@@ -149,6 +153,7 @@ Scene *SceneManager::CreatePreviewScene(const std::string &name)
 
 void SceneManager::ClosePreviewScene(Scene *scene)
 {
+    Scene::RequireNoWorldRetirement();
     const auto it = std::find_if(m_previewScenes.begin(), m_previewScenes.end(),
                                  [scene](const auto &item) { return item.get() == scene; });
     if (it == m_previewScenes.end())
@@ -187,7 +192,8 @@ float SceneManager::ConsumeFrameDeltaTime(float deltaTime) noexcept
 
 void SceneManager::UnloadScene(Scene *scene)
 {
-    if (!scene)
+    Scene::RequireNoWorldRetirement();
+    if (!scene || m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
         return;
 
     if (m_isPlaying)
@@ -250,13 +256,18 @@ bool SceneManager::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWor
 
 void SceneManager::Shutdown()
 {
-    // Mesh cooking uses immutable snapshots, but Jolt's geometry helpers must
-    // finish before PhysicsWorld and its global factory are torn down.
-    MeshCollider::FlushCompletedCooking(true);
+    Scene::RequireNoWorldRetirement();
 
     // No play-mode restore logic here — this is irreversible engine teardown.
     m_isPlaying = false;
     m_isPaused = false;
+    m_startupPending = false;
+    m_fixedPhase = FixedPhase::Idle;
+    m_pausedStepPending = false;
+    m_isStepping = false;
+    m_stepFrameOpen = false;
+    m_fixedSceneWorlds.clear();
+    m_fixedSceneCursor = 0;
 
     // Destroy the runtime-only persistent Scene first so its colliders release
     // Jolt bodies while PhysicsWorld is still initialized.
@@ -267,6 +278,8 @@ void SceneManager::Shutdown()
     std::vector<std::unique_ptr<Scene>> retiringPreviews;
     retiringPreviews.swap(m_previewScenes);
     retiringPreviews.clear();
+    // Drain cooking and release cached Jolt shapes while the physics factory is alive.
+    MeshCollider::ClearCookingCache();
     PhysicsECSStore::Instance().ClearPendingQueues();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
@@ -285,6 +298,7 @@ void SceneManager::Shutdown()
 
 void SceneManager::UnloadAllScenes()
 {
+    Scene::RequireNoWorldRetirement();
     if (m_isPlaying)
         FlushPersistentPromotions();
 
@@ -355,19 +369,32 @@ void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
 }
 
 void SceneManager::SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
-                                           size_t lateUpdateCount) noexcept
+                                           size_t animationUpdateCount, size_t lateUpdateCount) noexcept
 {
     if (revision < m_runtimeLifecyclePlanRevision)
         return;
     m_runtimeLifecyclePlanRevision = revision;
     m_runtimeLifecycleFixedUpdateCount = fixedUpdateCount;
     m_runtimeLifecycleUpdateCount = updateCount;
+    m_runtimeLifecycleAnimationUpdateCount = animationUpdateCount;
     m_runtimeLifecycleLateUpdateCount = lateUpdateCount;
 }
 
 void SceneManager::SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback)
 {
     m_runtimeFrameBarrier = std::move(callback);
+}
+
+void SceneManager::SetRuntimeResultConsumerCallback(RuntimeResultConsumerCallback callback)
+{
+    m_runtimeResultConsumer = std::move(callback);
+}
+
+bool SceneManager::RuntimeResultsReady(RuntimeFrameBarrier boundary) const
+{
+    if (auto callback = m_runtimeResultConsumer)
+        return callback(boundary);
+    return true;
 }
 
 void SceneManager::EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const
@@ -396,12 +423,15 @@ void SceneManager::ClearRuntimeLifecycleCallbacks()
     m_runtimeLifecycleEditorUpdate = nullptr;
     m_runtimeLifecycleEnd = nullptr;
     m_runtimeFrameBarrier = nullptr;
+    m_runtimeResultConsumer = nullptr;
     m_runtimeLifecycleSchedulerEnabled = false;
     m_runtimeLifecycleWorkAvailable = false;
+    m_runtimeResultConsumersPresent = false;
     m_runtimeLifecycleFrameOpen = false;
     m_runtimeLifecyclePlanRevision = 0;
     m_runtimeLifecycleFixedUpdateCount = 0;
     m_runtimeLifecycleUpdateCount = 0;
+    m_runtimeLifecycleAnimationUpdateCount = 0;
     m_runtimeLifecycleLateUpdateCount = 0;
     for (const auto &scene : m_scenes) {
         if (scene)
@@ -414,6 +444,7 @@ void SceneManager::ClearRuntimeLifecycleCallbacks()
 void SceneManager::Update(float deltaTime)
 {
     m_lastFrameProfile = {};
+    const auto admittedState = GetSimulationState();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     auto t0 = ProfileClock::now();
@@ -422,6 +453,11 @@ void SceneManager::Update(float deltaTime)
 #else
     auto t0 = ProfileClock::now();
 #endif
+
+    if (m_pausedStepPending && m_isPlaying && m_isPaused) {
+        Step(m_pausedStepDeltaTime);
+        return;
+    }
 
     if (!m_isPlaying && !m_scenes.empty()) {
         const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
@@ -432,60 +468,90 @@ void SceneManager::Update(float deltaTime)
         }
 
         t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes)
+        for (const auto &scene : m_scenes) {
+            if (GetSimulationState() != admittedState)
+                return;
             if (scene)
                 scene->EditorUpdate(deltaTime);
+        }
         m_lastFrameProfile.editorUpdateMs += ProfileMsSince(t0);
 
-        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
+        if (useRuntimeScheduler && (m_runtimeLifecycleUpdateCount > 0 || m_runtimeLifecycleAnimationUpdateCount > 0 ||
+                                    m_runtimeLifecycleLateUpdateCount > 0)) {
             if (auto callback = m_runtimeLifecycleEditorUpdate)
                 callback(deltaTime);
         }
+        if (GetSimulationState() != admittedState)
+            return;
     }
 
     // Update active scene if playing
     if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
         t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes)
+        for (const auto &scene : m_scenes) {
+            if (GetSimulationState() != admittedState)
+                return;
             if (scene)
                 scene->ProcessPendingStarts();
+        }
+        if (GetSimulationState() != admittedState)
+            return;
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->ProcessPendingStarts();
+        if (GetSimulationState() != admittedState)
+            return;
+        if (GetSimulationState() != admittedState)
+            return;
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
 
-        const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
+        const bool useRuntimeScheduler =
+            m_runtimeLifecycleSchedulerEnabled && (m_runtimeLifecycleWorkAvailable || HasPendingFixedStep());
         if (useRuntimeScheduler) {
             m_runtimeLifecycleFrameOpen = true;
             if (auto callback = m_runtimeLifecycleBegin)
                 callback();
         }
 
+        if (GetSimulationState() != admittedState)
+            return;
+
         // Bound simulation catch-up after scaling; unscaled consumers keep the
         // actual frame duration, including long frames and paused game time.
         m_lastScaledDeltaTime = std::clamp(deltaTime * m_timeScale, 0.0f, m_maxFixedDeltaTime);
 
         // ---- Fixed-update accumulator (Unity-style) ----
-        m_fixedTimeAccumulator += m_lastScaledDeltaTime;
-        while (m_fixedTimeAccumulator >= m_fixedTimeStep) {
-            RunFixedSimulationStep(useRuntimeScheduler);
-            m_fixedTimeAccumulator -= m_fixedTimeStep;
+        if (!HasPendingFixedStep())
+            m_fixedTimeAccumulator += m_lastScaledDeltaTime;
+        while (HasPendingFixedStep() || m_fixedTimeAccumulator >= m_fixedTimeStep) {
+            const bool current = RunFixedSimulationStep(useRuntimeScheduler, admittedState);
+            if (!current)
+                return;
         }
 
         t0 = ProfileClock::now();
         ApplyInterpolatedRigidbodies(m_fixedTimeAccumulator / m_fixedTimeStep);
         m_lastFrameProfile.interpolationMs += ProfileMsSince(t0);
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
+        if (GetSimulationState() != admittedState)
+            return;
 
         t0 = ProfileClock::now();
         if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
             if (auto callback = m_runtimeLifecycleUpdate)
                 callback(m_lastScaledDeltaTime);
         }
-        for (const auto &scene : m_scenes)
+        for (const auto &scene : m_scenes) {
+            if (GetSimulationState() != admittedState)
+                return;
             if (scene)
                 scene->Update(m_lastScaledDeltaTime);
+        }
+        if (GetSimulationState() != admittedState)
+            return;
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->Update(m_lastScaledDeltaTime);
+        if (GetSimulationState() != admittedState)
+            return;
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(t0);
@@ -495,41 +561,62 @@ void SceneManager::Update(float deltaTime)
 
 void SceneManager::EnsurePhysicsQueriesCurrent()
 {
+    if (HasPendingFixedStep() && !m_fixedExecuting)
+        return;
     if (m_scenes.empty() && !m_runtimePersistentScene)
         return;
     FlushPendingBroadphase();
     // Outside play mode nothing steps the simulation, so moved bodies must be
     // teleported (dt = 0): the kinematic-velocity paths would otherwise leave
     // bodies with a velocity that is never integrated nor settled.
-    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
+    SyncCollidersToPhysics(m_isPlaying ? GetFixedTimeStep() : 0.0f);
 }
 
 void SceneManager::LateUpdate(float deltaTime)
 {
-    if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
+    const auto admittedState = GetSimulationState();
+    if (m_isPlaying && !m_isPaused && !HasPendingFixedStep() && (!m_scenes.empty() || m_runtimePersistentScene)) {
         auto t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes)
+        for (const auto &scene : m_scenes) {
+            if (GetSimulationState() != admittedState)
+                return;
             if (scene)
                 scene->ProcessPendingStarts();
+        }
+        if (GetSimulationState() != admittedState)
+            return;
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->ProcessPendingStarts();
+        if (GetSimulationState() != admittedState)
+            return;
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
 
         t0 = ProfileClock::now();
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationEvaluation);
+        if (GetSimulationState() != admittedState)
+            return;
         if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable &&
             m_runtimeLifecycleLateUpdateCount > 0) {
             if (auto callback = m_runtimeLifecycleLateUpdate)
                 callback(m_lastScaledDeltaTime);
         }
-        for (const auto &scene : m_scenes)
+        for (const auto &scene : m_scenes) {
+            if (GetSimulationState() != admittedState)
+                return;
             if (scene)
                 scene->LateUpdate(m_lastScaledDeltaTime);
+        }
+        if (GetSimulationState() != admittedState)
+            return;
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->LateUpdate(m_lastScaledDeltaTime);
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.lateUpdateMs += ProfileMsSince(t0);
     }
+
+    if (!HasPendingFixedStep())
+        PublishSkeletonPoses();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Update spatial audio (runs even when paused so listener position stays synced)
@@ -541,7 +628,7 @@ void SceneManager::LateUpdate(float deltaTime)
 #endif
 }
 
-void SceneManager::EndFrame()
+void SceneManager::EndFrame(bool completeStep)
 {
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PendingDestroy);
     if (!m_scenes.empty() || m_runtimePersistentScene) {
@@ -559,12 +646,16 @@ void SceneManager::EndFrame()
         if (auto callback = m_runtimeLifecycleEnd)
             callback();
     }
+    if (completeStep)
+        m_stepFrameOpen = false;
 }
 
 void SceneManager::Play()
 {
-    // Only reset accumulator on initial play, not on resume-from-pause
-    if (!m_isPlaying) {
+    Scene::RequireNoWorldRetirement();
+    // Only reset accumulator on initial play, not on resume-from-pause.
+    const bool fresh = !m_isPlaying;
+    if (fresh) {
         ClearRuntimePersistentScene();
         m_resetDeltaTimeOnNextFrame = true;
         m_fixedTimeAccumulator = 0.0f;
@@ -576,6 +667,16 @@ void SceneManager::Play()
 
     m_isPlaying = true;
     m_isPaused = false;
+    m_pausedStepPending = false;
+    m_stepFrameOpen = false;
+    if (fresh) {
+        ++m_simulationEpoch;
+        m_startupPending = true;
+        m_fixedStepIndex = 0;
+        m_completedFixedStepIndex = 0;
+        m_publishedFixedStepIndex = 0;
+        m_fixedPhase = FixedPhase::Idle;
+    }
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
 #endif
@@ -584,13 +685,18 @@ void SceneManager::Play()
     if (auto callback = m_onPlayStateChanged)
         callback(true);
 
-    StartActiveSceneForPlay();
+    m_resetDeltaTimeOnNextFrame = true;
+    if (m_startupPending)
+        StartActiveSceneForPlay();
 }
 
 void SceneManager::StartActiveSceneForPlay()
 {
-    if (m_scenes.empty())
+    if (m_scenes.empty()) {
+        m_startupPending = false;
         return;
+    }
+    const auto admittedState = GetSimulationState();
 
     // Scene-relative frame numbering is the useful contract for deterministic
     // capture and diagnostics. A transactional scene replacement therefore
@@ -613,9 +719,14 @@ void SceneManager::StartActiveSceneForPlay()
     const double initialTransformMs = ProfileMsSince(phaseStart);
 
     phaseStart = ProfileClock::now();
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : m_scenes) {
+        if (GetSimulationState() != admittedState)
+            return;
         if (scene)
             scene->Start();
+    }
+    if (GetSimulationState() != admittedState)
+        return;
     FlushPersistentPromotions();
     const double startMs = ProfileMsSince(phaseStart);
 
@@ -636,12 +747,17 @@ void SceneManager::StartActiveSceneForPlay()
 
     phaseStart = ProfileClock::now();
     FlushPendingBroadphase();
+    // Play is a cold publication boundary. Finish the shapes requested above
+    // before any link in a connected body assembly can integrate on its own.
+    MeshCollider::FlushCompletedCooking(true);
+    FlushPendingBroadphase();
     const double flushMs = ProfileMsSince(phaseStart);
 
     // Jolt bodies default to sleeping and need activation after broadphase
     // publication for gravity and forces to apply on the first fixed step.
     phaseStart = ProfileClock::now();
     ActivateDynamicBodies();
+    m_startupPending = false;
     const double activationMs = ProfileMsSince(phaseStart);
 
     const double totalMs = ProfileMsSince(transitionStart);
@@ -663,17 +779,33 @@ void SceneManager::StartSceneForPlay(Scene *scene)
     scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     scene->SetPlaying(true);
     TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
+    const auto admittedState = GetSimulationState();
     scene->Start();
+    if (GetSimulationState() != admittedState)
+        return;
     TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
     SyncCollidersToPhysics(m_fixedTimeStep);
+    FlushPendingBroadphase();
+    MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
     ActivateDynamicBodies(scene);
 }
 
 void SceneManager::Stop()
 {
+    Scene::RequireNoWorldRetirement();
+    const bool wasPlaying = m_isPlaying;
     m_isPlaying = false;
     m_isPaused = false;
+    if (wasPlaying) {
+        ++m_simulationEpoch;
+        m_fixedStepIndex = 0;
+        m_completedFixedStepIndex = 0;
+        m_publishedFixedStepIndex = 0;
+    }
+    m_fixedPhase = FixedPhase::Idle;
+    m_pausedStepPending = false;
+    m_stepFrameOpen = false;
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
 #endif
@@ -698,12 +830,11 @@ void SceneManager::Stop()
 
 void SceneManager::Pause()
 {
-    m_isPaused = !m_isPaused;
+    if (!m_isPlaying || m_isPaused)
+        return;
+    m_isPaused = true;
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
-    if (m_isPaused)
-        AudioEngine::Instance().PauseAll();
-    else
-        AudioEngine::Instance().ResumeAll();
+    AudioEngine::Instance().PauseAll();
 #endif
 }
 
@@ -711,56 +842,118 @@ void SceneManager::Step(float deltaTime)
 {
     if (!m_isPaused || !m_isPlaying || (m_scenes.empty() && !m_runtimePersistentScene))
         return;
+    if (m_isStepping || (m_stepFrameOpen && !m_pausedStepPending))
+        throw std::logic_error("a paused simulation step cannot be reentered");
+    m_isStepping = true;
+    m_pausedStepPending = true;
+    m_pausedStepDeltaTime = deltaTime;
+    struct StepScope
+    {
+        bool &active;
+        ~StepScope()
+        {
+            active = false;
+        }
+    } stepScope{m_isStepping};
+    const auto admittedState = GetSimulationState();
 
+    if (m_startupPending) {
+        StartActiveSceneForPlay();
+        if (GetSimulationState() != admittedState)
+            return;
+    }
     m_lastFrameProfile = {};
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : m_scenes) {
+        if (GetSimulationState() != admittedState)
+            return;
         if (scene)
             scene->ProcessPendingStarts();
+    }
+    if (GetSimulationState() != admittedState)
+        return;
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
-    const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
+    if (GetSimulationState() != admittedState)
+        return;
+    const bool useRuntimeScheduler =
+        m_runtimeLifecycleSchedulerEnabled &&
+        (m_runtimeLifecycleWorkAvailable || HasPendingFixedStep() || m_runtimeResultConsumersPresent);
     if (useRuntimeScheduler) {
         m_runtimeLifecycleFrameOpen = true;
         if (auto callback = m_runtimeLifecycleBegin)
             callback();
     }
 
-    RunFixedSimulationStep(useRuntimeScheduler);
+    if (GetSimulationState() != admittedState)
+        return;
+    m_lastScaledDeltaTime = deltaTime;
+    if (GetSimulationState() != admittedState || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
+        return;
+    m_pausedStepPending = false;
     ApplyInterpolatedRigidbodies(1.0f);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
+    if (GetSimulationState() != admittedState)
+        return;
     if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
         if (auto callback = m_runtimeLifecycleUpdate)
             callback(deltaTime);
     }
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : m_scenes) {
+        if (GetSimulationState() != admittedState)
+            return;
         if (scene)
             scene->Update(deltaTime);
+    }
+    if (GetSimulationState() != admittedState)
+        return;
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->Update(deltaTime);
+    if (GetSimulationState() != admittedState)
+        return;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : m_scenes) {
+        if (GetSimulationState() != admittedState)
+            return;
         if (scene)
             scene->ProcessPendingStarts();
+    }
+    if (GetSimulationState() != admittedState)
+        return;
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
+    if (GetSimulationState() != admittedState)
+        return;
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationEvaluation);
+    if (GetSimulationState() != admittedState)
+        return;
     if (useRuntimeScheduler && m_runtimeLifecycleLateUpdateCount > 0) {
         if (auto callback = m_runtimeLifecycleLateUpdate)
             callback(deltaTime);
     }
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : m_scenes) {
+        if (GetSimulationState() != admittedState)
+            return;
         if (scene)
             scene->LateUpdate(deltaTime);
+    }
+    if (GetSimulationState() != admittedState)
+        return;
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->LateUpdate(deltaTime);
+    if (GetSimulationState() != admittedState)
+        return;
     ++m_runtimeFrameCount;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
     for (const auto &scene : m_scenes)
         if (scene)
             TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
+    if (GetSimulationState() != admittedState)
+        return;
     if (m_runtimePersistentScene)
         TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
+    PublishSkeletonPoses();
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationTimeline);
     // Keep the lifecycle frame open. The renderer still has to publish
@@ -958,6 +1151,9 @@ void SceneManager::PrepareActiveSceneReplacement()
     // boundary. Discard both wall-clock loading time and old-scene fixed-step
     // remainder before the new graph is allowed to tick.
     m_fixedTimeAccumulator = 0.0f;
+    m_fixedPhase = FixedPhase::Idle;
+    m_pausedStepPending = false;
+    m_stepFrameOpen = false;
     m_lastScaledDeltaTime = 0.0f;
     m_resetDeltaTimeOnNextFrame = true;
     if (m_isPlaying) {
@@ -979,6 +1175,7 @@ void SceneManager::UpdateRuntimeScenePlayingState(bool playing)
 
 void SceneManager::ClearRuntimePersistentScene()
 {
+    Scene::RequireNoWorldRetirement();
     for (uint64_t id : m_pendingPersistentRootIds) {
         if (GameObject *root = FindRuntimeObjectByID(id))
             root->SetPersistent(false);
@@ -1016,8 +1213,13 @@ void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
 
 void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
 {
+    // FixedUpdate may have authored cached poses. They must reach physics
+    // before the solver, rather than waiting for the end-of-frame commit.
+    TransformECSStore::Instance().VisitAuthoredPoseWrites([](Transform *transform) {
+        PhysicsECSStore::Instance().MarkAuthoredHierarchyDirty(transform->GetGameObject());
+    });
     auto &store = PhysicsECSStore::Instance();
-    const auto &dirtyColliders = store.ConsumeDirtyColliders();
+    const auto &dirtyColliders = store.ConsumeDirtyActors();
     m_lastFrameProfile.colliderSyncCandidates += static_cast<double>(dirtyColliders.size());
     static thread_local std::vector<PhysicsBodyPoseUpdate> staticPoseBatch;
     staticPoseBatch.clear();
@@ -1026,20 +1228,12 @@ void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
     for (const auto handle : dirtyColliders) {
         if (!store.IsValid(handle))
             continue;
-        auto &data = store.GetCollider(handle);
-        auto *col = data.owner;
-        if (!col || !col->IsEnabled())
+        const auto &actor = store.GetActor(handle);
+        if (!actor.owner || !IsRuntimeScene(actor.owner->GetScene()))
             continue;
-        auto *go = col->GetGameObject();
-        if (!go || !IsRuntimeScene(go->GetScene()))
-            continue;
-        const auto actorHandle = data.actorHandle;
-        if (!store.IsValid(actorHandle))
-            throw std::logic_error("dirty Collider references a stale PhysicsActor");
-        const auto &actor = store.GetActor(actorHandle);
         const bool profilesRigidbodySync = actor.rigidbody && actor.rigidbody->IsEnabled();
         const auto syncStart = profilesRigidbodySync ? ProfileClock::now() : ProfileClock::time_point{};
-        col->SyncTransformToPhysics(fixedDeltaTime, &staticPoseBatch);
+        store.SyncActorTransform(handle, fixedDeltaTime, &staticPoseBatch);
         if (profilesRigidbodySync)
             m_lastFrameProfile.syncExternalMovesMs += ProfileMsSince(syncStart);
     }
@@ -1048,6 +1242,8 @@ void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
 
 void SceneManager::PublishAuthoredTransformsToPhysics()
 {
+    if (HasPendingFixedStep())
+        return; // The retained step owns its original synchronization boundary and dt.
     // Runtime persistence is committed only after the Transform frame cache
     // has flushed. Moving a root while that cache still names the authored
     // Scene would otherwise make EndFrameCache skip its dirty slots.
@@ -1068,68 +1264,131 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
     SyncCollidersToPhysics(0.0f);
 }
 
-void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
+bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const SimulationState &admittedState)
 {
-    m_lastFrameProfile.fixedSteps += 1.0;
-    m_fixedTime += static_cast<double>(m_fixedTimeStep);
-    if (m_timeScale > 0.0f)
-        m_fixedUnscaledTime += static_cast<double>(m_fixedTimeStep / m_timeScale);
-
-    // Publish bodies created before this fixed step so FixedUpdate queries see
-    // the authoritative previous state. Transform writes from FixedUpdate are
-    // synchronized only once, at the explicit TransformToPhysics boundary.
-    FlushPendingBroadphase();
-
-    auto phaseStart = ProfileClock::now();
-    if (useRuntimeScheduler && m_runtimeLifecycleFixedUpdateCount > 0) {
-        static bool loggedRuntimeFixedBoundary = false;
-        if (!loggedRuntimeFixedBoundary) {
-            loggedRuntimeFixedBoundary = true;
-            INXLOG_INFO("[RuntimeLifecycle] fixed_update boundary active dt=", m_fixedTimeStep,
-                        " callbacks=", m_runtimeLifecycleFixedUpdateCount);
+    if (m_fixedExecuting)
+        throw std::logic_error("a fixed simulation step cannot be reentered");
+    m_fixedExecuting = true;
+    struct ExecutionScope
+    {
+        bool &active;
+        ~ExecutionScope()
+        {
+            active = false;
         }
-        if (auto callback = m_runtimeLifecycleFixedUpdate)
-            callback(m_fixedTimeStep);
+    } executionScope{m_fixedExecuting};
+    const auto validWorld = [&] {
+        return m_simulationEpoch == std::get<0>(admittedState) && m_isPlaying && m_fixedPhase != FixedPhase::Idle;
+    };
+    const auto current = [&] { return validWorld() && GetSimulationState() == admittedState; };
+    if (m_fixedPhase == FixedPhase::Idle) {
+        m_admittedFixedDeltaTime = m_fixedTimeStep;
+        m_fixedAccumulatorDebit = !m_isStepping;
+        ++m_fixedStepIndex;
+        m_fixedTime += static_cast<double>(m_admittedFixedDeltaTime);
+        if (m_timeScale > 0.0f)
+            m_fixedUnscaledTime += static_cast<double>(m_admittedFixedDeltaTime / m_timeScale);
+        m_fixedSceneWorlds.clear();
+        for (const auto &scene : m_scenes)
+            if (scene)
+                m_fixedSceneWorlds.push_back(scene->GetWorldId());
+        if (m_runtimePersistentScene)
+            m_fixedSceneWorlds.push_back(m_runtimePersistentScene->GetWorldId());
+        m_fixedSceneCursor = 0;
+        m_fixedPhase = FixedPhase::SceneScripts;
+        FlushPendingBroadphase();
+        if (!current())
+            return false;
+        const auto phaseStart = ProfileClock::now();
+        if (useRuntimeScheduler && m_runtimeLifecycleFixedUpdateCount > 0)
+            if (auto callback = m_runtimeLifecycleFixedUpdate)
+                callback(m_admittedFixedDeltaTime);
+        m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(phaseStart);
+        if (!current())
+            return false;
     }
-    for (const auto &scene : m_scenes)
-        if (scene)
-            scene->FixedUpdate(m_fixedTimeStep);
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->FixedUpdate(m_fixedTimeStep);
-    if (!TransformECSStore::Instance().IsFrameCacheActive())
-        FlushPersistentPromotions();
-    m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(phaseStart);
-
-    FlushPendingBroadphase();
-    auto &physicsStore = PhysicsECSStore::Instance();
-    const bool hasRigidbodies = physicsStore.GetAliveRigidbodyCount() > 0;
-
-    if (hasRigidbodies) {
-        phaseStart = ProfileClock::now();
-        SyncCollidersToPhysics(m_fixedTimeStep);
-        m_lastFrameProfile.syncCollidersMs += ProfileMsSince(phaseStart);
+    if (m_fixedPhase == FixedPhase::SceneScripts) {
+        if (!RuntimeResultsReady(RuntimeFrameBarrier::FixedScript) || !current())
+            return false;
+        const auto phaseStart = ProfileClock::now();
+        while (m_fixedSceneCursor < m_fixedSceneWorlds.size()) {
+            if (auto *scene = GetSceneByWorldId(m_fixedSceneWorlds[m_fixedSceneCursor]))
+                scene->FixedUpdate(m_admittedFixedDeltaTime);
+            if (!current())
+                return false;
+            ++m_fixedSceneCursor;
+        }
+        if (!TransformECSStore::Instance().IsFrameCacheActive())
+            FlushPersistentPromotions();
+        m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(phaseStart);
+        m_fixedPhase = FixedPhase::Control;
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformToPhysics);
+        if (!current())
+            return false;
     }
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformToPhysics);
-
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsSimulation);
-    if (hasRigidbodies) {
-        phaseStart = ProfileClock::now();
-        PhysicsWorld::Instance().Step(m_fixedTimeStep);
-        m_lastFrameProfile.physicsStepMs += ProfileMsSince(phaseStart);
-        m_lastFrameProfile.dynamicCCDSplits +=
-            static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
-
-        phaseStart = ProfileClock::now();
-        m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
-        m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
+    if (m_fixedPhase == FixedPhase::Control) {
+        if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsSimulation) || !current())
+            return false;
+        // Applying a result may author Transform, body, or joint data. The
+        // admitted dt belongs to this step even when settings changed while waiting.
+        FlushPendingBroadphase();
+        SyncCollidersToPhysics(m_admittedFixedDeltaTime);
+        m_fixedPhase = FixedPhase::Integration;
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsSimulation);
+        if (!current())
+            return false;
     }
-
-    if (hasRigidbodies) {
-        phaseStart = ProfileClock::now();
-        SyncRigidbodiesToTransform();
-        m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
+    if (m_fixedPhase == FixedPhase::Integration) {
+        if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+            const auto phaseStart = ProfileClock::now();
+            PhysicsWorld::Instance().Step(m_admittedFixedDeltaTime);
+            m_lastFrameProfile.physicsStepMs += ProfileMsSince(phaseStart);
+            m_lastFrameProfile.dynamicCCDSplits +=
+                static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
+        }
+        m_completedFixedStepIndex = m_fixedStepIndex;
+        m_lastFrameProfile.fixedSteps += 1.0;
+        if (m_fixedAccumulatorDebit)
+            m_fixedTimeAccumulator -= m_admittedFixedDeltaTime;
+        // Mark before user collision callbacks: a Pause or delayed publication
+        // must never repeat the solver or dispatch this batch a second time.
+        m_fixedPhase = FixedPhase::Publication;
+        if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+            const auto phaseStart = ProfileClock::now();
+            m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
+            m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
+        }
+        if (!validWorld())
+            return false;
     }
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
+    if (m_fixedPhase == FixedPhase::Publication) {
+        if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsToTransform) || !validWorld())
+            return false;
+        if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+            const auto phaseStart = ProfileClock::now();
+            SyncRigidbodiesToTransform();
+            m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
+        }
+        m_publishedFixedStepIndex = m_completedFixedStepIndex;
+        m_fixedPhase = FixedPhase::PostNotification;
+        if (!current()) {
+            ApplyInterpolatedRigidbodies(1.0f);
+            return false;
+        }
+    }
+    if (m_fixedPhase == FixedPhase::PostNotification) {
+        m_fixedPhase = FixedPhase::PostStep;
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
+        if (!current()) {
+            if (validWorld())
+                ApplyInterpolatedRigidbodies(1.0f);
+            return false;
+        }
+    }
+    if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsPostScript) || !current())
+        return false;
+    m_fixedPhase = FixedPhase::Idle;
+    return true;
 }
 
 void SceneManager::FlushPendingBroadphase()
@@ -1149,20 +1408,8 @@ void SceneManager::FlushPendingBroadphase()
     const size_t bodyCount = pendingBodies.size();
 
     for (auto handle : pendingBodies) {
-        if (!store.IsValid(handle))
-            continue;
-        auto &data = store.GetCollider(handle);
-        auto *col = data.owner;
-        if (!col || !col->IsEnabled() || col->GetBodyId() != 0xFFFFFFFF)
-            continue;
-
-        // Actually create the Jolt body (deferred from Awake)
-        col->RegisterBody();
-
-        // Queue broadphase add for the batch step below
-        if (col->GetBodyId() != 0xFFFFFFFF) {
-            col->AddToBroadphase();
-        }
+        if (store.IsValid(handle) && store.GetActor(handle).bodyId == 0xFFFFFFFF)
+            store.RegisterActor(handle);
     }
 
     double createBodiesMs = ProfileMsSince(t0);
@@ -1208,25 +1455,21 @@ void SceneManager::FlushPendingBroadphase()
     // }
 }
 
-void SceneManager::SyncTransforms()
+void SceneManager::SyncTransforms(float motionDeltaTime)
 {
     // First pass starts any deferred mesh cooking. Explicit SyncTransforms is
     // a barrier: wait for those immutable CPU jobs, commit them on this main
     // thread, then create/rebuild bodies before returning.
     FlushPendingBroadphase();
     PhysicsECSStore::Instance().MarkAllCollidersDirty();
-    // During play, route moved kinematic / collider-only bodies through the
-    // velocity-driven move paths — the editor gizmo calls Physics.sync_transforms
-    // after every drag frame, and a dt of 0 would degrade those moves into
-    // zero-velocity teleports that push dynamic bodies aside without imparting
-    // any momentum. Outside play nothing steps the simulation, so moves must
-    // remain teleports.
-    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
+    // The ordinary barrier publishes immediately. Editor drag explicitly
+    // supplies a step when its movement must impart contact velocity.
+    SyncCollidersToPhysics(motionDeltaTime);
     // Scale changes discovered above can start mesh cooking too. Include
     // those jobs in this explicit barrier rather than waiting before discovery.
     MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
-    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
+    SyncCollidersToPhysics(motionDeltaTime);
 }
 
 void SceneManager::ForceAllBodiesToCurrentTransform()
@@ -1265,7 +1508,7 @@ void SceneManager::ActivateDynamicBodies(Scene *scene)
         if (!rb || !rb->IsEnabled() || rb->IsKinematic())
             return;
         auto *go = rb->GetGameObject();
-        if (!go || !IsRuntimeScene(go->GetScene()) || (scene && go->GetScene() != scene))
+        if (!go || !go->IsActiveInHierarchy() || !IsRuntimeScene(go->GetScene()) || (scene && go->GetScene() != scene))
             return;
         rb->WakeUp();
     });
@@ -1283,8 +1526,7 @@ void SceneManager::SyncRigidbodiesToTransform()
     for (const uint32_t previousBodyId : m_posePresentationBodyIds) {
         if (std::binary_search(bodyIds.begin(), bodyIds.end(), previousBodyId))
             continue;
-        auto *collider = physics.FindColliderByBodyId(previousBodyId);
-        auto *rb = collider ? collider->GetCachedRigidbody() : nullptr;
+        auto *rb = physics.FindRigidbodyByBodyId(previousBodyId);
         if (!rb || !rb->IsEnabled())
             continue;
         auto *go = rb->GetGameObject();
@@ -1294,8 +1536,7 @@ void SceneManager::SyncRigidbodiesToTransform()
     m_posePresentationBodyIds.assign(bodyIds.begin(), bodyIds.end());
 
     for (const uint32_t bodyId : bodyIds) {
-        auto *collider = physics.FindColliderByBodyId(bodyId);
-        auto *rb = collider ? collider->GetCachedRigidbody() : nullptr;
+        auto *rb = physics.FindRigidbodyByBodyId(bodyId);
         if (!rb || !rb->IsEnabled())
             continue;
         auto *go = rb->GetGameObject();
@@ -1313,8 +1554,7 @@ void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
     auto &physics = PhysicsWorld::Instance();
     m_lastFrameProfile.interpolationCandidates += static_cast<double>(m_posePresentationBodyIds.size());
     for (const uint32_t bodyId : m_posePresentationBodyIds) {
-        auto *collider = physics.FindColliderByBodyId(bodyId);
-        auto *rb = collider ? collider->GetCachedRigidbody() : nullptr;
+        auto *rb = physics.FindRigidbodyByBodyId(bodyId);
         if (!rb || !rb->IsEnabled())
             continue;
         auto *go = rb->GetGameObject();
@@ -1442,6 +1682,50 @@ void SceneManager::QueueSkinPoseHistoryCommit(SkinnedMeshRenderer *renderer)
         m_pendingSkinPoseHistoryCommits.emplace(renderer, renderer);
 }
 
+void SceneManager::RegisterSkeletonBone(Transform *bone, SkeletonInstance *skeleton)
+{
+    m_skeletonBoneOwners[bone] = skeleton;
+}
+
+void SceneManager::ForgetSkeletonBone(Transform *bone)
+{
+    if (const auto found = m_skeletonBoneOwners.find(bone); found != m_skeletonBoneOwners.end()) {
+        auto *skeleton = found->second;
+        m_skeletonBoneOwners.erase(found);
+        skeleton->MarkPoseDirty();
+    }
+}
+
+void SceneManager::NotifySkeletonBoneChanged(Transform *bone)
+{
+    if (const auto found = m_skeletonBoneOwners.find(bone); found != m_skeletonBoneOwners.end())
+        found->second->MarkPoseDirty();
+}
+
+void SceneManager::ReleaseSkeletonBones(SkeletonInstance *skeleton, const std::vector<Transform *> &bones)
+{
+    for (auto *bone : bones)
+        if (const auto found = m_skeletonBoneOwners.find(bone);
+            found != m_skeletonBoneOwners.end() && found->second == skeleton)
+            m_skeletonBoneOwners.erase(found);
+    m_pendingSkeletonPoses.erase(std::remove(m_pendingSkeletonPoses.begin(), m_pendingSkeletonPoses.end(), skeleton),
+                                 m_pendingSkeletonPoses.end());
+}
+
+void SceneManager::QueueSkeletonPose(SkeletonInstance *skeleton)
+{
+    m_pendingSkeletonPoses.push_back(skeleton);
+}
+
+void SceneManager::PublishSkeletonPoses()
+{
+    while (!m_pendingSkeletonPoses.empty()) {
+        auto *skeleton = m_pendingSkeletonPoses.back();
+        m_pendingSkeletonPoses.pop_back();
+        skeleton->PublishRenderPoses();
+    }
+}
+
 void SceneManager::CommitSkinPoseHistories()
 {
     // Unregistration removes queued entries before component destruction.
@@ -1463,26 +1747,6 @@ void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)
     ++m_renderTransformRevision;
     if (m_renderTransformRevision == 0)
         m_renderTransformRevision = 1;
-}
-
-void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, const std::string &meshPath)
-{
-    (void)meshPath;
-    if (meshGuid.empty())
-        return;
-    for (auto *renderer : m_activeMeshRenderers) {
-        if (!renderer)
-            continue;
-        // ReloadAsset advances the registry version even though MeshLoader
-        // preserves the InxMesh pointer. Refresh the AssetRef publication now;
-        // otherwise draw extraction rejects the existing scene instance as a
-        // stale version until the user assigns the mesh again.
-        if (renderer->HasMeshAsset() && renderer->GetMeshAssetGuid() == meshGuid)
-            renderer->OnMeshAssetEvent(meshGuid, AssetEvent::Modified);
-        if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer);
-            skinned && skinned->ReferencesModelGuid(meshGuid))
-            skinned->ReloadSourceModel();
-    }
 }
 
 // ========================================================================

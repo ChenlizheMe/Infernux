@@ -7,7 +7,7 @@ import numpy as np
 
 from infernux.core.assets import AssetManager
 from infernux.core.material import Material
-from infernux.lib import LightShadows, SceneManager, Vector3
+from infernux.lib import CameraClearFlags, LightShadows, SceneManager, Vector3
 from infernux.rendergraph import Format
 from infernux.renderstack import RenderPipeline, DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline
 
@@ -52,7 +52,7 @@ class DepthCoveragePipeline(RenderPipeline):
         color = graph.create_texture('color', camera_target=True)
         forward = graph.create_texture('forward', format=Format.RGBA16_SFLOAT, samples=1)
         forward_depth = graph.create_texture('forward_depth', format=Format.D32_SFLOAT, samples=1)
-        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
+        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, camera_target=True)
         graph.add_pass('Forward coverage').write_color(forward).write_depth(forward_depth).set_clear(
             color=(0,0,0,0), depth=0.0).draw_renderers(material_pass='forward')
         graph.add_pass('Depth coverage').write_depth(depth).set_clear(depth=0.0).draw_renderers(material_pass='depth')
@@ -126,6 +126,7 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); s.albedo = vec3(.5); s.
 
         self.camera = obj('Surface Discard Camera', (0,0,-6)).add_component('Camera')
         self.camera.culling_mask = 1 << 18
+        self.camera.clear_flags = CameraClearFlags.SolidColor
         sun = obj('Surface Discard Sun')
         sun.transform.euler_angles = Vector3(0,45,0)
         light = sun.add_component('Light')

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
 from infernux.components.fields import FieldType
-from .hinge_joint import _from_native_rigidbody, _to_native_rigidbody
+from ._joint_fields import joint_fields
 
 
 class SliderJoint(BuiltinComponent):
@@ -13,18 +13,11 @@ class SliderJoint(BuiltinComponent):
     _cpp_type_name = "SliderJoint"
     _component_category_ = "Physics"
 
-    anchor = CppProperty.from_native("SliderJoint", "anchor")
+    anchor, connected_body, enable_collision = joint_fields("SliderJoint")
     axis = CppProperty.from_native("SliderJoint", "axis")
-    connected_body = CppProperty.from_native(
-        "SliderJoint", "connected_body",
-        get_converter=_from_native_rigidbody,
-        set_converter=_to_native_rigidbody,
-    )
-    connected_body.metadata.component_type = "Rigidbody"
     use_limits = CppProperty.from_native("SliderJoint", "use_limits")
     minimum_distance = CppProperty.from_native("SliderJoint", "minimum_distance")
     maximum_distance = CppProperty.from_native("SliderJoint", "maximum_distance")
-    enable_collision = CppProperty.from_native("SliderJoint", "enable_collision")
     current_position = CppProperty(
         "current_position", FieldType.FLOAT, default=0.0, readonly=True,
         tooltip="Current position along the slider axis in metres",

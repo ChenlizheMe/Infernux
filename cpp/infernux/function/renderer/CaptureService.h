@@ -8,6 +8,7 @@
 
 namespace infernux
 {
+class FrameWorkOwner;
 namespace vk
 {
 class ImageReadbackTicket;
@@ -25,6 +26,7 @@ enum class CaptureStatus
 {
     PendingGpu,
     PendingEncode,
+    PendingWrite,
     Completed,
     Failed,
     Cancelled,
@@ -53,8 +55,7 @@ struct CaptureSnapshot
 class CaptureService
 {
   public:
-    CaptureService();
-    explicit CaptureService(std::chrono::milliseconds gpuTimeout);
+    explicit CaptureService(FrameWorkOwner &owner, std::chrono::milliseconds gpuTimeout = std::chrono::seconds(10));
     ~CaptureService();
 
     CaptureService(const CaptureService &) = delete;
@@ -68,14 +69,20 @@ class CaptureService
     /// frame replaces the request-time frame in the returned metadata.
     [[nodiscard]] bool AttachReadback(uint64_t captureId, std::shared_ptr<vk::ImageReadbackTicket> ticket,
                                       uint64_t engineFrame);
+    /// Fail before file publication, or cancel a still-queued file write.
+    /// A write already executing is resolved by its actual IO result.
     void Fail(uint64_t captureId, std::string error);
     [[nodiscard]] CaptureSnapshot Query(uint64_t captureId) const;
+    /// False means terminal or the file write has already begun; it does not
+    /// claim to undo an artifact that is being committed.
     [[nodiscard]] bool Cancel(uint64_t captureId);
+    /// Source validity is checked until file submission. An accepted immutable
+    /// capture is independent of later source resizes while its file is written.
     void InvalidateSource(CaptureSource source, uint64_t sourceGeneration);
-    void Poll();
     [[nodiscard]] bool HasPending() const noexcept;
 
   private:
+    void Poll();
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

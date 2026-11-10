@@ -2,21 +2,32 @@
  * @file Rigidbody.h
  * @brief Rigidbody component — dynamic/kinematic body physics.
  *
- * Mirrors Unity's Rigidbody API. When attached to a GameObject that also has a
- * Collider, the Collider's body becomes dynamic (or kinematic) instead of static.
- * Without a Rigidbody sibling, colliders remain static.
+ * Owns the GameObject's dynamic or kinematic body, including bodies with no
+ * collision shapes. Collider components contribute shapes to this actor.
  */
 
 #pragma once
 
 #include "Component.h"
 #include "physics/PhysicsECSStore.h"
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <optional>
+#include <tuple>
 
 namespace infernux
 {
+
+/// Authored configuration, kept outside the per-frame physics data pool.
+struct RigidbodyMassProperties
+{
+    glm::vec3 center{0.0f};
+    glm::vec3 moments{1.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+};
 struct PhysicsBodyMotionState;
+enum class PhysicsStateFields : uint32_t;
 
 /**
  * @brief Unity-style ForceMode for AddForce / AddTorque.
@@ -79,10 +90,8 @@ enum class RigidbodyInterpolation : int
 /**
  * @brief Rigidbody component — drives physics simulation on a GameObject.
  *
- * NOTE: The Jolt body is owned by the *Collider* component. Rigidbody tells
- * colliders to switch their body from Static to Dynamic/Kinematic and provides
- * the physics API (forces, velocity, mass, etc.).  If there is no Collider
- * sibling, Rigidbody has no effect.
+ * Owns one physics actor. Collider components supply its collision shapes;
+ * a Rigidbody with no Collider still participates in dynamics and joints.
  */
 class Rigidbody : public Component
 {
@@ -92,11 +101,20 @@ class Rigidbody : public Component
     Rigidbody();
     ~Rigidbody() override;
 
+    [[nodiscard]] uint32_t GetBodyId() const;
+    [[nodiscard]] uint32_t GetParticipatingBodyId() const;
+    [[nodiscard]] std::optional<std::tuple<uint32_t, uint32_t, uint64_t, uint64_t>> GetResultTargetEpoch() const;
+    [[nodiscard]] ECSHandle GetECSHandle() const
+    {
+        return m_ecsHandle;
+    }
+
     // ====================================================================
     // Lifecycle
     // ====================================================================
 
     void Awake() override;
+    void OnHierarchyPublished() override;
     void OnEnable() override;
     void OnDisable() override;
     void OnDestroy() override;
@@ -111,6 +129,16 @@ class Rigidbody : public Component
         return Data().mass;
     }
     void SetMass(float mass);
+    void ValidateMass(float mass) const;
+
+    /// Explicit local COM and principal inertia (kg m^2), expressed at unit
+    /// object scale. Rotation maps principal axes into body-local axes.
+    void SetMassProperties(float mass, const glm::vec3 &center, const glm::vec3 &moments, const glm::quat &rotation);
+    void ResetMassProperties();
+    [[nodiscard]] const std::optional<RigidbodyMassProperties> &GetAuthoredMassProperties() const
+    {
+        return m_massProperties;
+    }
 
     /// @brief Linear drag (Unity: Rigidbody.drag). Default 0.
     [[nodiscard]] float GetDrag() const
@@ -212,11 +240,11 @@ class Rigidbody : public Component
     // ---- Kinematic movement ----
 
     /// @brief Schedule a kinematic move; presentation follows the configured interpolation mode.
-    /// @throws std::logic_error if this is not an active kinematic body with an enabled Collider.
+    /// @throws std::logic_error if this is not an active kinematic body with a resident body.
     void MovePosition(const glm::vec3 &position);
 
     /// @brief Schedule a kinematic rotation without teleporting the presentation Transform.
-    /// @throws std::logic_error if this is not an active kinematic body with an enabled Collider.
+    /// @throws std::logic_error if this is not an active kinematic body with a resident body.
     void MoveRotation(const glm::quat &rotation);
 
     // ---- Read-only world info ----
@@ -224,6 +252,11 @@ class Rigidbody : public Component
     /// @brief World-space center of mass (Unity: Rigidbody.worldCenterOfMass).
     [[nodiscard]] glm::vec3 GetWorldCenterOfMass() const;
     [[nodiscard]] PhysicsBodyMotionState GetMotionState() const;
+    [[nodiscard]] PhysicsBodyMotionState GetMotionState(PhysicsStateFields fields) const;
+
+    /// Reset an episode's resident bodies together, including solver history.
+    /// States use world poses/velocities; shape, constraints and IDs are retained.
+    static void ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::vector<PhysicsBodyMotionState> states);
 
     /// @brief World-space position of the rigidbody (Unity: Rigidbody.position).
     [[nodiscard]] glm::vec3 GetPosition() const;
@@ -264,9 +297,9 @@ class Rigidbody : public Component
     /// bodies retain their velocity-producing drive semantics.
     void SyncExternalMovesToPhysics(float fixedDeltaTime = 0.0f);
 
-    /// @brief Is this Rigidbody responsible for any collider's body?
-    ///        Returns true when enabled and has collider siblings.
-    [[nodiscard]] bool HasLinkedColliders() const;
+    /// @brief Does this Rigidbody have a native body?
+    ///        Returns true when the actor is allocated.
+    [[nodiscard]] bool HasBody() const;
 
     /// @brief Apply the complete Rigidbody configuration to a newly created or
     ///        motion-type-changed actor body.
@@ -295,6 +328,7 @@ class Rigidbody : public Component
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
+    friend class Ragdoll;
     enum class ForceCommandKind : uint8_t
     {
         Force,
@@ -314,7 +348,8 @@ class Rigidbody : public Component
     void ApplyForceCommand(class PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command);
 
     /// Notify all sibling Colliders to rebuild their Jolt body type.
-    void NotifyCollidersBodyTypeChanged();
+    void NotifyCollidersBodyTypeChanged(bool refreshShape = true);
+    void CacheActorPose(const glm::vec3 &position, const glm::quat &rotation);
 
     /// Apply drag damping (called via Jolt motion properties).
     void ApplyDragSettings();
@@ -338,7 +373,8 @@ class Rigidbody : public Component
 
     /// Teleport the actor body to @p pos / @p rot while preserving velocity,
     /// and update the transform/interpolation caches.
-    void TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot);
+    void TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3 &pos, const glm::quat &rot,
+                        bool publishTransform = true);
 
     /// Nested dynamic actors keep independent solver poses when this actor
     /// moves, including sleeping actors absent from the active readback list.
@@ -356,6 +392,9 @@ class Rigidbody : public Component
     }
 
     ECSHandle m_ecsHandle;
+    uint64_t m_resultEpoch = 0;
+    std::optional<RigidbodyMassProperties> PrepareMass(float mass) const;
+    std::optional<RigidbodyMassProperties> m_massProperties;
     std::vector<ForceCommand> m_pendingForceCommands;
 };
 

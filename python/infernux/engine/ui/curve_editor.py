@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 
-from infernux.graph.ramp import CURVE_WRAP_MODES, MAX_RAMP_KEYS, AnimationCurve
+from infernux._animation_curve import Keyframe, WeightedMode, _decode_number
+
+from infernux.graph.ramp import CURVE_WRAP_MODES, AnimationCurve
 
 from .dpi import editor_dpi_scale
 from .theme import Theme
@@ -20,46 +22,46 @@ class _CurveEditorState:
 _STATES: dict[str, _CurveEditorState] = {}
 
 
+def _edit_key_number(ctx, widget_id, value, speed, minimum, maximum):
+    """Keep authored precision until the native float widget is actually edited."""
+    number = _decode_number(value)
+    if not isfinite(number):
+        ctx.label(str(number))
+        ctx.same_line()
+        return 0.0 if ctx.button(f"Reset##{widget_id}") else value
+    updated = float(ctx.drag_float(widget_id, number, speed, minimum, maximum))
+    return updated if ctx.is_item_edited() else value
+
+
+def _edit_tangent(ctx, widget_id, value):
+    number = _decode_number(value)
+    if not isfinite(number):
+        ctx.label("NaN" if number != number else "Step")
+        ctx.same_line()
+        return 0.0 if ctx.button(f"Slope##{widget_id}") else value
+    return _edit_key_number(ctx, f"##{widget_id}", value, .02, -1.0e7, 1.0e7)
+
+
 def _evaluate_keys(keys: list[dict], time: float) -> float:
-    """Evaluate the same cubic Hermite segment used by LineRenderer."""
-    if not keys:
-        return 0.0
-    if len(keys) == 1 or time <= float(keys[0]["time"]):
-        return float(keys[0]["value"])
-    if time >= float(keys[-1]["time"]):
-        return float(keys[-1]["value"])
-    right_index = 1
-    while right_index < len(keys) and time > float(keys[right_index]["time"]):
-        right_index += 1
-    left = keys[right_index - 1]
-    right = keys[right_index]
-    duration = float(right["time"]) - float(left["time"])
-    if duration <= 1.0e-8:
-        return float(right["value"])
-    t = (time - float(left["time"])) / duration
-    t2 = t * t
-    t3 = t2 * t
-    return (
-        (2.0 * t3 - 3.0 * t2 + 1.0) * float(left["value"])
-        + (t3 - 2.0 * t2 + t) * duration * float(left["out_tangent"])
-        + (-2.0 * t3 + 3.0 * t2) * float(right["value"])
-        + (t3 - t2) * duration * float(right["in_tangent"])
-    )
+    """Use runtime semantics, including weighted and stepped segments."""
+    return AnimationCurve.from_dict(dict(keys=keys, pre_wrap="clamp", post_wrap="clamp")).evaluate(time)
 
 
 def _view_bounds(keys: list[dict], *, non_negative: bool) -> tuple[float, float, float, float]:
-    times = [float(item["time"]) for item in keys]
+    curve = AnimationCurve.from_dict(dict(keys=keys, pre_wrap="clamp", post_wrap="clamp"))
+    points = curve.keys
+    times = [key.time for key in points if isfinite(key.time)]
     time_min = min([0.0, *times])
     time_max = max([1.0, *times])
-    values = [float(item["value"]) for item in keys]
+    values = [key.value for key in points if isfinite(key.value)]
     sample_count = max(32, len(keys) * 24)
     for index in range(sample_count + 1):
         sample_time = time_min + (time_max - time_min) * index / sample_count
-        value = _evaluate_keys(keys, sample_time)
+        value = curve.evaluate(sample_time)
         if isfinite(value):
             values.append(value)
-    value_min = min(values)
-    value_max = max(values)
+    value_min = min([0.0, *values])
+    value_max = max([1.0, *values])
     if non_negative:
         value_min = min(0.0, value_min)
     padding = (
@@ -108,18 +110,26 @@ def _draw_curve(
         _, axis_y = to_screen(time_min, 0.0)
         ctx.draw_line(x0, axis_y, x1, axis_y, *Theme.CURVE_EDITOR_AXIS, 1.0 * dpi_scale)
 
+    curve = AnimationCurve.from_dict(dict(keys=keys, pre_wrap="clamp", post_wrap="clamp"))
     previous = None
     steps = max(64, int(width * 0.5))
     for index in range(steps + 1):
         time = time_min + time_span * index / steps
-        point = to_screen(time, _evaluate_keys(keys, time))
+        value = curve.evaluate(time)
+        if not isfinite(value):
+            previous = None
+            continue
+        point = to_screen(time, value)
         if previous is not None:
             ctx.draw_line(*previous, *point, *Theme.CURVE_EDITOR_LINE, 2.0 * dpi_scale)
         previous = point
 
     handles: dict[str, tuple[float, float]] = {}
     for index, item in enumerate(keys):
-        point = to_screen(float(item["time"]), float(item["value"]))
+        time, value = _decode_number(item["time"]), _decode_number(item["value"])
+        if not isfinite(time) or not isfinite(value):
+            continue
+        point = to_screen(time, value)
         color = Theme.CURVE_EDITOR_KEY_SELECTED if index == selected else Theme.CURVE_EDITOR_KEY
         radius = (5.0 if index == selected else 4.0) * dpi_scale
         ctx.draw_filled_circle(*point, radius, *color, 16)
@@ -128,16 +138,28 @@ def _draw_curve(
 
     if show_handles and 0 <= selected < len(keys):
         item = keys[selected]
-        key_x, key_y = to_screen(float(item["time"]), float(item["value"]))
+        key_time, key_value = _decode_number(item["time"]), _decode_number(item["value"])
+        if not isfinite(key_time) or not isfinite(key_value):
+            return handles
+        key_x, key_y = to_screen(key_time, key_value)
         time_per_pixel = time_span / width
         for name, direction, tangent_name in (
             ("in", -1.0, "in_tangent"),
             ("out", 1.0, "out_tangent"),
         ):
-            handle_time = float(item["time"]) + direction * 48.0 * dpi_scale * time_per_pixel
-            handle_value = float(item["value"]) + (
-                handle_time - float(item["time"])
-            ) * float(item[tangent_name])
+            key = Keyframe.from_dict(item)
+            tangent = getattr(key, tangent_name)
+            if not isfinite(tangent):
+                continue
+            neighbor = selected - 1 if direction < 0 else selected + 1
+            weighted = key.weighted_mode & (WeightedMode.IN if direction < 0 else WeightedMode.OUT)
+            handle_span = 48.0 * dpi_scale * time_per_pixel
+            if weighted and 0 <= neighbor < len(keys):
+                handle_span = abs(_decode_number(keys[neighbor]["time"]) - key.time) * getattr(key, name + "_weight")
+            handle_time = key.time + direction * handle_span
+            handle_value = _decode_number(item["value"]) + (
+                handle_time - _decode_number(item["time"])
+            ) * tangent
             handle = to_screen(handle_time, handle_value)
             ctx.draw_line(
                 key_x, key_y, *handle, *Theme.CURVE_EDITOR_TANGENT, 1.0 * dpi_scale
@@ -214,7 +236,7 @@ def render_curve_property(
     popup_id = f"##{widget_id}_curve_editor"
     if clicked:
         ctx.open_popup(popup_id)
-    ctx.set_next_window_size(440.0 * dpi, 440.0 * dpi, Theme.COND_ALWAYS)
+    ctx.set_next_window_size(440.0 * dpi, 570.0 * dpi, Theme.COND_ALWAYS)
     if not ctx.begin_popup(popup_id):
         return curve.to_dict()
 
@@ -240,6 +262,15 @@ def render_curve_property(
             list(CURVE_WRAP_MODES),
             -1,
         )
+
+        if not keys:
+            ctx.label("Empty curve (value = 0)")
+            if ctx.button(f"Add Key##{widget_id}_empty_add"):
+                keys.append(Keyframe().to_dict())
+            else:
+                return AnimationCurve(keys=keys, pre_wrap=CURVE_WRAP_MODES[pre_index],
+                                      post_wrap=CURVE_WRAP_MODES[post_index]).to_dict()
+            state.selected = 0
 
         canvas_width = max(280.0 * dpi, float(ctx.get_content_region_avail_width()))
         ctx.invisible_button(
@@ -274,16 +305,18 @@ def render_curve_property(
             result = value_max - (position[1] - y0) / max(1.0, y1 - y0) * (value_max - value_min)
             return time, result
 
-        if hovered and ctx.is_mouse_double_clicked(0) and len(keys) < MAX_RAMP_KEYS:
+        if hovered and ctx.is_mouse_double_clicked(0) :
             new_time, new_value = from_screen(mouse)
             if non_negative:
                 new_value = max(0.0, new_value)
+            if any(abs(float(k["time"]) - new_time) < 1.0e-6 for k in keys):
+                new_time += 1.0e-4
             keys.append(
                 {"time": new_time, "value": new_value, "in_tangent": 0.0, "out_tangent": 0.0}
             )
-            keys.sort(key=lambda item: float(item["time"]))
+            keys.sort(key=lambda item: _decode_number(item["time"]))
             state.selected = min(
-                range(len(keys)), key=lambda index: abs(float(keys[index]["time"]) - new_time)
+                range(len(keys)), key=lambda index: abs(_decode_number(keys[index]["time"]) - new_time)
             )
             state.dragging = "key"
         elif hovered and ctx.is_mouse_button_clicked(0):
@@ -294,8 +327,8 @@ def render_curve_property(
                     state.dragging = name
             for index, item in enumerate(keys):
                 key_point = (
-                    x0 + (float(item["time"]) - time_min) / max(1.0e-6, time_max - time_min) * (x1 - x0),
-                    y1 - (float(item["value"]) - value_min) / max(1.0e-6, value_max - value_min) * (y1 - y0),
+                    x0 + (_decode_number(item["time"]) - time_min) / max(1.0e-6, time_max - time_min) * (x1 - x0),
+                    y1 - (_decode_number(item["value"]) - value_min) / max(1.0e-6, value_max - value_min) * (y1 - y0),
                 )
                 if _distance_squared(mouse, key_point) <= (10.0 * dpi) ** 2:
                     state.selected = index
@@ -306,27 +339,37 @@ def render_curve_property(
             selected = keys[state.selected]
             mouse_time, mouse_value = from_screen(mouse)
             if state.dragging == "key":
-                minimum = float(keys[state.selected - 1]["time"]) + 1.0e-4 if state.selected else -1.0e7
+                minimum = _decode_number(keys[state.selected - 1]["time"]) + 1.0e-4 if state.selected else -1.0e7
                 maximum = (
-                    float(keys[state.selected + 1]["time"]) - 1.0e-4
+                    _decode_number(keys[state.selected + 1]["time"]) - 1.0e-4
                     if state.selected + 1 < len(keys)
                     else 1.0e7
                 )
                 selected["time"] = min(max(mouse_time, minimum), maximum)
                 selected["value"] = max(0.0, mouse_value) if non_negative else mouse_value
             elif state.dragging in {"in", "out"}:
-                delta_time = mouse_time - float(selected["time"])
+                delta_time = mouse_time - _decode_number(selected["time"])
                 if abs(delta_time) > 1.0e-6:
                     selected[f"{state.dragging}_tangent"] = (
-                        mouse_value - float(selected["value"])
+                        mouse_value - _decode_number(selected["value"])
                     ) / delta_time
+                    key = Keyframe.from_dict(selected)
+                    side = state.dragging
+                    bit = WeightedMode.IN if side == "in" else WeightedMode.OUT
+                    neighbor = state.selected + (-1 if side == "in" else 1)
+                    if key.weighted_mode & bit and 0 <= neighbor < len(keys):
+                        span = abs(_decode_number(keys[neighbor]["time"]) - key.time)
+                        if span:
+                            selected[f"{side}_weight"] = min(1.0, max(0.0, abs(delta_time) / span))
         elif state.dragging:
             state.dragging = ""
 
         selected = keys[state.selected]
-        minimum = float(keys[state.selected - 1]["time"]) + 1.0e-4 if state.selected else -1.0e7
+        for field, default in (("in_weight", 0.0), ("out_weight", 0.0), ("weighted_mode", 0)):
+            selected.setdefault(field, default)
+        minimum = _decode_number(keys[state.selected - 1]["time"]) + 1.0e-4 if state.selected else -1.0e7
         maximum = (
-            float(keys[state.selected + 1]["time"]) - 1.0e-4
+            _decode_number(keys[state.selected + 1]["time"]) - 1.0e-4
             if state.selected + 1 < len(keys)
             else 1.0e7
         )
@@ -337,45 +380,52 @@ def render_curve_property(
         ctx.label("Time")
         ctx.same_line(first_input_x)
         ctx.set_next_item_width(110.0 * dpi)
-        selected["time"] = float(
-            ctx.drag_float(f"##{widget_id}_time", selected["time"], 0.01, minimum, maximum)
-        )
+        selected["time"] = _edit_key_number(
+            ctx, f"##{widget_id}_time", selected["time"], 0.01, minimum, maximum)
         ctx.same_line(second_label_x)
         ctx.label("Value")
         ctx.same_line(second_input_x)
         ctx.set_next_item_width(-1.0)
-        selected["value"] = float(
-            ctx.drag_float(
-                f"##{widget_id}_value",
-                selected["value"],
-                0.01,
-                0.0 if non_negative else -1.0e7,
-                1.0e7,
-            )
-        )
+        selected["value"] = _edit_key_number(
+            ctx, f"##{widget_id}_value", selected["value"], 0.01,
+            0.0 if non_negative else -1.0e7, 1.0e7)
         ctx.align_text_to_frame_padding()
         ctx.label("In Tangent")
         ctx.same_line(first_input_x)
         ctx.set_next_item_width(110.0 * dpi)
-        selected["in_tangent"] = float(
-            ctx.drag_float(f"##{widget_id}_in", selected["in_tangent"], 0.02, -1.0e7, 1.0e7)
-        )
+        selected["in_tangent"] = _edit_tangent(ctx, f"{widget_id}_in", selected["in_tangent"])
         ctx.same_line(second_label_x)
         ctx.label("Out Tangent")
         ctx.same_line(second_input_x)
         ctx.set_next_item_width(-1.0)
-        selected["out_tangent"] = float(
-            ctx.drag_float(f"##{widget_id}_out", selected["out_tangent"], 0.02, -1.0e7, 1.0e7)
-        )
-        if len(keys) < MAX_RAMP_KEYS and ctx.button(f"Add Key##{widget_id}_add"):
+        selected["out_tangent"] = _edit_tangent(ctx, f"{widget_id}_out", selected["out_tangent"])
+        ctx.label("Weighted Mode")
+        ctx.same_line(140.0 * dpi)
+        ctx.set_next_item_width(-1.0)
+        original_mode = int(selected["weighted_mode"])
+        mode = ctx.combo(f"##{widget_id}_weighted", original_mode & 3, ["None", "In", "Out", "Both"], -1)
+        selected["weighted_mode"] = (original_mode & ~3) | mode
+        for side in ("in", "out"):
+            ctx.label(f"{side.title()} Weight")
+            ctx.same_line(140.0 * dpi)
+            ctx.set_next_item_width(-1.0)
+            selected[f"{side}_weight"] = _edit_key_number(
+                ctx, f"##{widget_id}_{side}_weight", selected[f"{side}_weight"], .005, 0.0, 1.0)
+        for side in ("in", "out"):
+            if side == "out":
+                ctx.same_line()
+            if ctx.button(f"Step {side.title()}##{widget_id}_step_{side}"):
+                selected[f"{side}_tangent"] = "infinity"
+
+        if ctx.button(f"Add Key##{widget_id}_add"):
             if len(keys) == 1:
                 insertion_index = 1
-                new_time = float(keys[0]["time"]) + 1.0
+                new_time = _decode_number(keys[0]["time"]) + 1.0
             else:
                 largest_gap = max(
                     range(len(keys) - 1),
-                    key=lambda index: float(keys[index + 1]["time"])
-                    - float(keys[index]["time"]),
+                    key=lambda index: _decode_number(keys[index + 1]["time"])
+                    - _decode_number(keys[index]["time"]),
                 )
                 insertion_index = largest_gap + 1
                 new_time = (
@@ -392,7 +442,7 @@ def render_curve_property(
                 },
             )
             state.selected = insertion_index
-        if len(keys) > 1:
+        if keys:
             ctx.same_line(0, 8.0 * dpi)
             if ctx.button(f"Remove Key##{widget_id}_remove"):
                 del keys[state.selected]

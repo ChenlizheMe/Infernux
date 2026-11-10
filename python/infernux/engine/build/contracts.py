@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -254,6 +256,7 @@ class BuildRequest:
     output_dir: str
     profile: BuildProfile = field(default_factory=BuildProfile)
     asset_catalog_entries: tuple[Mapping[str, object], ...] = ()
+    runtime_type_records: tuple[Mapping[str, object], ...] | None = None
     cancellation: BuildCancellationToken = field(
         default_factory=BuildCancellationToken,
         compare=False,
@@ -280,8 +283,13 @@ class BuildRequest:
         object.__setattr__(
             self,
             "asset_catalog_entries",
-            tuple(_frozen_mapping(item) for item in self.asset_catalog_entries),
+            tuple(_frozen_mapping(copy.deepcopy(dict(item))) for item in self.asset_catalog_entries),
         )
+        if self.runtime_type_records is not None:
+            object.__setattr__(
+                self, "runtime_type_records",
+                tuple(_frozen_mapping(copy.deepcopy(dict(item))) for item in self.runtime_type_records),
+            )
 
     def report(
         self,

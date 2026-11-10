@@ -2,12 +2,17 @@
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "GameObject.h"
+#include "RectTransformLayout.h"
 #include "Scene.h"
+#include "SceneManager.h"
 #include "TransformECSStore.h"
+#include "core/math/TransformMatrix.h"
+#include "core/math/TransformVectorMath.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
 #include <core/log/InxLog.h>
+#include <glm/gtc/type_ptr.hpp>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -17,6 +22,38 @@ namespace infernux
 
 namespace
 {
+glm::mat4 ComposeAffineMatrices(const float *left, const float *right)
+{
+    const auto result = transform_math::ComposeAffine(left, right);
+    return glm::make_mat4(result.data());
+}
+
+glm::vec3 RotateLocalVector(const glm::quat &rotation, const glm::vec3 &vector)
+{
+    const auto value =
+        transform_math::RotateLocal({rotation.x, rotation.y, rotation.z, rotation.w}, {vector.x, vector.y, vector.z});
+    return {value[0], value[1], value[2]};
+}
+
+glm::vec3 InverseLocalScale(const glm::vec3 &scale)
+{
+    const auto inverse = transform_math::InverseLocalScale({scale.x, scale.y, scale.z});
+    return {inverse[0], inverse[1], inverse[2]};
+}
+
+glm::quat NormalizeStoredRotation(const glm::quat &value)
+{
+    const auto normalized = rotation::NormalizeTransform(value.x, value.y, value.z, value.w);
+    return glm::quat(normalized[3], normalized[0], normalized[1], normalized[2]);
+}
+
+glm::quat MultiplyStoredRotation(const glm::quat &left, const glm::quat &right)
+{
+    const auto result =
+        rotation::MultiplyTransform({left.x, left.y, left.z, left.w}, {right.x, right.y, right.z, right.w});
+    return glm::quat(result[3], result[0], result[1], result[2]);
+}
+
 SemanticTypeDescriptor DescribeTransform()
 {
     SemanticTypeDescriptor type;
@@ -59,7 +96,33 @@ Transform::Transform() : m_ecsHandle(TransformECSStore::Instance().Allocate(this
 
 Transform::~Transform()
 {
+    SceneManager::Instance().ForgetSkeletonBone(this);
     TransformECSStore::Instance().Release(m_ecsHandle);
+}
+
+void Transform::SetLocalEulerAngles(const glm::vec3 &euler)
+{
+    auto &store = TransformECSStore::Instance();
+    store.SetLocalEulerAngles(m_ecsHandle, euler);
+    store.SetLocalRotation(m_ecsHandle, NormalizeStoredRotation(EulerYXZToQuat(euler)));
+    store.RecordLocalPoseWrite(m_ecsHandle, false, true);
+    store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
+    store.SetDirty(m_ecsHandle, true);
+    InvalidateWorldMatrix(true);
+}
+
+void Transform::SetLocalRotation(const glm::quat &rotation)
+{
+    auto &store = TransformECSStore::Instance();
+    const auto normalized = NormalizeStoredRotation(rotation);
+    if (GetLocalRotation() == normalized)
+        return;
+    store.SetLocalRotation(m_ecsHandle, normalized);
+    store.RecordLocalPoseWrite(m_ecsHandle, false, true);
+    store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(normalized, store.GetLocalEulerAngles(m_ecsHandle)));
+    store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
+    store.SetDirty(m_ecsHandle, true);
+    InvalidateWorldMatrix(true);
 }
 
 Transform *Transform::GetParentTransformSafe() const
@@ -72,7 +135,9 @@ Transform *Transform::GetParentTransformSafe() const
 
 glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 {
-    return glm::normalize(GetWorldRotation() * localAxis);
+    const glm::quat q = GetWorldRotation();
+    const auto value = rotation::RotatePublic({q.x, q.y, q.z, q.w}, {localAxis.x, localAxis.y, localAxis.z});
+    return glm::vec3(value[0], value[1], value[2]);
 }
 
 // ============================================================================
@@ -81,28 +146,33 @@ glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 
 glm::vec3 Transform::GetWorldPosition() const
 {
-    auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPositionOverride(m_ecsHandle)) {
-        return store.GetCachedWorldPosition(m_ecsHandle.index);
-    }
-
-    return glm::vec3(GetWorldMatrix()[3]);
+    const auto local = GetLocalPosition();
+    const Transform *parent = GetParentTransformSafe();
+    return parent ? parent->TransformPoint(local) : local;
 }
 
 void Transform::SetWorldPosition(const glm::vec3 &worldPos)
 {
+    if (!std::isfinite(worldPos.x) || !std::isfinite(worldPos.y) || !std::isfinite(worldPos.z))
+        return;
     auto &store = TransformECSStore::Instance();
+    if (store.GetRectLayout(m_ecsHandle)) {
+        const auto *parent = GetParentTransformSafe();
+        SetLocalPosition(parent ? parent->InverseTransformPoint(worldPos) : worldPos);
+        return;
+    }
     if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldPosition(m_ecsHandle.index, worldPos);
         return;
     }
 
+    store.RecordLocalPoseWrite(m_ecsHandle, true, false);
+
     Transform *parentTransform = GetParentTransformSafe();
     if (!parentTransform) {
         store.SetLocalPosition(m_ecsHandle, worldPos);
     } else {
-        glm::mat4 invParentWorld = glm::inverse(parentTransform->GetWorldMatrix());
-        store.SetLocalPosition(m_ecsHandle, glm::vec3(invParentWorld * glm::vec4(worldPos, 1.0f)));
+        store.SetLocalPosition(m_ecsHandle, parentTransform->InverseTransformPoint(worldPos));
     }
     store.SetDirty(m_ecsHandle, true);
     InvalidateWorldMatrix(false);
@@ -113,6 +183,7 @@ void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::
     auto &store = TransformECSStore::Instance();
     if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldPoseFromPhysics(m_ecsHandle.index, worldPos, glm::normalize(worldRot), applyRotation);
+        SceneManager::Instance().NotifySkeletonBoneChanged(this);
         return;
     }
 
@@ -120,14 +191,12 @@ void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::
     if (!parentTransform) {
         store.SetLocalPosition(m_ecsHandle, worldPos);
     } else {
-        const glm::mat4 invParentWorld = glm::inverse(parentTransform->GetWorldMatrix());
-        store.SetLocalPosition(m_ecsHandle, glm::vec3(invParentWorld * glm::vec4(worldPos, 1.0f)));
+        store.SetLocalPosition(m_ecsHandle, parentTransform->InverseTransformPoint(worldPos));
     }
 
     if (applyRotation) {
         const glm::quat safeWorldRot = glm::normalize(worldRot);
-        const glm::quat localRot =
-            parentTransform ? glm::inverse(parentTransform->GetWorldRotation()) * safeWorldRot : safeWorldRot;
+        const glm::quat localRot = WorldRotationToLocal(safeWorldRot);
         store.SetLocalRotation(m_ecsHandle, localRot);
         store.SetLocalEulerAngles(m_ecsHandle,
                                   ExtractEulerAnglesNear(localRot, store.GetLocalEulerAngles(m_ecsHandle)));
@@ -142,6 +211,7 @@ void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::
 
     store.SetDirty(m_ecsHandle, true);
     store.InvalidateSubtree(this, applyRotation, this);
+    SceneManager::Instance().NotifySkeletonBoneChanged(this);
 }
 
 // ============================================================================
@@ -164,7 +234,8 @@ const glm::mat4 &Transform::GetWorldMatrix() const
     if (!parentTransform) {
         store.SetCachedWorldMatrix(m_ecsHandle, localMatrix);
     } else {
-        store.SetCachedWorldMatrix(m_ecsHandle, parentTransform->GetWorldMatrix() * localMatrix);
+        store.SetCachedWorldMatrix(m_ecsHandle, ComposeAffineMatrices(glm::value_ptr(parentTransform->GetWorldMatrix()),
+                                                                      glm::value_ptr(localMatrix)));
     }
     store.SetWorldMatrixDirty(m_ecsHandle, false);
     return store.GetCachedWorldMatrix(m_ecsHandle);
@@ -190,35 +261,43 @@ glm::quat Transform::GetWorldRotation() const
         return store.GetCachedWorldRotation(m_ecsHandle.index);
     }
 
-    Transform *parentTransform = GetParentTransformSafe();
-    if (!parentTransform) {
-        return GetLocalRotation();
-    }
+    return LocalRotationToWorld(GetLocalRotation());
+}
 
-    return parentTransform->GetWorldRotation() * GetLocalRotation();
+glm::quat Transform::GetLocalRotation() const
+{
+    auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle))
+        return WorldRotationToLocal(store.GetCachedWorldRotation(m_ecsHandle.index));
+    return store.GetLocalRotation(m_ecsHandle);
+}
+
+glm::quat Transform::LocalRotationToWorld(const glm::quat &local) const
+{
+    glm::quat rotation = local;
+    for (const Transform *parent = GetParentTransformSafe(); parent; parent = parent->GetParentTransformSafe())
+        rotation = MultiplyStoredRotation(parent->GetLocalRotation(), rotation);
+    return rotation;
+}
+
+glm::quat Transform::WorldRotationToLocal(const glm::quat &world) const
+{
+    const Transform *parent = GetParentTransformSafe();
+    if (!parent)
+        return world;
+    // Invert the hierarchy from the root down. Collapsing its quaternions
+    // first or dividing their conjugates by squared length changes storage.
+    return MultiplyStoredRotation(glm::conjugate(parent->GetLocalRotation()), parent->WorldRotationToLocal(world));
 }
 
 void Transform::SetWorldRotation(const glm::quat &worldRot)
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
-        store.SetCachedWorldRotation(m_ecsHandle.index, glm::normalize(worldRot));
-        return;
-    }
+    const glm::quat newLocalRot = NormalizeStoredRotation(WorldRotationToLocal(worldRot));
 
-    glm::quat safeRot = glm::normalize(worldRot);
-    glm::quat newLocalRot;
-    Transform *parentTransform = GetParentTransformSafe();
-    if (!parentTransform) {
-        newLocalRot = safeRot;
-    } else {
-        newLocalRot = glm::inverse(parentTransform->GetWorldRotation()) * safeRot;
-    }
-
-    // Skip only when the quaternion is *exactly* the same (bit-equal).
-    if (store.GetLocalRotation(m_ecsHandle) == newLocalRot) {
+    if (GetLocalRotation() == newLocalRot)
         return;
-    }
+    store.RecordLocalPoseWrite(m_ecsHandle, false, true);
 
     store.SetLocalRotation(m_ecsHandle, newLocalRot);
     store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(newLocalRot, store.GetLocalEulerAngles(m_ecsHandle)));
@@ -255,33 +334,27 @@ glm::vec3 Transform::GetWorldEulerAngles() const
 
 void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
 {
-    glm::quat worldRot = EulerYXZToQuat(euler);
+    const glm::quat localRot = NormalizeStoredRotation(WorldRotationToLocal(EulerYXZToQuat(euler)));
 
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
-        store.SetCachedWorldRotation(m_ecsHandle.index, worldRot);
-        store.SetCachedWorldEulerAngles(m_ecsHandle, euler);
-        store.SetHasCachedWorldEulerAngles(m_ecsHandle, true);
-        store.SetWorldEulerExact(m_ecsHandle, true);
-        return;
-    }
 
     Transform *parentTransform = GetParentTransformSafe();
 
-    // Compute local rotation from world rotation (inlined, not via SetWorldRotation,
-    // to avoid intermediate euler extraction that could corrupt the exact values).
+    // Exact Euler authoring is metadata. Only a changed quaternion publishes
+    // geometry or invalidates descendants; repeated Euler writes keep their
+    // representation without manufacturing another pose commit.
+    if (GetLocalRotation() != localRot) {
+        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
+        store.SetLocalRotation(m_ecsHandle, localRot);
+        store.SetDirty(m_ecsHandle, true);
+        InvalidateWorldMatrix(true);
+    }
     if (!parentTransform) {
-        store.SetLocalRotation(m_ecsHandle, worldRot);
         store.SetLocalEulerAngles(m_ecsHandle, euler); // root: local == world, store exact
     } else {
-        glm::quat localRot = glm::inverse(parentTransform->GetWorldRotation()) * worldRot;
-        store.SetLocalRotation(m_ecsHandle, localRot);
         store.SetLocalEulerAngles(m_ecsHandle,
                                   ExtractEulerAnglesNear(localRot, store.GetLocalEulerAngles(m_ecsHandle)));
     }
-
-    store.SetDirty(m_ecsHandle, true);
-    InvalidateWorldMatrix(true);
 
     // Set exact world euler AFTER InvalidateWorldMatrix so the cascade doesn't clear it
     store.SetCachedWorldEulerAngles(m_ecsHandle, euler);
@@ -470,37 +543,48 @@ void Transform::SetAsLastSibling()
 
 glm::vec3 Transform::TransformPoint(const glm::vec3 &point) const
 {
-    return glm::vec3(GetWorldMatrix() * glm::vec4(point, 1.0f));
+    auto result = point;
+    for (const Transform *node = this; node; node = node->GetParentTransformSafe())
+        result = RotateLocalVector(node->GetLocalRotation(), result * node->GetLocalScale()) + node->GetLocalPosition();
+    return result;
 }
 
 glm::vec3 Transform::InverseTransformPoint(const glm::vec3 &point) const
 {
-    return glm::vec3(GetWorldToLocalMatrix() * glm::vec4(point, 1.0f));
+    const Transform *parent = GetParentTransformSafe();
+    const auto inParent = parent ? parent->InverseTransformPoint(point) : point;
+    return RotateLocalVector(glm::conjugate(GetLocalRotation()), inParent - GetLocalPosition()) *
+           InverseLocalScale(GetLocalScale());
 }
 
 glm::vec3 Transform::TransformDirection(const glm::vec3 &direction) const
 {
-    // Rotation only, no scale
-    return glm::normalize(GetWorldRotation() * direction);
+    auto result = direction;
+    for (const Transform *node = this; node; node = node->GetParentTransformSafe())
+        result = RotateLocalVector(node->GetLocalRotation(), result);
+    return result;
 }
 
 glm::vec3 Transform::InverseTransformDirection(const glm::vec3 &direction) const
 {
-    // Rotation only, no scale
-    return glm::normalize(glm::inverse(GetWorldRotation()) * direction);
+    const Transform *parent = GetParentTransformSafe();
+    const auto inParent = parent ? parent->InverseTransformDirection(direction) : direction;
+    return RotateLocalVector(glm::conjugate(GetLocalRotation()), inParent);
 }
 
 glm::vec3 Transform::TransformVector(const glm::vec3 &vector) const
 {
-    // Rotation + scale, no translation (w=0)
-    glm::mat4 worldMatrix = GetWorldMatrix();
-    return glm::vec3(worldMatrix * glm::vec4(vector, 0.0f));
+    auto result = vector;
+    for (const Transform *node = this; node; node = node->GetParentTransformSafe())
+        result = RotateLocalVector(node->GetLocalRotation(), result * node->GetLocalScale());
+    return result;
 }
 
 glm::vec3 Transform::InverseTransformVector(const glm::vec3 &vector) const
 {
-    // Rotation + scale, no translation (w=0)
-    return glm::vec3(GetWorldToLocalMatrix() * glm::vec4(vector, 0.0f));
+    const Transform *parent = GetParentTransformSafe();
+    const auto inParent = parent ? parent->InverseTransformVector(vector) : vector;
+    return RotateLocalVector(glm::conjugate(GetLocalRotation()), inParent) * InverseLocalScale(GetLocalScale());
 }
 
 // ============================================================================
@@ -509,7 +593,23 @@ glm::vec3 Transform::InverseTransformVector(const glm::vec3 &vector) const
 
 glm::mat4 Transform::GetWorldToLocalMatrix() const
 {
-    return glm::inverse(GetWorldMatrix());
+    const auto &store = TransformECSStore::Instance();
+    const bool worldOverride =
+        store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle);
+    // Physics world overrides are published as world TRS by GetWorldMatrix;
+    // authored poses retain the full hierarchy, including nonuniform scale.
+    const glm::vec3 position = worldOverride ? GetWorldPosition() : GetLocalPosition();
+    const glm::quat rotation = worldOverride ? glm::normalize(GetWorldRotation()) : GetLocalRotation();
+    const glm::vec3 scale = worldOverride ? GetWorldScale() : GetLocalScale();
+    const auto inverse =
+        transform_math::InverseTRS({position.x, position.y, position.z},
+                                   {rotation.x, rotation.y, rotation.z, rotation.w}, {scale.x, scale.y, scale.z});
+    const Transform *parent = GetParentTransformSafe();
+    if (!worldOverride && parent) {
+        const glm::mat4 parentInverse = parent->GetWorldToLocalMatrix();
+        return ComposeAffineMatrices(inverse.data(), glm::value_ptr(parentInverse));
+    }
+    return glm::make_mat4(inverse.data());
 }
 
 // ============================================================================
@@ -575,6 +675,12 @@ nlohmann::json Transform::SerializeDocument() const
 
     // Position
     glm::vec3 pos = GetLocalPosition();
+    const auto *rectState = TransformECSStore::Instance().GetRectLayout(m_ecsHandle);
+    if (rectState && (rectState->drive || rectState->drivenParent)) {
+        const auto authored = rectState->AuthoringLocalPosition();
+        pos.x = authored[0];
+        pos.y = authored[1];
+    }
     j["position"] = {pos.x, pos.y, pos.z};
 
     // Rotation (as Euler angles)
@@ -585,16 +691,42 @@ nlohmann::json Transform::SerializeDocument() const
     glm::vec3 scale = GetLocalScale();
     j["scale"] = {scale.x, scale.y, scale.z};
 
+    if (const auto *layout = TransformECSStore::Instance().GetRectLayout(m_ecsHandle)) {
+        const auto spec = layout->AuthoringSpec();
+        j["rect_layout"] = {{"anchor_min", spec.anchorMin},
+                            {"anchor_max", spec.anchorMax},
+                            {"pivot", spec.pivot},
+                            {"size_delta", spec.sizeDelta},
+                            {"anchored_position", spec.anchoredPosition},
+                            {"position_scale", layout->positionScale}};
+        if (layout->unitMode != ui::RectUnitMode::Explicit)
+            j["rect_layout"]["unit_mode"] = static_cast<int>(layout->unitMode);
+    }
+
     return j;
 }
 
 void Transform::ValidateSerializedDocument(const nlohmann::json &document)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(document, "Transform", {"position", "rotation", "scale"});
+    ValidateComponentDocument(document, "Transform", {"position", "rotation", "scale"}, {"rect_layout"});
     RequireFiniteVector(document, "position", 3, "Transform");
     RequireFiniteVector(document, "rotation", 3, "Transform");
     RequireFiniteVector(document, "scale", 3, "Transform");
+    if (document.contains("rect_layout")) {
+        const auto &layout = document["rect_layout"];
+        if (!layout.is_object())
+            throw std::invalid_argument("Transform.rect_layout must be an object");
+        for (const auto *field : {"anchor_min", "anchor_max", "pivot", "size_delta", "anchored_position"})
+            RequireFiniteVector(layout, field, 2, "Transform.rect_layout");
+        if (layout.contains("position_scale") &&
+            (!layout["position_scale"].is_number() || !std::isfinite(layout["position_scale"].get<float>()) ||
+             layout["position_scale"].get<float>() <= 0))
+            throw std::invalid_argument("Transform.rect_layout.position_scale must be positive and finite");
+        if (layout.contains("unit_mode") && (!layout["unit_mode"].is_number_integer() ||
+                                             layout["unit_mode"].get<int>() < 0 || layout["unit_mode"].get<int>() > 2))
+            throw std::invalid_argument("Transform.rect_layout.unit_mode is invalid");
+    }
 }
 
 bool Transform::DeserializeDocument(const nlohmann::json &j)
@@ -605,12 +737,34 @@ bool Transform::DeserializeDocument(const nlohmann::json &j)
             return false;
         }
 
+        if (!j.contains("rect_layout"))
+            TransformECSStore::Instance().DisableRectLayout(m_ecsHandle);
         SetLocalPosition(j["position"][0].get<float>(), j["position"][1].get<float>(), j["position"][2].get<float>());
         SetLocalEulerAngles(j["rotation"][0].get<float>(), j["rotation"][1].get<float>(),
                             j["rotation"][2].get<float>());
         SetLocalScale(j["scale"][0].get<float>(), j["scale"][1].get<float>(), j["scale"][2].get<float>());
 
         auto &store = TransformECSStore::Instance();
+        if (j.contains("rect_layout")) {
+            auto &state = store.EnableRectLayout(m_ecsHandle);
+            state.drive.reset();
+            auto &spec = state.spec;
+            const auto &layout = j["rect_layout"];
+            state.positionScale = layout.value("position_scale", 1.f);
+            state.unitMode = static_cast<ui::RectUnitMode>(layout.value("unit_mode", 0));
+            spec.anchorMin = layout["anchor_min"].get<ui::RectPoint>();
+            spec.anchorMax = layout["anchor_max"].get<ui::RectPoint>();
+            spec.pivot = layout["pivot"].get<ui::RectPoint>();
+            spec.sizeDelta = layout["size_delta"].get<ui::RectPoint>();
+            spec.anchoredPosition = layout["anchored_position"].get<ui::RectPoint>();
+            store.MarkRectLayoutInputChanged();
+            RectTransformLayout::RefreshSubtree(this);
+        } else {
+            // Removing a rectangle also removes its direct children's parent
+            // frame; their anchored coordinates remain authoritative.
+            for (size_t index = 0; index < GetChildCount(); ++index)
+                RectTransformLayout::RefreshSubtree(GetChild(index));
+        }
         store.SetDirty(m_ecsHandle, true);
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
         store.SetWorldEulerExact(m_ecsHandle, false);
@@ -638,6 +792,14 @@ void Transform::CloneDataTo(Transform &target) const
     dst.worldMatrixDirty = true;
     dst.owner = store.GetOwner(target.m_ecsHandle);
     store.SetSnapshot(target.m_ecsHandle, dst);
+    if (const auto *layout = store.GetRectLayout(m_ecsHandle)) {
+        auto &copied = store.EnableRectLayout(target.m_ecsHandle);
+        copied = *layout;
+        copied.spec = layout->AuthoringSpec();
+        copied.drive.reset();
+        RectTransformLayout::RefreshSubtree(&target);
+    } else
+        store.DisableRectLayout(target.m_ecsHandle);
 
     target.SetEnabled(IsEnabled());
 }

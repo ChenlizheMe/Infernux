@@ -1,4 +1,4 @@
-"""Assemble a desktop Player from the selected platform package, never a compiler."""
+"""Validate and stage the compatible payload selected by the export worker."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def inspect_desktop_runtime(root: str) -> dict[str, object]:
     except FileNotFoundError as exc:
         raise RuntimeError(
             "The platform plugin has no precompiled Player. Install the complete "
-            "platform release; game export does not compile the engine."
+            "platform release, or rebuild the Player during export."
         ) from exc
     if not isinstance(manifest, dict):
         raise ValueError("Platform Player manifest must be an object")
@@ -31,10 +31,17 @@ def inspect_desktop_runtime(root: str) -> dict[str, object]:
         "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
         "platform": sys.platform,
     }
+    from infernux.plugins.platform_releases import PLAYER_SOURCE_REVISION
+    if PLAYER_SOURCE_REVISION is not None:
+        expected["engine_source_revision"] = PLAYER_SOURCE_REVISION
     if any(manifest.get(key) != value for key, value in expected.items()) or (
         str(manifest.get("machine", "")).casefold().replace("amd64", "x86_64") != machine
     ):
-        raise RuntimeError("The platform Player does not match this engine version, host or Python ABI")
+        differences = [f"{key}: {manifest.get(key)!r} != {value!r}"
+                       for key, value in expected.items() if manifest.get(key) != value]
+        if str(manifest.get("machine", "")).casefold().replace("amd64", "x86_64") != machine:
+            differences.append(f"machine: {manifest.get('machine')!r} != {machine!r}")
+        raise RuntimeError("The platform Player does not match the current engine (" + "; ".join(differences) + ")")
     host = "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
     for filename in ("Runtime.inxrt", host):
         if not (payload / filename).is_file():

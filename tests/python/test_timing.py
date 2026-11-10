@@ -78,7 +78,7 @@ def test_player_clock_follows_native_pause_and_time_scale(scene):
         assert session.is_paused is True
         assert session.tick(1.0) == 0.0
         assert Time.frame_count == 1
-        manager.pause()
+        manager.play()
         Time.time_scale = 0.0
         session.tick(0.1)
         assert Time.time == pytest.approx(0.05)

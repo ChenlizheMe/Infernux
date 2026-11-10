@@ -23,7 +23,6 @@ def test_supervisor_prepares_desktop_style_project_and_persists_policy(tmp_path)
     project = tmp_path / "Desktop" / "CoreSystemsPilot"
     supervisor = SupervisorSession(
         str(project),
-        mode="global_validation",
         build_profile="debug_feedback",
         recording_enabled=True,
     )
@@ -46,18 +45,16 @@ def test_supervisor_prepares_desktop_style_project_and_persists_policy(tmp_path)
         "arguments": {},
     }
     assert "infernux.mcp.checkpoint.list" in handoff["instructions"][-1]
-    assert "supervisor_lease" not in handoff
-    assert "lease_token" not in handoff
     persisted_handoff = json.loads(
         (project / ".infernux" / "mcp_sessions" / supervisor.session_id / "agent-handoff.json").read_text(
             encoding="utf-8"
         )
     )
     assert persisted_handoff == handoff
-    with open(project / "ProjectSettings" / "mcp_capabilities.json", "r", encoding="utf-8") as f:
+    with open(project / "ProjectSettings" / "mcp_settings.json", "r", encoding="utf-8") as f:
         config = json.load(f)
-    assert config["profile"] == "global_validation"
     assert config["session"]["build_profile"] == "debug_feedback"
+    assert config["session"]["recording_enabled"] is True
 
 
 def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_state(tmp_path, monkeypatch):
@@ -150,26 +147,6 @@ def test_checkpoint_restore_rolls_back_first_root_when_second_root_replace_fails
     assert (settings / "BuildSettings.json").read_text(encoding="utf-8") == "checkpoint settings\n"
 
 
-def test_supervisor_switch_mode_is_explicit_and_records_a_secret_free_audit(tmp_path, monkeypatch):
-    project = tmp_path / "Desktop" / "ExplicitSwitchPilot"
-    supervisor = SupervisorSession(str(project), mode="developer_assist")
-    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
-
-    result = supervisor.switch_mode(
-        "global_validation",
-        reason="Run the human-equivalent validation pass.",
-        restart_editor=False,
-    )
-
-    assert result["mode"] == "global_validation"
-    assert result["handoff"]["checkpoint"] == "session-start"
-    assert result["handoff"]["phase"] == "verified"
-    assert result["last_handoff"]["handoff_id"] == result["handoff"]["handoff_id"]
-    assert "supervisor_lease" not in result["handoff"]
-    assert "lease_token" not in result["handoff"]
-    assert supervisor.handoff_history()[-1]["state"] == "completed"
-
-
 def test_supervisor_shutdown_quiescence_rejects_a_live_endpoint(tmp_path, monkeypatch):
     supervisor = SupervisorSession(str(tmp_path / "LiveEndpointPilot"))
     ticks = iter((0.0, 0.0, 0.2))
@@ -181,45 +158,24 @@ def test_supervisor_shutdown_quiescence_rejects_a_live_endpoint(tmp_path, monkey
     assert supervisor._wait_for_clean_editor_shutdown(7331, timeout_seconds=0.1) is False
 
 
-def test_supervisor_handoff_requires_a_current_managed_checkpoint(tmp_path, monkeypatch):
-    project = tmp_path / "Desktop" / "ManagedHandoffPilot"
-    supervisor = SupervisorSession(str(project), mode="developer_assist")
-    supervisor.managed_checkpoints_required = True
-    supervisor.prepare_project()
-    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
-
-    with pytest.raises(RuntimeError, match="managed checkpoint"):
-        supervisor.switch_mode(
-            "global_validation",
-            checkpoint="missing-baseline",
-            restart_editor=False,
-        )
-
-    with open(supervisor.handoff_history_path, "r", encoding="utf-8") as f:
-        history = [json.loads(line) for line in f if line.strip()]
-    assert history[-1]["state"] == "failed"
-
-
 def test_supervisor_handoff_rejects_dirty_running_editor(tmp_path, monkeypatch):
     supervisor = SupervisorSession(str(tmp_path / "DirtyPilot"))
     supervisor._process = _RunningProcess()
     monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
-    monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": False})
     monkeypatch.setattr(
         supervisor,
         "_read_project_info",
         lambda **_: {"active_scene": {"dirty": True}, "play_state": "edit"},
     )
 
-    with pytest.raises(RuntimeError, match="unsaved changes"):
-        supervisor.switch_mode(
-            "developer_assist",
-            checkpoint="must-not-stop-dirty-editor",
+    with pytest.raises(RuntimeError, match="Save the active scene"):
+        supervisor.create_checkpoint(
+            "must-not-stop-dirty-editor",
             restart_editor=False,
         )
 
     assert supervisor._process.poll() is None
-    with open(supervisor.handoff_history_path, "r", encoding="utf-8") as f:
+    with open(supervisor.checkpoint_history_path, "r", encoding="utf-8") as f:
         history = [json.loads(line) for line in f if line.strip()]
     assert history[-1]["state"] == "failed"
 
@@ -236,7 +192,6 @@ def test_supervisor_resume_reattaches_only_after_identity_verification(tmp_path,
             "editor_running": True,
             "mcp_ready": True,
             "editor_instance_id": "editor-resume-4242",
-            "supervisor_lease": "resume-lease",
             "project_lock_token": "resume-lock-token",
         }
     )
@@ -283,7 +238,6 @@ def test_supervisor_attaches_current_locked_headless_host_without_loopback_probe
     project = tmp_path / "Desktop" / "CurrentHeadlessHost"
     original = SupervisorSession(
         str(project),
-        mode="global_validation",
         session_id="current-headless-session",
         mcp_port=9841,
     )
@@ -305,7 +259,6 @@ def test_supervisor_attaches_current_locked_headless_host_without_loopback_probe
     attached = SupervisorSession.attach_current_host(
         str(project),
         "current-headless-session",
-        mode="global_validation",
         build_profile="debug_feedback",
         editor_instance_id="headless-editor-instance",
         mcp_port=9841,
@@ -322,16 +275,15 @@ def test_supervisor_attaches_current_locked_headless_host_without_loopback_probe
 
 def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "AttachedHandoffPilot"
-    supervisor = SupervisorSession(str(project), mode="global_validation", session_id="attached-session")
+    supervisor = SupervisorSession(str(project), session_id="attached-session")
     supervisor.prepare_project()
     supervisor._attached_editor_pid = 5151
     supervisor._editor_instance_id = "attached-editor"
-    supervisor._supervisor_lease = "attached-lease"
     supervisor._project_lock_token = "attached-lock"
     alive = {"value": True}
     monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda pid: int(pid) == 5151 and alive["value"])
     monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
-    monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": False})
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
     monkeypatch.setattr(
         supervisor,
         "_read_project_info",
@@ -347,19 +299,18 @@ def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(t
 
     monkeypatch.setattr(supervisor, "stop_editor", _normal_stop)
 
-    result = supervisor.switch_mode(
-        "developer_assist",
-        checkpoint="clean-before-script-pass",
+    result = supervisor.create_checkpoint(
+        "clean-before-script-pass",
         restart_editor=False,
     )
 
-    assert result["mode"] == "developer_assist"
-    assert result["handoff"]["state"] == "completed"
+    assert result["checkpoint_event"]["state"] == "completed"
+    assert supervisor.checkpoint_status("clean-before-script-pass")["current_match"] is True
     assert result["editor_running"] is False
     assert stop_calls == [30.0]
-    with open(project / "ProjectSettings" / "mcp_capabilities.json", "r", encoding="utf-8") as f:
+    with open(project / "ProjectSettings" / "mcp_settings.json", "r", encoding="utf-8") as f:
         config = json.load(f)
-    assert config["profile"] == "developer_assist"
+    assert config["session"]["managed_checkpoints_required"] is True
 
 
 def test_supervisor_normal_stop_uses_lease_tool_without_force_termination(tmp_path, monkeypatch):
@@ -367,7 +318,6 @@ def test_supervisor_normal_stop_uses_lease_tool_without_force_termination(tmp_pa
     supervisor.prepare_project()
     supervisor._attached_editor_pid = 6116
     supervisor._editor_instance_id = "lease-editor"
-    supervisor._supervisor_lease = "secret-lease"
     supervisor._project_lock_token = "lease-lock"
     alive = {"value": True}
     calls: list[tuple[str, str, dict[str, str]]] = []
@@ -393,7 +343,7 @@ def test_supervisor_normal_stop_uses_lease_tool_without_force_termination(tmp_pa
         (
             "operation_command_execute",
             "infernux.mcp.supervisor.shutdown",
-            {"lease_token": "secret-lease"},
+            {"editor_instance_id": "lease-editor"},
         )
     ]
     assert result["editor_running"] is False
@@ -412,20 +362,6 @@ def test_supervisor_releases_its_stale_lock_after_the_editor_process_exits(tmp_p
 
     assert supervisor._wait_for_clean_editor_shutdown(7331, timeout_seconds=0.1) is True
     assert not os.path.exists(supervisor.project_lock_path)
-
-
-def test_supervisor_handoff_rejects_active_validation_attempt(tmp_path, monkeypatch):
-    supervisor = SupervisorSession(str(tmp_path / "ActiveAttempt"))
-    supervisor._process = _RunningProcess()
-    monkeypatch.setattr(supervisor, "_verify_attached_editor", lambda **_: {})
-    monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": True})
-
-    with pytest.raises(RuntimeError, match="attempt"):
-        supervisor.switch_mode(
-            "developer_assist",
-            checkpoint="attempt-must-stop-first",
-            restart_editor=False,
-        )
 
 
 def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scene_guids=None):
@@ -788,7 +724,7 @@ def test_concurrent_player_launches_create_one_owner_and_process(tmp_path, monke
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", popen)
     if entrypoint == "operation":
         active = SimpleNamespace(project_root=str(project), session_id=supervisor.session_id,
-                                 build_profile="debug_feedback", mode="global_validation", editor_instance_id="test-host")
+                                 build_profile="debug_feedback", editor_instance_id="test-host")
         monkeypatch.setattr(player_operations.session, "current", lambda: active)
         monkeypatch.setattr(player_operations, "_LOCAL_SUPERVISORS", {})
 

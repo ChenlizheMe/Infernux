@@ -49,10 +49,10 @@ class MeshRenderer(BuiltinComponent):
 
     Properties delegate to the C++ ``MeshRenderer`` via CppProperty.
 
-    Material properties follow Unity naming conventions:
-
-    * ``material`` / ``sharedMaterial`` \u2014 slot 0
-    * ``materials`` / ``sharedMaterials`` \u2014 all slots
+    ``material`` and ``materials`` lazily instantiate renderer-local copies.
+    ``shared_material`` and ``shared_materials`` read the current references
+    without instantiation. Assigning any of these properties stores references;
+    it does not clone them until an instancing getter is used.
 
     Accepts any of: Python ``Material`` wrapper, native ``InxMaterial``,
     GUID string, or ``None``.
@@ -75,8 +75,8 @@ class MeshRenderer(BuiltinComponent):
 
     @property
     def material(self) -> Optional[Material]:
-        """The material for slot 0 (Unity-style)."""
-        return self.get_material(0)
+        """Lazily instantiate slot zero for this renderer, then reuse it."""
+        return self.get_instanced_material(0)
 
     @material.setter
     def material(self, value) -> None:
@@ -85,34 +85,38 @@ class MeshRenderer(BuiltinComponent):
             cpp.set_material(0, _to_native_material(value))
 
     @property
-    def sharedMaterial(self):
-        """Alias for ``material`` (Unity compatibility)."""
-        return self.material
+    def shared_material(self):
+        """Read slot zero without creating a renderer-local instance."""
+        return self.get_material(0)
 
-    @sharedMaterial.setter
-    def sharedMaterial(self, value) -> None:
+    @shared_material.setter
+    def shared_material(self, value) -> None:
         self.material = value
+
+    sharedMaterial = shared_material
 
     @property
     def materials(self) -> list[Optional[Material]]:
-        """All materials across every slot (Unity-style)."""
+        """Instantiate and return each material slot, reusing prior instances."""
         cpp = self._cpp_component
         if cpp is None:
             return []
-        return [self.get_material(i) for i in range(cpp.material_count)]
+        return [self.get_instanced_material(i) for i in range(cpp.material_count)]
 
     @materials.setter
     def materials(self, value: list) -> None:
         self.set_materials(value)
 
     @property
-    def sharedMaterials(self) -> list:
-        """Alias for ``materials`` (Unity compatibility)."""
-        return self.materials
+    def shared_materials(self) -> list:
+        """Copy the current slot list without instantiating its materials."""
+        return [self.get_material(i) for i in range(self.material_count)]
 
-    @sharedMaterials.setter
-    def sharedMaterials(self, value: list) -> None:
-        self.materials = value
+    @shared_materials.setter
+    def shared_materials(self, value: list) -> None:
+        self.set_materials(value)
+
+    sharedMaterials = shared_materials
 
     @property
     def material_guid(self) -> str:
@@ -131,7 +135,7 @@ class MeshRenderer(BuiltinComponent):
 
     def has_render_material(self) -> bool:
         """Check if a custom material is assigned at slot 0."""
-        return self.material is not None
+        return self.get_material(0) is not None
 
     def get_effective_material(self, slot: int = 0) -> Optional[Material]:
         """Get the effective material at slot (custom or default)."""
@@ -156,10 +160,18 @@ class MeshRenderer(BuiltinComponent):
     materialCount = material_count  # Unity PascalCase alias
 
     def get_material(self, slot: int) -> Optional[Material]:
-        """Get the material at a given slot index."""
+        """Read the assigned material without implicit instantiation."""
         cpp = self._cpp_component
         if cpp is not None:
             native = cpp.get_material(slot)
+            return Material.from_native(native) if native is not None else None
+        return None
+
+    def get_instanced_material(self, slot: int = 0) -> Optional[Material]:
+        """Return the stable renderer-local material for a slot."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            native = cpp.get_instanced_material(slot)
             return Material.from_native(native) if native is not None else None
         return None
 
@@ -206,11 +218,16 @@ class MeshRenderer(BuiltinComponent):
     GetMaterials = get_materials  # Unity PascalCase alias
 
     def get_shared_materials(self, result: Optional[list] = None) -> list:
-        """Return all shared materials (equivalent to ``get_materials``).
+        """Return all current slot references without instantiating them.
 
         Matches Unity ``Renderer.GetSharedMaterials``.
         """
-        return self.get_materials(result)
+        materials = self.shared_materials
+        if result is not None:
+            result.clear()
+            result.extend(materials)
+            return result
+        return materials
 
     GetSharedMaterials = get_shared_materials  # Unity PascalCase alias
 
@@ -559,10 +576,10 @@ class MeshRenderer(BuiltinComponent):
     def set_vertex_buffer(self, value, bounds_min, bounds_max, *, space="local") -> None:
         """Render directly from a resident GPU vertex buffer.
 
-        ``value`` must come from :meth:`create_vertex_buffer`. ``space`` is
-        explicit: local vertices use the GameObject Transform, while world
-        vertices already contain their final position. Bounds use the same
-        coordinate space and compute writes never trigger a hidden readback.
+        Supply a full canonical allocation, such as :meth:`create_vertex_buffer`
+        or a compute result with the same interleaved layout. Local vertices
+        use the GameObject Transform. World vertices already contain their final
+        position. Bounds use the same coordinate space.
         """
         from infernux.compute import Buffer
 
@@ -592,6 +609,8 @@ class MeshRenderer(BuiltinComponent):
                 value, vertex_count, indices, name, space
             )
             return
+        if value._byte_offset or value.nbytes != value._native.byte_size:
+            raise ValueError("MeshRenderer vertex storage must cover the whole GPU allocation")
         self._require_cpp_component().set_vertex_buffer(
             value._native, coerce_vec3(bounds_min), coerce_vec3(bounds_max), space == "world"
         )

@@ -11,7 +11,7 @@ from pathlib import Path
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_COMPATIBILITY_VERSION, ENGINE_VERSION
 from infernux.engine.path_utils import resolved_path
 
 from .github_releases import (
@@ -137,7 +137,7 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = package_commands.add_parser("verify")
     verify.add_argument("package")
-    verify.add_argument("--engine", default=ENGINE_VERSION)
+    verify.add_argument("--engine", default=ENGINE_COMPATIBILITY_VERSION)
     verify.set_defaults(handler=package_verify)
 
     manifest = package_commands.add_parser("release-manifest")

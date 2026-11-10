@@ -113,8 +113,8 @@
 /* English pages keep the bundled CJK subset off the network: the brand mark
    and language switch fall back to system CJK faces. */
 html:lang(en) {
-    --font-display: "Space Grotesk", "Inter", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-    --font-body: "Inter", "Space Grotesk", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    --font-display: "Space Grotesk", "Inter", "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    --font-body: "Inter", "Space Grotesk", "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 
 /* ---------------------------------------------------------------- base */

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from infernux.engine.interaction.previews import PreviewScope
 
 from infernux.runtime_services import UpdatePhase, UpdateRegistration
+from infernux.execution import ExecutionScope
 
 from infernux.engine.path_utils import (
     is_path_within,
@@ -162,4 +163,4 @@ class InxPreload(ABC):
         """Release process-local state before reload, disable, or shutdown."""
 
 
-__all__ = ["InxPreload", "PreloadContext"]
+__all__ = ["InxPreload", "PreloadContext", "ExecutionScope"]

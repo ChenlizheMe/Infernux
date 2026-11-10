@@ -145,7 +145,7 @@ def _query_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, p
     return tex, f"mat|{resolved_path(preview_path)}"
 
 
-def _is_material_preview_ready(panel, preview_path, cache_tag) -> bool:
+def _is_material_preview_ready(panel, native_key) -> bool:
     """Return true only when the native texture is for the requested content."""
     from .asset_resource_preview import _resolve_native_engine
 
@@ -153,13 +153,10 @@ def _is_material_preview_ready(panel, preview_path, cache_tag) -> bool:
     if native is None:
         return False
 
-    embedded = isinstance(preview_path, str) and "::submat:" in preview_path
-    norm_path = resolved_path(preview_path or "")
-    cache_key = f"mat|{norm_path}"
-    return bool(native.is_material_preview_ready(cache_key))
+    return bool(native.is_material_preview_ready(native_key))
 
 
-def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, preview_path) -> int:
+def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, preview_path) -> int:
     """Avoid repeating filesystem and native preview lookups for a stable material.
 
     Only the *readiness* decision is cached. The descriptor handle itself is
@@ -169,18 +166,14 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
     handle across frames binds a freed descriptor — Vulkan validation errors,
     previews rendering as the font atlas, and intermittent crashes.
     """
-    embedded = isinstance(preview_path, str) and "::submat:" in preview_path
-    # Asset refreshes publish a new in-memory JSON document before the next
-    # inspector frame.  Do not let the old preview token survive that refresh;
-    # this keeps external/native version changes on the same generation path
-    # as an inline edit without reading the file from disk.
-    live_json = state.extra.get("cached_json", "")
-    if not embedded and live_json and live_json != (cache_tag or ""):
-        cache_tag = live_json
-        state.extra["_material_cache_tag"] = cache_tag
-
-    preview_key = (preview_path or "", cache_tag or "")
+    # cached_json is the pre-gesture Undo baseline until the edit commits.
+    # The working document and its native version already follow each input
+    # frame, so preview them without waiting for Undo or durable autosave.
+    preview_key = (preview_path or "", id(native_mat), native_mat.get_version())
     cached_key = state.extra.get("_material_preview_query_key")
+    if cached_key != preview_key:
+        state.extra["_material_cache_tag"] = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
+    cache_tag = state.extra["_material_cache_tag"]
     cached_ready = bool(state.extra.get("_material_preview_tex_ready", False))
     native_key = state.extra.get("_material_preview_native_key") or ""
     if cached_key == preview_key and cached_ready and native_key:
@@ -199,7 +192,7 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
     tex, native_key = _query_material_preview_tex(
         panel, native_mat, mat_data, state, cache_tag, preview_path,
     )
-    ready = bool(tex) and _is_material_preview_ready(panel, preview_path, cache_tag)
+    ready = bool(tex) and _is_material_preview_ready(panel, native_key)
     state.extra["_material_preview_query_key"] = preview_key
     state.extra["_material_preview_native_key"] = native_key
     state.extra["_material_preview_tex_ready"] = ready
@@ -1016,7 +1009,6 @@ def _restore_rejected_material_edit(
     mat_data.update(restored)
     state.extra["cached_data"] = mat_data
     state.extra["cached_json"] = json.dumps(restored)
-    state.extra.pop("_material_preview_pending", None)
     if not native_mat.deserialize_document(restored):
         raise RuntimeError("material rollback document was rejected")
     _refresh_pipeline(panel)
@@ -1086,7 +1078,6 @@ def _cancel_material_edit_session(panel, state, native_mat, session) -> None:
     else:
         state.extra["cached_data"] = copy.deepcopy(old_document)
     state.extra["cached_json"] = json.dumps(old_document)
-    state.extra.pop("_material_preview_pending", None)
     _refresh_pipeline(panel, native_mat)
 
 
@@ -1218,7 +1209,6 @@ def _prepare_shader_annotations(mat_data, state, *, read_only: bool):
 
     state.extra["cached_data"] = mat_data
     state.extra["cached_json"] = json.dumps(mat_data)
-    state.extra.pop("_material_preview_pending", None)
     return False, False
 
 
@@ -1284,24 +1274,6 @@ def _render_material_top(ctx, panel, state, mat_data, section_readonly,
     if so_ck:
         change_key = so_ck
 
-    now = _time.time()
-    cache_tag = state.extra.get("_material_cache_tag", "")
-    if not cache_tag and not is_embedded_slot:
-        try:
-            cache_tag = state.extra.get("cached_json") or json.dumps(
-                mat_data, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            cache_tag = ""
-        state.extra["_material_cache_tag"] = cache_tag
-    if (state.extra.get("_material_preview_pending", False)
-            and now >= float(state.extra.get("_material_preview_ready_at", 0.0) or 0.0)):
-        try:
-            cache_tag = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
-            state.extra["_material_cache_tag"] = cache_tag
-        except Exception:
-            cache_tag = state.extra.get("_material_cache_tag", cache_tag)
-        state.extra["_material_preview_pending"] = False
-
     if did_split:
         ctx.table_next_column()
         avail_w = max(140.0, ctx.get_content_region_avail_width())
@@ -1318,7 +1290,7 @@ def _render_material_top(ctx, panel, state, mat_data, section_readonly,
         preview_tex_id = 0
         if preview_path or _native_mat is not None:
             preview_tex_id = _get_cached_material_preview_tex(
-                panel, _native_mat, mat_data, state, cache_tag, preview_path)
+                panel, _native_mat, mat_data, state, preview_path)
         if not _draw_centered_texture(ctx, preview_tex_id, avail_w, preview_size, 256, 256):
             ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
             ctx.label("Material preview unavailable.")
@@ -1451,9 +1423,6 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
 
     # ── Auto-save on change ─────────────────────────────────────────────
     if changed:
-        # Publish the latest document on the following frame.
-        state.extra["_material_preview_pending"] = True
-        state.extra["_material_preview_ready_at"] = _time.time()
         state.extra["_inline_autosave_pending"] = True
         old_document = _document_before_material_edit(state, mat_data)
         _apply_material_changes(panel, state, mat_data, _native_mat,

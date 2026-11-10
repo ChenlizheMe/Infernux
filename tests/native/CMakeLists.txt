@@ -195,16 +195,13 @@ if(INFERNUX_BUILD_TESTS)
 
     infernux_add_native_test(infernux_text_layout_tests
         tests/native/InxTextLayoutTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/core/text/TextSegments.cpp
-        cpp/infernux/core/text/TextMarkup.cpp
         cpp/infernux/function/renderer/gui/InxTextLayout.cpp
     )
     target_include_directories(infernux_text_layout_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux
     )
-    target_link_libraries(infernux_text_layout_tests PRIVATE imgui infernux_utf8proc)
+    target_link_libraries(infernux_text_layout_tests PRIVATE imgui InfernuxFoundation)
     add_test(NAME infernux.text_layout COMMAND infernux_text_layout_tests)
 
     infernux_add_native_test(infernux_shader_source_dependency_tests tests/native/ShaderSourceDependencyTests.cpp)
@@ -253,22 +250,16 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_editor_tools_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.editor_tools COMMAND infernux_editor_tools_tests)
 
-    infernux_add_native_test(infernux_job_system_tests
-        tests/native/JobSystemTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/core/threading/JobSystem.cpp
-    )
-    target_link_libraries(infernux_job_system_tests PRIVATE Threads::Threads)
+    infernux_add_native_test(infernux_job_system_tests tests/native/JobSystemTests.cpp)
+    target_link_libraries(infernux_job_system_tests PRIVATE InfernuxFoundation Threads::Threads)
     add_test(NAME infernux.job_system COMMAND infernux_job_system_tests)
     set_tests_properties(infernux.job_system PROPERTIES TIMEOUT 30)
 
     infernux_add_native_test(infernux_jolt_job_system_adapter_tests
         tests/native/InfernuxJoltJobSystemAdapterTests.cpp
         cpp/infernux/function/scene/physics/InfernuxJoltJobSystemAdapter.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/core/threading/JobSystem.cpp
     )
-    target_link_libraries(infernux_jolt_job_system_adapter_tests PRIVATE Jolt Threads::Threads)
+    target_link_libraries(infernux_jolt_job_system_adapter_tests PRIVATE InfernuxFoundation Jolt Threads::Threads)
     add_test(NAME infernux.jolt_job_system_adapter COMMAND infernux_jolt_job_system_adapter_tests)
     set_tests_properties(infernux.jolt_job_system_adapter PROPERTIES TIMEOUT 30)
 
@@ -289,10 +280,8 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_gui_tree_stack_tests PRIVATE imgui)
     add_test(NAME infernux.gui_tree_stack COMMAND infernux_gui_tree_stack_tests)
 
-    infernux_add_native_test(infernux_log_release_policy_tests
-        tests/native/InxLogReleasePolicyTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-    )
+    infernux_add_native_test(infernux_log_release_policy_tests tests/native/InxLogReleasePolicyTests.cpp)
+    target_link_libraries(infernux_log_release_policy_tests PRIVATE InfernuxFoundation)
     target_compile_definitions(infernux_log_release_policy_tests PRIVATE
         INFERNUX_COMPILE_OUT_DEBUG_LOGS=1
     )
@@ -301,21 +290,19 @@ if(INFERNUX_BUILD_TESTS)
     infernux_add_native_test(infernux_input_manager_tests
         tests/native/InputManagerTests.cpp
         cpp/infernux/platform/input/InputManager.cpp
-        cpp/infernux/core/log/InxLog.cpp
     )
-    target_link_libraries(infernux_input_manager_tests PRIVATE SDL3::SDL3)
+    target_link_libraries(infernux_input_manager_tests PRIVATE InfernuxFoundation SDL3::SDL3)
     add_test(NAME infernux.input_manager COMMAND infernux_input_manager_tests)
 
     infernux_add_native_test(infernux_web_keyboard_tests
         tests/native/WebKeyboardTests.cpp
         cpp/infernux/platform/input/InputManager.cpp
-        cpp/infernux/core/log/InxLog.cpp
     )
     target_include_directories(infernux_web_keyboard_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external/plugins/infernux_web/native
     )
-    target_link_libraries(infernux_web_keyboard_tests PRIVATE SDL3::SDL3)
+    target_link_libraries(infernux_web_keyboard_tests PRIVATE InfernuxFoundation SDL3::SDL3)
     add_test(NAME infernux.web_keyboard COMMAND infernux_web_keyboard_tests)
 
     infernux_add_native_test(infernux_window_sizing_policy_tests
@@ -353,37 +340,20 @@ if(INFERNUX_BUILD_TESTS)
         add_test(NAME infernux.windows_dpi_policy COMMAND infernux_windows_dpi_policy_tests)
     endif()
 
-    infernux_add_native_test(infernux_atomic_file_tests
-        tests/native/AtomicFileTests.cpp
-        cpp/infernux/platform/filesystem/AtomicFile.cpp
-    )
+    infernux_add_native_test(infernux_atomic_file_tests tests/native/AtomicFileTests.cpp)
+    target_link_libraries(infernux_atomic_file_tests PRIVATE InfernuxFoundation)
     add_test(NAME infernux.atomic_file COMMAND infernux_atomic_file_tests)
 
-    infernux_add_native_test(infernux_document_store_tests
-        tests/native/DocumentStoreTests.cpp
-        cpp/infernux/platform/filesystem/DocumentStore.cpp
-        cpp/infernux/platform/filesystem/AtomicFile.cpp
-    )
+    infernux_add_native_test(infernux_document_store_tests tests/native/DocumentStoreTests.cpp)
+    target_link_libraries(infernux_document_store_tests PRIVATE InfernuxFoundation)
     add_test(NAME infernux.document_store COMMAND infernux_document_store_tests)
 
-    infernux_add_native_test(infernux_document_transaction_tests
-        tests/native/DocumentTransactionTests.cpp
-        cpp/infernux/platform/filesystem/DocumentTransaction.cpp
-        cpp/infernux/platform/filesystem/DocumentStore.cpp
-        cpp/infernux/platform/filesystem/AtomicFile.cpp
-    )
-    target_link_libraries(infernux_document_transaction_tests PRIVATE Threads::Threads)
-    target_link_libraries(infernux_document_transaction_tests PRIVATE ${INFERNUX_ZLIB_TARGET})
-    if(INFERNUX_ZLIB_INCLUDE_DIRS)
-        target_include_directories(infernux_document_transaction_tests PRIVATE ${INFERNUX_ZLIB_INCLUDE_DIRS})
-    endif()
+    infernux_add_native_test(infernux_document_transaction_tests tests/native/DocumentTransactionTests.cpp)
+    target_link_libraries(infernux_document_transaction_tests PRIVATE InfernuxFoundation)
     add_test(NAME infernux.document_transaction COMMAND infernux_document_transaction_tests)
 
-    infernux_add_native_test(infernux_semantic_type_registry_tests
-        tests/native/SemanticTypeRegistryTests.cpp
-        cpp/infernux/core/reflection/SemanticTypeRegistry.cpp
-    )
-    target_link_libraries(infernux_semantic_type_registry_tests PRIVATE Threads::Threads)
+    infernux_add_native_test(infernux_semantic_type_registry_tests tests/native/SemanticTypeRegistryTests.cpp)
+    target_link_libraries(infernux_semantic_type_registry_tests PRIVATE InfernuxFoundation Threads::Threads)
     add_test(NAME infernux.semantic_type_registry COMMAND infernux_semantic_type_registry_tests)
 
     infernux_add_native_test(infernux_component_data_store_tests
@@ -466,7 +436,7 @@ if(INFERNUX_BUILD_TESTS)
     infernux_add_native_test(infernux_rhi_contracts_tests
         tests/native/RhiContractsTests.cpp
     )
-    target_link_libraries(infernux_rhi_contracts_tests PRIVATE InfernuxRenderCore)
+    target_link_libraries(infernux_rhi_contracts_tests PRIVATE InfernuxRenderCore Vulkan::Vulkan)
     add_test(NAME infernux.rhi_contracts COMMAND infernux_rhi_contracts_tests)
 
     infernux_add_native_test(infernux_render_texture_tests tests/native/RenderTextureTests.cpp)
@@ -502,24 +472,8 @@ if(INFERNUX_BUILD_TESTS)
 
     infernux_add_native_test(infernux_vulkan_rhi_device_tests
         tests/native/VulkanRhiDeviceTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp
-        cpp/infernux/function/renderer/vk/DescriptorBindTrace.cpp
-        cpp/infernux/function/renderer/vk/VmaContext.cpp
-        cpp/infernux/function/renderer/vk/VkDescriptorManager.cpp
-        cpp/infernux/function/renderer/vk/VulkanBindlessTextureTable.cpp
-        cpp/infernux/function/renderer/vk/VulkanCommandUploads.cpp
-        cpp/infernux/function/renderer/vk/VulkanRhiDevice.cpp
     )
-    target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE
-        Vulkan::Vulkan
-        GPUOpen::VulkanMemoryAllocator
-    )
-    if(MSVC)
-        target_compile_options(infernux_vulkan_rhi_device_tests PRIVATE /utf-8)
-        target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE delayimp)
-        target_link_options(infernux_vulkan_rhi_device_tests PRIVATE /DELAYLOAD:vulkan-1.dll)
-    endif()
+    target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE InfernuxVulkanBackend)
     add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
     set_tests_properties(infernux.vulkan_rhi_device PROPERTIES TIMEOUT 30)
 
@@ -653,21 +607,7 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_skinned_bind_pose_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.skinned_bind_pose COMMAND infernux_skinned_bind_pose_tests)
 
-    infernux_add_native_test(infernux_particle_gpu_runtime_tests
-        tests/native/ParticleGpuRuntimeTests.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuSurfaceBinding.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuMeshRenderer.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuContactRuntime.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuRibbonRenderer.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp
-    )
+    infernux_add_native_test(infernux_particle_gpu_runtime_tests tests/native/ParticleGpuRuntimeTests.cpp)
     target_link_libraries(infernux_particle_gpu_runtime_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.particle_gpu_runtime COMMAND infernux_particle_gpu_runtime_tests)
 
@@ -886,21 +826,19 @@ if(INFERNUX_BUILD_TESTS)
 
     infernux_add_native_test(infernux_mesh_artifact_tests
         tests/native/MeshArtifactTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
         cpp/infernux/function/resources/InxMesh/MeshArtifact.cpp
         cpp/infernux/function/resources/InxMesh/InxMesh.cpp
         cpp/infernux/function/resources/InxSkinnedMesh/InxSkinnedMesh.cpp
     )
-    target_link_libraries(infernux_mesh_artifact_tests PRIVATE Vulkan::Vulkan glm::glm)
+    target_link_libraries(infernux_mesh_artifact_tests PRIVATE InfernuxFoundation Vulkan::Vulkan glm::glm)
     add_test(NAME infernux.mesh_artifact COMMAND infernux_mesh_artifact_tests)
 
     infernux_add_native_test(infernux_skinned_mesh_artifact_tests
         tests/native/SkinnedMeshArtifactTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
         cpp/infernux/function/resources/InxSkinnedMesh/SkinnedMeshArtifact.cpp
         cpp/infernux/function/resources/InxSkinnedMesh/InxSkinnedMesh.cpp
     )
-    target_link_libraries(infernux_skinned_mesh_artifact_tests PRIVATE Vulkan::Vulkan glm::glm)
+    target_link_libraries(infernux_skinned_mesh_artifact_tests PRIVATE InfernuxFoundation Vulkan::Vulkan glm::glm)
     add_test(NAME infernux.skinned_mesh_artifact COMMAND infernux_skinned_mesh_artifact_tests)
 
     infernux_add_native_test(infernux_texture_artifact_tests
@@ -963,11 +901,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     add_test(NAME infernux.shader_info_schema COMMAND infernux_shader_info_schema_tests)
 
-    infernux_add_native_test(infernux_shader_stage_linker_tests
-        tests/native/ShaderStageLinkerTests.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuRibbonRenderer.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp
-    )
+    infernux_add_native_test(infernux_shader_stage_linker_tests tests/native/ShaderStageLinkerTests.cpp)
     target_link_libraries(infernux_shader_stage_linker_tests PRIVATE infernux_runtime_test_support)
     target_compile_definitions(infernux_shader_stage_linker_tests PRIVATE
         INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders"

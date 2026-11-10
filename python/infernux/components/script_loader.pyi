@@ -75,6 +75,7 @@ def load_all_components_from_file(
 
 
 class ScriptReloadRejected(ScriptLoadError): ...
+class ScriptHelperLayoutChanged(ScriptReloadRejected): ...
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,10 @@ class ComponentBodyReloadTransaction:
 
 def stage_component_body_reload_batch(
     requests: Iterable[ComponentBodyReloadRequest],
+    *,
+    replacing_scene: object = ...,
+    preserve_live_helpers: bool = ...,
+    rebuild_helpers: bool = ...,
 ) -> ComponentBodyReloadTransaction: ...
 
 

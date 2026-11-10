@@ -86,7 +86,7 @@ class LibraryPipeline(RenderPipeline):
     def define_topology(self, graph):
         graph.set_msaa_samples(1)
         color = graph.create_texture('color', camera_target=True)
-        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, samples=1)
+        depth = graph.create_texture('depth', format=Format.D32_SFLOAT, camera_target=True)
         graph.add_pass('Library surface').write_color(color).write_depth(depth).set_clear(
             color=(0,0,0,0), depth=0.0).draw_renderers(material_pass='forward')
         graph.screen_ui_section(resources={'color'})

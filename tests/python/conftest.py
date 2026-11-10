@@ -44,7 +44,6 @@ from infernux.lib import (
     Vector3,
     Physics,
     InputManager,
-    NativeRuntimeFrameBarrier,
     lib_dir,
 )
 from infernux.resources import resources_path
@@ -170,42 +169,25 @@ def _install_runtime_scheduler_bridge(runtime_scheduler):
         runtime_scheduler.execute_native_editor_update,
         runtime_scheduler.end_native_frame,
     )
-    barrier_map = {
-        NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
-            RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
-        NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
-            RuntimeFrameBarrier.PHYSICS_SIMULATION,
-        NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
-            RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
-        NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
-            RuntimeFrameBarrier.TRANSFORM_RESOLVE,
-        NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
-            RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
-        NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
-            RuntimeFrameBarrier.ANIMATION_TIMELINE,
-        NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
-            RuntimeFrameBarrier.RENDER_EXTRACTION,
-        NativeRuntimeFrameBarrier.RENDER_GRAPH:
-            RuntimeFrameBarrier.RENDER_GRAPH,
-        NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
-            RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
-        NativeRuntimeFrameBarrier.PENDING_DESTROY:
-            RuntimeFrameBarrier.PENDING_DESTROY,
-    }
-
     def consume_barrier(native_barrier):
-        barrier = barrier_map[native_barrier]
+        barrier = RuntimeFrameBarrier.from_native(native_barrier)
+        if barrier == RuntimeFrameBarrier.RENDER_SUBMITTED:
+            runtime_scheduler.consume_runtime_changes(barrier)
+            return
         changes = runtime_scheduler.consume_native_barrier(barrier)
         if changes is not None and barrier == RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
             runtime_scheduler.execute_native_phase(
                 "physics_pre_step", manager.get_fixed_time_step()
             )
+        elif changes is not None and barrier == RuntimeFrameBarrier.ANIMATION_EVALUATION:
+            runtime_scheduler.execute_native_phase("animation_update", manager.get_frame_delta_time())
         elif changes is not None and barrier == RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
             runtime_scheduler.execute_native_phase(
                 "physics_post_step", manager.get_fixed_time_step()
             )
 
     manager.set_runtime_frame_barrier_callback(consume_barrier)
+    manager.set_runtime_result_consumer_callback(runtime_scheduler.resume_native_result_boundary)
     runtime_scheduler.bind_native_bridge(manager)
     yield runtime_scheduler
 

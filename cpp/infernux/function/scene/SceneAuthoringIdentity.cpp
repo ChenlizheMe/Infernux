@@ -1,4 +1,5 @@
 #include "SceneAuthoringIdentity.h"
+#include "ComponentFactory.h"
 #include "core/types/Guid.h"
 
 #include <charconv>
@@ -79,9 +80,9 @@ void RewriteReferences(Json &object, ObjectId &objectId, ComponentId &componentI
     for (auto &component : object.at("components")) {
         const std::string type = component.at("type_id").get<std::string>();
         auto &fields = component.at("data");
-        if (type == "native:infernux.HingeJoint" || type == "native:infernux.SliderJoint")
-            fields.at("connected_body_component_id") =
-                componentId(fields.at("connected_body_component_id"), true, false);
+        if (type.rfind("native:infernux.", 0) == 0)
+            ComponentFactory::RewriteDocumentComponentReferences(
+                type.substr(16), fields, [&](const Json &value) { return componentId(value, true, false); });
         if (type.rfind("python:", 0) == 0)
             RewriteFields(fields, objectId, componentId);
     }

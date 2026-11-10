@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 import math
+from functools import cache
 from infernux.lib import InxGUIContext
 from infernux.engine.i18n import t
 from .theme import Theme, ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar
@@ -16,6 +17,19 @@ from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE
 # Gizmo handle IDs — must match C++ EditorTools constants
 from infernux.debug import Debug
 from infernux.engine.editor_visibility import game_object_is_active_in_hierarchy
+
+
+@cache
+def _camera_preview_graph():
+    from infernux.rendergraph import RenderGraph
+    from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+
+    pipeline = DefaultForwardPipeline()
+    pipeline.msaa_samples = 1
+    pipeline.shadows_enabled = False
+    graph = RenderGraph("Scene Camera Preview", output_samples=1)
+    pipeline.define_topology(graph, preview=True)
+    return graph.build()
 
 
 class SceneViewOverlaysMixin:
@@ -78,7 +92,40 @@ class SceneViewOverlaysMixin:
             scene_height,
         ) or overlay_hovered
 
-        return overlay_hovered
+        return self._draw_camera_preview(ctx, vp, dpi) or overlay_hovered
+
+    def _draw_camera_preview(self, ctx, vp, dpi: float) -> bool:
+        if not self._engine:
+            return False
+        from infernux.components.builtin.camera import Camera
+        from infernux.engine.interaction import SelectionService
+        from infernux.lib import SceneManager
+
+        selection = SelectionService.instance()
+        camera = None
+        if len(selection.snapshot.targets) == 1:
+            object_id = selection.primary_scene_object_id()
+            if object_id:
+                selected = SceneManager.instance().find_runtime_object_by_id(object_id)
+                if selected is not None:
+                    camera = selected.get_component(Camera)
+        native = self._engine.get_native_engine()
+        texture_id, width, height = native._scene_camera_preview(
+            camera.component_id if camera is not None else 0,
+            _camera_preview_graph() if camera is not None else None,
+        )
+        if not texture_id:
+            return False
+
+        margin = 8.0 * dpi
+        scale = min(min(240.0 * dpi, vp.width * 0.4) / width,
+                    min(135.0 * dpi, vp.height * 0.4) / height)
+        right, bottom = vp.image_max_x - margin, vp.image_max_y - margin
+        left, top = right - width * scale, bottom - height * scale
+        ctx.draw_image_rect(texture_id, left, top, right, bottom)
+        ctx.draw_rect(left, top, right, bottom, 0.12, 0.12, 0.12, 1.0)
+        return (vp.is_hovered and left <= ctx.get_mouse_pos_x() <= right
+                and top <= ctx.get_mouse_pos_y() <= bottom)
 
     @staticmethod
     def _execute_scene_command(command_id: str) -> bool:

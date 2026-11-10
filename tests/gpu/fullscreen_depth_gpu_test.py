@@ -29,7 +29,7 @@ class DepthAudit(RenderPipeline):
         samples = graph.set_msaa_samples(self.samples)
         color = graph.create_texture('color',camera_target=True)
         scene_color = graph.create_texture('scene_color',format=Format.RGBA16_SFLOAT,samples=samples)
-        scene_depth = graph.create_texture('depth',format=Format.D32_SFLOAT,samples=samples)
+        scene_depth = graph.create_texture('depth',format=Format.D32_SFLOAT, camera_target=True)
         previous_depth = graph.create_texture('previous_depth',format=Format.D32_SFLOAT,samples=samples)
         resolved = graph.create_texture('resolved',format=Format.RGBA16_SFLOAT,samples=1) if samples>1 else scene_color
         with graph.add_pass('Initialize') as p:

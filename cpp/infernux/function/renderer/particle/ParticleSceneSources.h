@@ -76,7 +76,8 @@ inline std::optional<GpuParticleSkinnedMeshSnapshot> ResolveSceneSkinnedMeshSour
     snapshot.currentPalette = pose->current;
     snapshot.previousPalette = pose->previous;
     snapshot.revision = pose->revision;
-    const glm::mat4 &world = renderer->GetGameObject()->GetTransform()->GetWorldMatrix();
+    const glm::mat4 world =
+        renderer->ResolveRenderWorldMatrix(renderer->GetGameObject()->GetTransform()->GetWorldMatrix());
     for (uint32_t row = 0; row < 4; ++row) {
         for (uint32_t column = 0; column < 4; ++column)
             snapshot.sourceToWorld[row * 4 + column] = world[column][row];

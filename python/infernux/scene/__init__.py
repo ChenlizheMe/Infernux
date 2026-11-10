@@ -364,6 +364,9 @@ class SceneManager:
     def _resolve_load_path(scene: Union[int, str]) -> Optional[str]:
         """Resolve and validate one public scene-load request."""
         scenes = SceneManager._load_build_list()
+        runtime = SceneManager._runtime_scene_service
+        if isinstance(scene, str) and runtime is not None:
+            scenes.extend(getattr(runtime, "additional_scene_guids", ()))
         if not scenes:
             Debug.log_warning("SceneManager: Build list is empty.")
             return None
@@ -383,19 +386,15 @@ class SceneManager:
             path = SceneManager._resolve_build_scene(scene, scenes)
             if path is None:
                 Debug.log_warning(
-                    f"SceneManager: Scene '{scene}' not found in build list."
+                    f"SceneManager: Scene '{scene}' is unavailable."
                 )
                 return None
         else:
             Debug.log_warning("SceneManager: scene must be int or str.")
             return None
 
-        # Packaged Players intentionally do not ship authoring ``.scene``
-        # documents at their BuildSettings paths.  Keep the logical build-list
-        # reference intact and let the immutable RuntimeAssetCatalog resolve it
-        # to the cooked scene artifact.  Editor/runtime-with-files paths still
-        # retain the eager disk validation below.
-        if SceneManager._runtime_scene_service is not None:
+        # The Player service resolves the selected identity to its cooked scene.
+        if runtime is not None:
             return path
 
         # Validate authoring file exists.
@@ -408,7 +407,7 @@ class SceneManager:
     def load_scene(
         scene: Union[int, str], mode: LoadSceneMode = LoadSceneMode.SINGLE
     ) -> bool:
-        """Load a scene from the build list.
+        """Load a built scene or a scene from published Player content.
 
         During play mode the request starts at the next safe frame boundary.
         Use :meth:`wait_for_load_scene` when the scene should begin preparing

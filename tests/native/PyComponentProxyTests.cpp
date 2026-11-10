@@ -1,5 +1,6 @@
 #include <function/scene/BoxCollider.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/InstantiationIds.h>
 #include <function/scene/PyComponentProxy.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
@@ -127,7 +128,8 @@ void TestSubtreeReplacementTeardown()
         const auto objects = scene.GetAllObjects();
         assert(objects.size() == 1 && objects.front() == parent);
     })) != nullptr);
-    assert(parent->DeserializeDocument(emptyDocument));
+    infernux::InstantiationIds ids;
+    assert(parent->DeserializeDocument(emptyDocument, ids));
     assert(callbacks == 1);
     assert(parent->GetChildren().empty());
     assert(parent->AddComponent<infernux::BoxCollider>() != nullptr);
@@ -313,13 +315,13 @@ class CollisionEnterOnlyProbe(InxComponent):
     // may remain installed while a structural rebuild produces an empty phase;
     // that phase must not cross into Python until a newer plan enables it.
     sceneManager.SetRuntimeLifecycleWorkAvailable(true);
-    sceneManager.SetRuntimeLifecyclePlan(1, 0, 0, 0);
+    sceneManager.SetRuntimeLifecyclePlan(1, 0, 0, 0, 0);
     sceneManager.Play();
     sceneManager.Update(1.0f / 60.0f);
     sceneManager.LateUpdate(1.0f / 60.0f);
     sceneManager.EndFrame();
     assert(runtimeUpdates == 0);
-    sceneManager.SetRuntimeLifecyclePlan(2, 0, 1, 0);
+    sceneManager.SetRuntimeLifecyclePlan(2, 0, 1, 0, 0);
     sceneManager.Update(1.0f / 60.0f);
     sceneManager.LateUpdate(1.0f / 60.0f);
     sceneManager.EndFrame();

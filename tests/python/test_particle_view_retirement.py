@@ -1,5 +1,6 @@
 """Camera churn must release view bindings while resident particles keep drawing."""
 import json
+import time
 
 import numpy as np
 import pytest
@@ -52,6 +53,7 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
         obj = scene.create_game_object(f'Particle View {index}')
         obj.transform.position = Vector3(0, 0, -5)
         result = obj.add_component('Camera')
+        result.render_to_texture = True
         result.target_texture = targets[index]
         result.depth = index + 1
         result.culling_mask = 128
@@ -92,7 +94,14 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
         engine.set_play_mode_rendering(True)
         component.graph = ParticleGraphRef(guid=graph_guid)
         component.awake()
-        assert component.play(), component.last_compile_error
+        # Keep the retained geometry in view across the long churn sequence.
+        component.set_parameter('drift', 0.0)
+        if not component.play():
+            deadline = time.monotonic() + 5.0
+            while component._has_unpublished_candidate() and time.monotonic() < deadline:
+                engine.tick(0.0)
+                component.update(0.0)
+            assert component.play(), component.last_compile_error or component.runtime_diagnostics()
 
         def update(_delta):
             component.update(1. / 120.)
@@ -102,7 +111,8 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
             try:
                 frame += 1
                 assert frame < 1200, results
-                if ticket is None and frame >= changed + 12:
+                execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+                if ticket is None and engine.game_presentation_ready and execution >= changed + 12:
                     ticket = engine.request_render_target_readback(True)
                     request = component.request_gpu_view_diagnostics('game', retained.component_id)
                 elif ticket is not None and ticket.done:
@@ -141,7 +151,7 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
                         transient_owner, transient = camera(1)
                         assert transient.component_id not in seen_cameras
                         seen_cameras.add(transient.component_id)
-                    changed, ticket = frame, None
+                    changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
                 engine.exit()
@@ -161,8 +171,10 @@ def test_camera_churn_releases_particle_view_bindings(engine, scene, tmp_path, m
         router.dispose()
         manager.stop()
         assert remove_runtime_service('gpu-particles', engine)
+        retained.render_to_texture = False
         retained.target_texture = None
         if transient is not None:
+            transient.render_to_texture = False
             transient.target_texture = None
         for path in assets:
             assert database.delete_asset(str(path))

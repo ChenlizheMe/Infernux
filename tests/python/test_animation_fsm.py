@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 import pytest
+from types import SimpleNamespace
 
 from infernux.core.anim_state_machine import (
     AnimCondition,
@@ -79,15 +80,20 @@ class _RendererBinding:
     def _get_bound_native_component(self):
         return self.native
 
+    def _require_cpp_component(self):
+        return self.native
+
 
 class _RendererOwner:
     def __init__(self, renderer):
         self.renderer = renderer
         self.lookups = 0
+        self.id = id(self)
+        self.scene = SimpleNamespace(world_id=1, structure_version=1)
 
     def get_component(self, _component_type):
         self.lookups += 1
-        return self.renderer
+        return self.renderer if _component_type is not SkeletalAnimator else None
 
     def get_children(self):
         return []
@@ -97,9 +103,11 @@ class _HierarchyOwner:
     def __init__(self, renderer=None, children=()):
         self.renderer = renderer
         self.children = list(children)
+        self.id = id(self)
+        self.scene = SimpleNamespace(world_id=1, structure_version=1)
 
     def get_component(self, _component_type):
-        return self.renderer
+        return self.renderer if _component_type is not SkeletalAnimator else None
 
     def get_children(self):
         return list(self.children)
@@ -109,6 +117,7 @@ class _NativePoseRecorder:
     def __init__(self):
         self.calls = []
         self.pose_stacks = []
+        self.skeleton = SimpleNamespace(component_id=id(self), physics_controls_pose=False)
 
     def submit_animation_pose(self, *args):
         self.calls.append(args)
@@ -138,7 +147,7 @@ def test_skeletal_restart_and_rejected_transition_preserve_playback(monkeypatch)
     owner.get_py_components = lambda: [Receiver()]
     animator._clip_cache["Walk"].events = [AnimationEvent(0.0, "start_event")]
     assert animator.play("Walk")
-    animator.update(0.5)
+    animator.animation_update(0.5)
     assert calls == ["start"]
     revision = animator._playback_revision
     assert animator.play("Walk")
@@ -149,7 +158,7 @@ def test_skeletal_restart_and_rejected_transition_preserve_playback(monkeypatch)
         assert animator._elapsed == 0.5 and animator._playback_revision == revision
     assert animator.play("Walk", restart=True)
     assert animator._elapsed == 0.0 and animator._playback_revision == revision + 1
-    animator.update(0.25)
+    animator.animation_update(0.25)
     assert calls == ["start", "start"]
     assert native.calls[-1][1] == pytest.approx(0.25)
     layers = animator.get_pose_layers()
@@ -188,10 +197,10 @@ def test_skeletal_event_state_change_keeps_the_new_playback_cursor(monkeypatch, 
         "B": AnimationClip3D(take_name="Second", duration_hint=1.0, events=[AnimationEvent(0.25, "second")]),
     }
     assert animator.play("A")
-    animator.update(1.0 if phase == "terminal" else 0.5)
+    animator.animation_update(1.0 if phase == "terminal" else 0.5)
     assert animator.current_state == ("A" if phase == "restart" else "B") and animator.is_playing
     assert animator.normalized_time == 0.0
-    animator.update(0.3)
+    animator.animation_update(0.3)
     assert calls == ["first", "first" if phase == "restart" else "second"]
     assert native.calls[-1][1] == pytest.approx(0.3)
 
@@ -233,7 +242,7 @@ def test_imported_root_motion_updates_owner_transform_once_per_frame(monkeypatch
     animator._last_native_pose_key = None
     monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
 
-    animator.update(0.25)
+    animator.animation_update(0.25)
 
     assert native.root_calls == [("Walk", 0.5, 0.75, True, "d" * 32)]
     assert transform.translations[0].x == pytest.approx(1.0)
@@ -257,7 +266,7 @@ def test_imported_non_looping_clip_cannot_be_forced_to_wrap_by_fsm(monkeypatch):
     animator._elapsed = 0.9
     animator._playing = True
 
-    animator.update(0.2)
+    animator.animation_update(0.2)
 
     assert animator._elapsed == pytest.approx(1.0)
     assert animator.is_playing is False
@@ -265,10 +274,10 @@ def test_imported_non_looping_clip_cannot_be_forced_to_wrap_by_fsm(monkeypatch):
 
     state.transitions = [AnimTransition(target_state="Next", duration=0.5)]
     assert animator.play("Once")
-    animator.update(1.0)
+    animator.animation_update(1.0)
     assert animator.current_state == "Next" and animator.is_playing
     assert animator._blend_from_elapsed == 1.0
-    animator.update(0.25)
+    animator.animation_update(0.25)
     outgoing, incoming = native.pose_stacks[-1]
     assert outgoing["take_name"] == "Once" and outgoing["time"] == 1.0
     assert outgoing["loop"] is False
@@ -291,14 +300,14 @@ def test_completed_state_can_transition_when_landing_arrives_later(monkeypatch, 
     )
     animator._clip_cache = {"Jump": _FakeClip("Jump", duration_hint=1.0), "Idle": _FakeClip("Idle")}
     assert animator.play("Jump")
-    animator.update(1.1)
+    animator.animation_update(1.1)
     assert animator.current_state == "Jump" and not animator.is_playing
-    animator.update(.2)
+    animator.animation_update(.2)
     assert animator._elapsed == 1.0
     if explicit_stop:
         animator.stop()
     animator.set_bool("grounded", True)
-    animator.update(.1)
+    animator.animation_update(.1)
     assert animator.current_state == ("Jump" if explicit_stop else "Idle")
     assert animator.is_playing is not explicit_stop
     if not explicit_stop:
@@ -308,7 +317,7 @@ def test_completed_state_can_transition_when_landing_arrives_later(monkeypatch, 
 def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
     animator = _make_animator()
     stale = _RendererBinding(None)
-    live = _RendererBinding(object())
+    live = _RendererBinding(_NativePoseRecorder())
     owner = _RendererOwner(live)
     animator._skinned_renderers = [stale]
     monkeypatch.setattr(
@@ -326,6 +335,7 @@ def test_skeletal_animator_submits_same_pose_to_all_descendant_renderers(monkeyp
     animator = _make_animator()
     body_native = _NativePoseRecorder()
     visor_native = _NativePoseRecorder()
+    visor_native.skeleton = body_native.skeleton
     owner = _HierarchyOwner(
         children=[
             _HierarchyOwner(renderer=_RendererBinding(body_native)),
@@ -350,7 +360,7 @@ def test_skeletal_animator_submits_same_pose_to_all_descendant_renderers(monkeyp
     animator._sync_native_runtime_playback()
 
     assert len(body_native.calls) == 1
-    assert visor_native.calls == body_native.calls
+    assert visor_native.calls == []  # The shared skeleton is sampled once for both meshes.
 
 
 def test_skeletal_animator_submits_clip_source_separately_from_render_model(monkeypatch):
@@ -455,7 +465,7 @@ def test_clip_group_events_independent_loop_clocks_and_whole_group_crossfade(mon
     received = []
     monkeypatch.setattr(animator, "_dispatch_clip_events", lambda clip, *args, **kwargs: received.append((clip.take_name, args)))
     assert animator.play("Group")
-    animator.update(2.5)
+    animator.animation_update(2.5)
     assert animator._elapsed == 2.5 and animator.normalized_time == pytest.approx(2.5 / 3)
     assert len(received) == 3
     assert animator.get_curve_value("FootPlant") == pytest.approx(3.0)
@@ -464,7 +474,7 @@ def test_clip_group_events_independent_loop_clocks_and_whole_group_crossfade(mon
     assert not animator.play("Incomplete")
     assert animator.current_state == "Group" and animator._elapsed == 2.5
     assert animator.cross_fade("Idle", .2)
-    animator.update(.1)
+    animator.animation_update(.1)
     layers = native.pose_stacks[-1]
     assert [layer["take_name"] for layer in layers] == ["Run", "Reload", "Look", "Idle"]
     assert [layer["weight"] for layer in layers] == [1.0] * 4
@@ -472,7 +482,7 @@ def test_clip_group_events_independent_loop_clocks_and_whole_group_crossfade(mon
     assert len({layer["blend_group"] for layer in layers[:3]}) == 1
     assert layers[-1]["blend_group"] != layers[0]["blend_group"]
     assert [layer["time"] for layer in layers[:3]] == pytest.approx([2.6] * 3)
-    animator.update(.2)
+    animator.animation_update(.2)
     assert native.calls[-1][0] == "Idle"
 
 
@@ -509,7 +519,7 @@ def test_imported_events_dispatch_every_occurrence_across_multiple_wraps(monkeyp
     animator._prev_event_norm = 0.9
     animator._playing = True
 
-    animator.update(2.2)
+    animator.animation_update(2.2)
 
     assert calls == [("L", 1.0), ("L", 1.0)]
 
@@ -518,6 +528,8 @@ def test_native_pose_submission_failure_propagates(monkeypatch):
     animator = _make_animator()
 
     class Native:
+        skeleton = SimpleNamespace(component_id=123)
+
         @staticmethod
         def submit_animation_pose(*_args):
             raise RuntimeError("native pose rejected")

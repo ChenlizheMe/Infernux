@@ -26,6 +26,29 @@ constexpr size_t RoleIndex(rhi::QueueRole role) noexcept
 
 } // namespace
 
+thread_local const SubmissionReadScope *SubmissionReadScope::s_current = nullptr;
+
+SubmissionReadScope::SubmissionReadScope(VkCommandBuffer commands, SubmissionReads &reads) noexcept
+    : m_commands(commands), m_reads(reads), m_previous(s_current)
+{
+    s_current = this;
+}
+
+SubmissionReadScope::~SubmissionReadScope()
+{
+    s_current = m_previous;
+}
+
+SubmissionReads *SubmissionReadScope::Current(VkCommandBuffer commands) noexcept
+{
+    return s_current && s_current->m_commands == commands ? &s_current->m_reads : nullptr;
+}
+
+SubmissionReads *SubmissionReadScope::Current() noexcept
+{
+    return s_current ? &s_current->m_reads : nullptr;
+}
+
 VulkanSubmissionExecutor::~VulkanSubmissionExecutor()
 {
     Destroy();
@@ -41,7 +64,6 @@ bool VulkanSubmissionExecutor::Initialize(VkDeviceContext &device, VulkanQueueMa
     m_queues = &queues;
     m_device = device.GetDevice();
     m_frames.resize((std::max)(frameSlotCount, 1u));
-    m_frameDiagnostics.resize(m_frames.size());
     for (FrameState &frame : m_frames) {
         if (!CreatePools(frame)) {
             Destroy();
@@ -59,19 +81,11 @@ bool VulkanSubmissionExecutor::Initialize(VkDeviceContext &device, VulkanQueueMa
         }
         m_laneTimelines.resize(static_cast<size_t>(maxLane) + 1);
 
-        VkSemaphoreTypeCreateInfo typeInfo{};
-        typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-        typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-        typeInfo.initialValue = 0;
-
-        VkSemaphoreCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        createInfo.pNext = &typeInfo;
-        for (LaneTimeline &timeline : m_laneTimelines) {
-            if (vkCreateSemaphore(m_device, &createInfo, nullptr, &timeline.semaphore) != VK_SUCCESS) {
-                Destroy();
-                return false;
-            }
+        for (const auto role :
+             {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer, rhi::QueueRole::Present}) {
+            const auto lane = queues.GetSnapshot(role).nativeLane;
+            if (lane < m_laneTimelines.size())
+                m_laneTimelines[lane] = queues.GetDependencyTimeline(role);
         }
     }
     return true;
@@ -80,10 +94,6 @@ bool VulkanSubmissionExecutor::Initialize(VkDeviceContext &device, VulkanQueueMa
 void VulkanSubmissionExecutor::Destroy() noexcept
 {
     if (m_device != VK_NULL_HANDLE) {
-        for (LaneTimeline &timeline : m_laneTimelines) {
-            if (timeline.semaphore != VK_NULL_HANDLE)
-                vkDestroySemaphore(m_device, timeline.semaphore, nullptr);
-        }
         for (FrameState &frame : m_frames) {
             for (RolePool &role : frame.roles) {
                 if (role.pool != VK_NULL_HANDLE)
@@ -92,7 +102,6 @@ void VulkanSubmissionExecutor::Destroy() noexcept
         }
     }
     m_frames.clear();
-    m_frameDiagnostics.clear();
     m_laneTimelines.clear();
     m_device = VK_NULL_HANDLE;
     m_queues = nullptr;
@@ -104,7 +113,7 @@ VkSemaphore VulkanSubmissionExecutor::GetDependencyTimeline(rhi::QueueRole role)
     if (!m_queues || role == rhi::QueueRole::Count)
         return VK_NULL_HANDLE;
     const uint32_t lane = m_queues->GetSnapshot(role).nativeLane;
-    return lane < m_laneTimelines.size() ? m_laneTimelines[lane].semaphore : VK_NULL_HANDLE;
+    return lane < m_laneTimelines.size() ? m_laneTimelines[lane] : VK_NULL_HANDLE;
 }
 
 bool VulkanSubmissionExecutor::CreatePools(FrameState &frame)
@@ -119,7 +128,7 @@ bool VulkanSubmissionExecutor::CreatePools(FrameState &frame)
         createInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
         createInfo.queueFamilyIndex = snapshot.family;
         RolePool &target = frame.roles[RoleIndex(role)];
-        target.uploads = std::make_unique<VulkanCommandUploads>(m_deviceContext->GetVmaAllocator());
+        target.uploads = std::make_unique<VulkanCommandUploads>(m_deviceContext->GetRhiDevice());
         if (vkCreateCommandPool(m_device, &createInfo, nullptr, &target.pool) != VK_SUCCESS)
             return false;
     }
@@ -149,15 +158,6 @@ VkCommandBuffer VulkanSubmissionExecutor::AcquireCommandBuffer(FrameState &frame
     return commandBuffer;
 }
 
-void VulkanSubmissionExecutor::CancelReservations(const std::vector<rhi::SubmissionTicket> &tickets,
-                                                  size_t first) noexcept
-{
-    if (!m_queues)
-        return;
-    for (size_t index = first; index < tickets.size(); ++index)
-        (void)m_queues->CancelReservation(tickets[index]);
-}
-
 VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32_t frameSlot,
                                                                           const rhi::SubmissionPlan &plan,
                                                                           const BatchRecorder &recorder,
@@ -165,7 +165,25 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
 {
     ExecuteResult output{};
     auto phaseStart = sync.cpuTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    if (!m_deviceContext || !m_queues || frameSlot >= m_frames.size() || plan.batches.empty() || !recorder)
+    if (!m_deviceContext || !m_queues || frameSlot >= m_frames.size())
+        return output;
+    FrameState &frame = m_frames[frameSlot];
+    if (!frame.submittedTickets.empty()) {
+        INXLOG_ERROR("VulkanSubmissionExecutor frame slot must complete before command and upload reuse");
+        return output;
+    }
+    struct UnsubmittedUploads
+    {
+        FrameState &frame;
+        ~UnsubmittedUploads()
+        {
+            if (frame.submittedTickets.empty())
+                for (auto &role : frame.roles)
+                    if (role.uploads)
+                        role.uploads->Discard();
+        }
+    } unsubmitted{frame};
+    if (plan.batches.empty() || !recorder)
         return output;
     const auto firstGraphics = std::find_if(plan.batches.begin(), plan.batches.end(),
                                             [](const auto &batch) { return batch.queue == rhi::QueueRole::Graphics; });
@@ -226,39 +244,28 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         return output;
     }
 
-    FrameState &frame = m_frames[frameSlot];
-    if (!frame.submittedTickets.empty()) {
-        INXLOG_ERROR("VulkanSubmissionExecutor frame slot must complete before command and upload reuse");
-        return output;
-    }
+    frame.submittedTickets.reserve(plan.batches.size() + (needsTerminalJoin ? 1u : 0u));
     for (RolePool &role : frame.roles) {
         role.cursor = 0;
         if (role.pool != VK_NULL_HANDLE && vkResetCommandPool(m_device, role.pool, 0) != VK_SUCCESS)
             return output;
-        if (role.uploads)
-            role.uploads->Reset();
     }
 
     std::vector<rhi::SubmissionTicket> tickets;
+    // Keep each compiler batch's wait/signal boundary intact. Consecutive
+    // same-role batches share one host vkQueueSubmit call, not one VkSubmitInfo.
+    struct BatchSync
+    {
+        SubmissionWaits dependencies;
+        std::vector<VkSemaphore> signals;
+        std::vector<uint64_t> signalValues;
+        VkTimelineSemaphoreSubmitInfo timeline{};
+    };
+    std::vector<BatchSync> batchSync(plan.batches.size());
     std::vector<VkCommandBuffer> commands;
     std::vector<uint64_t> signalValues(plan.batches.size(), 0);
     tickets.reserve(plan.batches.size() + (needsTerminalJoin ? 1u : 0u));
     commands.reserve(plan.batches.size());
-
-    FrameDiagnostic &diagnostic = m_frameDiagnostics[frameSlot];
-    diagnostic = {};
-    diagnostic.previousTimeline = sync.previousFrameTimeline;
-    diagnostic.previousTimelineValue = sync.previousFrameTimelineValue;
-    diagnostic.uploadTimeline = sync.uploadTimeline;
-    diagnostic.uploadTimelineValue = sync.uploadTimelineValue;
-    diagnostic.backgroundComputeTimeline = sync.backgroundComputeTimeline;
-    diagnostic.backgroundComputeTimelineValue = sync.backgroundComputeTimelineValue;
-    diagnostic.batchRoles.reserve(plan.batches.size());
-    diagnostic.batchLanes.reserve(plan.batches.size());
-    diagnostic.batchSignalValues.reserve(plan.batches.size());
-    diagnostic.batchQueuePredecessors.reserve(plan.batches.size());
-    diagnostic.batchWaits.reserve(plan.batches.size());
-    diagnostic.batchNames.reserve(plan.batches.size());
 
     if (sync.cpuTimings) {
         const auto now = std::chrono::steady_clock::now();
@@ -273,6 +280,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         }
         commands.push_back(commandBuffer);
         VulkanCommandUploads::Scope uploadScope(*frame.roles[RoleIndex(batch.queue)].uploads, commandBuffer);
+        SubmissionReads reads;
+        SubmissionReadScope readScope(commandBuffer, reads);
 
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -287,15 +296,13 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
             return output;
         }
-        const uint32_t lane = m_queues->GetSnapshot(batch.queue).nativeLane;
-        if (lane < m_laneTimelines.size())
-            signalValues[batchIndex] = m_laneTimelines[lane].nextValue++;
-        diagnostic.batchRoles.push_back(batch.queue);
-        diagnostic.batchLanes.push_back(lane);
-        diagnostic.batchSignalValues.push_back(signalValues[batchIndex]);
-        diagnostic.batchQueuePredecessors.push_back(batch.queuePredecessor);
-        diagnostic.batchWaits.push_back(batch.waitsFor);
-        diagnostic.batchNames.push_back(batch.diagnosticName);
+        for (const auto &read : reads.reads) {
+            if (!read.producer.IsValid())
+                continue;
+            const auto point = m_queues->DependencyFor(read.producer, batch.queue);
+            if (point.semaphore != VK_NULL_HANDLE)
+                batchSync[batchIndex].dependencies.Add({point.semaphore, point.value, read.stages});
+        }
     }
     if (sync.cpuTimings) {
         const auto now = std::chrono::steady_clock::now();
@@ -303,12 +310,25 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         phaseStart = now;
     }
 
-    // Recording may publish asynchronous resource uploads. Reserve frame
-    // submissions only after every recorder has finished so those uploads
-    // are ordered before any batch that waits on the upload timeline. If a
-    // transfer role aliases a compute lane, reserving first would put the
-    // consumer ahead of its producer and create a same-queue timeline
-    // deadlock during generation-prime particle work.
+    // A recorder can submit an upload. Reserve these consumers only after
+    // recording so an upload on an aliased lane keeps its earlier queue order.
+    struct Reservations
+    {
+        VulkanQueueManager &queues;
+        const std::vector<rhi::SubmissionTicket> &tickets;
+        size_t next = 0;
+
+        void CancelRemaining() noexcept
+        {
+            while (next < tickets.size())
+                (void)queues.CancelReservation(tickets[next++]);
+        }
+
+        ~Reservations()
+        {
+            CancelRemaining();
+        }
+    } reservations{*m_queues, tickets};
     for (size_t first = 0; first < plan.batches.size();) {
         const auto &batch = plan.batches[first];
         size_t end = first + 1;
@@ -317,25 +337,24 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         if (std::any_of(plan.batches.begin() + first, plan.batches.begin() + end,
                         [&](const auto &item) { return item.device != m_deviceContext->GetDeviceId(); })) {
             INXLOG_ERROR("VulkanSubmissionExecutor rejected a batch for another device");
-            CancelReservations(tickets, 0);
             return output;
         }
         rhi::SubmissionTicket ticket = m_queues->Reserve(batch.queue, static_cast<uint32_t>(end - first));
-        if (!ticket.IsValid()) {
-            CancelReservations(tickets, 0);
+        if (!ticket.IsValid())
             return output;
-        }
         for (size_t index = first; index < end; ++index, ++ticket.serial)
             tickets.push_back(ticket);
         first = end;
     }
     if (needsTerminalJoin) {
         const auto joinTicket = m_queues->Reserve(joinRole);
-        if (!joinTicket.IsValid()) {
-            CancelReservations(tickets, 0);
+        if (!joinTicket.IsValid())
             return output;
-        }
         tickets.push_back(joinTicket);
+    }
+    for (size_t index = 0; index < plan.batches.size(); ++index) {
+        if (!m_laneTimelines.empty())
+            signalValues[index] = tickets[index].serial;
     }
     output.completionTicket = tickets.back();
 
@@ -350,54 +369,35 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     }
     const size_t previousFrameWaitBatch = (sync.previousFrameWaitAtFirstBatch || !hasGraphics) ? 0 : firstGraphicsBatch;
     std::vector<bool> laneSubmitted((std::max)(m_laneTimelines.size(), static_cast<size_t>(4)), false);
+    std::array<bool, static_cast<size_t>(rhi::QueueRole::Count)> roleSubmitted{};
 
-    // Keep each compiler batch's wait/signal boundary intact. Consecutive
-    // same-role batches share one host vkQueueSubmit call, not one VkSubmitInfo.
-    // Storage is fixed before pointers are installed in the submit structures.
-    struct BatchSync
-    {
-        std::vector<VkSemaphore> waits, signals;
-        std::vector<VkPipelineStageFlags> waitStages;
-        std::vector<uint64_t> waitValues, signalValues;
-        VkTimelineSemaphoreSubmitInfo timeline{};
-    };
-    std::vector<BatchSync> batchSync(plan.batches.size());
     std::vector<VkSubmitInfo> submits(plan.batches.size());
-    size_t groupFirst = 0;
-
     for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
         const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
         const uint32_t targetLane = m_queues->GetSnapshot(batch.queue).nativeLane;
         auto &storage = batchSync[batchIndex];
-        auto &waits = storage.waits;
-        auto &waitStages = storage.waitStages;
-        auto &waitValues = storage.waitValues;
-        bool usesTimeline = false;
+        auto &waits = storage.dependencies.semaphores;
+        auto &waitStages = storage.dependencies.stages;
+        auto &waitValues = storage.dependencies.values;
+        bool usesTimeline = !waits.empty();
+        const auto addWait = [&](VkSemaphore semaphore, uint64_t value, VkPipelineStageFlags stages) {
+            storage.dependencies.Add({semaphore, value, stages});
+            usesTimeline |= value != 0;
+        };
         if (batchIndex == firstGraphicsBatch && sync.imageAvailable != VK_NULL_HANDLE) {
-            waits.push_back(sync.imageAvailable);
-            waitStages.push_back(sync.imageAvailableStages);
-            waitValues.push_back(0);
+            addWait(sync.imageAvailable, 0, sync.imageAvailableStages);
         }
         if (batchIndex == previousFrameWaitBatch && sync.previousFrameTimeline != VK_NULL_HANDLE &&
             sync.previousFrameTimelineValue != 0) {
-            waits.push_back(sync.previousFrameTimeline);
-            waitStages.push_back(sync.previousFrameStages);
-            waitValues.push_back(sync.previousFrameTimelineValue);
-            usesTimeline = true;
-        }
-        if (batchIndex == firstGraphicsBatch && sync.backgroundComputeTimeline != VK_NULL_HANDLE &&
-            sync.backgroundComputeTimelineValue != 0) {
-            waits.push_back(sync.backgroundComputeTimeline);
-            waitStages.push_back(sync.backgroundComputeStages);
-            waitValues.push_back(sync.backgroundComputeTimelineValue);
-            usesTimeline = true;
+            addWait(sync.previousFrameTimeline, sync.previousFrameTimelineValue, sync.previousFrameStages);
         }
         const bool firstOnLane = targetLane < laneSubmitted.size() && !laneSubmitted[targetLane];
-        if (firstOnLane && sync.uploadTimeline != VK_NULL_HANDLE && sync.uploadTimelineValue != 0) {
-            waits.push_back(sync.uploadTimeline);
-            waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-            waitValues.push_back(sync.uploadTimelineValue);
-            usesTimeline = true;
+        for (const auto &producer : sync.producers) {
+            const bool firstConsumer = producer.consumer == rhi::QueueRole::Count
+                                           ? firstOnLane
+                                           : batch.queue == producer.consumer && !roleSubmitted[RoleIndex(batch.queue)];
+            if (firstConsumer)
+                addWait(producer.timeline, producer.value, producer.stages);
         }
 
         std::vector<uint64_t> laneWaitValues(m_laneTimelines.size(), 0);
@@ -417,10 +417,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
 
         for (const rhi::SubmissionBatchDependency &dependency : batch.waitsFor) {
             if (!addLaneWait(dependency.sourceBatch,
-                             rhi::ToVkPipelineStages(dependency.waitStages, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT))) {
-                CancelReservations(tickets, groupFirst);
+                             rhi::ToVkPipelineStages(dependency.waitStages, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)))
                 return output;
-            }
         }
 
         const bool finalBatch = batchIndex + 1 == plan.batches.size();
@@ -428,29 +426,20 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             // Join every lane into the terminal fence, including work
             // that is topologically independent from the final render pass.
             for (uint32_t sourceBatch = 0; sourceBatch < batchIndex; ++sourceBatch) {
-                if (!addLaneWait(sourceBatch, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-                    CancelReservations(tickets, groupFirst);
+                if (!addLaneWait(sourceBatch, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT))
                     return output;
-                }
             }
         }
 
         for (size_t lane = 0; lane < laneWaitValues.size(); ++lane) {
             if (laneWaitValues[lane] == 0)
                 continue;
-            waits.push_back(m_laneTimelines[lane].semaphore);
-            waitStages.push_back(laneWaitStages[lane] != 0 ? laneWaitStages[lane] : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-            waitValues.push_back(laneWaitValues[lane]);
-            usesTimeline = true;
+            addWait(m_laneTimelines[lane], laneWaitValues[lane],
+                    laneWaitStages[lane] != 0 ? laneWaitStages[lane] : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
         }
 
         auto &signals = storage.signals;
         auto &signalSubmitValues = storage.signalValues;
-        if (targetLane < m_laneTimelines.size() && signalValues[batchIndex] != 0) {
-            signals.push_back(m_laneTimelines[targetLane].semaphore);
-            signalSubmitValues.push_back(signalValues[batchIndex]);
-            usesTimeline = true;
-        }
         if (batchIndex == lastGraphicsBatch && sync.renderFinished != VK_NULL_HANDLE) {
             signals.push_back(sync.renderFinished);
             signalSubmitValues.push_back(0);
@@ -476,40 +465,17 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
         submitInfo.pSignalSemaphores = signals.data();
 
-        // Later batches on this lane must not repeat the external upload wait,
-        // even when this host-call group has not been flushed yet.
+        // The first consumer on each lane carries its external dependencies.
         if (targetLane < laneSubmitted.size())
             laneSubmitted[targetLane] = true;
-        if (!finalBatch && plan.batches[batchIndex + 1].queue == batch.queue)
-            continue;
-
-        const VkFence fence = finalBatch && !needsTerminalJoin ? sync.completionFence : VK_NULL_HANDLE;
-        const VkResult result = m_queues->SubmitReserved(tickets[groupFirst], submits.data() + groupFirst,
-                                                         static_cast<uint32_t>(batchIndex + 1 - groupFirst), fence);
-        if (result != VK_SUCCESS) {
-            CancelReservations(tickets, batchIndex + 1);
-            if (output.submittedAny) {
-                (void)m_queues->WaitIdleForAllQueues();
-                for (size_t completed = 0; completed < groupFirst; ++completed)
-                    m_queues->MarkCompleted(tickets[completed]);
-            }
-            output.result = result;
-            return output;
-        }
-        output.submittedAny = true;
-        frame.submittedTickets.insert(frame.submittedTickets.end(), tickets.begin() + groupFirst,
-                                      tickets.begin() + batchIndex + 1);
-        groupFirst = batchIndex + 1;
-        if (finalBatch && !needsTerminalJoin && targetLane < m_laneTimelines.size()) {
-            output.completionTimeline = m_laneTimelines[targetLane].semaphore;
-            output.completionTimelineValue = signalValues[batchIndex];
-        }
+        roleSubmitted[RoleIndex(batch.queue)] = true;
     }
 
+    // Finish allocating wait metadata before the first queue accepts work.
+    SubmissionWaits joinWaits;
+    VkTimelineSemaphoreSubmitInfo joinTimeline{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+    VkSubmitInfo joinSubmit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     if (needsTerminalJoin) {
-        std::vector<VkSemaphore> waits;
-        std::vector<VkPipelineStageFlags> waitStages;
-        std::vector<uint64_t> waitValues;
         std::vector<uint64_t> joinedLaneValues(m_laneTimelines.size(), 0);
         for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
             const uint32_t lane = m_queues->GetSnapshot(plan.batches[batchIndex].queue).nativeLane;
@@ -518,126 +484,76 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             joinedLaneValues[lane] = (std::max)(joinedLaneValues[lane], signalValues[batchIndex]);
         }
         for (size_t lane = 0; lane < joinedLaneValues.size(); ++lane) {
-            if (joinedLaneValues[lane] == 0)
-                continue;
-            waits.push_back(m_laneTimelines[lane].semaphore);
-            waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-            waitValues.push_back(joinedLaneValues[lane]);
+            if (joinedLaneValues[lane] != 0)
+                joinWaits.Add({m_laneTimelines[lane], joinedLaneValues[lane], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT});
         }
+        joinTimeline.waitSemaphoreValueCount = static_cast<uint32_t>(joinWaits.values.size());
+        joinTimeline.pWaitSemaphoreValues = joinWaits.values.data();
+        joinSubmit.pNext = &joinTimeline;
+        joinSubmit.waitSemaphoreCount = joinTimeline.waitSemaphoreValueCount;
+        joinSubmit.pWaitSemaphores = joinWaits.semaphores.data();
+        joinSubmit.pWaitDstStageMask = joinWaits.stages.data();
+    }
 
-        std::vector<VkSemaphore> signals;
-        std::vector<uint64_t> signalValuesForSubmit;
-        uint64_t joinTimelineValue = 0;
-        if (joinLane < m_laneTimelines.size()) {
-            signals.push_back(m_laneTimelines[joinLane].semaphore);
-            joinTimelineValue = m_laneTimelines[joinLane].nextValue++;
-            signalValuesForSubmit.push_back(joinTimelineValue);
+    const auto failSubmission = [&](VkResult result) {
+        reservations.CancelRemaining();
+        if (output.submittedBatchCount) {
+            (void)m_queues->WaitIdleForAllQueues();
+            for (const auto &accepted : frame.submittedTickets)
+                m_queues->MarkCompleted(accepted);
         }
-        VkTimelineSemaphoreSubmitInfo timelineInfo{};
-        timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timelineInfo.waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size());
-        timelineInfo.pWaitSemaphoreValues = waitValues.data();
-        timelineInfo.signalSemaphoreValueCount = static_cast<uint32_t>(signalValuesForSubmit.size());
-        timelineInfo.pSignalSemaphoreValues = signalValuesForSubmit.data();
-
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.pNext = &timelineInfo;
-        submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
-        submitInfo.pWaitSemaphores = waits.data();
-        submitInfo.pWaitDstStageMask = waitStages.data();
-        submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
-        submitInfo.pSignalSemaphores = signals.data();
-
+        output.result = result;
+        return output;
+    };
+    for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
+        const bool finalBatch = batchIndex + 1 == plan.batches.size();
+        if (!finalBatch && plan.batches[batchIndex + 1].queue == plan.batches[batchIndex].queue)
+            continue;
+        const size_t groupFirst = reservations.next;
+        const VkFence fence = finalBatch && !needsTerminalJoin ? sync.completionFence : VK_NULL_HANDLE;
+        const VkResult result = m_queues->SubmitReserved(tickets[groupFirst], submits.data() + groupFirst,
+                                                         static_cast<uint32_t>(batchIndex + 1 - groupFirst), fence);
+        if (result != VK_SUCCESS)
+            return failSubmission(result);
+        output.submittedBatchCount = reservations.next = batchIndex + 1;
+        frame.submittedTickets.insert(frame.submittedTickets.end(), tickets.begin() + groupFirst,
+                                      tickets.begin() + reservations.next);
+        if (finalBatch && !needsTerminalJoin && terminalLane < m_laneTimelines.size()) {
+            output.completionTimeline = m_laneTimelines[terminalLane];
+            output.completionTimelineValue = signalValues[batchIndex];
+        }
+    }
+    if (needsTerminalJoin) {
         const auto joinTicket = tickets.back();
-        const VkResult joinResult = m_queues->SubmitReserved(joinTicket, submitInfo, sync.completionFence);
-        if (joinResult != VK_SUCCESS) {
-            if (output.submittedAny) {
-                (void)m_queues->WaitIdleForAllQueues();
-                for (size_t completed = 0; completed + 1 < tickets.size(); ++completed)
-                    m_queues->MarkCompleted(tickets[completed]);
-            }
-            output.result = joinResult;
-            return output;
-        }
-        output.submittedAny = true;
+        const VkResult joinResult = m_queues->SubmitReserved(joinTicket, joinSubmit, sync.completionFence);
+        if (joinResult != VK_SUCCESS)
+            return failSubmission(joinResult);
+        ++reservations.next;
         frame.submittedTickets.push_back(joinTicket);
-        output.completionTimeline = m_laneTimelines[joinLane].semaphore;
-        output.completionTimelineValue = joinTimelineValue;
+        output.completionTimeline = m_laneTimelines[joinLane];
+        output.completionTimelineValue = joinTicket.serial;
     }
 
     output.result = VK_SUCCESS;
-    diagnostic.completionTimeline = output.completionTimeline;
-    diagnostic.completionTimelineValue = output.completionTimelineValue;
     if (sync.cpuTimings)
         (*sync.cpuTimings)[2] =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phaseStart).count();
     return output;
 }
 
-void VulkanSubmissionExecutor::LogFrameWaitDiagnostics(uint32_t frameSlot, uint32_t elapsedMilliseconds) const noexcept
+uint64_t VulkanSubmissionExecutor::GetRetainedUploadBytes() const noexcept
 {
-    if (m_device == VK_NULL_HANDLE || frameSlot >= m_frameDiagnostics.size())
-        return;
+    uint64_t bytes = 0;
+    for (const auto &frame : m_frames)
+        for (const auto &role : frame.roles)
+            if (role.uploads)
+                bytes += role.uploads->RetainedBytes();
+    return bytes;
+}
 
-    const FrameDiagnostic &diagnostic = m_frameDiagnostics[frameSlot];
-    const auto counterValue = [this](VkSemaphore semaphore) noexcept {
-        uint64_t value = 0;
-        if (semaphore == VK_NULL_HANDLE || vkGetSemaphoreCounterValue(m_device, semaphore, &value) != VK_SUCCESS)
-            return uint64_t{0};
-        return value;
-    };
-
-    std::vector<uint64_t> laneCurrent(m_laneTimelines.size(), 0);
-    std::string lanes;
-    for (size_t lane = 0; lane < m_laneTimelines.size(); ++lane) {
-        laneCurrent[lane] = counterValue(m_laneTimelines[lane].semaphore);
-        if (!lanes.empty())
-            lanes += ',';
-        lanes += std::to_string(lane) + "=" + std::to_string(laneCurrent[lane]) + "/" +
-                 std::to_string(m_laneTimelines[lane].nextValue > 0 ? m_laneTimelines[lane].nextValue - 1 : 0);
-    }
-
-    std::string batches;
-    for (size_t index = 0; index < diagnostic.batchRoles.size(); ++index) {
-        if (!batches.empty())
-            batches += ',';
-        const uint32_t lane = diagnostic.batchLanes[index];
-        const bool completed = lane < laneCurrent.size() && laneCurrent[lane] >= diagnostic.batchSignalValues[index];
-        batches += std::to_string(index) + ":r" + std::to_string(static_cast<uint32_t>(diagnostic.batchRoles[index])) +
-                   "/l" + std::to_string(lane) + "=" + std::to_string(diagnostic.batchSignalValues[index]) +
-                   (completed ? ":done" : ":pending");
-        if (index < diagnostic.batchNames.size() && !diagnostic.batchNames[index].empty())
-            batches += ":name='" + diagnostic.batchNames[index] + "'";
-        if (index < diagnostic.batchQueuePredecessors.size() &&
-            diagnostic.batchQueuePredecessors[index] != rhi::InvalidSubmissionBatchIndex)
-            batches += ":qprev=" + std::to_string(diagnostic.batchQueuePredecessors[index]);
-        if (index < diagnostic.batchWaits.size() && !diagnostic.batchWaits[index].empty()) {
-            batches += ":wait=[";
-            bool firstWait = true;
-            for (const auto &wait : diagnostic.batchWaits[index]) {
-                if (!firstWait)
-                    batches += '|';
-                firstWait = false;
-                batches += "b" + std::to_string(wait.sourceBatch);
-                if (wait.sourceBatch < diagnostic.batchSignalValues.size() &&
-                    wait.sourceBatch < diagnostic.batchLanes.size()) {
-                    const uint32_t sourceLane = diagnostic.batchLanes[wait.sourceBatch];
-                    batches += "/l" + std::to_string(sourceLane) + "=" +
-                               std::to_string(diagnostic.batchSignalValues[wait.sourceBatch]);
-                    if (sourceLane < laneCurrent.size())
-                        batches += "/current" + std::to_string(laneCurrent[sourceLane]);
-                }
-            }
-            batches += ']';
-        }
-    }
-
-    INXLOG_ERROR("VulkanSubmissionExecutor: frame slot ", frameSlot, " stalled for ", elapsedMilliseconds,
-                 " ms; lanes(current/submitted)=[", lanes, "] batches=[", batches,
-                 "] previous=", counterValue(diagnostic.previousTimeline), '/', diagnostic.previousTimelineValue,
-                 " upload=", counterValue(diagnostic.uploadTimeline), '/', diagnostic.uploadTimelineValue,
-                 " completion=", counterValue(diagnostic.completionTimeline), '/', diagnostic.completionTimelineValue);
+VulkanCommandUploads &VulkanSubmissionExecutor::CommandUploads(uint32_t frameSlot, rhi::QueueRole role) noexcept
+{
+    return *m_frames[frameSlot].roles[RoleIndex(role)].uploads;
 }
 
 void VulkanSubmissionExecutor::CompleteFrame(uint32_t frameSlot) noexcept
@@ -647,6 +563,10 @@ void VulkanSubmissionExecutor::CompleteFrame(uint32_t frameSlot) noexcept
     FrameState &frame = m_frames[frameSlot];
     for (const rhi::SubmissionTicket ticket : frame.submittedTickets)
         m_queues->MarkCompleted(ticket);
+    if (!frame.submittedTickets.empty())
+        for (auto &role : frame.roles)
+            if (role.uploads)
+                role.uploads->Recycle();
     frame.submittedTickets.clear();
 }
 

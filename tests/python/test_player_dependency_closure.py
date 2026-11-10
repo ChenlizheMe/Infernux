@@ -37,6 +37,9 @@ def test_player_keeps_engine_notices_from_source_and_installed_wheel(tmp_path, m
     expected = {
         "LICENSE": (source / "LICENSE").read_bytes(),
         "utf8proc/LICENSE.md": (source / "licenses/utf8proc/LICENSE.md").read_bytes(),
+        "python/infernux/resources/fonts/MapleMono-LICENSE.txt": (
+            source / "python/infernux/resources/fonts/MapleMono-LICENSE.txt"
+        ).read_bytes(),
     }
     if installed:
         site = tmp_path / "site-packages"
@@ -45,7 +48,7 @@ def test_player_keeps_engine_notices_from_source_and_installed_wheel(tmp_path, m
         (dist_info / "METADATA").write_text("Name: infernux\nVersion: 0.4.3\n", encoding="utf-8")
         records = []
         for name, content in expected.items():
-            relative = name if name == "LICENSE" else "licenses/" + name
+            relative = name if name == "LICENSE" or name.startswith("python/") else "licenses/" + name
             target = dist_info / "licenses" / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
@@ -114,6 +117,7 @@ def _cook_scripts(tmp_path, *, enabled=True, pin_version=None):
         registry.set_enabled("vendor/service", False)
     output = tmp_path / "output"
     builder = GameBuilder(str(project), str(output))
+    builder.freeze_asset_index_entries(entries, runtime_type_records=[])
     builder._cooked_asset_entries = {"script-0": entries[0]}
     staged = output / "Data/Assets/game.py"
     staged.parent.mkdir(parents=True)

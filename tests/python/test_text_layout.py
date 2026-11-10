@@ -215,13 +215,23 @@ def test_native_character_geometry_translates_rotates_hides_and_resets(engine, s
             renderer.add_text_geometry(layer, *box, geometry, *tint, **options)
 
     def capture(*, mask=True):
+        phase_execution = None
+        if engine.game_presentation_ready:
+            frame = engine.renderer_frame_snapshot
+            phase_execution = (frame["game_render_view_id"], frame["game_render_graph_execution_count"])
         ticket = None
         for _ in range(100):
             engine.tick(1 / 60)
-            renderer = engine.get_screen_ui_renderer()
-            if ticket is None and renderer.last_submitted_index_count(layer):
-                ticket = engine.request_render_target_readback(True)
-            elif ticket is not None and ticket.done:
+            if ticket is None:
+                if not engine.game_presentation_ready:
+                    continue
+                frame = engine.renderer_frame_snapshot
+                execution = (frame["game_render_view_id"], frame["game_render_graph_execution_count"])
+                if not frame["game_render_graph_current_executed"] or execution == phase_execution:
+                    continue
+                if engine.get_screen_ui_renderer().last_submitted_index_count(layer):
+                    ticket = engine.request_render_target_readback(True)
+            elif ticket.done:
                 assert not ticket.error, ticket.error
                 pixels = ticket.result_numpy()
                 return np.max(pixels[:, :, :3], axis=2) > 0.2 if mask else pixels.astype(np.float32)

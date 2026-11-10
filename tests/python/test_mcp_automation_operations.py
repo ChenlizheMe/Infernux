@@ -33,6 +33,9 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
         get_global_transform_serial=lambda: 0,
         set_runtime_lifecycle_callbacks=lambda *args: callbacks.update(begin=args[0]),
         set_runtime_frame_barrier_callback=lambda _callback: None,
+        set_runtime_result_consumer_callback=lambda _callback: None,
+        _set_result_consumers_present=lambda _present: None,
+        _is_executing_step=lambda: False,
     )
     monkeypatch.setattr(native, "SceneManager", SimpleNamespace(instance=lambda: scene_manager))
     monkeypatch.setattr(MainThreadCommandQueue, "instance", lambda: SimpleNamespace(drain=drain))
@@ -40,9 +43,10 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
     engine = engine_module.Engine.__new__(engine_module.Engine)
     engine._mode = engine_module.RuntimeMode.Graphical
     engine._engine = SimpleNamespace(
-        set_pre_scene_update_callback=lambda cb: callbacks.update(pre_scene=cb),
+        _set_runtime_frame_callbacks=lambda pre_scene, _prepare: callbacks.update(pre_scene=pre_scene),
     )
-    engine._render_submission_frame = 0
+    engine._cpu_range_tasks = set()
+    engine._result_consumers = []
     engine._runtime_scheduler = SimpleNamespace(
         change_journal=SimpleNamespace(transaction=nullcontext),
         begin_native_frame=begin,
@@ -55,7 +59,6 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
     callbacks["pre_scene"](0.125)
     callbacks["begin"]()
     assert calls == ["authoring", ("reload", 0.125), "begin"]
-    assert engine._render_submission_frame == 1
     # This fake does not own a native engine to destroy.
     engine._engine = None
 
@@ -285,7 +288,6 @@ def _operations(tmp_path):
     session.configure(
         str(tmp_path),
         {
-            "profile": "global_validation",
             "session": {"build_profile": "debug_feedback"},
         },
     )

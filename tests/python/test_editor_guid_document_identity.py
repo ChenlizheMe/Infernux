@@ -164,6 +164,7 @@ def test_authoring_save_as_rekeys_to_published_guid(tmp_path, monkeypatch):
         saved_revision=0,
         controller=controller,
     )
+    view.document_id = document.document_id
     ticket = registry.begin_save(document.document_id, save_as=True)
 
     result = controller.continue_save_to_resource(ticket.ticket_id, target)

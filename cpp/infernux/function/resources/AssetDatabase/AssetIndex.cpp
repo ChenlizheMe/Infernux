@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <ostream>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPath.h>
 #include <stdexcept>
@@ -13,9 +14,9 @@ namespace infernux
 namespace
 {
 
-// Revision 1 includes authoritative Prefab Variant dependencies. Older
-// catalogs cannot be reused even when the source timestamps are unchanged.
-constexpr int kImportRevision = 1;
+// Direct Prefab component and nested-source dependencies now share Scene's
+// reference rules. Rebuild catalogs containing the former incomplete edges.
+constexpr int kImportRevision = 2;
 
 void RequireExactFields(const nlohmann::json &object, std::initializer_list<const char *> fields,
                         const std::string &location)
@@ -49,6 +50,32 @@ AssetFileFingerprint ParseFingerprint(const nlohmann::json &document, const std:
 nlohmann::json SerializeFingerprint(const AssetFileFingerprint &fingerprint)
 {
     return {{"size", fingerprint.size}, {"modified_ns", fingerprint.modifiedNs}};
+}
+
+template <typename Emit> void VisitIndexEntries(const AssetIndex &index, Emit emit)
+{
+    std::vector<const AssetIndexEntry *> ordered;
+    ordered.reserve(index.Size());
+    for (const auto &item : index.Entries())
+        ordered.push_back(&item.second);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto *left, const auto *right) { return left->normalizedPath < right->normalizedPath; });
+    for (const auto *entry : ordered) {
+        auto dependencies = entry->dependencies;
+        std::sort(dependencies.begin(), dependencies.end());
+        emit(nlohmann::json{{"normalized_path", entry->normalizedPath},
+                            {"guid", entry->guid},
+                            {"resource_type", static_cast<int>(entry->resourceType)},
+                            {"source", SerializeFingerprint(entry->source)},
+                            {"meta", SerializeFingerprint(entry->meta)},
+                            {"content_hash", entry->contentHash},
+                            {"dependencies", std::move(dependencies)},
+                            {"read_only", entry->readOnly},
+                            {"import_succeeded", entry->importSucceeded},
+                            {"import_error", entry->importError},
+                            {"artifact_path", entry->artifactPath},
+                            {"metadata", entry->metadata.SerializeDocument()}});
+    }
 }
 
 } // namespace
@@ -87,12 +114,25 @@ bool AssetIndex::Load(const std::string &path, const std::string &normalizedProj
     return true;
 }
 
-void AssetIndex::Save(const std::string &path) const
+void AssetIndex::Save(const std::string &path, const PathWriteScope &parentScope) const
 {
-    const std::filesystem::path filePath = ToFsPath(path);
-    if (filePath.has_parent_path())
-        std::filesystem::create_directories(filePath.parent_path());
-    DocumentStore::Instance().WriteAndWait(path, SerializeDocument().dump(2) + "\n");
+    DocumentWriteOptions options;
+    options.writeScope = parentScope;
+    DocumentStore::Instance().WriteStreamAndWait(
+        path,
+        [this](std::ostream &output) {
+            output << "{\"entries\":[";
+            bool first = true;
+            VisitIndexEntries(*this, [&](const nlohmann::json &entry) {
+                if (!first)
+                    output.put(',');
+                output << entry;
+                first = false;
+            });
+            output << "],\"import_revision\":" << kImportRevision
+                   << ",\"project_root\":" << nlohmann::json(m_projectRoot) << "}\n";
+        },
+        options);
 }
 
 const AssetIndexEntry *AssetIndex::Find(const std::string &normalizedPath) const
@@ -110,33 +150,8 @@ void AssetIndex::Upsert(AssetIndexEntry entry)
 
 nlohmann::json AssetIndex::SerializeDocument() const
 {
-    std::vector<const AssetIndexEntry *> ordered;
-    ordered.reserve(m_entries.size());
-    for (const auto &[path, entry] : m_entries) {
-        (void)path;
-        ordered.push_back(&entry);
-    }
-    std::sort(ordered.begin(), ordered.end(),
-              [](const auto *left, const auto *right) { return left->normalizedPath < right->normalizedPath; });
-
     nlohmann::json entries = nlohmann::json::array();
-    for (const AssetIndexEntry *entry : ordered) {
-        auto dependencies = entry->dependencies;
-        std::sort(dependencies.begin(), dependencies.end());
-        entries.push_back({{"normalized_path", entry->normalizedPath},
-                           {"guid", entry->guid},
-                           {"resource_type", static_cast<int>(entry->resourceType)},
-                           {"source", SerializeFingerprint(entry->source)},
-                           {"meta", SerializeFingerprint(entry->meta)},
-                           {"content_hash", entry->contentHash},
-                           {"dependencies", std::move(dependencies)},
-                           {"read_only", entry->readOnly},
-                           {"import_succeeded", entry->importSucceeded},
-                           {"import_error", entry->importError},
-                           {"artifact_path", entry->artifactPath},
-                           {"metadata", entry->metadata.SerializeDocument()}});
-    }
-
+    VisitIndexEntries(*this, [&](nlohmann::json entry) { entries.push_back(std::move(entry)); });
     return {{"project_root", m_projectRoot}, {"import_revision", kImportRevision}, {"entries", std::move(entries)}};
 }
 

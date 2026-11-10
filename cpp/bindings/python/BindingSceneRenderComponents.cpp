@@ -5,14 +5,56 @@
 #include "function/scene/Light.h"
 #include "function/scene/LineRenderer.h"
 #include "function/scene/SceneManager.h"
+#include "function/scene/SkeletonInstance.h"
 #include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/SpriteRenderer.h"
+#include "function/scene/TrailRenderer.h"
 #include <array>
+#include <cmath>
+#include <cstring>
+#include <limits>
 
 namespace py = pybind11;
 
 namespace infernux::scene_binding
 {
+namespace
+{
+// Borrow the Python buffer only during this call. Copy into owned authoring
+// storage so later mutations cannot silently bypass geometry invalidation.
+std::vector<glm::vec3> ReadRibbonPositions(const py::buffer &buffer)
+{
+    const auto info = buffer.request();
+    if (info.ndim != 2 || info.shape[1] != 3)
+        throw py::value_error("positions buffer must have shape (N, 3)");
+    const bool isFloat =
+        info.itemsize == sizeof(float) && (info.format == "f" || info.format == "@f" || info.format == "=f");
+    const bool isDouble =
+        info.itemsize == sizeof(double) && (info.format == "d" || info.format == "@d" || info.format == "=d");
+    if (!isFloat && !isDouble)
+        throw py::type_error("positions buffer must contain native-endian float32 or float64 values");
+    std::vector<glm::vec3> positions(static_cast<size_t>(info.shape[0]));
+    const auto *data = static_cast<const char *>(info.ptr);
+    for (py::ssize_t row = 0; row < info.shape[0]; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            const char *element = data + row * info.strides[0] + column * info.strides[1];
+            // Strided views need not be aligned, even when their dtype is.
+            if (isFloat) {
+                float value;
+                std::memcpy(&value, element, sizeof(value));
+                positions[static_cast<size_t>(row)][column] = value;
+            } else {
+                double value;
+                std::memcpy(&value, element, sizeof(value));
+                if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+                    throw py::value_error("positions must contain finite float32-representable coordinates");
+                positions[static_cast<size_t>(row)][column] = static_cast<float>(value);
+            }
+        }
+    }
+    return positions;
+}
+} // namespace
 
 void BindLineRenderer(py::module_ &m)
 {
@@ -33,6 +75,8 @@ void BindLineRenderer(py::module_ &m)
         .value("Clamp", LineCurveWrapMode::Clamp)
         .value("Repeat", LineCurveWrapMode::Repeat)
         .value("PingPong", LineCurveWrapMode::PingPong)
+        .value("Default", LineCurveWrapMode::Default)
+        .value("Once", LineCurveWrapMode::Once)
         .export_values();
 
     py::enum_<LineGradientMode>(m, "LineGradientMode")
@@ -42,14 +86,19 @@ void BindLineRenderer(py::module_ &m)
         .export_values();
 
     py::class_<LineWidthKey>(m, "LineWidthKey")
-        .def(py::init([](float time, float value, float inTangent, float outTangent) {
-                 return LineWidthKey{time, value, inTangent, outTangent};
+        .def(py::init([](float time, float value, float inTangent, float outTangent, float inWeight, float outWeight,
+                         int32_t weightedMode) {
+                 return LineWidthKey{time, value, inTangent, outTangent, inWeight, outWeight, weightedMode};
              }),
-             py::arg("time"), py::arg("value"), py::arg("in_tangent") = 0.0f, py::arg("out_tangent") = 0.0f)
+             py::arg("time"), py::arg("value"), py::arg("in_tangent") = 0.0f, py::arg("out_tangent") = 0.0f,
+             py::arg("in_weight") = 0.0f, py::arg("out_weight") = 0.0f, py::arg("weighted_mode") = 0)
         .def_readwrite("time", &LineWidthKey::time)
         .def_readwrite("value", &LineWidthKey::value)
         .def_readwrite("in_tangent", &LineWidthKey::inTangent)
-        .def_readwrite("out_tangent", &LineWidthKey::outTangent);
+        .def_readwrite("out_tangent", &LineWidthKey::outTangent)
+        .def_readwrite("in_weight", &LineWidthKey::inWeight)
+        .def_readwrite("out_weight", &LineWidthKey::outWeight)
+        .def_readwrite("weighted_mode", &LineWidthKey::weightedMode);
 
     py::class_<LineColorKey>(m, "LineColorKey")
         .def(py::init([](float time, const glm::vec4 &color) { return LineColorKey{time, color}; }), py::arg("time"),
@@ -71,6 +120,12 @@ void BindLineRenderer(py::module_ &m)
         .def("set_position", &LineRenderer::SetPosition, py::arg("index"), py::arg("position"),
              "Set one authored position")
         .def("get_positions", &LineRenderer::GetPositions, py::return_value_policy::copy, "Get all authored positions")
+        .def(
+            "set_positions",
+            [](LineRenderer &renderer, const py::buffer &positions) {
+                renderer.SetPositions(ReadRibbonPositions(positions));
+            },
+            py::arg("positions"), "Copy an (N, 3) float32/float64 buffer into authored positions")
         .def("set_positions", &LineRenderer::SetPositions, py::arg("positions"), "Replace all authored positions")
         .def_property("start_width", &LineRenderer::GetStartWidth, &LineRenderer::SetStartWidth)
         .def_property("end_width", &LineRenderer::GetEndWidth, &LineRenderer::SetEndWidth)
@@ -97,12 +152,42 @@ void BindLineRenderer(py::module_ &m)
              py::arg("use_transform") = false, "Bake the expanded line snapshot into a MeshRenderer inline mesh")
         .def("simplify", &LineRenderer::Simplify, py::arg("tolerance"),
              "Reduce the position list using Ramer-Douglas-Peucker simplification");
+
+    NativeClass<TrailRenderer, LineRenderer>(m, "TrailRenderer")
+        .def(py::init<>())
+        .def_property("time", &TrailRenderer::GetTime, &TrailRenderer::SetTime)
+        .def_property("min_vertex_distance", &TrailRenderer::GetMinVertexDistance, &TrailRenderer::SetMinVertexDistance)
+        .def_property("emitting", &TrailRenderer::GetEmitting, &TrailRenderer::SetEmitting)
+        .def_property_readonly("position_count", &TrailRenderer::GetTrailPositionCount)
+        .def("get_position", &TrailRenderer::GetTrailPosition, py::arg("index"))
+        .def("get_positions", &TrailRenderer::GetTrailPositions)
+        .def("set_position", &TrailRenderer::SetTrailPosition, py::arg("index"), py::arg("position"))
+        .def(
+            "set_positions",
+            [](TrailRenderer &renderer, const py::buffer &positions) {
+                renderer.SetTrailPositions(ReadRibbonPositions(positions));
+            },
+            py::arg("positions"))
+        .def("set_positions", &TrailRenderer::SetTrailPositions, py::arg("positions"))
+        .def("add_position", &TrailRenderer::AddPosition, py::arg("position"))
+        .def(
+            "add_positions",
+            [](TrailRenderer &renderer, const py::buffer &positions) {
+                renderer.AddPositions(ReadRibbonPositions(positions));
+            },
+            py::arg("positions"))
+        .def("add_positions", &TrailRenderer::AddPositions, py::arg("positions"))
+        .def("clear", &TrailRenderer::Clear)
+        .def("_advance_trail", &TrailRenderer::LateUpdate, py::arg("delta_time"));
 }
 
 void BindSkinnedMeshRenderer(py::module_ &m)
 {
     NativeClass<SkinnedMeshRenderer, MeshRenderer>(m, "SkinnedMeshRenderer")
         .def(py::init<>())
+        .def_property("skeleton", &SkinnedMeshRenderer::GetSkeletonInstance, &SkinnedMeshRenderer::SetSkeletonInstance,
+                      py::return_value_policy::reference)
+        .def_property_readonly("bones", &SkinnedMeshRenderer::GetBones, py::return_value_policy::reference)
         .def_property_readonly("source_model_guid", &SkinnedMeshRenderer::GetSourceModelGuid,
                                "GUID of the animated source model asset")
         .def_property("animation_source_guid", &SkinnedMeshRenderer::GetAnimationSourceGuid,
@@ -126,19 +211,20 @@ void BindSkinnedMeshRenderer(py::module_ &m)
         .def(
             "get_skeleton_node_world_matrices",
             [](const SkinnedMeshRenderer &renderer, const std::vector<std::string> &nodeNames) {
-                const auto matrices = renderer.GetSkeletonNodeWorldMatrices(nodeNames);
-                py::array_t<float> result(py::array::ShapeContainer{static_cast<py::ssize_t>(matrices.size()),
-                                                                    py::ssize_t{4}, py::ssize_t{4}});
-                auto values = result.mutable_unchecked<3>();
-                for (size_t index = 0; index < matrices.size(); ++index)
-                    for (int row = 0; row < 4; ++row)
-                        for (int column = 0; column < 4; ++column)
-                            values(index, row, column) = matrices[index][column][row];
-                return result;
+                return binding::Matrix4ArrayToPython(renderer.GetSkeletonNodeWorldMatrices(nodeNames));
             },
             py::arg("node_names"),
             "Read one latest submitted pose as float32[N,4,4], indexed [node,row,column]. "
             "Matrices map engine-unit bone-local coordinates into rendered world space; unknown names raise.")
+        .def(
+            "get_skin_matrices",
+            [](const SkinnedMeshRenderer &renderer, bool previous) {
+                const auto palette =
+                    previous ? renderer.GetPreviousRuntimeSkinBonePalette() : renderer.GetRuntimeSkinBonePalette();
+                return binding::Matrix4ArrayToPython(palette ? *palette : std::vector<glm::mat4>{});
+            },
+            py::arg("previous") = false,
+            "Copy current or previous rendered skin palette as float32[N,4,4] in skeleton-root space.")
         .def("get_animation_duration_seconds", &SkinnedMeshRenderer::GetAnimationDurationSeconds, py::arg("take_name"),
              py::arg("animation_source_guid") = "", "Get imported animation take duration in seconds")
         .def(
@@ -376,6 +462,11 @@ void BindCamera(py::module_ &m)
                       "Shared RenderTexture output owner")
         .def_property("target_texture_guid", &Camera::GetTargetTextureGuid, &Camera::SetTargetTextureGuid,
                       "Authored output identity; resolved by the renderer, never by scene decoding")
+        .def_property("render_to_texture", &Camera::GetRenderToTexture, &Camera::SetRenderToTexture)
+        .def_property("render_on_demand", &Camera::GetRenderOnDemand, &Camera::SetRenderOnDemand)
+        .def_property(
+            "memory_output_size", [](const Camera &camera) { return glm::vec2(camera.GetMemoryOutputSize()); },
+            &Camera::SetMemoryOutputSize, "Camera-owned output size in pixels")
         // Projection mode
         .def_property("projection_mode", &Camera::GetProjectionMode, &Camera::SetProjectionMode,
                       "Camera projection mode (Perspective or Orthographic)")
@@ -407,6 +498,12 @@ void BindCamera(py::module_ &m)
                       "Physical camera lens shift in normalized sensor units")
         .def_property("gate_fit", &Camera::GetGateFit, &Camera::SetGateFit, "Physical camera film/resolution gate fit")
         .def_property("aspect_ratio", &Camera::GetAspectRatio, &Camera::SetAspectRatio, "Aspect ratio (width/height)")
+        .def("reset_aspect_ratio", &Camera::ResetAspectRatio)
+        .def("_update_automatic_aspect_ratio", &Camera::UpdateAutomaticAspectRatio, py::arg("aspect"))
+        .def_property_readonly("has_custom_aspect_ratio", &Camera::HasCustomAspectRatio)
+        .def_property("rect", &Camera::GetRect, &Camera::SetRect)
+        .def_property("pixel_rect", &Camera::GetPixelRect, &Camera::SetPixelRect)
+        .def("_set_screen_dimensions", &Camera::SetScreenDimensions, py::arg("width"), py::arg("height"))
         .def_property(
             "projection_matrix", [](const Camera &c) { return binding::Matrix4ToPython(c.GetProjectionMatrix()); },
             [](Camera &c, const FloatArray &matrix) {

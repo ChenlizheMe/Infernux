@@ -34,10 +34,18 @@ class Renderer:
         self.capture = None
         self.key = None
 
-    def append_command_packets(self, packets):
+    def append_command_packets(self, packets, opacities):
         self.appends += 1
-        for packet in packets:
-            self.commands.extend(self.resolve(command) for command in packet)
+        alpha_indices = {"add_text": 9, "add_image": 13, "add_filled_rect": 8}
+        for packet, opacity in zip(packets, opacities, strict=True):
+            if opacity <= 0:
+                continue
+            for command in packet:
+                name, args, kwargs = self.resolve(command)
+                if opacity < 1 and name in alpha_indices:
+                    index = alpha_indices[name]
+                    args = args[:index] + (args[index] * opacity,) + args[index + 1:]
+                self.commands.append((name, args, kwargs))
 
     @staticmethod
     def resolve(command):
@@ -161,7 +169,7 @@ def ui(scene, monkeypatch, request):
     renderer = Renderer()
 
     class Engine:
-        _render_submission_frame = 0
+        _service_opportunity = 0
 
         def get_screen_ui_renderer(self):
             return renderer
@@ -169,6 +177,9 @@ def ui(scene, monkeypatch, request):
     engine = Engine()
     manager = SimpleNamespace(
         get_active_scene=lambda: scene,
+        simulation_epoch=1,
+        is_playing=lambda: False,
+        is_paused=lambda: False,
         get_runtime_persistent_scene=lambda: None,
         scene_count=1,
         get_scene_at=lambda index: scene if index == 0 else None,
@@ -199,7 +210,7 @@ def ui(scene, monkeypatch, request):
         return element
 
     def frame():
-        engine._render_submission_frame += 1
+        engine._service_opportunity += 1
         renderer.commands.clear()
         extracted.clear()
         rebuilt = submission.submit()
@@ -527,7 +538,7 @@ def test_two_submission_owners_observe_edits_independently(ui):
     renderer = Renderer()
 
     class OtherEngine:
-        _render_submission_frame = 0
+        _service_opportunity = 0
 
         def get_screen_ui_renderer(self):
             return renderer
@@ -540,7 +551,7 @@ def test_two_submission_owners_observe_edits_independently(ui):
     # Another edit while this owner is not drawing must remain pending too.
     second.color = [0.2, 0.5, 0.8, 1.0]
     _, expected = ui.frame()
-    engine._render_submission_frame += 1
+    engine._service_opportunity += 1
     renderer.commands.clear()
     assert other.submit()
     assert renderer.commands == expected

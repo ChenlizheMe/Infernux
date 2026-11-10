@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -21,6 +22,7 @@ namespace infernux
 // Forward declaration for MeshRenderer registry
 class MeshRenderer;
 class SkinnedMeshRenderer;
+class SkeletonInstance;
 // Forward declaration for Light registry
 class Light;
 
@@ -159,9 +161,13 @@ class SceneManager
 
     /// @brief Call every frame after Update
     void LateUpdate(float deltaTime);
+    [[nodiscard]] float GetFrameDeltaTime() const
+    {
+        return m_lastScaledDeltaTime;
+    }
 
     /// @brief Process pending destroys at end of frame
-    void EndFrame();
+    void EndFrame(bool completeStep = true);
 
     /// @brief Manually flush Transform changes to the physics engine.
     /// Unity equivalent: Physics.SyncTransforms().
@@ -169,7 +175,9 @@ class SceneManager
     /// immediate physics queries (raycast, overlap) against the new positions.
     /// Normally called automatically before each physics step; calling it
     /// explicitly is only needed for same-frame queries after transform edits.
-    void SyncTransforms();
+    /// A positive motionDeltaTime is reserved for editor drag contact velocity;
+    /// the ordinary explicit synchronization barrier always uses zero.
+    void SyncTransforms(float motionDeltaTime = 0.0f);
 
     /// Publish the Transform writes collected during the current frame to
     /// physics. Called once after TransformECSStore::EndFrameCache().
@@ -190,6 +198,35 @@ class SceneManager
     [[nodiscard]] uint64_t GetRuntimeFrameCount() const noexcept
     {
         return m_runtimeFrameCount;
+    }
+
+    /// Simulation session identity; changes only at Fresh Play and Stop.
+    [[nodiscard]] uint64_t GetSimulationEpoch() const noexcept
+    {
+        return m_simulationEpoch;
+    }
+    using SimulationState = std::tuple<uint64_t, bool, bool>;
+    [[nodiscard]] SimulationState GetSimulationState() const noexcept
+    {
+        return std::tuple{m_simulationEpoch, m_isPlaying, m_isPaused};
+    }
+    /// Fixed bundles begun in this session, including empty-body and paused steps.
+    [[nodiscard]] uint64_t GetFixedStepIndex() const noexcept
+    {
+        return m_fixedStepIndex;
+    }
+    /// Last fixed bundle whose physical integration has completed, including an empty world.
+    [[nodiscard]] uint64_t GetCompletedFixedStepIndex() const noexcept
+    {
+        return m_completedFixedStepIndex;
+    }
+    [[nodiscard]] uint64_t GetPublishedFixedStepIndex() const noexcept
+    {
+        return m_publishedFixedStepIndex;
+    }
+    [[nodiscard]] bool HasPendingFixedStep() const noexcept
+    {
+        return m_fixedPhase != FixedPhase::Idle;
     }
 
     [[nodiscard]] size_t GetLastColliderSyncCandidateCount() const
@@ -329,10 +366,31 @@ class SceneManager
         return m_isPaused;
     }
 
+    [[nodiscard]] bool IsStepping() const noexcept
+    {
+        return m_isStepping || m_pausedStepPending || m_stepFrameOpen;
+    }
+    /// Actual native callback dispatch, excluding a logical Step awaiting results.
+    [[nodiscard]] bool IsExecutingStep() const noexcept
+    {
+        return m_isStepping;
+    }
+    void RetainStepFrame() noexcept
+    {
+        if (m_isStepping)
+            m_stepFrameOpen = true;
+    }
+    [[nodiscard]] uint64_t GetStepPermissionIndex() const noexcept
+    {
+        // Initial Start precedes fixed-step admission. Starts after integration
+        // and continuations of an admitted fixed step use its current identity.
+        return m_fixedStepIndex + static_cast<uint64_t>(m_pausedStepPending && !HasPendingFixedStep());
+    }
+
     /// @brief Get the fixed physics timestep in seconds.
     [[nodiscard]] float GetFixedTimeStep() const
     {
-        return m_fixedTimeStep;
+        return HasPendingFixedStep() ? m_admittedFixedDeltaTime : m_fixedTimeStep;
     }
 
     /// @brief Set the fixed physics timestep in seconds.
@@ -398,18 +456,24 @@ class SceneManager
     /// barrier must never perform a second transform/physics/render operation.
     enum class RuntimeFrameBarrier
     {
+        FixedScript,
+        PhysicsPostScript,
         TransformToPhysics,
         PhysicsSimulation,
         PhysicsToTransform,
         TransformResolve,
         FinalTransformResolve,
+        AnimationEvaluation,
         AnimationTimeline,
         RenderExtraction,
         RenderGraph,
         SnapshotPublication,
         PendingDestroy,
+        RenderSubmitted,
+        RenderPresented,
     };
     using RuntimeFrameBarrierCallback = std::function<void(RuntimeFrameBarrier)>;
+    using RuntimeResultConsumerCallback = std::function<bool(RuntimeFrameBarrier)>;
 
     /// Install the shared Python lifecycle bridge used by Editor and Player.
     /// The bridge is called at the real simulation phase boundaries. A single
@@ -420,14 +484,21 @@ class SceneManager
                                       RuntimeLifecyclePhaseCallback lateUpdate,
                                       RuntimeLifecyclePhaseCallback editorUpdate, RuntimeLifecycleEndCallback endFrame);
     void SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback);
+    void SetRuntimeResultConsumerCallback(RuntimeResultConsumerCallback callback);
+    void SetRuntimeResultConsumersPresent(bool present) noexcept
+    {
+        m_runtimeResultConsumersPresent = present;
+    }
     /// Publish the immutable Python phase plan consumed by the native frame
     /// driver. Python still owns arbitrary user-callable objects; native code
     /// owns phase ordering, rejects stale revisions, and retains phase counts
     /// without scanning Python component structure every frame.
     void SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
-                                 size_t lateUpdateCount) noexcept;
+                                 size_t animationUpdateCount, size_t lateUpdateCount) noexcept;
     void SetRuntimeLifecycleWorkAvailable(bool available) noexcept;
     void EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const;
+    /// Required result gate, independent of observational phase notifications.
+    bool RuntimeResultsReady(RuntimeFrameBarrier boundary) const;
     void ClearRuntimeLifecycleCallbacks();
 
     [[nodiscard]] bool HasRuntimeLifecycleCallbacks() const noexcept
@@ -474,6 +545,12 @@ class SceneManager
     /// Track only changed poses; commit after all cameras have submitted.
     void QueueSkinPoseHistoryCommit(SkinnedMeshRenderer *renderer);
     void CommitSkinPoseHistories();
+    void RegisterSkeletonBone(Transform *bone, SkeletonInstance *skeleton);
+    void NotifySkeletonBoneChanged(Transform *bone);
+    void ForgetSkeletonBone(Transform *bone);
+    void ReleaseSkeletonBones(SkeletonInstance *skeleton, const std::vector<Transform *> &bones);
+    void QueueSkeletonPose(SkeletonInstance *skeleton);
+    void PublishSkeletonPoses();
 
     /// Publish procedural vertex/bounds changes without rebuilding the
     /// renderer registry. Camera caches must recull these updates even when
@@ -491,9 +568,6 @@ class SceneManager
     {
         return m_meshRendererVersion;
     }
-
-    /// Mark all MeshRenderers referencing a given mesh GUID/path as buffer-dirty.
-    void MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, const std::string &meshPath = "");
 
     /// Register a Light so lighting can iterate it directly.
     void RegisterLight(Light *light);
@@ -539,7 +613,7 @@ class SceneManager
     /// Execute the one authoritative fixed-script/physics bundle. Both normal
     /// play and paused single-step use this path so transform synchronization,
     /// Jolt stepping and lifecycle callbacks cannot run twice in one step.
-    void RunFixedSimulationStep(bool useRuntimeScheduler);
+    bool RunFixedSimulationStep(bool useRuntimeScheduler, const SimulationState &admittedState);
 
     Scene *EnsureRuntimePersistentScene();
     void FlushPersistentPromotions();
@@ -574,10 +648,35 @@ class SceneManager
     bool m_resetDeltaTimeOnNextFrame = true;
     double m_fixedTime = 0.0;
     double m_fixedUnscaledTime = 0.0;
+    uint64_t m_simulationEpoch = 0;
+    uint64_t m_fixedStepIndex = 0;
+    uint64_t m_completedFixedStepIndex = 0;
+    uint64_t m_publishedFixedStepIndex = 0;
+    enum class FixedPhase
+    {
+        Idle,
+        SceneScripts,
+        Control,
+        Integration,
+        Publication,
+        PostNotification,
+        PostStep
+    };
+    FixedPhase m_fixedPhase = FixedPhase::Idle;
+    float m_admittedFixedDeltaTime = 0.0f;
+    bool m_fixedAccumulatorDebit = false;
+    bool m_fixedExecuting = false;
+    std::vector<uint64_t> m_fixedSceneWorlds;
+    size_t m_fixedSceneCursor = 0;
 
     // Play mode state
     bool m_isPlaying = false;
     bool m_isPaused = false;
+    bool m_isStepping = false;
+    bool m_pausedStepPending = false;
+    bool m_stepFrameOpen = false;
+    float m_pausedStepDeltaTime = 0.0f;
+    bool m_startupPending = false;
     uint64_t m_runtimeFrameCount = 0;
 
     // Callbacks
@@ -593,12 +692,15 @@ class SceneManager
     RuntimeLifecyclePhaseCallback m_runtimeLifecycleEditorUpdate;
     RuntimeLifecycleEndCallback m_runtimeLifecycleEnd;
     RuntimeFrameBarrierCallback m_runtimeFrameBarrier;
+    RuntimeResultConsumerCallback m_runtimeResultConsumer;
     bool m_runtimeLifecycleSchedulerEnabled = false;
     bool m_runtimeLifecycleWorkAvailable = false;
+    bool m_runtimeResultConsumersPresent = false;
     bool m_runtimeLifecycleFrameOpen = false;
     uint64_t m_runtimeLifecyclePlanRevision = 0;
     size_t m_runtimeLifecycleFixedUpdateCount = 0;
     size_t m_runtimeLifecycleUpdateCount = 0;
+    size_t m_runtimeLifecycleAnimationUpdateCount = 0;
     size_t m_runtimeLifecycleLateUpdateCount = 0;
     uint64_t m_renderTransformRevision = 1;
     uint64_t m_renderContentRevision = 1;
@@ -608,6 +710,8 @@ class SceneManager
     std::vector<MeshRenderer *> m_activeMeshRenderers;
     std::unordered_set<MeshRenderer *> m_activeMeshRendererSet; // O(1) duplicate check
     std::unordered_map<MeshRenderer *, SkinnedMeshRenderer *> m_pendingSkinPoseHistoryCommits;
+    std::unordered_map<Transform *, SkeletonInstance *> m_skeletonBoneOwners;
+    std::vector<SkeletonInstance *> m_pendingSkeletonPoses;
     uint64_t m_meshRendererVersion = 0;
     uint32_t m_rendererRegistryTransactionDepth = 0;
     bool m_rendererRegistryTransactionDirty = false;

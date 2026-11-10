@@ -226,6 +226,20 @@ def _make_builder(tmp_path, output_dir):
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
 
 
+def _freeze_player_script_types(builder):
+    """Supply the owner-published schema input to isolated script-cook tests."""
+    from infernux.engine.player_script_catalog import capture_runtime_type_records
+    from infernux.engine.project_context import is_preload_python_library
+
+    entries = list(builder._cooked_asset_entries.values())
+    scripts = [entry for entry in entries if str(entry["normalized_path"]).endswith(".py")]
+    sources = {builder._library_source_entry_path(entry):
+               Path(builder._library_source_entry_path(entry)).read_bytes() for entry in scripts
+               if not is_preload_python_library(builder._library_source_entry_path(entry))}
+    records = capture_runtime_type_records(builder.project_path, scripts, sources)
+    builder.freeze_asset_index_entries(entries, runtime_type_records=records)
+
+
 def _scene_with_component(fields, *, type_id="python:cook-script:cook-fixture:CookFixture:CookFixture"):
     """Identity-complete authoring input for dependency/cook unit tests."""
     return {
@@ -963,6 +977,7 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
     )
     assert not builder._runtime_catalog_payload_required("ProjectSettings/InxPlugins.json")
 
+    _freeze_player_script_types(builder)
     builder._compile_player_plugin_scripts(str(output))
     assert not staged_runtime.exists()
     assert staged_runtime.with_suffix(".pyc").is_file()
@@ -1079,6 +1094,7 @@ def test_player_exports_local_author_package_without_installing(tmp_path, refere
     assert shipped[0]["version"] == ("1.2.3" if authored_manifest else "0.0.0")
     assert not shipped[0]["control"]["owned"]
     assert all(not item["owned"] for item in shipped[0]["files"])
+    _freeze_player_script_types(builder)
     builder._compile_player_plugin_scripts(str(output))
     assert not (staged / "runtime/lifecycle.py").exists()
     assert (staged / "runtime/lifecycle.pyc").is_file()
@@ -1179,6 +1195,7 @@ def test_player_plugin_component_joins_runtime_type_and_guid_catalogs(tmp_path, 
     monkeypatch.setattr(project_context, "_preload_python_libraries", {"cook-test": (str(library),)})
     monkeypatch.setitem(sys.modules, "owned_runtime", SimpleNamespace(__file__=str(helper)))
 
+    _freeze_player_script_types(builder)
     builder._compile_player_plugin_scripts(str(output))
 
     guid_map = json.loads((data / "_script_guid_map.json").read_text(encoding="utf-8"))

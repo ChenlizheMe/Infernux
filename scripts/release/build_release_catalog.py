@@ -18,16 +18,43 @@ from hub_release import project_hub_version, project_hub_build_number, project_b
 MINIMUM_UPDATABLE_VERSION = "0.4.0"
 
 
-def require_new_hub_version() -> str:
-    """Require an unpublished application/build identity without replacing old assets."""
+def _hub_publication_versions() -> tuple[str, str, str | None]:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     hub_version = project_hub_version(ROOT)
     catalog = json.loads((ROOT / "docs/hub-catalog.json").read_text(encoding="utf-8"))
     published = [
         item["version"] for item in catalog["releases"] if item["published_at"] is not None
     ]
-    if published:
-        latest = max(published, key=lambda value: Version(value.split("+", 1)[0]))
+    latest = max(published, key=lambda value: Version(value.split("+", 1)[0])) if published else None
+    return version, hub_version, latest
+
+
+def publication_required() -> bool:
+    """Skip an unchanged published identity while rejecting version regressions."""
+    version, hub_version, latest = _hub_publication_versions()
+    if latest is None:
+        return True
+    current_version = Version(hub_version.split("+", 1)[0])
+    published_version = Version(latest.split("+", 1)[0])
+    if current_version < published_version:
+        raise ValueError(f"Hub {hub_version} is older than the published version {latest}")
+    if current_version == published_version:
+        tag = release_tag_for(version, project_build_number(ROOT))
+        release = json.loads((ROOT / "docs/release.json").read_text(encoding="utf-8"))
+        if release["published_at"] is None or release["tag"] != tag:
+            raise ValueError(
+                f"Engine release {tag} has changed but Hub {hub_version} is already published; "
+                "increment the Hub build number before publishing changed artifacts."
+            )
+        print(f"Skipping publication: Hub {hub_version} is already published.", file=sys.stderr)
+        return False
+    return True
+
+
+def require_new_hub_version() -> str:
+    """Require an unpublished application/build identity without replacing old assets."""
+    version, hub_version, latest = _hub_publication_versions()
+    if latest is not None:
         if Version(hub_version.split("+", 1)[0]) <= Version(latest.split("+", 1)[0]):
             raise ValueError(
                 f"Hub {latest} is already published; increment the build number or project.version "
@@ -196,20 +223,24 @@ def build_catalog(
     print(f"Generated {version} release catalogs from {release_dir}; published_at={published_at!r}")
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", type=Path)
-    parser.add_argument("--check-version", action="store_true", help="Check the Hub publication identity without writing catalogs")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check-version", action="store_true", help="Check the Hub publication identity without writing catalogs")
+    modes.add_argument("--publication-status", action="store_true", help="Print a CI publish=true/false decision without writing catalogs")
     parser.add_argument("--published-at", help="Actual GitHub publication timestamp; omit while preparing the release")
     parser.add_argument("--linux-inventory", type=Path, help="Verified Linux CI archive inventory instead of local Linux files")
     parser.add_argument("--resolve-pypi", action="store_true", help="Use the published files.pythonhosted.org wheel URLs")
     parser.add_argument("--hub-only", action="store_true", help="Publish a separate Hub revision while preserving the engine release and wheels")
     args = parser.parse_args()
-    if args.check_version:
+    if args.publication_status:
+        print(f"publish={str(publication_required()).lower()}")
+    elif args.check_version:
         require_new_hub_version()
     else:
         if args.release_dir is None:
-            parser.error("--release-dir is required unless --check-version is used")
+            parser.error("--release-dir is required unless --check-version or --publication-status is used")
         build_catalog(
             args.release_dir,
             args.published_at,
@@ -217,3 +248,7 @@ if __name__ == "__main__":
             resolve_pypi=args.resolve_pypi,
             hub_only=args.hub_only,
         )
+
+
+if __name__ == "__main__":
+    main()

@@ -14,9 +14,13 @@
 
 #pragma once
 
+#include "VulkanBackendApi.h"
+
 #include "../rhi/RhiDevice.h"
+#include "../rhi/RhiSubmission.h"
 #include "VkTypes.h"
 #include <core/log/InxLog.h>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -25,6 +29,17 @@ namespace infernux
 {
 namespace vk
 {
+
+class VkResourceManager;
+
+using AllocationAdmission = std::function<bool(uint32_t memoryType, VkDeviceSize bytes)>;
+
+VkResult CreateManagedImage(VmaAllocator allocator, VkDevice device, const VkImageCreateInfo &description,
+                            const AllocationAdmission &admit, VkImage &image, VmaAllocation &allocation);
+VkResult CreateManagedBuffer(VmaAllocator allocator, VkDevice device, const VkBufferCreateInfo &description,
+                             VmaAllocationCreateInfo memory, const AllocationAdmission &admit, VkBuffer &buffer,
+                             VmaAllocation &allocation, VmaAllocationInfo *info = nullptr,
+                             bool preferHostCached = false);
 
 // ============================================================================
 // VkHandle - Generic RAII wrapper for Vulkan handles
@@ -209,28 +224,28 @@ class VkBufferHandle
      * @param properties Memory property flags
      * @return true if creation succeeded
      */
-    bool Create(VmaAllocator allocator, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage,
-                VkMemoryPropertyFlags properties, const std::vector<uint32_t> &queueFamilies = {},
-                std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
+    INFERNUX_VULKAN_BACKEND_API bool Create(VmaAllocator allocator, VkDevice device, VkDeviceSize size,
+                                            VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                                            const std::vector<uint32_t> &queueFamilies = {},
+                                            std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
+
+    // False means the selected heap cannot admit this buffer yet.
+    INFERNUX_VULKAN_BACKEND_API bool TryCreateManaged(VmaAllocator allocator, VkDevice device, VkDeviceSize size,
+                                                      VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                                                      const std::vector<uint32_t> &queueFamilies,
+                                                      std::shared_ptr<rhi::DeviceLifetime> lifetime,
+                                                      const AllocationAdmission &admit, bool preferHostCached = false);
 
     /**
      * @brief Destroy the buffer and free memory
      */
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
     /**
-     * @brief Map the buffer memory for CPU access
+     * @brief Map the entire buffer allocation for CPU access
      * @return Pointer to mapped memory, or nullptr on failure
      */
-    [[nodiscard]] void *Map();
-
-    /**
-     * @brief Map a range of buffer memory
-     * @param offset Offset from start of buffer
-     * @param size Size to map (or VK_WHOLE_SIZE)
-     * @return Pointer to mapped memory, or nullptr on failure
-     */
-    [[nodiscard]] void *Map(VkDeviceSize offset, VkDeviceSize size);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API void *Map();
 
     /**
      * @brief Unmap previously mapped memory
@@ -243,7 +258,7 @@ class VkBufferHandle
      * @param size Size of data to copy
      * @param offset Offset in buffer
      */
-    void CopyFrom(const void *data, VkDeviceSize size, VkDeviceSize offset = 0);
+    INFERNUX_VULKAN_BACKEND_API void CopyFrom(const void *data, VkDeviceSize size, VkDeviceSize offset = 0);
 
     // Accessors
     [[nodiscard]] VkBuffer GetBuffer() const noexcept
@@ -257,6 +272,10 @@ class VkBufferHandle
     [[nodiscard]] VkDeviceSize GetSize() const noexcept
     {
         return m_size;
+    }
+    [[nodiscard]] rhi::SubmissionTicket GetUploadSubmission() const noexcept
+    {
+        return m_uploadSubmission;
     }
     [[nodiscard]] bool IsValid() const noexcept
     {
@@ -281,6 +300,7 @@ class VkBufferHandle
     }
 
   private:
+    friend class VkResourceManager;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VkBuffer m_buffer = VK_NULL_HANDLE;
@@ -288,6 +308,7 @@ class VkBufferHandle
     VkDeviceSize m_size = 0;
     void *m_mappedPtr = nullptr;
     std::shared_ptr<rhi::DeviceLifetime> m_lifetime;
+    rhi::SubmissionTicket m_uploadSubmission;
 };
 
 // ============================================================================
@@ -313,7 +334,7 @@ class VkImageHandle
     VkImageHandle(const VkImageHandle &) = delete;
     VkImageHandle &operator=(const VkImageHandle &) = delete;
     VkImageHandle(VkImageHandle &&other) noexcept;
-    VkImageHandle &operator=(VkImageHandle &&other) noexcept;
+    INFERNUX_VULKAN_BACKEND_API VkImageHandle &operator=(VkImageHandle &&other) noexcept;
 
     /**
      * @brief Create an image with VMA memory allocation
@@ -327,10 +348,11 @@ class VkImageHandle
      * @param properties Memory property flags
      * @return true if creation succeeded
      */
-    bool Create(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format,
-                VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
-                VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1,
-                std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
+    INFERNUX_VULKAN_BACKEND_API bool Create(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height,
+                                            VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage,
+                                            VkMemoryPropertyFlags properties,
+                                            VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                                            uint32_t mipLevels = 1, std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
 
     /**
      * @brief Create an image view for this image
@@ -339,12 +361,13 @@ class VkImageHandle
      * @param mipLevels Number of mip levels
      * @return true if creation succeeded
      */
-    bool CreateView(VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels = 1);
+    INFERNUX_VULKAN_BACKEND_API bool CreateView(VkFormat format, VkImageAspectFlags aspectFlags,
+                                                uint32_t mipLevels = 1);
 
     /**
      * @brief Destroy the image, view, and memory
      */
-    void Destroy() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
 
     // Accessors
     [[nodiscard]] VkImage GetImage() const noexcept

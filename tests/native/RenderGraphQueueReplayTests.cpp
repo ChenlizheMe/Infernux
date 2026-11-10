@@ -6,7 +6,7 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanComputeQueue.h>
-#include <function/renderer/vk/VulkanFrameSubmission.h>
+#include <function/renderer/VulkanFrameSubmission.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/VulkanSubmissionExecutor.h>
@@ -137,19 +137,19 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     // silently exist as both a value and a storage buffer; callers must remove
     // the old binding before changing its kind.
     DrawParameterBlock bufferFirst;
-    bufferFirst.SetBuffer("RendererParameters", parameters);
+    bufferFirst.SetBuffer("parameters", parameters);
     bool rejectedConflictingBinding = false;
     try {
-        bufferFirst.SetFloat("RendererParameters", 1.0f);
+        bufferFirst.SetFloat("parameters", 1.0f);
     } catch (const std::invalid_argument &) {
         rejectedConflictingBinding = true;
     }
     assert(rejectedConflictingBinding);
     DrawParameterBlock valueFirst;
-    valueFirst.SetFloat("RendererParameters", 1.0f);
+    valueFirst.SetFloat("parameters", 1.0f);
     rejectedConflictingBinding = false;
     try {
-        valueFirst.SetBuffer("RendererParameters", parameters);
+        valueFirst.SetBuffer("parameters", parameters);
     } catch (const std::invalid_argument &) {
         rejectedConflictingBinding = true;
     }
@@ -159,11 +159,11 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     // published the material's first Forward program. Reflection validation
     // happens when that real pass is resolved below.
     auto material = std::make_shared<InxMaterial>("renderer-parameter-buffer");
-    material->SetBuffer("RendererParameters", parameters);
+    material->SetBuffer("parameters", parameters);
     DrawParameterBlock prepublishedParameters;
-    prepublishedParameters.SetBuffer("RendererParameters", parameters);
+    prepublishedParameters.SetBuffer("parameters", parameters);
     auto publication = prepublishedParameters.Capture(*material);
-    assert(publication && publication->buffers.at("RendererParameters") == parameters);
+    assert(publication && publication->buffers.at("parameters") == parameters);
 
     rhi::BindingLayoutDesc computeLayoutDesc;
     computeLayoutDesc.entries[0] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -187,7 +187,8 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
         [](const MergedDescriptorBinding &binding) {
             return binding.set == 0 && binding.binding == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         });
-    assert(storageBinding != program->GetDescriptorBindings().end() && storageBinding->name == "RendererParameters");
+    assert(storageBinding != program->GetDescriptorBindings().end() && storageBinding->name == "parameters");
+    assert(storageBinding->readOnly);
     rhi::ComputePipelineDesc computeDesc;
     computeDesc.computeShader = computeShader;
     computeDesc.bindingLayouts[0] = computeLayout;
@@ -212,7 +213,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     descriptors.SetRetirementQueue(&rendererRetirement);
     descriptors.Initialize(context.GetVmaAllocator(), context.GetDevice(), context.GetPhysicalDevice(),
                            &descriptorAllocator);
-    descriptors.SetBufferResolver([&device](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+    descriptors.SetBufferResolver([&device](const std::shared_ptr<rhi::ComputeBufferAllocation> &buffer) {
         if (!buffer || buffer->GetBuffer().Device() != device.GetDeviceId())
             return VkDescriptorBufferInfo{};
         return VkDescriptorBufferInfo{device.Resolve(buffer->GetBuffer()), 0, buffer->GetByteSize()};
@@ -221,7 +222,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
         descriptors.GetOrCreateRendererDescriptorSet(*material, *program, publication);
     assert(rendererDescriptor && rendererDescriptor->isValid && !rendererDescriptor->hasUnboundRequiredBuffers &&
            rendererDescriptor->descriptorSet != VK_NULL_HANDLE &&
-           rendererDescriptor->storageBufferBindings.at(storageBinding->binding) == parameters);
+           rendererDescriptor->storageBufferBindings.at(storageBinding->binding) == parameters->GetAllocation());
     assert(program->GetPipelineLayout() != VK_NULL_HANDLE);
 
     // Semantic passes consume the Forward material set-0 ABI. Calling the
@@ -253,7 +254,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     vk::ResourceHandle color;
     graph.AddComputePass("Write inx.buffer", [&](vk::PassBuilder &builder) {
         residentParameters =
-            builder.ImportBuffer("RendererParameters", parameters->GetBuffer(), parameters->GetByteSize());
+            builder.ImportBuffer("parameters", parameters->GetBuffer(), parameters->GetByteSize());
         graph.SetResourceInitialState(residentParameters, rhi::TextureLayout::Undefined,
                                       rhi::Access::ShaderRead | rhi::Access::ShaderWrite,
                                       rhi::PipelineStage::ComputeShader, rhi::QueueRole::Compute);
@@ -445,7 +446,8 @@ static void CheckReplay(vk::VkDeviceContext &context, vk::VulkanQueueManager &qu
         auto image =
             kind == ResourceKind::Buffer
                 ? graph.RegisterTransientBuffer("ReplayBuffer", desc.byteSize,
-                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+                                                rhi::BufferUsageFlags::TransferSource |
+                                                    rhi::BufferUsageFlags::TransferDestination)
                 : graph.RegisterTransientTexture("ReplayImage", 8, 4,
                                                  kind == ResourceKind::Depth ? VK_FORMAT_D32_SFLOAT
                                                                              : VK_FORMAT_R8G8B8A8_UNORM);

@@ -1,10 +1,13 @@
 #include "InxTextureLoader.hpp"
+#include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxTexture/SvgRasterizer.h>
+#include <function/resources/InxTexture/TextureDecoder.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <core/log/InxLog.h>
-#include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <platform/filesystem/InxPath.h>
@@ -16,49 +19,103 @@ namespace infernux
 namespace
 {
 
-void SkipPnmWhitespaceAndComments(const unsigned char *data, size_t dataSize, size_t &pos)
+class PnmReader
 {
-    while (pos < dataSize) {
-        while (pos < dataSize && std::isspace(static_cast<unsigned char>(data[pos]))) {
-            ++pos;
-        }
-        if (pos < dataSize && data[pos] == '#') {
-            while (pos < dataSize && data[pos] != '\n' && data[pos] != '\r') {
-                ++pos;
-            }
-            continue;
-        }
-        break;
+  public:
+    explicit PnmReader(std::string_view bytes) : m_bytes(bytes), m_size(bytes.size())
+    {
     }
+    explicit PnmReader(AssetSource &source) : m_file(source.OpenedFile()), m_size(source.Size())
+    {
+    }
+
+    int Peek()
+    {
+        if (position == m_size)
+            return EOF;
+        if (!m_file)
+            return static_cast<unsigned char>(m_bytes[static_cast<size_t>(position)]);
+        if (position == m_windowEnd) {
+            m_windowBegin = position;
+            const auto count = (std::min)(uint64_t(m_window.size()), m_size - position);
+            m_file->ReadAt(position, m_window.data(), static_cast<size_t>(count));
+            m_windowEnd = position + count;
+        }
+        return m_window[static_cast<size_t>(position - m_windowBegin)];
+    }
+
+    uint64_t position = 0;
+
+  private:
+    FileInput *m_file = nullptr;
+    std::string_view m_bytes;
+    uint64_t m_size;
+    uint64_t m_windowBegin = 0, m_windowEnd = 0;
+    std::array<unsigned char, 4096> m_window;
+};
+
+bool ReadPnmInt(PnmReader &input, int &out)
+{
+    int next = input.Peek();
+    for (;;) {
+        while (std::isspace(next)) {
+            ++input.position;
+            next = input.Peek();
+        }
+        if (next != '#')
+            break;
+        while (next != EOF && next != '\n' && next != '\r') {
+            ++input.position;
+            next = input.Peek();
+        }
+    }
+    const bool negative = next == '-';
+    if (negative || next == '+') {
+        ++input.position;
+        next = input.Peek();
+    }
+    if (next < '0' || next > '9')
+        return false;
+    out = 0;
+    while (next >= '0' && next <= '9') {
+        out = out * 10 + next - '0';
+        if (out > 65535)
+            return false;
+        ++input.position;
+        next = input.Peek();
+    }
+    return (!negative || out == 0) && (next == EOF || next == '#' || std::isspace(next));
 }
 
-bool ReadPnmToken(const unsigned char *data, size_t dataSize, size_t &pos, std::string &out)
+struct PnmHeader
 {
-    SkipPnmWhitespaceAndComments(data, dataSize, pos);
-    if (pos >= dataSize) {
-        return false;
-    }
-    const size_t start = pos;
-    while (pos < dataSize && !std::isspace(static_cast<unsigned char>(data[pos])) && data[pos] != '#') {
-        ++pos;
-    }
-    out.assign(reinterpret_cast<const char *>(data + start), pos - start);
-    return !out.empty();
+    int width = 0, height = 0, maxValue = 0, channels = 0;
+    bool binary = false;
+};
+
+PnmHeader ReadPnmHeader(PnmReader &input)
+{
+    if (input.Peek() != 'P')
+        return {};
+    ++input.position;
+    const int magic = input.Peek();
+    if (magic != '2' && magic != '3' && magic != '5' && magic != '6')
+        return {};
+    ++input.position;
+    PnmHeader header;
+    if (!ReadPnmInt(input, header.width) || !ReadPnmInt(input, header.height) || !ReadPnmInt(input, header.maxValue) ||
+        !header.width || !header.height || !header.maxValue)
+        return {};
+    header.binary = magic == '5' || magic == '6';
+    header.channels = magic == '3' || magic == '6' ? 3 : 1;
+    return header;
 }
 
-bool ReadPnmInt(const unsigned char *data, size_t dataSize, size_t &pos, int &out)
+TextureDecoder::SourceInfo PnmSourceInfo(PnmReader &input)
 {
-    std::string token;
-    if (!ReadPnmToken(data, dataSize, pos, token)) {
-        return false;
-    }
-    char *end = nullptr;
-    long value = std::strtol(token.c_str(), &end, 10);
-    if (end == token.c_str() || *end != '\0' || value < 0 || value > 65535) {
-        return false;
-    }
-    out = static_cast<int>(value);
-    return true;
+    const auto header = ReadPnmHeader(input);
+    return {static_cast<uint32_t>(header.width), static_cast<uint32_t>(header.height),
+            static_cast<uint8_t>(header.binary ? header.channels : 4)};
 }
 
 unsigned char ScalePnmSample(int value, int maxValue)
@@ -68,40 +125,20 @@ unsigned char ScalePnmSample(int value, int maxValue)
 
 bool DecodePnmToRgba(const unsigned char *data, size_t dataSize, InxTextureData &result)
 {
-    if (!data || dataSize < 3 || data[0] != 'P') {
+    PnmReader input({reinterpret_cast<const char *>(data), dataSize});
+    const auto [width, height, maxValue, srcChannels, binary] = ReadPnmHeader(input);
+    if (!width)
         return false;
-    }
 
-    const unsigned char magic = data[1];
-    const bool asciiRgb = magic == '3';
-    const bool asciiGray = magic == '2';
-    const bool binaryRgb = magic == '6';
-    const bool binaryGray = magic == '5';
-    if (!asciiRgb && !asciiGray && !binaryRgb && !binaryGray) {
-        return false;
-    }
-
-    size_t pos = 2;
-    int width = 0;
-    int height = 0;
-    int maxValue = 0;
-    if (!ReadPnmInt(data, dataSize, pos, width) || !ReadPnmInt(data, dataSize, pos, height) ||
-        !ReadPnmInt(data, dataSize, pos, maxValue)) {
-        return false;
-    }
-    if (width <= 0 || height <= 0 || maxValue <= 0 || maxValue > 65535) {
-        return false;
-    }
-
+    size_t pos = static_cast<size_t>(input.position);
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
-    const int srcChannels = (asciiRgb || binaryRgb) ? 3 : 1;
     const int bytesPerSample = maxValue > 255 ? 2 : 1;
     // Even ASCII needs at least one byte per sample. Reject impossible headers
     // before allocating pixels, and never expose a partially decoded image.
     if (pixelCount > (dataSize - pos) / static_cast<size_t>(srcChannels) ||
         pixelCount > (std::numeric_limits<size_t>::max)() / 4)
         return false;
-    if (binaryRgb || binaryGray) {
+    if (binary) {
         // The single separator ends the header. Subsequent whitespace and '#'
         // bytes are pixel values, not padding or comments.
         if (pos >= dataSize || !std::isspace(static_cast<unsigned char>(data[pos])))
@@ -112,18 +149,17 @@ bool DecodePnmToRgba(const unsigned char *data, size_t dataSize, InxTextureData 
     }
     std::vector<unsigned char> pixels(pixelCount * 4);
 
-    if (asciiRgb || asciiGray) {
+    if (!binary) {
         for (size_t i = 0; i < pixelCount; ++i) {
             int r = 0;
             int g = 0;
             int b = 0;
-            if (asciiRgb) {
-                if (!ReadPnmInt(data, dataSize, pos, r) || !ReadPnmInt(data, dataSize, pos, g) ||
-                    !ReadPnmInt(data, dataSize, pos, b)) {
+            if (srcChannels == 3) {
+                if (!ReadPnmInt(input, r) || !ReadPnmInt(input, g) || !ReadPnmInt(input, b)) {
                     return false;
                 }
             } else {
-                if (!ReadPnmInt(data, dataSize, pos, r)) {
+                if (!ReadPnmInt(input, r)) {
                     return false;
                 }
                 g = r;
@@ -169,6 +205,18 @@ bool DecodePnmToRgba(const unsigned char *data, size_t dataSize, InxTextureData 
 }
 
 } // namespace
+
+TextureDecoder::SourceInfo detail::ReadPnmInfo(AssetSource &source)
+{
+    PnmReader input(source);
+    return PnmSourceInfo(input);
+}
+
+TextureDecoder::SourceInfo detail::ReadPnmInfo(std::string_view bytes)
+{
+    PnmReader input(bytes);
+    return PnmSourceInfo(input);
+}
 
 bool InxTextureLoader::IsPnmSource(const unsigned char *data, size_t dataSize)
 {

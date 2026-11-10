@@ -33,11 +33,14 @@ class Scene : public NativeLifetimeOwner
     }
     ~Scene();
 
-    // Non-copyable, movable
+    /// Owner teardown cannot reenter callbacks which are retiring a world.
+    static void RequireNoWorldRetirement();
+
+    // World owners keep a stable address for objects and retained commits.
     Scene(const Scene &) = delete;
     Scene &operator=(const Scene &) = delete;
-    Scene(Scene &&) = default;
-    Scene &operator=(Scene &&) = default;
+    Scene(Scene &&) = delete;
+    Scene &operator=(Scene &&) = delete;
 
     // ========================================================================
     // Properties
@@ -105,6 +108,7 @@ class Scene : public NativeLifetimeOwner
 
     /// @brief Destroy a GameObject (will be removed at end of frame)
     void DestroyGameObject(GameObject *gameObject);
+    [[nodiscard]] bool IsPendingDestroy(const GameObject *object) const;
 
     /// @brief Clone a GameObject (deep copy). Unity: Object.Instantiate()
     /// Creates a full copy including all children and components.
@@ -113,18 +117,12 @@ class Scene : public NativeLifetimeOwner
     /// @param parent Optional parent for the clone (nullptr = root level)
     /// @param instantiateInWorldSpace Preserve the source root's world transform after parenting
     /// @return The cloned GameObject, or nullptr on failure
-    GameObject *InstantiateGameObject(GameObject *source, GameObject *parent = nullptr,
+    GameObject *InstantiateGameObject(GameObject *source, InstantiationIds &ids, GameObject *parent = nullptr,
                                       bool instantiateInWorldSpace = false);
 
-    /// @brief Instantiate a GameObject hierarchy from a JSON string (e.g. prefab file).
-    /// Creates fresh IDs for all objects. Python components are stored as pending.
-    /// @param jsonStr The serialized GameObject JSON (from GameObject::Serialize())
-    /// @param parent Optional parent for the new object (nullptr = root level)
-    /// @return The root GameObject, or nullptr on failure
-    GameObject *InstantiateFromJson(const std::string &jsonStr, GameObject *parent = nullptr);
-
     /// @brief Instantiate directly from a parsed document. Fresh IDs are assigned.
-    GameObject *InstantiateFromDocument(const nlohmann::json &document, GameObject *parent = nullptr);
+    GameObject *InstantiateFromDocument(const nlohmann::json &document, InstantiationIds &ids,
+                                        GameObject *parent = nullptr);
 
     /// @brief Internal: Unregister object ID from lookup (called from GameObject dtor)
     void UnregisterGameObject(uint64_t id);
@@ -412,6 +410,7 @@ class Scene : public NativeLifetimeOwner
     void AwakeObject(GameObject *obj);
 
   private:
+    class InstantiationScope;
     friend class GameObject;
     friend class Component;
     friend class SceneCommitToken;
@@ -435,7 +434,6 @@ class Scene : public NativeLifetimeOwner
     void EditorUpdateObject(GameObject *obj, float deltaTime);
     void DispatchInitialLifecycle(GameObject *object, bool start);
     class Component *FindComponentByID(uint64_t componentId) const;
-    bool IsPendingDestroy(const GameObject *obj) const;
 
     /// @brief Shared recursive GameObject builder from JSON string.
     /// @param preserveIds If true, restores original IDs (Deserialize); otherwise generates new ones (Instantiate).
@@ -499,6 +497,7 @@ class Scene : public NativeLifetimeOwner
     bool m_isPlaying = false;
     bool m_hasStarted = false;
     bool m_retiringObjects = false;
+    SceneCommitToken *m_retainedCommit = nullptr;
     bool m_runtimeLifecycleSchedulerEnabled = false;
 
     // Per-scene environment (skybox material + ambient) settings
@@ -515,6 +514,9 @@ class Scene : public NativeLifetimeOwner
     uint64_t m_lifecycleObjectCacheVersion = UINT64_MAX;
     std::vector<ObjectHandle> m_updateObjects;
     std::vector<ObjectHandle> m_fixedUpdateObjects;
+    std::pair<uint64_t, uint64_t> m_fixedDispatchStep{};
+    std::vector<ObjectHandle> m_fixedDispatchObjects;
+    size_t m_fixedDispatchCursor = 0;
     std::vector<ObjectHandle> m_lateUpdateObjects;
 
     // Explicit seeks/cuts only. The renderer consumes this monotonic revision

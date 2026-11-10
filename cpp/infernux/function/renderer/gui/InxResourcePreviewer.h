@@ -287,13 +287,12 @@ class MaterialPreviewer : public IResourcePreviewer
     }
     std::vector<std::pair<std::string, std::string>> GetMetadata() const override;
 
-    static std::shared_ptr<InxMaterial> BuildPreviewMaterialFromFile(const std::string &matFilePath,
-                                                                     AssetDatabase *adb = nullptr);
     static std::shared_ptr<InxMaterial> BuildPreviewMaterialFromJson(const std::string &materialJson,
                                                                      AssetDatabase *adb = nullptr);
-    static std::shared_ptr<InxMaterial> BuildEmbeddedPreviewMaterial(const std::string &modelPath, uint32_t slotIndex);
-    static void RenderCpuPreview(const std::shared_ptr<InxMaterial> &material, int size,
-                                 std::vector<unsigned char> &outPixels, AssetDatabase *adb = nullptr);
+    static std::shared_ptr<InxMaterial> ClonePreviewMaterial(const std::shared_ptr<InxMaterial> &material,
+                                                             AssetDatabase *adb = nullptr);
+    static void RenderCpuPreview(const InxMaterial &material, int size, std::vector<unsigned char> &outPixels,
+                                 const AssetDatabase *adb);
 
   private:
     InxGUI *m_gui = nullptr;

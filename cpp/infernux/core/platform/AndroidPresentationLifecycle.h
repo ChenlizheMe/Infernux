@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/FoundationApi.h"
+
 namespace infernux
 {
 
@@ -13,14 +15,14 @@ namespace infernux
 class AndroidPresentationLifecycle final
 {
   public:
-    static void ActivateRuntime() noexcept;
-    static void DeactivateRuntime() noexcept;
-    static void MarkPresentationSuspended() noexcept;
-    static void MarkPresentationResumed() noexcept;
-    static void WaitForPresentationSuspended();
+    INFERNUX_FOUNDATION_API static void ActivateRuntime() noexcept;
+    INFERNUX_FOUNDATION_API static void DeactivateRuntime() noexcept;
+    INFERNUX_FOUNDATION_API static void MarkPresentationSuspended() noexcept;
+    INFERNUX_FOUNDATION_API static void MarkPresentationResumed() noexcept;
+    INFERNUX_FOUNDATION_API static void WaitForPresentationSuspended();
 
-    [[nodiscard]] static bool IsRuntimeActive() noexcept;
-    [[nodiscard]] static bool IsPresentationSuspended() noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API static bool IsRuntimeActive() noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API static bool IsPresentationSuspended() noexcept;
 };
 
 } // namespace infernux

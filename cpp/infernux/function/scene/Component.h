@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -22,6 +23,8 @@ struct ComponentTypeConstraints
     std::vector<std::string> incompatibleTypes;
     std::vector<std::string> exclusiveGroups;
     std::vector<std::string> satisfiedTypes;
+    // Bare component identities stored in the native document, scalar or array.
+    std::vector<std::string> documentComponentReferences;
 };
 
 // Forward declarations
@@ -65,6 +68,17 @@ class Component : public NativeLifetimeOwner
     // ========================================================================
     // Lifecycle methods (override in derived classes)
     // ========================================================================
+
+    /// Validate cross-node authoring data on the complete, unpublished graph.
+    virtual void ValidateHierarchy() const
+    {
+    }
+
+    /// Native binding after a whole hierarchy is published, including inactive
+    /// and preview objects. Never runs while a document is being staged.
+    virtual void OnHierarchyPublished()
+    {
+    }
 
     /// @brief Called when the component first becomes active in the hierarchy
     virtual void Awake()
@@ -224,7 +238,18 @@ class Component : public NativeLifetimeOwner
     }
     void SetPrefabSourceID(uint64_t id)
     {
+        SetPrefabSource(id, {});
+    }
+
+    // Empty means the same asset scope as the owning GameObject.
+    [[nodiscard]] const std::string &GetPrefabSourceGuid() const
+    {
+        return m_prefabSourceGuid;
+    }
+    void SetPrefabSource(uint64_t id, std::string guid)
+    {
         m_prefabSourceId = id;
+        m_prefabSourceGuid = id ? std::move(guid) : std::string{};
     }
 
     /// Reserve an identity before preflighting a document transaction.
@@ -418,6 +443,9 @@ class Component : public NativeLifetimeOwner
 
     [[nodiscard]] virtual nlohmann::json SerializeDocument() const;
     virtual bool DeserializeDocument(const nlohmann::json &document);
+    /// Apply editable values to an existing instance, retaining its internal ownership.
+    virtual bool ApplyAuthoringDocument(const nlohmann::json &document);
+    virtual nlohmann::json PrepareAuthoringDocument(const nlohmann::json &document) const;
     /// @brief Create a deep copy of this component (native clone, no JSON round-trip).
     /// The clone gets a fresh component ID and instance GUID.
     /// Base implementation copies enabled state and execution order.
@@ -454,6 +482,7 @@ class Component : public NativeLifetimeOwner
     int m_executionOrder = 0;
     uint64_t m_componentId = 0;
     uint64_t m_prefabSourceId = 0;
+    std::string m_prefabSourceGuid;
     uint64_t m_lifetimeGeneration = 0;
 
   private:
@@ -467,6 +496,7 @@ class Component : public NativeLifetimeOwner
     friend class Scene; // Scene needs to call Start
     friend class SceneCommitToken;
     friend class GameObject;
+    friend class PrefabComponentEdit;
 };
 
 } // namespace infernux

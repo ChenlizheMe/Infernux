@@ -9,11 +9,103 @@
 #include <cstring>
 #include <shared_mutex>
 #include <stdexcept>
+#include <utility>
 
 namespace infernux
 {
 namespace vk
 {
+namespace
+{
+template <typename Handle, typename Allocate, typename Bind>
+VkResult AllocateManaged(VmaAllocator allocator, Handle handle, VkMemoryRequirements requirements,
+                         VmaAllocationCreateInfo memory, const AllocationAdmission &admit, Allocate allocate, Bind bind,
+                         VmaAllocation &allocation, VmaAllocationInfo *info = nullptr, bool preferHostCached = false)
+{
+    const auto properties = memory.requiredFlags;
+    const VkPhysicalDeviceMemoryProperties *deviceMemory = nullptr;
+    if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        vmaGetMemoryProperties(allocator, &deviceMemory);
+        uint32_t hostTypes = 0;
+        for (uint32_t index = 0; index < deviceMemory->memoryTypeCount; ++index) {
+            const auto &type = deviceMemory->memoryTypes[index];
+            if ((type.propertyFlags & properties) == properties &&
+                !(deviceMemory->memoryHeaps[type.heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
+                hostTypes |= uint32_t{1} << index;
+        }
+        if (requirements.memoryTypeBits & hostTypes)
+            requirements.memoryTypeBits &= hostTypes;
+    }
+    uint32_t memoryType = 0;
+    const auto selection = vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits, &memory, &memoryType);
+    if (selection != VK_SUCCESS)
+        return selection;
+    if (preferHostCached && deviceMemory) {
+        // Readback favors cached memory within the same admitted heap. The
+        // access preference does not move an allocation to a different budget.
+        const auto heap = deviceMemory->memoryTypes[memoryType].heapIndex;
+        uint32_t heapTypes = 0;
+        for (uint32_t index = 0; index < deviceMemory->memoryTypeCount; ++index)
+            if (deviceMemory->memoryTypes[index].heapIndex == heap)
+                heapTypes |= uint32_t{1} << index;
+        auto cached = memory;
+        cached.requiredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        uint32_t cachedType = 0;
+        if (vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits & heapTypes, &cached, &cachedType) ==
+            VK_SUCCESS)
+            memoryType = cachedType;
+    }
+    if (!admit(memoryType, requirements.size))
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+
+    memory.memoryTypeBits = uint32_t{1} << memoryType;
+    memory.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+    const auto result = allocate(allocator, handle, &memory, &allocation, info);
+    if (result != VK_SUCCESS)
+        return result;
+    const auto bound = bind(allocator, allocation, handle);
+    if (bound != VK_SUCCESS)
+        vmaFreeMemory(allocator, allocation);
+    return bound;
+}
+} // namespace
+
+VkResult CreateManagedImage(VmaAllocator allocator, VkDevice device, const VkImageCreateInfo &description,
+                            const AllocationAdmission &admit, VkImage &image, VmaAllocation &allocation)
+{
+    VkImage raw = VK_NULL_HANDLE;
+    const auto created = vkCreateImage(device, &description, nullptr, &raw);
+    if (created != VK_SUCCESS)
+        return created;
+    VkHandle<VkImage> pending(device, raw, vkDestroyImage);
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(device, raw, &requirements);
+    VmaAllocationCreateInfo memory{};
+    memory.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    const auto result = AllocateManaged(allocator, raw, requirements, memory, admit, vmaAllocateMemoryForImage,
+                                        vmaBindImageMemory, allocation);
+    if (result == VK_SUCCESS)
+        image = pending.Release();
+    return result;
+}
+
+VkResult CreateManagedBuffer(VmaAllocator allocator, VkDevice device, const VkBufferCreateInfo &description,
+                             VmaAllocationCreateInfo memory, const AllocationAdmission &admit, VkBuffer &buffer,
+                             VmaAllocation &allocation, VmaAllocationInfo *info, bool preferHostCached)
+{
+    VkBuffer raw = VK_NULL_HANDLE;
+    const auto created = vkCreateBuffer(device, &description, nullptr, &raw);
+    if (created != VK_SUCCESS)
+        return created;
+    VkHandle<VkBuffer> pending(device, raw, vkDestroyBuffer);
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device, raw, &requirements);
+    const auto result = AllocateManaged(allocator, raw, requirements, memory, admit, vmaAllocateMemoryForBuffer,
+                                        vmaBindBufferMemory, allocation, info, preferHostCached);
+    if (result == VK_SUCCESS)
+        buffer = pending.Release();
+    return result;
+}
 
 // ============================================================================
 // VkBufferHandle Implementation
@@ -22,7 +114,7 @@ namespace vk
 VkBufferHandle::VkBufferHandle(VkBufferHandle &&other) noexcept
     : m_allocator(other.m_allocator), m_device(other.m_device), m_buffer(other.m_buffer),
       m_allocation(other.m_allocation), m_size(other.m_size), m_mappedPtr(other.m_mappedPtr),
-      m_lifetime(std::move(other.m_lifetime))
+      m_lifetime(std::move(other.m_lifetime)), m_uploadSubmission(std::exchange(other.m_uploadSubmission, {}))
 {
     other.m_allocator = VK_NULL_HANDLE;
     other.m_device = VK_NULL_HANDLE;
@@ -43,6 +135,7 @@ VkBufferHandle &VkBufferHandle::operator=(VkBufferHandle &&other) noexcept
         m_size = other.m_size;
         m_mappedPtr = other.m_mappedPtr;
         m_lifetime = std::move(other.m_lifetime);
+        m_uploadSubmission = std::exchange(other.m_uploadSubmission, {});
 
         other.m_allocator = VK_NULL_HANDLE;
         other.m_device = VK_NULL_HANDLE;
@@ -118,6 +211,40 @@ bool VkBufferHandle::Create(VmaAllocator allocator, VkDevice device, VkDeviceSiz
     return true;
 }
 
+bool VkBufferHandle::TryCreateManaged(VmaAllocator allocator, VkDevice device, VkDeviceSize size,
+                                      VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                                      const std::vector<uint32_t> &queueFamilies,
+                                      std::shared_ptr<rhi::DeviceLifetime> lifetime, const AllocationAdmission &admit,
+                                      bool preferHostCached)
+{
+    Destroy();
+    VkBufferCreateInfo description{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    description.size = size;
+    description.usage = usage;
+    if (queueFamilies.size() > 1) {
+        description.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        description.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size());
+        description.pQueueFamilyIndices = queueFamilies.data();
+    }
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VmaAllocationCreateInfo memory{};
+    memory.requiredFlags = properties;
+    const auto result = CreateManagedBuffer(allocator, device, description, memory, admit, buffer, allocation, nullptr,
+                                            preferHostCached);
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY)
+        return false;
+    if (result != VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate managed Vulkan buffer memory");
+    m_buffer = buffer;
+    m_allocation = allocation;
+    m_allocator = allocator;
+    m_device = device;
+    m_size = size;
+    m_lifetime = std::move(lifetime);
+    return true;
+}
+
 void VkBufferHandle::Destroy() noexcept
 {
     std::shared_lock<std::shared_mutex> lifetimeLock;
@@ -137,14 +264,10 @@ void VkBufferHandle::Destroy() noexcept
     m_device = VK_NULL_HANDLE;
     m_size = 0;
     m_lifetime.reset();
+    m_uploadSubmission = {};
 }
 
 void *VkBufferHandle::Map()
-{
-    return Map(0, m_size);
-}
-
-void *VkBufferHandle::Map(VkDeviceSize offset, VkDeviceSize size)
 {
     std::shared_lock<std::shared_mutex> lifetimeLock;
     if (m_lifetime)
@@ -161,10 +284,6 @@ void *VkBufferHandle::Map(VkDeviceSize offset, VkDeviceSize size)
     if (vmaMapMemory(m_allocator, m_allocation, &m_mappedPtr) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to map buffer memory via VMA");
         return nullptr;
-    }
-    // VMA maps the entire allocation; adjust pointer for offset
-    if (offset > 0) {
-        m_mappedPtr = static_cast<char *>(m_mappedPtr) + offset;
     }
     return m_mappedPtr;
 }
@@ -190,10 +309,10 @@ void VkBufferHandle::CopyFrom(const void *data, VkDeviceSize size, VkDeviceSize 
         throw std::invalid_argument("buffer copy requires non-empty source data");
     if (offset > m_size || size > m_size - offset)
         throw std::out_of_range("buffer copy exceeds the destination allocation");
-    void *mapped = Map(offset, size);
+    void *mapped = Map();
     if (!mapped)
         throw std::runtime_error("failed to map destination buffer for CPU copy");
-    std::memcpy(mapped, data, static_cast<size_t>(size));
+    std::memcpy(static_cast<char *>(mapped) + offset, data, static_cast<size_t>(size));
     Unmap();
 }
 

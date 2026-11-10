@@ -5,15 +5,18 @@ ShadingModelInfo {
     Unsupported [Deferred]
 }
 
-vec3 inxSixWayBasisWeights(vec3 lightDirection, out bvec3 positiveDirection) {
+mat3 inxSixWayBasis() {
     ShadingContext ctx = GetShadingContext();
     vec3 rightAxis = normalize(ctx.tangentWS.xyz);
-    vec3 backAxis = normalize(ctx.geometricNormalWS);
+    // Volume coefficients retain their authored axes on either side of the
+    // card; the face-forward surface normal is only for surface lighting.
+    vec3 backAxis = normalize(ctx.frontFacing ? ctx.geometricNormalWS : -ctx.geometricNormalWS);
     vec3 upAxis = normalize(cross(backAxis, rightAxis)) * ctx.tangentWS.w;
-    vec3 localDirection = vec3(
-        dot(lightDirection, rightAxis),
-        dot(lightDirection, upAxis),
-        dot(lightDirection, backAxis));
+    return mat3(rightAxis, upAxis, backAxis);
+}
+
+vec3 inxSixWayBasisWeights(vec3 lightDirection, out bvec3 positiveDirection) {
+    vec3 localDirection = transpose(inxSixWayBasis()) * lightDirection;
     positiveDirection = greaterThanEqual(localDirection, vec3(0.0));
     return localDirection * localDirection;
 }
@@ -52,10 +55,10 @@ vec3 inxSixWayDirectionalResponse(
 }
 
 vec3 inxSixWayAmbient(float alpha) {
-    ShadingContext ctx = GetShadingContext();
-    vec3 rightAxis = normalize(ctx.tangentWS.xyz);
-    vec3 backAxis = normalize(ctx.geometricNormalWS);
-    vec3 upAxis = normalize(cross(backAxis, rightAxis)) * ctx.tangentWS.w;
+    mat3 basis = inxSixWayBasis();
+    vec3 rightAxis = basis[0];
+    vec3 upAxis = basis[1];
+    vec3 backAxis = basis[2];
     float absorptionRange = inxSixWayAbsorptionRange(alpha);
     vec3 densityScales = inxSixWayDensityScales(material.baseColor.rgb);
     vec3 ambient =
@@ -95,7 +98,7 @@ vec3 inxSixWayAmbient(float alpha) {
     return tintedAmbient * denseSmokeSuppression;
 }
 
-vec3 inxSixWayDirectLighting(vec3 shadowNormal, float alpha) {
+vec3 inxSixWayDirectLighting(float alpha) {
     ShadingContext ctx = GetShadingContext();
     vec3 directLighting = vec3(0.0);
     float absorptionRange = inxSixWayAbsorptionRange(alpha);
@@ -240,8 +243,6 @@ vec3 inxSixWayDirectLighting(vec3 shadowNormal, float alpha) {
 }
 
 void shading(in SurfaceData s, out vec4 color) {
-    ShadingContext ctx = GetShadingContext();
-    vec3 shadowNormal = normalize(ctx.geometricNormalWS);
     // Zero ambient is a strict opt-out: do not sample sky/probes at all. Even
     // when enabled, ambient is deliberately capped as a weak fill so it can
     // never replace authored direct lighting on dense smoke.
@@ -249,7 +250,7 @@ void shading(in SurfaceData s, out vec4 color) {
     vec3 ambient = ambientWeight > 0.0001
         ? inxSixWayAmbient(s.alpha) * ambientWeight
         : vec3(0.0);
-    vec3 direct = inxSixWayDirectLighting(shadowNormal, s.alpha) * material.lightingIntensity;
+    vec3 direct = inxSixWayDirectLighting(s.alpha) * material.lightingIntensity;
     // The six directional coefficients are already density-weighted. The
     // premultiplied output must not multiply the lit result by alpha again.
     vec3 litColor = max(ambient + direct, vec3(0.0));

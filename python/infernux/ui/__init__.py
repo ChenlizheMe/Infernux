@@ -7,11 +7,12 @@ from .inx_ui_component import InxUIComponent
 from .inx_ui_screen_component import InxUIScreenComponent
 from .ui_canvas import UICanvas
 from .ui_frame import UIFrame
+from .ui_layout_element import UILayoutElement
 from .ui_group import UIGroup
 from .ui_progress_bar import UIProgressBar
 from .ui_slider import UISlider
 from .ui_text import UIText
-from .ui_image import UIImage
+from .ui_image import UIImage, ImageType, ImageFillMethod
 # Unity-compatible name: RawImage is the same managed texture/RenderTexture
 # control in Infernux; keep one component and one renderer.
 UIRawImage = UIImage
@@ -45,11 +46,13 @@ __all__ = [
     "InxUIScreenComponent",
     "UICanvas",
     "UIFrame",
+    "UILayoutElement",
     "UIGroup",
     "UIProgressBar",
     "UISlider",
     "UIText",
     "UIImage",
+    "ImageType", "ImageFillMethod",
     "UIRawImage",
     "UISelectable",
     "UIButton",

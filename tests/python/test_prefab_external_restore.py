@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -84,6 +85,11 @@ def _linked_worlds(scene, fixture, depth):
     return base, source_path, instances, refs, identities, variant_bytes
 
 
+def _publish_external_event(handler, kind, path):
+    getattr(handler, f"on_{kind}")(SimpleNamespace(is_directory=False, src_path=str(path)))
+    assert handler.process_pending_reloads(force=True) == 1
+
+
 @pytest.mark.parametrize("event,depth", [("modified", 1), ("restored", 2)])
 def test_source_update_reaches_resident_instances_without_losing_identity(prefab_project, scene, depth, event):
     database, _, _, handler = prefab_project
@@ -96,16 +102,13 @@ def test_source_update_reaches_resident_instances_without_losing_identity(prefab
     if event == "restored":
         base.unlink()
         meta.unlink()
-        handler._commit_deleted(str(base), guid_hint=guid)
+        _publish_external_event(handler, "deleted", base)
         assert not database.get_guid_from_path(str(base))
         assert [obj.get_child(0).layer for obj in instances] == [9, 9]
         meta.write_bytes(metadata_bytes)
     base.write_text(json.dumps(updated), encoding="utf-8")
     source_bytes = base.read_bytes()
-    if event == "restored":
-        handler._commit_created(str(base))
-    else:
-        handler._commit_modified(str(base))
+    _publish_external_event(handler, "created" if event == "restored" else "modified", base)
     assert database.get_guid_from_path(str(base)) == guid
     assert _read_resolved_prefab_document(str(variant), database)["root_object"]["children"][0]["layer"] == 11
     assert [obj.get_child(0).layer for obj in instances] == [11, 11]
@@ -130,17 +133,18 @@ def test_invalid_restored_prefab_preserves_worlds_until_valid_source_arrives(pre
     before = [obj.serialize_document() for obj in instances]
     base.unlink()
     meta.unlink()
-    handler._commit_deleted(str(base), guid_hint=guid)
+    _publish_external_event(handler, "deleted", base)
     invalid = b"<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> teammate\n"
     meta.write_bytes(original_meta)
     base.write_bytes(invalid)
-    with pytest.raises((RuntimeError, ValueError)):
-        handler._commit_created(str(base))
+    _publish_external_event(handler, "created", base)
+    assert database.get_guid_from_path(str(base)) == guid
+    assert database.get_import_error(guid)
     assert base.read_bytes() == invalid
     assert [obj.serialize_document() for obj in instances] == before
     valid["root_object"]["children"][0]["layer"] = 12
     base.write_text(json.dumps(valid), encoding="utf-8")
-    handler._commit_modified(str(base))
+    _publish_external_event(handler, "modified", base)
     assert [obj.get_child(0).layer for obj in instances] == [12, 12]
 
 
@@ -154,11 +158,11 @@ def test_different_guid_at_old_path_does_not_replace_instance_source(prefab_proj
     before = [obj.serialize_document() for obj in instances]
     base.unlink()
     meta.unlink()
-    handler._commit_deleted(str(base), guid_hint=old_guid)
+    _publish_external_event(handler, "deleted", base)
     replacement_meta["metadata"]["guid"]["value"] = uuid4().hex
     replacement["root_object"]["children"][0]["layer"] = 12
     meta.write_text(json.dumps(replacement_meta), encoding="utf-8")
     base.write_text(json.dumps(replacement), encoding="utf-8")
-    handler._commit_created(str(base))
+    _publish_external_event(handler, "created", base)
     assert database.get_guid_from_path(str(base)) != old_guid
     assert [obj.serialize_document() for obj in instances] == before

@@ -14,14 +14,15 @@ SceneRenderBridge &SceneRenderBridge::Instance()
 
 void SceneRenderBridge::UpdateCameraData(float *outPos, float *outLookAt, float *outUp)
 {
-    const glm::vec3 position = m_sceneRenderer.GetCameraPosition();
-    const glm::vec3 lookAt = position + m_sceneRenderer.GetCameraForward();
-    const glm::vec3 up = m_sceneRenderer.GetCameraUp();
+    static const RenderViewData defaultView;
+    const auto world = m_sceneRenderer.GetRenderWorld().Acquire();
+    const auto &view = world ? world->PrimaryView() : defaultView;
+    const glm::vec3 lookAt = view.position + view.forward;
 
     if (outPos) {
-        outPos[0] = position.x;
-        outPos[1] = position.y;
-        outPos[2] = position.z;
+        outPos[0] = view.position.x;
+        outPos[1] = view.position.y;
+        outPos[2] = view.position.z;
     }
     if (outLookAt) {
         outLookAt[0] = lookAt.x;
@@ -29,9 +30,9 @@ void SceneRenderBridge::UpdateCameraData(float *outPos, float *outLookAt, float 
         outLookAt[2] = lookAt.z;
     }
     if (outUp) {
-        outUp[0] = up.x;
-        outUp[1] = up.y;
-        outUp[2] = up.z;
+        outUp[0] = view.up.x;
+        outUp[1] = view.up.y;
+        outUp[2] = view.up.z;
     }
 }
 

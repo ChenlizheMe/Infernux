@@ -149,15 +149,19 @@ def test_skinned_renderer_declares_inherited_fields_for_host_schema_and_edits(sc
     base = catalog.type_document("native:infernux.MeshRenderer")
     descriptor = catalog.type_document("native:infernux.SkinnedMeshRenderer")
     assert descriptor["base_type_guid"] == base["type_guid"]
-    assert descriptor["fields"][:-1] == base["fields"]
-    assert descriptor["fields"][-1] == SkinnedMeshRenderer.active_take_name.schema.to_document()
+    assert descriptor["fields"][:-2] == base["fields"]
+    assert descriptor["fields"][-2:] == [
+        SkinnedMeshRenderer.active_take_name.schema.to_document(),
+        SkinnedMeshRenderer.skeleton.schema.to_document(),
+    ]
 
     owner = scene.create_game_object("SkinnedSchemaEdit")
     renderer = owner.add_component("SkinnedMeshRenderer")
     wrapper = SkinnedMeshRenderer._get_or_create_wrapper(renderer, owner)
     schema = EditorAutomationHost.instance().scene_component_schema(owner.id, renderer.component_id)
     assert {field["name"] for field in schema["fields"]} == {
-        "enabled", "castShadows", "receivesShadows", "submeshIndex", "meshPivotOffset", "activeTakeName"
+        "enabled", "castShadows", "receivesShadows", "submeshIndex", "meshPivotOffset", "activeTakeName",
+        "skeleton_component_id",
     }
     before = renderer.serialize_document()
     previous = UndoManager._instance

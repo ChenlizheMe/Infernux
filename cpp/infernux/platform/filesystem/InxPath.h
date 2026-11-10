@@ -1,17 +1,41 @@
 #pragma once
 
+#include "NativeFilePath.h"
+
 #include <algorithm>
+#include <cerrno>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <mutex>
+#include <stdexcept>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include <core/config/InxPlatform.h>
+#ifndef INX_PLATFORM_WINDOWS
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace infernux
 {
 inline std::string FromFsPath(const std::filesystem::path &p);
+#ifdef INX_PLATFORM_WINDOWS
+inline std::pair<uint64_t, uint64_t> FileIdentity(HANDLE handle)
+{
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!::GetFileInformationByHandle(handle, &info))
+        throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                "Cannot identify file input");
+    return {info.dwVolumeSerialNumber, (uint64_t{info.nFileIndexHigh} << 32) | info.nFileIndexLow};
 }
+#endif
+} // namespace infernux
 namespace infernux
 {
 
@@ -104,11 +128,8 @@ inline std::string NormalizeFilesystemPathLexically(const std::string &path)
 /**
  * @brief Resolve an existing path to its stable display/storage spelling.
  *
- * Existing aliases and symlinks are
- * resolved when possible. Windows short
- * names are expanded to long names. Missing paths fall back to absolute
- *
- * lexical normalization.
+ * Resolves aliases in the existing prefix and keeps the remaining path
+ * lexical. Windows uses the normalized long names of the existing entries.
  */
 inline std::string ResolveFilesystemPath(const std::string &path)
 {
@@ -117,38 +138,8 @@ inline std::string ResolveFilesystemPath(const std::string &path)
         return {};
 
     std::error_code error;
-    std::filesystem::path resolved = ToFsPath(lexical);
-    auto canonical = std::filesystem::weakly_canonical(resolved, error);
-    if (!error)
-        resolved = std::move(canonical);
-
-#ifdef INX_PLATFORM_WINDOWS
-    std::filesystem::path existingPrefix = resolved;
-    std::vector<std::filesystem::path> missingSuffix;
-    while (!existingPrefix.empty() && !std::filesystem::exists(existingPrefix, error)) {
-        error.clear();
-        const auto parent = existingPrefix.parent_path();
-        if (parent == existingPrefix)
-            break;
-        missingSuffix.push_back(existingPrefix.filename());
-        existingPrefix = parent;
-    }
-
-    const std::wstring native = existingPrefix.native();
-    const DWORD required = GetLongPathNameW(native.c_str(), nullptr, 0);
-    if (required > 0) {
-        std::wstring expanded(static_cast<size_t>(required), L'\0');
-        const DWORD written = GetLongPathNameW(native.c_str(), expanded.data(), required);
-        if (written > 0 && written < required) {
-            expanded.resize(static_cast<size_t>(written));
-            resolved = std::filesystem::path(std::move(expanded));
-            for (auto it = missingSuffix.rbegin(); it != missingSuffix.rend(); ++it)
-                resolved /= *it;
-        }
-    }
-#endif
-
-    return FromFsPath(resolved.lexically_normal());
+    const auto canonical = std::filesystem::weakly_canonical(ToFsPath(lexical), error);
+    return error ? lexical : FromFsPath(canonical.lexically_normal());
 }
 
 inline std::string PortablePathFilename(const std::string &path)
@@ -239,19 +230,23 @@ inline bool FilesystemPathsEquivalent(const std::string &left, const std::string
     return FilesystemPathKey(left) == FilesystemPathKey(right);
 }
 
+/// Pure containment on already normalized keys, with a component boundary.
+inline bool IsFilesystemPathKeyWithin(const std::string &path, const std::string &root, bool allowRoot = true)
+{
+    if (path.empty() || root.empty())
+        return false;
+    if (path == root)
+        return allowRoot;
+    return path.size() > root.size() && path.compare(0, root.size(), root) == 0 &&
+           (root.back() == '/' || path[root.size()] == '/');
+}
+
 inline bool IsFilesystemPathWithin(const std::string &path, const std::string &root, bool allowRoot = true)
 {
     if (path.empty() || root.empty())
         return false;
 
-    const auto candidate = ToFsPath(FilesystemPathKey(path));
-    const auto parent = ToFsPath(FilesystemPathKey(root));
-    auto candidatePart = candidate.begin();
-    for (auto rootPart = parent.begin(); rootPart != parent.end(); ++rootPart, ++candidatePart) {
-        if (candidatePart == candidate.end() || *candidatePart != *rootPart)
-            return false;
-    }
-    return allowRoot || candidatePart != candidate.end();
+    return IsFilesystemPathKeyWithin(FilesystemPathKey(path), FilesystemPathKey(root), allowRoot);
 }
 
 inline bool TryMakeRelativeFilesystemPath(const std::string &path, const std::string &root, std::string &relative,
@@ -283,54 +278,242 @@ inline bool TryMakeRelativeFilesystemPath(const std::string &path, const std::st
     return TryNormalizePortableRelativePath(FromFsPath(result), relative, allowRoot);
 }
 
+#ifdef INX_PLATFORM_LINUX
+inline std::filesystem::path NativeDescriptorPath(int descriptor)
+{
+    return std::filesystem::path("/proc/self/fd") / std::to_string(descriptor);
+}
+#endif
+
+/// One seekable input snapshot. Readers permit atomic pathname publication;
+/// callers choose bounded blocks rather than requiring a whole-file copy.
+class FileInput
+{
+  public:
+    enum class Sharing
+    {
+        ReadWrite,
+        Snapshot
+    };
+
+    struct State
+    {
+        uint64_t size;
+        std::pair<int64_t, int64_t> modified;
+    };
+
+    struct Revision
+    {
+        State data;
+        std::pair<uint64_t, uint64_t> identity;
+        std::pair<int64_t, int64_t> changed;
+
+        bool operator==(const Revision &other) const
+        {
+            return data.size == other.data.size && data.modified == other.data.modified && identity == other.identity &&
+                   changed == other.changed;
+        }
+    };
+
+    explicit FileInput(const std::filesystem::path &path, Sharing sharing = Sharing::ReadWrite)
+    {
+#ifdef INX_PLATFORM_WINDOWS
+        shareAccess_ = FILE_SHARE_READ | FILE_SHARE_DELETE;
+        if (sharing == Sharing::ReadWrite)
+            shareAccess_ |= FILE_SHARE_WRITE;
+        handle_ = ::CreateFileW(NativeFilePath(path).c_str(), GENERIC_READ, shareAccess_, nullptr, OPEN_EXISTING,
+                                FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE)
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "Cannot open file input");
+#else
+        (void)sharing;
+        descriptor_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (descriptor_ < 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot open file input: " + FromFsPath(path));
+#endif
+    }
+#ifdef INX_PLATFORM_LINUX
+    int Descriptor() const
+    {
+        return descriptor_;
+    }
+#endif
+    ~FileInput()
+    {
+        Close();
+    }
+    FileInput(const FileInput &) = delete;
+    FileInput &operator=(const FileInput &) = delete;
+
+    void Close() noexcept
+    {
+        std::lock_guard lock(mutex_);
+#ifdef INX_PLATFORM_WINDOWS
+        if (handle_ != INVALID_HANDLE_VALUE)
+            ::CloseHandle(std::exchange(handle_, INVALID_HANDLE_VALUE));
+#else
+        if (descriptor_ >= 0)
+            ::close(std::exchange(descriptor_, -1));
+#endif
+    }
+
+    uint64_t Size()
+    {
+        return Inspect().size;
+    }
+
+    State Inspect()
+    {
+        std::lock_guard lock(mutex_);
+#ifdef INX_PLATFORM_WINDOWS
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (!::GetFileInformationByHandle(handle_, &info))
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "Cannot inspect file input");
+        return {(uint64_t{info.nFileSizeHigh} << 32) | info.nFileSizeLow,
+                {info.ftLastWriteTime.dwHighDateTime, info.ftLastWriteTime.dwLowDateTime}};
+#else
+        struct stat info{};
+        if (::fstat(descriptor_, &info) != 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot inspect file input");
+#ifdef __APPLE__
+        const auto &modified = info.st_mtimespec;
+#else
+        const auto &modified = info.st_mtim;
+#endif
+        return {static_cast<uint64_t>(info.st_size), {modified.tv_sec, modified.tv_nsec}};
+#endif
+    }
+
+    /// Identity of the open object, including in-place changes that restore mtime.
+    Revision InspectRevision()
+    {
+        std::lock_guard lock(mutex_);
+#ifdef INX_PLATFORM_WINDOWS
+        BY_HANDLE_FILE_INFORMATION info{};
+        FILE_BASIC_INFO basic{};
+        if (!::GetFileInformationByHandle(handle_, &info) ||
+            !::GetFileInformationByHandleEx(handle_, FileBasicInfo, &basic, sizeof(basic)))
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "Cannot inspect file revision");
+        return {{(uint64_t{info.nFileSizeHigh} << 32) | info.nFileSizeLow,
+                 {info.ftLastWriteTime.dwHighDateTime, info.ftLastWriteTime.dwLowDateTime}},
+                {info.dwVolumeSerialNumber, (uint64_t{info.nFileIndexHigh} << 32) | info.nFileIndexLow},
+                {basic.ChangeTime.QuadPart, 0}};
+#else
+        struct stat info{};
+        if (::fstat(descriptor_, &info) != 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot inspect file revision");
+#ifdef __APPLE__
+        const auto &modified = info.st_mtimespec;
+        const auto &changed = info.st_ctimespec;
+#else
+        const auto &modified = info.st_mtim;
+        const auto &changed = info.st_ctim;
+#endif
+        return {{static_cast<uint64_t>(info.st_size), {modified.tv_sec, modified.tv_nsec}},
+                {static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino)},
+                {changed.tv_sec, changed.tv_nsec}};
+#endif
+    }
+
+    void Seek(uint64_t offset)
+    {
+        std::lock_guard lock(mutex_);
+        position_ = offset;
+    }
+
+#ifdef INX_PLATFORM_WINDOWS
+    std::pair<uint64_t, uint64_t> Identity()
+    {
+        std::lock_guard lock(mutex_);
+        return FileIdentity(handle_);
+    }
+
+    HANDLE OpenOverlapped()
+    {
+        std::lock_guard lock(mutex_);
+        const auto handle =
+            ::ReOpenFile(handle_, GENERIC_READ, shareAccess_, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN);
+        if (handle == INVALID_HANDLE_VALUE)
+            throw std::system_error(static_cast<int>(::GetLastError()), std::system_category(),
+                                    "Cannot open asynchronous file input");
+        return handle;
+    }
+#endif
+
+    void Read(void *destination, size_t bytes)
+    {
+        std::lock_guard lock(mutex_);
+        ReadExact(position_, destination, bytes);
+        position_ += bytes;
+    }
+
+    /// Independent ranges share the same file revision, without moving the
+    /// sequential cursor. Decode/consumer work happens outside this IO lock.
+    void ReadAt(uint64_t offset, void *destination, size_t bytes)
+    {
+        std::lock_guard lock(mutex_);
+        ReadExact(offset, destination, bytes);
+    }
+
+  private:
+    void ReadExact(uint64_t offset, void *destination, size_t bytes)
+    {
+        auto *data = static_cast<unsigned char *>(destination);
+        while (bytes) {
+            const auto count = (std::min)(bytes, size_t{1} << 30);
+#ifdef INX_PLATFORM_WINDOWS
+            OVERLAPPED range{};
+            range.Offset = static_cast<DWORD>(offset);
+            range.OffsetHigh = static_cast<DWORD>(offset >> 32);
+            DWORD received = 0;
+            // A synchronous handle can read at an explicit offset in one call.
+            if (!::ReadFile(handle_, data, static_cast<DWORD>(count), &received, &range)) {
+                const auto error = ::GetLastError();
+                if (error != ERROR_HANDLE_EOF)
+                    throw std::system_error(static_cast<int>(error), std::system_category(), "Cannot read file input");
+            }
+#else
+            const auto received = ::pread(descriptor_, data, count, static_cast<off_t>(offset));
+            if (received < 0) {
+                if (errno == EINTR)
+                    continue;
+                throw std::system_error(errno, std::generic_category(), "Cannot read file input");
+            }
+#endif
+            if (!received)
+                throw std::runtime_error("File input ended before the requested range");
+            data += received;
+            bytes -= received;
+            offset += received;
+        }
+    }
+
+    std::mutex mutex_;
+    uint64_t position_ = 0;
+#ifdef INX_PLATFORM_WINDOWS
+    DWORD shareAccess_;
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+    int descriptor_ = -1;
+#endif
+};
+
 /**
  * @brief Read a file into a byte vector, supporting Unicode paths on Windows.
  */
 inline bool ReadFileBytes(const std::string &filePath, std::vector<unsigned char> &out)
 {
-#ifdef INX_PLATFORM_WINDOWS
-    // A reader keeps its file snapshot alive while an atomic writer replaces
-    // or invalidates the pathname. CRT streams do not share delete access.
-    const HANDLE handle =
-        ::CreateFileW(ToFsPath(filePath).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                      nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
+    try {
+        FileInput file(ToFsPath(filePath));
+        out.resize(static_cast<size_t>(file.Size()));
+        file.Read(out.data(), out.size());
+        return true;
+    } catch (const std::runtime_error &) {
         return false;
-    struct InputFile
-    {
-        HANDLE handle;
-        ~InputFile()
-        {
-            ::CloseHandle(handle);
-        }
-    } file{handle};
-    LARGE_INTEGER size;
-    if (!::GetFileSizeEx(file.handle, &size) || size.QuadPart < 0)
-        return false;
-    out.resize(static_cast<size_t>(size.QuadPart));
-    size_t offset = 0;
-    while (offset < out.size()) {
-        const auto count = static_cast<DWORD>((std::min)(out.size() - offset, size_t{1} << 30));
-        DWORD received = 0;
-        if (!::ReadFile(file.handle, out.data() + offset, count, &received, nullptr) || received == 0)
-            return false;
-        offset += received;
     }
-    return true;
-#else
-    std::ifstream file(ToFsPath(filePath), std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        return false;
-    auto size = file.tellg();
-    if (size <= 0) {
-        out.clear();
-        return size == 0;
-    }
-    out.resize(static_cast<size_t>(size));
-    file.seekg(0);
-    file.read(reinterpret_cast<char *>(out.data()), size);
-    return !file.fail();
-#endif
 }
 
 inline std::ifstream OpenInputFile(const std::string &filePath, std::ios_base::openmode mode = std::ios::in)

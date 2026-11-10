@@ -39,11 +39,15 @@ _PARALLEL_CACHE_PREFIX = "parallel-"
 
 def _package_index(data_root: Path) -> dict[str, tuple[str, int]]:
     index_path = data_root / "PackageIndex.inxmanifest"
-    records: dict[str, tuple[str, int]] = {}
     try:
-        lines = index_path.read_text(encoding="ascii").splitlines()
+        return _parse_package_index(index_path.read_text(encoding="ascii"))
     except OSError as exc:
         raise RuntimeError(f"Player package index is unreadable: {index_path}") from exc
+
+
+def _parse_package_index(source: str) -> dict[str, tuple[str, int]]:
+    lines = source.splitlines()
+    records: dict[str, tuple[str, int]] = {}
     if not lines or lines[0] != _PACKAGE_INDEX_HEADER:
         raise RuntimeError("Player package index uses an unsupported format")
     for line in lines[1:]:

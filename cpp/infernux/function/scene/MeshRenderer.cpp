@@ -11,6 +11,7 @@
 #include <cstring>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/CurveJson.h>
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxMesh/ModelMeshIdentity.h>
 #include <function/scene/PrimitiveMeshes.h>
@@ -98,15 +99,13 @@ bool RendererParameterEquals(const MaterialProperty &left, const MaterialPropert
            RendererParameterValueEquals(left.value, right.value);
 }
 
-std::vector<std::string> ResolveModelNodePathBySubresourceId(const std::string &meshGuid,
-                                                             const std::string &subresourceId,
+std::vector<std::string> ResolveModelNodePathBySubresourceId(const InxMesh *mesh, const std::string &subresourceId,
                                                              std::vector<std::string> serializedPath)
 {
-    if (subresourceId.empty())
+    if (subresourceId.empty() || !mesh)
         return serializedPath;
 
-    auto *assetDb = AssetRegistry::Instance().GetAssetDatabase();
-    const auto meta = assetDb ? assetDb->GetMetaByGuid(meshGuid) : nullptr;
+    const auto &meta = mesh->GetImportMetadata();
     if (!meta || !meta->HasKey("model_meshes"))
         throw std::invalid_argument("Model mesh identity manifest is unavailable");
 
@@ -498,9 +497,9 @@ void MeshRenderer::SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> i
     m_meshAsset.Clear();
     m_modelNodePath.clear();
     m_modelSubresourceId.clear();
-    ++m_inlineMeshVersion;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     ComputeLocalBoundsFromInlineVertices();
+    OnMeshSourceChanged();
     NotifyCollisionGeometryChanged(this);
 }
 
@@ -520,14 +519,14 @@ void MeshRenderer::SetProceduralMesh(std::vector<Vertex> vertices, std::vector<u
     m_meshAsset.Clear();
     m_modelNodePath.clear();
     m_modelSubresourceId.clear();
-    ++m_inlineMeshVersion;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     ComputeLocalBoundsFromInlineVertices();
     const bool isDrawable = !m_inlineVertices.empty() && !m_inlineIndices.empty();
     if (wasDrawable != isDrawable || wasSharedPrimitive)
         SceneManager::Instance().NotifyMeshRendererChanged(this);
     else
         SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
+    OnMeshSourceChanged();
 }
 
 void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
@@ -546,8 +545,7 @@ void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, c
     m_meshAsset.Clear();
     m_modelNodePath.clear();
     m_modelSubresourceId.clear();
-    ++m_inlineMeshVersion;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
 
     // Cache bounds per primitive type (keyed by static vertex data address).
     // Avoids iterating all vertices for every identical primitive.
@@ -561,6 +559,7 @@ void MeshRenderer::SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, c
         s_boundsCache[&vertices] = {m_localBoundsMin, m_localBoundsMax};
     }
 
+    OnMeshSourceChanged();
     NotifyCollisionGeometryChanged(this);
 }
 
@@ -577,8 +576,7 @@ void MeshRenderer::RecalculateInlineNormals()
         m_sharedIndices = nullptr;
     }
     RecalculateMeshNormals(m_inlineVertices, m_inlineIndices);
-    ++m_inlineMeshVersion;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
 }
 
@@ -595,8 +593,7 @@ void MeshRenderer::RecalculateInlineTangents()
         m_sharedIndices = nullptr;
     }
     RecalculateMeshTangents(m_inlineVertices, m_inlineIndices);
-    ++m_inlineMeshVersion;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
 }
 
@@ -668,7 +665,7 @@ void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh
     const uint64_t runtimeVersion = guid.empty() ? 0 : AssetRegistry::Instance().GetAssetVersion(guid);
     m_meshAsset = AssetRef<InxMesh>(guid, std::move(mesh), runtimeVersion);
     m_useInlineMesh = false;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     m_inlineVertices.clear();
     m_inlineIndices.clear();
     m_sharedVertices = nullptr;
@@ -684,6 +681,7 @@ void MeshRenderer::SetMeshAsset(const std::string &guid, std::shared_ptr<InxMesh
         UpdateBoundsForMeshSelection(m);
 
     SyncMaterialSlotsToMesh();
+    OnMeshSourceChanged();
     NotifyCollisionGeometryChanged(this);
 }
 
@@ -699,7 +697,7 @@ void MeshRenderer::SetMeshAssetGuid(const std::string &guid)
 
     m_meshAsset.SetGuid(guid);
     m_useInlineMesh = false;
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     m_inlineVertices.clear();
     m_inlineIndices.clear();
     m_sharedVertices = nullptr;
@@ -709,6 +707,7 @@ void MeshRenderer::SetMeshAssetGuid(const std::string &guid)
     if (!guid.empty())
         graph.AddRuntimeDependency(GetInstanceGuid(), guid);
 
+    OnMeshSourceChanged();
     NotifyCollisionGeometryChanged(this);
 }
 
@@ -721,7 +720,7 @@ void MeshRenderer::ClearMeshAsset()
 
     m_meshAsset.Clear();
     m_embeddedMaterialVersions.clear();
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     m_useInlineMesh = false;
     m_inlineVertices.clear();
     m_inlineIndices.clear();
@@ -730,6 +729,7 @@ void MeshRenderer::ClearMeshAsset()
     m_vertexBuffer.reset();
     m_localBoundsMin = glm::vec3(-0.5f);
     m_localBoundsMax = glm::vec3(0.5f);
+    OnMeshSourceChanged();
     NotifyCollisionGeometryChanged(this);
 }
 
@@ -740,7 +740,7 @@ void MeshRenderer::OnMeshAssetEvent(const std::string &meshGuid, AssetEvent even
 
     if (event == AssetEvent::Deleted) {
         m_meshAsset.Invalidate();
-        m_meshBufferDirty = true;
+        MarkMeshSourceDirty();
         m_useInlineMesh = false;
         m_inlineVertices.clear();
         m_inlineIndices.clear();
@@ -753,7 +753,10 @@ void MeshRenderer::OnMeshAssetEvent(const std::string &meshGuid, AssetEvent even
         return;
     }
 
+    const auto previousVersion = m_meshAsset.GetCachedVersion();
     AssetRegistry::Instance().Resolve(m_meshAsset, ResourceType::Mesh);
+    if (m_meshAsset.GetCachedVersion() != previousVersion)
+        ++m_geometryVersion;
     auto mesh = m_meshAsset.Get();
     if (!mesh)
         return;
@@ -770,6 +773,7 @@ void MeshRenderer::OnMeshAssetEvent(const std::string &meshGuid, AssetEvent even
 
 bool MeshRenderer::ConsumeMeshBufferDirty()
 {
+    EnsureProceduralGeometryCurrent();
     bool d = m_meshBufferDirty;
     m_meshBufferDirty = false;
     return d;
@@ -789,6 +793,8 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
     const std::string guid = material ? material->GetGuid() : "";
     if (oldMat == material && oldGuid == guid)
         return;
+    m_materialInstanced.resize(m_materials.size(), false);
+    m_materialInstanced[slot] = false;
 
     auto &graph = AssetDependencyGraph::Instance();
     if (!oldGuid.empty())
@@ -828,6 +834,8 @@ void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
     if (slot >= m_materials.size())
         m_materials.resize(slot + 1);
     EnsureParameterSlot(slot);
+    m_materialInstanced.resize(m_materials.size(), false);
+    m_materialInstanced[slot] = false;
     m_embeddedMaterialVersions.resize(m_materials.size());
     m_embeddedMaterialVersions[slot].reset();
 
@@ -877,7 +885,13 @@ void MeshRenderer::SetMaterialSlots(const std::vector<MaterialSlotValue> &materi
             graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
     }
 
+    std::vector<bool> instanced(candidate.size(), false);
+    for (size_t slot = 0; slot < candidate.size() && slot < m_materials.size(); ++slot)
+        instanced[slot] = IsMaterialInstantiated(static_cast<uint32_t>(slot)) &&
+                          candidate[slot].Get() == m_materials[slot].Get() &&
+                          candidate[slot].GetGuid() == m_materials[slot].GetGuid();
     m_materials = std::move(candidate);
+    m_materialInstanced = std::move(instanced);
     m_embeddedMaterialVersions.assign(materials.size(), std::nullopt);
     m_persistentParameters.resize(materials.size());
     m_runtimeParameters.resize(materials.size());
@@ -903,6 +917,7 @@ void MeshRenderer::SetMaterialSlotCount(uint32_t count)
             graph.RemoveRuntimeDependency(GetInstanceGuid(), m_materials[i].GetGuid());
     }
     m_materials.resize(count);
+    m_materialInstanced.resize(count, false);
     m_embeddedMaterialVersions.resize(count);
     m_persistentParameters.resize(count);
     m_runtimeParameters.resize(count);
@@ -1078,13 +1093,18 @@ void MeshRenderer::SetRuntimeParameterProperty(uint32_t slot, MaterialProperty p
 const MaterialProperty *MeshRenderer::GetParameter(uint32_t slot, const std::string &name, bool persistentOnly,
                                                    const std::string &owner) const
 {
+    const auto compatible = [&](const MaterialProperty &property) -> const MaterialProperty * {
+        const auto material = GetEffectiveMaterial(slot);
+        const auto *declared = material ? material->GetProperty(name) : nullptr;
+        return declared && MaterialPropertyOverrideCompatible(*declared, property) ? &property : nullptr;
+    };
     if (!persistentOnly && slot < m_runtimeParameters.size()) {
         if (!owner.empty()) {
             const auto layer = m_runtimeParameters[slot].find(owner);
             if (layer != m_runtimeParameters[slot].end()) {
                 const auto found = layer->second.find(name);
                 if (found != layer->second.end())
-                    return &found->second.property;
+                    return compatible(found->second.property);
             }
         } else {
             const RuntimeParameterEntry *newest = nullptr;
@@ -1095,13 +1115,13 @@ const MaterialProperty *MeshRenderer::GetParameter(uint32_t slot, const std::str
                     newest = &found->second;
             }
             if (newest)
-                return &newest->property;
+                return compatible(newest->property);
         }
     }
     if ((persistentOnly || owner.empty()) && slot < m_persistentParameters.size()) {
         const auto found = m_persistentParameters[slot].find(name);
         if (found != m_persistentParameters[slot].end())
-            return &found->second;
+            return compatible(found->second);
     }
     return nullptr;
 }
@@ -1151,6 +1171,64 @@ std::shared_ptr<InxMaterial> MeshRenderer::GetMaterial(uint32_t slot) const
     if (slot >= m_materials.size())
         return nullptr;
     return m_materials[slot].Get();
+}
+
+std::shared_ptr<InxMaterial> MeshRenderer::GetInstancedMaterial(uint32_t slot)
+{
+    auto material = GetMaterial(slot);
+    if (IsMaterialInstantiated(slot))
+        return material;
+    // Primitives express their implicit default with an absent slot. An
+    // explicit null slot remains null rather than creating a fallback instance.
+    if (!material && slot == 0 && m_materials.empty() && (HasInlineMesh() || HasMeshAsset()))
+        material = GetEffectiveMaterial(0);
+    if (!material || material->IsDeleted())
+        return nullptr;
+    auto instance = material->CloneRendererInstance();
+    instance->SetName(material->GetName() + " (Instance)");
+    SetMaterial(slot, instance);
+    m_materialInstanced[slot] = true;
+    return instance;
+}
+
+MeshRenderer::MaterialBindingsSnapshot MeshRenderer::CaptureMaterialBindings() const
+{
+    return {GetInstanceGuid(),
+            m_materials,
+            m_materialInstanced,
+            m_embeddedMaterialVersions,
+            {m_persistentParameters.size(), m_runtimeParameters.size(), m_parameterBlocks.size()}};
+}
+
+void MeshRenderer::RestoreMaterialBindings(const MaterialBindingsSnapshot &snapshot)
+{
+    if (snapshot.owner != GetInstanceGuid())
+        throw std::invalid_argument("Material binding snapshot belongs to another renderer");
+    auto &graph = AssetDependencyGraph::Instance();
+    for (const auto &ref : m_materials)
+        if (ref.HasGuid())
+            graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
+    m_materials = snapshot.materials;
+    m_materialInstanced = snapshot.instanced;
+    m_embeddedMaterialVersions = snapshot.imported;
+    m_persistentParameters.resize(snapshot.parameterSizes[0]);
+    m_runtimeParameters.resize(snapshot.parameterSizes[1]);
+    m_parameterBlocks.resize(snapshot.parameterSizes[2]);
+    for (const auto &ref : m_materials)
+        if (ref.HasGuid())
+            graph.AddRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
+    RefreshParameterTextureDependencies();
+    NotifyRenderableStateChanged(this);
+}
+
+void MeshRenderer::CopyMaterialBindingsTo(MeshRenderer &destination) const
+{
+    auto snapshot = CaptureMaterialBindings();
+    snapshot.owner = destination.GetInstanceGuid();
+    snapshot.instanced.assign(snapshot.materials.size(), false);
+    snapshot.parameterSizes = {destination.m_persistentParameters.size(), destination.m_runtimeParameters.size(),
+                               destination.m_parameterBlocks.size()};
+    destination.RestoreMaterialBindings(snapshot);
 }
 
 std::shared_ptr<InxMaterial> MeshRenderer::GetEffectiveMaterial(uint32_t slot) const
@@ -1367,6 +1445,7 @@ void MeshRenderer::SetNodeGroup(int32_t group)
         return;
     m_nodeGroup = group;
     if (HasMeshAsset()) {
+        ++m_geometryVersion;
         auto mesh = m_meshAsset.Get();
         if (mesh) {
             UpdateBoundsForMeshSelection(mesh);
@@ -1398,7 +1477,7 @@ void MeshRenderer::SetModelNodePath(std::vector<std::string> path)
     if (mesh)
         UpdateBoundsForMeshSelection(mesh);
     SyncMaterialSlotsToMesh();
-    MarkMeshBufferDirty();
+    MarkMeshSourceDirty();
     NotifyCollisionGeometryChanged(this);
 }
 
@@ -1445,6 +1524,7 @@ void MeshRenderer::SetSubmeshIndex(int32_t index)
         return;
     m_submeshIndex = index;
     if (auto mesh = m_meshAsset.Get()) {
+        ++m_geometryVersion;
         UpdateBoundsForMeshSelection(mesh);
         SyncMaterialSlotsToMesh();
     }
@@ -1665,12 +1745,15 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     if (expectedType == "SpriteRenderer") {
         required.insert(required.end(), {"frameId", "spriteColor", "flipX", "flipY"});
         optional.push_back("spriteGuid");
-    } else if (expectedType == "LineRenderer") {
+    } else if (expectedType == "LineRenderer" || expectedType == "TrailRenderer") {
         required.insert(required.end(), {"positions", "widthCurve", "widthMultiplier", "colorGradient", "loop",
                                          "useWorldSpace", "alignment", "textureMode", "textureScale",
                                          "numCornerVertices", "numCapVertices", "shadowBias", "generateLightingData"});
+        if (expectedType == "TrailRenderer")
+            required.insert(required.end(), {"time", "minVertexDistance", "emitting"});
     } else if (expectedType == "SkinnedMeshRenderer") {
         optional.push_back("activeTakeName");
+        optional.push_back("skeleton_component_id");
     } else if (expectedType != "MeshRenderer") {
         throw std::invalid_argument("unsupported MeshRenderer document type: " + std::string(expectedType));
     }
@@ -1800,6 +1883,8 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
 
     if (expectedType == "SkinnedMeshRenderer" && j.contains("activeTakeName"))
         RequireString(j, "activeTakeName", expectedType);
+    if (expectedType == "SkinnedMeshRenderer" && j.contains("skeleton_component_id"))
+        RequireUnsignedInteger(j, "skeleton_component_id", expectedType);
     if (expectedType == "SpriteRenderer") {
         const auto &frameId = RequireString(j, "frameId", expectedType);
         if (!frameId.empty()) {
@@ -1822,7 +1907,7 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
                     "SpriteRenderer.frameId must identify a persisted SpriteFrame when spriteGuid is set");
         }
     }
-    if (expectedType == "LineRenderer") {
+    if (expectedType == "LineRenderer" || expectedType == "TrailRenderer") {
         const auto &positions = j["positions"];
         if (!positions.is_array())
             throw std::invalid_argument("LineRenderer.positions must be an array");
@@ -1864,22 +1949,27 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
 
         const auto &widthCurve = j["widthCurve"];
         if (!widthCurve.is_object() || widthCurve.size() != 3 || !widthCurve.contains("keys") ||
-            !widthCurve.contains("preWrap") || !widthCurve.contains("postWrap") || !widthCurve["keys"].is_array() ||
-            widthCurve["keys"].empty())
+            !widthCurve.contains("preWrap") || !widthCurve.contains("postWrap") || !widthCurve["keys"].is_array())
             throw std::invalid_argument("LineRenderer.widthCurve has invalid fields");
         double previousTime = -std::numeric_limits<double>::infinity();
         for (const auto &key : widthCurve["keys"]) {
-            if (!key.is_object() || key.size() != 4 || !key.contains("time") || !key.contains("value") ||
-                !key.contains("inTangent") || !key.contains("outTangent"))
+            if (!key.is_object() || (key.size() != 4 && key.size() != 7) || !key.contains("time") ||
+                !key.contains("value") || !key.contains("inTangent") || !key.contains("outTangent") ||
+                (key.size() == 7 &&
+                 (!key.contains("inWeight") || !key.contains("outWeight") || !key.contains("weightedMode"))))
                 throw std::invalid_argument("LineRenderer.widthCurve contains an invalid key");
-            for (const char *field : {"time", "value", "inTangent", "outTangent"}) {
-                if (!key[field].is_number() || !std::isfinite(key[field].get<double>()))
-                    throw std::invalid_argument("LineRenderer.widthCurve keys must contain finite numbers");
+            for (const char *field : {"value", "inTangent", "outTangent"})
+                curvejson::Read(key[field]);
+            if (key.size() == 7) {
+                for (const char *field : {"inWeight", "outWeight"})
+                    curvejson::Read(key[field]);
+                if (!key["weightedMode"].is_number_integer())
+                    throw std::invalid_argument("LineRenderer curve weightedMode must be an integer");
+                key["weightedMode"].get<int32_t>();
             }
-            const double time = key["time"].get<double>();
-            if (time <= previousTime || key["value"].get<double>() < 0.0)
-                throw std::invalid_argument(
-                    "LineRenderer.widthCurve key times must increase and values must be non-negative");
+            const double time = curvejson::Read(key["time"]);
+            if (std::isnan(time) || time < previousTime)
+                throw std::invalid_argument("LineRenderer.widthCurve key times must be ordered and non-NaN");
             previousTime = time;
         }
         const auto requireNestedEnum = [&](const nlohmann::json &object, const char *field, int maximum,
@@ -1890,8 +1980,8 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
             if (value < 0 || value > maximum)
                 throw std::invalid_argument(std::string(label) + " is outside its enum range");
         };
-        requireNestedEnum(widthCurve, "preWrap", 2, "LineRenderer.widthCurve.preWrap");
-        requireNestedEnum(widthCurve, "postWrap", 2, "LineRenderer.widthCurve.postWrap");
+        requireNestedEnum(widthCurve, "preWrap", 4, "LineRenderer.widthCurve.preWrap");
+        requireNestedEnum(widthCurve, "postWrap", 4, "LineRenderer.widthCurve.postWrap");
 
         const auto &gradient = j["colorGradient"];
         if (!gradient.is_object() || gradient.size() != 2 || !gradient.contains("keys") || !gradient.contains("mode") ||
@@ -1916,6 +2006,14 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
             previousTime = time;
         }
         requireNestedEnum(gradient, "mode", 2, "LineRenderer.colorGradient.mode");
+        if (expectedType == "TrailRenderer") {
+            requireFiniteNonNegative("time");
+            requireFiniteNonNegative("minVertexDistance");
+            if (!j["emitting"].is_boolean())
+                throw std::invalid_argument("TrailRenderer.emitting must be boolean");
+            if (j["loop"].get<bool>() || !j["useWorldSpace"].get<bool>())
+                throw std::invalid_argument("TrailRenderer requires a non-looping world-space ribbon");
+        }
     }
 }
 
@@ -1932,7 +2030,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         }
         const std::string stagedSubresourceId = j.value("modelSubresourceId", std::string{});
         const auto stagedPath = ResolveModelNodePathBySubresourceId(
-            meshGuid, stagedSubresourceId, j.value("modelNodePath", std::vector<std::string>{}));
+            stagedMesh.get(), stagedSubresourceId, j.value("modelNodePath", std::vector<std::string>{}));
         const bool meshAssetResolved = static_cast<bool>(stagedMesh);
         if (!stagedPath.empty() && stagedMesh && !stagedMesh->GetModelSourceGeometry())
             throw std::invalid_argument("Model node binding requires node-local source geometry");
@@ -1996,6 +2094,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         }
 
         // Mesh asset GUID (model-file meshes managed by AssetRegistry)
+        ApplyRendererDocumentFields(j);
         if (stagedMesh)
             SetMeshAsset(meshGuid, std::move(stagedMesh));
         else if (!meshGuid.empty())
@@ -2018,6 +2117,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
                 graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
         }
         m_materials = std::move(stagedMaterials);
+        m_materialInstanced.assign(m_materials.size(), false);
         m_embeddedMaterialVersions.assign(m_materials.size(), std::nullopt);
         for (const auto &reference : m_materials) {
             if (reference.HasGuid())
@@ -2122,7 +2222,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
             }
         }
 
-        ++m_inlineMeshVersion;
+        ++m_geometryVersion;
 
         // Component deserialization is intentionally order-independent.  A
         // MeshCollider may have been deserialized before this renderer and
@@ -2153,7 +2253,7 @@ std::unique_ptr<Component> MeshRenderer::Clone() const
     // Inline mesh
     clone->m_useInlineMesh = m_useInlineMesh;
     clone->m_inlineMeshName = m_inlineMeshName;
-    clone->m_inlineMeshVersion = m_inlineMeshVersion;
+    clone->m_geometryVersion = m_geometryVersion;
     clone->m_sharedVertices = m_sharedVertices;
     clone->m_sharedIndices = m_sharedIndices;
     if (!m_sharedVertices) {
@@ -2162,6 +2262,9 @@ std::unique_ptr<Component> MeshRenderer::Clone() const
     }
     // Materials
     clone->m_materials = m_materials;
+    // A cloned renderer initially shares references, then instantiates its own
+    // materials on demand, including a source that was already instantiated.
+    clone->m_materialInstanced.assign(m_materials.size(), false);
     clone->m_embeddedMaterialVersions = m_embeddedMaterialVersions;
     clone->m_persistentParameters = m_persistentParameters;
     clone->m_runtimeParameters.clear();

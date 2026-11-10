@@ -1,6 +1,7 @@
 #include <function/renderer/FullscreenRenderer.h>
 #include <function/renderer/SceneRenderGraph.h>
 #include <function/renderer/gui/WorldUIDepthReplay.h>
+#include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/scene/Camera.h>
 
 #ifdef NDEBUG
@@ -10,20 +11,45 @@
 #include <cmath>
 #include <string_view>
 #include <utility>
+#include <utility>
 
 using namespace infernux;
 
 namespace
 {
 
+rhi::RenderViewContext FixtureView(uint32_t samples, uint32_t width, uint32_t height)
+{
+    rhi::RenderViewContext view;
+    view.width = width;
+    view.height = height;
+    view.colorFormat = rhi::PixelFormat::RGBA16SFloat;
+    view.depthFormat = rhi::PixelFormat::D32SFloat;
+    view.samples = static_cast<rhi::SampleCount>(samples);
+    return view;
+}
+
+bool ValidateRenderGraphDescription(const RenderGraphDescription &graph, uint32_t samples, uint32_t width = 0, uint32_t height = 0)
+{
+    return infernux::ValidateRenderGraphDescription(graph, FixtureView(samples, width, height));
+}
+
+GraphTextureDesc CameraAttachment(std::string name, rhi::PixelFormat format)
+{
+    GraphTextureDesc result{std::move(name), format};
+    result.samples = 0;
+    result.role = GraphTextureRole::Camera;
+    return result;
+}
+
 void CheckWorldUIDepthReplay()
 {
     RenderGraphDescription graph;
     graph.name = "Pipeline+Stack";
-    graph.textures.push_back({"depth", rhi::PixelFormat::D32SFloat, false, true});
+    graph.textures.push_back(CameraAttachment("view_depth", rhi::PixelFormat::D32SFloat));
     GraphPassDesc opaque;
     opaque.name = "OpaquePass";
-    opaque.writeDepth = "depth";
+    opaque.writeDepth = "view_depth";
     opaque.clearDepth = true;
     GraphCommandDesc draw;
     draw.queueMax = 2999;
@@ -32,7 +58,7 @@ void CheckWorldUIDepthReplay()
     opaque.commands.push_back(draw);
     GraphPassDesc ui;
     ui.name = "_WorldUI";
-    ui.writeDepth = "depth";
+    ui.writeDepth = "view_depth";
     GraphCommandDesc world;
     world.type = GraphCommandType::DrawWorldUI;
     ui.commands.push_back(world);
@@ -78,7 +104,7 @@ void CheckWorldUIDepthReplay()
     invalid.passes.pop_back();
     assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
-    invalid.textures[0].width = 128;
+    invalid.textures[0].role = GraphTextureRole::Transient;
     assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI")); // Not the view depth attachment.
 
     // A later label stage must inspect its own depth history, rather than
@@ -152,7 +178,7 @@ void CheckFullscreenState()
 {
     RenderGraphDescription graph;
     graph.textures.push_back({"color", rhi::PixelFormat::RGBA8UNorm});
-    graph.textures.push_back({"depth", rhi::PixelFormat::D32SFloat, false, true});
+    graph.textures.push_back(CameraAttachment("depth", rhi::PixelFormat::D32SFloat));
     GraphPassDesc initialize;
     initialize.name = "initialize";
     initialize.writeColors = {{0, "color"}};
@@ -171,7 +197,7 @@ void CheckFullscreenState()
     overlay.commands.push_back(command);
     graph.passes.push_back(overlay);
     graph.outputTexture = "color";
-    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    const auto valid = [](const auto &desc) { return ValidateRenderGraphDescription(desc, 1); };
     assert(valid(graph));
     auto broken = graph;
     broken.passes.erase(broken.passes.begin());
@@ -239,7 +265,7 @@ void CheckGraphBufferValidation()
     graph.passes.push_back(copy);
     graph.outputTexture = "color";
 
-    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    const auto valid = [](const auto &desc) { return ValidateRenderGraphDescription(desc, 1); };
     assert(valid(graph));
     auto broken = graph;
     broken.passes.back().bufferAccesses[0].resource = "other_view/data";
@@ -276,7 +302,7 @@ void CheckViewLightListValidation()
     graph.passes.push_back(pass);
     graph.outputTexture = "color";
 
-    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    const auto valid = [](const auto &desc) { return ValidateRenderGraphDescription(desc, 1); };
     assert(valid(graph));
 
     auto writable = graph;
@@ -322,7 +348,7 @@ void CheckSampledAssetTextureValidation()
     graph.passes.push_back(sample);
     graph.outputTexture = "color";
 
-    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    const auto valid = [](const auto &desc) { return ValidateRenderGraphDescription(desc, 1); };
     assert(valid(graph));
     auto broken = graph;
     broken.textures[1].assetGuid.clear();
@@ -356,8 +382,8 @@ void CheckWorldUIPassAttachments()
 {
     RenderGraphDescription graph;
     graph.textures.push_back({"color", rhi::PixelFormat::RGBA8UNorm});
-    graph.textures.push_back({"depth", rhi::PixelFormat::D32SFloat, false, true});
-    graph.textures.push_back({"label_depth", rhi::PixelFormat::D32SFloat, false, true});
+    graph.textures.push_back(CameraAttachment("depth", rhi::PixelFormat::D32SFloat));
+    graph.textures.push_back({"label_depth", rhi::PixelFormat::D32SFloat});
     GraphPassDesc ordinary;
     ordinary.name = "ordinary";
     ordinary.writeColors = {{0, "color"}};
@@ -375,7 +401,7 @@ void CheckWorldUIPassAttachments()
     labels.commands[0].worldUILayerMask = 1u << 30;
     graph.passes.push_back(labels);
     graph.outputTexture = "color";
-    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    const auto valid = [](const auto &desc) { return ValidateRenderGraphDescription(desc, 1); };
     assert(valid(graph));
     auto broken = graph;
     broken.passes.back().writeDepth.clear();
@@ -401,8 +427,10 @@ void CheckViewResourceSchedule()
     const auto independent = RenderViewSchedule::Build({{{}, {&screen}}, {{}, {&monitor}}});
     assert((independent.order == std::vector<uint32_t>{0, 1}));
     assert(independent.predecessors[1].empty());
+    const auto waiting = RenderViewSchedule::Build({{{&missing}, {&screen}}});
+    assert(waiting.order.empty());
+    assert((waiting.missingProducers == std::vector<uint32_t>{0}));
     for (const auto &invalid : std::vector<std::vector<RenderViewAccess>>{
-             {{{&missing}, {&screen}}},
              {{{&monitor}, {&monitor}}},
              {{{&monitor}, {&screen}}, {{&screen}, {&monitor}}},
          }) {
@@ -426,44 +454,45 @@ void CheckViewMaterialContracts()
 {
     RenderGraphDescription graph;
     graph.msaaSamples = 8; // An authored request is not an allocated target.
-    graph.textures.push_back({"color", rhi::PixelFormat::RGBA16SFloat, true, false, 0, 0, 0, 0});
-    graph.textures.push_back({"depth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 0});
-    graph.textures.push_back({"fixed", rhi::PixelFormat::RGBA16SFloat, false, false, 37, 23, 0, 2});
-    graph.textures.push_back({"fixedDepth", rhi::PixelFormat::D32SFloat, false, true, 37, 23, 0, 2});
-    graph.textures.push_back({"reducedDepth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 2, 1});
+    graph.textures.push_back(CameraAttachment("color", rhi::PixelFormat::RGBA16SFloat));
+    graph.textures.push_back(CameraAttachment("view_depth", rhi::PixelFormat::D32SFloat));
+    graph.textures.push_back({"fixed", rhi::PixelFormat::RGBA16SFloat, 37, 23, 0, 2});
+    graph.textures.push_back({"fixedDepth", rhi::PixelFormat::D32SFloat, 37, 23, 0, 2});
+    graph.textures.push_back({"reducedDepth", rhi::PixelFormat::D32SFloat, 0, 0, 2, 1});
     GraphPassDesc pass;
     pass.commands.push_back({GraphCommandType::DrawRenderers});
     pass.writeColors = {{0, "color"}};
-    pass.writeDepth = "depth";
+    pass.writeDepth = "view_depth";
     rhi::RenderViewContext view;
     view.colorFormat = rhi::PixelFormat::RGBA8UNorm;
     view.depthFormat = rhi::PixelFormat::D24UNormS8UInt;
     view.samples = rhi::SampleCount::One;
-    const auto first = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    const auto first = ResolveMaterialPass(graph, pass, view);
     assert(first.colorFormats == std::vector{rhi::PixelFormat::RGBA8UNorm});
     assert(first.depthFormat == rhi::PixelFormat::D24UNormS8UInt);
     assert(first.samples == rhi::SampleCount::One);
     assert(!first.depthReadOnly && first.IsValid());
     view.samples = rhi::SampleCount::Four;
-    const auto second = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    const auto second = ResolveMaterialPass(graph, pass, view);
     assert(second.samples == rhi::SampleCount::Four);
     assert(first.RenderingSignature() != second.RenderingSignature());
     view.samples = rhi::SampleCount::One;
     view.colorFormat = rhi::PixelFormat::RGBA16SFloat;
-    const auto third = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    const auto third = ResolveMaterialPass(graph, pass, view);
     assert(first.RenderingSignature() != third.RenderingSignature());
     assert(first.samples == rhi::SampleCount::One); // Other views were not mutated.
 
     // A viewport-sized mask is not the Camera depth just because its dimensions match.
     auto independentDepth = graph.textures[1];
-    independentDepth.name = "selection_depth";
+    independentDepth.name = "depth";
+    independentDepth.role = GraphTextureRole::Transient;
     independentDepth.samples = 1;
     assert(graph.textures[1].IsViewDepth() && !independentDepth.IsViewDepth());
     graph.textures.push_back(independentDepth);
     auto independentPass = pass;
     independentPass.writeColors = {{0, "fixed"}};
     independentPass.writeDepth = independentDepth.name;
-    const auto independent = SceneRenderGraph::ResolveMaterialPass(graph, independentPass, view);
+    const auto independent = ResolveMaterialPass(graph, independentPass, view);
     assert(independent.depthFormat == rhi::PixelFormat::D32SFloat);
     assert(independent.samples == rhi::SampleCount::One);
 
@@ -472,7 +501,7 @@ void CheckViewMaterialContracts()
     pass.commands[0].type = GraphCommandType::DrawWorldUI;
     for (const auto samples : {rhi::SampleCount::One, rhi::SampleCount::Four}) {
         view.samples = samples;
-        const auto world = SceneRenderGraph::ResolveMaterialPass(graph, pass, view).RenderingSignature();
+        const auto world = ResolveMaterialPass(graph, pass, view).RenderingSignature();
         assert(world.colorFormats[0] == view.colorFormat);
         assert(world.depthFormat == view.depthFormat);
         assert(world.stencilFormat == rhi::PixelFormat::D24UNormS8UInt);
@@ -484,7 +513,7 @@ void CheckViewMaterialContracts()
     // A custom raster attachment retains its own format/sample/depth contract.
     pass.writeColors = {{0, "fixed"}};
     pass.writeDepth = "fixedDepth";
-    const auto fixed = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    const auto fixed = ResolveMaterialPass(graph, pass, view);
     assert(fixed.colorFormats == std::vector{rhi::PixelFormat::RGBA16SFloat});
     assert(fixed.depthFormat == rhi::PixelFormat::D32SFloat);
     assert(fixed.samples == rhi::SampleCount::Two);
@@ -494,15 +523,15 @@ void CheckViewMaterialContracts()
     pass.commands[0].type = GraphCommandType::DrawSkybox;
     pass.writeColors = {{0, "color"}};
     pass.writeDepth.clear();
-    pass.readTextures = {"depth"};
-    auto read = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    pass.readTextures = {"view_depth"};
+    auto read = ResolveMaterialPass(graph, pass, view);
     assert(read.depthFormat == view.depthFormat && read.depthReadOnly);
-    pass.commands[0].inputBindings = {{"_Depth", "depth"}};
-    read = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    pass.commands[0].inputBindings = {{"_Depth", "view_depth"}};
+    read = ResolveMaterialPass(graph, pass, view);
     assert(read.depthFormat == rhi::PixelFormat::Undefined && !read.depthReadOnly);
     pass.commands[0].inputBindings.clear();
     pass.readTextures = {"reducedDepth"};
-    read = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    read = ResolveMaterialPass(graph, pass, view);
     assert(read.depthFormat == rhi::PixelFormat::D32SFloat && read.depthReadOnly);
 
     pass.commands[0].type = GraphCommandType::DrawRenderers;
@@ -510,15 +539,15 @@ void CheckViewMaterialContracts()
     pass.writeColors.clear();
     pass.readTextures.clear();
     pass.writeDepth = "fixedDepth";
-    const auto depthOnly = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    const auto depthOnly = ResolveMaterialPass(graph, pass, view);
     assert(depthOnly.colorFormats.empty() && depthOnly.IsValid());
     assert(depthOnly.samples == rhi::SampleCount::Two);
-    const auto reflectedDepth = SceneRenderGraph::ResolveMaterialPass(graph, pass, view, true);
+    const auto reflectedDepth = ResolveMaterialPass(graph, pass, view, true);
     assert(reflectedDepth.invertCulling && reflectedDepth != depthOnly);
     assert(reflectedDepth.RenderingSignature() == depthOnly.RenderingSignature());
     pass.commands[0].type = GraphCommandType::DrawShadowCasters;
     pass.commands[0].shaderTarget = ShaderCompileTarget::Shadow;
-    const auto lightSpace = SceneRenderGraph::ResolveMaterialPass(graph, pass, view, true);
+    const auto lightSpace = ResolveMaterialPass(graph, pass, view, true);
     assert(lightSpace.IsValid() && !lightSpace.invertCulling);
     pass.commands[0].type = GraphCommandType::DrawRenderers;
 
@@ -526,10 +555,10 @@ void CheckViewMaterialContracts()
     pass.commands[0].shaderTarget = ShaderCompileTarget::Forward;
     pass.writeDepth.clear();
     graph.textures[0].format = rhi::PixelFormat::RGBA8UNorm;
-    graph.textures[0].isBackbuffer = false;
+    graph.textures[0].role = GraphTextureRole::Transient;
     graph.textures[0].samples = 2;
     pass.writeColors = {{1, "fixed"}, {0, "color"}};
-    const auto mrt = SceneRenderGraph::ResolveMaterialPass(graph, pass, view);
+    const auto mrt = ResolveMaterialPass(graph, pass, view);
     assert((mrt.colorFormats == std::vector{rhi::PixelFormat::RGBA8UNorm, rhi::PixelFormat::RGBA16SFloat}));
     assert(mrt.samples == rhi::SampleCount::Two);
 }
@@ -537,7 +566,7 @@ void CheckViewMaterialContracts()
 RenderGraphDescription MakeShadowGraph(ShaderCompileTarget target)
 {
     RenderGraphDescription graph;
-    graph.textures.push_back({"ShadowDepth", rhi::PixelFormat::D32SFloat, false, true, 16, 16, 0, 1});
+    graph.textures.push_back({"ShadowDepth", rhi::PixelFormat::D32SFloat, 16, 16, 0, 1});
 
     GraphPassDesc pass;
     pass.name = "ShadowCasters";
@@ -551,8 +580,8 @@ RenderGraphDescription MakeShadowGraph(ShaderCompileTarget target)
 RenderGraphDescription MakeMotionGraph(rhi::PixelFormat colorFormat, bool readableDepth)
 {
     RenderGraphDescription graph;
-    graph.textures.push_back({"Motion", colorFormat, false, false, 0, 0, 0, 1});
-    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+    graph.textures.push_back({"Motion", colorFormat, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, 0, 0, 0, 1});
 
     GraphPassDesc pass;
     pass.name = "Motion";
@@ -569,12 +598,12 @@ RenderGraphDescription MakeMotionGraph(rhi::PixelFormat colorFormat, bool readab
 RenderGraphDescription MakeTemporalGraph(bool completePair, bool singleSample = true)
 {
     RenderGraphDescription graph;
-    GraphTextureDesc read{"HistoryRead", rhi::PixelFormat::RGBA16SFloat, false, false, 0, 0, 0, singleSample ? 1u : 4u};
+    GraphTextureDesc read{"HistoryRead", rhi::PixelFormat::RGBA16SFloat, 0, 0, 0, singleSample ? 1u : 4u};
     read.role = GraphTextureRole::TemporalRead;
     read.temporalKey = "taa";
     graph.textures.push_back(read);
     if (completePair) {
-        GraphTextureDesc write{"HistoryWrite", rhi::PixelFormat::RGBA16SFloat, false, false, 0, 0, 0, 1};
+        GraphTextureDesc write{"HistoryWrite", rhi::PixelFormat::RGBA16SFloat, 0, 0, 0, 1};
         write.role = GraphTextureRole::TemporalWrite;
         write.temporalKey = "taa";
         graph.textures.push_back(write);
@@ -590,8 +619,8 @@ RenderGraphDescription MakeTemporalGraph(bool completePair, bool singleSample = 
 RenderGraphDescription MakeNormalGraph(rhi::PixelFormat colorFormat, bool readableDepth)
 {
     RenderGraphDescription graph;
-    graph.textures.push_back({"Normal", colorFormat, false, false, 0, 0, 0, 1});
-    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+    graph.textures.push_back({"Normal", colorFormat, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, 0, 0, 0, 1});
 
     GraphPassDesc pass;
     pass.name = "Normal";
@@ -608,8 +637,8 @@ RenderGraphDescription MakeNormalGraph(rhi::PixelFormat colorFormat, bool readab
 RenderGraphDescription MakeBaseColorGraph(rhi::PixelFormat colorFormat, bool readableDepth)
 {
     RenderGraphDescription graph;
-    graph.textures.push_back({"BaseColor", colorFormat, false, false, 0, 0, 0, 1});
-    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+    graph.textures.push_back({"BaseColor", colorFormat, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, 0, 0, 0, 1});
 
     GraphPassDesc pass;
     pass.name = "BaseColor";
@@ -626,10 +655,10 @@ RenderGraphDescription MakeBaseColorGraph(rhi::PixelFormat colorFormat, bool rea
 RenderGraphDescription MakeAttachmentGraph(int secondColorSlot, uint32_t readOnlyDepthCount, bool writesDepth)
 {
     RenderGraphDescription graph;
-    graph.textures.push_back({"Color0", rhi::PixelFormat::RGBA16SFloat, false, false, 0, 0, 0, 1});
-    graph.textures.push_back({"Color1", rhi::PixelFormat::RGBA16SFloat, false, false, 0, 0, 0, 1});
-    graph.textures.push_back({"Depth0", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
-    graph.textures.push_back({"Depth1", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+    graph.textures.push_back({"Color0", rhi::PixelFormat::RGBA16SFloat, 0, 0, 0, 1});
+    graph.textures.push_back({"Color1", rhi::PixelFormat::RGBA16SFloat, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth0", rhi::PixelFormat::D32SFloat, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth1", rhi::PixelFormat::D32SFloat, 0, 0, 0, 1});
 
     GraphPassDesc pass;
     pass.name = "AttachmentContract";
@@ -665,52 +694,52 @@ int main(int argc, char **argv)
     CheckViewResourceSchedule();
     CheckViewMaterialContracts();
     const auto invalidTarget = MakeShadowGraph(ShaderCompileTarget::Forward);
-    assert(!SceneRenderGraph::ValidateGraphDescription(invalidTarget, 1));
+    assert(!ValidateRenderGraphDescription(invalidTarget, 1));
 
     const auto validTarget = MakeShadowGraph(ShaderCompileTarget::Shadow);
-    assert(SceneRenderGraph::ValidateGraphDescription(validTarget, 1));
+    assert(ValidateRenderGraphDescription(validTarget, 1));
 
-    assert(SceneRenderGraph::ValidateGraphDescription(MakeMotionGraph(rhi::PixelFormat::RG16SFloat, true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeMotionGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeMotionGraph(rhi::PixelFormat::RG16SFloat, false), 1));
-    assert(SceneRenderGraph::ValidateGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA16SFloat, true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA16SFloat, false), 1));
-    assert(SceneRenderGraph::ValidateGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA16SFloat, true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA16SFloat, false), 1));
-    assert(SceneRenderGraph::ValidateGraphDescription(MakeTemporalGraph(true), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeTemporalGraph(false), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeTemporalGraph(true, false), 1));
+    assert(ValidateRenderGraphDescription(MakeMotionGraph(rhi::PixelFormat::RG16SFloat, true), 1));
+    assert(!ValidateRenderGraphDescription(MakeMotionGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
+    assert(!ValidateRenderGraphDescription(MakeMotionGraph(rhi::PixelFormat::RG16SFloat, false), 1));
+    assert(ValidateRenderGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA16SFloat, true), 1));
+    assert(!ValidateRenderGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
+    assert(!ValidateRenderGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA16SFloat, false), 1));
+    assert(ValidateRenderGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA16SFloat, true), 1));
+    assert(!ValidateRenderGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
+    assert(!ValidateRenderGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA16SFloat, false), 1));
+    assert(ValidateRenderGraphDescription(MakeTemporalGraph(true), 1));
+    assert(!ValidateRenderGraphDescription(MakeTemporalGraph(false), 1));
+    assert(!ValidateRenderGraphDescription(MakeTemporalGraph(true, false), 1));
     auto historyContract = MakeTemporalGraph(true);
     for (auto &texture : historyContract.textures) {
         texture.width = 37;
         texture.height = 23;
     }
-    assert(SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
+    assert(ValidateRenderGraphDescription(historyContract, 1));
     historyContract.textures[0].width = 38;
-    assert(!SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
+    assert(!ValidateRenderGraphDescription(historyContract, 1));
     historyContract = MakeTemporalGraph(true);
     historyContract.passes.clear();
-    assert(!SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
+    assert(!ValidateRenderGraphDescription(historyContract, 1));
     historyContract = MakeTemporalGraph(true);
     historyContract.passes[0].writeColors[0].second = "HistoryRead";
-    assert(!SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
+    assert(!ValidateRenderGraphDescription(historyContract, 1));
     historyContract = MakeTemporalGraph(true);
     GraphPassDesc readCurrent;
     readCurrent.name = "ReadCurrent";
     readCurrent.readTextures.push_back("HistoryWrite");
     historyContract.passes.push_back(readCurrent);
-    assert(SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
+    assert(ValidateRenderGraphDescription(historyContract, 1));
     std::swap(historyContract.passes[0], historyContract.passes[1]);
-    assert(!SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
+    assert(!ValidateRenderGraphDescription(historyContract, 1));
     historyContract = MakeTemporalGraph(true);
     historyContract.passes[0].readTextures.push_back("HistoryWrite");
-    assert(!SceneRenderGraph::ValidateGraphDescription(historyContract, 1));
-    assert(SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(1, 1, false), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(2, 1, false), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(1, 2, false), 1));
-    assert(!SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(1, 1, true), 1));
+    assert(!ValidateRenderGraphDescription(historyContract, 1));
+    assert(ValidateRenderGraphDescription(MakeAttachmentGraph(1, 1, false), 1));
+    assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(2, 1, false), 1));
+    assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(1, 2, false), 1));
+    assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(1, 1, true), 1));
 
     const glm::vec2 firstJitter = SceneRenderGraph::ComputeTemporalJitterNdc(0, 200, 100);
     assert(std::abs(firstJitter.x) < 1e-7f);
@@ -739,11 +768,7 @@ int main(int argc, char **argv)
     assert(SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
     dynamicCaster.isStatic = true;
     assert(!SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
-    std::vector<glm::mat4> skinPose{glm::mat4(1.0f)};
-    dynamicCaster.skinBoneMatrices = &skinPose;
-    assert(SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
-    dynamicCaster.skinBoneMatrices = nullptr;
-    dynamicCaster.previousSkinBoneMatrices = &skinPose;
+    dynamicCaster.skinBoneMatrices = std::make_shared<const std::vector<glm::mat4>>(1, glm::mat4(1.0f));
     assert(SceneRenderGraph::ShadowCasterRequiresContinuousUpdate(dynamicCaster));
 
     SceneRenderGraph graph;

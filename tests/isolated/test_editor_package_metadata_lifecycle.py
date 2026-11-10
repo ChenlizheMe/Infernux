@@ -58,7 +58,8 @@ def exercise(project):
         data = json.loads(sidecar.read_text(encoding="utf-8"))
         data["metadata"]["audit_marker"] = {"type": "int", "value": 41}
         sidecar.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
-        handler._commit_metadata_modified(str(path))
+        handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(sidecar)))
+        handler.process_pending_reloads(force=True)
         assert database.get_meta_by_guid(imported.guid).get_int("audit_marker") == 41
         assert database.get_guid_from_path(str(path)) == imported.guid
         assert path.read_bytes() == source_before
@@ -67,7 +68,8 @@ def exercise(project):
         # Actual source saves still publish the lifecycle event. The sidecar
         # distinction must not disable reload of an edited plugin module.
         path.write_text("class Service:\n    changed = True\n", encoding="utf-8")
-        handler._commit_modified(str(path))
+        handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(path)))
+        handler.process_pending_reloads(force=True)
         assert notifications == [(str(path), "modified")], notifications
         print("EDITOR_METADATA_LIFECYCLE_OK")
     finally:

@@ -1,11 +1,14 @@
 #pragma once
 
+#include "RenderCoreApi.h"
 #include "RhiBuffer.h"
 #include "RhiComputeHost.h"
 #include "RhiSubmission.h"
+#include <core/math/Intervals.h>
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux::rhi
@@ -14,6 +17,18 @@ namespace infernux::rhi
 class ComputeRecordingContext;
 class ComputeBuffer;
 class ComputeReadback;
+class ComputeKernel;
+class PreparedComputeBatch;
+class ComputeBufferState;
+class ComputeBufferAllocation;
+using ComputeBufferBindings = std::unordered_map<const ComputeBuffer *, std::shared_ptr<ComputeBufferAllocation>>;
+
+/// Buffer storage retained by compute work, not the driver's memory-block size.
+struct ComputeStorageBlock
+{
+    BufferHandle buffer;
+    uint64_t byteSize;
+};
 
 struct ComputeBufferRead
 {
@@ -22,33 +37,98 @@ struct ComputeBufferRead
     uint64_t byteSize = 0;
 };
 
-std::vector<std::vector<uint8_t>> ReadComputeBatch(ComputeHost &host, std::vector<ComputeBufferRead> reads);
+INFERNUX_RENDER_CORE_API std::vector<std::vector<uint8_t>> ReadComputeBatch(ComputeHost &host,
+                                                                            std::vector<ComputeBufferRead> reads);
 
-enum class ComputeScalarType : uint8_t
+/// One physical allocation and its accepted value facts. Prepared work retains
+/// this identity, independently of the logical buffer used to author the work.
+class ComputeBufferAllocation final
 {
-    Float32,
-    Int32,
-    UInt32,
-};
-
-struct ComputeBufferDesc
-{
-    uint64_t elementCount = 0;
-    ComputeScalarType scalarType = ComputeScalarType::Float32;
-    uint8_t lanes = 1;
-
-    [[nodiscard]] uint32_t GetScalarBytes() const noexcept
+  public:
+    INFERNUX_RENDER_CORE_API ComputeBufferAllocation(Device &device, const BufferDesc &desc,
+                                                     bool graphWritable = false);
+    [[nodiscard]] BufferHandle GetBuffer() const noexcept
     {
-        return 4;
-    }
-    [[nodiscard]] uint32_t GetElementStride() const noexcept
-    {
-        return GetScalarBytes() * lanes;
+        return m_storage.GetBuffer();
     }
     [[nodiscard]] uint64_t GetByteSize() const noexcept
     {
-        return elementCount * GetElementStride();
+        return m_storage.GetByteSize();
     }
+    [[nodiscard]] SubmissionTicket GetLastWriteSubmission() const noexcept
+    {
+        return m_lastWriteSubmission;
+    }
+    [[nodiscard]] QueueRole GetLastWriterQueue() const noexcept
+    {
+        return m_lastWriterQueue;
+    }
+    [[nodiscard]] bool IsGraphWritable() const noexcept
+    {
+        return m_graphWritable;
+    }
+    [[nodiscard]] bool IsReadProtected() const noexcept
+    {
+        return m_readers != 0;
+    }
+    [[nodiscard]] const BufferDesc &GetStorageDesc() const noexcept
+    {
+        return m_desc;
+    }
+    /// Internal publication after graph prefix validation and real GPU acceptance.
+    /// The completion queue may differ from the queue that actually wrote storage.
+    INFERNUX_RENDER_CORE_API void PublishGraphValue(SubmissionTicket completion, QueueRole writer,
+                                                    intervals::Set initialized, intervals::Set written) noexcept;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasInitializedRange(uint64_t offset, uint64_t byteSize) const;
+    INFERNUX_RENDER_CORE_API void AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const;
+
+  private:
+    friend class ComputeBuffer;
+    friend class ComputeKernel;
+    friend class PreparedComputeBatch;
+    friend class ComputeBufferState;
+    ComputeBufferAllocation(Device &device, BufferHandle buffer, const BufferDesc &desc, bool graphWritable);
+    [[nodiscard]] static std::shared_ptr<ComputeBufferAllocation> CreatePrivate(Device &device, const BufferDesc &desc,
+                                                                                bool graphWritable, bool managed);
+    void RecordUpload(ComputeRecordingContext &context, uint64_t offset, const void *data, uint64_t byteSize) const;
+    BufferResource m_storage;
+    BufferDesc m_desc;
+    SubmissionTicket m_lastWriteSubmission;
+    QueueRole m_lastWriterQueue = QueueRole::Compute;
+    bool m_graphWritable;
+    intervals::Set m_initialized;
+    intervals::Set m_written;
+    uint32_t m_readers = 0;
+};
+
+/// The logical value endpoint shared by recorded work. It outlives public
+/// wrappers, so accepting one queued writer also advances later queued work.
+class ComputeBufferState final
+{
+  public:
+    INFERNUX_RENDER_CORE_API ComputeBufferState(ComputeBufferDesc desc,
+                                                std::shared_ptr<ComputeBufferAllocation> allocation, bool frozen);
+    INFERNUX_RENDER_CORE_API ~ComputeBufferState();
+    ComputeBufferState(const ComputeBufferState &) = delete;
+    ComputeBufferState &operator=(const ComputeBufferState &) = delete;
+    [[nodiscard]] const ComputeBufferDesc &GetDesc() const noexcept
+    {
+        return m_desc;
+    }
+    [[nodiscard]] std::shared_ptr<ComputeBufferAllocation> GetAllocation() const noexcept
+    {
+        return m_allocation;
+    }
+    [[nodiscard]] bool IsFrozen() const noexcept
+    {
+        return m_frozen;
+    }
+
+  private:
+    friend class PreparedComputeBatch;
+    ComputeBufferDesc m_desc;
+    std::shared_ptr<ComputeBufferAllocation> m_allocation;
+    bool m_frozen;
 };
 
 /// Engine-owned, device-local storage used by public compute buffers. Upload
@@ -57,84 +137,132 @@ struct ComputeBufferDesc
 class ComputeBuffer final : public std::enable_shared_from_this<ComputeBuffer>
 {
   public:
-    ComputeBuffer(ComputeHost &host, ComputeBufferDesc desc);
-    ~ComputeBuffer();
+    INFERNUX_RENDER_CORE_API ComputeBuffer(ComputeHost &host, ComputeBufferDesc desc);
+    /// A budgeted target stays submission-owned until its completed value is handed off.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API static std::shared_ptr<ComputeBuffer>
+    TryCreatePrivate(ComputeHost &host, ComputeBufferDesc desc);
+    /// Graph assembly publishes these owners before their first submission.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API static std::shared_ptr<ComputeBuffer>
+    TryCreateGraphBuffer(ComputeHost &host, ComputeBufferDesc desc);
+    INFERNUX_RENDER_CORE_API ~ComputeBuffer();
 
     ComputeBuffer(const ComputeBuffer &) = delete;
     ComputeBuffer &operator=(const ComputeBuffer &) = delete;
 
-    [[nodiscard]] uint64_t GetByteSize() const noexcept;
-    [[nodiscard]] const ComputeBufferDesc &GetDesc() const noexcept;
-    [[nodiscard]] BufferHandle GetBuffer() const noexcept;
-    [[nodiscard]] ComputeHost &GetHost() noexcept;
-    [[nodiscard]] const ComputeHost &GetHost() const noexcept;
-    void SetData(uint64_t offset, const void *data, uint64_t byteSize);
-    [[nodiscard]] std::vector<uint8_t> GetData(uint64_t offset, uint64_t byteSize);
-    [[nodiscard]] std::shared_ptr<ComputeReadback> GetDataAsync(uint64_t offset, uint64_t byteSize);
+    [[nodiscard]] INFERNUX_RENDER_CORE_API uint64_t GetByteSize() const noexcept;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API const ComputeBufferDesc &GetDesc() const noexcept;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API BufferHandle GetBuffer() const noexcept;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API ComputeHost &GetHost() noexcept;
+    [[nodiscard]] INFERNUX_RENDER_CORE_API const ComputeHost &GetHost() const noexcept;
+    [[nodiscard]] std::shared_ptr<ComputeBufferAllocation> GetAllocation() const noexcept
+    {
+        return m_state->GetAllocation();
+    }
+    /// Logical writer identity, shared by views and unchanged by allocation replacement.
+    [[nodiscard]] const ComputeBufferState *GetWriterStateIdentity() const noexcept
+    {
+        return m_state.get();
+    }
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeBuffer> Freeze();
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeBuffer> FreezeScalars();
+    INFERNUX_RENDER_CORE_API void PublishStorage();
+    [[nodiscard]] bool IsFrozen() const noexcept
+    {
+        return m_state->IsFrozen();
+    }
+    INFERNUX_RENDER_CORE_API void AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const;
+    INFERNUX_RENDER_CORE_API void SetData(uint64_t offset, const void *data, uint64_t byteSize);
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<uint8_t> GetData(uint64_t offset, uint64_t byteSize);
 
-    /// Stage one host update so a compute batch can record its transfer and
-    /// dispatches into the same queue submission.
-    void PrepareUpload(uint64_t offset, const void *data, uint64_t byteSize);
-    void RecordPreparedUpload(ComputeRecordingContext &context, uint64_t offset, uint64_t byteSize) const;
-    void AttachUpload(SubmissionTicket ticket) noexcept;
-    void AttachWrite(SubmissionTicket ticket) noexcept;
-    [[nodiscard]] SubmissionTicket GetLastWriteSubmission() const noexcept;
-
-    /// Prepare, record, and finish a synchronous readback owned by an engine
-    /// compute batch. These are RHI plumbing methods; public callers use the
-    /// typed inx.buffer boundary rather than staging resources directly.
-    void PrepareReadback(uint64_t offset, uint64_t byteSize);
-    void RecordPreparedReadback(ComputeRecordingContext &context, uint64_t offset, uint64_t byteSize) const;
-    [[nodiscard]] std::vector<uint8_t> FinishReadback(uint64_t offset, uint64_t byteSize);
+    [[nodiscard]] INFERNUX_RENDER_CORE_API SubmissionTicket GetLastWriteSubmission() const noexcept;
+    /// Accepted compute writes cover this range; consumers must still order
+    /// after the source ticket. Coverage is not GPU completion or freshness.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasInitializedRange(uint64_t offset, uint64_t byteSize) const;
 
   private:
+    friend class ComputeKernel;
     friend class ComputeReadback;
-    [[nodiscard]] std::shared_ptr<BufferResource> AcquireAsyncReadbackStorage(uint64_t byteSize);
-    [[nodiscard]] BufferResource &EnsureUploadBuffer();
-    [[nodiscard]] BufferResource &EnsureReadbackBuffer();
+    friend class PreparedComputeBatch;
+    [[nodiscard]] static std::shared_ptr<ComputeBuffer> TryCreate(ComputeHost &host, ComputeBufferDesc desc,
+                                                                  BufferUsageFlags usage, bool graphWritable);
+    ComputeBuffer(ComputeHost host, std::shared_ptr<ComputeBufferState> state);
     void ValidateRange(uint64_t offset, uint64_t byteSize) const;
 
     ComputeHost m_host;
-    ComputeBufferDesc m_desc;
-    std::unique_ptr<BufferResource> m_storage;
-    std::unique_ptr<BufferResource> m_upload;
-    std::unique_ptr<BufferResource> m_readback;
-    // One reusable allocation; outstanding snapshots keep their own leases.
-    std::shared_ptr<BufferResource> m_asyncReadback;
-    SubmissionTicket m_uploadTicket;
-    SubmissionTicket m_lastWriteSubmission;
+    std::shared_ptr<ComputeBufferState> m_state;
 };
 
-/// One explicit GPU-to-CPU transfer. The staging allocation and source stay
-/// alive until its exact compute-queue ticket completes.
+/// One prepared tail read. No submission occurs during construction. A batch
+/// publishes its exact ticket on acceptance and retains separate GPU storage
+/// ownership, so cancelling the consumer never releases an in-flight copy.
 class ComputeReadback final
 {
   public:
-    ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffer> source, uint64_t offset, uint64_t byteSize);
     ~ComputeReadback() = default;
 
     ComputeReadback(const ComputeReadback &) = delete;
     ComputeReadback &operator=(const ComputeReadback &) = delete;
 
-    [[nodiscard]] bool IsComplete();
-    void Wait();
-    [[nodiscard]] std::vector<uint8_t> GetData();
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool IsComplete();
+    [[nodiscard]] bool IsCancelled() const noexcept
+    {
+        return m_cancelled;
+    }
+    INFERNUX_RENDER_CORE_API bool Cancel() noexcept;
+    INFERNUX_RENDER_CORE_API void Wait();
+    /// Materialize once, then release the consumer's staging lease.
+    INFERNUX_RENDER_CORE_API void ReadInto(void *destination, uint64_t byteSize);
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<uint8_t> GetData();
     [[nodiscard]] uint64_t GetByteSize() const noexcept
     {
         return m_byteSize;
     }
+    INFERNUX_RENDER_CORE_API void AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const;
+    [[nodiscard]] SubmissionTicket GetSubmission() const noexcept
+    {
+        return m_ticket;
+    }
+    [[nodiscard]] SubmissionTicket GetSourceWriteSubmission() const noexcept
+    {
+        return m_sourceWriteSubmission;
+    }
+    [[nodiscard]] BufferHandle GetSourceBuffer() const noexcept
+    {
+        return m_sourceBuffer;
+    }
+    [[nodiscard]] uint64_t GetSourceOffset() const noexcept
+    {
+        return m_offset;
+    }
+    [[nodiscard]] ComputeHost &GetHost() noexcept
+    {
+        return m_host;
+    }
 
   private:
+    friend class ComputeKernel;
+    friend class PreparedComputeBatch;
+    ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffer> source, uint64_t offset, uint64_t byteSize);
     ComputeHost m_host;
     struct Storage
     {
-        std::shared_ptr<ComputeBuffer> source;
+        std::shared_ptr<ComputeBufferAllocation> source;
         std::shared_ptr<BufferResource> staging;
+        void AppendRetainedStorage(std::vector<ComputeStorageBlock> &blocks) const;
     };
+    void Record(ComputeRecordingContext &context) const;
+    [[nodiscard]] std::shared_ptr<BufferResource> AllocateStaging(bool managed);
+    void Rebind(std::shared_ptr<ComputeBufferAllocation> allocation);
+    [[nodiscard]] std::shared_ptr<Storage> Attach(SubmissionTicket ticket) noexcept;
     std::shared_ptr<Storage> m_storage;
+    std::shared_ptr<ComputeBufferState> m_source;
     SubmissionTicket m_ticket;
+    SubmissionTicket m_sourceWriteSubmission;
+    BufferHandle m_sourceBuffer;
+    uint64_t m_offset = 0;
     uint64_t m_byteSize = 0;
     bool m_complete = false;
+    bool m_cancelled = false;
 };
 
 } // namespace infernux::rhi

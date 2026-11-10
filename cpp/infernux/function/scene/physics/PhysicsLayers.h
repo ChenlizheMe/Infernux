@@ -24,7 +24,14 @@ namespace PhysicsObjectLayers
 static constexpr uint16_t LAYER_COUNT = 32;
 static constexpr JPH::ObjectLayer NON_MOVING_BASE = 0;
 static constexpr JPH::ObjectLayer MOVING_BASE = LAYER_COUNT;
-static constexpr JPH::ObjectLayer NUM_LAYERS = LAYER_COUNT * 2;
+static constexpr JPH::ObjectLayer MIXED_NON_MOVING = LAYER_COUNT * 2;
+static constexpr JPH::ObjectLayer MIXED_MOVING = MIXED_NON_MOVING + 1;
+static constexpr JPH::ObjectLayer NUM_LAYERS = MIXED_MOVING + 1;
+
+inline bool IsMixed(JPH::ObjectLayer layer)
+{
+    return layer == MIXED_NON_MOVING || layer == MIXED_MOVING;
+}
 
 inline JPH::ObjectLayer Encode(int gameLayer, bool moving)
 {
@@ -40,7 +47,7 @@ inline int DecodeGameLayer(JPH::ObjectLayer objectLayer)
 
 inline bool IsMovingLayer(JPH::ObjectLayer objectLayer)
 {
-    return objectLayer >= MOVING_BASE;
+    return objectLayer == MIXED_MOVING || (objectLayer >= MOVING_BASE && objectLayer < MIXED_NON_MOVING);
 }
 } // namespace PhysicsObjectLayers
 
@@ -62,6 +69,8 @@ class BPLayerInterface final : public JPH::BroadPhaseLayerInterface
             m_objectToBroadPhase[PhysicsObjectLayers::NON_MOVING_BASE + i] = PhysicsBroadPhaseLayers::NON_MOVING;
             m_objectToBroadPhase[PhysicsObjectLayers::MOVING_BASE + i] = PhysicsBroadPhaseLayers::MOVING;
         }
+        m_objectToBroadPhase[PhysicsObjectLayers::MIXED_NON_MOVING] = PhysicsBroadPhaseLayers::NON_MOVING;
+        m_objectToBroadPhase[PhysicsObjectLayers::MIXED_MOVING] = PhysicsBroadPhaseLayers::MOVING;
     }
 
     [[nodiscard]] uint32_t GetNumBroadPhaseLayers() const override
@@ -114,6 +123,11 @@ class ObjectLayerPairFilter final : public JPH::ObjectLayerPairFilter
         if (!PhysicsObjectLayers::IsMovingLayer(inLayer1) && !PhysicsObjectLayers::IsMovingLayer(inLayer2)) {
             return false;
         }
+
+        // A compound may contain several game layers. Broad phase admits
+        // candidates; the contact listener checks the actual two leaf shapes.
+        if (PhysicsObjectLayers::IsMixed(inLayer1) || PhysicsObjectLayers::IsMixed(inLayer2))
+            return true;
 
         const int gameLayer1 = PhysicsObjectLayers::DecodeGameLayer(inLayer1);
         const int gameLayer2 = PhysicsObjectLayers::DecodeGameLayer(inLayer2);

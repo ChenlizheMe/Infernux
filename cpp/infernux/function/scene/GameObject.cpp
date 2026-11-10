@@ -5,8 +5,10 @@
 #include "ComponentRecord.h"
 #include "MeshRenderer.h"
 #include "PyComponentProxy.h"
+#include "RectTransformLayout.h"
 #include "Rigidbody.h"
 #include "Scene.h"
+#include "SceneManager.h"
 #include "TransformECSStore.h"
 #include "function/audio/AudioSource.h"
 #include "physics/PhysicsECSStore.h"
@@ -94,9 +96,10 @@ void GameObject::SetLayer(int layer)
         return;
     }
 
-    const uint32_t bodyId = Collider::GetSharedBodyId(this);
+    auto *collider = GetComponent<Collider>();
+    const uint32_t bodyId = collider ? collider->GetBodyId() : Collider::GetSharedBodyId(this);
     if (bodyId != 0xFFFFFFFF)
-        physics.SetBodyGameLayer(bodyId, m_layer);
+        physics.RefreshBodyLayers(bodyId);
 }
 
 void GameObject::SetScene(Scene *scene)
@@ -174,9 +177,20 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
     Scene *scene = m_scene;
     const ObjectHandle owner = GetHandle();
     const auto components = GetComponentDispatchSnapshot();
+    const auto admittedState = SceneManager::Instance().GetSimulationState();
+    const auto interrupted = [&] {
+        if (SceneManager::Instance().GetSimulationState() == admittedState)
+            return false;
+        if (SceneManager::Instance().GetSimulationEpoch() == std::get<0>(admittedState) &&
+            scene->ResolveGameObject(owner) == this)
+            scene->QueueStartObject(this);
+        return true;
+    };
 
     if (isActiveInHierarchy) {
         for (ObjectHandle handle : *components) {
+            if (interrupted())
+                return;
             if (scene->ResolveGameObject(owner) != this)
                 return;
             Component *comp = scene->ResolveComponent(handle);
@@ -185,11 +199,15 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
             if (!comp->HasAwake()) {
                 comp->CallAwake();
             }
+            if (interrupted())
+                return;
             comp = scene->ResolveComponent(handle);
             if (!comp)
                 continue;
             if (comp->IsEnabled()) {
                 comp->CallOnEnable();
+                if (interrupted())
+                    return;
                 comp = scene->ResolveComponent(handle);
                 if (comp && playing && scene->HasStarted()) {
                     scene->QueueComponentStart(comp);
@@ -198,22 +216,28 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
         }
     } else {
         for (ObjectHandle handle : *components) {
+            if (interrupted())
+                return;
             if (scene->ResolveGameObject(owner) != this)
                 return;
             Component *comp = scene->ResolveComponent(handle);
             if (!comp)
                 continue;
             comp->OnGameObjectDeactivated();
+            if (interrupted())
+                return;
             comp = scene->ResolveComponent(handle);
             if (!comp)
                 continue;
             if (comp->IsEnabled() && comp->HasAwake()) {
                 comp->CallOnDisable();
+                if (interrupted())
+                    return;
             }
         }
     }
 
-    if (scene->ResolveGameObject(owner) != this)
+    if (interrupted() || scene->ResolveGameObject(owner) != this)
         return;
     std::vector<ObjectHandle> children;
     for (const auto &child : m_children)
@@ -225,6 +249,8 @@ void GameObject::HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActi
         bool childWasActive = wasActiveInHierarchy && child->m_active;
         bool childIsActive = isActiveInHierarchy && child->m_active;
         child->HandleActiveStateChanged(childWasActive, childIsActive);
+        if (interrupted())
+            return;
     }
 }
 
@@ -336,7 +362,98 @@ void GameObject::RequireWritableStructure() const
         m_scene->RequireWritableWorld();
 }
 
+void GameObject::PrepareRectLayoutParent()
+{
+    auto &store = TransformECSStore::Instance();
+    if (store.GetRectLayout(m_transform.GetECSHandle()))
+        return;
+    if (m_parent)
+        m_parent->PrepareRectLayoutParent();
+
+    // Only an incoming bound UI branch needs this preparation. Ordinary scene
+    // hierarchies and stable frame updates never enter Python layout discovery.
+    for (const auto &component : m_components) {
+        if (auto *proxy = dynamic_cast<PyComponentProxy *>(component.get())) {
+            py::gil_scoped_acquire acquire;
+            const auto instance = proxy->GetPyComponent();
+            const auto prepare = py::getattr(instance, "_prepare_native_rect_layout", py::none());
+            if (!prepare.is_none()) {
+                prepare();
+                return;
+            }
+        }
+    }
+
+    // A non-visual hierarchy node transmits its parent frame without changing
+    // its authored scene pose, just like a lazily bound Python layout bridge.
+    const auto position = m_transform.GetLocalPosition();
+    RectTransformLayout layout(&m_transform);
+    layout.SetUnitMode(static_cast<int>(ui::RectUnitMode::InheritUI));
+    layout.SetAnchorMin({0.f, 0.f});
+    layout.SetAnchorMax({1.f, 1.f});
+    layout.SetSizeDelta({0.f, 0.f});
+    layout.SetAuthoringLocalPosition(position);
+}
+
 void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
+{
+    SetParentInternal(newParent, worldPositionStays, true);
+}
+
+void GameObject::SetPrefabInstanceParent(GameObject *newParent)
+{
+    SetParentInternal(newParent, false, false);
+}
+
+void GameObject::RetireExternalPrefabLinks(bool keepRoot)
+{
+    RequireWritableStructure();
+
+    // Preserve only source scopes carried inside the surviving subtree.
+    std::vector<const GameObject *> retainedScopes;
+    auto retire = [&](auto &&self, GameObject *object) -> void {
+        const auto retains = [&retainedScopes](const std::string &guid) {
+            return std::any_of(retainedScopes.begin(), retainedScopes.end(),
+                               [&guid](const auto *scope) { return scope->m_prefabGuid == guid; });
+        };
+        const bool wasScope = object->m_prefabRoot || object->m_prefabSourceDocument;
+        const bool isScope = wasScope && (keepRoot || object != this);
+        const bool unscoped = !wasScope && object->m_prefabGuid.empty() && !object->m_prefabSourceId;
+        const bool retainsImplicitSource = unscoped || isScope || retains(object->m_prefabGuid);
+        if (isScope) {
+            if (const auto &baseline = object->m_prefabSourceDocument;
+                baseline && baseline->contains("outer_source_id")) {
+                const auto owner = baseline->find("outer_source_guid");
+                const bool keepsPlacement =
+                    owner == baseline->end() ? !retainedScopes.empty() : retains(owner->get_ref<const std::string &>());
+                if (!keepsPlacement) {
+                    auto updated = *baseline;
+                    updated.erase("outer_source_id");
+                    updated.erase("outer_source_guid");
+                    object->SetPrefabSourceDocument(updated);
+                }
+            }
+            retainedScopes.push_back(object);
+        } else if (!retainsImplicitSource) {
+            object->m_prefabGuid.clear();
+            object->m_prefabRoot = false;
+            object->m_prefabSourceId = 0;
+            object->m_prefabSourceDocument.reset();
+        }
+        for (auto &component : object->m_components) {
+            const auto &sourceGuid = component->GetPrefabSourceGuid();
+            if (component->GetPrefabSourceID() && !(sourceGuid.empty() ? retainsImplicitSource : retains(sourceGuid)))
+                component->SetPrefabSourceID(0);
+        }
+        for (auto &child : object->m_children)
+            self(self, child.get());
+        if (isScope)
+            retainedScopes.pop_back();
+    };
+    retire(retire, this);
+}
+
+void GameObject::SetParentInternal(GameObject *newParent, bool worldPositionStays, bool retirePrefabLinks)
 {
     RequireWritableStructure();
     if (newParent)
@@ -368,17 +485,29 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
             object = object->m_parent;
         return object;
     };
-    const bool changesPrefabScope = prefabScope(m_parent) != prefabScope(newParent);
+    const bool changesPrefabScope = retirePrefabLinks && prefabScope(m_parent) != prefabScope(newParent);
 
     // Cache world transform before reparenting
     glm::vec3 savedWorldPos;
     glm::quat savedWorldRot;
     glm::vec3 savedWorldScale;
+    const auto *rectLayout = TransformECSStore::Instance().GetRectLayout(m_transform.GetECSHandle());
+    const bool preserveRectSize = worldPositionStays && rectLayout;
+    glm::vec2 savedRectSize{};
+    float savedRectPositionScale = 1.f;
+    if (preserveRectSize) {
+        const auto rect = ui::CompileRectLayout(rectLayout->spec).rect;
+        savedRectSize = {rect[2], rect[3]};
+        savedRectPositionScale = rectLayout->positionScale;
+    }
     if (worldPositionStays) {
         savedWorldPos = m_transform.GetWorldPosition();
         savedWorldRot = m_transform.GetWorldRotation();
         savedWorldScale = m_transform.GetWorldScale();
     }
+
+    if (newParent && rectLayout && rectLayout->unitMode == ui::RectUnitMode::InheritUI)
+        newParent->PrepareRectLayoutParent();
 
     const bool crossesScenes = newParent && previousScene && newParent->m_scene && newParent->m_scene != previousScene;
     std::unique_ptr<GameObject> selfPtr;
@@ -395,28 +524,8 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
             return;
     }
 
-    if (changesPrefabScope) {
-        // Source IDs belong to one enclosing instance, not merely its asset
-        // GUID. Moving into another instance creates private outer members.
-        // Nested roots keep their own source namespace and all inner links.
-        auto retireOuterLinks = [](auto &&self, GameObject *object) -> void {
-            if (object->m_prefabRoot || object->m_prefabSourceDocument) {
-                if (object->m_prefabSourceDocument && object->m_prefabSourceDocument->contains("outer_source_id")) {
-                    auto baseline = *object->m_prefabSourceDocument;
-                    baseline.erase("outer_source_id");
-                    object->SetPrefabSourceDocument(baseline);
-                }
-                return;
-            }
-            object->m_prefabGuid.clear();
-            object->m_prefabSourceId = 0;
-            for (auto &component : object->m_components)
-                component->SetPrefabSourceID(0);
-            for (auto &child : object->m_children)
-                self(self, child.get());
-        };
-        retireOuterLinks(retireOuterLinks, this);
-    }
+    if (changesPrefabScope)
+        RetireExternalPrefabLinks();
 
     // 2. Attach to new owner
     if (!crossesScenes && newParent) {
@@ -433,6 +542,14 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
 
     // 3. Restore world transform after hierarchy change
     if (worldPositionStays) {
+        if (preserveRectSize) {
+            RectTransformLayout layout(&m_transform);
+            const auto positionScale = layout.GetPositionScale();
+            if (positionScale != savedRectPositionScale)
+                savedRectSize *= savedRectPositionScale / positionScale;
+            layout.SetSizeWithCurrentAnchors(0, savedRectSize.x);
+            layout.SetSizeWithCurrentAnchors(1, savedRectSize.y);
+        }
         m_transform.SetWorldPosition(savedWorldPos);
         m_transform.SetWorldRotation(savedWorldRot);
         m_transform.SetWorldScale(savedWorldScale);
@@ -446,6 +563,7 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     if (!crossesScenes && m_scene)
         m_scene->BumpStructureVersion();
     bool isActiveInHierarchy = IsActiveInHierarchy();
+    PhysicsECSStore::Instance().RefreshHierarchy(this);
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
 }
 
@@ -780,7 +898,10 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     const ObjectHandle ownerHandle = GetHandle();
     const ObjectHandle componentHandle = component->GetHandle();
     Scene *scene = m_scene;
+    const auto admittedState = SceneManager::Instance().GetSimulationState();
     component->CallAwake();
+    if (SceneManager::Instance().GetSimulationEpoch() != std::get<0>(admittedState))
+        return;
     // Lifecycle callbacks may deliberately change enabled or owner activity.
     // Keep their result, just as normal attachment does; restoring the saved
     // bit here would resurrect a component that disabled itself in Awake.
@@ -828,6 +949,151 @@ Component *GameObject::AddComponentByTypeName(const std::string &typeName)
     return AttachComponent(std::move(component), true);
 }
 
+PrefabComponentEdit::PrefabComponentEdit(GameObject &owner)
+    : m_owner(std::make_shared<OwnerLifetime>()), m_previousOrder(owner.GetComponentOrder())
+{
+    m_owner->object = &owner;
+    owner.ObserveNativeLifetime(m_owner);
+}
+
+PrefabComponentEdit::~PrefabComponentEdit()
+{
+    try {
+        Rollback();
+    } catch (const std::exception &error) {
+        INXLOG_ERROR("Prefab component rollback failed: ", error.what());
+    }
+}
+
+void PrefabComponentEdit::Close()
+{
+    if (auto *owner = m_owner->object)
+        owner->ForgetNativeLifetimeObserver(m_owner.get());
+    m_owner->object = nullptr;
+}
+
+std::shared_ptr<PrefabComponentEdit> GameObject::StagePrefabComponentEdit(const json &additions,
+                                                                          const std::vector<uint64_t> &removedIds)
+{
+    RequireWritableStructure();
+    if (!m_scene || !additions.is_array())
+        throw std::invalid_argument("Prefab component publication requires a live GameObject and component records");
+    const std::unordered_set<uint64_t> removed(removedIds.begin(), removedIds.end());
+    const auto before = GetComponentOrder();
+    const std::unordered_set<uint64_t> existing(before.begin(), before.end());
+    if (removed.size() != removedIds.size() ||
+        std::any_of(removed.begin(), removed.end(), [&](uint64_t id) { return existing.count(id) == 0; }))
+        throw std::invalid_argument("Prefab component removal must address unique existing slots");
+
+    std::vector<std::pair<uint64_t, std::unique_ptr<Component>>> staged;
+    staged.reserve(additions.size());
+    std::unordered_set<uint64_t> newIds;
+    for (const auto &value : additions) {
+        const auto record = DecodeComponentRecord(value);
+        if (record.kind != ComponentRecordKind::Native || !newIds.insert(record.componentId).second ||
+            (Component::FindByComponentId(record.componentId) && removed.count(record.componentId) == 0))
+            throw std::invalid_argument("Prefab native component slot has a conflicting identity");
+        auto component = ComponentFactory::Create(record.nativeTypeName);
+        auto document = BuildNativeComponentDocument(record);
+        document.erase("component_id");
+        if (!component || !component->DeserializeDocument(document))
+            throw std::invalid_argument("Invalid Prefab native component '" + record.nativeTypeName + "'");
+        staged.emplace_back(record.componentId, std::move(component));
+    }
+
+    auto edit = std::shared_ptr<PrefabComponentEdit>(new PrefabComponentEdit(*this));
+    edit->m_removed.reserve(removed.size());
+    edit->m_added.reserve(staged.size());
+    m_components.reserve(m_components.size() + staged.size());
+    auto &registry = Component::GetInstanceRegistry();
+    for (auto &component : m_components) {
+        const auto id = component->GetComponentID();
+        if (removed.count(id))
+            edit->m_removed.push_back({std::move(component), registry.extract(id)});
+    }
+    m_components.erase(std::remove(m_components.begin(), m_components.end(), nullptr), m_components.end());
+    for (auto &[id, component] : staged) {
+        component->SetComponentID(id);
+        component->SetGameObject(this);
+        edit->m_added.push_back(id);
+        m_components.push_back(std::move(component));
+    }
+    InvalidateComponentExecutionCache();
+    RefreshLifecycleDispatchFlags();
+    m_scene->BumpStructureVersion();
+    return edit;
+}
+
+void PrefabComponentEdit::Validate() const
+{
+    const auto *owner = m_owner->object;
+    if (!owner)
+        throw std::runtime_error("Prefab component owner retired during publication");
+    const auto blockers = owner->GetComponentSetBlockers();
+    if (!blockers.empty())
+        throw std::invalid_argument("Invalid Prefab component set: " + blockers.front());
+    for (const auto id : m_added) {
+        const auto *component = Component::FindByComponentId(id);
+        if (!component || component->GetGameObject() != owner)
+            throw std::runtime_error("Added Prefab component retired during publication");
+        component->ValidateHierarchy();
+    }
+}
+
+void PrefabComponentEdit::Finish()
+{
+    auto &registry = Component::GetInstanceRegistry();
+    for (auto &retired : m_removed) {
+        if (m_owner->object) {
+            // Cleanup can still use the retiring component's native binding.
+            // A replacement with the same ID keeps its new registry entry.
+            if (registry.count(retired.component->GetComponentID()) == 0)
+                registry.insert(std::move(retired.registry));
+            retired.component->CallOnDestroy();
+        }
+        retired.component->SetGameObject(nullptr);
+        retired.component.reset();
+    }
+    m_removed.clear();
+    for (const auto id : m_added) {
+        auto *owner = m_owner->object;
+        auto *component = Component::FindByComponentId(id);
+        if (owner && component && component->GetGameObject() == owner)
+            owner->PostAddComponent(component, false);
+    }
+    Close();
+}
+
+void PrefabComponentEdit::Rollback()
+{
+    auto *owner = m_owner->object;
+    if (!owner) {
+        for (auto &retired : m_removed)
+            retired.component->SetGameObject(nullptr);
+        m_removed.clear();
+        return;
+    }
+    auto &components = owner->m_components;
+    const auto added = [&](const auto &component) {
+        return std::find(m_added.begin(), m_added.end(), component->GetComponentID()) != m_added.end();
+    };
+    components.erase(std::remove_if(components.begin(), components.end(), added), components.end());
+    auto &registry = Component::GetInstanceRegistry();
+    for (auto &retired : m_removed) {
+        registry.insert(std::move(retired.registry));
+        components.push_back(std::move(retired.component));
+    }
+    m_removed.clear();
+    owner->InvalidateComponentExecutionCache();
+    owner->RefreshLifecycleDispatchFlags();
+    const bool restored = owner->SetComponentOrder(m_previousOrder);
+    if (owner->m_scene)
+        owner->m_scene->BumpStructureVersion();
+    Close();
+    if (!restored)
+        throw std::runtime_error("Prefab component slots changed during rollback");
+}
+
 std::vector<std::string> GameObject::GetAddComponentBlockers(const std::string &typeName) const
 {
     if (!ComponentFactory::IsRegistered(typeName))
@@ -836,7 +1102,7 @@ std::vector<std::string> GameObject::GetAddComponentBlockers(const std::string &
                                  nullptr, true, true);
 }
 
-void GameObject::PostAddComponent(Component *component)
+void GameObject::PostAddComponent(Component *component, bool reset)
 {
     if (!component || !m_scene) {
         return;
@@ -849,10 +1115,19 @@ void GameObject::PostAddComponent(Component *component)
     Scene *scene = m_scene;
     const ObjectHandle owner = GetHandle();
     const ObjectHandle identity = component->GetHandle();
+    const auto admittedState = SceneManager::Instance().GetSimulationState();
 
     // Unity: Reset is editor-only and fires when a component is first added.
-    if (!m_scene->IsPlaying())
+    if (reset && !m_scene->IsPlaying())
         component->CallReset();
+    if (SceneManager::Instance().GetSimulationEpoch() != std::get<0>(admittedState))
+        return;
+    if (scene->ResolveGameObject(owner) != this || !(component = scene->ResolveComponent(identity)))
+        return;
+
+    component->OnHierarchyPublished();
+    if (SceneManager::Instance().GetSimulationEpoch() != std::get<0>(admittedState))
+        return;
     if (scene->ResolveGameObject(owner) != this || !(component = scene->ResolveComponent(identity)))
         return;
 
@@ -863,6 +1138,8 @@ void GameObject::PostAddComponent(Component *component)
     }
 
     component->CallAwake();
+    if (SceneManager::Instance().GetSimulationEpoch() != std::get<0>(admittedState))
+        return;
     if (scene->ResolveGameObject(owner) != this || !(component = scene->ResolveComponent(identity)))
         return;
 
@@ -967,7 +1244,7 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
             return nullptr;
         }
         replacement->SetComponentID(current->GetComponentID());
-        replacement->SetPrefabSourceID(current->GetPrefabSourceID());
+        replacement->SetPrefabSource(current->GetPrefabSourceID(), current->GetPrefabSourceGuid());
 
         Component *published = replacement.get();
         slot = std::move(replacement);
@@ -1041,6 +1318,7 @@ void GameObject::AttachChild(std::unique_ptr<GameObject> child)
         child->SetScene(m_scene);
     }
     m_children.push_back(std::move(child));
+    RectTransformLayout::RefreshSubtree(m_children.back()->GetTransform());
 }
 
 void GameObject::SetChildSiblingIndex(GameObject *child, int newIndex)
@@ -1072,8 +1350,10 @@ std::unique_ptr<GameObject> GameObject::DetachChild(GameObject *child)
     if (it != m_children.end()) {
         std::unique_ptr<GameObject> ret = std::move(*it);
         m_children.erase(it);
-        if (ret)
+        if (ret) {
             ret->m_parent = nullptr;
+            RectTransformLayout::RefreshSubtree(ret->GetTransform());
+        }
         return ret;
     }
     return nullptr;
@@ -1110,9 +1390,21 @@ GameObject *GameObject::FindDescendant(const std::string &name) const
 
 void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(float), bool editMode)
 {
+    auto &manager = SceneManager::Instance();
+    const auto admittedState = manager.GetSimulationState();
     Scene *scene = m_scene;
     const ObjectHandle owner = GetHandle();
-    const auto components = GetComponentDispatchSnapshot();
+    const bool fixed = update == &Component::FixedUpdate;
+    auto components = GetComponentDispatchSnapshot();
+    if (fixed) {
+        const auto step = std::pair{manager.GetSimulationEpoch(), manager.GetFixedStepIndex()};
+        if (!m_fixedDispatchSnapshot || step != m_fixedDispatchStep) {
+            m_fixedDispatchStep = step;
+            m_fixedDispatchSnapshot = components;
+            m_fixedDispatchCursor = 0;
+        }
+        components = m_fixedDispatchSnapshot;
+    }
     const auto resolve = [&](ObjectHandle handle) -> Component * {
         auto *component = scene ? scene->ResolveComponent(handle) : Component::FindByComponentId(handle.id);
         return component && component->GetLifetimeGeneration() == handle.generation &&
@@ -1120,9 +1412,14 @@ void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(floa
                    ? component
                    : nullptr;
     };
-    for (const ObjectHandle handle : *components) {
+    for (size_t index = fixed ? m_fixedDispatchCursor : 0; index < components->size(); ++index) {
+        if (SceneManager::Instance().GetSimulationState() != admittedState)
+            return;
         if (scene && scene->ResolveGameObject(owner) != this)
             return;
+        const ObjectHandle handle = (*components)[index];
+        if (fixed)
+            m_fixedDispatchCursor = index + 1;
         Component *component = resolve(handle);
         if (!component || !component->IsEnabled())
             continue;
@@ -1133,6 +1430,8 @@ void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(floa
                 continue;
             if (!component->HasAwake() && component->WantsEditModeLifecycle())
                 component->CallAwake();
+            if (SceneManager::Instance().GetSimulationState() != admittedState)
+                return;
             component = resolve(handle);
             if (!component || !component->HasAwake())
                 continue;
@@ -1241,7 +1540,8 @@ nlohmann::json GameObject::SerializeDocument() const
     // Serialize children
     json childrenArray = json::array();
     for (const auto &child : m_children) {
-        childrenArray.push_back(child->SerializeDocument());
+        if (!m_scene || !m_scene->IsPendingDestroy(child.get()))
+            childrenArray.push_back(child->SerializeDocument());
     }
     j["children"] = childrenArray;
 
@@ -1253,7 +1553,15 @@ std::string GameObject::Serialize() const
     return SerializeDocument().dump(2);
 }
 
-bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocumentIds)
+void GameObject::ValidateHierarchy() const
+{
+    for (const auto &component : m_components)
+        component->ValidateHierarchy();
+    for (const auto &child : m_children)
+        child->ValidateHierarchy();
+}
+
+bool GameObject::DeserializeDocument(const nlohmann::json &j, InstantiationIds &ids, bool preserveDocumentIds)
 {
     RequireWritableStructure();
     try {
@@ -1261,6 +1569,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         auto stagedRoot = stagingScene.BuildGameObjectFromJsonImpl(j, /*preserveIds=*/false);
         if (!stagedRoot)
             return false;
+        stagedRoot->ValidateHierarchy();
         Scene *targetScene = m_scene;
         GameObject *targetParent = m_parent;
 
@@ -1288,6 +1597,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         std::unordered_set<uint64_t> componentIds;
         std::unordered_map<uint64_t, uint64_t> stagedToCommittedObjectId;
         std::unordered_map<uint64_t, uint64_t> nativeComponentIdRemap;
+        std::unordered_map<uint64_t, InstantiatedObjectIds *> publishedByObject;
         uint64_t rootObjectId = m_id;
         uint64_t rootTransformId = m_transform.GetComponentID();
 
@@ -1310,6 +1620,9 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             object->m_id = committedObjectId;
             if (isRoot)
                 rootObjectId = committedObjectId;
+            auto &publishedIds = ids[document.at("id").get<uint64_t>()];
+            publishedIds.object = committedObjectId;
+            publishedByObject[committedObjectId] = &publishedIds;
 
             const json &transformDocument = document.at("transform");
             const uint64_t committedTransformId =
@@ -1322,6 +1635,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                 throw std::invalid_argument("ObjectGraph contains a duplicate component_id");
             if (!preserveDocumentIds && transformDocument.contains("component_id"))
                 nativeComponentIdRemap.emplace(transformDocument["component_id"].get<uint64_t>(), committedTransformId);
+            publishedIds.transform = committedTransformId;
             if (isRoot)
                 rootTransformId = committedTransformId;
             else
@@ -1336,6 +1650,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                             throw std::invalid_argument("ObjectGraph contains a duplicate component_id");
                         pythonComponentIds.push_back(record.componentId);
                     }
+                    publishedIds.components.push_back(0); // Filled from the pending Python identity below.
                     continue;
                 }
                 if (nativeComponentIndex >= object->m_components.size())
@@ -1348,6 +1663,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                 if (!preserveDocumentIds)
                     nativeComponentIdRemap.emplace(record.componentId, componentId);
                 componentAssignments.push_back({stagedComponent, componentId});
+                publishedIds.components.push_back(componentId);
             }
             if (nativeComponentIndex != object->m_components.size())
                 throw std::logic_error("staged ObjectGraph native component count changed");
@@ -1359,13 +1675,6 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                 collectAssignments(object->m_children[index].get(), childDocuments[index], false);
         };
         collectAssignments(stagedRoot.get(), j, true);
-
-        if (!preserveDocumentIds) {
-            for (const auto &[component, componentId] : componentAssignments) {
-                (void)componentId;
-                component->RemapComponentReferences(nativeComponentIdRemap);
-            }
-        }
 
         if (targetScene) {
             for (const uint64_t objectId : objectIds) {
@@ -1396,8 +1705,18 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             if (id == stagedToCommittedObjectId.end())
                 throw std::logic_error("pending Python component targets an unknown staged GameObject");
             pending.gameObjectId = id->second;
-            if (!preserveDocumentIds)
-                pending.fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
+            const auto sourceId = pending.fieldsDocument.at("__component_id__").get<uint64_t>();
+            const auto componentId = preserveDocumentIds ? sourceId : Component::ReserveDocumentID();
+            pending.fieldsDocument["__component_id__"] = componentId;
+            publishedByObject.at(pending.gameObjectId)->components.at(pending.componentIndex) = componentId;
+            nativeComponentIdRemap.emplace(sourceId, componentId);
+        }
+
+        if (!preserveDocumentIds) {
+            for (const auto &[component, componentId] : componentAssignments) {
+                (void)componentId;
+                component->RemapComponentReferences(nativeComponentIdRemap);
+            }
         }
 
         Component::ReserveRegistry(Component::GetInstanceCount() + componentAssignments.size());
@@ -1493,6 +1812,9 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             for (auto &pending : stagingScene.m_pendingPyComponents)
                 targetScene->m_pendingPyComponents.push_back(std::move(pending));
             ++targetScene->m_structureVersion;
+            targetScene->AwakeObject(this);
+            if (targetScene->IsPlaying() && targetScene->HasStarted())
+                targetScene->QueueStartObject(this);
         }
         return true;
     } catch (const std::exception &e) {
@@ -1509,17 +1831,17 @@ void GameObject::CollectAllDescendants(std::vector<GameObject *> &out) const
     }
 }
 
-std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
+std::unique_ptr<GameObject> GameObject::Clone(Scene *scene, InstantiationIds &ids) const
 {
     std::unordered_map<uint64_t, uint64_t> componentIdRemap;
     std::vector<Component *> clonedComponents;
-    auto clone = CloneGraph(scene, componentIdRemap, clonedComponents);
+    auto clone = CloneGraph(scene, ids, componentIdRemap, clonedComponents);
     for (Component *component : clonedComponents)
         component->RemapComponentReferences(componentIdRemap);
     return clone;
 }
 
-std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
+std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene, InstantiationIds &ids,
                                                    std::unordered_map<uint64_t, uint64_t> &componentIdRemap,
                                                    std::vector<Component *> &clonedComponents) const
 {
@@ -1540,6 +1862,9 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
     m_transform.CloneDataTo(obj->m_transform);
     componentIdRemap.emplace(m_transform.GetComponentID(), obj->m_transform.GetComponentID());
     clonedComponents.push_back(&obj->m_transform);
+    auto &publishedIds = ids[m_id];
+    publishedIds.object = obj->GetID();
+    publishedIds.transform = obj->m_transform.GetComponentID();
 
     // Clone components
     for (size_t componentIndex = 0; componentIndex < m_components.size(); ++componentIndex) {
@@ -1558,23 +1883,29 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
                 pending.componentIndex = componentIndex;
                 pending.fieldsDocument = proxy->SerializePyFieldsDocument();
                 pending.fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
+                const auto id = pending.fieldsDocument["__component_id__"].get<uint64_t>();
+                publishedIds.components.push_back(id);
+                componentIdRemap.emplace(comp->GetComponentID(), id);
                 scene->AddPendingPyComponent(std::move(pending));
             }
         } else {
             auto clonedComp = comp->Clone();
-            if (clonedComp) {
-                clonedComp->SetPrefabSourceID(comp->GetPrefabSourceID());
-                clonedComp->SetGameObject(obj.get());
-                componentIdRemap.emplace(comp->GetComponentID(), clonedComp->GetComponentID());
-                clonedComponents.push_back(clonedComp.get());
-                obj->m_components.push_back(std::move(clonedComp));
-            }
+            if (!clonedComp)
+                throw std::logic_error(std::string("Component does not implement Clone: ") + comp->GetTypeName());
+            clonedComp->SetPrefabSource(comp->GetPrefabSourceID(), comp->GetPrefabSourceGuid());
+            clonedComp->SetGameObject(obj.get());
+            componentIdRemap.emplace(comp->GetComponentID(), clonedComp->GetComponentID());
+            clonedComponents.push_back(clonedComp.get());
+            publishedIds.components.push_back(clonedComp->GetComponentID());
+            obj->m_components.push_back(std::move(clonedComp));
         }
     }
 
     // Recursively clone children
     for (const auto &child : m_children) {
-        auto clonedChild = child->CloneGraph(scene, componentIdRemap, clonedComponents);
+        if (m_scene && m_scene->IsPendingDestroy(child.get()))
+            continue;
+        auto clonedChild = child->CloneGraph(scene, ids, componentIdRemap, clonedComponents);
         if (clonedChild) {
             obj->AttachChild(std::move(clonedChild));
         }

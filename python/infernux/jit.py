@@ -13,7 +13,9 @@ Numba remains an internal CPU code-generation backend; its decorator and
 ``prange`` are not a second public authoring surface.
 """
 
-from functools import lru_cache
+from infernux.cpu_execution import _CpuArguments, CpuRangeProgram
+
+from infernux._compiler.kernel_contract import WORK_ITEM_FAST_MATH, CPU_WORK_ITEM_ERROR_MODEL
 import os
 import sys
 
@@ -29,17 +31,8 @@ from infernux.jit_runtime import (
     CpuSpecializationStatistics as SpecializationStatistics,
 )
 
-
-_VECTOR_FIELDS = {
-    2: ("x", "y"),
-    3: ("x", "y", "z"),
-    4: ("x", "y", "z", "w"),
-}
-
-
 def _is_web_runtime() -> bool:
     return os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or sys.platform == "emscripten"
-
 
 def _jit_runtime_available() -> bool:
     """Return whether this process may execute the native CPU JIT."""
@@ -47,38 +40,11 @@ def _jit_runtime_available() -> bool:
     # The target capability, not merely the host backend, controls execution.
     return _BACKEND_JIT_AVAILABLE and not _is_web_runtime()
 
-
 # Describe the active Player. A host Python used while assembling Web content
 # may have Numba installed, but the Web Player deliberately does not.
 JIT_AVAILABLE = _jit_runtime_available()
 
-
-@lru_cache(maxsize=1)
-def _vector_layouts():
-    """Native vector types and immutable layouts, independent of call data."""
-    from infernux.lib import Vector2, Vector3, vec4f
-    import numpy as np
-    return tuple(
-        (vector_type, fields, np.dtype([(name, np.float32) for name in fields]))
-        for vector_type, fields in (
-            (Vector2, _VECTOR_FIELDS[2]),
-            (Vector3, _VECTOR_FIELDS[3]),
-            (vec4f, _VECTOR_FIELDS[4]),
-        )
-    )
-
-
-def _vector_record(value):
-    """Return a typed NumPy scalar for one public engine vector, if any."""
-    import numpy as np
-    for vector_type, fields, dtype in _vector_layouts():
-        if isinstance(value, vector_type):
-            record = np.array(tuple(float(getattr(value, name)) for name in fields), dtype=dtype)[()]
-            return record, value, vector_type, fields
-    return None
-
-
-class _CompiledCpuFunction:
+class _CompiledCpuFunction(_CpuArguments):
     """Thin public adapter from engine CPU buffers to native JIT storage."""
 
     def __init__(self, compiled):
@@ -87,46 +53,6 @@ class _CompiledCpuFunction:
         self.__qualname__ = getattr(compiled, "__qualname__", self.__name__)
         self.__doc__ = getattr(compiled, "__doc__", None)
         self.__module__ = getattr(compiled, "__module__", __name__)
-
-    @staticmethod
-    def _arguments(args, kwargs):
-        from infernux.compute import Buffer
-        import numpy as np
-
-        owners = {}
-
-        def unwrap(value):
-            if value is None or isinstance(value, (bool, int, float, complex, np.number)):
-                return value
-            if isinstance(value, np.ndarray):
-                if value.dtype.hasobject:
-                    raise TypeError("inx.jit.compile does not accept NumPy object arrays")
-                return value
-            if isinstance(value, Buffer):
-                value._require_open()
-                if value.device != "cpu":
-                    raise RuntimeError("inx.jit.compile accepts CPU buffers; GPU buffers require inx.compute.launch")
-                array = value.numpy(copy=False)
-                owners[id(array)] = value
-                return array
-            identity = ("vector", id(value))
-            if identity in owners:
-                return owners[identity]
-            vector = _vector_record(value)
-            if vector is not None:
-                record, original, vector_type, fields = vector
-                owners.setdefault("vectors", []).append((record, original, vector_type, fields))
-                owners[("vector_type", record.dtype.str)] = (vector_type, fields)
-                owners[identity] = record
-                return record
-            raise TypeError(
-                "inx.jit.compile arguments must be numeric scalars, NumPy arrays, "
-                "CPU inx.buffer values, or Infernux vectors"
-            )
-
-        return tuple(unwrap(value) for value in args), {
-            name: unwrap(value) for name, value in kwargs.items()
-        }, owners
 
     @staticmethod
     def _restore(value, owners):
@@ -179,7 +105,6 @@ class _CompiledCpuFunction:
     def __getattr__(self, name):
         return getattr(self._compiled, name)
 
-
 def compile(fn=None, **options):
     """Compile a CPU function with Infernux's serial/parallel analysis.
 
@@ -218,6 +143,173 @@ def compile(fn=None, **options):
         raise TypeError("inx.jit.compile expects a callable")
     return _CompiledCpuFunction(_njit(fn, **options))
 
+class _CompiledCpuRange(CpuRangeProgram, _CompiledCpuFunction):
+    """One prepared native row function; ownership and scheduling stay with its caller."""
+
+    def __init__(self, compiled, parameter_names, parameter_kinds, domain_parameter, plan):
+        _CompiledCpuFunction.__init__(self, compiled)
+        CpuRangeProgram.__init__(self, parameter_names, parameter_kinds, domain_parameter, plan)
+        self._c_entry = None
+
+    def _native_entry(self):
+        """Retain a C wrapper for this exact, already-proved publication."""
+        if self._c_entry is None:
+            from infernux._jit_backend import compile_range_entry
+            self._c_entry = compile_range_entry(self._compiled, self.parameter_kinds, self.continuation_plan)
+        return self._c_entry
+
+    def __call__(self, *params, begin, end):
+        import numpy as np
+
+        values, owners, _, begin, end = self._range_arguments(params, begin, end)
+        if begin != end:
+            self._compiled(*values, np.int32(begin), np.int32(end))
+
+    def _infernux_warmup(self, *params):
+        import numpy as np
+
+        values, owners, _ = self._bind(params)
+        # The proven function contains only this loop. An empty native call
+        # specializes exact readonly/layout types without reading/writing rows.
+        self._compiled(*values, np.int32(0), np.int32(0))
+
+def _prepare_cpu_work_item(function, params, *, receiver_fields=None):
+    import numpy as np
+    from infernux._compiler.kernel_contract import ARRAY_KINDS
+    from infernux._compiler.work_item import normalize_work_item
+    from infernux.jit_hir import TypeRef, ValueType
+
+    if not _jit_runtime_available():
+        raise RuntimeError("native CPU work-item continuation is unavailable on this target")
+    item = normalize_work_item(function, len(params), receiver_fields=receiver_fields, target="CPU/Native")
+    names = tuple(argument.arg for argument in (*item.definition.args.posonlyargs, *item.definition.args.args))
+    native_params, _, owners = _CompiledCpuFunction._arguments(tuple(params), {})
+    array_parameters = tuple(index for index, value in enumerate(native_params) if isinstance(value, np.ndarray))
+    if any(str(native_params[index].dtype) not in ARRAY_KINDS for index in array_parameters):
+        raise TypeError("CPU work-item arrays require float32, int32, uint32 or int64 storage")
+    kinds = tuple(ARRAY_KINDS[str(native_params[index].dtype)] if index in array_parameters else
+                  "int32" if isinstance(native_params[index], (int, np.integer)) else "float32"
+                  for index in range(len(names)))
+    types = {name: TypeRef(ValueType.ARRAY, ("domain",), True) if index in array_parameters
+             else TypeRef(ValueType.INT if kinds[index] == "int32" else ValueType.FLOAT)
+             for index, name in enumerate(names)}
+    hir = item.analyze(argument_types=types)
+    plan = hir.continuation_plan
+    plan.require()
+    return item, native_params, hir, plan, kinds
+
+def _compile_work_item(function, params, *, receiver_fields=None):
+    """One author body, HIR proof and typed native [begin,end) entry."""
+    return _compile_cpu_work_item(function, *_prepare_cpu_work_item(function, params, receiver_fields=receiver_fields))
+
+def _compile_cpu_work_item(function, item, params, hir, plan, parameter_kinds):
+    import ast
+    import builtins
+    import hashlib
+    import json
+    import numpy as np
+
+    names = tuple(argument.arg for argument in (*item.definition.args.posonlyargs, *item.definition.args.args))
+    hidden = ("_infernux_range_begin", "_infernux_range_end", "_infernux_range_f32", "_infernux_range_iter")
+    used = {node.id for node in ast.walk(item.definition) if isinstance(node, ast.Name)} | set(item.globals_map) | set(names)
+    if any(name in used for name in hidden):
+        raise TypeError("work item source uses a reserved _infernux_range_ name")
+
+    class Float32Constants(ast.NodeTransformer):
+        def visit_Call(self, node):
+            node = self.generic_visit(node)
+            if isinstance(node.func, ast.Name) and node.func.id == "float":
+                node.func.id = hidden[2]
+            return node
+
+        def visit_Constant(self, node):
+            if type(node.value) is float:
+                return ast.copy_location(ast.Call(func=ast.Name(id=hidden[2], ctx=ast.Load()),
+                                                  args=[node], keywords=[]), node)
+            return node
+
+    definition = item.loop_definition(bounds=hidden[:2])
+    definition.body[0].iter.func.id = hidden[3]
+    # A C entry freezes its dispatcher. Distinct typed ABIs must not share that
+    # dispatcher even when the authored row body (for example a copy) is equal.
+    definition.name = "_infernux_range_" + item.definition.name + "__" + "_".join(parameter_kinds)
+    definition.args.posonlyargs = []
+    definition.args.args = [*(ast.arg(arg=name) for name in names), *(ast.arg(arg=name) for name in hidden[:2])]
+    definition.returns = None
+    definition = ast.fix_missing_locations(Float32Constants().visit(definition))
+    namespace = dict(item.globals_map)
+    namespace.update({"__name__": function.__module__, hidden[2]: np.float32, hidden[3]: builtins.range})
+    for name, value in tuple(namespace.items()):
+        if isinstance(value, (float, np.floating)):
+            namespace[name] = np.float32(value)
+    filename = "<infernux-native-range:" + function.__qualname__ + ">"
+    exec(builtins.compile(ast.Module(body=[definition], type_ignores=[]), filename, "exec"), namespace)
+    generated = namespace[definition.name]
+    # Retain only the existing backend's actual global references, not the
+    # author module's scene/editor objects or a new source-text cache.
+    from infernux._jit_backend import _global_names
+    required = set(_global_names(generated.__code__)) | {"__builtins__"}
+    for name in tuple(namespace):
+        if name not in required:
+            del namespace[name]
+    compiled = compile(generated, auto_parallel=False, fastmath=WORK_ITEM_FAST_MATH,
+                       error_model=CPU_WORK_ITEM_ERROR_MODEL)
+    result = _CompiledCpuRange(compiled._compiled, names, parameter_kinds, item.domain_parameter, plan)
+    # Frozen code/constant identity; cost metadata never keys on live buffers or
+    # the changing parameter generation of a trained model.
+    result.cost_identity = hashlib.sha256(json.dumps(dict(
+        source=ast.dump(ast.Module(body=[*item.helpers, item.definition], type_ignores=[]), include_attributes=False),
+        constants=item.compile_values, kinds=parameter_kinds, fast_math=WORK_ITEM_FAST_MATH,
+        error_model=CPU_WORK_ITEM_ERROR_MODEL,
+    ), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    warmup(result, *params)
+    result.hir = hir
+    result.arithmetic_types = tuple(sorted({str(signature.return_type)
+        for overload in result._compiled.overloads.values()
+        for expression, signature in overload.type_annotation.calltypes.items()
+        if getattr(expression, "op", None) in {"binop", "inplace_binop", "unary", "call"}
+        and str(signature.return_type) in {"float32", "float64"}}))
+    if "float64" in result.arithmetic_types:
+        raise TypeError("CPU continuation requires float32 arithmetic; use floating literals/float32 operands instead of implicit wider arithmetic")
+    return result
+
+def _compile_reduction_work_item(function, params, *, receiver_fields=None, _prepared=None, native_entries=True):
+    """Cold, finite CPU programs from one ordered region; no execution/scheduling."""
+    import numpy as np
+
+    programs = {}
+    carry = lowered = samples = program = whole = variants = None
+    item = values = hir = plan = kinds = None
+    try:
+        item, values, hir, plan, kinds = (_prepare_cpu_work_item(function, params, receiver_fields=receiver_fields)
+                                       if _prepared is None else _prepared)
+        variants = item.reduction_variants(plan, kinds)
+        region = plan.ordered_reduction
+        whole = _compile_cpu_work_item(function, item, values, hir, plan, kinds)
+        programs["whole"] = whole
+        if native_entries:
+            whole._native_entry()
+        count = len(whole._bind(values)[0][whole.domain_parameter])
+        if region.count > 1:
+            carry = np.empty((2, count), dtype=np.float32)
+            for kind, lowered in variants.items():
+                if kind == "whole":
+                    continue
+                begin, end = (0, 1) if kind == "initial" else (1, 2) if kind == "resume" else (region.count - 1, region.count)
+                samples = (*values, carry[0], carry[1], np.int32(begin), np.int32(end))
+                program = _compile_cpu_work_item(function, lowered.item, samples, hir,
+                                                lowered.continuation, lowered.parameter_kinds)
+                if native_entries:
+                    program._native_entry()
+                programs[kind] = program
+        whole._inner_variants = {kind: program for kind, program in programs.items() if kind != "whole"}
+        result, programs = programs, None
+        return result
+    except BaseException:
+        programs.clear()
+        raise
+    finally:
+        function = params = item = values = hir = plan = kinds = carry = lowered = samples = program = whole = variants = _prepared = None
 
 def warmup(fn, *args, **kwargs):
     """Prepare native CPU code without executing authored gameplay state.
@@ -231,7 +323,6 @@ def warmup(fn, *args, **kwargs):
             "inx.jit.warmup requires the bundled Numba/llvmlite CPU JIT runtime"
         )
     return _native_warmup(fn, *args, **kwargs)
-
 
 def statistics(fn) -> Statistics:
     """Snapshot a CPU compilation without compiling or executing the function.
@@ -265,7 +356,6 @@ def statistics(fn) -> Statistics:
         decisions = ()
     return compilation_statistics(implementations, function_name=fn.__qualname__,
                                   selected_mode=mode, last_diagnostic=diagnostic, decisions=decisions)
-
 
 __all__ = [
     "JIT_AVAILABLE", "compile", "warmup", "statistics", "Statistics",

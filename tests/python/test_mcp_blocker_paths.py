@@ -37,8 +37,6 @@ def report_session(tmp_path):
         gateway,
         str(project),
         {
-            "profile": "global_validation",
-            "granted_capabilities": ["session.write"],
             "session": {"session_id": "report-path-test", "managed_checkpoints_required": False},
             "features": {"session_call_log": False},
         },
@@ -86,7 +84,7 @@ def test_report_path_escape_preserves_existing_asset(report_session, tmp_path, r
         "absolute": str(victim.with_suffix("")),
     }[kind]
     if route == "direct":
-        with pytest.raises(session.McpPolicyError, match="report_id"):
+        with pytest.raises(session.McpSessionError, match="report_id"):
             session.write_blocker(_report(report_id=report_id))
     else:
         result = execute("infernux.mcp.blocker.report", {"report": _report(report_id=report_id)})
@@ -181,12 +179,3 @@ def test_report_directory_link_cannot_redirect_writes(report_session, tmp_path):
     result = execute("infernux.mcp.blocker.report", {"report": _report(report_id="escaped")})
     assert not result["ok"], result
     assert not list(outside.iterdir())
-
-
-def test_report_permission_denial_does_not_create_directory(report_session, monkeypatch):
-    _, execute = report_session
-    monkeypatch.setitem(adapter._config, "granted_capabilities", ["session.read"])
-    result = execute("infernux.mcp.blocker.report", {"report": _report(report_id="denied")})
-    assert not result["ok"], result
-    assert "operation.permission_denied" in str(result)
-    assert not (Path(session.current().artifact_root) / "reports").exists()

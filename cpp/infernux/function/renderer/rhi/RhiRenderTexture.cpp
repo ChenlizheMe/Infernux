@@ -10,38 +10,6 @@ namespace infernux::rhi
 {
 namespace
 {
-uint32_t TexelBytes(PixelFormat format)
-{
-    switch (format) {
-    case PixelFormat::R8UNorm:
-        return 1;
-    case PixelFormat::RG8UNorm:
-    case PixelFormat::R16SFloat:
-    case PixelFormat::RGBA4UNormPack16:
-        return 2;
-    case PixelFormat::RGBA8UNorm:
-    case PixelFormat::RGBA8Srgb:
-    case PixelFormat::BGRA8UNorm:
-    case PixelFormat::BGRA8Srgb:
-    case PixelFormat::RG16SFloat:
-    case PixelFormat::R32SFloat:
-    case PixelFormat::RGB10A2UNorm:
-    case PixelFormat::D32SFloat:
-    case PixelFormat::D24UNormS8UInt:
-        return 4;
-    case PixelFormat::RGBA16SFloat:
-    case PixelFormat::RGBA16UNorm:
-    case PixelFormat::RG32UInt:
-    case PixelFormat::D32SFloatS8UInt:
-        return 8;
-    case PixelFormat::RGBA32SFloat:
-    case PixelFormat::RGBA32UInt:
-        return 16;
-    default:
-        throw std::invalid_argument("RenderTexture requires an uncompressed attachment format");
-    }
-}
-
 uint32_t RelativeExtent(uint32_t reference, float scale)
 {
     if (reference == 0 || !std::isfinite(scale) || scale <= 0)
@@ -97,7 +65,7 @@ std::shared_ptr<TextureResource> CreateAttachment(Device &device, const TextureD
                 throw std::runtime_error("RenderTexture sampler allocation failed");
         }
         const uint64_t bytes =
-            uint64_t{desc.width} * desc.height * TexelBytes(desc.format) * static_cast<uint8_t>(desc.samples);
+            GetPixelFormatLayout(desc.format).RowBytes(desc.width) * desc.height * static_cast<uint8_t>(desc.samples);
         return std::make_shared<TextureResource>(device, texture, view, sampler, bytes, desc.format, viewDesc);
     } catch (...) {
         // Partial construction owns exactly these handles; no alternate format
@@ -130,9 +98,8 @@ void ValidateRenderTextureDescription(const RenderTextureDesc &description)
         throw std::invalid_argument("RenderTexture color/depth formats have incompatible attachment roles");
     if (description.filter != FilterMode::Linear && description.filter != FilterMode::Nearest)
         throw std::invalid_argument("Invalid RenderTexture filter");
-    TexelBytes(description.colorFormat);
-    if (description.depthFormat != PixelFormat::Undefined)
-        TexelBytes(description.depthFormat);
+    if (!IsValidPixelFormat(description.colorFormat) || IsBlockCompressedFormat(description.colorFormat))
+        throw std::invalid_argument("RenderTexture requires an uncompressed attachment format");
     if (description.sampledDepth && description.depthFormat == PixelFormat::Undefined)
         throw std::invalid_argument("Sampled depth requires a depth attachment format");
 }
@@ -220,9 +187,10 @@ std::shared_ptr<const RenderTextureGeneration> RenderTexture::PrepareGeneration(
     if (description.storage)
         features |= FormatFeature::Storage;
     RequireFormat(caps, description.colorFormat, features, SampleCount::One);
-    RequireFormat(caps, description.colorFormat,
-                  FormatFeature::ColorAttachment | FormatFeature::TransferSource | FormatFeature::Sampled,
-                  description.samples);
+    auto multisampleFeatures = FormatFeature::ColorAttachment | FormatFeature::Sampled;
+    if (caps.features.multisampleTextureCopies)
+        multisampleFeatures |= FormatFeature::TransferSource | FormatFeature::TransferDestination;
+    RequireFormat(caps, description.colorFormat, multisampleFeatures, description.samples);
     if (description.depthFormat != PixelFormat::Undefined) {
         auto depthFeatures =
             FormatFeature::DepthStencilAttachment | FormatFeature::TransferSource | FormatFeature::TransferDestination;
@@ -247,8 +215,9 @@ std::shared_ptr<const RenderTextureGeneration> RenderTexture::PrepareGeneration(
     next->color = CreateAttachment(*m_device, image, description.filter);
     if (description.samples != SampleCount::One) {
         image.samples = description.samples;
-        image.usage =
-            TextureUsageFlags::ColorAttachment | TextureUsageFlags::TransferSource | TextureUsageFlags::Sampled;
+        image.usage = TextureUsageFlags::ColorAttachment | TextureUsageFlags::Sampled;
+        if (caps.features.multisampleTextureCopies)
+            image.usage = image.usage | TextureUsageFlags::TransferSource | TextureUsageFlags::TransferDestination;
         next->multisampleColor = CreateAttachment(*m_device, image, description.filter);
     }
     if (description.depthFormat != PixelFormat::Undefined) {

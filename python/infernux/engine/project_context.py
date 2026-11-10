@@ -5,6 +5,7 @@ import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from importlib.util import spec_from_file_location
 from typing import Iterator, Optional, Protocol
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
@@ -28,6 +29,17 @@ class _RuntimeAssetExtensionResolver(Protocol):
     def __call__(self, guid: str, /) -> str: ...
 
 
+class _RuntimeContentImports:
+    """Resolve cooked submodules of packages already loaded by the Player."""
+
+    def __init__(self) -> None:
+        self.paths: dict[str, str] = {}
+
+    def find_spec(self, fullname, path=None, target=None):
+        source = self.paths.get(fullname)
+        return spec_from_file_location(fullname, source) if source is not None else None
+
+
 @dataclass
 class ProjectContext:
     root: Optional[str] = None
@@ -35,6 +47,9 @@ class ProjectContext:
     package_resolver: Optional[_RuntimePackageResolver] = None
     asset_query: Optional[_RuntimeAssetQuery] = None
     asset_extension_resolver: Optional[_RuntimeAssetExtensionResolver] = None
+    content_roots: tuple[str, ...] = ()
+    content_import_paths: tuple[str, ...] = ()
+    content_imports: Optional[_RuntimeContentImports] = None
     guid_manifest: Optional[dict] = None
     guid_manifest_loaded: bool = False
     package_registry_cache: tuple[str, int, int, frozenset[str]] | None = None
@@ -50,6 +65,7 @@ def _context() -> ProjectContext:
 
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
+    set_runtime_content_roots(())
     _context().root = resolved_path(path) if path else None
     _context().asset_resolver = None
     _context().package_resolver = None
@@ -91,6 +107,34 @@ def set_runtime_asset_extension_resolver(
     if resolver is not None and not callable(resolver):
         raise TypeError("runtime asset extension resolver must be callable")
     _context().asset_extension_resolver = resolver
+
+
+def set_runtime_content_roots(roots: tuple[str, ...], modules: Optional[dict[str, str]] = None) -> None:
+    """Expose the asset import paths of published Player content."""
+    context = _context()
+    if context.content_roots == roots:
+        return
+    current = [path for path in sys.path if path not in context.content_import_paths]
+    import_paths: tuple[str, ...] = ()
+    if roots:
+        paths = [os.path.join(root, "Assets") for root in (context.root, *roots) if root]
+        import_paths = tuple(path for path in paths if path not in current)
+        if modules:
+            if context.content_imports is None:
+                context.content_imports = _RuntimeContentImports()
+                sys.meta_path.insert(0, context.content_imports)
+            context.content_imports.paths.update(modules)
+    elif context.content_imports is not None:
+        sys.meta_path.remove(context.content_imports)
+        context.content_imports = None
+    sys.path = [*current, *import_paths]
+    context.content_roots = roots
+    context.content_import_paths = import_paths
+
+
+def _script_project_root(path: str) -> Optional[str]:
+    context = _context()
+    return next((root for root in context.content_roots if is_path_within(path, root)), context.root)
 
 
 def query_runtime_asset_guids(pattern: str, *, exact: bool = False) -> tuple[str, ...]:
@@ -384,10 +428,14 @@ def register_preload_python_library(owner: str, path: str) -> None:
     roots = _preload_python_libraries.get(owner, ())
     if root not in roots:
         _preload_python_libraries[owner] = (*roots, root)
+    from infernux.engine.script_source import track_preload_sources
+    track_preload_sources()
 
 
 def release_preload_python_libraries(owner: str) -> None:
     _preload_python_libraries.pop(owner, None)
+    from infernux.engine.script_source import track_preload_sources
+    track_preload_sources()
 
 
 def is_preload_python_library(path: str) -> bool:
@@ -401,14 +449,16 @@ def is_project_component_script(
     project_root: Optional[str] = None,
 ) -> bool:
     """Return whether *path* belongs to the project's gameplay script domain."""
+    return not is_preload_python_library(path) and is_project_script(path, project_root)
 
+
+def is_project_script(path: str, project_root: Optional[str] = None) -> bool:
+    """Include packaged libraries while sharing the same source ownership rules."""
     roots = get_project_script_roots(project_root)
     if not roots:
         return False
     root = resolved_path(project_root or _context().root)
     candidate = resolved_path(path)
-    if is_preload_python_library(candidate):
-        return False
     if is_path_within(candidate, roots[0], allow_root=False):
         return True
     package_root, role, _ = _package_script_layout(candidate, project_root)
@@ -493,14 +543,15 @@ def get_script_module_name(
     Returns ``None`` when the script is outside the gameplay/editor script
     domains or its code-relative path is not a valid Python module name.
     """
-    active_root = resolved_path(project_root or _context().root) if (project_root or _context().root) else ""
     if path and project_root and not os.path.isabs(path):
-        resolved = resolved_path(os.path.join(active_root, path))
+        resolved = resolved_path(os.path.join(project_root, path))
     else:
         resolved = resolve_script_path(path) if path else None
     if not resolved:
         return None
 
+    root = project_root or _script_project_root(resolved)
+    active_root = resolved_path(root) if root else ""
     assets_root = resolved_path(os.path.join(active_root, "Assets")) if active_root else None
     resolved_abs = resolved_path(resolved)
     rel_path = ""
@@ -550,13 +601,19 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
     """
     resolved = resolve_script_path(path) if path else None
     resolved_abs = resolved_path(resolved) if resolved else ""
+    original_root = get_project_root()
+    project_root = _script_project_root(resolved_abs) if resolved_abs else original_root
     assets_root = get_assets_root()
-    project_root = get_project_root()
+    if project_root and project_root != original_root:
+        assets_root = os.path.join(project_root, "Assets")
 
     roots: list[str] = []
 
     if assets_root and resolved_abs:
         if is_path_within(resolved_abs, assets_root):
+            original_assets = get_assets_root()
+            if original_assets and original_assets != assets_root:
+                roots.append(original_assets)
             roots.append(assets_root)
             parent_dir = os.path.dirname(resolved_abs)
             if parent_dir and parent_dir not in roots:

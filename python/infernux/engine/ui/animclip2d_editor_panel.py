@@ -426,8 +426,6 @@ class AnimClip2DEditorPanel(EditorPanel):
             "2D animation clip",
             owner_id=self._window_id,
         )
-        self._pending_save_as_clip: Optional[_ClipState] = None
-        self._pending_save_ticket_id: str = ""
         # Window construction establishes a clean blank baseline. An explicit
         # New command still creates an unsaved draft through
         # _new_clip_document_immediate().
@@ -1070,7 +1068,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             document is None
             or self.window_id not in document.view_ids
             or self._save_as_dialog.is_open
-            or bool(self._pending_save_ticket_id)
+            or self._authoring_document_controller.has_save_as
         ):
             return False
         core = EditorInteractionCore.instance()
@@ -1899,40 +1897,14 @@ class AnimClip2DEditorPanel(EditorPanel):
                 DocumentActionStatus.REJECTED,
                 "2D animation clip requires a texture and at least one frame",
             )
-        self._pending_save_ticket_id = ticket.ticket_id
-        if self._show_save_as_dialog(clip):
-            return DocumentActionResult(DocumentActionStatus.PENDING)
-        self._pending_save_ticket_id = ""
-        return DocumentActionResult(
-            DocumentActionStatus.REJECTED,
-            "no project root is available",
+        return self._authoring_document_controller.begin_save_as(
+            ticket, lambda: self._show_save_as_dialog(clip),
         )
 
     def discard(self, *, document_id: str) -> bool:
         if document_id != self.document_id:
             return False
         return self._discard_unsaved_changes()
-
-    def _do_save_clip(
-        self,
-        clip: _ClipState,
-        save_path: str,
-        *,
-        ticket_id: str = "",
-    ) -> bool:
-        """Continue an existing SaveTicket with a user-selected path."""
-        if clip is not self._active_clip:
-            return False
-        active_ticket_id = ticket_id or self._pending_save_ticket_id
-        if not active_ticket_id:
-            raise RuntimeError("2D animation clip saves require a DocumentRegistry SaveTicket")
-        result = self._authoring_document_controller.continue_save_to_resource(
-            active_ticket_id,
-            save_path,
-        )
-        if result.accepted:
-            self._pending_save_ticket_id = ""
-        return result.accepted
 
     def _capture_animation_clip(self, *, name: str = ""):
         return self._model.capture_asset(name=name)
@@ -1963,36 +1935,13 @@ class AnimClip2DEditorPanel(EditorPanel):
         ):
             Debug.log_warning("[AnimClipEditor] No project root set - cannot save animation clip.")
             return False
-        self._pending_save_as_clip = clip
         return True
 
     def _save_pending_clip(self, save_path: str) -> bool:
-        clip = self._pending_save_as_clip
-        if clip is None:
-            Debug.log_warning("[AnimClipEditor] Save As completed without a pending animation clip.")
-            return False
-        saved = self._do_save_clip(
-            clip,
-            save_path,
-            ticket_id=self._pending_save_ticket_id,
-        )
-        if saved:
-            self._pending_save_as_clip = None
-        return saved
+        return self._authoring_document_controller.confirm_save_as(save_path).accepted
 
     def _cancel_pending_save_as(self) -> None:
-        self._pending_save_as_clip = None
-        ticket_id = self._pending_save_ticket_id
-        self._pending_save_ticket_id = ""
-        if ticket_id:
-            from infernux.engine.interaction import DocumentRegistry
-
-            DocumentRegistry.instance().complete_save(
-                ticket_id,
-                success=False,
-                cancelled=True,
-                message="save was cancelled",
-            )
+        self._authoring_document_controller.cancel_pending_save()
 
     def _discard_unsaved_changes(self) -> bool:
         self._cancel_pending_save_as()

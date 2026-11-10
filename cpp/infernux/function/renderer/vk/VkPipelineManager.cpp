@@ -4,8 +4,6 @@
  */
 
 #include "VkPipelineManager.h"
-#include "../InxRenderStruct.h"
-#include "VertexInputVulkan.h"
 #include "VkRenderUtils.h"
 #include <core/error/InxError.h>
 #include <platform/filesystem/InxPath.h>
@@ -620,21 +618,6 @@ void VkPipelineManager::DestroyDescriptorSetLayout(VkDescriptorSetLayout layout)
     }
 
     vkDestroyDescriptorSetLayout(m_device, layout, nullptr);
-}
-
-// ============================================================================
-// Standard Vertex Input Configurations
-// ============================================================================
-
-VertexInputConfig VkPipelineManager::GetStandardMeshVertexInput()
-{
-    VertexInputConfig config;
-
-    config.bindings.push_back(GetVertexBindingDescription());
-    const auto attributes = GetVertexAttributeDescriptions();
-    config.attributes.insert(config.attributes.end(), attributes.begin(), attributes.end());
-
-    return config;
 }
 
 // ============================================================================

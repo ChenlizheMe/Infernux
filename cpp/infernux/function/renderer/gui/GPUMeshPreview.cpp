@@ -2,13 +2,13 @@
 /**
  * @file GPUMeshPreview.cpp
  * @brief GPU mesh preview — renders an arbitrary InxMesh with per-submesh
- *        materials into a small offscreen attachment set and reads back RGBA8
- *        pixels for editor thumbnails
+ *        materials into independent GPU textures for editor thumbnails
  * (model / prefab previews).
  */
 
 #include "GPUMeshPreview.h"
 #include "InxError.h"
+#include "PreviewDisplay.h"
 #include "PreviewResources.h"
 #include <backends/imgui_impl_vulkan.h>
 #include <function/renderer/EngineGlobals.h>
@@ -43,77 +43,6 @@ namespace
 {
 constexpr float kMeshPreviewFovDeg = 30.0f;
 constexpr int kPreviewSupersampleFactor = 2;
-
-struct PreviewIndexUpload
-{
-    std::vector<uint16_t> packed16;
-    const void *data = nullptr;
-    size_t byteSize = 0;
-    VkIndexType type = VK_INDEX_TYPE_UINT32;
-};
-
-PreviewIndexUpload PreparePreviewIndices(size_t vertexCount, const std::vector<uint32_t> &indices,
-                                         MeshIndexFormat requested)
-{
-    PreviewIndexUpload upload;
-    const auto resolved = ResolveMeshIndexFormat(requested, vertexCount, indices);
-    if (resolved == MeshIndexFormat::UInt16) {
-        upload.packed16.assign(indices.begin(), indices.end());
-        upload.data = upload.packed16.data();
-        upload.byteSize = upload.packed16.size() * sizeof(uint16_t);
-        upload.type = VK_INDEX_TYPE_UINT16;
-    } else {
-        upload.data = indices.data();
-        upload.byteSize = indices.size() * sizeof(uint32_t);
-    }
-    return upload;
-}
-
-/// @brief Downsample RGBA image from srcSize to dstSize using box filter.
-void DownsampleRGBABox(const std::vector<unsigned char> &srcPixels, int srcSize, int dstSize,
-                       std::vector<unsigned char> &dstPixels)
-{
-    if (srcSize <= 0 || dstSize <= 0 || srcPixels.empty()) {
-        dstPixels.clear();
-        return;
-    }
-    if (srcSize == dstSize) {
-        dstPixels = srcPixels;
-        return;
-    }
-
-    dstPixels.resize(static_cast<size_t>(dstSize) * dstSize * 4);
-    const float scale = static_cast<float>(srcSize) / static_cast<float>(dstSize);
-
-    for (int dy = 0; dy < dstSize; ++dy) {
-        for (int dx = 0; dx < dstSize; ++dx) {
-            const int sx0 = static_cast<int>(dx * scale);
-            const int sy0 = static_cast<int>(dy * scale);
-            const int sx1 = std::min(static_cast<int>((dx + 1) * scale), srcSize);
-            const int sy1 = std::min(static_cast<int>((dy + 1) * scale), srcSize);
-            float r = 0, g = 0, b = 0, a = 0;
-            int count = 0;
-            for (int sy = sy0; sy < sy1; ++sy) {
-                for (int sx = sx0; sx < sx1; ++sx) {
-                    const size_t idx = (static_cast<size_t>(sy) * srcSize + sx) * 4;
-                    r += srcPixels[idx + 0];
-                    g += srcPixels[idx + 1];
-                    b += srcPixels[idx + 2];
-                    a += srcPixels[idx + 3];
-                    ++count;
-                }
-            }
-            if (count > 0) {
-                const float inv = 1.0f / count;
-                const size_t dstIdx = (static_cast<size_t>(dy) * dstSize + dx) * 4;
-                dstPixels[dstIdx + 0] = static_cast<unsigned char>(r * inv + 0.5f);
-                dstPixels[dstIdx + 1] = static_cast<unsigned char>(g * inv + 0.5f);
-                dstPixels[dstIdx + 2] = static_cast<unsigned char>(b * inv + 0.5f);
-                dstPixels[dstIdx + 3] = static_cast<unsigned char>(a * inv + 0.5f);
-            }
-        }
-    }
-}
 
 /// @brief Compute camera transform that fits a bounding box into the viewport.
 struct FitCameraResult
@@ -173,6 +102,8 @@ GPUMeshPreview::GPUMeshPreview(InxVkCoreModular *vkCore) : m_vkCore(vkCore)
     m_renderView.kind = rhi::RenderViewKind::Preview;
     m_renderView.output = rhi::RenderOutputKind::OffscreenTexture;
     m_renderView.revision = 1;
+    if (vkCore)
+        m_display = std::make_unique<PreviewDisplay>(*vkCore, m_renderView.id);
 }
 
 GPUMeshPreview::~GPUMeshPreview()
@@ -185,31 +116,122 @@ GPUMeshPreview::~GPUMeshPreview()
 }
 
 // ============================================================================
-// RenderToPixels
+// GPU thumbnail
 // ============================================================================
 
-std::shared_ptr<vk::ImageReadbackTicket>
-GPUMeshPreview::BeginRenderToPixels(const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials,
-                                    int size)
+bool GPUMeshPreview::PrepareGeometry(const InxMesh &mesh, std::shared_ptr<PreviewGeometryUpload> &upload,
+                                     bool &progressed, const std::shared_ptr<const InxSkinnedMesh> &skin)
 {
-    if (!m_vkCore || size <= 0)
-        return nullptr;
-    // Auto-fit the camera to the mesh AABB, then delegate to the explicit-camera path.
-    auto cam = FitCameraToBounds(mesh.GetBoundsMin(), mesh.GetBoundsMax(), kMeshPreviewFovDeg);
-    return BeginRenderToPixelsCamera(mesh, materials, size, cam.view, cam.proj, cam.cameraPos);
+    auto &resources = m_vkCore->GetResourceManager();
+    const auto geometry = skin ? std::shared_ptr<const MeshGeometry>() : mesh.GetGeometrySnapshot();
+    const auto format = skin ? skin->indexFormat : mesh.GetIndexFormat();
+    const auto &vertices = skin ? skin->baseVertices : geometry->vertices;
+    const auto &indices = skin ? skin->indices : geometry->indices;
+    if (!upload || upload->geometry != geometry || upload->skin != skin || upload->format != format) {
+        const auto resolved = ResolveMeshIndexFormat(format, vertices.size(), indices);
+        const auto indexType = resolved == MeshIndexFormat::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+        auto vertexUpload =
+            resources.CreateBufferUpload(vertices.size() * sizeof(Vertex), rhi::BufferUsageFlags::Vertex);
+        auto indexUpload = resources.CreateBufferUpload(
+            indices.size() * (indexType == VK_INDEX_TYPE_UINT16 ? sizeof(uint16_t) : sizeof(uint32_t)),
+            rhi::BufferUsageFlags::Index);
+        upload = std::make_shared<PreviewGeometryUpload>(
+            PreviewGeometryUpload{geometry, skin, format, indexType, std::move(vertexUpload), std::move(indexUpload)});
+        progressed = true;
+    }
+    // One bounded copy per advance, never a fence wait. A later call observes
+    // the original ticket; it cannot re-submit a block still in flight.
+    auto *owner = ActivePreviewOwner(*m_vkCore);
+    for (const auto &ticket : {upload->vertices, upload->indices}) {
+        const bool published = ticket->IsPublished();
+        if (resources.TryPublishBufferUpload(ticket)) {
+            progressed |= !published;
+            continue;
+        }
+        if (ticket->IsPending())
+            return false;
+        const auto offset = ticket->GetSubmittedBytes();
+        const VkDeviceSize unit = ticket == upload->vertices                  ? sizeof(float)
+                                  : upload->indexType == VK_INDEX_TYPE_UINT16 ? sizeof(uint16_t)
+                                                                              : sizeof(uint32_t);
+        const auto bytes = PreviewUploadBytes(owner, ticket->GetSize() - offset, unit);
+        if (!bytes)
+            return false;
+        if (ticket != upload->vertices && upload->indexType == VK_INDEX_TYPE_UINT16) {
+            progressed |= resources.TryAppendIndex16Upload(ticket, indices.data() + offset / unit, bytes, owner);
+        } else {
+            const auto *source = ticket == upload->vertices ? reinterpret_cast<const std::byte *>(vertices.data())
+                                                            : reinterpret_cast<const std::byte *>(indices.data());
+            progressed |=
+                resources.TryAppendBufferUpload(ticket, source + offset, bytes, owner, bytes == unit, unit,
+                                                {ticket == upload->vertices ? upload->indices.get() : nullptr});
+        }
+        return false;
+    }
+    return true;
 }
 
-std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCamera(
-    const InxMesh &mesh, const std::vector<std::shared_ptr<InxMaterial>> &materials, int size, const glm::mat4 &view,
-    const glm::mat4 &proj, const glm::vec3 &cameraPos, bool cloneMaterials)
+bool GPUMeshPreview::PrepareMaterials(const std::vector<std::shared_ptr<InxMaterial>> &sources,
+                                      std::vector<std::shared_ptr<InxMaterial>> &prepared, bool &progressed)
+{
+    if (prepared.empty() && !sources.empty()) {
+        const auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+        const auto prepare = [this](const std::shared_ptr<InxMaterial> &source) -> std::shared_ptr<InxMaterial> {
+            if (!source)
+                return {};
+            auto material = source->Clone();
+            if (!m_vkCore->RefreshPreviewMaterialPipeline(material, material->GetVertShaderName(),
+                                                          material->GetFragShaderName(), false))
+                return {};
+            return material;
+        };
+        prepared.reserve(sources.size());
+        for (const auto &source : sources) {
+            auto material = prepare(source);
+            if (!material && source && source != defaultMaterial)
+                material = prepare(defaultMaterial);
+            prepared.push_back(std::move(material));
+        }
+        progressed = true;
+    }
+
+    bool ready = true;
+    for (auto &material : prepared) {
+        if (!material)
+            continue;
+        if (material->NeedsTextureAssetResolution() &&
+            !m_vkCore->RefreshPreviewMaterialPipeline(material, material->GetVertShaderName(),
+                                                      material->GetFragShaderName(), false)) {
+            material.reset();
+            continue;
+        }
+        m_vkCore->UpdateMaterialUBO(*material);
+        if (m_vkCore->GetMaterialPipelineManager().HasPendingTextureProperties(material->GetMaterialKey())) {
+            ready = false;
+            continue;
+        }
+        const auto *pass = m_vkCore->GetOrCreatePreviewMaterialPass(material);
+        if (!pass || !pass->isValid || pass->descriptorSet == VK_NULL_HANDLE)
+            material.reset();
+    }
+    return ready;
+}
+
+std::shared_ptr<PreviewImage> GPUMeshPreview::BeginRender(const InxMesh &mesh,
+                                                          const std::vector<std::shared_ptr<InxMaterial>> &materials,
+                                                          int size, std::shared_ptr<PreviewGeometryUpload> &geometry,
+                                                          bool &progressed, bool &materialsChanged)
 {
     if (!m_vkCore || size <= 0)
         return nullptr;
-    if (m_activeReadback && !m_activeReadback->IsDone())
-        return nullptr;
-    m_activeReadback.reset();
+    const auto camera = FitCameraToBounds(mesh.GetBoundsMin(), mesh.GetBoundsMax(), kMeshPreviewFovDeg);
+    const auto &view = camera.view;
+    const auto &proj = camera.proj;
+    const auto &cameraPos = camera.cameraPos;
     if (m_activeSubmission && !m_activeSubmission->IsComplete())
         return nullptr;
+    if (m_activeSubmission && m_activeSubmission->HasExecutionTiming())
+        m_gpuNanoseconds = m_activeSubmission->GetExecutionNanoseconds();
     m_activeSubmission.reset();
 
     const auto &vertices = mesh.GetVertices();
@@ -219,129 +241,51 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
 
     const int renderSize = std::max(size, size * kPreviewSupersampleFactor);
 
-    if (!EnsureResources(renderSize))
+    if (!EnsureResources(renderSize, progressed))
         return nullptr;
-
-    // ── Prepare per-submesh material pipelines ───────────────────────
-    // Get a default material for submeshes without an assigned material.
-    auto defaultMat = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
 
     struct SubmeshBinding
     {
-        const SubMesh *submesh = nullptr;
-        std::shared_ptr<InxMaterial> ownedMaterial; // keep-alive
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-        VkDescriptorSet materialDescSet = VK_NULL_HANDLE;
-        const ShaderProgram *program = nullptr;
+        const SubMesh *submesh;
+        std::shared_ptr<InxMaterial> ownedMaterial;
+        VkPipeline pipeline;
+        VkPipelineLayout pipelineLayout;
+        VkDescriptorSet materialDescSet;
+        const ShaderProgram *program;
     };
 
     std::vector<SubmeshBinding> bindings;
     bindings.reserve(mesh.GetSubMeshCount());
-
-    for (uint32_t si = 0; si < mesh.GetSubMeshCount(); ++si) {
-        const SubMesh &sm = mesh.GetSubMesh(si);
-        if (sm.indexCount == 0)
+    for (const auto &submesh : mesh.GetSubMeshes()) {
+        if (!submesh.indexCount)
             continue;
-
-        // Pick material for this submesh
-        std::shared_ptr<InxMaterial> srcMat;
-        if (sm.materialSlot < materials.size() && materials[sm.materialSlot])
-            srcMat = materials[sm.materialSlot];
-        else
-            srcMat = defaultMat;
-
-        if (!srcMat)
+        const auto &material = materials.at(submesh.materialSlot);
+        if (!material)
             continue;
-
-        // Prepare pipeline. Thumbnails clone for isolation; live previews pass
-        // persistent dedicated clones (cloneMaterials=false) so the cached pipeline
-        // is reused every frame instead of rebuilt (Clone() makes a unique key each
-        // call → cache miss → vkCreateGraphicsPipelines per frame → playback lag).
-        std::shared_ptr<InxMaterial> previewMat;
-        if (cloneMaterials) {
-            previewMat = srcMat->Clone();
-            if (!previewMat)
-                continue;
-            previewMat->ClearAllPassPipelines();
-        } else {
-            previewMat = srcMat;
-        }
-        bool pipelineReady = m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
-                                                                      previewMat->GetFragShaderName(), false);
-        if (!pipelineReady && srcMat != defaultMat && defaultMat) {
-            // A malformed embedded material must not hide the whole FBX
-            // submesh. Keep the complete model thumbnail useful with the
-            // engine's known-good preview material.
-            previewMat = cloneMaterials ? defaultMat->Clone() : defaultMat;
-            if (previewMat && cloneMaterials)
-                previewMat->ClearAllPassPipelines();
-            pipelineReady =
-                previewMat && m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
-                                                                       previewMat->GetFragShaderName(), false);
-        }
-        if (!pipelineReady || !previewMat)
-            continue;
-
-        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat);
-        if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
-            continue;
-
-        previewMat->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
-        previewMat->SetPassPipelineLayout(ShaderCompileTarget::Forward, rd->pipelineLayout);
-        previewMat->SetPassDescriptorSet(ShaderCompileTarget::Forward, rd->descriptorSet);
-        previewMat->SetPassShaderProgram(ShaderCompileTarget::Forward, rd->shaderProgram);
-
-        SubmeshBinding b;
-        b.submesh = &sm;
-        b.ownedMaterial = previewMat;
-        b.pipeline = rd->pipeline;
-        b.pipelineLayout = rd->pipelineLayout;
-        b.materialDescSet = rd->descriptorSet;
-        b.program = rd->shaderProgram.get();
-        bindings.push_back(std::move(b));
-    }
-
-    if (bindings.empty())
-        return nullptr;
-
-    // A thumbnail is a completed dependency product. Do not cache pixels
-    // sampled from a placeholder/old texture while its upload is pending.
-    for (auto &b : bindings) {
-        m_vkCore->UpdateMaterialUBO(*b.ownedMaterial);
-        if (m_vkCore->GetMaterialPipelineManager().HasPendingTextureProperties(b.ownedMaterial->GetMaterialKey()))
+        // The preparation owns the descriptors and their resolved texture slots.
+        // A changed slot invalidates this candidate before any geometry is used.
+        if (material->NeedsTextureAssetResolution() ||
+            m_vkCore->GetMaterialPipelineManager().HasPendingTextureProperties(material->GetMaterialKey())) {
+            materialsChanged = true;
             return nullptr;
+        }
+        auto *pass = m_vkCore->GetOrCreatePreviewMaterialPass(material);
+        if (!pass || !pass->isValid || pass->descriptorSet == VK_NULL_HANDLE) {
+            materialsChanged = true;
+            return nullptr;
+        }
+        bindings.push_back(
+            {&submesh, material, pass->pipeline, pass->pipelineLayout, pass->descriptorSet, pass->shaderProgram.get()});
     }
-
-    // Texture synchronization may publish a copy-on-write material descriptor
-    // and retire the handle captured above. Re-read every binding after the
-    // update so this command buffer never skips all geometry on stale handles.
-    bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
-                                  [&](SubmeshBinding &binding) {
-                                      MaterialPassRenderData *rd =
-                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial);
-                                      if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
-                                          rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
-                                          !rd->shaderProgram)
-                                          return true;
-                                      binding.pipeline = rd->pipeline;
-                                      binding.pipelineLayout = rd->pipelineLayout;
-                                      binding.materialDescSet = rd->descriptorSet;
-                                      binding.program = rd->shaderProgram.get();
-                                      return false;
-                                  }),
-                   bindings.end());
     if (bindings.empty())
         return nullptr;
 
     // Allocate geometry only after the material textures are ready; waiting
     // for an upload must not recreate vertex/index buffers every frame.
-    auto &rm = m_vkCore->GetResourceManager();
-    auto vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
-    const auto indexUpload = PreparePreviewIndices(vertices.size(), indices, mesh.GetIndexFormat());
-    auto ibo = rm.CreateIndexBuffer(indexUpload.data, indexUpload.byteSize);
-    if (!vbo || !ibo)
+    if (!PrepareGeometry(mesh, geometry, progressed))
         return nullptr;
+    auto vbo = geometry->vertices->GetBuffer();
+    auto ibo = geometry->indices->GetBuffer();
 
     // ── Scene UBO ────────────────────────────────────────────────────
     // Use identity model matrix; the mesh vertices are in local space
@@ -418,9 +362,18 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     }
 
     // ── Record command buffer ────────────────────────────────────────
-    auto readbackRecorder = rm.BeginGraphicsImageReadback(static_cast<uint32_t>(renderSize),
-                                                          static_cast<uint32_t>(renderSize), m_colorFormat);
-    VkCommandBuffer cmd = readbackRecorder.GetCommandBuffer();
+    const bool multisampled = m_sampleCount != VK_SAMPLE_COUNT_1_BIT;
+    auto output =
+        m_display->Prepare(multisampled ? m_resolveColor.GetView() : m_msaaColor.GetView(), m_colorFormat, size);
+    if (!output)
+        return nullptr;
+    constexpr VkDeviceSize transferBytes = sizeof(sceneUBO) + sizeof(lightingUBO) + sizeof(globalsUBO) +
+                                           sizeof(modelMat) + sizeof(std::array<uint32_t, 4>) + sizeof(glm::mat4) +
+                                           sizeof(GPUInstanceAuxData);
+    PreviewCommands commands(*m_vkCore, transferBytes, m_gpuNanoseconds);
+    const VkCommandBuffer cmd = commands.Get();
+    if (cmd == VK_NULL_HANDLE)
+        return nullptr;
 
     vkCmdUpdateBuffer(cmd, sceneUBOBuf, 0, sizeof(sceneUBO), &sceneUBO);
     vkCmdUpdateBuffer(cmd, lightingUBOBuf, 0, sizeof(lightingUBO), &lightingUBO);
@@ -498,8 +451,9 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     // Bind mesh geometry
     VkBuffer vboBuf = vbo->GetBuffer();
     VkDeviceSize offsets[] = {0};
+    commands.ReadGeometry(*vbo, *ibo);
     vkCmdBindVertexBuffers(cmd, 0, 1, &vboBuf, offsets);
-    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, indexUpload.type);
+    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, geometry->indexType);
 
     // Push constants
     struct PushConstants
@@ -514,9 +468,12 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     // ── Draw each submesh ────────────────────────────────────────────
     bool anyDrawn = false;
     for (auto &b : bindings) {
-        if (!m_vkCore->GetMaterialPipelineManager().IsDescriptorSetLive(b.materialDescSet))
+        const auto *descriptor =
+            m_vkCore->GetMaterialPipelineManager().GetDescriptorManager().FindLiveDescriptorSet(b.materialDescSet);
+        if (!descriptor)
             continue;
 
+        commands.ReadMaterial(*descriptor);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, b.pipeline);
 
         vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Set0", cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -564,7 +521,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     if (m_depth.HasView())
         m_depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    // ── MSAA resolve + readback ──────────────────────────────────────
+    // ── MSAA resolve + display ──────────────────────────────────────
     if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
         vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
                                                m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -578,21 +535,10 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         resolveRegion.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize), 1};
         vkCmdResolveImage(cmd, m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_resolveColor.GetImage(),
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
-
-        vkrender::TransitionTrackedImageLayout(cmd, m_resolveColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
-                                               m_resolveColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    } else {
-        vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
-                                               m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     }
 
-    VkImage srcImage = (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) ? m_resolveColor.GetImage() : m_msaaColor.GetImage();
-
-    VkBufferImageCopy copyRegion{};
-    copyRegion.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copyRegion.imageExtent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize), 1};
-    vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackRecorder.GetStagingBuffer(), 1,
-                           &copyRegion);
+    m_display->Record(cmd, *output, multisampled ? m_resolveColor.GetImage() : m_msaaColor.GetImage(),
+                      multisampled ? m_resolveColorLayout : m_msaaColorLayout, size);
 
     auto vertexLease = std::shared_ptr<vk::VkBufferHandle>(std::move(vbo));
     auto indexLease = std::shared_ptr<vk::VkBufferHandle>(std::move(ibo));
@@ -600,9 +546,9 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     materialLeases.reserve(bindings.size());
     for (const auto &binding : bindings)
         materialLeases.push_back(binding.ownedMaterial);
-    m_activeReadback =
-        readbackRecorder.Submit([vertexLease = std::move(vertexLease), indexLease = std::move(indexLease),
-                                 materialLeases = std::move(materialLeases)]() mutable {
+    m_activeSubmission =
+        commands.Submit([vertexLease = std::move(vertexLease), indexLease = std::move(indexLease),
+                         materialLeases = std::move(materialLeases), finalView = output->texture]() mutable {
             materialLeases.clear();
             indexLease.reset();
             vertexLease.reset();
@@ -611,86 +557,16 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     // command recording. Finish the submission so command-buffer and resource
     // ownership remain valid, but let the caller retry instead of publishing
     // the transparent clear as a successful thumbnail.
-    return anyDrawn ? m_activeReadback : nullptr;
-}
-
-bool GPUMeshPreview::TryCompleteRenderToPixels(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
-                                               std::vector<unsigned char> &outPixels)
-{
-    if (!ticket || !ticket->IsDone() || ticket->GetStatus() != vk::ImageReadbackStatus::Completed || outputSize <= 0)
-        return false;
-
-    const int renderSize = static_cast<int>(ticket->GetWidth());
-    if (renderSize <= 0 || ticket->GetHeight() != ticket->GetWidth() || ticket->GetChannelCount() != 4)
-        return false;
-
-    // ── Readback pixels ──────────────────────────────────────────────
-    const int pixelCount = renderSize * renderSize;
-    std::vector<unsigned char> renderPixels(static_cast<size_t>(pixelCount) * 4, 0);
-
-    const auto &raw = ticket->GetData();
-
-    if (ticket->GetElementType() == "float16") {
-        const uint16_t *src = reinterpret_cast<const uint16_t *>(raw.data());
-        auto halfToFloat = [](uint16_t h) -> float {
-            uint32_t sign = (h >> 15) & 0x1;
-            uint32_t exponent = (h >> 10) & 0x1F;
-            uint32_t mantissa = h & 0x3FF;
-            if (exponent == 0) {
-                if (mantissa == 0)
-                    return sign ? -0.0f : 0.0f;
-                float val = (mantissa / 1024.0f) * std::pow(2.0f, -14.0f);
-                return sign ? -val : val;
-            }
-            if (exponent == 31)
-                return mantissa ? 0.0f : (sign ? -1e30f : 1e30f);
-            float val = std::pow(2.0f, static_cast<float>(exponent) - 15.0f) * (1.0f + mantissa / 1024.0f);
-            return sign ? -val : val;
-        };
-
-        auto linearToSrgb = [](float c) -> float {
-            if (c <= 0.0031308f)
-                return c * 12.92f;
-            return 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
-        };
-
-        for (int i = 0; i < pixelCount; ++i) {
-            float r = halfToFloat(src[i * 4 + 0]);
-            float g = halfToFloat(src[i * 4 + 1]);
-            float b = halfToFloat(src[i * 4 + 2]);
-            float a = std::clamp(halfToFloat(src[i * 4 + 3]), 0.0f, 1.0f);
-
-            // Reinhard tonemap
-            r = r / (1.0f + r);
-            g = g / (1.0f + g);
-            b = b / (1.0f + b);
-
-            r = linearToSrgb(r);
-            g = linearToSrgb(g);
-            b = linearToSrgb(b);
-
-            renderPixels[i * 4 + 0] = static_cast<unsigned char>(std::clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
-            renderPixels[i * 4 + 1] = static_cast<unsigned char>(std::clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f);
-            renderPixels[i * 4 + 2] = static_cast<unsigned char>(std::clamp(b, 0.0f, 1.0f) * 255.0f + 0.5f);
-            renderPixels[i * 4 + 3] = static_cast<unsigned char>(a * 255.0f + 0.5f);
-        }
-    } else {
-        if (raw.size() != renderPixels.size())
-            return false;
-        std::memcpy(renderPixels.data(), raw.data(), renderPixels.size());
-    }
-
-    DownsampleRGBABox(renderPixels, renderSize, outputSize, outPixels);
-    if (m_activeReadback == ticket)
-        m_activeReadback.reset();
-    return true;
+    output->submission = m_activeSubmission;
+    progressed = true;
+    return anyDrawn ? output : nullptr;
 }
 
 // ============================================================================
 // Resource management (mirrors GPUMaterialPreview)
 // ============================================================================
 
-bool GPUMeshPreview::EnsureResources(int size)
+bool GPUMeshPreview::EnsureResources(int size, bool &progressed)
 {
     auto &mpm = m_vkCore->GetMaterialPipelineManager();
     VkFormat colorFormat = mpm.GetColorFormat();
@@ -710,6 +586,7 @@ bool GPUMeshPreview::EnsureResources(int size)
     if (renderConfigChanged) {
         DestroyImGuiDisplayDescriptor();
         DestroyAttachments();
+        progressed = true;
     }
 
     m_colorFormat = colorFormat;
@@ -722,14 +599,15 @@ bool GPUMeshPreview::EnsureResources(int size)
         DestroyAttachments();
         CreateAttachments(size);
         m_currentSize = size;
+        progressed = true;
         if (m_msaaColor.IsValid())
             PublishRenderView();
     }
 
-    return m_msaaColor.IsValid() && EnsureViewResources();
+    return m_msaaColor.IsValid() && EnsureViewResources(progressed);
 }
 
-bool GPUMeshPreview::EnsureViewResources()
+bool GPUMeshPreview::EnsureViewResources(bool &progressed)
 {
     if (m_previewGlobalsSet != VK_NULL_HANDLE)
         return true;
@@ -773,13 +651,13 @@ bool GPUMeshPreview::EnsureViewResources()
         writes[binding].pBufferInfo = &buffers[binding];
     }
     vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    progressed = true;
     return true;
 }
 
 void GPUMeshPreview::DestroyViewResources()
 {
     m_activeSubmission.reset();
-    m_activeReadback.reset();
     if (m_vkCore) {
         auto &descriptorManager = m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
         descriptorManager.Retire(m_fallbackShadowDescLease);
@@ -929,21 +807,17 @@ void GPUMeshPreview::EnsureImGuiDisplayDescriptor()
 uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
                                                     const std::vector<std::shared_ptr<InxMaterial>> &materials,
                                                     int size, const glm::mat4 &view, const glm::mat4 &proj,
-                                                    const glm::vec3 &cameraPos, bool cloneMaterials,
-                                                    const std::vector<glm::mat4> *bonePalette)
+                                                    const glm::vec3 &cameraPos,
+                                                    std::shared_ptr<PreviewGeometryUpload> &geometry, bool &progressed,
+                                                    bool cloneMaterials, const std::vector<glm::mat4> *bonePalette)
 {
     if (!m_vkCore || size <= 0)
         return 0;
-    if (m_activeReadback && !m_activeReadback->IsDone()) {
-        // The caller uses zero as backpressure and keeps only its latest
-        // request pending. Returning the stale display texture here falsely
-        // reports that a new camera/transform state was rendered.
-        return 0;
-    }
-    m_activeReadback.reset();
     if (m_activeSubmission && !m_activeSubmission->IsComplete()) {
         return 0;
     }
+    if (m_activeSubmission && m_activeSubmission->HasExecutionTiming())
+        m_gpuNanoseconds = m_activeSubmission->GetExecutionNanoseconds();
     m_activeSubmission.reset();
 
     const auto skin = bonePalette ? mesh.GetSkinnedData() : nullptr;
@@ -954,29 +828,14 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         return 0;
 
     const int renderSize = size;
-    if (!EnsureResources(renderSize))
+    if (!EnsureResources(renderSize, progressed))
         return 0;
 
-    auto &rm = m_vkCore->GetResourceManager();
-    const auto indexUpload =
-        PreparePreviewIndices(vertices.size(), indices, skin ? skin->indexFormat : mesh.GetIndexFormat());
-    std::shared_ptr<vk::VkBufferHandle> vbo;
-    std::shared_ptr<vk::VkBufferHandle> ibo;
-    if (skin && skin == m_uploadedSkin && skin->indexFormat == m_uploadedSkinIndexFormat) {
-        vbo = m_skinVertices;
-        ibo = m_skinIndices;
-    } else {
-        vbo = rm.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
-        ibo = rm.CreateIndexBuffer(indexUpload.data, indexUpload.byteSize);
-        if (skin && vbo && ibo) {
-            m_uploadedSkin = skin;
-            m_uploadedSkinIndexFormat = skin->indexFormat;
-            m_skinVertices = vbo;
-            m_skinIndices = ibo;
-        }
-    }
-    if (!vbo || !ibo)
+    if (!PrepareGeometry(mesh, geometry, progressed, skin))
         return 0;
+    auto &rm = m_vkCore->GetResourceManager();
+    auto vbo = geometry->vertices->GetBuffer();
+    auto ibo = geometry->indices->GetBuffer();
 
     const VkDeviceSize paletteBytes = bonePalette ? bonePalette->size() * sizeof(glm::mat4) : sizeof(glm::mat4);
     if (m_previewSkinPaletteBuffer->GetSize() < paletteBytes) {
@@ -1142,7 +1001,10 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         globalsDesc = m_previewGlobalsSet;
     }
 
-    VkCommandBuffer cmd = m_vkCore->BeginSingleTimeCommands();
+    const VkDeviceSize transferBytes = sizeof(sceneUBO) + sizeof(lightingUBO) + sizeof(globalsUBO) + sizeof(modelMat) +
+                                       sizeof(std::array<uint32_t, 4>) + paletteBytes + sizeof(GPUInstanceAuxData);
+    PreviewCommands commands(*m_vkCore, transferBytes, m_gpuNanoseconds);
+    const VkCommandBuffer cmd = commands.Get();
     if (cmd == VK_NULL_HANDLE)
         return 0;
 
@@ -1229,8 +1091,9 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
 
     VkBuffer vboBuf = vbo->GetBuffer();
     VkDeviceSize offsets[] = {0};
+    commands.ReadGeometry(*vbo, *ibo);
     vkCmdBindVertexBuffers(cmd, 0, 1, &vboBuf, offsets);
-    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, indexUpload.type);
+    vkCmdBindIndexBuffer(cmd, ibo->GetBuffer(), 0, geometry->indexType);
 
     struct PushConstants
     {
@@ -1242,8 +1105,11 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     pushData.normalMat = glm::transpose(glm::inverse(modelMat));
 
     for (auto &b : bindings) {
-        if (!m_vkCore->GetMaterialPipelineManager().IsDescriptorSetLive(b.materialDescSet))
+        const auto *descriptor =
+            m_vkCore->GetMaterialPipelineManager().GetDescriptorManager().FindLiveDescriptorSet(b.materialDescSet);
+        if (!descriptor)
             continue;
+        commands.ReadMaterial(*descriptor);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, b.pipeline);
         vkdebug::CmdBindDescriptorSetsTracked("GPUMeshPreview.Live.Set0", cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                               b.pipelineLayout, 0, 1, &b.materialDescSet, 0, nullptr);
@@ -1307,14 +1173,14 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     materialLeases.reserve(bindings.size());
     for (const auto &binding : bindings)
         materialLeases.push_back(binding.ownedMaterial);
-    m_activeSubmission = m_vkCore->EndSingleTimeCommandsAsync(
-        cmd, [vertexLease = std::move(vertexLease), indexLease = std::move(indexLease),
-              materialLeases = std::move(materialLeases)]() mutable {
-            materialLeases.clear();
-            indexLease.reset();
-            vertexLease.reset();
-        });
+    m_activeSubmission = commands.Submit([vertexLease = std::move(vertexLease), indexLease = std::move(indexLease),
+                                          materialLeases = std::move(materialLeases)]() mutable {
+        materialLeases.clear();
+        indexLease.reset();
+        vertexLease.reset();
+    });
     m_displayImageShaderReady = true;
+    progressed = true;
     EnsureImGuiDisplayDescriptor();
     return reinterpret_cast<uint64_t>(m_displayDescriptorSet);
 }
@@ -1329,45 +1195,55 @@ uint64_t GPUMeshPreview::RenderAnimation(const std::shared_ptr<InxMesh> &mesh, c
         throw std::invalid_argument("Animation preview requires a renderable skinned model");
     if (!skin->FindAnimation(take))
         throw std::invalid_argument("Animation preview clip is not present in the published model");
-    const bool changed = mesh != m_animationMesh || mesh->GetGeneration() != m_animationGeneration ||
-                         dependencyRevision != m_animationRevision;
-    if (changed) {
+    const bool sourceChanged = mesh != m_animationMesh || mesh->GetGeneration() != m_animationGeneration ||
+                               dependencyRevision != m_animationRevision || !m_animationMaterialLoads.IsCurrent();
+    if (sourceChanged) {
         m_animationMesh = mesh;
         m_animationGeneration = mesh->GetGeneration();
         m_animationRevision = dependencyRevision;
         m_renderedSeconds = -1.0f;
         m_animationMaterials.clear();
-        uint32_t slots = 0;
-        for (const auto &submesh : skin->subMeshes)
-            slots = std::max(slots, submesh.materialSlot + 1);
-        auto &registry = AssetRegistry::Instance();
-        for (uint32_t slot = 0; slot < slots; ++slot) {
-            std::shared_ptr<InxMaterial> material;
-            if (slot >= mesh->GetMaterialSlotData().size()) {
-                material = registry.GetBuiltinMaterial("DefaultLit")->Clone();
-            } else if (const auto &guid = mesh->GetMaterialSlotData()[slot].materialGuid; !guid.empty()) {
-                auto source = registry.LoadAsset<InxMaterial>(guid, ResourceType::Material);
-                if (!source || source->IsDeleted())
-                    source = registry.GetBuiltinMaterial("ErrorMaterial");
-                material = source->Clone();
-            } else {
-                material = mesh->CreateMaterialCopy(slot);
-            }
-            m_animationMaterials.push_back(std::move(material));
-        }
+        m_animationMaterialLoads.Clear();
+        m_animationMaterialsReady = false;
+    }
+    const bool changed = !m_animationMaterialsReady;
+    bool progressed = false;
+    if (changed) {
+        std::vector<std::shared_ptr<InxMaterial>> sources;
+        if (!TryPrepareModelPreviewMaterials(*mesh, skin->subMeshes, m_animationMaterialLoads, sources, progressed))
+            return 0;
+        for (const auto &material : sources)
+            m_animationMaterials.push_back(material->Clone());
+        m_animationMaterialsReady = true;
     }
     if (take == m_renderedTake && seconds == m_renderedSeconds && size == m_renderedSize && GetDisplayTextureId())
         return GetDisplayTextureId();
 
-    // Fixed bind-pose framing makes root movement visible instead of tracking it.
-    const auto camera = FitCameraToBounds(mesh->GetBoundsMin(), mesh->GetBoundsMax(), kMeshPreviewFovDeg);
     SkinnedSampleRequest request;
     request.takeName = take;
     request.timeSeconds = seconds;
     request.loop = false; // Scrubbing to duration must show the final pose.
+    if (changed || take != m_framedTake) {
+        auto firstPose = request;
+        firstPose.timeSeconds = 0.0f;
+        const auto firstPalette = skin->BuildGpuBonePalette(firstPose);
+        m_animationFrameMin = mesh->GetBoundsMin();
+        m_animationFrameMax = mesh->GetBoundsMax();
+        glm::vec3 poseMin, poseMax;
+        if (skin->ComputeSkinnedBounds(firstPalette, poseMin, poseMax)) {
+            m_animationFrameMin = poseMin;
+            m_animationFrameMax = poseMax;
+        }
+        m_framedTake = take;
+    }
+    // Keep the starting pose in view even when a clip starts away from the
+    // bind pose. Framing stays fixed during playback, so root motion remains
+    // visible without CPU skinning every frame.
+    const auto camera = FitCameraToBounds(m_animationFrameMin, m_animationFrameMax, kMeshPreviewFovDeg);
     const auto palette = skin->BuildGpuBonePalette(request);
-    const uint64_t texture = RenderToImGuiTextureCamera(*mesh, m_animationMaterials, size, camera.view, camera.proj,
-                                                        camera.cameraPos, false, &palette);
+    const uint64_t texture =
+        RenderToImGuiTextureCamera(*mesh, m_animationMaterials, size, camera.view, camera.proj, camera.cameraPos,
+                                   m_animationGeometry, progressed, false, &palette);
     if (texture) {
         m_renderedTake = take;
         m_renderedSeconds = seconds;

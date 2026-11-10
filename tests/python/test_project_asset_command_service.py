@@ -26,7 +26,7 @@ def project_asset_commands(tmp_path, monkeypatch):
     assets = tmp_path / "Assets"
     assets.mkdir()
 
-    def delete_item(path, _database):
+    def delete_item(path, _database, *, write_scope=None):
         if os.path.isdir(path):
             shutil.rmtree(path)
         else:
@@ -50,7 +50,7 @@ def project_asset_commands(tmp_path, monkeypatch):
         destination = os.path.join(os.path.dirname(source), new_name)
         return move_batch(((source, destination),), None)[0]
 
-    def copy(source, destination, _database):
+    def copy(source, destination, _database, *, write_scope=None):
         if os.path.isdir(source):
             shutil.copytree(source, destination)
         else:
@@ -64,16 +64,20 @@ def project_asset_commands(tmp_path, monkeypatch):
     monkeypatch.setattr(
         AssetManager,
         "import_asset",
-        staticmethod(lambda _path, database=None: True),
+        staticmethod(lambda _path, database=None, *, write_scope=None: True),
     )
     monkeypatch.setattr(
         AssetManager,
         "reimport_asset",
-        staticmethod(lambda _path, database=None: True),
+        staticmethod(lambda _path, database=None, *, write_scope=None: True),
     )
 
     class _Database:
         project_root = str(tmp_path)
+
+        @staticmethod
+        def get_deletion_write_paths(paths):
+            return [target for path in paths for target in (path, path + ".meta")]
 
         @staticmethod
         def get_guid_from_path(path):

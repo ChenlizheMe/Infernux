@@ -265,7 +265,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         # Entry node uid
         self._entry_uid: str = ""
 
-        self._pending_save_ticket_id: str = ""
+        # The save-as ticket lives in _authoring_document_controller; the panel
+        # exposes it read-only through the property defined below.
 
         # Opening the editor is presentation, not authoring. Keep the initial
         # blank FSM clean; the explicit New command retains dirty draft
@@ -1040,7 +1041,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             or document is None
             or self.window_id not in document.view_ids
             or self._save_as_dialog.is_open
-            or bool(self._pending_save_ticket_id)
+            or self._authoring_document_controller.has_save_as
         ):
             return False
         core = EditorInteractionCore.instance()
@@ -2571,19 +2572,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         ).accepted
 
     def request_authoring_save_as(self, ticket):
-        from infernux.engine.interaction import (
-            DocumentActionResult,
-            DocumentActionStatus,
-        )
-
-        self._pending_save_ticket_id = ticket.ticket_id
-        if self._show_save_as_dialog():
-            return DocumentActionResult(DocumentActionStatus.PENDING)
-        self._pending_save_ticket_id = ""
-        return DocumentActionResult(
-            DocumentActionStatus.REJECTED,
-            "no project root is available",
-        )
+        return self._authoring_document_controller.begin_save_as(ticket, self._show_save_as_dialog)
 
     def discard(self, *, document_id: str) -> bool:
         if document_id != self.document_id:
@@ -2611,19 +2600,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             return False
         return True
 
-    def _save_to(self, target: str, *, ticket_id: str = "") -> bool:
-        active_ticket_id = ticket_id or self._pending_save_ticket_id
-        if not active_ticket_id:
-            raise RuntimeError(
-                "Animation FSM saves require a DocumentRegistry SaveTicket"
-            )
-        result = self._authoring_document_controller.continue_save_to_resource(
-            active_ticket_id,
-            target,
-        )
-        if result.accepted:
-            self._pending_save_ticket_id = ""
-        return result.accepted
+    def _save_to(self, target: str) -> bool:
+        return self._authoring_document_controller.confirm_save_as(target).accepted
 
     def capture_authoring_save_snapshot(self, target: str):
         from infernux.engine.interaction import (
@@ -2681,17 +2659,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         return document_content_token(self._fsm.to_dict())
 
     def _cancel_pending_save(self) -> None:
-        ticket_id = self._pending_save_ticket_id
-        self._pending_save_ticket_id = ""
-        if ticket_id:
-            from infernux.engine.interaction import DocumentRegistry
-
-            DocumentRegistry.instance().complete_save(
-                ticket_id,
-                success=False,
-                cancelled=True,
-                message="save was cancelled",
-            )
+        self._authoring_document_controller.cancel_pending_save()
     def _discard_unsaved_changes(self) -> bool:
         target = self._file_path or (self._fsm.file_path if self._fsm is not None else "")
         if target:

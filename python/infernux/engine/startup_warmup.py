@@ -94,7 +94,7 @@ class PlayerStartupWarmup:
         self._cpu_records = list(cpu_records)
         self._cpu_jobs: list[tuple[dict, object, float]] = []
         self._cpu_records_resolved = False
-        self._prepares: list[tuple[object, tuple]] = []
+        self._prepares: list[tuple[object, tuple, str, tuple[int, ...]]] = []
         # The Player window is still hidden while bootstrap pumps this queue.
         # Starting immediately lets persisted GPU work and the CPU worker
         # overlap scene preparation instead of charging the first interaction.
@@ -208,9 +208,9 @@ class PlayerStartupWarmup:
             # yields immediately after it completes.
             pump_started = time.perf_counter()
             while self._prepares:
-                declaration, params = self._prepares.pop(0)
+                declaration, params, autodiff_mode, gradient_parameters = self._prepares.pop(0)
                 prepare_started = time.perf_counter()
-                compute._prepare_now(declaration, params)
+                compute._prepare_now(declaration, params, autodiff_mode, gradient_parameters)
                 self._prepare_count += 1
                 write_player_log(
                     "[Startup.Warmup] GPU specialization "
@@ -632,11 +632,12 @@ def run_script_warmup(
     source = lexical_path(file_path)
     from infernux.components.component import InxComponent
     from infernux.components.registry import component_types_for_script_path
-    from infernux.components.script_loader import load_all_components_from_file
 
+    # An empty registry is expected for helper scripts. Re-importing here
+    # would replace the module and classes that the reload just published.
     types = component_types_for_script_path(source)
-    if not types and os.path.isfile(source):
-        types = tuple(load_all_components_from_file(source, register=True))
+    if not types:
+        return 0
     active = tuple(
         component
         for values in InxComponent._active_instances.values()

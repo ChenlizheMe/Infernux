@@ -1,4 +1,5 @@
 #include <platform/filesystem/InxPack.h>
+#include <platform/filesystem/AtomicFile.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -60,8 +61,7 @@ std::vector<uint8_t> ReadFile(const std::filesystem::path &path)
 void RequireNoTemporaryFiles(const std::filesystem::path &root)
 {
     for (const auto &entry : std::filesystem::directory_iterator(root)) {
-        const std::string name = infernux::FromFsPath(entry.path().filename());
-        Require(name.find(".tmp.inxpkg.") == std::string::npos, "InxPack left a temporary output file behind");
+        Require(!infernux::IsAtomicTemporaryPath(entry.path()), "InxPack left a temporary output file behind");
     }
 }
 
@@ -165,14 +165,14 @@ int main()
         }
 
         const auto compressibleSource = sourceDirectory / ToFsPath("可压缩源文件.bin");
-        std::vector<uint8_t> compressibleBytes(64 * 1024);
+        std::vector<uint8_t> compressibleBytes(192 * 1024);
         for (size_t index = 0; index < compressibleBytes.size(); ++index)
             compressibleBytes[index] = static_cast<uint8_t>((index / 256) % 7);
         WriteSource(compressibleSource, compressibleBytes);
         const auto deterministicA = root / ToFsPath("确定性A.inxrt");
         const auto deterministicB = root / ToFsPath("确定性B.inxrt");
         const auto releasePackage = root / ToFsPath("release.inxrt");
-        const std::vector<SourceFile> compressibleSources = {{"Runtime/Resources.bin", compressibleSource}};
+        const std::vector<Source> compressibleSources = {{"Runtime/Resources.bin", compressibleSource}};
         const Manifest defaultA = Write(deterministicA, compressibleSources);
         const Manifest defaultB = Write(deterministicB, compressibleSources);
         Require(ReadFile(deterministicA) == ReadFile(deterministicB), "default InxPack output is not deterministic");
