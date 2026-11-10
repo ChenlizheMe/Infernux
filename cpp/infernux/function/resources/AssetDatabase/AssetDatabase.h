@@ -684,12 +684,26 @@ class AssetDatabase : public NativeLifetimeOwner
         bool abandoned = false;
     };
 
+    struct WorkerMetadataOutput
+    {
+        size_t assetIndex;
+        std::shared_ptr<const InxResourceMeta> metadata;
+        uint64_t workspace = 0;
+        size_t bytes = 0;
+        uint64_t fingerprint = 0;
+        std::optional<DocumentTransactionEntry> staged;
+        std::shared_ptr<DocumentWriteTicket> write;
+        std::exception_ptr failure;
+    };
+
     enum class CatalogIoStage : uint8_t
     {
         Scan,
         MetadataPlan,
         Metadata,
         Sidecar,
+        SidecarMeasure,
+        SidecarStage,
         Cook,
         Persist,
         Index,
@@ -765,6 +779,9 @@ class AssetDatabase : public NativeLifetimeOwner
             ImportPrepare,
             Import,
             ImportMerge,
+            MetadataOutputPlan,
+            MetadataOutputMeasure,
+            MetadataOutputStage,
             MetadataWrite,
             FileStateMerge,
             ReadyToBuildIndex,
@@ -783,6 +800,7 @@ class AssetDatabase : public NativeLifetimeOwner
         WorkingSet stagedWorkingSet;
         std::unordered_map<std::string, std::vector<std::string>> committedDependencies;
         std::vector<DocumentTransactionEntry> metadataWrites;
+        std::vector<WorkerMetadataOutput> metadataOutputs;
         std::unordered_set<std::string> stagedTextureGuids;
         std::vector<size_t> importWave;
         uint64_t importStorageWaitBytes = 0;
@@ -821,7 +839,6 @@ class AssetDatabase : public NativeLifetimeOwner
         size_t dependencyMergeCursor = 0;
         size_t fileStateMergeCursor = 0;
         bool importMergeInitialized = false;
-        bool hasTextureRevisions = false;
         double ownerFinalizeMilliseconds = 0.0;
         double ownerMergeMaxSliceMilliseconds = 0.0;
         size_t ownerMergeSliceCount = 0;
@@ -882,6 +899,11 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] static bool AreImportWaveWritesComplete(const PendingRefreshCommit &state);
     [[nodiscard]] static bool FinishImportWave(PendingRefreshCommit &state, bool drain);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
+    void QueueRefreshMetadataOutput(const std::shared_ptr<PendingRefreshCommit> &state,
+                                    PendingRefreshCommit::Phase phase);
+    [[nodiscard]] static bool AreMetadataOutputsComplete(const PendingRefreshCommit &state);
+    static void DrainMetadataOutputs(PendingRefreshCommit &state);
+    void BeginRefreshMetadataTransaction(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
     void FinalizePendingRefreshCommit(const std::shared_ptr<PendingRefreshCommit> &state);

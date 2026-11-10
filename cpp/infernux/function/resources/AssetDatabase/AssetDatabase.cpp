@@ -491,6 +491,60 @@ uint64_t EstimateMetadataDocumentWorkspace(const InxResourceMeta &metadata)
     return layout.Workspace() + compoundBytes;
 }
 
+class MetadataOutput final : public std::streambuf
+{
+  public:
+    explicit MetadataOutput(std::string *destination = nullptr) : m_destination(destination)
+    {
+    }
+
+    void Encode(const nlohmann::json &document)
+    {
+        std::ostream stream(this);
+        stream.exceptions(std::ios::badbit | std::ios::failbit);
+        stream.fill(' ');
+        stream << std::setw(4) << document << '\n';
+    }
+
+    [[nodiscard]] size_t Size() const noexcept
+    {
+        return m_size;
+    }
+
+    [[nodiscard]] uint64_t Fingerprint() const
+    {
+        return m_fingerprint.Value();
+    }
+
+  private:
+    std::streamsize xsputn(const char *data, std::streamsize length) override
+    {
+        const auto bytes = static_cast<size_t>(length);
+        if (m_destination) {
+            if (bytes > m_destination->size() - m_size)
+                throw std::logic_error("metadata output exceeded its measured size");
+            std::copy_n(data, bytes, m_destination->data() + m_size);
+        } else {
+            m_fingerprint.Append({data, bytes});
+        }
+        m_size += bytes;
+        return length;
+    }
+
+    int_type overflow(int_type value) override
+    {
+        if (!traits_type::eq_int_type(value, traits_type::eof())) {
+            const char ch = traits_type::to_char_type(value);
+            xsputn(&ch, 1);
+        }
+        return traits_type::not_eof(value);
+    }
+
+    std::string *m_destination;
+    size_t m_size = 0;
+    detail::FileFingerprint m_fingerprint;
+};
+
 struct MetadataMatch
 {
     const InxResourceMeta &published;
@@ -2353,6 +2407,9 @@ FrameWorkSource AssetDatabase::GetCatalogWorkSource(FrameWorkOwner &owner)
                                  : !waitingBytes || waitingBytes > m_frameWork->CpuStorageLimit() ||
                                        m_frameWork->CanReserveCpuStorage(waitingBytes);
         }
+        if (advanceRefresh && m_refreshWork.Complete() && m_pendingRefreshCommit &&
+            m_pendingRefreshCommit->phase == PendingRefreshCommit::Phase::MetadataOutputStage)
+            advanceRefresh = AreMetadataOutputsComplete(*m_pendingRefreshCommit);
         const bool advanceApply = CanAdvanceModelReimport();
         const bool advanceWatcher = CanAdvanceWatcherImport();
         const bool advanceRuntimeCatalog = CanSubmitCatalogWork(m_runtimeCatalogWork);
@@ -2440,8 +2497,12 @@ void AssetDatabase::RethrowRefreshFailure()
 bool AssetDatabase::AdvanceRefresh(bool managed, bool drain)
 {
     ObserveCatalogWork(m_refreshWork);
-    if (!m_refreshWork.Complete())
+    if (!m_refreshWork.Complete()) {
+        if (drain && m_refreshWork.active.empty() && m_pendingRefreshCommit &&
+            m_pendingRefreshCommit->phase == PendingRefreshCommit::Phase::MetadataOutputStage)
+            DrainMetadataOutputs(*m_pendingRefreshCommit);
         return SubmitCatalogWork(m_refreshWork, managed, drain);
+    }
     if (!m_pendingAssetScan && !m_pendingRefreshCommit)
         return false;
     (void)CommitReadyRefresh(managed, drain);
@@ -2486,6 +2547,37 @@ bool AssetDatabase::CommitReadyRefresh(bool managed, bool drain)
             }
             if (state->phase == PendingRefreshCommit::Phase::ImportMerge) {
                 (void)ContinuePendingImportMerge(state);
+                return false;
+            }
+            if (state->phase == PendingRefreshCommit::Phase::MetadataOutputPlan) {
+                QueueRefreshMetadataOutput(state, PendingRefreshCommit::Phase::MetadataOutputMeasure);
+                return false;
+            }
+            if (state->phase == PendingRefreshCommit::Phase::MetadataOutputMeasure) {
+                for (const auto &output : state->metadataOutputs)
+                    if (output.failure)
+                        std::rethrow_exception(output.failure);
+                state->metadataOutputs.erase(std::remove_if(state->metadataOutputs.begin(),
+                                                            state->metadataOutputs.end(),
+                                                            [](const auto &output) { return !output.bytes; }),
+                                             state->metadataOutputs.end());
+                if (state->metadataOutputs.empty())
+                    BeginRefreshMetadataTransaction(state);
+                else
+                    QueueRefreshMetadataOutput(state, PendingRefreshCommit::Phase::MetadataOutputStage);
+                return false;
+            }
+            if (state->phase == PendingRefreshCommit::Phase::MetadataOutputStage) {
+                if (!drain && !AreMetadataOutputsComplete(*state))
+                    return false;
+                DrainMetadataOutputs(*state);
+                for (auto &output : state->metadataOutputs) {
+                    if (output.failure)
+                        std::rethrow_exception(output.failure);
+                    state->metadataWrites.push_back(std::move(output.staged.value()));
+                }
+                state->metadataOutputs.clear();
+                BeginRefreshMetadataTransaction(state);
                 return false;
             }
             if (state->phase == PendingRefreshCommit::Phase::MetadataWrite) {
@@ -3058,7 +3150,6 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
            HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         const auto metadataIndex = state->metadataMergeCursor++;
         auto &item = state->workerMetadata[metadataIndex];
-        state->hasTextureRevisions |= item.textureRevision.has_value();
         if (item.producerThread != m_ownerThread)
             ++m_lastRefreshWorkerMetadataCount;
         if (!item.error.empty())
@@ -3474,22 +3565,16 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
     while (state->importResultMergeCursor == state->workerImports.size() &&
            state->metadataWritePrepareCursor < state->pendingImports.size() &&
            HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
-        auto &asset = state->pendingImports[state->metadataWritePrepareCursor++];
+        const auto assetIndex = state->metadataWritePrepareCursor++;
+        auto &asset = state->pendingImports[assetIndex];
         state->committedDependencies.try_emplace(asset.guid, std::vector<std::string>{});
         if (asset.persistMetadata) {
             const auto metadata = workingSet.metas.find(asset.guid);
             if (metadata == workingSet.metas.end() || !metadata->second) {
                 workingSet.importResults[asset.guid] = {false, "Pending import has no metadata to persist"};
+                asset.persistMetadata = false;
             } else {
-                const std::string metaPath = InxResourceMeta::GetMetaFilePath(asset.path);
-                std::string content = metadata->second->SerializeDocumentPortable(m_projectRoot).dump(4) + "\n";
-                const auto &consumed = asset.expectedMetadata.value();
-                asset.persistMetadata = !MatchesConsumedDocument(content, consumed);
-                if (asset.persistMetadata) {
-                    state->metadataWrites.push_back({metaPath, std::move(content), asset.expectedMetadata});
-                } else {
-                    asset.meta = {consumed.size, consumed.modifiedNs};
-                }
+                state->metadataOutputs.push_back({assetIndex, metadata->second});
             }
         }
         ++processed;
@@ -3520,8 +3605,105 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
 
     m_lastRefreshImportMilliseconds = std::chrono::duration<double, std::milli>(now - state->importStarted).count();
     state->metadataWriteStarted = now;
-    // A superseded texture can fail before producing any output to persist.
-    const bool validateSources = !state->metadataWrites.empty() || state->hasTextureRevisions;
+    if (state->metadataOutputs.empty())
+        BeginRefreshMetadataTransaction(state);
+    else
+        QueueRefreshMetadataOutput(state, PendingRefreshCommit::Phase::MetadataOutputPlan);
+    return true;
+}
+
+void AssetDatabase::QueueRefreshMetadataOutput(const std::shared_ptr<PendingRefreshCommit> &state,
+                                               PendingRefreshCommit::Phase phase)
+{
+    using Phase = PendingRefreshCommit::Phase;
+    const auto storageBytes = [state, phase](uint32_t index) {
+        const auto &output = state->metadataOutputs[index];
+        return output.workspace + (phase == Phase::MetadataOutputStage ? output.bytes + 64 : 0);
+    };
+    const auto stage = phase == Phase::MetadataOutputPlan      ? CatalogIoStage::MetadataPlan
+                       : phase == Phase::MetadataOutputMeasure ? CatalogIoStage::SidecarMeasure
+                                                               : CatalogIoStage::SidecarStage;
+    const bool bounded = m_frameWork && phase != Phase::MetadataOutputPlan;
+    QueueCatalogWork(
+        m_refreshWork, stage, static_cast<uint32_t>(state->metadataOutputs.size()),
+        [this, state, phase, storageBytes, bounded](uint32_t index, auto storage) {
+            auto &output = state->metadataOutputs[index];
+            if (bounded && !storage && !output.failure) {
+                const auto bytes = storageBytes(index);
+                const auto reason = bytes > m_frameWork->CpuStorageLimit()
+                                        ? " bytes, exceeding the configured CPU capacity"
+                                        : " bytes; retry when CPU capacity is available";
+                output.failure = std::make_exception_ptr(
+                    std::runtime_error("metadata output requires " + std::to_string(bytes) + reason));
+            }
+            return [state, phase, index, storage = std::move(storage)]() mutable {
+                auto claim = std::move(storage);
+                auto &output = state->metadataOutputs[index];
+                if (output.failure)
+                    return;
+                auto &asset = state->pendingImports[output.assetIndex];
+                try {
+                    if (phase == Phase::MetadataOutputPlan) {
+                        output.workspace = EstimateMetadataDocumentWorkspace(*output.metadata) + sizeof(MetadataOutput);
+                    } else if (phase == Phase::MetadataOutputMeasure) {
+                        MetadataOutput measurement;
+                        measurement.Encode(output.metadata->SerializeDocumentPortable(state->projectRoot));
+                        output.fingerprint = measurement.Fingerprint();
+                        const auto &consumed = asset.expectedMetadata.value();
+                        asset.persistMetadata = !consumed.exists || consumed.size != measurement.Size() ||
+                                                consumed.contentHash != output.fingerprint;
+                        if (asset.persistMetadata)
+                            output.bytes = measurement.Size();
+                        else
+                            asset.meta = {consumed.size, consumed.modifiedNs};
+                    } else {
+                        std::string content(output.bytes, '\0');
+                        MetadataOutput encoding(&content);
+                        encoding.Encode(output.metadata->SerializeDocumentPortable(state->projectRoot));
+                        if (encoding.Size() != output.bytes ||
+                            detail::FileFingerprint::Of(content) != output.fingerprint)
+                            throw std::runtime_error("portable metadata changed between measurement and staging: " +
+                                                     asset.path);
+                        if (claim)
+                            claim->ReduceTo(content.capacity() + 1);
+                        DocumentTransactionEntry entry(InxResourceMeta::GetMetaFilePath(asset.path), std::move(content),
+                                                       asset.expectedMetadata);
+                        entry.preclaimedStorage = std::move(claim);
+                        output.write = DocumentTransaction::Stage(state->projectRoot, entry);
+                        output.staged.emplace(std::move(entry));
+                    }
+                } catch (...) {
+                    output.failure = std::current_exception();
+                }
+            };
+        },
+        bounded ? CatalogWork::StoragePlan(storageBytes) : CatalogWork::StoragePlan{});
+    state->phase = phase;
+}
+
+bool AssetDatabase::AreMetadataOutputsComplete(const PendingRefreshCommit &state)
+{
+    return std::all_of(state.metadataOutputs.begin(), state.metadataOutputs.end(),
+                       [](const auto &output) { return !output.write || output.write->IsComplete(); });
+}
+
+void AssetDatabase::DrainMetadataOutputs(PendingRefreshCommit &state)
+{
+    for (auto &output : state.metadataOutputs) {
+        if (output.write) {
+            try {
+                output.write->Wait();
+            } catch (...) {
+                output.failure = std::current_exception();
+            }
+            output.write.reset();
+        }
+    }
+}
+
+void AssetDatabase::BeginRefreshMetadataTransaction(const std::shared_ptr<PendingRefreshCommit> &state)
+{
+    const bool validateSources = !state->metadataWrites.empty() || !state->pendingImports.empty();
     state->phase =
         validateSources ? PendingRefreshCommit::Phase::MetadataWrite : PendingRefreshCommit::Phase::FileStateMerge;
     if (validateSources) {
@@ -3538,11 +3720,15 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                         const auto &prepared = state->workerMetadata[index];
                         if (const auto &revision = prepared.textureRevision)
                             RequireFileRevisionCurrent(asset.path, *revision);
-                        if (prepared.textureWorkingBytes && !asset.persistMetadata && asset.expectedMetadata &&
-                            !(CaptureAtomicFileState(InxResourceMeta::GetMetaFilePath(asset.path)) ==
-                              *asset.expectedMetadata))
-                            throw std::runtime_error("texture metadata changed before refresh publication: " +
-                                                     asset.path);
+                        if (!asset.persistMetadata && asset.expectedMetadata) {
+                            const auto path = InxResourceMeta::GetMetaFilePath(asset.path);
+                            const bool current = prepared.sidecarRevision
+                                                     ? IsFileRevisionCurrent(ToFsPath(path), *prepared.sidecarRevision)
+                                                     : CaptureAtomicFileState(path) == *asset.expectedMetadata;
+                            if (!current)
+                                throw std::runtime_error("asset metadata changed before refresh publication: " +
+                                                         asset.path);
+                        }
                     }
                     if (writes.empty())
                         return;
@@ -3567,7 +3753,6 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                 }
             });
     }
-    return true;
 }
 
 bool AssetDatabase::ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state)

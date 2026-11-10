@@ -8,11 +8,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from build_platform_plugins import ROOT, PACKAGE_VERSION, PLATFORM_PLAYERS, assemble, read
+from build_platform_plugins import ROOT, PLATFORM_PLAYERS, assemble, read
 
 
 def run(*args, cwd=None, check=True):
-    result = subprocess.run([str(arg) for arg in args], cwd=cwd, text=True,
+    result = subprocess.run([str(arg) for arg in args], cwd=cwd, encoding='utf-8',
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if check and result.returncode:
         raise RuntimeError(f'{args[0]} failed: {result.stderr.strip()}')
@@ -38,15 +38,17 @@ def prepare_repository(checkout, manifest):
     """Prepare a metadata-only commit. Remote mutation is a separate publication step."""
     revision = manifest['plugin_source_revision']
     tag = 'v' + manifest['version']
+    tag_ref = f'refs/tags/{tag}'
     expected = {'reference': manifest['reference'], 'version': manifest['version'], 'engine': manifest['engine']}
-    existing = run('git', 'rev-parse', '--verify', f'refs/tags/{tag}', cwd=checkout, check=False)
-    if existing.returncode == 0:
+    run('git', 'fetch', '--no-tags', 'origin', revision, cwd=checkout)
+    if run('git', 'ls-remote', '--refs', 'origin', tag_ref, cwd=checkout).stdout.strip():
+        run('git', 'fetch', '--no-tags', 'origin', f'{tag_ref}:{tag_ref}', cwd=checkout)
         validate_source(checkout, revision, tag, expected)
         metadata = json.loads(run('git', 'show', f'{tag}:package/inx_package.json', cwd=checkout).stdout)
         if any(metadata[key] != value for key, value in expected.items()):
             raise ValueError(f'Existing immutable tag has another plugin identity: {tag}')
         return tag
-    validate_source(checkout, revision, 'HEAD', expected)
+    run('git', 'switch', '--detach', revision, cwd=checkout)
     metadata_path = checkout / 'package/inx_package.json'
     metadata = read(metadata_path)
     if any(metadata[key] != value for key, value in expected.items()):
@@ -56,17 +58,16 @@ def prepare_repository(checkout, manifest):
         run('git', '-c', 'user.name=Infernux Release', '-c', 'user.email=release@infernux-engine.com',
             'commit', '-m', f'Release {manifest["reference"]} {manifest["version"]}', cwd=checkout)
     run('git', 'tag', tag, cwd=checkout)
+    validate_source(checkout, revision, tag, expected)
     return tag
 
 
 def publish_repository(repository, manifest, artifact, manifest_path, *, clone_parent):
-    """Non-force atomic source push, followed by immutable release assets."""
+    """Publish the tested source tag and its immutable release assets."""
     checkout = clone_parent / manifest['reference'].replace('/', '.')
     run('gh', 'repo', 'clone', repository, checkout, '--', '--quiet')
     tag = prepare_repository(checkout, manifest)
-    branch = run('git', 'symbolic-ref', '--short', 'HEAD', cwd=checkout).stdout.strip()
-    # Atomic push never moves an existing tag or overwrites a divergent branch.
-    run('git', 'push', '--atomic', 'origin', f'HEAD:refs/heads/{branch}', f'refs/tags/{tag}', cwd=checkout)
+    run('git', 'push', 'origin', f'refs/tags/{tag}', cwd=checkout)
     release = run('gh', 'release', 'view', tag, '--repo', repository,
                   '--json', 'isDraft,assets', check=False)
     if release.returncode == 0:
@@ -102,9 +103,10 @@ def main():
         stem = reference.replace('/', '.')
         path = args.directory / (stem + '.release.json')
         manifest = read(path)
-        if (manifest['version'] != PACKAGE_VERSION or manifest['engine'] != '==' + PACKAGE_VERSION
-                or not manifest['plugin_source_revision']):
-            raise ValueError(f'Incomplete engine-coupled plugin release: {reference}')
+        gitlink = run('git', 'ls-tree', manifest['source_revision'], '--',
+                      descriptor['repository_path'], cwd=ROOT).stdout.split(maxsplit=3)
+        if gitlink[:3] != ['160000', 'commit', manifest['plugin_source_revision']]:
+            raise ValueError(f'Plugin revision differs from the tested engine gitlink: {reference}')
         plans.append((repositories[reference], manifest, args.directory / (stem + '.inxpkg'), path))
     if args.check:
         print(f'Validated {len(plans)} engine-coupled repository publications')

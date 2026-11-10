@@ -6,8 +6,11 @@
 #include <core/threading/FrameWorkOwner.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <limits>
+#include <ostream>
+#include <streambuf>
 #include <utility>
 
 namespace infernux
@@ -16,6 +19,38 @@ namespace
 {
 constexpr size_t kOpenWriteLimit = 4;
 constexpr size_t kMaxDocumentRange = 64 * 1024 * 1024;
+
+class AtomicDocumentStream final : public std::streambuf
+{
+  public:
+    explicit AtomicDocumentStream(AtomicFileWriter &writer) : m_writer(writer)
+    {
+        setp(m_buffer.data(), m_buffer.data() + m_buffer.size());
+    }
+
+  private:
+    int sync() override
+    {
+        const auto bytes = static_cast<size_t>(pptr() - pbase());
+        if (bytes)
+            m_writer.Append({pbase(), bytes});
+        setp(m_buffer.data(), m_buffer.data() + m_buffer.size());
+        return 0;
+    }
+
+    int_type overflow(int_type value) override
+    {
+        sync();
+        if (!traits_type::eq_int_type(value, traits_type::eof())) {
+            *pptr() = traits_type::to_char_type(value);
+            pbump(1);
+        }
+        return traits_type::not_eof(value);
+    }
+
+    AtomicFileWriter &m_writer;
+    std::array<char, 64 * 1024> m_buffer;
+};
 
 bool Await(const JobCompletionEvent &event,
            std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
@@ -423,9 +458,19 @@ void DocumentStore::Expedite(const DocumentWriteTicket &ticket)
 
 uint64_t DocumentStore::WriteAndWait(const std::string &path, std::string_view content, DocumentWriteOptions options)
 {
+    return WriteBlocking(path, content, std::move(options));
+}
+
+uint64_t DocumentStore::WriteStreamAndWait(const std::string &path, StreamWriter content, DocumentWriteOptions options)
+{
+    return WriteBlocking(path, std::move(content), std::move(options));
+}
+
+uint64_t DocumentStore::WriteBlocking(const std::string &path, Content content, DocumentWriteOptions options)
+{
     std::shared_ptr<DocumentWriteTicket> ticket;
     try {
-        SubmitContent(path, content, std::move(options), ticket);
+        SubmitContent(path, std::move(content), std::move(options), ticket);
         Await(ticket->m_completion);
     } catch (...) {
         if (ticket && !ticket->IsComplete())
@@ -659,12 +704,13 @@ void DocumentStore::RunPath(const std::string &key, uint64_t scheduledGeneration
         bool terminal = true;
         const auto started = step ? detail::IoClock::now() : detail::IoClock::time_point{};
         try {
+            const auto *produce = std::get_if<StreamWriter>(&request->content);
             if (const auto *prepared = std::get_if<AtomicPreparedFile>(&request->content)) {
                 AtomicFileWriter writer(request->path, {request->options.mode, request->options.expectedFileState},
                                         *prepared);
                 writer.VerifyExpected((std::numeric_limits<uint64_t>::max)());
                 receipt = writer.Publish();
-            } else if (m_writer && !request->staged) {
+            } else if (m_writer && !request->staged && !produce) {
                 receipt = m_writer(request->path, request->Bytes(), request->options);
             } else {
                 if (!request->writer) {
@@ -676,7 +722,13 @@ void DocumentStore::RunPath(const std::string &key, uint64_t scheduledGeneration
                         step || request->options.preclaimedStorage ? 0 : request->Bytes().size(), request->staged);
                 }
                 auto &writer = *request->writer;
-                if (step && step->range == WriteStep::Range::ExpectedInput) {
+                if (produce) {
+                    AtomicDocumentStream buffer(writer);
+                    std::ostream stream(&buffer);
+                    stream.exceptions(std::ios::badbit | std::ios::failbit);
+                    (*produce)(stream);
+                    stream.flush();
+                } else if (step && step->range == WriteStep::Range::ExpectedInput) {
                     writer.VerifyExpected(step->bytes);
                 } else {
                     const auto remaining = request->Bytes().substr(writer.WrittenBytes());
@@ -684,9 +736,9 @@ void DocumentStore::RunPath(const std::string &key, uint64_t scheduledGeneration
                 }
                 if (step && step->bytes)
                     step->rangeNanoseconds = detail::IoElapsedNs(started);
-                if (!step)
+                if (!step || produce)
                     writer.VerifyExpected((std::numeric_limits<uint64_t>::max)());
-                if (!step || step->publish)
+                if (!step || produce || step->publish)
                     receipt = writer.Publish();
                 else
                     terminal = false;

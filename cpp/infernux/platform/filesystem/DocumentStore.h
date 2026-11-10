@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iosfwd>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -133,6 +134,7 @@ class DocumentStore final
   public:
     using Writer =
         std::function<AtomicWriteReceipt(const std::string &, std::string_view, const DocumentWriteOptions &)>;
+    using StreamWriter = std::function<void(std::ostream &)>;
 
     INFERNUX_FOUNDATION_API explicit DocumentStore(Writer writer = {});
     INFERNUX_FOUNDATION_API ~DocumentStore();
@@ -161,6 +163,9 @@ class DocumentStore final
     /// The caller keeps the input immutable until the write returns.
     INFERNUX_FOUNDATION_API uint64_t WriteAndWait(const std::string &path, std::string_view content,
                                                   DocumentWriteOptions options = {});
+    /// Produce a document on the same ordered path without retaining its encoded text.
+    INFERNUX_FOUNDATION_API uint64_t WriteStreamAndWait(const std::string &path, StreamWriter content,
+                                                        DocumentWriteOptions options = {});
     INFERNUX_FOUNDATION_API bool Cancel(const std::shared_ptr<DocumentWriteTicket> &ticket);
     [[nodiscard]] INFERNUX_FOUNDATION_API DocumentPathMetrics GetMetrics(const std::string &path) const;
     [[nodiscard]] INFERNUX_FOUNDATION_API DocumentFileState CaptureFileState(const std::string &path) const;
@@ -181,7 +186,8 @@ class DocumentStore final
         Closing,
     };
 
-    using Content = std::variant<std::string, std::string_view, DocumentWriteBuffer, AtomicPreparedFile>;
+    using Content = std::variant<std::string, std::string_view, DocumentWriteBuffer, AtomicPreparedFile, StreamWriter>;
+    uint64_t WriteBlocking(const std::string &path, Content content, DocumentWriteOptions options);
 
     struct Request
     {
