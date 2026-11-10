@@ -2097,15 +2097,25 @@ FrameWorkFacts Infernux::DescribePreviewWork()
         materialPrepareReady || std::any_of(m_materialPreviewStates.begin(), m_materialPreviewStates.end(), completed);
     const bool meshHostReady =
         meshPrepareReady || std::any_of(m_meshPreviewStates.begin(), m_meshPreviewStates.end(), completed);
-    if (materialHostReady && (!meshHostReady || !m_preferMeshPreviewHost))
-        facts.host = {1, 0, true, false};
-    else if (meshHostReady)
-        facts.host = {3, 0, true, false};
+    const bool hostReady[] = {
+        std::any_of(m_texturePreviewStates.begin(), m_texturePreviewStates.end(),
+                    [](const auto &entry) { return entry.second.importedGpuPending; }),
+        materialHostReady,
+        false,
+        meshHostReady,
+        false,
+    };
+    for (uint64_t offset = 0; offset < std::size(hostReady); ++offset) {
+        const auto lane = (m_nextPreviewHostLane + offset) % std::size(hostReady);
+        if (hostReady[lane]) {
+            facts.host = {lane, 0, true, false};
+            break;
+        }
+    }
     const bool materialRenderPending = std::any_of(m_materialPreviewStates.begin(), m_materialPreviewStates.end(),
                                                    [](const auto &entry) { return bool(entry.second.renderTicket); });
     const bool ready[] = {
-        std::any_of(m_texturePreviewStates.begin(), m_texturePreviewStates.end(),
-                    [](const auto &entry) { return entry.second.importedGpuPending; }),
+        false,
         !materialRenderPending && materialGpuReady,
         !m_texturePreviewCompletedQueue.empty(),
         meshGpuReady,
@@ -2135,7 +2145,7 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
     if (gpu)
         m_nextPreviewLane = (lane + 1) % 5;
     else
-        m_preferMeshPreviewHost = lane == 1;
+        m_nextPreviewHostLane = (lane + 1) % 5;
     bool progressed = false;
 
     // Registered project textures never enter the CPU thumbnail pipeline.
@@ -2149,7 +2159,9 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
         std::string guid;
     };
     std::vector<ImportedPreviewPublication> importedPublications;
-    if (lane == 0) {
+    // Resolving a preview prepares CPU data or binds a completed GPU view.
+    // The renderer's texture source owns the actual GPU upload separately.
+    if (!gpu && lane == 0) {
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
         for (const auto &[key, state] : m_texturePreviewStates) {
             if (state.importedGpuPending && !state.importedTextureGuid.empty())

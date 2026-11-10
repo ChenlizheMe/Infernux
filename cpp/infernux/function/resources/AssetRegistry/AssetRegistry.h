@@ -31,6 +31,7 @@ class InxMesh;
 class InxTexture;
 class AssetRegistry;
 class TextureReadTask;
+struct TextureReadProfile;
 struct ShaderAsset;
 enum class MeshGeometryView : uint8_t;
 
@@ -374,6 +375,7 @@ class AssetRegistry
     uint64_t m_loadFrame = 0, m_loadGrant = 0;
     WorkerAssetLoadPlan::Read m_acceptedRead;
     std::array<double, static_cast<size_t>(WorkerAssetLoadPlan::ReadKind::Count)> m_readRates{};
+    std::unordered_map<ResourceType, uint64_t> m_loadControlNanoseconds;
     std::shared_ptr<AssetLoadTicket> BeginAssetLoad(const std::string &guid, ResourceType type, bool replaceMesh,
                                                     bool preferPublished = false);
     bool SubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool synchronous, bool &progressed);
@@ -385,6 +387,7 @@ class AssetRegistry
     void ObserveAssetLoad();
     uint64_t m_nextLoadToken = 1;
     std::vector<std::shared_ptr<TextureReadTask>> m_textureReads;
+    std::shared_ptr<TextureReadProfile> m_textureReadProfile;
     std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders;        // type → loader
     std::unordered_map<std::string, std::shared_ptr<InxMaterial>> m_builtinMaterials; // name → builtin mat
     mutable std::unordered_map<InxMaterial *, std::weak_ptr<InxMaterial>> m_runtimeMaterials;

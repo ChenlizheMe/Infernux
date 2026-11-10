@@ -272,7 +272,6 @@ class ProjectPanel : public EditorPanel
     {
         uint64_t fingerprint = 0;
         uint64_t textureId = 0;
-        uint64_t lastRequestFrame = 0;
     };
     std::unordered_map<std::string, PreviewRequestCacheEntry> m_texturePreviewRequests;
     // Material preview queries are more expensive than the read-only texture
@@ -280,13 +279,6 @@ class ProjectPanel : public EditorPanel
     // stable Project frame does not re-enter the preview state machine.
     std::unordered_map<std::string, PreviewRequestCacheEntry> m_materialPreviewResults;
     std::unordered_map<std::string, PreviewRequestCacheEntry> m_modelPreviewRequests;
-    uint64_t m_previewFrameSerial = 0;
-    // FileManager must not enqueue a whole directory's previews in one frame.
-    // These are scheduling budgets, not display limits: ready thumbnails remain visible.
-    int m_texturePreviewRequestsThisFrame = 0;
-    int m_modelPreviewRequestsThisFrame = 0;
-    static constexpr int kTexturePreviewRequestBudget = 2;
-    static constexpr int kModelPreviewRequestBudget = 1;
     struct PrefabTypeCacheEntry
     {
         uint64_t mtimeNs = 0;

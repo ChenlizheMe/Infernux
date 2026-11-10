@@ -1382,31 +1382,19 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     const int maxSize = contract.maxSize;
     const std::string &textureFormat = contract.textureFormat;
     const std::string &textureType = contract.textureType;
-    // Import settings affect the generated pixels even when the source file
-    // itself is unchanged. Fold only the settings used by this preview path
-    // into the generation fingerprint.
-    texMtime ^= nearest ? UINT64_C(0x9e3779b97f4a7c15) : 0;
-    texMtime ^= srgb ? UINT64_C(0xc2b2ae3d27d4eb4f) : 0;
-
     const std::string resourceKey = std::string("tex|") + filePath;
     const uint64_t readyTexture = m_engine->GetTexturePreviewTextureId(resourceKey);
-    if (readyTexture != 0)
-        return readyTexture;
-    if (m_texturePreviewRequestsThisFrame >= kTexturePreviewRequestBudget)
-        return 0;
-
     uint64_t fingerprint = texMtime;
     fingerprint ^= nearest ? UINT64_C(0x9e3779b97f4a7c15) : 0;
     fingerprint ^= srgb ? UINT64_C(0xc2b2ae3d27d4eb4f) : 0;
     fingerprint ^= std::hash<std::string>{}(textureFormat) + UINT64_C(0x517cc1b727220a95);
     fingerprint ^= std::hash<std::string>{}(textureType) + UINT64_C(0x6eed0e9da4d94a4f);
+    fingerprint ^= std::hash<int>{}(maxSize);
     auto &request = m_texturePreviewRequests[resourceKey];
-    if (request.fingerprint == fingerprint && m_previewFrameSerial - request.lastRequestFrame < 30)
-        return 0;
+    if (readyTexture != 0 && request.fingerprint == fingerprint)
+        return readyTexture;
     request.fingerprint = fingerprint;
-    request.lastRequestFrame = m_previewFrameSerial;
     ++m_previewScheduleAttempts;
-    ++m_texturePreviewRequestsThisFrame;
     // pump=false: PreRender already pumped once this frame.
     auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
                                                                  maxSize, textureFormat, textureType, false, false);
@@ -1436,15 +1424,12 @@ uint64_t ProjectPanel::GetMaterialThumbnail(const std::string &filePath, uint64_
         // re-entering QueryOrScheduleMaterialPreview on every UI build.
         if (previewReady)
             return publishedTexture;
-        if (m_previewFrameSerial - result.lastRequestFrame < 30)
-            return publishedTexture;
     }
     if (result.fingerprint == mtimeNs && previewReady && publishedTexture != 0 &&
         publishedTexture != result.textureId) {
         // Inspector authoring may publish a new live texture without changing
         // the disk mtime. Adopt it immediately without scheduling a duplicate.
         result.textureId = publishedTexture;
-        result.lastRequestFrame = m_previewFrameSerial;
         return publishedTexture;
     }
 
@@ -1455,7 +1440,6 @@ uint64_t ProjectPanel::GetMaterialThumbnail(const std::string &filePath, uint64_
     const uint64_t textureId = m_engine->QueryOrScheduleMaterialPreview(resourceKey, filePath, "", mtimeNs);
     result.fingerprint = mtimeNs;
     result.textureId = textureId;
-    result.lastRequestFrame = m_previewFrameSerial;
     ++m_previewScheduleAttempts;
     return textureId;
 }
@@ -1482,12 +1466,9 @@ uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
     if (result.fingerprint == stamp && publishedTexture == result.textureId) {
         if (previewReady)
             return publishedTexture;
-        if (m_previewFrameSerial - result.lastRequestFrame < 30)
-            return publishedTexture;
     }
     if (result.fingerprint == stamp && previewReady && publishedTexture != 0 && publishedTexture != result.textureId) {
         result.textureId = publishedTexture;
-        result.lastRequestFrame = m_previewFrameSerial;
         return publishedTexture;
     }
     // The shared preview state owns generation and pending-request coalescing.
@@ -1496,7 +1477,6 @@ uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
     const uint64_t textureId = m_engine->QueryOrScheduleMaterialPreview(resourceKey, item.path, "", stamp);
     result.fingerprint = stamp;
     result.textureId = textureId;
-    result.lastRequestFrame = m_previewFrameSerial;
     ++m_previewScheduleAttempts;
     return textureId;
 }
@@ -1517,15 +1497,8 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath)
     auto &request = m_modelPreviewRequests[resourceKey];
     if (readyTexture != 0 && request.fingerprint == revision)
         return readyTexture;
-    if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
-        return readyTexture;
-
-    if (request.fingerprint == revision && m_previewFrameSerial - request.lastRequestFrame < 30)
-        return 0;
     request.fingerprint = revision;
-    request.lastRequestFrame = m_previewFrameSerial;
     ++m_previewScheduleAttempts;
-    ++m_modelPreviewRequestsThisFrame;
     return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath);
 }
 
@@ -2203,12 +2176,9 @@ void ProjectPanel::PreRender(InxGUIContext *ctx)
 void ProjectPanel::VisiblePreRender(InxGUIContext *ctx)
 {
     const auto preStart = std::chrono::steady_clock::now();
-    ++m_previewFrameSerial;
     const auto iconsStart = std::chrono::steady_clock::now();
     EnsureTypeIconsLoaded();
     const auto previewStart = std::chrono::steady_clock::now();
-    m_texturePreviewRequestsThisFrame = 0;
-    m_modelPreviewRequestsThisFrame = 0;
     ProcessPendingThumbnails();
     const auto otherStart = std::chrono::steady_clock::now();
     GetGridTextLineHeight(ctx);

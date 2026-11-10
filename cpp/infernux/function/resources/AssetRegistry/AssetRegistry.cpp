@@ -27,8 +27,11 @@ namespace infernux
 {
 namespace
 {
-detail::FileIoWindow PlanWorkerRead(WorkerAssetLoadPlan::Read read, uint64_t allowance, double bytesPerNanosecond)
+detail::FileIoWindow PlanWorkerRead(WorkerAssetLoadPlan::Read read, uint64_t allowance, double bytesPerNanosecond,
+                                    uint64_t controlNanoseconds)
 {
+    if (!read.bytes)
+        return {0, controlNanoseconds};
     if (read.kind == WorkerAssetLoadPlan::ReadKind::RangedFile)
         return detail::PlanFileIoWindow(read.bytes, allowance, bytesPerNanosecond);
     return {read.bytes, detail::PredictFileIoNanoseconds(read.bytes, bytesPerNanosecond)};
@@ -65,6 +68,7 @@ void AssetRegistry::Initialize(std::unique_ptr<AssetDatabase> adb)
     m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     m_cpuEvictionCount = 0;
     m_runtimeMeshSerial = 0;
+    m_textureReadProfile = std::make_shared<TextureReadProfile>();
     m_initialized = true;
 }
 
@@ -84,6 +88,7 @@ void AssetRegistry::Shutdown()
     m_assetRuntimeTypes.clear();
     m_pendingLoads.clear();
     m_textureReads.clear();
+    m_textureReadProfile.reset();
     m_cpuResidency.reset();
     m_frameWork = nullptr;
     // The database's accepted metadata/import jobs retain loader pointers.
@@ -669,6 +674,8 @@ void AssetRegistry::ObserveAssetLoad()
         m_frameWork->ObserveResource(FrameWorkResource::Io, m_activeLoad->m_executionNanoseconds, m_loadFrame,
                                      m_loadGrant);
         if (m_loadGrant && !m_activeLoad->m_failure) {
+            if (!m_acceptedRead.bytes)
+                m_loadControlNanoseconds[m_activeLoad->m_resourceType] = m_activeLoad->m_executionNanoseconds;
             auto &rate = m_readRates[static_cast<size_t>(m_acceptedRead.kind)];
             const auto minimum =
                 m_acceptedRead.kind == WorkerAssetLoadPlan::ReadKind::RangedFile ? detail::kMinimumFileWindow : 0;
@@ -781,9 +788,10 @@ bool AssetRegistry::SubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
         const bool managed = !synchronous && m_frameWork;
         const auto read = ticket->m_workerPlan.read;
         const auto range = managed ? PlanWorkerRead(read, m_frameWork->ResourceRemaining(FrameWorkResource::Io),
-                                                    m_readRates[static_cast<size_t>(read.kind)])
+                                                    m_readRates[static_cast<size_t>(read.kind)],
+                                                    m_loadControlNanoseconds[ticket->m_resourceType])
                                    : detail::FileIoWindow{read.bytes, 0};
-        if (managed && !m_frameWork->CanAdmitResource(FrameWorkResource::Io, range.prediction, range.bytes != 0))
+        if (managed && !m_frameWork->CanAdmitResource(FrameWorkResource::Io, range.prediction, true))
             return false;
         auto claim = ticket->m_storageClaim;
         if (!claim && managed && ticket->m_workerPlan.advance) {
@@ -844,6 +852,7 @@ FrameWorkSource AssetRegistry::GetAssetLoadWorkSource(FrameWorkOwner &owner)
 {
     m_frameWork = &owner;
     m_readRates.fill(0);
+    m_loadControlNanoseconds.clear();
     m_cpuResidency = std::make_shared<FrameCpuResidencySource>(
         FrameCpuResidencySource{[this] { return GetTotalCpuBytes(); },
                                 [this](uint64_t target, bool reclaim) { return FitCpuStorage(target, reclaim); }});
@@ -901,8 +910,9 @@ FrameWorkSource AssetRegistry::GetAssetLoadWorkSource(FrameWorkOwner &owner)
             if (m_activeLoad)
                 continue;
             const auto read = ticket->m_workerPlan.read;
-            const auto range = PlanWorkerRead(read, allowance, m_readRates[static_cast<size_t>(read.kind)]);
-            if (!m_frameWork->CanAdmitResource(FrameWorkResource::Io, range.prediction, range.bytes != 0))
+            const auto range = PlanWorkerRead(read, allowance, m_readRates[static_cast<size_t>(read.kind)],
+                                              m_loadControlNanoseconds[ticket->m_resourceType]);
+            if (!m_frameWork->CanAdmitResource(FrameWorkResource::Io, range.prediction, true))
                 continue;
             const auto bytes = ticket->m_workerPlan.storageBytes;
             if (ticket->m_storageClaim || !bytes || m_frameWork->CanReserveCpuStorage(bytes) ||
@@ -1052,8 +1062,9 @@ std::shared_ptr<TextureReadTask> AssetRegistry::BeginTextureRead(const std::stri
     const auto metadata = m_assetDb->GetMetaByGuid(guid);
     if (!metadata)
         throw std::invalid_argument("texture source metadata is missing: " + guid);
-    auto task = std::make_shared<TextureReadTask>(m_assetDb->GetRuntimeArtifactPath(guid, ResourceType::Texture),
-                                                  metadata->GetDataAs<std::string>("content_hash"));
+    auto task =
+        std::make_shared<TextureReadTask>(m_assetDb->GetRuntimeArtifactPath(guid, ResourceType::Texture),
+                                          metadata->GetDataAs<std::string>("content_hash"), m_textureReadProfile);
     m_textureReads.push_back(task);
     return task;
 }

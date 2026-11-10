@@ -775,7 +775,7 @@ class Infernux
     FrameWorkOwner::SourceId m_assetCatalogWorkSource = 0;
     FrameWorkOwner::SourceId m_documentWriteWorkSource = 0;
     uint64_t m_nextPreviewLane = 0;
-    bool m_preferMeshPreviewHost = false;
+    uint64_t m_nextPreviewHostLane = 0;
     std::string m_lastImportedPreviewKey;
 
     // Timeline-editor cube preview: query schedules, PumpTimelineCubePreviewIfDirty renders.

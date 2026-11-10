@@ -30,8 +30,8 @@ struct TextureReadTask::State : detail::IoStepState
     }
 };
 
-TextureReadTask::TextureReadTask(std::string path, std::string sourceHash)
-    : m_state(std::make_shared<State>(std::move(path), std::move(sourceHash)))
+TextureReadTask::TextureReadTask(std::string path, std::string sourceHash, std::shared_ptr<TextureReadProfile> profile)
+    : m_state(std::make_shared<State>(std::move(path), std::move(sourceHash))), m_profile(std::move(profile))
 {
     m_state->Snapshot();
 }
@@ -96,8 +96,14 @@ void TextureReadTask::Poll(FrameWorkOwner &owner)
     const auto elapsed = GetExecutionNanoseconds();
     const auto duration = elapsed - m_observedNanoseconds;
     owner.ObserveResource(FrameWorkResource::Io, duration, m_frame, m_grant);
-    if (m_state->error.empty() && !(m_state->control.load(std::memory_order_acquire) & State::cancel))
-        detail::ObserveFileIoWindow(m_bytesPerNanosecond, m_submittedBytes, duration);
+    if (duration && m_state->error.empty() && !(m_state->control.load(std::memory_order_acquire) & State::cancel)) {
+        if (m_submittedState == TextureReadState::Opening)
+            m_profile->openNanoseconds = duration;
+        else if (m_submittedState == TextureReadState::Closing)
+            m_profile->closeNanoseconds = duration;
+        else
+            detail::ObserveFileIoWindow(m_profile->bytesPerNanosecond, m_submittedBytes, duration);
+    }
     m_submittedBytes = 0;
     m_observedNanoseconds = elapsed;
     m_frame = m_grant = 0;
@@ -140,10 +146,14 @@ std::optional<TextureReadTask::ReadStep> TextureReadTask::Plan(const FrameWorkOw
             step.reservation = (std::max<uint64_t>)(reserved, GetReservationBytes(step.batchBytes));
         }
         const auto remaining = step.batchBytes - cursor.GetBufferedBytes();
-        const auto bytes = detail::PlanFileIoWindow(remaining, allowance, m_bytesPerNanosecond).bytes;
+        const auto bytes = detail::PlanFileIoWindow(remaining, allowance, m_profile->bytesPerNanosecond).bytes;
         step.bytes = static_cast<size_t>(bytes - bytes % unit);
-        step.prediction = detail::PredictFileIoNanoseconds(step.bytes, m_bytesPerNanosecond);
-    } else if (cursor.GetState() != TextureReadState::Opening && cursor.GetState() != TextureReadState::Closing) {
+        step.prediction = detail::PredictFileIoNanoseconds(step.bytes, m_profile->bytesPerNanosecond);
+    } else if (cursor.GetState() == TextureReadState::Opening) {
+        step.prediction = m_profile->openNanoseconds;
+    } else if (cursor.GetState() == TextureReadState::Closing) {
+        step.prediction = m_profile->closeNanoseconds;
+    } else {
         return {};
     }
     if (!owner.CanAdmitResource(FrameWorkResource::Io, step.prediction, true))
@@ -190,6 +200,7 @@ void TextureReadTask::Advance(size_t bytes, size_t batchBytes)
                                std::memory_order_relaxed);
     m_batchBytes = batchBytes;
     m_submittedBytes = bytes;
+    m_submittedState = cursor.GetState();
     m_job = detail::DispatchIo(m_state, [bytes, batchBytes](State &state) { state.cursor.Advance(bytes, batchBytes); });
 }
 void TextureReadTask::ConsumeOutput()

@@ -242,7 +242,7 @@ struct VkResourceManager::TextureUploadBlock
 
 VkResourceManager::TextureUploadBlock VkResourceManager::SelectTextureUploadBlock(const TextureUploadTicket &ticket,
                                                                                   VkDeviceSize bytes,
-                                                                                  const FrameWorkOwner *owner)
+                                                                                  const FrameWorkOwner *owner) const
 {
     if (!owner)
         return {bytes};
@@ -252,10 +252,13 @@ VkResourceManager::TextureUploadBlock VkResourceManager::SelectTextureUploadBloc
     };
     TextureUploadBlock block{aligned((std::min)(bytes, owner->ResourceRemaining(FrameWorkResource::Transfer)))};
     const auto rowBytes = layout.RowBytes(ticket.m_description.width);
-    const auto profiledBytes = ticket.m_profiledBytes;
+    // Reuse completed transfers on this uploader instead of spending a fresh
+    // host-frame calibration on every small icon or newly imported texture.
+    const auto profiledBytes = ticket.m_profiledBytes ? ticket.m_profiledBytes : m_textureUploadProfiledBytes;
+    const auto profiledNanoseconds =
+        ticket.m_profiledBytes ? ticket.m_profiledNanoseconds : m_textureUploadProfiledNanoseconds;
     if (profiledBytes >= (std::min)(block.bytes, rowBytes)) {
-        block.nanosecondsPerByte =
-            static_cast<double>(ticket.m_profiledNanoseconds) / static_cast<double>(profiledBytes);
+        block.nanosecondsPerByte = static_cast<double>(profiledNanoseconds) / static_cast<double>(profiledBytes);
         const double gpuBytes =
             static_cast<double>(owner->ResourceRemaining(FrameWorkResource::Gpu)) / block.nanosecondsPerByte;
         block.bytes = aligned(static_cast<VkDeviceSize>((std::min)(static_cast<double>(block.bytes), gpuBytes)));

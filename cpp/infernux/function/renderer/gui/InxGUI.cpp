@@ -369,7 +369,8 @@ void InxGUI::RegisterTextureUploadWork(FrameWorkOwner &owner)
             const auto index = (m_nextTextureUpload + offset) % count;
             const auto &pending = m_pendingTextureUploads[index];
             facts.gpuBusy |= pending.ticket->IsPending();
-            if (!facts.gpu.ready && pending.pixels &&
+            if (pending.pixels &&
+                (!facts.gpu.ready || (pending.pinned && !m_pendingTextureUploads[facts.gpu.token].pinned)) &&
                 resources.CanAppendTextureUpload(
                     *pending.ticket, pending.ticket->GetResidentBytes() - pending.ticket->GetSubmittedBytes(), owner))
                 facts.gpu = {index, 0, true, false};
@@ -379,15 +380,24 @@ void InxGUI::RegisterTextureUploadWork(FrameWorkOwner &owner)
     source.advance = [this, &owner](bool gpu, uint64_t index) {
         if (!gpu || index >= m_pendingTextureUploads.size())
             return false;
-        auto &pending = m_pendingTextureUploads[index];
-        try {
-            if (!RetireStaleTextureUpload(pending) && !AppendTextureUpload(pending, owner))
-                return false;
-        } catch (const std::exception &error) {
-            FailTextureUpload(pending, error.what());
+        bool progressed = false;
+        const auto count = m_pendingTextureUploads.size();
+        const bool pinned = m_pendingTextureUploads[index].pinned;
+        for (size_t offset = 0; offset < count && owner.Remaining(true) > 0; ++offset) {
+            const auto current = (index + offset) % count;
+            auto &pending = m_pendingTextureUploads[current];
+            if (pending.pinned != pinned || !pending.pixels || pending.ticket->IsPending())
+                continue;
+            try {
+                if (!RetireStaleTextureUpload(pending) && !AppendTextureUpload(pending, owner))
+                    continue;
+            } catch (const std::exception &error) {
+                FailTextureUpload(pending, error.what());
+            }
+            progressed = true;
+            m_nextTextureUpload = current + 1;
         }
-        m_nextTextureUpload = index + 1;
-        return true;
+        return progressed;
     };
     m_textureUploadWorkSource = owner.AddSource(std::move(source));
     m_textureUploadOwner = &owner;

@@ -297,6 +297,7 @@ void VkResourceManager::Destroy() noexcept
     m_pendingImageReadbacks.clear();
     m_readbackOwner = nullptr;
     m_readbackTimingBytes = m_readbackTimingNanoseconds = 0;
+    m_textureUploadProfiledBytes = m_textureUploadProfiledNanoseconds = 0;
 
     // Destroy samplers
     if (m_linearSampler != VK_NULL_HANDLE) {
@@ -809,6 +810,10 @@ void VkResourceManager::RetireTextureUpload(TextureUploadTicket &ticket)
     if (elapsed && bytes >= ticket.m_profiledBytes) {
         ticket.m_profiledBytes = bytes;
         ticket.m_profiledNanoseconds = elapsed;
+    }
+    if (elapsed && bytes >= m_textureUploadProfiledBytes) {
+        m_textureUploadProfiledBytes = bytes;
+        m_textureUploadProfiledNanoseconds = elapsed;
     }
     m_rhiDevice->RecycleStagingBuffer(std::move(ticket.m_staging));
     ticket.m_completedBytes = ticket.m_submittedBytes;

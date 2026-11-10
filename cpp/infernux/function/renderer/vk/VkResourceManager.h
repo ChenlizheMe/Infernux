@@ -689,8 +689,8 @@ class VkResourceManager
 
   private:
     struct TextureUploadBlock;
-    static TextureUploadBlock SelectTextureUploadBlock(const TextureUploadTicket &ticket, VkDeviceSize bytes,
-                                                       const FrameWorkOwner *owner);
+    TextureUploadBlock SelectTextureUploadBlock(const TextureUploadTicket &ticket, VkDeviceSize bytes,
+                                                const FrameWorkOwner *owner) const;
     bool AppendTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket, VkDeviceSize bytes,
                              const std::function<const void *(uint32_t, VkDeviceSize, VkDeviceSize)> &source,
                              FrameWorkOwner *owner = nullptr);
@@ -772,6 +772,8 @@ class VkResourceManager
     uint32_t m_transferQueueFamily = 0;
     std::vector<std::shared_ptr<BufferUploadTicket>> m_pendingBufferUploads;
     std::vector<std::shared_ptr<TextureUploadTicket>> m_pendingTextureUploads;
+    VkDeviceSize m_textureUploadProfiledBytes = 0;
+    uint64_t m_textureUploadProfiledNanoseconds = 0;
     std::vector<std::unique_ptr<GpuTimestampQueries>> m_graphicsWorkQueries, m_transferWorkQueries;
     void RetireTextureUpload(TextureUploadTicket &ticket);
     std::vector<std::shared_ptr<ImageReadbackTicket>> m_pendingImageReadbacks;
