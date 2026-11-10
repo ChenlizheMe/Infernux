@@ -9,7 +9,7 @@ class in <b>infernux.physics</b>
 Global physics system for raycasting and spatial queries.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.4.3
+**Status:** Preview · **Verified with:** 0.4.8
 
 Spatial queries accept layer masks and explicit trigger handling. Keep query volumes and distances bounded, and use the simplest query that answers the gameplay question.
 <!-- USER CONTENT END -->

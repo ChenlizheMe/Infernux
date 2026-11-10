@@ -20,7 +20,7 @@ creating temporary AudioSource objects. Set ``spatial_blend`` to 0 for
 channel-preserving 2D audio and to 1 for a point-source 3D signal.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.4.3
+**Status:** Preview · **Verified with:** 0.4.8
 
 AudioSource owns 1–16 tracks; `play_on_awake` starts only track 0. Use pooled one-shots for transient effects and keep assigned AudioClip objects loaded while playback may use them.
 <!-- USER CONTENT END -->

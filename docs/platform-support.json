@@ -1,7 +1,7 @@
 {
   "$schema": "infernux.platform_support",
   "development_version": "0.4.8",
-  "released_version": "0.4.3",
+  "released_version": "0.4.8",
   "python_abi": "cp313",
   "evidence": {
     "commit": "c30a9fec2553e07f1202dc5d7d2789a542cb9452",

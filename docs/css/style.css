@@ -4,7 +4,7 @@
    the chassis. Post-processing (scanlines, Bayer dither, grain, chromatic
    split) is a static overlay or a transient state, never a layout cost. */
 :root {
-    --release-code: "043";
+    --release-code: "048";
     --accent: #ff6e6e;
     --accent-strong: #ff8580;
     --accent-deep: #8f2632;

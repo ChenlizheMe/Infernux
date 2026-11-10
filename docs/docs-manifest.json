@@ -3,14 +3,14 @@
   "project": "Infernux",
   "canonical_origin": "https://infernux-engine.com",
   "repository": "https://github.com/ChenlizheMe/Infernux",
-  "documented_release": "0.4.3",
+  "documented_release": "0.4.8",
   "release_status": "stable",
-  "last_verified": "2026-10-28",
+  "last_verified": "2026-11-10",
   "build": {
     "status": "stamped",
-    "source_commit": "9fccd4128d1b495347c70334144c5afec027e669",
-    "source_url": "https://github.com/ChenlizheMe/Infernux/commit/9fccd4128d1b495347c70334144c5afec027e669",
-    "generated_at": "2026-11-10T15:38:03.000Z",
+    "source_commit": "d96ff10f0ac620a0b1a944f0f80668cc27f07a98",
+    "source_url": "https://github.com/ChenlizheMe/Infernux/commit/d96ff10f0ac620a0b1a944f0f80668cc27f07a98",
+    "generated_at": "2026-11-10T15:39:28.000Z",
     "timestamp_source": "source-commit"
   },
   "languages": [

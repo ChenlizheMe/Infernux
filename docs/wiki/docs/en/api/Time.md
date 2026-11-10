@@ -9,7 +9,7 @@ class in <b>infernux.timing</b>
 Provides access to time information for the current frame.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.4.3
+**Status:** Preview · **Verified with:** 0.4.8
 
 Use scaled time for gameplay and unscaled time for UI or diagnostics that continue while paused. Physics work belongs to fixed updates.
 <!-- USER CONTENT END -->
