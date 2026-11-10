@@ -67,16 +67,23 @@ class _AssetDatabaseProbe:
     def get_meta_by_guid(self, guid):
         return None
 
-    def _begin_watcher_import(self, path, on_ready, on_finished):
+    def _begin_watcher_import(self, path, on_ready, on_finished, *, metadata_only=False):
         assert self._watcher_import is None
-        self._watcher_import = path, on_ready, on_finished
+        self._watcher_import = path, on_ready, on_finished, metadata_only
         return True
 
     def _complete_pending_watcher_import(self):
-        path, on_ready, on_finished = self._watcher_import
+        from infernux.core.document_store import capture_document_file_state
+
+        path, on_ready, on_finished, metadata_only = self._watcher_import
         self._watcher_import = None
         guid = self.guid_by_path.get(path, "")
-        proposed = _mutation("reimport" if guid else "import", path, guid)
+        proposed = SimpleNamespace(
+            operation="reimport" if guid else "import",
+            guid=guid,
+            _authored_metadata_guid="",
+            _observed_metadata=capture_document_file_state(path + ".meta") if metadata_only else None,
+        )
         if not on_ready(proposed, True):
             on_finished("skipped", proposed, 0, None)
             return

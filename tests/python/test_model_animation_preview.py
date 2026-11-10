@@ -42,14 +42,23 @@ class TransportControls:
         pass
 
 
+def _mock_published_model_metadata(monkeypatch, read_animation_table):
+    def get_meta_by_path(path):
+        metadata = {"model_animations": read_animation_table(path)}
+        return SimpleNamespace(get_string=metadata.__getitem__)
+
+    monkeypatch.setattr(
+        "infernux.core.assets.AssetManager._asset_database",
+        SimpleNamespace(get_meta_by_path=get_meta_by_path),
+    )
+
+
 @pytest.mark.parametrize("take", ["stable-id", "Walk"])
 def test_child_and_standalone_clip_preview_uses_published_owner(monkeypatch, take):
     from infernux.engine.ui import model_animation_preview as preview
 
     record = {"id": "stable-id", "name": "Walk", "duration": 2.0}
-    monkeypatch.setattr(
-        "infernux.core.asset_types.read_asset_metadata", lambda path: {"model_animations": json.dumps([record])}
-    )
+    _mock_published_model_metadata(monkeypatch, lambda path: json.dumps([record]))
     monkeypatch.setattr("infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: 1)
     calls = []
     monkeypatch.setattr(preview, "render_model_animation_preview", lambda *args, **kwargs: calls.append((args, kwargs)))
@@ -61,7 +70,7 @@ def test_child_and_standalone_clip_preview_uses_published_owner(monkeypatch, tak
 def test_missing_clip_does_not_preview_a_different_take(monkeypatch):
     from infernux.engine.ui import model_animation_preview as preview
 
-    monkeypatch.setattr("infernux.core.asset_types.read_asset_metadata", lambda path: {"model_animations": "[]"})
+    _mock_published_model_metadata(monkeypatch, lambda path: "[]")
     monkeypatch.setattr("infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: 1)
     messages = []
     ctx = SimpleNamespace(text_wrapped=messages.append)
@@ -78,9 +87,9 @@ def test_clip_preview_source_cache_follows_published_dependency_revision(monkeyp
 
     def read(path):
         reads.append(path)
-        return {"model_animations": "[]"}
+        return "[]"
 
-    monkeypatch.setattr("infernux.core.asset_types.read_asset_metadata", read)
+    _mock_published_model_metadata(monkeypatch, read)
     ctx, state = SimpleNamespace(text_wrapped=lambda _: None), SimpleNamespace(extra={})
     for _ in range(10):
         preview.render_clip_animation_preview(ctx, None, state, "model.fbx", "deleted")

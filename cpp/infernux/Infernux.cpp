@@ -1123,7 +1123,7 @@ void Infernux::Exit()
     INXLOG_DEBUG("Exit requested.");
     {
         std::lock_guard lock(m_runMutex);
-        m_frameWork.Stop();
+        m_frameWork.SuspendDriver();
         m_exitRequested.store(true, std::memory_order_release);
     }
     m_runCv.notify_all();

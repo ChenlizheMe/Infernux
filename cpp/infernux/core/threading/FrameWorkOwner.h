@@ -215,11 +215,16 @@ class FrameWorkOwner
     INFERNUX_FOUNDATION_API void EndOpportunity() noexcept;
     void Stop() noexcept
     {
-        m_accepting.store(false, std::memory_order_release);
+        m_admission.store(Admission::Closed, std::memory_order_release);
+    }
+    void SuspendDriver() noexcept
+    {
+        auto open = Admission::Open;
+        m_admission.compare_exchange_strong(open, Admission::DriverSuspended, std::memory_order_acq_rel);
     }
     void Reopen() noexcept
     {
-        m_accepting.store(true, std::memory_order_release);
+        m_admission.store(Admission::Open, std::memory_order_release);
     }
     INFERNUX_FOUNDATION_API void ClearSources();
 
@@ -252,7 +257,7 @@ class FrameWorkOwner
     }
     [[nodiscard]] bool IsAccepting() const noexcept
     {
-        return m_accepting.load(std::memory_order_acquire);
+        return m_admission.load(std::memory_order_acquire) == Admission::Open;
     }
     [[nodiscard]] bool WasServiced() const noexcept
     {
@@ -274,6 +279,12 @@ class FrameWorkOwner
     [[nodiscard]] INFERNUX_FOUNDATION_API const char *GpuUnavailableReason() const noexcept;
 
   private:
+    enum class Admission : uint8_t
+    {
+        Open,
+        DriverSuspended,
+        Closed
+    };
     struct Source
     {
         SourceId id;
@@ -320,7 +331,7 @@ class FrameWorkOwner
     std::shared_ptr<std::atomic<uint64_t>> m_cpuStorage = std::make_shared<std::atomic<uint64_t>>(0);
     uint64_t m_cpuStorageLimit = 512ULL * 1024 * 1024;
     std::weak_ptr<FrameCpuResidencySource> m_cpuResidency;
-    std::atomic<bool> m_accepting{true};
+    std::atomic<Admission> m_admission{Admission::Open};
     bool m_active = false;
     bool m_late = false;
     bool m_earlyAdvanced = false;

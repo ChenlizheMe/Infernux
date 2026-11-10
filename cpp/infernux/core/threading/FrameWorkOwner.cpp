@@ -36,9 +36,13 @@ uint64_t FrameWorkOwner::CpuStorageBytes() const
 
 bool FrameWorkOwner::FitCpuStorage(uint64_t bytes, bool reclaim) const
 {
+    const auto admission = m_admission.load(std::memory_order_acquire);
+    // Explicit asset work can run between frame drivers while the engine owns its resources.
+    if (admission == Admission::Closed || (admission == Admission::DriverSuspended && m_active))
+        return false;
     const auto used = CpuStorageReservedBytes();
     const auto residency = m_cpuResidency.lock();
-    return IsAccepting() && used <= m_cpuStorageLimit && bytes <= m_cpuStorageLimit - used &&
+    return used <= m_cpuStorageLimit && bytes <= m_cpuStorageLimit - used &&
            (!residency || residency->fit(m_cpuStorageLimit - used - bytes, reclaim));
 }
 
