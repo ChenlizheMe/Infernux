@@ -2,6 +2,8 @@
 // Explicit release destinations; keep published versions available. Secrets are bindings.
 const ALLOWED_KEYS = new Set([
   "plugins/infernux.tween/0.3.1/infernux.tween.inxpkg",
+  "plugins/infernux.mcp/0.2.1/infernux.mcp.inxpkg",
+  "plugins/infernux.mcp/0.2.1/infernux-plugin-release.json",
   "plugins/infernux.mcp/0.2.0/infernux.mcp.inxpkg",
   "wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-win_amd64.whl",
   "wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-manylinux_2_35_x86_64.whl",
@@ -124,6 +126,8 @@ const ALLOWED_KEYS = new Set([
   "hub/0.4.0/build-2/InfernuxHubInstaller-0.4.0-windows-x64.exe"
 ]);
 const RELEASE_SOURCES = new Map([
+  ["plugins/infernux.mcp/0.2.1/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.2.1/infernux.mcp.inxpkg"],
+  ["plugins/infernux.mcp/0.2.1/infernux-plugin-release.json", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.2.1/infernux-plugin-release.json"],
   ["plugins/infernux.mcp/0.2.0/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.2.0/infernux.mcp.inxpkg"],
   ["wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-win_amd64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v8/infernux-0.4.3-8-cp313-cp313-win_amd64.whl"],
   ["wheels/0.4.3/build-8/infernux-0.4.3-8-cp313-cp313-manylinux_2_35_x86_64.whl", "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.3-v8/infernux-0.4.3-8-cp313-cp313-manylinux_2_35_x86_64.whl"],

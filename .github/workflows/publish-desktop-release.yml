@@ -289,6 +289,25 @@ jobs:
       - name: Verify Cloudflare destinations against the actual wheel plugin catalog
         run: node tests/release/test-r2-upload-worker.mjs dist/official-plugin-upload-catalog.json
 
+      - name: Verify independent plugins are available at the wheel's catalog URLs
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          catalog = json.loads(Path('dist/official-plugin-upload-catalog.json').read_text(encoding='utf-8'))
+          for entry in catalog['packages']:
+              if entry.get('engine_release'):
+                  continue  # These platform packages are published by this workflow.
+              url = entry['source']['location']
+              request = Request(url, headers={'User-Agent': 'Infernux-Release-Publisher'}, method='HEAD')
+              with urlopen(request, timeout=30) as response:
+                  if int(response.headers.get('Content-Length', 0)) <= 0:
+                      raise ValueError(f'Empty plugin artifact: {url}')
+              print(f"Verified {entry['reference']} {entry['version']}")
+          PY
+
       - name: Preflight immutable PyPI files
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}

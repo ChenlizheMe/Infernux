@@ -17,6 +17,8 @@ Infernux 0.4.8 brings model authoring, native execution, and checkpoint export i
 - Capture camera views continuously or on request. Cameras can publish to a RenderTexture asset or to memory, and consumers can keep using the latest completed image.
 - Expose editable skeleton hierarchies and Jolt joints and ragdolls. Model results can be applied at explicit physics and rendering boundaries.
 - Improve asset preparation and preview publication with shared IO and transfer budgets. Native PNG and JPEG paths reserve their decoding workspace. Asset refresh, watching, and model Apply use the native sidecar parser and preserve the revision they consumed.
+- Prepare scene geometry on open using bounded Vulkan upload batches. Scene camera movement updates gizmo icons in the current frame and keeps their picking aligned.
+- Bundle MCP 0.2.1 with restored checkpoint operations. The official catalog also includes Tween 0.3.1 for Infernux 0.4.8.
 - Update the Hub and platform packaging for engine 0.4.8. Install platform packages built for this exact engine release before exporting a Player.
 
 ---

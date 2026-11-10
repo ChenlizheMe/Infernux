@@ -78,6 +78,8 @@
 <li>Capture camera views continuously or on request. Cameras can publish to a RenderTexture asset or to memory, and consumers can keep using the latest completed image.</li>
 <li>Expose editable skeleton hierarchies and Jolt joints and ragdolls. Model results can be applied at explicit physics and rendering boundaries.</li>
 <li>Improve asset preparation and preview publication with shared IO and transfer budgets. Native PNG and JPEG paths reserve their decoding workspace. Asset refresh, watching, and model Apply use the native sidecar parser and preserve the revision they consumed.</li>
+<li>Prepare scene geometry on open using bounded Vulkan upload batches. Scene camera movement updates gizmo icons in the current frame and keeps their picking aligned.</li>
+<li>Bundle MCP 0.2.1 with restored checkpoint operations. The official catalog also includes Tween 0.3.1 for Infernux 0.4.8.</li>
 <li>Update the Hub and platform packaging for engine 0.4.8. Install platform packages built for this exact engine release before exporting a Player.</li>
 </ul></div></article>
 <article class="container release-article" data-page-language="zh" hidden><a href="../roadmap.html#release-log">← 全部版本</a><header class="changelog-heading"><span class="mini-tag">v0.4.8 · 正在准备发布</span><h1>原生神经计算</h1>
@@ -94,6 +96,8 @@
 <li>相机支持连续或按请求渲染，可输出到 RenderTexture 资产或内存。使用方可继续显示最近一次完成的图像。</li>
 <li>提供可编辑的骨骼层级以及 Jolt 关节和布娃娃。模型结果可以在指定的物理或渲染阶段生效。</li>
 <li>资产准备和预览发布共用 IO 与传输预算。原生 PNG 和 JPEG 解码先预约工作内存。资产刷新、文件监听和模型 Apply 使用原生侧车解析器，并保留实际读取的文件代次。</li>
+<li>打开场景时分批上传网格。移动 Scene 相机会当帧更新 Gizmo 图标，拾取与显示位置保持一致。</li>
+<li>内置 MCP 0.2.1，恢复检查点操作。官方插件目录提供适用于 Infernux 0.4.8 的 Tween 0.3.1。</li>
 <li>Hub 与平台打包对齐到引擎 0.4.8。导出 Player 时使用与引擎发布版本一致的平台包。</li>
 </ul></div></article>
     </main>
