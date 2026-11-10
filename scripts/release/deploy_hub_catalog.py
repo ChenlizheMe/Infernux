@@ -46,8 +46,8 @@ def deploy_catalog(repository: str, commit: str, catalog: Path) -> None:
             if actual == expected:
                 print(f"Published Hub catalog {expected['stable']} at {commit}")
                 return
-        elif builds and not any(build["status"] in ("queued", "building") for build in builds):
-            raise RuntimeError(f"Hub catalog Pages build failed: {builds[0]['error']}")
+        # Cancelled duplicate builds can appear before the replacement build is
+        # visible. Wait for the matching deployment within the existing deadline.
         if attempt < MAX_DEPLOYMENT_ATTEMPTS - 1:
             time.sleep(10)
     raise TimeoutError(f"The public Hub catalog did not reach release commit {commit}")

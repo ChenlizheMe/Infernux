@@ -38,7 +38,7 @@ def test_pages_publication_uses_the_matching_deployment_without_duplicate_builds
     before = [] if initial == 'missing' else [build(initial)]
     selected = 'build/2' if initial in ('missing', 'errored') else 'build/1'
     cancelled = build('errored', 'build/cancelled')
-    responses = iter([before, [cancelled, build('queued', selected)],
+    responses = iter([before, [cancelled], [cancelled, build('queued', selected)],
                       [cancelled, build('built', selected)]])
     calls = []
 
