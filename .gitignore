@@ -54,9 +54,11 @@ MANIFEST
 # Python runtime
 # ============================================================================
 __pycache__/
+/pycache/
 *.py[cod]
 *$py.class
-/.pytest_cache/
+.pytest_cache/
+/.pytest_cache-installed-wheel/
 .mypy_cache/
 .ruff_cache/
 
