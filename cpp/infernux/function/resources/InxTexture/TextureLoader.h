@@ -23,6 +23,7 @@ class TextureLoader final : public IAssetLoader
     std::set<std::string> ScanDependencies(const std::string &filePath, AssetDatabase *adb) override;
 
     void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const override;
+    static void CreateSourceMeta(AssetSource &source, InxResourceMeta &metaData);
 };
 
 } // namespace infernux

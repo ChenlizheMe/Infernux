@@ -14,6 +14,7 @@
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
+#include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/RenderTexture/RenderTextureArtifact.h>
 
 #include <core/log/InxLog.h>
@@ -34,6 +35,7 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <streambuf>
@@ -49,20 +51,7 @@ namespace
 {
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
-
-std::string TextureSourceExtension(const std::filesystem::path &path)
-{
-    auto extension = FromFsPath(path.extension());
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    return extension;
-}
-
-bool IsPlannedTextureSource(const std::filesystem::path &path)
-{
-    const auto extension = TextureSourceExtension(path);
-    return extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".jpe";
-}
+constexpr uint64_t kMetadataPlanRange = 8u * 1024u * 1024u;
 
 std::string Utf8Diagnostic(const char *message)
 {
@@ -376,6 +365,35 @@ struct MetadataJsonShape
     bool quoted = false, escaped = false, atom = false;
 };
 
+struct MetadataScan
+{
+    std::string_view Normalize(char *data, size_t count)
+    {
+        offset += count;
+        size_t output = 0;
+        for (size_t index = 0; index < count; ++index) {
+            char ch = data[index];
+            if (ch == '\0')
+                throw std::invalid_argument("unescaped null byte in metadata JSON");
+            const bool space = !shape.quoted && IsJsonSpace(ch);
+            if (space && previousSpace)
+                continue;
+            previousSpace = space;
+            if (space)
+                ch = ' ';
+            data[output++] = ch;
+            shape.Add(ch);
+        }
+        if (shape.bytes > std::numeric_limits<uint64_t>::max() / 1024)
+            throw std::length_error("metadata document exceeds addressable workspace");
+        return {data, output};
+    }
+
+    uint64_t offset = 0;
+    MetadataJsonShape shape;
+    bool previousSpace = false;
+};
+
 // Keep the original bytes for file identity, while letting the JSON lexer
 // see at most one separator in a run of whitespace outside a string.
 class MetadataInput final : public std::streambuf
@@ -387,15 +405,9 @@ class MetadataInput final : public std::streambuf
     {
     }
 
-    void Inspect()
-    {
-        while (!NextBlock().empty()) {
-        }
-    }
-
     uint64_t Workspace() const
     {
-        return sizeof(*this) + m_shape.Workspace();
+        return sizeof(*this) + m_scan.shape.Workspace();
     }
 
   private:
@@ -407,27 +419,12 @@ class MetadataInput final : public std::streambuf
             m_remaining -= count;
             if (m_fingerprint)
                 m_fingerprint->Append({m_bytes.data(), count});
-            size_t output = 0;
-            for (size_t index = 0; index < count; ++index) {
-                char ch = m_bytes[index];
-                if (ch == '\0')
-                    throw std::invalid_argument("unescaped null byte in metadata JSON");
-                const bool space = !m_shape.quoted && IsJsonSpace(ch);
-                if (space && m_space)
-                    continue;
-                m_space = space;
-                if (space)
-                    ch = ' ';
-                m_bytes[output++] = ch;
-                m_shape.Add(ch);
-            }
-            if (!output)
+            const auto block = m_scan.Normalize(m_bytes.data(), count);
+            if (block.empty())
                 continue;
-            if (m_shape.bytes > std::numeric_limits<uint64_t>::max() / 1024)
-                throw std::length_error("metadata document exceeds addressable workspace");
             if (m_admittedBytes && Workspace() > m_admittedBytes)
                 throw std::runtime_error("metadata content changed beyond its admitted workspace");
-            return {m_bytes.data(), output};
+            return block;
         }
         return {};
     }
@@ -446,20 +443,34 @@ class MetadataInput final : public std::streambuf
     detail::FileFingerprint *m_fingerprint;
     uint64_t m_admittedBytes;
     std::array<char, 4096> m_bytes;
-    MetadataJsonShape m_shape;
-    bool m_space = false;
+    MetadataScan m_scan;
 };
 
-uint64_t PlanMetadataDocument(const std::string &path, std::optional<FileInput::Revision> &expected)
+std::optional<uint64_t> PlanMetadataDocument(const std::string &path, std::optional<FileInput::Revision> &expected,
+                                             MetadataScan &scan, uint64_t limit)
 {
     const auto target = NativeFilePath(ToFsPath(path));
     FileInput input(target, FileInput::Sharing::Snapshot);
-    const auto &revision = expected.emplace(input.InspectRevision());
-    MetadataInput blocks(input, revision.data.size);
-    blocks.Inspect();
+    const auto revision = input.InspectRevision();
+    if (expected && !(revision == *expected))
+        throw std::runtime_error("metadata source changed during planning: " + path);
+    expected = revision;
+    input.Seek(scan.offset);
+    auto remaining = revision.data.size - scan.offset;
+    if (limit)
+        remaining = std::min(remaining, limit);
+    std::array<char, 4096> scratch;
+    while (remaining) {
+        const auto count = static_cast<size_t>(std::min<uint64_t>(remaining, scratch.size()));
+        input.Read(scratch.data(), count);
+        scan.Normalize(scratch.data(), count);
+        remaining -= count;
+    }
     if (!(input.InspectRevision() == revision) || !IsFileRevisionCurrent(target, revision))
         throw std::runtime_error("metadata source changed during planning: " + path);
-    return blocks.Workspace();
+    if (scan.offset != revision.data.size)
+        return std::nullopt;
+    return sizeof(MetadataInput) + scan.shape.Workspace();
 }
 
 uint64_t EstimateMetadataDocumentWorkspace(const InxResourceMeta &metadata)
@@ -997,6 +1008,11 @@ void RequireFileRevisionCurrent(const std::string &path, const FileInput::Revisi
 
 } // namespace
 
+struct AssetDatabase::MetadataPlanCursor
+{
+    MetadataScan scan;
+};
+
 struct AssetDatabase::TextureSourceSnapshot
 {
     std::shared_ptr<FrameCpuStorageClaim> storage;
@@ -1040,7 +1056,7 @@ struct AssetDatabase::TextureSourceSnapshot
         if (revision->data.size != source->Size() ||
             revision->data.size > static_cast<uint64_t>(std::numeric_limits<int>::max()))
             throw std::invalid_argument("texture source exceeds decoder limits: " + path);
-        if (!workingBytes && settings && boundedProjectRoot && IsPlannedTextureSource(ToFsPath(path))) {
+        if (!workingBytes && settings && boundedProjectRoot && TextureDecoder::IsRasterSource(path)) {
             try {
                 auto options = *settings;
                 options.AddMetadata("resource_type", ResourceType::Texture);
@@ -2514,9 +2530,20 @@ bool AssetDatabase::CommitReadyRefresh(bool managed, bool drain)
     if (m_pendingRefreshCommit) {
         const auto state = m_pendingRefreshCommit;
         try {
-            if (state->phase == PendingRefreshCommit::Phase::MetadataPlan) {
-                QueueRefreshMetadata(state, false);
-                state->phase = PendingRefreshCommit::Phase::MetadataPrepare;
+            if (state->phase == PendingRefreshCommit::Phase::MetadataPlan ||
+                state->phase == PendingRefreshCommit::Phase::SidecarPlan) {
+                auto &plans = state->metadataPlans;
+                plans.erase(std::remove_if(plans.begin(), plans.end(),
+                                           [&](uint32_t index) { return state->workerMetadata[index].sidecarPlanned; }),
+                            plans.end());
+                if (!plans.empty()) {
+                    QueueRefreshMetadataPlan(state);
+                    return false;
+                }
+                const bool adopting = state->phase == PendingRefreshCommit::Phase::SidecarPlan;
+                QueueRefreshMetadata(state, adopting);
+                state->phase = adopting ? PendingRefreshCommit::Phase::MetadataPublish
+                                        : PendingRefreshCommit::Phase::MetadataPrepare;
                 return false;
             }
             if (state->phase == PendingRefreshCommit::Phase::MetadataPrepare) {
@@ -2527,8 +2554,17 @@ bool AssetDatabase::CommitReadyRefresh(bool managed, bool drain)
                 return false;
             }
             if (state->phase == PendingRefreshCommit::Phase::SidecarCreate) {
-                if (m_frameWork)
-                    QueueRefreshMetadata(state, true);
+                for (const auto index : state->metadataPublications) {
+                    if (state->workerMetadata[index].adoptingSidecar) {
+                        state->metadataAdoptions.push_back(index);
+                        state->metadataPlans.push_back(static_cast<uint32_t>(index));
+                    }
+                }
+                if (!state->metadataPlans.empty()) {
+                    state->phase = PendingRefreshCommit::Phase::SidecarPlan;
+                    QueueRefreshMetadataPlan(state);
+                    return false;
+                }
                 state->phase = PendingRefreshCommit::Phase::MetadataPublish;
                 return false;
             }
@@ -2677,18 +2713,27 @@ void AssetDatabase::CompletePendingRefresh()
     }
 }
 
-void AssetDatabase::PlanMetadataRead(WorkerMetadataPrepare &item)
+void AssetDatabase::PlanMetadataRead(WorkerMetadataPrepare &item, uint64_t range)
 {
-    item.sidecarPlanned = true;
-    item.sidecarRevision.reset();
-    item.sidecarWorkingBytes = 0;
-    item.sidecarComparisonBytes = 0;
-    if (item.file.readOnly)
+    if (item.file.readOnly) {
+        item.sidecarPlanned = true;
         return;
+    }
     try {
         const auto path = InxResourceMeta::GetMetaFilePath(item.file.path);
-        if (std::filesystem::is_regular_file(ToFsPath(path))) {
-            item.sidecarWorkingBytes = PlanMetadataDocument(path, item.sidecarRevision);
+        if (!item.sidecarPlan) {
+            item.sidecarPlanned = false;
+            item.sidecarRevision.reset();
+            item.sidecarWorkingBytes = 0;
+            item.sidecarComparisonBytes = 0;
+            if (std::filesystem::is_regular_file(ToFsPath(path)))
+                item.sidecarPlan = std::make_shared<MetadataPlanCursor>();
+        }
+        if (item.sidecarPlan) {
+            const auto bytes = PlanMetadataDocument(path, item.sidecarRevision, item.sidecarPlan->scan, range);
+            if (!bytes)
+                return;
+            item.sidecarWorkingBytes = *bytes;
             if (item.publishedSidecar)
                 item.sidecarComparisonBytes = EstimateMetadataDocumentWorkspace(*item.publishedSidecar);
         }
@@ -2697,6 +2742,8 @@ void AssetDatabase::PlanMetadataRead(WorkerMetadataPrepare &item)
         item.sidecarComparisonBytes = 0;
         item.error = Utf8Diagnostic(exception.what());
     }
+    item.sidecarPlan.reset();
+    item.sidecarPlanned = true;
 }
 
 void AssetDatabase::RequireMetadataStorage(WorkerMetadataPrepare &item,
@@ -2781,13 +2828,7 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
         if (textureSource && !textureSource->planningError.empty()) {
             // Preserve the failed import's authored identity without loading
             // the whole image solely to report an invalid cook configuration.
-            const auto extension = TextureSourceExtension(ToFsPath(item.file.path));
-            metadata.InitFromSource(*textureSource->source, ResourceType::Texture);
-            metadata.AddMetadata("file_type", "texture");
-            metadata.AddMetadata("file_extension", extension);
-            metadata.AddMetadata("source_container", extension == ".png" ? "PNG" : "JPEG");
-            metadata.AddMetadata("is_binary", true);
-            metadata.AddMetadata("file_size", static_cast<size_t>(textureSource->source->Size()));
+            TextureLoader::CreateSourceMeta(*textureSource->source, metadata);
         } else {
             item.loader->CreateMeta(textureSource ? *textureSource->source : *source, metadata);
         }
@@ -2847,7 +2888,7 @@ void AssetDatabase::FinishMetadataAdoption(WorkerMetadataPrepare &item, TextureS
 }
 
 void AssetDatabase::PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot,
-                                           TextureSourceSnapshot *textureSource)
+                                           TextureSourceSnapshot *textureSource, bool deferAdoption)
 {
     if (item.file.readOnly || (item.expectedMetadata && item.expectedMetadata->exists))
         return;
@@ -2865,7 +2906,10 @@ void AssetDatabase::PublishMissingMetadata(WorkerMetadataPrepare &item, const st
             item.inheritedGuid = false;
         } else if (item.sidecarPlanned) {
             item.adoptingSidecar = true;
-            PlanMetadataRead(item);
+            if (deferAdoption)
+                item.sidecarPlanned = false;
+            else
+                PlanMetadataRead(item);
             return;
         } else {
             FinishMetadataAdoption(item, textureSource);
@@ -3063,10 +3107,9 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
     try {
         if (m_frameWork) {
             state->phase = PendingRefreshCommit::Phase::MetadataPlan;
-            QueueCatalogWork(m_refreshWork, CatalogIoStage::MetadataPlan,
-                             static_cast<uint32_t>(state->workerMetadata.size()), [state](uint32_t index, auto) {
-                                 return [state, index] { PlanMetadataRead(state->workerMetadata[index]); };
-                             });
+            state->metadataPlans.resize(state->workerMetadata.size());
+            std::iota(state->metadataPlans.begin(), state->metadataPlans.end(), 0u);
+            QueueRefreshMetadataPlan(state);
         } else {
             QueueRefreshMetadata(state, false);
         }
@@ -3081,12 +3124,18 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
     return false;
 }
 
+void AssetDatabase::QueueRefreshMetadataPlan(const std::shared_ptr<PendingRefreshCommit> &state)
+{
+    QueueCatalogWork(m_refreshWork, CatalogIoStage::MetadataPlan, static_cast<uint32_t>(state->metadataPlans.size()),
+                     [state](uint32_t index, auto) {
+                         return [state, index = state->metadataPlans[index]] {
+                             PlanMetadataRead(state->workerMetadata[index], kMetadataPlanRange);
+                         };
+                     });
+}
+
 void AssetDatabase::QueueRefreshMetadata(const std::shared_ptr<PendingRefreshCommit> &state, bool adopting)
 {
-    if (adopting)
-        for (const auto index : state->metadataPublications)
-            if (state->workerMetadata[index].adoptingSidecar)
-                state->metadataAdoptions.push_back(index);
     const auto itemAt = [state, adopting](uint32_t index) -> WorkerMetadataPrepare & {
         return state->workerMetadata[adopting ? state->metadataAdoptions[index] : index];
     };
@@ -3209,7 +3258,8 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
                              capture.boundedProjectRoot = bounded ? &state->projectRoot : nullptr;
                              capture.deferPlanningError = bounded;
                              PublishMissingMetadata(item, state->projectRoot,
-                                                    item.resourceType == ResourceType::Texture ? &capture : nullptr);
+                                                    item.resourceType == ResourceType::Texture ? &capture : nullptr,
+                                                    bounded);
                          };
                      });
     state->phase = PendingRefreshCommit::Phase::SidecarCreate;
@@ -4378,16 +4428,22 @@ bool AssetDatabase::BeginWatcherImport(const std::string &requestedPath, Watcher
         pending->snapshot = LoadQuerySnapshot();
         worker.request.resolveTextureGuid = ModelTextureResolver(pending->snapshot);
     }
-    pending->preparing = m_frameWork && result.resourceType == ResourceType::Texture && IsPlannedTextureSource(path);
+    pending->preparing =
+        m_frameWork && result.resourceType == ResourceType::Texture && TextureDecoder::IsRasterSource(result.path);
     if (pending->preparing)
         pending->textureSource.boundedProjectRoot = &m_projectRoot;
     if (m_frameWork)
-        QueueCatalogJob(m_watcherWork, CatalogIoStage::MetadataPlan,
-                        [pending] { PlanMetadataRead(pending->metadata); });
+        QueueWatcherMetadataPlan(pending);
     else
         QueueWatcherCook(pending);
     m_pendingWatcherImport = std::move(pending);
     return true;
+}
+
+void AssetDatabase::QueueWatcherMetadataPlan(const std::shared_ptr<PendingWatcherImport> &pending)
+{
+    QueueCatalogJob(m_watcherWork, CatalogIoStage::MetadataPlan,
+                    [pending] { PlanMetadataRead(pending->metadata, kMetadataPlanRange); });
 }
 
 void AssetDatabase::QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending)
@@ -4534,7 +4590,9 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
                    GetMetaByGuid(result.guid) != pending->metadata.publishedSidecar) {
             pending->outcome = "superseded";
         } else if (m_watcherWork.stage == CatalogIoStage::MetadataPlan) {
-            if (pending->preparing) {
+            if (!pending->metadata.sidecarPlanned) {
+                QueueWatcherMetadataPlan(pending);
+            } else if (pending->preparing) {
                 QueueMetadataRead(m_watcherWork, CatalogIoStage::Metadata, pending->metadata,
                                   [pending](auto) { PrepareMetadata(pending->metadata, &pending->textureSource); });
             } else {
@@ -4827,11 +4885,17 @@ void AssetDatabase::StartModelReimport(const std::string &sourcePath, const std:
         ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(sourcePath)), pending->metadataFingerprint);
     if (m_frameWork) {
         pending->phase = PendingModelReimport::Phase::MetadataPlan;
-        QueueCatalogJob(m_applyWork, CatalogIoStage::MetadataPlan, [pending] { PlanMetadataRead(pending->metadata); });
+        QueueModelMetadataPlan(pending);
     } else {
         QueueModelCook(pending);
     }
     m_pendingModelReimport = std::move(pending);
+}
+
+void AssetDatabase::QueueModelMetadataPlan(const std::shared_ptr<PendingModelReimport> &pending)
+{
+    QueueCatalogJob(m_applyWork, CatalogIoStage::MetadataPlan,
+                    [pending] { PlanMetadataRead(pending->metadata, kMetadataPlanRange); });
 }
 
 void AssetDatabase::QueueModelCook(const std::shared_ptr<PendingModelReimport> &pending)
@@ -4934,7 +4998,10 @@ bool AssetDatabase::AdvanceModelReimport(bool managed, bool drain)
         if (pending->IsDiscarded())
             throw std::runtime_error("Model Apply was discarded before publication");
         if (pending->phase == PendingModelReimport::Phase::MetadataPlan) {
-            QueueModelCook(pending);
+            if (pending->metadata.sidecarPlanned)
+                QueueModelCook(pending);
+            else
+                QueueModelMetadataPlan(pending);
             return true;
         }
         if (!worker.error.empty())
@@ -6040,35 +6107,59 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
     const std::string newMetaPath = InxResourceMeta::GetMetaFilePath(newPath);
     const bool sameMetadata = FilesystemPathKey(oldMetaPath) == FilesystemPathKey(newMetaPath);
     const bool oldExists = fs::exists(ToFsPath(oldMetaPath));
+    const bool newExists = !oldExists && fs::exists(ToFsPath(newMetaPath));
     AtomicFileState destinationState;
-    InxResourceMeta meta = *current;
-    if (oldExists) {
-        AtomicFileState sourceState;
-        meta = LoadMetadataDocument(oldMetaPath, &sourceState);
-        if (meta.GetGuid() != guid || meta.GetResourceType() != current->GetResourceType())
-            throw std::runtime_error("asset relocation source metadata has a different identity: " + oldPath);
-        if (!sameMetadata && fs::exists(ToFsPath(newMetaPath)))
-            throw std::runtime_error("asset relocation destination metadata already exists: " + newPath);
-        if (sameMetadata) {
-            if (ToFsPath(oldMetaPath).filename() != ToFsPath(newMetaPath).filename())
-                fs::rename(ToFsPath(oldMetaPath), ToFsPath(newMetaPath));
-            destinationState = sourceState;
+    std::shared_ptr<FrameCpuStorageClaim> storage;
+    const auto reserve = [&](uint64_t bytes) {
+        if (!m_frameWork)
+            return;
+        const bool admitted = storage ? m_frameWork->TryGrowCpuStorage(*storage, bytes)
+                                      : bool(storage = m_frameWork->TryReserveCpuStorage(bytes));
+        if (!admitted)
+            throw std::runtime_error("asset relocation requires " + std::to_string(bytes) + " CPU bytes for metadata");
+    };
+    std::optional<InxResourceMeta> authored;
+    if (oldExists || newExists) {
+        const auto &path = oldExists ? oldMetaPath : newMetaPath;
+        std::optional<FileInput::Revision> revision;
+        uint64_t bytes = 0;
+        if (m_frameWork) {
+            MetadataScan scan;
+            bytes = PlanMetadataDocument(path, revision, scan, 0).value();
+            reserve(bytes);
         }
-    } else if (fs::exists(ToFsPath(newMetaPath))) {
-        // A directory relocation has already moved the sidecar on disk.
-        meta = LoadMetadataDocument(newMetaPath, &destinationState);
-        if (meta.GetGuid() != guid || meta.GetResourceType() != current->GetResourceType())
-            throw std::runtime_error("asset relocation destination metadata has a different identity: " + newPath);
+        AtomicFileState consumed;
+        authored.emplace(LoadMetadataDocument(path, &consumed, revision ? &*revision : nullptr, bytes));
+        if (authored->GetGuid() != guid || authored->GetResourceType() != current->GetResourceType())
+            throw std::runtime_error("asset relocation metadata has a different identity: " + path);
+        if (newExists || sameMetadata)
+            destinationState = consumed;
     }
+    if (oldExists && !sameMetadata && fs::exists(ToFsPath(newMetaPath)))
+        throw std::runtime_error("asset relocation destination metadata already exists: " + newPath);
     if (replacement)
-        meta = *replacement;
-    meta.UpdateFilePath(newPath);
+        authored.reset();
+    const auto &published = replacement ? *replacement : *current;
+    if (m_frameWork)
+        reserve(EstimateMetadataDocumentWorkspace(published) +
+                (authored ? EstimateMetadataDocumentWorkspace(*authored) : 0) + 64u * 1024u + 32 * newPath.size());
+    // Keep derived catalog fields even when the portable sidecar omits them.
+    auto movedMeta = std::make_shared<InxResourceMeta>(published);
+    movedMeta->UpdateFilePath(newPath);
+    if (authored)
+        authored->UpdateFilePath(newPath);
+    const auto &sidecar = authored ? *authored : *movedMeta;
+    if (oldExists && sameMetadata && ToFsPath(oldMetaPath).filename() != ToFsPath(newMetaPath).filename())
+        fs::rename(ToFsPath(oldMetaPath), ToFsPath(newMetaPath));
     DocumentWriteOptions options;
     options.expectedFileState = destinationState;
     options.writeScope = writeScope;
-    DocumentStore::Instance()
-        .Submit(newMetaPath, meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options)
-        ->Wait();
+    DocumentStore::Instance().WriteStreamAndWait(
+        newMetaPath,
+        [&](std::ostream &stream) {
+            stream << std::setw(4) << sidecar.SerializeDocumentPortable(m_projectRoot) << '\n';
+        },
+        options);
     if (oldExists && !sameMetadata) {
         std::error_code error;
         if (!fs::remove(ToFsPath(oldMetaPath), error) || error) {
@@ -6077,10 +6168,6 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
             throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
         }
     }
-    // Portable sidecars omit derived import state (hashes, model children,
-    // artifact descriptions). Relocation changes location, not that state.
-    auto movedMeta = std::make_shared<InxResourceMeta>(replacement ? *replacement : *current);
-    movedMeta->UpdateFilePath(newPath);
     m_metas[guid] = std::move(movedMeta);
 }
 

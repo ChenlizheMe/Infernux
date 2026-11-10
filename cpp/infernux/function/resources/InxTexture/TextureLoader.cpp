@@ -2,7 +2,6 @@
 
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
-#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
@@ -10,6 +9,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <limits>
 
@@ -50,6 +50,14 @@ TextureArtifactInputs ResolveArtifactInputs(const std::string &filePath, const s
     return {metadata->GetDataAs<std::string>("content_hash"), artifactPath};
 }
 
+std::string SourceExtension(const std::string &path)
+{
+    auto extension = FromFsPath(ToFsPath(path).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char value) { return std::tolower(value); });
+    return extension;
+}
+
 } // namespace
 
 // =============================================================================
@@ -58,19 +66,11 @@ TextureArtifactInputs ResolveArtifactInputs(const std::string &filePath, const s
 
 void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
-    const auto &filePath = source.Path();
-    std::filesystem::path path = ToFsPath(filePath);
-    std::string extension = FromFsPath(path.extension());
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-    const bool isTextVolume = extension == ".inxvfield" || extension == ".inxsdf";
-    const bool isSvg = extension == ".svg";
+    const auto extension = SourceExtension(source.Path());
+    const bool isRaster = extension != ".inxvfield" && extension != ".inxsdf" && extension != ".svg";
     const bool sequential = source.IsSequential();
-    const auto content = (isTextVolume || isSvg || sequential) ? std::string_view{} : source.Bytes();
-    const auto contentSize = static_cast<size_t>(source.Size());
-    if (sequential)
-        metaData.InitSourceIdentity(filePath, ResourceType::Texture);
-    else
-        metaData.InitFromSource(source, ResourceType::Texture);
+    const auto content = isRaster && !sequential ? source.Bytes() : std::string_view{};
+    CreateSourceMeta(source, metaData);
 
     // Get image dimensions without fully loading the pixel data
     int width = 0, height = 0, channels = 0;
@@ -83,21 +83,27 @@ void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) c
         metaData.AddMetadata("height", static_cast<int>(info.height));
         if (info.channels)
             metaData.AddMetadata("channels", static_cast<int>(info.channels));
-    } else if (!isTextVolume && !isSvg && fileBytes && contentSize > 0 &&
-               contentSize <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
-               stbi_info_from_memory(fileBytes, static_cast<int>(contentSize), &width, &height, &channels)) {
-        metaData.AddMetadata("width", width);
-        metaData.AddMetadata("height", height);
-        metaData.AddMetadata("channels", channels);
-    } else if (!isTextVolume && !isSvg && fileBytes && contentSize > 0) {
-        InxTextureData pnmInfo = InxTextureLoader::LoadFromMemory(fileBytes, contentSize, filePath);
-        if (pnmInfo.IsValid()) {
-            metaData.AddMetadata("width", pnmInfo.width);
-            metaData.AddMetadata("height", pnmInfo.height);
-            metaData.AddMetadata("channels", pnmInfo.channels);
+    } else if (!content.empty() && content.size() <= static_cast<size_t>(std::numeric_limits<int>::max())) {
+        if (stbi_info_from_memory(fileBytes, static_cast<int>(content.size()), &width, &height, &channels)) {
+            metaData.AddMetadata("width", width);
+            metaData.AddMetadata("height", height);
+            metaData.AddMetadata("channels", channels);
+        } else if (const auto info = detail::ReadPnmInfo(content); info.width) {
+            metaData.AddMetadata("width", static_cast<int>(info.width));
+            metaData.AddMetadata("height", static_cast<int>(info.height));
+            metaData.AddMetadata("channels", static_cast<int>(info.channels));
         }
     }
+}
 
+void TextureLoader::CreateSourceMeta(AssetSource &source, InxResourceMeta &metaData)
+{
+    if (source.IsSequential())
+        metaData.InitSourceIdentity(source.Path(), ResourceType::Texture);
+    else
+        metaData.InitFromSource(source, ResourceType::Texture);
+
+    const auto extension = SourceExtension(source.Path());
     metaData.AddMetadata("file_type", std::string("texture"));
     metaData.AddMetadata("file_extension", extension);
 
@@ -121,9 +127,9 @@ void TextureLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) c
     };
     auto fmtIt = formatMap.find(extension);
     metaData.AddMetadata("source_container", fmtIt != formatMap.end() ? fmtIt->second : std::string("Unknown"));
-    metaData.AddMetadata("is_binary", !isTextVolume && !isSvg);
+    metaData.AddMetadata("is_binary", extension != ".inxvfield" && extension != ".inxsdf" && extension != ".svg");
 
-    metaData.AddMetadata("file_size", contentSize);
+    metaData.AddMetadata("file_size", static_cast<size_t>(source.Size()));
 }
 
 // =============================================================================

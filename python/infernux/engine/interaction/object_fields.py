@@ -142,13 +142,18 @@ class AssetReferenceCatalog:
             matches.append((name, path))
         if descriptor.type_id == "AnimationClip3D":
             from infernux.core.animation_clip3d import embedded_take_descriptors
-            from infernux.core.asset_types import read_meta_file
+            from infernux.core.assets import AssetManager
 
             models = {path.partition("::")[0] for _name, path in self._items_for_type("Mesh")}
+            database = AssetManager._asset_database
             for path in sorted(models):
                 disk_path = os.path.join(project_root, path) if project_root and not os.path.isabs(path) else path
+                meta = database.get_meta_by_path(disk_path)
+                if meta is None:
+                    continue
                 model_name = os.path.splitext(os.path.basename(path))[0]
-                for take in embedded_take_descriptors(read_meta_file(disk_path) or {}):
+                takes = meta.get_string("model_animations") or None
+                for take in embedded_take_descriptors({"model_animations": takes}):
                     virtual = f"{path}::subanim:{take['id']}"
                     matches.append((f"{model_name} | {take['name']}", virtual))
         matches.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))

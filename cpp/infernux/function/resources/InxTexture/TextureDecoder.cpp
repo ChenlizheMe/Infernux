@@ -5,6 +5,7 @@
 #include "VectorFieldSource.h"
 #include <core/log/InxLog.h>
 
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -144,6 +146,11 @@ uint64_t LevelByteSize(uint32_t width, uint32_t height, TextureFormat format)
     return pixels * bytesPerPixel;
 }
 
+uint64_t RasterSourceBytes(uint32_t width, uint32_t height, TextureFormat format)
+{
+    return uint64_t(width) * height * TextureFormatBytesPerTexel(format);
+}
+
 const std::array<float, 65536> &Srgb16ToLinear()
 {
     static const auto values = [] {
@@ -240,6 +247,53 @@ void ExpandRgba16(const stbi_us *pixels, size_t byteCount, bool srgb, void *dest
                           static_cast<float>(pixels[3]) / 65535.0f};
         std::memcpy(output + offset, value.data(), pixelBytes);
     }
+}
+
+struct PreciseRasterPixels
+{
+    std::unique_ptr<stbi_us, decltype(&stbi_image_free)> integer{nullptr, &stbi_image_free};
+    std::unique_ptr<float, decltype(&stbi_image_free)> floating{nullptr, &stbi_image_free};
+    int width = 0, height = 0;
+};
+
+PreciseRasterPixels LoadPreciseRaster(std::string_view source, bool sixteenBit, const std::string &path)
+{
+    PreciseRasterPixels pixels;
+    const auto *bytes = reinterpret_cast<const unsigned char *>(source.data());
+    const auto size = static_cast<int>(source.size());
+    int channels = 0;
+    if (sixteenBit) {
+        pixels.integer.reset(
+            stbi_load_16_from_memory(bytes, size, &pixels.width, &pixels.height, &channels, STBI_rgb_alpha));
+        if (!pixels.integer)
+            throw std::runtime_error("failed to decode 16-bit texture: " + path);
+    } else {
+        pixels.floating.reset(
+            stbi_loadf_from_memory(bytes, size, &pixels.width, &pixels.height, &channels, STBI_rgb_alpha));
+        if (!pixels.floating)
+            throw std::runtime_error("failed to decode HDR texture: " + path);
+    }
+    return pixels;
+}
+
+std::vector<float> ResizePreciseRaster(PreciseRasterPixels &pixels, uint32_t width, uint32_t height, bool srgb,
+                                       const std::string &path)
+{
+    constexpr auto format = TextureFormat::Rgba32Float;
+    std::vector<float> expanded;
+    const auto *decoded = pixels.floating.get();
+    if (pixels.integer) {
+        const auto bytes = static_cast<size_t>(RasterSourceBytes(pixels.width, pixels.height, format));
+        expanded.resize(bytes / sizeof(float));
+        ExpandRgba16(pixels.integer.get(), bytes, srgb, expanded.data());
+        pixels.integer.reset();
+        decoded = expanded.data();
+    }
+    std::vector<float> resized(static_cast<size_t>(LevelByteSize(width, height, format) / sizeof(float)));
+    if (!stbir_resize_float_linear(decoded, pixels.width, pixels.height, 0, resized.data(), static_cast<int>(width),
+                                   static_cast<int>(height), 0, STBIR_RGBA))
+        throw std::runtime_error("failed to resize HDR texture: " + path);
+    return resized;
 }
 
 uint32_t PngU32(const unsigned char *bytes)
@@ -891,28 +945,64 @@ RgbaCookStorage PlanRgbaCook(uint32_t width, uint32_t height, const InxResourceM
 
 constexpr uint64_t ArtifactControlBytes = 64 * 1024;
 
-struct JpegPlan
+struct EncodedRasterPlan
 {
     uint64_t bytes;
     size_t mipBytes;
 };
 
-JpegPlan PlanJpeg(const detail::JpegInfo &jpeg, uint64_t sourceBytes, const InxResourceMeta &metadata)
+void RequireRasterDimensions(TextureDecoder::SourceInfo source)
 {
-    const auto [width, height] = FitDimensions(jpeg.source.width, jpeg.source.height, ReadMaxSize(metadata));
-    const auto cook = PlanRgbaCook(width, height, metadata);
-    size_t resizeScratch = 0;
-    if (width != jpeg.source.width || height != jpeg.source.height) {
+    if (!source.width || !source.height)
+        throw std::invalid_argument("invalid or unsupported raster texture dimensions");
+}
+
+EncodedRasterPlan PlanEncodedRaster(TextureDecoder::SourceInfo source, uint64_t decodeBytes, uint64_t sourceBytes,
+                                    const InxResourceMeta &metadata, bool sixteenBit = false, bool hdr = false)
+{
+    RequireRasterDimensions(source);
+    const auto format = sixteenBit || hdr ? TextureFormat::Rgba32Float : TextureFormat::Rgba8UNorm;
+    const auto sourcePixels = RasterSourceBytes(source.width, source.height, format);
+    const auto [width, height] = FitDimensions(source.width, source.height, ReadMaxSize(metadata));
+    const auto cook = PlanRgbaCook(width, height, metadata, format);
+    uint64_t baseBytes = (sixteenBit ? sourcePixels / 2 : sourcePixels) + cook.mipBytes;
+    if (width != source.width || height != source.height) {
         STBIR_RESIZE resize;
-        InitRgbaResize(resize, jpeg.source.width, jpeg.source.height, width, height, metadata);
-        resizeScratch = detail::MeasureTextureResize(resize);
+        InitRgbaResize(resize, source.width, source.height, width, height, metadata, format);
+        const auto resizeScratch = detail::MeasureTextureResize(resize);
         if (!resizeScratch)
-            throw std::invalid_argument("cannot plan the JPEG resize workspace");
+            throw std::invalid_argument("cannot plan the raster texture resize workspace");
+        baseBytes = sourcePixels + cook.mipBytes + resizeScratch;
+        if (sixteenBit || hdr) {
+            // The float resizer uses a typed output before copying into the mip chain.
+            baseBytes += LevelByteSize(width, height, format);
+            if (sixteenBit)
+                baseBytes = std::max(baseBytes, sourcePixels + sourcePixels / 2 + cook.mipBytes);
+        }
     }
-    const auto rgbaBytes = uint64_t(jpeg.source.width) * jpeg.source.height * 4;
-    const auto workingBytes =
-        std::max({jpeg.decodeBytes, rgbaBytes + cook.mipBytes + resizeScratch, cook.processingBytes});
+    const auto workingBytes = std::max({decodeBytes, baseBytes, cook.processingBytes});
     return {sourceBytes + workingBytes + ArtifactControlBytes, static_cast<size_t>(cook.mipBytes)};
+}
+
+uint64_t RasterPreviewBytes(const detail::RasterInfo &raster, uint64_t sourceBytes, uint32_t width, uint32_t height,
+                            TextureFormat format)
+{
+    RequireRasterDimensions(raster.source);
+    const auto sourcePixels = RasterSourceBytes(raster.source.width, raster.source.height, format);
+    const auto output = LevelByteSize(width, height, format);
+    const auto precise = format == TextureFormat::Rgba32Float;
+    const auto decodedPixels = precise && raster.sixteenBit ? sourcePixels / 2 : sourcePixels;
+    auto working = std::max(precise ? raster.decodeBytes : raster.previewDecodeBytes, decodedPixels + output);
+    if (precise && (width != raster.source.width || height != raster.source.height)) {
+        STBIR_RESIZE resize;
+        InitRgbaResize(resize, raster.source.width, raster.source.height, width, height, {}, format);
+        const auto scratch = detail::MeasureTextureResize(resize);
+        if (!scratch)
+            throw std::invalid_argument("cannot plan the raster preview resize workspace");
+        working = std::max({working, sourcePixels + output + scratch, (raster.hdr ? sourcePixels : 0) + 2 * output,
+                            raster.sixteenBit ? sourcePixels + decodedPixels : 0});
+    }
+    return sourceBytes + working + sizeof(TextureCpuData) + sizeof(TextureMipLevel);
 }
 
 struct PngPlan
@@ -961,21 +1051,37 @@ PngPlan PlanPng(AssetSource &source, const InxResourceMeta &metadata)
 
 } // namespace
 
+bool TextureDecoder::IsRasterSource(const std::string &path)
+{
+    auto extension = FromFsPath(ToFsPath(path).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char value) { return std::tolower(value); });
+    return asset_formats::Contains(asset_formats::kTextureExtensions, extension) && extension != ".svg" &&
+           extension != ".inxvfield" && extension != ".inxsdf";
+}
+
 TextureDecoder::SourceInfo TextureDecoder::ReadSequentialSourceInfo(AssetSource &source)
 {
     if (const auto jpeg = detail::ReadJpegInfo(source); jpeg.source.width)
         return jpeg.source;
     const auto png = ReadPngHeader(source);
     // PNG without an explicit alpha channel can gain one from tRNS.
-    return {png.width, png.height, png.color & 4 ? png.Channels() : uint8_t{0}};
+    if (png.width)
+        return {png.width, png.height, png.color & 4 ? png.Channels() : uint8_t{0}};
+    return detail::ReadRasterInfo(source).source;
 }
 
 uint64_t TextureDecoder::PlanSourceStorage(AssetSource &source, const InxResourceMeta &metadata)
 {
     try {
         if (const auto jpeg = detail::ReadJpegInfo(source); jpeg.source.width)
-            return PlanJpeg(jpeg, source.Size(), metadata).bytes;
-        return PlanPng(source, metadata).bytes;
+            return PlanEncodedRaster(jpeg.source, jpeg.decodeBytes, source.Size(), metadata).bytes;
+        if (const auto png = PlanPng(source, metadata); png.bytes)
+            return png.bytes;
+        const auto raster = detail::ReadRasterInfo(source);
+        return PlanEncodedRaster(raster.source, raster.decodeBytes, source.Size(), metadata, raster.sixteenBit,
+                                 raster.hdr)
+            .bytes;
     } catch (const std::overflow_error &error) {
         throw std::invalid_argument(error.what());
     }
@@ -998,13 +1104,25 @@ TextureDecoder::SourcePreviewPlan TextureDecoder::PlanSourcePreview(AssetSource 
                 format};
     }
     const auto jpeg = detail::ReadJpegInfo(source);
-    if (!jpeg.source.width)
+    if (jpeg.source.width) {
+        const auto [width, height] = FitDimensions(jpeg.source.width, jpeg.source.height, maxSize);
+        const auto output = LevelByteSize(width, height, TextureFormat::Rgba8UNorm);
+        const auto input = uint64_t(jpeg.source.width) * jpeg.source.height * 4;
+        const auto bytes = source.Size() + std::max(jpeg.decodeBytes, input + 1 + output);
+        return {jpeg.source, width, height, bytes, SourcePreviewPlan::Codec::Jpeg};
+    }
+    const auto raster = detail::ReadRasterInfo(source);
+    if (!raster.source.width && !IsRasterSource(source.Path()))
         return {};
-    const auto [width, height] = FitDimensions(jpeg.source.width, jpeg.source.height, maxSize);
-    const auto output = LevelByteSize(width, height, TextureFormat::Rgba8UNorm);
-    const auto input = uint64_t(jpeg.source.width) * jpeg.source.height * 4;
-    const auto bytes = source.Size() + std::max(jpeg.decodeBytes, input + 1 + output);
-    return {jpeg.source, width, height, bytes, SourcePreviewPlan::Codec::Jpeg};
+    if (source.Size() > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("raster preview exceeds decoder input limits");
+    RequireRasterDimensions(raster.source);
+    const bool precise = document && (raster.sixteenBit || raster.hdr);
+    const auto format = precise ? TextureFormat::Rgba32Float : TextureFormat::Rgba8UNorm;
+    const auto [width, height] =
+        FitDimensions(raster.source.width, raster.source.height, precise ? MaximumDimension : maxSize);
+    const auto bytes = RasterPreviewBytes(raster, source.Size(), width, height, format);
+    return {raster.source, width, height, bytes, SourcePreviewPlan::Codec::Raster, format};
 }
 
 InxTextureData TextureDecoder::DecodeSourcePreview(AssetSource &source, const SourcePreviewPlan &plan,
@@ -1024,7 +1142,7 @@ InxTextureData TextureDecoder::DecodeSourcePreview(AssetSource &source, const So
         image.pixels.resize(static_cast<size_t>(pixels));
         rows.CopyImage(image.pixels.data(), plan.previewWidth, plan.previewHeight);
         rows.Finish();
-    } else {
+    } else if (plan.codec == SourcePreviewPlan::Codec::Jpeg) {
         std::vector<unsigned char> encoded(static_cast<size_t>(source.Size()));
         source.OpenedFile()->ReadAt(0, encoded.data(), encoded.size());
         const auto jpeg = detail::ReadJpegInfo({reinterpret_cast<const char *>(encoded.data()), encoded.size()});
@@ -1040,6 +1158,53 @@ InxTextureData TextureDecoder::DecodeSourcePreview(AssetSource &source, const So
             throw std::runtime_error("failed to decode JPEG preview");
         image.pixels = SamplePreview(plan.source.width, plan.source.height, plan.previewWidth, plan.previewHeight,
                                      [&](uint32_t row) { return pixels.get() + size_t(row) * plan.source.width * 4; });
+    } else {
+        std::vector<unsigned char> encoded(static_cast<size_t>(source.Size()));
+        source.OpenedFile()->ReadAt(0, encoded.data(), encoded.size());
+        const std::string_view bytes{reinterpret_cast<const char *>(encoded.data()), encoded.size()};
+        const auto raster = detail::ReadRasterInfo(bytes);
+        if (raster.source.width != plan.source.width || raster.source.height != plan.source.height ||
+            RasterPreviewBytes(raster, encoded.size(), plan.previewWidth, plan.previewHeight, plan.format) > plan.bytes)
+            throw std::runtime_error("raster preview source changed after admission");
+        if (plan.format == TextureFormat::Rgba32Float) {
+            if (!raster.sixteenBit && !raster.hdr)
+                throw std::runtime_error("raster document layout changed after admission");
+            auto pixels = LoadPreciseRaster(bytes, raster.sixteenBit, source.Path());
+            const auto output = static_cast<size_t>(LevelByteSize(plan.previewWidth, plan.previewHeight, plan.format));
+            if (plan.previewWidth != raster.source.width || plan.previewHeight != raster.source.height) {
+                const auto resized =
+                    ResizePreciseRaster(pixels, plan.previewWidth, plan.previewHeight, true, source.Path());
+                image.pixels.resize(output);
+                std::memcpy(image.pixels.data(), resized.data(), output);
+            } else {
+                image.pixels.resize(output);
+                if (pixels.integer)
+                    ExpandRgba16(pixels.integer.get(), output, true, image.pixels.data());
+                else
+                    std::memcpy(image.pixels.data(), pixels.floating.get(), output);
+            }
+        } else if (InxTextureLoader::IsPnmSource(encoded.data(), encoded.size())) {
+            auto pixels = InxTextureLoader::LoadFromMemory(encoded.data(), encoded.size());
+            if (!pixels.IsValid())
+                throw std::runtime_error("failed to decode PNM preview");
+            if (plan.previewWidth == plan.source.width && plan.previewHeight == plan.source.height)
+                image.pixels = std::move(pixels.pixels);
+            else
+                image.pixels = SamplePreview(
+                    plan.source.width, plan.source.height, plan.previewWidth, plan.previewHeight,
+                    [&](uint32_t row) { return pixels.pixels.data() + size_t(row) * plan.source.width * 4; });
+        } else {
+            int width, height, channels;
+            const std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+                stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()), &width, &height, &channels,
+                                      STBI_rgb_alpha),
+                &stbi_image_free);
+            if (!pixels)
+                throw std::runtime_error("failed to decode raster preview");
+            image.pixels =
+                SamplePreview(plan.source.width, plan.source.height, plan.previewWidth, plan.previewHeight,
+                              [&](uint32_t row) { return pixels.get() + size_t(row) * plan.source.width * 4; });
+        }
     }
     return image;
 }
@@ -1088,28 +1253,29 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(AssetSource &source
         if (!file)
             throw std::logic_error("texture source must be opened for its admitted decode");
         const auto revision = file->InspectRevision();
-        if (detail::ReadJpegInfo(source).source.width) {
+        const auto plan = PlanPng(source, metadata);
+        if (!plan.bytes) {
             if (source.Size() > source.SequentialStorageLimit())
-                throw std::logic_error("JPEG source exceeded its admitted storage");
+                throw std::logic_error("raster source exceeded its admitted storage");
             std::string encoded(static_cast<size_t>(source.Size()), '\0');
             source.ReadSequential(encoded.data(), encoded.size());
             if (!(file->InspectRevision() == revision))
-                throw std::runtime_error("JPEG source changed during capture: " + source.Path());
+                throw std::runtime_error("raster source changed during capture: " + source.Path());
             source.CloseFile();
             // The decoder sees these exact bytes, even if the file changes
             // between admission, capture and the caller's publication check.
             const auto jpeg = detail::ReadJpegInfo(encoded);
-            if (!jpeg.source.width)
-                throw std::runtime_error("JPEG source changed before decode: " + source.Path());
-            const auto plan = PlanJpeg(jpeg, encoded.size(), metadata);
-            if (plan.bytes > source.SequentialStorageLimit())
-                throw std::logic_error("JPEG options changed after bounded admission");
+            const auto raster =
+                jpeg.source.width ? detail::RasterInfo{jpeg.source, jpeg.decodeBytes} : detail::ReadRasterInfo(encoded);
+            const auto encodedPlan = PlanEncodedRaster(raster.source, raster.decodeBytes, encoded.size(), metadata,
+                                                       raster.sixteenBit, raster.hdr);
+            if (encodedPlan.bytes > source.SequentialStorageLimit())
+                throw std::logic_error("raster options changed after bounded admission");
             if (sequentialChannels)
-                *sequentialChannels = jpeg.source.channels;
-            return DecodeBytes(encoded, metadata, source.Path(), preserveSvgViewport, plan.mipBytes);
+                *sequentialChannels = raster.source.channels;
+            return DecodeBytes(encoded, metadata, source.Path(), preserveSvgViewport, encodedPlan.mipBytes);
         }
-        const auto plan = PlanPng(source, metadata);
-        if (!plan.bytes || plan.bytes > source.SequentialStorageLimit())
+        if (plan.bytes > source.SequentialStorageLimit())
             throw std::logic_error("PNG options changed after bounded admission");
         TextureCpuData texture;
         texture.semantic = ReadSemantic(metadata);
@@ -1216,43 +1382,23 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeBytes(std::string_vi
     const bool source16Bit = !pnmSource && stbi_is_16_bit_from_memory(bytes, static_cast<int>(source.size())) != 0;
     if (source16Bit || stbi_is_hdr_from_memory(bytes, static_cast<int>(source.size())) != 0) {
         texture.format = TextureFormat::Rgba32Float;
-        std::unique_ptr<stbi_us, decltype(&stbi_image_free)> pixels16(nullptr, &stbi_image_free);
-        std::unique_ptr<float, decltype(&stbi_image_free)> decodedHdr(nullptr, &stbi_image_free);
-        if (source16Bit) {
-            pixels16.reset(stbi_load_16_from_memory(bytes, static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
-                                                    &sourceChannels, STBI_rgb_alpha));
-            if (!pixels16)
-                throw std::runtime_error("failed to decode 16-bit texture: " + sourcePath);
-        } else {
-            decodedHdr.reset(stbi_loadf_from_memory(bytes, static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
-                                                    &sourceChannels, STBI_rgb_alpha));
-            if (!decodedHdr)
-                throw std::runtime_error("failed to decode HDR texture: " + sourcePath);
-        }
+        auto pixels = LoadPreciseRaster(source, source16Bit, sourcePath);
+        sourceWidth = pixels.width;
+        sourceHeight = pixels.height;
+        if (plannedMipBytes)
+            texture.bytes.reserve(plannedMipBytes);
         const auto [width, height] = FitDimensions(sourceWidth, sourceHeight, maxSize);
         const auto level = DescribeBaseLevel(width, height, texture.format);
         const bool srgb = source16Bit && ReadSrgb(metadata);
         if (width != static_cast<uint32_t>(sourceWidth) || height != static_cast<uint32_t>(sourceHeight)) {
-            std::vector<float> precisePixels;
-            const float *decoded = decodedHdr.get();
-            if (pixels16) {
-                const auto sourceSize = static_cast<size_t>(LevelByteSize(sourceWidth, sourceHeight, texture.format));
-                precisePixels.resize(sourceSize / sizeof(float));
-                ExpandRgba16(pixels16.get(), sourceSize, srgb, precisePixels.data());
-                pixels16.reset();
-                decoded = precisePixels.data();
-            }
-            std::vector<float> resized(static_cast<size_t>(level.byteSize / sizeof(float)));
-            if (!stbir_resize_float_linear(decoded, sourceWidth, sourceHeight, 0, resized.data(),
-                                           static_cast<int>(width), static_cast<int>(height), 0, STBIR_RGBA))
-                throw std::runtime_error("failed to resize HDR texture: " + sourcePath);
+            const auto resized = ResizePreciseRaster(pixels, width, height, srgb, sourcePath);
             CopyBaseLevel(texture, level, resized.data());
-        } else if (pixels16) {
+        } else if (pixels.integer) {
             texture.bytes.resize(static_cast<size_t>(level.byteSize));
-            ExpandRgba16(pixels16.get(), texture.bytes.size(), srgb, texture.bytes.data());
+            ExpandRgba16(pixels.integer.get(), texture.bytes.size(), srgb, texture.bytes.data());
             texture.mipLevels.push_back(level);
         } else {
-            CopyBaseLevel(texture, level, decodedHdr.get());
+            CopyBaseLevel(texture, level, pixels.floating.get());
         }
     } else {
         texture.format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;

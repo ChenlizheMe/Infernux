@@ -592,6 +592,8 @@ class AssetDatabase : public NativeLifetimeOwner
         bool complete = false;
     };
 
+    struct MetadataPlanCursor;
+
     struct WorkerMetadataPrepare
     {
         PathWriteScope writeScope;
@@ -603,6 +605,7 @@ class AssetDatabase : public NativeLifetimeOwner
         bool inheritedGuid = false;
         std::shared_ptr<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
+        std::shared_ptr<MetadataPlanCursor> sidecarPlan;
         std::optional<FileInput::Revision> sidecarRevision;
         uint64_t sidecarWorkingBytes = 0;
         std::shared_ptr<const InxResourceMeta> publishedSidecar;
@@ -775,6 +778,7 @@ class AssetDatabase : public NativeLifetimeOwner
             MetadataPrepare,
             MetadataMerge,
             SidecarCreate,
+            SidecarPlan,
             MetadataPublish,
             ImportPrepare,
             Import,
@@ -792,6 +796,7 @@ class AssetDatabase : public NativeLifetimeOwner
         AssetScanArtifact scanArtifact;
         std::string projectRoot;
         std::vector<WorkerMetadataPrepare> workerMetadata;
+        std::vector<uint32_t> metadataPlans;
         std::vector<PendingAsset> pendingImports;
         std::vector<size_t> metadataPublications;
         std::vector<size_t> metadataAdoptions;
@@ -870,14 +875,14 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
-    static void PlanMetadataRead(WorkerMetadataPrepare &item);
+    static void PlanMetadataRead(WorkerMetadataPrepare &item, uint64_t range = 0);
     void RequireMetadataStorage(WorkerMetadataPrepare &item,
                                 const std::shared_ptr<FrameCpuStorageClaim> &storage) const;
     [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> ReserveMetadataRead(WorkerMetadataPrepare &item) const;
     static void PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource = nullptr);
     static void FinishMetadataAdoption(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource);
     static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot,
-                                       TextureSourceSnapshot *textureSource = nullptr);
+                                       TextureSourceSnapshot *textureSource = nullptr, bool deferAdoption = false);
     [[nodiscard]] static AssetIndex
     BuildDerivedIndexArtifact(const WorkingSet &workingSet,
                               const std::unordered_map<std::string, std::vector<std::string>> &dependenciesByGuid,
@@ -890,6 +895,7 @@ class AssetDatabase : public NativeLifetimeOwner
                                const std::unordered_map<std::string, ImportResultState> &importResults,
                                uint64_t generation, bool includeCatalog = true);
     [[nodiscard]] bool CommitScanArtifact(AssetScanArtifact artifact, uint64_t expectedQueryGeneration);
+    void QueueRefreshMetadataPlan(const std::shared_ptr<PendingRefreshCommit> &state);
     void QueueRefreshMetadata(const std::shared_ptr<PendingRefreshCommit> &state, bool adopting);
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingMetadataPublish(const std::shared_ptr<PendingRefreshCommit> &state);
@@ -925,7 +931,9 @@ class AssetDatabase : public NativeLifetimeOwner
     void CompleteWatcherWriteForExplicitImport(const PathWriteScope &scope);
     void WriteWatcherImport(PendingWatcherImport &pending);
     void PublishWatcherImport(PendingWatcherImport &pending);
+    void QueueWatcherMetadataPlan(const std::shared_ptr<PendingWatcherImport> &pending);
     void QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending);
+    void QueueModelMetadataPlan(const std::shared_ptr<PendingModelReimport> &pending);
     void QueueModelCook(const std::shared_ptr<PendingModelReimport> &pending);
     [[nodiscard]] bool CanAdvanceModelReimport() const;
     bool AdvanceModelReimport(bool managed, bool drain = false);

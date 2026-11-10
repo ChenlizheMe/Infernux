@@ -156,15 +156,16 @@ def render_model_animation_preview(ctx, panel, state, clips, *, source_path=None
 def render_clip_animation_preview(ctx, panel, state, model_path, take):
     """A clip asset previews its published source, never the virtual child path."""
     import json
-    from infernux.core.asset_types import read_asset_metadata
     from infernux.core.assets import AssetManager
     from infernux.engine.i18n import t
 
     signature = (model_path, AssetManager.preview_dependency_signature(model_path)) if model_path else ("", 0)
     cached = state.extra.get("clip_preview_source")
     if cached is None or cached[0] != signature:
-        metadata = read_asset_metadata(model_path) if model_path else None
-        cached = (signature, json.loads((metadata or {}).get("model_animations", "[]")))
+        database = AssetManager._asset_database
+        metadata = database.get_meta_by_path(model_path) if model_path and database is not None else None
+        takes = metadata.get_string("model_animations") if metadata is not None else ""
+        cached = (signature, json.loads(takes or "[]"))
         state.extra["clip_preview_source"] = cached
     clips = cached[1]
     # Existing standalone clips may name a take; imported children use stable IDs.

@@ -32,7 +32,8 @@ class TextureDecoder final
         enum class Codec
         {
             Png,
-            Jpeg
+            Jpeg,
+            Raster
         };
 
         SourceInfo source;
@@ -43,6 +44,7 @@ class TextureDecoder final
         TextureFormat format = TextureFormat::Rgba8UNorm;
     };
 
+    [[nodiscard]] static bool IsRasterSource(const std::string &path);
     [[nodiscard]] static uint64_t PlanSourceStorage(AssetSource &source, const InxResourceMeta &metadata);
     [[nodiscard]] static SourceInfo ReadSequentialSourceInfo(AssetSource &source);
     [[nodiscard]] static SourcePreviewPlan PlanSourcePreview(AssetSource &source, uint32_t maxSize, bool document);
@@ -83,6 +85,20 @@ struct JpegInfo
 
 [[nodiscard]] JpegInfo ReadJpegInfo(AssetSource &source);
 [[nodiscard]] JpegInfo ReadJpegInfo(std::string_view bytes);
+
+struct RasterInfo
+{
+    TextureDecoder::SourceInfo source;
+    uint64_t decodeBytes = 0;
+    uint64_t previewDecodeBytes = 0;
+    bool sixteenBit = false;
+    bool hdr = false;
+};
+
+[[nodiscard]] RasterInfo ReadRasterInfo(AssetSource &source);
+[[nodiscard]] RasterInfo ReadRasterInfo(std::string_view bytes);
+[[nodiscard]] TextureDecoder::SourceInfo ReadPnmInfo(AssetSource &source);
+[[nodiscard]] TextureDecoder::SourceInfo ReadPnmInfo(std::string_view bytes);
 } // namespace detail
 
 } // namespace infernux

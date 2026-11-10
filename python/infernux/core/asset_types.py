@@ -567,6 +567,11 @@ def read_asset_metadata(asset_path: str, *, guid: str = "") -> Optional[Dict[str
         if sidecar is not None:
             return sidecar
 
+    return read_published_asset_metadata(asset_path, guid=guid)
+
+
+def read_published_asset_metadata(asset_path: str, *, guid: str = "") -> Optional[Dict[str, Any]]:
+    """Read the last catalog publication without opening an authoring sidecar."""
     database = _published_asset_database()
     if database is None:
         return None

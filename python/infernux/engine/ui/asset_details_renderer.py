@@ -41,7 +41,7 @@ from infernux.core.asset_types import (
     ShaderAssetInfo,
     FontAssetInfo,
     read_meta_file,
-    read_asset_metadata,
+    read_published_asset_metadata,
     read_texture_import_settings,
     read_audio_import_settings,
     read_mesh_import_settings,
@@ -671,8 +671,9 @@ class _State:
         self.file_path = file_path
         self.category = category
         try:
-            self.meta = (read_asset_metadata(file_path) if any(token in file_path for token in ("::subtex:", "::subanim:"))
-                         else read_meta_file(_meta_host_path_for_virtual_asset(file_path)))
+            meta_path = (file_path if any(token in file_path for token in ("::subtex:", "::subanim:"))
+                         else _meta_host_path_for_virtual_asset(file_path))
+            self.meta = read_published_asset_metadata(meta_path)
             result = cat_def.load_fn(file_path)
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
             report_asset_load_error(file_path, str(exc))
@@ -1210,14 +1211,16 @@ def _load_identity_asset(path: str):
 
 
 def _load_shader(path: str):
-    meta = read_meta_file(path)
-    guid = (meta or {}).get("guid", "")
+    from infernux.core.assets import AssetManager
+
+    guid = AssetManager._get_guid_from_path(path) or ""
     return ShaderAssetInfo.from_path(path, guid=guid), {}
 
 
 def _load_font(path: str):
-    meta = read_meta_file(path)
-    guid = (meta or {}).get("guid", "")
+    from infernux.core.assets import AssetManager
+
+    guid = AssetManager._get_guid_from_path(path) or ""
     return FontAssetInfo.from_path(path, guid=guid), {}
 
 
@@ -1445,14 +1448,13 @@ def _render_data_asset_body(ctx: InxGUIContext, panel, state: _State):
 
 
 def _load_render_effect(path: str):
+    from infernux.core.assets import AssetManager
     from infernux.renderstack.render_effect import (
         EditableRenderEffectGroup,
         RenderEffect,
     )
 
     if path.lower().endswith(".effect"):
-        from infernux.core.assets import AssetManager
-
         database = AssetManager.require_asset_database()
         guid = str(database.get_guid_from_path(path) or "")
         effect = (
@@ -1470,7 +1472,7 @@ def _load_render_effect(path: str):
     document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
     if not isinstance(document, RenderEffectGroupAsset):
         return None
-    guid = str((read_meta_file(path) or {}).get("guid", "") or "")
+    guid = AssetManager._get_guid_from_path(path) or ""
     return EditableRenderEffectGroup(
         document,
         file_path=path,
@@ -1987,14 +1989,14 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     field_label(ctx, t("asset.animclip3d_source_model"), lw)
 
     def _on_model_pick(path, _clip=clip):
+        database = AssetManager._asset_database
         supplied_guid = ""
         if isinstance(path, dict):
             supplied_guid = str(path.get("guid") or "").strip()
             p = str(path.get("path_hint") or "").strip()
             if supplied_guid and not p:
                 try:
-                    adb = getattr(AssetManager, "_asset_database", None)
-                    p = str(adb.get_path_from_guid(supplied_guid) or "") if adb else ""
+                    p = str(database.get_path_from_guid(supplied_guid) or "") if database else ""
                 except (AttributeError, RuntimeError):
                     p = ""
         else:
@@ -2005,8 +2007,8 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
         model_guid = model_guid or AssetManager._get_guid_from_path(p) or ""
         bone_names = []
         # Pull bind pose bone names from import metadata (cheap UX).
-        meta = read_meta_file(p) or {}
-        csv = str(meta.get("bone_names_csv", "") or "")
+        metadata = database.get_meta_by_guid(model_guid) if model_guid and database is not None else None
+        csv = metadata.get_string("bone_names_csv") if metadata is not None else ""
         if csv:
             bone_names = [x.strip() for x in csv.split(",") if x.strip()]
         document = _clip.serialize_document()
@@ -2798,7 +2800,7 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                         if key == "texture_type" and hasattr(settings, "_sync_derived_fields"):
                             settings._sync_derived_fields()
                             if value is TextureType.SPRITE and not settings.sprite_frames:
-                                metadata = state.meta or read_meta_file(state.file_path) or {}
+                                metadata = state.meta or {}
                                 width = int(metadata.get("width", metadata.get("artifact_width", 0)) or 0)
                                 height = int(metadata.get("height", metadata.get("artifact_height", 0)) or 0)
                                 if width <= 0 or height <= 0:
