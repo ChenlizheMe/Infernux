@@ -27,7 +27,22 @@ def test_recovery_preserves_original_tested_revision_and_artifact_attempt(workfl
              'docs/tools/verify-site.mjs', 'docs/hub-catalog.json', 'docs/api-snapshots/0.4.3-v2.json',
              'scripts/release/deploy_hub_catalog.py', 'README.md']
     assert module.validate(run, jobs, 'owner/engine', 'a' * 40, 'b' * 40, paths) == {
-        'sha': 'a' * 40, 'publisher_sha': 'b' * 40, 'branch': 'master', 'attempt': 1}
+        'sha': 'a' * 40, 'publisher_sha': 'b' * 40, 'branch': 'master', 'attempt': 1, 'publication_mode': 'resume'}
+
+
+def test_recovery_keeps_new_release_checks_when_publication_never_started():
+    run, jobs = source()
+    prefix = module.WORKFLOW_PREFIXES[run['path']]
+    jobs['jobs'][-1]['conclusion'] = 'skipped'
+    plan = {'name': prefix + module.PLAN_JOB, 'status': 'completed', 'conclusion': 'failure', 'steps': []}
+    jobs['jobs'].extend([plan, {'name': prefix + module.VERIFY_JOB, 'status': 'completed', 'conclusion': 'skipped'}])
+    jobs['total_count'] = len(jobs['jobs'])
+    validated = module.validate(run, jobs, 'owner/engine', 'a' * 40, 'b' * 40, [])
+    assert validated['publication_mode'] == 'new'
+    assert validated['attempt'] == 1
+    plan['steps'].append({'name': 'Decide whether to publish'})
+    with pytest.raises(ValueError, match='publisher that never started'):
+        module.validate(run, jobs, 'owner/engine', 'a' * 40, 'b' * 40, [])
 
 
 @pytest.mark.parametrize('change', ['engine', 'incomplete_jobs', 'build_failed', 'build_skipped', 'missing_gate', 'ci_missing_gate', 'duplicate', 'wrong_sha', 'fork', 'pr', 'wrong_workflow', 'running', 'public_success'])

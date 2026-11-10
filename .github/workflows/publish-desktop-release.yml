@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       recover_partial_publication:
-        description: Recover only a draft whose original platform acceptance jobs all passed
+        description: Recover publication only when the original platform acceptance jobs all passed
         required: false
         type: boolean
         default: false
@@ -92,6 +92,7 @@ jobs:
       branch: ${{ steps.source.outputs.branch }}
       attempt: ${{ steps.source.outputs.attempt }}
       publisher_sha: ${{ steps.source.outputs.publisher_sha }}
+      publication_mode: ${{ steps.source.outputs.publication_mode }}
     steps:
       - uses: actions/checkout@v4
         if: inputs.recover_partial_publication
@@ -114,7 +115,7 @@ jobs:
           if ($env:RECOVERY -eq 'true') {
             $source = python scripts/release/verify_release_recovery.py --repository $env:GITHUB_REPOSITORY --run-id $env:RUN_ID --expected-sha $env:EXPECTED_SOURCE --publisher-sha $env:GITHUB_SHA | ConvertFrom-Json
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            foreach ($key in @('sha', 'publisher_sha', 'branch', 'attempt')) { "$key=$($source.$key)" >> $env:GITHUB_OUTPUT }
+            foreach ($key in @('sha', 'publisher_sha', 'branch', 'attempt', 'publication_mode')) { "$key=$($source.$key)" >> $env:GITHUB_OUTPUT }
             exit 0
           }
           if ($env:RUN_ID -ne $env:GITHUB_RUN_ID) { throw 'Publication must use the current gated workflow run.' }
@@ -128,6 +129,7 @@ jobs:
           "publisher_sha=$($source.head_sha)" >> $env:GITHUB_OUTPUT
           "branch=$($source.head_branch)" >> $env:GITHUB_OUTPUT
           "attempt=$($source.run_attempt)" >> $env:GITHUB_OUTPUT
+          "publication_mode=new" >> $env:GITHUB_OUTPUT
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.source.outputs.publisher_sha }}
@@ -193,7 +195,7 @@ jobs:
           PY
 
       - name: Require a new published Hub version
-        if: ${{ !inputs.recover_partial_publication }}
+        if: needs.verify.outputs.publication_mode == 'new'
         run: |
           python -m pip install --disable-pip-version-check 'packaging>=24.0'
           python scripts/release/build_release_catalog.py --check-version
@@ -291,8 +293,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SOURCE_SHA: ${{ needs.verify.outputs.sha }}
-          REPLACE_EXISTING: ${{ inputs.replace_existing_release }}
-          RECOVERY: ${{ inputs.recover_partial_publication }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing_release && (!inputs.recover_partial_publication || needs.verify.outputs.publication_mode == 'resume') }}
+          RECOVERY: ${{ needs.verify.outputs.publication_mode == 'resume' }}
           SIGNED: ${{ inputs.sign_windows_release }}
         run: |
           python scripts/release/build_release_notes.py --output dist/release-notes.md --signed "$SIGNED"
