@@ -218,7 +218,9 @@ jobs:
           path: out/platform-plugins
 
       - name: Validate all four platform plugin identities and payload digests
-        run: python scripts/release/build_platform_plugins.py assemble --output out/platform-plugins --sdk-wheels dist/*/infernux-*.whl
+        env:
+          SOURCE_SHA: ${{ needs.verify.outputs.sha }}
+        run: python scripts/release/build_platform_plugins.py assemble --output out/platform-plugins --source-revision "$SOURCE_SHA" --sdk-wheels dist/*/infernux-*.whl
 
       - name: Check engine-coupled plugin publication metadata
         run: python scripts/release/publish_engine_plugins.py --directory out/platform-plugins --check
@@ -261,7 +263,7 @@ jobs:
               "InfernuxHub-windows-x64-manifest.json": "json",
               "InfernuxHub-linux-x64-manifest.json": "json",
           }
-          actual = {path.name for path in root.iterdir() if path.is_file()}
+          actual = {path.name for path in root.iterdir()}
           if actual != set(expected):
               raise SystemExit(
                   f"Desktop release payload mismatch: missing={sorted(set(expected)-actual)}, "
@@ -269,8 +271,8 @@ jobs:
               )
           for name, kind in expected.items():
               path = root / name
-              if path.stat().st_size <= 0:
-                  raise SystemExit(f"Empty release asset: {name}")
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f"Missing or empty release asset: {name}")
               if kind == "zip" and not zipfile.is_zipfile(path):
                   raise SystemExit(f"Invalid ZIP/wheel asset: {name}")
               if kind == "json":
@@ -286,6 +288,11 @@ jobs:
 
       - name: Verify Cloudflare destinations against the actual wheel plugin catalog
         run: node tests/release/test-r2-upload-worker.mjs dist/official-plugin-upload-catalog.json
+
+      - name: Preflight immutable PyPI files
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: python scripts/release/verify_publication.py --release-dir "dist/$RELEASE_VERSION" --pypi-version "$RELEASE_VERSION" --allow-missing
 
       - name: Create the release when needed
         id: github_release
@@ -363,21 +370,21 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: gh release upload "$RELEASE_TAG" out/platform-plugins/* --clobber --repo "$GITHUB_REPOSITORY"
 
-      - name: Update and publish the matching plugin repositories
-        env:
-          GH_TOKEN: ${{ secrets.PLATFORM_RELEASE_TOKEN }}
-        run: |
-          gh auth setup-git
-          python scripts/release/publish_engine_plugins.py --directory out/platform-plugins
-
-      - name: Verify GitHub assets and preflight immutable PyPI files
+      - name: Verify the complete GitHub release inventory
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_API_URL: ${{ steps.github_release.outputs.api_url }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           gh api "$RELEASE_API_URL" > dist/github-assets.json
-          python scripts/release/verify_publication.py --release-dir "dist/$RELEASE_VERSION" --github-json dist/github-assets.json --pypi-version "$RELEASE_VERSION" --allow-missing
+          python scripts/release/verify_publication.py --release-dir "dist/$RELEASE_VERSION" --platform-dir out/platform-plugins --github-json dist/github-assets.json
+
+      - name: Update and publish the matching plugin repositories
+        env:
+          GH_TOKEN: ${{ secrets.PLATFORM_RELEASE_TOKEN }}
+        run: |
+          gh auth setup-git
+          python scripts/release/publish_engine_plugins.py --directory out/platform-plugins
 
       - name: Publish engine wheels to PyPI
         env:

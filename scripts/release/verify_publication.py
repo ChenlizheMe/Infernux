@@ -57,11 +57,16 @@ def verify_pypi(root: Path, version: str, *, allow_missing: bool = False, wait_s
             print(f'PyPI matches: {wheel.name}')
 
 
-def verify_github(root: Path, document: dict) -> None:
-    local = {p.name: p for p in root.iterdir() if p.is_file()}
+def verify_github(root: Path, document: dict, *, platform_dir: Path | None = None) -> None:
+    directories = (root,) if platform_dir is None else (root, platform_dir)
+    paths = [path for directory in directories for path in directory.iterdir() if path.is_file()]
+    local = {path.name: path for path in paths}
     remote = {item['name']: item for item in document['assets']}
+    if len(local) != len(paths):
+        raise ValueError('Duplicate filenames in the final GitHub asset inventory')
     if not local or set(local) != set(remote):
-        raise ValueError('GitHub asset inventory does not match the final release')
+        raise ValueError(f'GitHub asset inventory mismatch: missing={sorted(local.keys() - remote.keys())}, '
+                         f'unexpected={sorted(remote.keys() - local.keys())}')
     for name, path in local.items():
         item = remote[name]
         if item.get('digest') != 'sha256:' + digest(path) or item['size'] != path.stat().st_size:
@@ -72,6 +77,7 @@ def verify_github(root: Path, document: dict) -> None:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--release-dir', type=Path, required=True)
+    parser.add_argument('--platform-dir', type=Path, help='Matching platform assets included in the GitHub release')
     parser.add_argument('--pypi-version')
     parser.add_argument('--allow-missing', action='store_true')
     parser.add_argument('--wait-seconds', type=float, default=0, help='Bounded wait for post-upload PyPI metadata visibility')
@@ -82,4 +88,5 @@ if __name__ == '__main__':
     if args.pypi_version:
         verify_pypi(args.release_dir, args.pypi_version, allow_missing=args.allow_missing, wait_seconds=args.wait_seconds)
     if args.github_json:
-        verify_github(args.release_dir, json.loads(args.github_json.read_text(encoding='utf-8')))
+        verify_github(args.release_dir, json.loads(args.github_json.read_text(encoding='utf-8')),
+                      platform_dir=args.platform_dir)

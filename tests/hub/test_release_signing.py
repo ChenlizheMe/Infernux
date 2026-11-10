@@ -242,14 +242,20 @@ try {
 
 def test_github_digest_must_match_exact_final_files(tmp_path):
     module = load('verify_publication')
-    (tmp_path / 'Hub.exe').write_bytes(b'signed')
-    item = {'name': 'Hub.exe', 'size': 6, 'digest': 'sha256:' + hashlib.sha256(b'signed').hexdigest()}
-    module.verify_github(tmp_path, {'assets': [item]})
-    item['digest'] = 'sha256:' + '0' * 64
-    with pytest.raises(ValueError, match='differs'):
-        module.verify_github(tmp_path, {'assets': [item]})
+    desktop = tmp_path / 'desktop'
+    platforms = tmp_path / 'platforms'
+    desktop.mkdir()
+    platforms.mkdir()
+    assets = []
+    for path, data in ((desktop / 'Hub.exe', b'signed'), (platforms / 'infernux.platform-linux.inxpkg', b'player')):
+        path.write_bytes(data)
+        assets.append({'name': path.name, 'size': len(data), 'digest': 'sha256:' + hashlib.sha256(data).hexdigest()})
+    module.verify_github(desktop, {'assets': assets}, platform_dir=platforms)
     with pytest.raises(ValueError, match='inventory'):
-        module.verify_github(tmp_path, {'assets': []})
+        module.verify_github(desktop, {'assets': assets[:1]}, platform_dir=platforms)
+    assets[1]['digest'] = 'sha256:' + '0' * 64
+    with pytest.raises(ValueError, match='differs'):
+        module.verify_github(desktop, {'assets': assets}, platform_dir=platforms)
 
 
 def test_pypi_existing_wheel_mismatch_is_not_skip_existing(tmp_path, monkeypatch):

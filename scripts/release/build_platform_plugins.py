@@ -186,6 +186,12 @@ def build(platform, args):
 
 
 def assemble(directory, *, sdk_wheels=(), source_revision=None):
+    stems = [descriptor["reference"].replace("/", ".") for descriptor in PLATFORM_PLAYERS.values()]
+    artifacts = {stem + extension for stem in stems for extension in (".inxpkg", ".release.json")}
+    incoming = {path.name for path in directory.iterdir()} - {"official-registry.json", "registry.json"}
+    if incoming != artifacts:
+        raise ValueError(f"Platform artifact inventory mismatch: missing={sorted(artifacts - incoming)}, "
+                         f"unexpected={sorted(incoming - artifacts)}")
     revisions = set()
     for platform in PLATFORMS:
         reference = PLATFORM_PLAYERS[platform]["reference"]

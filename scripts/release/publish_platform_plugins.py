@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from build_platform_plugins import RELEASE, PLATFORMS, PLATFORM_PLAYERS, assemble
 from publish_hub_objects import Publisher
@@ -25,8 +26,10 @@ def main():
             publisher.upload(path, f'platform-plugins/{RELEASE}/{path.name}')
     publisher.upload(args.directory / 'registry.json', f'platform-plugins/{RELEASE}/registry.json')
     history = merge_history(published_catalog(), read(args.directory / 'registry.json'))
-    write(args.directory / 'published-registry.json', history)
-    publisher.upload(args.directory / 'published-registry.json', 'plugins/official-registry.json')
+    with TemporaryDirectory(prefix='infernux-plugin-registry-') as directory:
+        path = Path(directory) / 'official-registry.json'
+        write(path, history)
+        publisher.upload(path, 'plugins/official-registry.json')
 
 
 if __name__ == '__main__':

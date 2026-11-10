@@ -24,12 +24,17 @@ jobs:
     name: Check release documentation identity
     runs-on: ubuntu-22.04
     steps:
-      - name: Check platform publication credential is configured
+      - name: Check publication credentials are configured
         env:
           PLATFORM_PUBLISH_CONFIGURED: ${{ secrets.PLATFORM_RELEASE_TOKEN != '' }}
+          PYPI_PUBLISH_CONFIGURED: ${{ secrets.PYPI_API_TOKEN != '' }}
         run: |
           if [ "$PLATFORM_PUBLISH_CONFIGURED" != true ]; then
             echo '::error::Configure the PLATFORM_RELEASE_TOKEN Actions secret before building the release.'
+            exit 1
+          fi
+          if [ "$PYPI_PUBLISH_CONFIGURED" != true ]; then
+            echo '::error::Configure the PYPI_API_TOKEN Actions secret before building the release.'
             exit 1
           fi
       - uses: actions/checkout@v4
