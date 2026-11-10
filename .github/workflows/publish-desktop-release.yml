@@ -384,6 +384,7 @@ jobs:
         run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_VERSION/"* --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload the matching platform plugins to the same engine release
+        if: steps.github_release.outputs.upload == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}

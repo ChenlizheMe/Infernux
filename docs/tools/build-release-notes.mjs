@@ -55,8 +55,9 @@ const bodyAfterTitle = currentMarkdown.slice(heading.index + heading[0].length).
 const firstSection = bodyAfterTitle.search(/^###\s+/m);
 const preamble = firstSection >= 0 ? bodyAfterTitle.slice(0, firstSection) : bodyAfterTitle;
 const summary = cleanInline(preamble.split(/\n\s*\n/).find((block) => block.trim() && !/Baseline for comparison|^---$/m.test(block)) || "");
-const comparison = currentMarkdown.match(/\*\*Baseline for comparison:\*\*\s+\[`v?([^`]+?)\.\.\.v?([^`]+)`\]\(([^)]+)\)/);
+const comparison = preamble.match(/\[[^\]\n]+\]\((https:\/\/github\.com\/[^/\s)]+\/[^/\s)]+\/compare\/v?([^/()\s]+?)\.\.\.v?([^/()\s]+))\)/);
 if (!comparison) throw new Error("UpdateLog.md must include a linked baseline comparison");
+const [, comparisonUrl, comparisonFrom, comparisonTo] = comparison;
 
 const sections = [];
 for (const match of currentMarkdown.matchAll(/^###\s+(.+)\n([\s\S]*?)(?=^###\s+|(?![\s\S]))/gm)) {
@@ -94,9 +95,9 @@ const output = `${JSON.stringify({
   source: "UpdateLog.md",
   summary,
   comparison: {
-    from: comparison[1],
-    to: comparison[2],
-    url: comparison[3]
+    from: comparisonFrom,
+    to: comparisonTo,
+    url: comparisonUrl
   },
   section_count: sections.length,
   item_count: sections.reduce((count, section) => count + section.items.length, 0),
