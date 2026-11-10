@@ -31,7 +31,7 @@ jobs:
         $version = '1.3.296.0'
         $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
         Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe" -OutFile $installer
-        Start-Process -Wait -WindowStyle Hidden -FilePath $installer -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install'
+        Start-Process -Wait -WindowStyle Hidden -WorkingDirectory $env:RUNNER_TEMP -FilePath $installer -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install'
         "VULKAN_SDK=C:\VulkanSDK\$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
     - name: Install Vulkan Runtime
       timeout-minutes: 5
@@ -41,7 +41,7 @@ jobs:
         $version = '1.3.296.0'
         $runtimeInstaller = Join-Path $env:RUNNER_TEMP 'vulkan-runtime.exe'
         Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanRT-$version-Installer.exe" -OutFile $runtimeInstaller
-        $runtimeProcess = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $runtimeInstaller -ArgumentList '/auto'
+        $runtimeProcess = Start-Process -Wait -PassThru -WindowStyle Hidden -WorkingDirectory $env:RUNNER_TEMP -FilePath $runtimeInstaller -ArgumentList '/auto'
         if ($runtimeProcess.ExitCode -ne 0) { throw "Vulkan Runtime installation failed: $($runtimeProcess.ExitCode)" }
     - name: Install release-engineering Python dependencies
       run: |
@@ -50,7 +50,8 @@ jobs:
     - name: Build the complete plugin directly with CMake
       run: |
         conda activate infernux
-        cmake --preset windows-msvc-release -DINFERNUX_PLAYER_PACKAGE_PLUGIN=OFF
+        cmake --preset windows-msvc-release -DINFERNUX_PLAYER_PACKAGE_PLUGIN=OFF \
+          -DINFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES=OFF -DINFERNUX_REQUIRE_CLEAN_WHEEL_SOURCE=ON
         cmake --build --preset windows-msvc-player
     - name: Package the exact engine release plugin
       run: |
@@ -91,7 +92,8 @@ jobs:
     - name: Build the complete plugin directly with CMake
       run: |
         conda activate infernux
-        cmake --preset linux-clang-release -DINFERNUX_PLAYER_PACKAGE_PLUGIN=OFF
+        cmake --preset linux-clang-release -DINFERNUX_PLAYER_PACKAGE_PLUGIN=OFF \
+          -DINFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES=OFF -DINFERNUX_REQUIRE_CLEAN_WHEEL_SOURCE=ON
         cmake --build --preset linux-clang-player
     - name: Package the exact engine release plugin
       run: |

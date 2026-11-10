@@ -2,6 +2,11 @@
 
 set(INFERNUX_PYTHON_STAGE_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source")
 set(INFERNUX_PYTHON_WHEEL_DIR "${INFERNUX_STAGE_DIR}/wheels")
+option(INFERNUX_REQUIRE_CLEAN_WHEEL_SOURCE "Require a clean Git checkout for release wheels" OFF)
+set(_infernux_player_build_source_args)
+if(INFERNUX_REQUIRE_CLEAN_WHEEL_SOURCE)
+    list(APPEND _infernux_player_build_source_args --require-clean)
+endif()
 
 # Developer/release dependency build, not part of a user's game export.
 # LLVM's CMake package must already be provided through CMAKE_PREFIX_PATH.
@@ -33,6 +38,7 @@ add_custom_target(stage_python_package
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/cmake/write_player_build_source.py"
         --source "${CMAKE_SOURCE_DIR}"
         --output "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux/resources/player-build-source.json"
+        ${_infernux_player_build_source_args}
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/release/build_platform_plugins.py"
         catalog --output "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux/resources/official_packages/official-registry.json"
     DEPENDS

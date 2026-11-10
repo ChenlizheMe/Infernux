@@ -102,13 +102,13 @@ def test_interaction_core_commits_edits_on_selection_and_panel_transitions():
         core.shutdown()
 
 
-def test_material_continuous_edit_publishes_one_document_command():
+def test_material_continuous_edit_publishes_one_document_command(tmp_path):
     from infernux.engine.ui.inspector_material import _update_material_edit_session
     from infernux.engine.undo import UndoManager
 
     class _Material:
         guid = "material-guid"
-        file_path = "Assets/Test.mat"
+        file_path = str(tmp_path / "Test.mat")
 
         def __init__(self):
             self.document = {"properties": {"roughness": {"value": 0.8}}}

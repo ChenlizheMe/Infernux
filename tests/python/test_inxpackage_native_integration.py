@@ -20,6 +20,7 @@ from infernux.engine.player_package_native import read_entry
 from infernux.plugins import InxPackage, PluginManager
 from infernux.plugins.content import parse_markdown_blocks
 from infernux.plugins.official import install_default_libraries
+from infernux.resources import get_package_resources_path
 
 
 @pytest.fixture(autouse=True)
@@ -198,7 +199,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     tmp_path, monkeypatch
 ):
     repository = Path(__file__).parents[2]
-    resources = repository / "python" / "infernux" / "resources"
+    resources = Path(get_package_resources_path())
     artifact = resources / "infernux.mcp.inxpkg"
     preset = "windows-msvc-release" if sys.platform == "win32" else "linux-clang-release"
     assert artifact.is_file(), (
@@ -225,7 +226,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
 
 
 def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
-    resources = Path(__file__).resolve().parents[2] / "python/infernux/resources"
+    resources = Path(get_package_resources_path())
     artifact = resources / "infernux.mcp.inxpkg"
     preview = InxPackage.inspect(str(artifact))
     assert preview.metadata["reference"] == "infernux/mcp"

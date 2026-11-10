@@ -164,8 +164,9 @@ jobs:
         run: |
           conda activate infernux
           $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanSDK-$env:VULKAN_SDK_VERSION-Installer.exe"
-          Invoke-WebRequest -Uri $url -OutFile vulkan_sdk.exe
-          Start-Process -Wait -FilePath .\vulkan_sdk.exe -ArgumentList `
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan_sdk.exe'
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process -Wait -WindowStyle Hidden -WorkingDirectory $env:RUNNER_TEMP -FilePath $installer -ArgumentList `
             "--accept-licenses","--default-answer","--confirm-command","install"
 
       - name: Install build and test dependencies
@@ -193,7 +194,9 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/tests/acceptance/windows_software_vulkan.cmake"
+          cmake --preset windows-msvc-release `
+            -DINFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES=OFF -DINFERNUX_REQUIRE_CLEAN_WHEEL_SOURCE=ON `
+            "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/tests/acceptance/windows_software_vulkan.cmake"
 
       - name: Provide pinned software Vulkan for build and tests
         shell: pwsh
@@ -384,7 +387,8 @@ jobs:
       - name: Configure Linux release preset
         run: |
           conda activate infernux
-          cmake --preset linux-clang-release
+          cmake --preset linux-clang-release \
+            -DINFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES=OFF -DINFERNUX_REQUIRE_CLEAN_WHEEL_SOURCE=ON
 
       - name: Build Linux editor and native tests
         run: |

@@ -24,6 +24,14 @@ jobs:
     name: Check release documentation identity
     runs-on: ubuntu-22.04
     steps:
+      - name: Check platform publication credential is configured
+        env:
+          PLATFORM_PUBLISH_CONFIGURED: ${{ secrets.PLATFORM_RELEASE_TOKEN != '' }}
+        run: |
+          if [ "$PLATFORM_PUBLISH_CONFIGURED" != true ]; then
+            echo '::error::Configure the PLATFORM_RELEASE_TOKEN Actions secret before building the release.'
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
