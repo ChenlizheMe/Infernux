@@ -19,6 +19,18 @@ class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
     """Complete an editor scene transaction and refresh editor Gizmos."""
 
     def poll(self, *, admit_assets: bool = False) -> bool:
+        if (
+            admit_assets
+            and self.state is SceneDocumentTransactionState.DOCUMENT_READY
+            and self._native_engine is not None
+            and self._native_engine.has_renderer
+            and self._asset_database is not None
+        ):
+            try:
+                self._asset_database._complete_runtime_artifact_publication()
+            except Exception as exc:
+                self._fail(exc)
+                return True
         if self._path is None or self.state is not SceneDocumentTransactionState.RESOURCES_READY:
             return super().poll(admit_assets=admit_assets)
 

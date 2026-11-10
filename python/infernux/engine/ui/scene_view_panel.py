@@ -209,11 +209,6 @@ class SceneViewPanel(
         self._tool_icon_ids: dict[int, int] = {}  # tool_mode -> tex_id
         self._tool_icons_loaded: bool = False
 
-        # Gizmo hover pick cache — avoids expensive per-triangle raycast
-        # every frame when the mouse hasn't moved.
-        self._hover_pick_cache_pos: tuple[float, float] = (-1.0, -1.0)
-        self._hover_pick_cache_result: int = 0
-
         # Edit-mode ParticleSystem preview follows the primary scene selection.
         self._particle_preview_component = None
         self._particle_preview_object = None
@@ -290,8 +285,6 @@ class SceneViewPanel(
         self._last_scene_height = 0
         self._last_frame_time = 0.0
         self._particle_preview_last_tick = 0.0
-        self._hover_pick_cache_pos = (-1.0, -1.0)
-        self._hover_pick_cache_result = 0
         from infernux.engine.interaction import SelectionService
 
         self._particle_preview_selection_service = SelectionService.instance()

@@ -326,6 +326,7 @@ class InxRenderer
 
     /// @brief Drain GPU work before destructive scene/resource replacement.
     void WaitForGpuIdle();
+    void PrepareSceneAssets();
     [[nodiscard]] size_t GetPendingMeshUploadCount() const;
     [[nodiscard]] uint64_t GetSubmittedMeshUploadCount() const;
     [[nodiscard]] size_t GetResidentMeshVertexBufferCount() const;

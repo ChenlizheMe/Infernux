@@ -1430,7 +1430,6 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             gizmoCtx.particleGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoParticleIconMaterial");
             gizmoCtx.selectedObjectId = m_selectedObjectId;
             gizmoCtx.activeScene = SceneManager::Instance().GetActiveScene();
-            gizmoCtx.cameraPos = glm::vec3(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2]);
             gizmoCtx.iconDpiScale = m_gui ? m_gui->GetDisplayScale() : 1.0f;
         }
 
@@ -2237,6 +2236,14 @@ void InxRenderer::WaitForGpuIdle()
 
     // Pump the OS message queue so Windows does not flag the application
     // as "Not Responding" during long GPU drains (scene switch, MSAA change).
+    SDL_PumpEvents();
+}
+
+void InxRenderer::PrepareSceneAssets()
+{
+    auto &bridge = SceneRenderBridge::Instance();
+    bridge.PrepareFrame();
+    m_vkCore->PrepareSceneAssets(bridge.BuildDrawCalls().drawCalls);
     SDL_PumpEvents();
 }
 

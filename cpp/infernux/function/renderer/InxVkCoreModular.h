@@ -436,6 +436,7 @@ class InxVkCoreModular
     /// Prepare the requested geometry and optional resident vertex stream as one binding.
     /// A pending upload leaves the previous complete binding available for drawing.
     [[nodiscard]] bool PrepareObjectBuffers(const DrawCall &draw);
+    void PrepareSceneAssets(const std::vector<DrawCall> &draws);
 
     /// @brief Advance the frame counter for mesh preparation and retention.
     /// Call once per frame before any Render calls.
@@ -1465,6 +1466,9 @@ class InxVkCoreModular
         uint64_t token = 0;
         uint64_t requestedFrame = 0;
     };
+
+    bool AppendMeshUploadBlock(const SharedMeshKey &key, PendingSharedMeshBuffers &upload, bool vertex,
+                               VkDeviceSize bytes, FrameWorkOwner *owner);
 
     struct RuntimeMeshUpload
     {

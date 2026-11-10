@@ -346,70 +346,43 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
     result.drawCalls.reserve(m_iconEntries.size());
     std::unordered_set<uint64_t> activeIconObjects;
     activeIconObjects.reserve(m_iconEntries.size());
+    const glm::vec3 cameraForward = glm::normalize(glm::cross(billboardRight, billboardUp));
 
-    for (size_t i = 0; i < m_iconEntries.size(); ++i) {
-        const auto &icon = m_iconEntries[i];
+    for (const auto &icon : m_iconEntries) {
         activeIconObjects.insert(icon.objectId);
-
-        // Compute billboard orientation
-        glm::vec3 toCamera = cameraPos - icon.position;
-        float distance = glm::length(toCamera);
-        if (distance < 0.001f) {
-            // When the editor camera sits on top of an icon (common for scene
-            // cameras), keep the icon drawable instead of silently dropping it.
-            toCamera = glm::vec3(0.0f, 0.0f, 1.0f);
-            distance = 0.0f;
-        } else {
-            toCamera /= distance; // normalize
-        }
-
-        // A projected pixel size remains stable across viewport resize, FOV,
-        // perspective/orthographic cameras and monitor DPI changes.
-        const glm::vec3 cameraForward = glm::normalize(glm::cross(billboardRight, billboardUp));
-        const float worldSize =
-            ComputeIconHalfWorldSize(icon.position, cameraPos, cameraForward, projection, viewportHeight, dpiScale);
-
-        glm::vec3 topLeft = icon.position + billboardUp * worldSize - billboardRight * worldSize;
-        glm::vec3 topRight = icon.position + billboardUp * worldSize + billboardRight * worldSize;
-        glm::vec3 bottomRight = icon.position - billboardUp * worldSize + billboardRight * worldSize;
-        glm::vec3 bottomLeft = icon.position - billboardUp * worldSize - billboardRight * worldSize;
-
-        auto makeVertex = [&](const glm::vec3 &pos, const glm::vec2 &uv) -> Vertex {
-            Vertex v;
-            v.pos = pos;
-            v.normal = toCamera;
-            v.tangent = glm::vec4(billboardRight, 1.0f);
-            v.color = icon.color;
-            v.texCoord = uv;
-            return v;
-        };
-
-        std::vector<Vertex> nextVertices;
-        nextVertices.reserve(4);
-        nextVertices.push_back(makeVertex(topLeft, glm::vec2(0.0f, 0.0f)));
-        nextVertices.push_back(makeVertex(topRight, glm::vec2(1.0f, 0.0f)));
-        nextVertices.push_back(makeVertex(bottomRight, glm::vec2(1.0f, 1.0f)));
-        nextVertices.push_back(makeVertex(bottomLeft, glm::vec2(0.0f, 1.0f)));
+        const std::shared_ptr<InxMaterial> &iconMaterial = materials.Resolve(icon.iconKind);
+        if (!iconMaterial)
+            continue;
 
         IconGeometryState &geometry = m_iconGeometryStates[icon.objectId];
-        if (geometry.objectId == 0)
+        if (geometry.objectId == 0) {
             geometry.objectId = AllocateGeometryObjectId(ICON_ID_PREFIX);
-        if (!SameVertices(geometry.vertices, nextVertices)) {
-            geometry.vertices = std::move(nextVertices);
+            const glm::vec3 normal(0.0f, 0.0f, 1.0f);
+            const glm::vec4 tangent(1.0f, 0.0f, 0.0f, 1.0f);
+            geometry.vertices = {
+                Vertex::CreateFull({-1.0f, 1.0f, 0.0f}, normal, tangent, icon.color, {0.0f, 0.0f}),
+                Vertex::CreateFull({1.0f, 1.0f, 0.0f}, normal, tangent, icon.color, {1.0f, 0.0f}),
+                Vertex::CreateFull({1.0f, -1.0f, 0.0f}, normal, tangent, icon.color, {1.0f, 1.0f}),
+                Vertex::CreateFull({-1.0f, -1.0f, 0.0f}, normal, tangent, icon.color, {0.0f, 1.0f}),
+            };
+            geometry.indices = {0, 1, 2, 0, 2, 3};
+            AdvanceRevision(geometry.revision);
+        } else if (geometry.vertices.front().color != icon.color) {
+            for (auto &vertex : geometry.vertices)
+                vertex.color = icon.color;
             AdvanceRevision(geometry.revision);
         }
-        if (geometry.indices.empty())
-            geometry.indices = {0, 1, 2, 0, 2, 3};
 
-        const std::shared_ptr<InxMaterial> &iconMaterial = materials.Resolve(icon.iconKind);
-        if (!iconMaterial) {
-            continue;
-        }
-
+        // Publish the current Scene camera pose in the instance transform. A
+        // moving camera must not queue a new mesh generation for every icon.
+        const float worldSize =
+            ComputeIconHalfWorldSize(icon.position, cameraPos, cameraForward, projection, viewportHeight, dpiScale);
         DrawCall dc;
         dc.indexStart = 0;
         dc.indexCount = 6;
-        dc.worldMatrix = glm::mat4(1.0f); // identity — vertices are in world space
+        dc.worldMatrix =
+            glm::mat4(glm::vec4(billboardRight * worldSize, 0.0f), glm::vec4(billboardUp * worldSize, 0.0f),
+                      glm::vec4(cameraForward, 0.0f), glm::vec4(icon.position, 1.0f));
         dc.material = iconMaterial;
         // The billboard owns a renderer-private buffer identity, while picking
         // must publish the real GameObject identity.  Mixing the two lets an

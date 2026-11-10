@@ -546,6 +546,9 @@ class VkResourceManager
      */
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkBufferHandle> CreateUniformBuffer(VkDeviceSize size);
 
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<VkBufferHandle>
+    CreateHostDrawBuffer(const void *data, VkDeviceSize size, VkBufferUsageFlags usage);
+
     /**
      * @brief Create a storage buffer
      *

@@ -11,6 +11,7 @@ namespace infernux::rhi
 inline constexpr uint64_t InlineBufferUpdateBytes = 64 * 1024;
 inline constexpr uint64_t MinUploadStagingClass = 4 * 1024;
 inline constexpr uint64_t MaxPooledUploadStagingClass = 16 * 1024 * 1024;
+inline constexpr uint64_t UploadStagingPoolBytes = 128ULL * 1024 * 1024;
 
 [[nodiscard]] constexpr uint64_t UploadStagingClass(uint64_t bytes) noexcept
 {

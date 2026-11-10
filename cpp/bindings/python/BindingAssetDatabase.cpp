@@ -96,6 +96,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Schedule filesystem scan and fingerprint collection on the engine JobSystem")
         .def("try_commit_refresh", &AssetDatabase::TryCommitRefresh,
              "Advance asynchronous scan/import and finalize a completed artifact on the owner thread")
+        .def("_complete_runtime_artifact_publication", &AssetDatabase::CompleteRuntimeArtifactPublication,
+             py::call_guard<py::gil_scoped_release>())
         .def("complete_pending_refresh", &AssetDatabase::CompletePendingRefresh,
              "Wait for and commit the currently pending asynchronous refresh")
         .def_property_readonly("refresh_pending", &AssetDatabase::IsRefreshPending)

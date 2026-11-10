@@ -730,6 +730,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
         return m_cachedProj;
     }
 
+    [[nodiscard]] const glm::mat4 &GetEditorOverlayProjection() const
+    {
+        return m_cachedUnjitteredProj;
+    }
+
     [[nodiscard]] glm::mat4 GetPreviousViewProj() const
     {
         return m_cameraHistoryValid ? m_previousViewProj : m_cachedProj * m_cachedView;

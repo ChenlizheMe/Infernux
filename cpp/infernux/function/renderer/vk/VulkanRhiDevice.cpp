@@ -1294,9 +1294,8 @@ void VulkanRhiDevice::RecycleStagingBuffer(std::shared_ptr<VkBufferHandle> buffe
 {
     if (!buffer || !buffer->IsValid())
         return;
-    constexpr VkDeviceSize poolBudget = 64ULL * 1024 * 1024;
     const auto size = buffer->GetSize();
-    if (size > rhi::MaxPooledUploadStagingClass || size > poolBudget - m_stagingStats.bytes ||
+    if (size > rhi::MaxPooledUploadStagingClass || size > rhi::UploadStagingPoolBytes - m_stagingStats.bytes ||
         buffer.use_count() != 1) {
         ++m_stagingStats.discards;
         return;

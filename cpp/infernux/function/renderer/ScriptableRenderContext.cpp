@@ -365,31 +365,22 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
     }
 
-    // Auto-append component gizmo icons (script-side, billboard diamonds)
-    if (m_gizmoCtx.componentGizmos && m_gizmoCtx.componentGizmos->HasIconData()) {
+    const bool hasIcons = m_gizmoCtx.componentGizmos && m_gizmoCtx.componentGizmos->HasIconData();
+    const glm::mat4 editorCameraToWorld =
+        hasIcons || m_gizmoCtx.editorTools ? glm::inverse(m_cachedView) : glm::mat4(1.0f);
+    const glm::vec3 editorCameraPosition(editorCameraToWorld[3]);
+
+    // Auto-append component gizmo icons using the Scene camera snapshot.
+    if (hasIcons) {
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
 #endif
-        glm::vec3 cameraRight(1.0f, 0.0f, 0.0f);
-        glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
-        glm::vec3 iconCameraPosition = m_gizmoCtx.cameraPos;
-        if (m_activeCamera) {
-            // The icon quad is submitted with the cached view/projection pair.
-            // Derive its billboard frame from that same view rather than from
-            // a live camera transform which may have advanced during a graph
-            // rebuild.  This keeps the rendered quad and its pick projection
-            // in the same frame of reference.
-            const auto cameraToWorld = glm::inverse(m_cachedView);
-            cameraRight = glm::normalize(glm::vec3(cameraToWorld[0]));
-            cameraUp = glm::normalize(glm::vec3(cameraToWorld[1]));
-            iconCameraPosition = glm::vec3(cameraToWorld[3]);
-        }
         const GizmosDrawCallBuffer::IconMaterials iconMaterials{
             m_gizmoCtx.componentGizmoIconMaterial, m_gizmoCtx.cameraGizmoIconMaterial,
             m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.particleGizmoIconMaterial};
         DrawCallResult iconResult = m_gizmoCtx.componentGizmos->GetIconDrawCalls(
-            iconMaterials, iconCameraPosition, cameraRight, cameraUp, m_cachedProj,
-            m_graph ? m_graph->GetRenderViewContext().height : 1u, m_gizmoCtx.iconDpiScale);
+            iconMaterials, editorCameraPosition, glm::vec3(editorCameraToWorld[0]), glm::vec3(editorCameraToWorld[1]),
+            m_cachedProj, m_graph ? m_graph->GetRenderViewContext().height : 1u, m_gizmoCtx.iconDpiScale);
         if (!iconResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
         for (auto &dc : iconResult.drawCalls) {
@@ -407,7 +398,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         t0 = Clock::now();
 #endif
         DrawCallResult toolsResult = m_gizmoCtx.editorTools->GetDrawCalls(
-            m_gizmoCtx.editorToolsMaterial, m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, m_gizmoCtx.cameraPos);
+            m_gizmoCtx.editorToolsMaterial, m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, editorCameraPosition);
         if (!toolsResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::EditorTool);
         for (auto &dc : toolsResult.drawCalls) {

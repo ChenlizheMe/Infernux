@@ -1449,7 +1449,7 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     if (m_renderView.kind == rhi::RenderViewKind::Scene) {
         // Editor overlays run after the temporal resolve. Their own subpixel
         // jitter would otherwise reappear as icon/grid shimmer every frame.
-        overlayCamera.proj = ProjectionForPass(m_cachedUnjitteredProj, m_temporalJitterNdc, true);
+        overlayCamera.proj = GetEditorOverlayProjection();
         overlayCamera.previousViewProj = overlayCamera.proj * view;
         overlayCamera.inverseViewProj = glm::inverse(overlayCamera.proj * view);
     }

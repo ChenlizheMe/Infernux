@@ -2943,30 +2943,92 @@ void InxVkCoreModular::RegisterMeshUploadWork(FrameWorkOwner &owner)
             m_lastMeshGpuToken = token;
             const bool vertex = upload.vertexUpload->GetSubmittedBytes() != upload.vertexUpload->GetSize();
             const auto &ticket = vertex ? upload.vertexUpload : upload.indexUpload;
-            const auto offset = ticket->GetSubmittedBytes();
             const auto unit = vertex ? sizeof(float) : key.IndexBytes();
             const auto bytes = m_resourceManager.PlanBufferUploadBlock(*ticket, owner, unit);
-            if (!bytes)
-                return false;
-            bool accepted;
-            if (!vertex && key.indexFormat == MeshIndexFormat::UInt16) {
-                accepted = m_resourceManager.TryAppendIndex16Upload(ticket, upload.indices->data() + offset / unit,
-                                                                    bytes, &owner);
-            } else {
-                const auto *data = vertex ? reinterpret_cast<const std::byte *>(upload.vertices->data())
-                                          : reinterpret_cast<const std::byte *>(upload.indices->data());
-                accepted = m_resourceManager.TryAppendBufferUpload(ticket, data + offset, bytes, &owner, bytes == unit,
-                                                                   unit, {vertex ? upload.indexUpload.get() : nullptr});
-            }
-            if (accepted && vertex && offset == 0) {
-                ++m_submittedMeshUploadCount;
-                m_asyncMeshUploadCount += ticket->IsAsync();
-            }
-            return accepted;
+            return bytes && AppendMeshUploadBlock(key, upload, vertex, bytes, &owner);
         }
         return false;
     };
     m_meshWorkSource = owner.AddSource(std::move(source));
+}
+
+bool InxVkCoreModular::AppendMeshUploadBlock(const SharedMeshKey &key, PendingSharedMeshBuffers &upload, bool vertex,
+                                             VkDeviceSize bytes, FrameWorkOwner *owner)
+{
+    const auto &ticket = vertex ? upload.vertexUpload : upload.indexUpload;
+    const auto offset = ticket->GetSubmittedBytes();
+    const auto unit = vertex ? sizeof(float) : key.IndexBytes();
+    if (!vertex && key.indexFormat == MeshIndexFormat::UInt16)
+        return m_resourceManager.TryAppendIndex16Upload(ticket, upload.indices->data() + offset / unit, bytes, owner);
+
+    const auto *data = vertex ? reinterpret_cast<const std::byte *>(upload.vertices->data())
+                              : reinterpret_cast<const std::byte *>(upload.indices->data());
+    if (!m_resourceManager.TryAppendBufferUpload(ticket, data + offset, bytes, owner, bytes == unit, unit,
+                                                 {vertex ? upload.indexUpload.get() : nullptr}))
+        return false;
+    if (vertex && offset == 0) {
+        ++m_submittedMeshUploadCount;
+        m_asyncMeshUploadCount += ticket->IsAsync();
+    }
+    return true;
+}
+
+void InxVkCoreModular::PrepareSceneAssets(const std::vector<DrawCall> &draws)
+{
+    AdvanceEnsureFrame();
+    std::unordered_set<uint64_t> geometry;
+    std::unordered_set<InxMaterial *> materials;
+    auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    for (const auto &draw : draws) {
+        if (draw.meshVertices && draw.meshIndices && geometry.insert(draw.objectId).second)
+            (void)PrepareObjectBuffers(draw);
+        const auto &material = draw.material;
+        if (!material || !materials.insert(material.get()).second)
+            continue;
+        PrepareMaterialTextureAssets(material);
+        for (const auto &[name, property] : material->GetAllProperties()) {
+            if (property.type != MaterialPropertyType::Texture2D || material->HasRuntimeTextureOverride(name))
+                continue;
+            const auto &guid = std::get<std::string>(property.value);
+            const auto metadata = database->GetMetaByGuid(guid);
+            if (metadata && metadata->GetResourceType() == ResourceType::Texture)
+                (void)ResolveTextureForMaterial(guid, name, material->GetTextureSampler(name), true);
+        }
+    }
+
+    // The explicit scene-open operation can wait for transfers. Reuse the
+    // incremental uploader and bound each batch by its staging footprint.
+    for (;;) {
+        PumpPendingMeshUploads();
+        VkDeviceSize remaining = rhi::UploadStagingPoolBytes;
+        bool hasWork = false;
+        for (auto &[key, upload] : m_pendingSharedMeshBuffers) {
+            if (upload.requestedFrame != m_ensureFrameCounter)
+                continue;
+            hasWork = true;
+            for (const bool vertex : {true, false}) {
+                const auto &ticket = vertex ? upload.vertexUpload : upload.indexUpload;
+                if (ticket->GetSubmittedBytes() == ticket->GetSize())
+                    continue;
+                if (ticket->IsPending())
+                    break;
+                const auto bytes = (std::min)(ticket->GetSize() - ticket->GetSubmittedBytes(),
+                                              VkDeviceSize{rhi::MaxPooledUploadStagingClass});
+                const auto staging = vk::VkResourceManager::GetUploadStagingBytes(bytes);
+                if (staging > remaining)
+                    break;
+                if (AppendMeshUploadBlock(key, upload, vertex, bytes, nullptr))
+                    remaining -= staging;
+                if (ticket->GetSubmittedBytes() != ticket->GetSize())
+                    break;
+            }
+        }
+        if (!hasWork)
+            return;
+        m_resourceManager.DrainBufferUploads();
+        if (m_resourceManager.GetPendingGpuTransferCount())
+            throw std::runtime_error("Scene uploads did not finish");
+    }
 }
 
 void InxVkCoreModular::PumpPendingMeshUploads()
@@ -3101,7 +3163,16 @@ InxVkCoreModular::PerObjectBuffers *InxVkCoreModular::PrepareObjectGeometry(cons
     const auto geometryView = draw.meshGeometryView;
     const auto objectId = draw.objectId;
     const auto runtimeVersion = IsBuiltinMeshGuid(assetGuid) ? uint64_t{1} : draw.meshRuntimeVersion;
-    const auto requestedIndexFormat = draw.meshIndexFormat;
+    // Small engine-owned overlays need to draw in the same frame as their
+    // input. Each geometry revision gets an immutable, host-visible pair;
+    // the regular mesh cache keeps prior pairs alive through GPU completion.
+    const auto domain = draw.identity.domain;
+    const bool smallComponentGizmo =
+        domain == RenderDomain::ComponentGizmo &&
+        vertices.size() * sizeof(Vertex) + indices.size() * sizeof(uint32_t) <= rhi::InlineBufferUpdateBytes;
+    const bool editorOverlay =
+        domain == RenderDomain::EditorTool || domain == RenderDomain::EditorGizmo || smallComponentGizmo;
+    const auto requestedIndexFormat = editorOverlay ? MeshIndexFormat::UInt32 : draw.meshIndexFormat;
     const bool cpuGeometryReleased = vertices.empty() || indices.empty();
     if (!assetGuid.empty() && runtimeVersion == 0)
         throw std::invalid_argument("Mesh GPU identity requires GUID and runtime version together");
@@ -3164,7 +3235,19 @@ InxVkCoreModular::PerObjectBuffers *InxVkCoreModular::PrepareObjectGeometry(cons
     }
 
     auto sharedIt = m_sharedMeshBuffers.find(sharedKey);
-    if (sharedKey.dynamicObjectId) {
+    if (editorOverlay) {
+        if (sharedIt == m_sharedMeshBuffers.end()) {
+            SharedMeshBuffers buffers;
+            buffers.vertexBuffer = m_resourceManager.CreateHostDrawBuffer(
+                vertices.data(), vertices.size() * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            buffers.indexBuffer = m_resourceManager.CreateHostDrawBuffer(
+                indices.data(), indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+            buffers.vertexCount = vertices.size();
+            buffers.indexCount = indices.size();
+            PublishSharedMeshBuffers(sharedKey, std::move(buffers));
+            sharedIt = m_sharedMeshBuffers.find(sharedKey);
+        }
+    } else if (sharedKey.dynamicObjectId) {
         // Finish one captured revision per object. Continually changing
         // procedural geometry can publish intermediate complete revisions.
         auto active = m_runtimeMeshUploads.find(objectId);

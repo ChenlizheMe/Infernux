@@ -59,22 +59,18 @@ static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec2 &screenPoi
 
     const auto &icons = buf->GetIconEntries();
 
-    // Icon billboards are submitted with the Scene RenderGraph's cached
-    // camera matrices.  Reading the live Camera matrices here can disagree
-    // for one or more frames while the graph is rebuilding, after a resize,
-    // or when temporal jitter is active; the icon is then visible at one
-    // pixel location but its pick quad is tested at another.  Reuse the
-    // exact matrices used for submission whenever that cache is available.
+    // Match the unjittered Scene overlay, including when the displayed image
+    // is temporarily stretched during a viewport resize.
     glm::mat4 cameraToWorld = camera->GetCameraToWorldMatrix();
     glm::mat4 view = camera->GetViewMatrix();
     glm::mat4 projection = camera->GetProjectionMatrix();
-    if (SceneRenderGraph *graph = rendererPtr->GetSceneRenderGraph(); graph && graph->HasCachedCameraVP()) {
-        view = graph->GetCachedView();
-        projection = graph->GetCachedProj();
-        cameraToWorld = glm::inverse(view);
-    }
     uint32_t renderHeight = static_cast<uint32_t>(displayedSize.y);
     if (SceneRenderGraph *graph = rendererPtr->GetSceneRenderGraph()) {
+        if (graph->HasCachedCameraVP()) {
+            view = graph->GetCachedView();
+            projection = graph->GetEditorOverlayProjection();
+            cameraToWorld = glm::inverse(view);
+        }
         const uint32_t graphHeight = graph->GetRenderViewContext().height;
         if (graphHeight != 0)
             renderHeight = graphHeight;

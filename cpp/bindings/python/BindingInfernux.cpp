@@ -2173,6 +2173,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     r->WaitForGpuIdle();
             },
             "Drain pending GPU work before destructive scene replacement")
+        .def("_prepare_scene_render_assets", [](Infernux &self) { RequireRenderer(self).PrepareSceneAssets(); },
+             py::call_guard<py::gil_scoped_release>())
         .def(
             "resize_scene_render_target",
             [](Infernux &self, uint32_t width, uint32_t height) {

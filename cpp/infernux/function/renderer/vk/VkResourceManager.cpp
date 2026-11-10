@@ -1209,6 +1209,16 @@ std::unique_ptr<VkBufferHandle> VkResourceManager::CreateUniformBuffer(VkDeviceS
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
 
+std::unique_ptr<VkBufferHandle> VkResourceManager::CreateHostDrawBuffer(const void *data, VkDeviceSize size,
+                                                                        VkBufferUsageFlags usage)
+{
+    auto buffer =
+        CreateBufferInternal(size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (buffer)
+        buffer->CopyFrom(data, size);
+    return buffer;
+}
+
 std::unique_ptr<VkBufferHandle> VkResourceManager::CreateStorageBuffer(VkDeviceSize size, bool deviceLocal)
 {
     VkMemoryPropertyFlags properties =

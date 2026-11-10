@@ -1,8 +1,8 @@
+#include "GizmoIdentityTests.h"
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/resources/AssetDatabase/BuiltinSceneIconMetadata.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
-#include "GizmoIdentityTests.h"
 
 #include <cassert>
 #include <cmath>
@@ -74,8 +74,11 @@ int main()
     assert(iconFirst.drawCalls.size() == 1);
     assert(iconFirst.drawCalls[0].objectId != icon.objectId);
     assert(iconFirst.drawCalls[0].pickingObjectId == icon.objectId);
-    const auto &iconVertices = *iconFirst.drawCalls[0].meshVertices;
-    const float halfWidth = iconVertices[1].pos.x;
+    const auto worldX = [](const auto &result) {
+        const auto &draw = result.drawCalls[0];
+        return (draw.worldMatrix * glm::vec4(draw.meshVertices->at(1).pos, 1.0f)).x;
+    };
+    const float halfWidth = worldX(iconFirst);
     assert(std::abs(halfWidth * 800.0f * iconProjection[1][1] / (2.0f * 10.0f) -
                     infernux::GizmosDrawCallBuffer::ICON_HALF_SIZE_PIXELS) < 1.0e-4f);
     const uint64_t iconRevision = iconFirst.drawCalls[0].meshRuntimeVersion;
@@ -84,16 +87,16 @@ int main()
     assert(iconStable.drawCalls[0].meshRuntimeVersion == iconRevision);
     auto iconHiDpi = buffer.GetIconDrawCalls(materials, {0.0f, 0.0f, -10.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
                                              iconProjection, 800, 2.0f);
-    assert(std::abs(iconHiDpi.drawCalls[0].meshVertices->at(1).pos.x - 2.0f * halfWidth) < 1.0e-5f);
+    assert(std::abs(worldX(iconHiDpi) - 2.0f * halfWidth) < 1.0e-5f);
     const glm::mat4 orthoProjection = glm::ortho(-5.0f, 5.0f, -5.0f, 5.0f, 0.1f, 100.0f);
     auto iconOrtho = buffer.GetIconDrawCalls(materials, {0.0f, 0.0f, -10.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
                                              orthoProjection, 800, 1.0f);
-    assert(std::abs(iconOrtho.drawCalls[0].meshVertices->at(1).pos.x * 800.0f * orthoProjection[1][1] / 2.0f -
+    assert(std::abs(worldX(iconOrtho) * 800.0f * orthoProjection[1][1] / 2.0f -
                     infernux::GizmosDrawCallBuffer::ICON_HALF_SIZE_PIXELS) < 1.0e-4f);
     auto iconCameraMoved = buffer.GetIconDrawCalls(materials, {0.0f, 0.0f, -20.0f}, {1.0f, 0.0f, 0.0f},
                                                    {0.0f, 1.0f, 0.0f}, iconProjection, 800, 1.0f);
-    assert(iconCameraMoved.drawCalls[0].meshRuntimeVersion != iconRevision);
-    assert(std::abs(iconCameraMoved.drawCalls[0].meshVertices->at(1).pos.x - 2.0f * halfWidth) < 1.0e-5f);
+    assert(iconCameraMoved.drawCalls[0].meshRuntimeVersion == iconRevision);
+    assert(std::abs(worldX(iconCameraMoved) - 2.0f * halfWidth) < 1.0e-5f);
 
     // An explicit view-matrix override can flip the camera basis handedness.
     // Its axial distance, and therefore projected icon size, must agree.
@@ -102,7 +105,7 @@ int main()
     assert(std::abs(oppositeBasisSize - halfWidth) < 1.0e-5f);
     auto iconMirrored = buffer.GetIconDrawCalls(materials, {0.0f, 0.0f, 10.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
                                                 iconProjection, 800, 1.0f);
-    assert(std::abs(std::abs(iconMirrored.drawCalls[0].meshVertices->at(1).pos.x) - halfWidth) < 1.0e-5f);
+    assert(std::abs(std::abs(worldX(iconMirrored)) - halfWidth) < 1.0e-5f);
 
     // Built-in kinds are strict routes.  Falling back to the generic white
     // material while a dedicated material is being published produces the

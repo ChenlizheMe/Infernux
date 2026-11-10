@@ -452,6 +452,7 @@ class SceneViewGizmoMixin:
         left_clicked = left_down and not self._was_left_down
         self._was_left_down = left_down
         gizmo_consumed = False
+        gizmo_hovered = is_scene_hovered and not overlay_hovered
 
         if self._engine:
             local_mx, local_my = vp.mouse_local(ctx)
@@ -468,7 +469,7 @@ class SceneViewGizmoMixin:
                     vp.height,
                     left_down=left_down,
                     left_clicked=left_clicked,
-                    hovered=is_scene_hovered,
+                    hovered=gizmo_hovered,
                 )
             if custom_consumed:
                 self._engine.set_editor_tool_highlight(0)
@@ -476,7 +477,7 @@ class SceneViewGizmoMixin:
             else:
                 gizmo_consumed = self._update_gizmo_interaction(
                     ctx, local_mx, local_my, vp.width, vp.height,
-                    left_down, left_clicked, is_scene_hovered)
+                    left_down, left_clicked, gizmo_hovered)
 
         # Camera drag
         mgr = InputManager.instance()
@@ -647,16 +648,9 @@ class SceneViewGizmoMixin:
         # -----------------------------------------------------------
         if not is_hovered:
             engine.set_editor_tool_highlight(0)
-            self._hover_pick_cache_pos = (-1.0, -1.0)
             return False
 
-        pos_key = (local_mx, local_my)
-        if pos_key == self._hover_pick_cache_pos:
-            picked = self._hover_pick_cache_result
-        else:
-            picked = engine.pick_gizmo_axis(local_mx, local_my, scene_w, scene_h)
-            self._hover_pick_cache_pos = pos_key
-            self._hover_pick_cache_result = picked
+        picked = engine.pick_gizmo_axis(local_mx, local_my, scene_w, scene_h)
 
         handle = _GIZMO_IDS.get(picked, 0)
         engine.set_editor_tool_highlight(handle)

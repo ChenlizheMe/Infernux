@@ -332,7 +332,8 @@ class SceneDocumentTransaction:
             if admit:
                 try:
                     for ticket in self._asset_load_tickets:
-                        registry.try_submit_asset_load(ticket)
+                        if not ticket.complete:
+                            ticket.wait()
                 except AssetLoadSuperseded:
                     self._start_asset_preloads(prefer_published=admit)
                     return False

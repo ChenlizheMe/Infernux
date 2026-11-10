@@ -1501,7 +1501,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
         if self._scene_transaction is not None:
             transaction = self._scene_transaction
-            if not transaction.poll():
+            from infernux.engine.scene_document_transaction import SceneDocumentTransactionState
+
+            if (
+                transaction.state is SceneDocumentTransactionState.DOCUMENT_READY
+                and self._engine is not None
+                and self._engine.has_renderer
+            ):
+                # Opening an editor Scene is explicit foreground work. Finish
+                # the dependencies of the parsed document before publishing it.
+                transaction.run_to_completion(raise_on_failure=False)
+            elif not transaction.poll():
                 return
             path = self._scene_transaction_path
             self._scene_transaction = None
@@ -1835,10 +1845,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             if not runtime_load:
                 self._remember_last_scene(self._current_scene_path)
 
-        self._last_scene_load = {
-            "status": "loaded", "path": resolved_path(path), "error": "",
-        }
-
         # Sync all prefab instances to the latest on-disk prefab data
         self.sync_all_prefab_instances(scene)
 
@@ -1853,6 +1859,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         synchronized = synchronize_scene_model_instances(scene, mark_dirty=False)
         if not runtime_load and (synchronized or document_reconciliation_count):
             _mark_scene_dirty(scene)
+
+        if is_active and not runtime_load and self._engine is not None and self._engine.has_renderer:
+            self._engine._prepare_scene_render_assets()
+
+        self._last_scene_load = {
+            "status": "loaded", "path": resolved_path(path), "error": "",
+        }
 
         from infernux.gizmos.collector import notify_scene_changed
 
