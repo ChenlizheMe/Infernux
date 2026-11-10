@@ -80,6 +80,9 @@ struct FrameWorkSource
     std::function<FrameWorkFacts()> describe;
     /// True only for retained state changes, accepted work or a new terminal result.
     std::function<bool(bool, uint64_t)> advance;
+    // On-demand assets and editor images are not background throughput work.
+    // They retain ordinary storage, submission and completion accounting.
+    bool interactive = false;
 };
 
 struct FrameWorkCost
@@ -279,6 +282,22 @@ class FrameWorkOwner
     [[nodiscard]] INFERNUX_FOUNDATION_API const char *GpuUnavailableReason() const noexcept;
 
   private:
+    class ServiceScope
+    {
+      public:
+        ServiceScope(FrameWorkOwner &owner, bool interactive)
+            : m_owner(owner), m_previous(std::exchange(owner.m_interactive, interactive))
+        {
+        }
+        ~ServiceScope()
+        {
+            m_owner.m_interactive = m_previous;
+        }
+
+      private:
+        FrameWorkOwner &m_owner;
+        bool m_previous;
+    };
     enum class Admission : uint8_t
     {
         Open,
@@ -304,7 +323,7 @@ class FrameWorkOwner
     bool Drive(const std::function<FrameGpuAvailability()> &gpuAvailability = {});
     std::vector<Choice> DescribeSources();
     std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source);
-    bool Select(std::vector<Choice> &choices, bool gpu);
+    bool Select(std::vector<Choice> &choices, bool gpu, bool interactive = false);
     bool HasPending(const std::vector<Choice> &choices) const;
     bool FitCpuStorage(uint64_t bytes, bool reclaim) const;
     uint64_t RunningNanoseconds() const;
@@ -337,6 +356,7 @@ class FrameWorkOwner
     bool m_earlyAdvanced = false;
     bool m_serviced = false;
     bool m_preferGpu = false;
+    bool m_interactive = false;
     FrameGpuAvailability m_gpuAvailability = FrameGpuAvailability::Ready;
 };
 

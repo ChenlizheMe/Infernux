@@ -1365,6 +1365,7 @@ std::deque<Infernux::PendingPreviewJob>::iterator Infernux::FindReadyPreviewJob(
 FrameWorkSource Infernux::GetPreviewIoWorkSource()
 {
     FrameWorkSource source;
+    source.interactive = true;
     source.observe = [this] { ObservePreviewJob(); };
     source.refresh = source.observe;
     source.describe = [this] {
@@ -2057,6 +2058,7 @@ void Infernux::PumpPreviewTasks()
         return;
     if (!m_previewWorkSource) {
         FrameWorkSource source;
+        source.interactive = true;
         source.observe = [this] {
             ObserveSubmittedPreviews();
             PollGpuCompletions();

@@ -858,6 +858,7 @@ FrameWorkSource AssetRegistry::GetAssetLoadWorkSource(FrameWorkOwner &owner)
                                 [this](uint64_t target, bool reclaim) { return FitCpuStorage(target, reclaim); }});
     owner.SetCpuResidencySource(m_cpuResidency);
     FrameWorkSource source;
+    source.interactive = true;
     source.observe = [this] {
         ObserveAssetLoad();
         m_pendingLoads.erase(std::remove_if(m_pendingLoads.begin(), m_pendingLoads.end(),

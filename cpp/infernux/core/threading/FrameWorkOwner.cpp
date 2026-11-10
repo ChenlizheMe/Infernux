@@ -174,17 +174,21 @@ const FrameWorkAllowance &FrameWorkOwner::ResourceState(FrameWorkResource resour
 uint64_t FrameWorkOwner::ResourceRemaining(FrameWorkResource resource) const noexcept
 {
     const auto &state = ResourceState(resource);
-    return state.admitted < state.allowance ? state.allowance - state.admitted : 0;
+    const auto remaining = state.admitted < state.allowance ? state.allowance - state.admitted : 0;
+    // Interactive work uses the configured window per submission, rather
+    // than waiting for background credit to refill on another host frame.
+    return m_interactive ? (std::max)(remaining, state.limit) : remaining;
 }
 
 bool FrameWorkOwner::CanAdmitResource(FrameWorkResource resource, uint64_t prediction, bool indivisible) const noexcept
 {
     const auto &state = ResourceState(resource);
     const auto remaining = ResourceRemaining(resource);
-    // Unknown duration gets one calibration grant, never a zero-cost loop.
+    // Background work gets one unknown-duration calibration per host frame.
+    // Interactive admission is limited by actual storage and queue readiness.
     return m_active && IsAccepting() && remaining &&
-           (prediction ? prediction <= remaining || (indivisible && state.admitted == 0)
-                       : state.frameCalibrations == 0);
+           (m_interactive || (prediction ? prediction <= remaining || (indivisible && state.admitted == 0)
+                                         : state.frameCalibrations == 0));
 }
 
 uint64_t FrameWorkOwner::AdmitResource(FrameWorkResource resource, uint64_t prediction, bool indivisible)
@@ -199,7 +203,8 @@ uint64_t FrameWorkOwner::RecordAcceptedResource(FrameWorkResource resource, uint
     ReportProgress();
     auto &state = m_resources[static_cast<size_t>(resource)];
     const auto grant = prediction ? prediction : ResourceRemaining(resource);
-    state.indivisibleOverruns += grant > ResourceRemaining(resource);
+    const auto remaining = state.admitted < state.allowance ? state.allowance - state.admitted : 0;
+    state.indivisibleOverruns += grant > remaining;
     state.admitted += grant;
     state.calibrations += prediction == 0;
     state.frameCalibrations += prediction == 0;
@@ -257,6 +262,8 @@ FrameWorkCost FrameWorkOwner::EndScope()
 
 int64_t FrameWorkOwner::Remaining(bool background) const
 {
+    if (m_interactive)
+        return (std::numeric_limits<int64_t>::max)();
     return static_cast<int64_t>(m_allowanceNanoseconds) - static_cast<int64_t>(m_spentNanoseconds) -
            static_cast<int64_t>(RunningNanoseconds()) -
            (background ? static_cast<int64_t>(m_foregroundReserveNanoseconds) : 0);
@@ -297,6 +304,7 @@ std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_p
     if (!source->awake || !source->observedOpportunity || source->observedOpportunity != m_opportunity)
         return std::nullopt;
     Scope scope(*this);
+    ServiceScope service(*this, source->callbacks.interactive);
     auto facts = source->callbacks.describe();
     if (!source->awake)
         return std::nullopt; // Removed during the callback.
@@ -342,27 +350,30 @@ bool FrameWorkOwner::HasPending(const std::vector<Choice> &choices) const
     });
 }
 
-bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu)
+bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interactive)
 {
-    if (!IsAccepting() || Remaining(true) <= 0)
+    if (!IsAccepting() || (!interactive && Remaining(true) <= 0))
+        return false;
+    if (gpu && interactive && (!m_late || m_gpuAvailability == FrameGpuAvailability::ForegroundRecording))
         return false;
     const bool gpuReserved =
         std::any_of(choices.begin(), choices.end(), [](const auto &choice) { return choice.facts.reservation; });
     const bool gpuBusy =
         std::any_of(choices.begin(), choices.end(), [](const auto &choice) { return choice.facts.gpuBusy; });
     const bool gpuAvailable = m_gpuAvailability == FrameGpuAvailability::Ready && !gpuBusy;
-    const auto fits = [this](const auto &candidate) {
-        return candidate.ready &&
-               candidate.hostNanoseconds <= static_cast<uint64_t>((std::max)(int64_t{0}, Remaining(true)));
+    const auto fits = [this, interactive](const auto &candidate) {
+        return candidate.ready && (interactive || candidate.hostNanoseconds <=
+                                                      static_cast<uint64_t>((std::max)(int64_t{0}, Remaining(true))));
     };
     const auto gpuClaimsHostCredit = [&] {
         return gpuAvailable && std::any_of(choices.begin(), choices.end(), [&](const auto &choice) {
-                   return choice.facts.gpu.reserved && fits(choice.facts.gpu);
+                   return !choice.source->callbacks.interactive && choice.facts.gpu.reserved && fits(choice.facts.gpu);
                });
     };
-    if (!gpu && m_preferGpu && gpuAvailable && std::any_of(choices.begin(), choices.end(), [&](const auto &choice) {
+    if (!interactive && !gpu && m_preferGpu && gpuAvailable &&
+        std::any_of(choices.begin(), choices.end(), [&](const auto &choice) {
             const auto &candidate = choice.facts.gpu;
-            return (!gpuReserved || candidate.reserved) && fits(candidate);
+            return !choice.source->callbacks.interactive && (!gpuReserved || candidate.reserved) && fits(candidate);
         }))
         return false;
     auto &next = gpu ? m_nextGpuSource : m_nextHostSource;
@@ -373,15 +384,16 @@ bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu)
     std::stable_sort(choices.begin(), choices.end(),
                      [&](const auto &left, const auto &right) { return order(left) < order(right); });
     for (auto &choice : choices) {
-        if (!IsAccepting() || Remaining(true) <= 0)
+        if (!IsAccepting() || (!interactive && Remaining(true) <= 0))
             break;
-        if (!choice.source->awake)
+        if (!choice.source->awake || choice.source->callbacks.interactive != interactive)
             continue;
         auto &candidate = gpu ? choice.facts.gpu : choice.facts.host;
-        if (!fits(candidate) || (!candidate.reserved && (gpu ? gpuReserved : gpuClaimsHostCredit())))
+        if (!fits(candidate) || (!interactive && !candidate.reserved && (gpu ? gpuReserved : gpuClaimsHostCredit())))
             continue;
         next = choice.source->id + 1;
         Scope scope(*this);
+        ServiceScope service(*this, interactive);
         const auto progressSerial = m_progressSerial;
         const bool ownProgress = choice.source->callbacks.advance(gpu, candidate.token);
         const bool progressed = ownProgress || progressSerial != m_progressSerial;
@@ -434,7 +446,14 @@ bool FrameWorkOwner::Drive(const std::function<FrameGpuAvailability()> &gpuAvail
         first = false;
         auto choices = DescribeSources();
         const bool pending = HasPending(choices);
-        if (!IsAccepting() || Remaining(true) <= 0) {
+        if (!IsAccepting())
+            return pending;
+        // Interactive consumers must make progress even after background
+        // service spent this frame's allowance. Never wait for a worker or
+        // fence here: an unavailable step simply stays pending.
+        if ((m_late && Select(choices, true, true)) || Select(choices, false, true))
+            continue;
+        if (Remaining(true) <= 0) {
             if (m_late && !m_serviced)
                 m_preferGpu = false;
             return pending;

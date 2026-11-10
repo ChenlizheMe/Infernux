@@ -75,6 +75,7 @@ FrameWorkSource InxVkCoreModular::GetTextureWorkSource(FrameWorkOwner &owner)
     m_frameWorkOwner = &owner;
     m_resourceManager.RegisterImageReadbackWork(owner);
     FrameWorkSource source;
+    source.interactive = true;
     source.observe = [this] {
         m_resourceManager.PollGpuUploads();
         AssetRegistry::Instance().PollTextureReads();

@@ -354,6 +354,7 @@ void InxGUI::DeferTextureRelease(ImGuiTextureResource resource)
 void InxGUI::RegisterTextureUploadWork(FrameWorkOwner &owner)
 {
     FrameWorkSource source;
+    source.interactive = true;
     source.observe = source.refresh = [this] {
         if (!m_pendingTextureUploads.empty()) {
             m_vkCore_ptr->GetResourceManager().PollGpuUploads();

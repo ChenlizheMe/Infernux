@@ -40,6 +40,7 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
     baseline = None
     settled = 0
     gate = None
+    published_before_edit = None
     observations = []
 
     def publish(color):
@@ -47,8 +48,9 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
         AssetManager.note_asset_edit(str(case.material_path), material_json=case.material.serialize())
 
     def supersede(row):
-        nonlocal phase
+        nonlocal phase, published_before_edit
         observations.append(row)
+        published_before_edit = row["ready_generation"]
         publish((1.0, 0.0, 0.0))
         phase = "latest"
 
@@ -57,9 +59,10 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
         if phase != "supersede":
             return
         row = next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key)
-        if not row["has_render_ticket"]:
+        if not row["has_render_ticket"] and row["ready_generation"] != baseline["generation"] + 1:
             return
-        # Preview rendering is submitted during late work, after post-draw.
+        # Late service can submit and publish a small preview in one host
+        # frame. Observe either its pending ticket or its completed image.
         gate = engine.frame_work.add_source(
             None, lambda: _Infernux._FrameWorkFacts(gpu_busy=True), lambda gpu, lane: False
         )
@@ -75,8 +78,18 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
             nonlocal phase, baseline, settled, gate
             row = next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key)
             if phase == "latest":
-                assert row["ready_generation"] != baseline["generation"] + 1, row
+                assert row["ready_generation"] in (published_before_edit, baseline["generation"] + 2), row
             ready = row["texture_id"] and row["generation"] == row["ready_generation"] and not row["in_flight"]
+            if phase == "latest" and gate is not None:
+                # Unrelated background GPU work must not hold up an interactive
+                # preview. Keep it busy until the newest image is published;
+                # only then release the gate for the verification readback.
+                if not ready:
+                    return False
+                assert row["generation"] == baseline["generation"] + 2, row
+                observations.append(row)
+                engine.frame_work.remove_source(gate)
+                gate = None
             if ready:
                 row = measure_preview_pixels(engine, row, case.pixel_reads)
                 if row is None:
@@ -93,13 +106,6 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
             if phase == "supersede" and stage == "queued":
                 supersede(next(dict(r) for r in engine.preview_task_snapshots if r["resource_key"] == key))
             elif phase == "latest":
-                if gate is not None:
-                    assert row["ready_generation"] == baseline["generation"], row
-                    if row["generation"] == baseline["generation"] + 2 and not row["has_render_ticket"]:
-                        observations.append(row)
-                        engine.frame_work.remove_source(gate)
-                        gate = None
-                    return False
                 if ready:
                     assert row["generation"] == baseline["generation"] + 2, row
                     assert row["measured_generation"] == row["generation"], row
