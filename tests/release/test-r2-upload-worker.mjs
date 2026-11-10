@@ -5,7 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 
 const source = await readFile(new URL("../../scripts/release/r2-upload-worker.mjs", import.meta.url), "utf8");
 const context = vm.createContext({ TextEncoder, URL, Response, crypto: { subtle: { timingSafeEqual } } });
-vm.runInContext(source.replace("export default", "globalThis.worker =") + "\nglobalThis.validateKey = requireKey; globalThis.releaseSources = RELEASE_SOURCES;", context);
+vm.runInContext(source.replace("export default", "globalThis.worker =") + "\nglobalThis.validateKey = requireKey; globalThis.releaseSources = RELEASE_SOURCES; globalThis.platformSource = platformPluginSource;", context);
 let packages;
 if (process.argv[2]) {
   const catalog = JSON.parse(await readFile(process.argv[2], "utf8"));
@@ -21,6 +21,18 @@ if (process.argv[2]) {
 assert.ok(Array.isArray(packages) && packages.length > 0);
 for (const manifest of packages) {
   const artifact = `${manifest.reference.replaceAll("/", ".")}.inxpkg`;
+  if (manifest.engine_release) {
+    const directory = `platform-plugins/${manifest.engine_release}`;
+    assert.equal(manifest.artifact, artifact);
+    assert.equal(manifest.source.location, `https://downloads.infernux-engine.com/${directory}/${artifact}`);
+    for (const name of [artifact, artifact.replace(/\.inxpkg$/, ".release.json"), "registry.json"]) {
+      const key = `${directory}/${name}`;
+      assert.equal(context.validateKey(key), key);
+      assert.equal(context.platformSource(key), `https://github.com/ChenlizheMe/Infernux/releases/download/v${manifest.engine_release}/${name}`);
+      assert.throws(() => context.validateKey(`platform-plugins/unpublished/${name}`), /not authorized/);
+    }
+    continue;
+  }
   const key = `plugins/${manifest.reference.replaceAll("/", ".")}/${manifest.version}/${artifact}`;
   assert.equal(context.validateKey(key), key);
   assert.equal(context.releaseSources.get(key), `${manifest.repository}/releases/download/v${manifest.version}/${artifact}`);

@@ -44,7 +44,33 @@ jobs:
           node docs/tools/check-readme.mjs
           python scripts/release/build_release_notes.py --output "$RUNNER_TEMP/release-notes.md" --signed "${{ inputs.sign_windows_release }}"
       - name: Resolve platform plugin identities before building this release
-        run: python scripts/release/build_platform_plugins.py catalog --output out/platform-plugin-catalog.json
+        run: |
+          python scripts/release/build_platform_plugins.py catalog --output out/platform-plugin-catalog.json
+          node tests/release/test-r2-upload-worker.mjs out/platform-plugin-catalog.json
+      - name: Verify the live storage service accepts this release's destinations
+        env:
+          R2_UPLOAD_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+        run: |
+          PYTHONPATH=scripts/release python - <<'PY'
+          import os
+
+          from build_platform_plugins import PLATFORM_REFERENCES, RELEASE, VERSION, catalog
+          from publish_hub_objects import Publisher, release_assets
+          from hub_release import project_hub_build_number, project_hub_version
+
+          prefix = f"platform-plugins/{RELEASE}"
+          keys = [f"{prefix}/registry.json", "plugins/official-registry.json"]
+          for item in catalog()["packages"]:
+              if item["reference"] in PLATFORM_REFERENCES:
+                  artifact = item["artifact"]
+                  keys += [f"{prefix}/{artifact}", f"{prefix}/{artifact.removesuffix('.inxpkg')}.release.json"]
+          keys += [f"hub/{VERSION}/build-{project_hub_build_number()}/{name}"
+                   for name in release_assets(project_hub_version())]
+          publisher = Publisher(os.environ["R2_UPLOAD_TOKEN"])
+          for key in keys:
+              publisher.exists(key)
+          print(f"Verified {len(keys)} live platform and Hub destinations for {RELEASE}")
+          PY
 
   build-test-publish:
     needs: release-identity

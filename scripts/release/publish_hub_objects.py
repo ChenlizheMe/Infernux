@@ -66,19 +66,24 @@ class Publisher:
             raise RuntimeError("The distribution upload endpoint returned invalid JSON")
         return result
 
+    def exists(self, key: str) -> bool:
+        try:
+            stored = self._request("POST", "/stat", {"key": key})
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"Upload service rejected {key} (HTTP {exc.code})") from exc
+        if type(stored.get("exists")) is not bool:
+            raise RuntimeError(f"The upload endpoint returned invalid object existence for {key}")
+        return stored["exists"]
+
     def upload(self, source: Path, key: str) -> None:
         with source.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         # The fixed registry is a moving catalog, committed after its advertised
         # packages exist. All versioned payloads (including JSON) stay immutable.
-        if key != "plugins/official-registry.json":
-            stored = self._request("POST", "/stat", {"key": key})
-            if type(stored.get("exists")) is not bool:
-                raise RuntimeError("The upload endpoint returned invalid object existence")
-            if stored["exists"]:
-                self._verify_public_object(key, digest, allow_missing=False)
-                print(f"Already published identical object: {key}")
-                return
+        if key != "plugins/official-registry.json" and self.exists(key):
+            self._verify_public_object(key, digest, allow_missing=False)
+            print(f"Already published identical object: {key}")
+            return
         is_json = source.suffix == ".json"
         started = self._request(
             "POST",
