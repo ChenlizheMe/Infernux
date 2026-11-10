@@ -46,6 +46,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def_readwrite("error_code", &AssetMutationResult::errorCode)
         .def_readwrite("error", &AssetMutationResult::error)
         .def_readwrite("query_generation", &AssetMutationResult::queryGeneration)
+        .def_readonly("_authored_metadata_guid", &AssetMutationResult::authoredMetadataGuid)
+        .def_readonly("_observed_metadata", &AssetMutationResult::observedMetadata)
         .def("__bool__", [](const AssetMutationResult &result) { return result.succeeded; });
 
     py::class_<AssetDependencyGraph, std::shared_ptr<AssetDependencyGraph>>(m, "AssetDependencyGraph")
@@ -122,7 +124,7 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
                 return database.ReimportAsset(path, snapshot, writeScope);
             },
             py::arg("path"), py::arg("settings") = py::none(), py::kw_only(), py::arg("write_scope") = PathWriteScope{},
-            "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
+            "Reimport an existing asset, atomically publishing optional import settings with its artifacts")
         .def(
             "_begin_watcher_import",
             [](AssetDatabase &database, const std::string &path, py::function onReady, py::function onFinished,
@@ -174,11 +176,11 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
                 database.BeginModelReimport(path, PythonToJson(settings), std::move(published));
             },
             py::arg("path"), py::arg("settings"), py::kw_only(), py::arg("on_published") = py::none(),
-            "Start model cooking on the native JobSystem")
+            "Start an asset settings Apply on the native JobSystem")
         .def("try_commit_model_reimport", &AssetDatabase::TryCommitModelReimport,
-             "Return the model Apply result once publication has completed")
+             "Return the Apply result once publication has completed")
         .def("complete_pending_model_reimport", &AssetDatabase::CompletePendingModelReimport,
-             py::call_guard<py::gil_scoped_release>(), "Wait for and publish the requested model Apply")
+             py::call_guard<py::gil_scoped_release>(), "Wait for and publish the requested asset Apply")
         .def("discard_model_reimport", &AssetDatabase::DiscardModelReimport)
         .def_property_readonly("model_reimport_pending", &AssetDatabase::IsModelReimportPending)
         .def_property_readonly("model_reimport_publishing", &AssetDatabase::IsModelReimportPublishing)

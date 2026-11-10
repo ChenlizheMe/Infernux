@@ -1940,6 +1940,7 @@ class DocumentRegistry:
         deleted: bool = False,
         metadata_only: bool = False,
         baseline_only: bool = False,
+        metadata_file_state: Any = None,
     ) -> Optional[bool]:
         """Reserve one real content change before AssetManager mutates resources.
 
@@ -1967,9 +1968,11 @@ class DocumentRegistry:
         if identity in self._external_change_preflights:
             return True
 
-        observed_file_state = _capture_durable_file_state(
-            resource_path + ".meta" if metadata_only else resource_path
-        )
+        observed_file_state = metadata_file_state if metadata_only else None
+        if observed_file_state is None:
+            observed_file_state = _capture_durable_file_state(
+                resource_path + ".meta" if metadata_only else resource_path
+            )
         content_changed = True if metadata_only else self._resource_content_changed(affected, observed_file_state)
         if content_changed is None:
             return None

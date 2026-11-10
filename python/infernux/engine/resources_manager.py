@@ -34,7 +34,6 @@ from infernux.engine.import_coordinator import (
     ImportCoordinator,
     is_document_store_temporary_path,
 )
-from infernux.core.asset_types import read_meta_guid
 from infernux.debug import Debug
 
 
@@ -457,7 +456,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # content revision, never a second asset identity.
             AssetFsEventKind.MODIFIED if registered_guid else AssetFsEventKind.CREATED,
             event.src_path,
-            guid_hint=registered_guid or read_meta_guid(event.src_path),
+            guid_hint=registered_guid,
+            unresolved_identity=not registered_guid,
             debounce_seconds=0.0 if script_change or editor_catalog_change else None,
         )
         if script_change or editor_catalog_change:
@@ -582,6 +582,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if callable(request_full_speed):
                 request_full_speed()
         for event in events:
+            if not self._coordinator.begin_dispatch(event):
+                continue
             retained = False
             try:
                 # A catalog transaction owns mutation until its prepared
@@ -628,7 +630,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         else:
             Debug.log_error(f"Asset event failed: {event}: {exc}")
 
-    def _reschedule_asset_event(self, event: AssetFsEvent, *, retry: bool) -> bool:
+    def _reschedule_asset_event(self, event: AssetFsEvent, *, retry: bool, authored_guid: str = "") -> bool:
         # An importer can wait after its create/move catalog commit. The
         # remaining work is then a content revision at the published path,
         # rather than another identity mutation. Only waiting work needs this
@@ -638,8 +640,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             guid = self._asset_database.get_guid_from_path(event.destination or event.path)
             published = bool(guid) and (not event.guid_hint or guid == event.guid_hint)
         if retry:
-            return self._coordinator.retry(event, asset_published=published)
-        self._coordinator.defer(event, asset_published=published)
+            return self._coordinator.retry(event, asset_published=published, authored_guid=authored_guid)
+        self._coordinator.defer(event, asset_published=published, authored_guid=authored_guid)
         return True
 
     def _record_frontend_failure(self, result: ScriptChangeResult) -> None:
@@ -1518,20 +1520,31 @@ class ResourceChangeHandler(FileSystemEventHandler):
         runtime = {}
         created = False
         successor = False
+        move_source = ""
         rejected = None
 
         def ready(result, before_write):
-            nonlocal documents, asset_guid, runtime, created, successor, rejected
+            nonlocal documents, asset_guid, runtime, created, successor, move_source, rejected
             successor = self._coordinator.has_source_successor(event)
-            if successor or not before_write:
-                return not successor
+            if successor:
+                return False
             with action_origin_scope(ActionOrigin.EXTERNAL):
                 try:
                     if not metadata_only and self._is_source_watcher_echo(event):
                         return False
                     created = event.kind is AssetFsEventKind.CREATED and result.operation == "import"
+                    if created and result._authored_metadata_guid:
+                        old_path = database.get_path_from_guid(result._authored_metadata_guid)
+                        if old_path and path_key(old_path) != path_key(path) and not os.path.isfile(old_path):
+                            move_source = old_path
+                            return False
+                    if not before_write:
+                        return True
                     if not created:
-                        preflight = self._preflight_modified(path, metadata_only=metadata_only)
+                        preflight = self._preflight_modified(
+                            path, metadata_only=metadata_only,
+                            metadata_file_state=result._observed_metadata if metadata_only else None,
+                        )
                         if preflight is None:
                             return False
                         documents, asset_guid = preflight
@@ -1558,9 +1571,23 @@ class ResourceChangeHandler(FileSystemEventHandler):
                         # The queued source import reads the sidecar too. A
                         # deferred older sidecar event would block that source.
                         if not (has_successor and metadata_only):
-                            self._reschedule_asset_event(event, retry=False)
+                            self._reschedule_asset_event(event, retry=False, authored_guid=result._authored_metadata_guid)
                         return
                     if outcome == "skipped":
+                        if move_source:
+                            guid = result._authored_metadata_guid
+                            move = None
+                            if not os.path.isfile(move_source) and os.path.isfile(path):
+                                move = self._coordinator.resolve_created_move(event, guid, move_source)
+                            if move is not None and self._coordinator.begin_dispatch(move):
+                                try:
+                                    self._dispatch_event(move)
+                                except Exception as exc:
+                                    self._handle_asset_event_failure(move, exc)
+                                finally:
+                                    self._coordinator.complete(move)
+                            elif not self._reschedule_asset_event(event, retry=True, authored_guid=guid):
+                                Debug.log_error(f"Asset move event did not arrive for '{move_source}' -> '{path}'")
                         return
                     if not result.database_committed:
                         AssetManager._meta_write_suppression.pop(AssetManager._normalize_asset_path(path), None)
@@ -1665,7 +1692,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             return False
         return self._begin_watcher_import(event, metadata_only=True)
 
-    def _preflight_modified(self, path: str, *, metadata_only: bool = False):
+    def _preflight_modified(self, path: str, *, metadata_only: bool = False, metadata_file_state=None):
         from infernux.core.assets import AssetManager
         from infernux.engine.interaction import DocumentRegistry
 
@@ -1684,6 +1711,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         accepted = documents.preflight_external_resource_change(
             path, guid=asset_guid, metadata_only=metadata_only,
             baseline_only=local_write_state == "ack",
+            metadata_file_state=metadata_file_state,
         )
         if accepted is None:
             raise _AssetImportNotReady(

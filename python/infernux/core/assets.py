@@ -650,10 +650,6 @@ class AssetManager:
         if cls._execution_strategies_initialized:
             return
 
-        from infernux.core.asset_types import write_texture_import_settings, write_audio_import_settings
-
-        cls.register_import_strategy("texture", write_texture_import_settings)
-        cls.register_import_strategy("audio", write_audio_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
         cls.register_save_strategy("data_asset", lambda resource: resource.save() is not False)
         cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
@@ -667,21 +663,28 @@ class AssetManager:
 
         cls._execution_strategies_initialized = True
 
+    @staticmethod
+    def _import_settings_document(asset_category: str, path: str, settings_obj) -> dict | None:
+        from infernux.core.asset_types import (
+            AudioImportSettings, MeshImportSettings, TextureImportSettings, _canonical_texture_import_settings,
+        )
+
+        if asset_category == "texture":
+            settings = TextureImportSettings.from_dict(settings_obj.to_dict())
+            return _canonical_texture_import_settings(path, settings).to_dict()
+        if asset_category == "audio":
+            return AudioImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+        if asset_category == "mesh":
+            return MeshImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+        return None
+
     @classmethod
     def apply_import_settings(cls, asset_category: str, path: str, settings_obj) -> bool:
         """Apply import settings by category and trigger reimport in one unified step."""
         cls._ensure_execution_strategies()
 
-        if asset_category == "texture" and "::subtex:" in path:
-            from infernux.core.asset_types import TextureImportSettings
-            snapshot = TextureImportSettings.from_dict(settings_obj.to_dict()).to_dict()
-            return bool(cls.reimport_asset(path, import_settings=snapshot))
-
-        if asset_category == "mesh":
-            # Model settings are an import input, not an early sidecar write.
-            # Native import publishes this snapshot and its artifacts together.
-            from infernux.core.asset_types import MeshImportSettings
-            snapshot = MeshImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+        snapshot = cls._import_settings_document(asset_category, path, settings_obj)
+        if snapshot is not None:
             return bool(cls.reimport_asset(path, import_settings=snapshot))
 
         apply_fn = cls._import_apply_handlers.get(asset_category)
@@ -703,22 +706,29 @@ class AssetManager:
 
     @classmethod
     def begin_model_reimport(cls, path: str, settings_obj):
-        """Submit an immutable model settings snapshot; return its owning database."""
-        from infernux.core.asset_types import MeshImportSettings, TextureImportSettings
+        category = "texture" if "::subtex:" in path else "mesh"
+        return cls.begin_import_settings_apply(category, path, settings_obj)
+
+    @classmethod
+    def begin_import_settings_apply(cls, category: str, path: str, settings_obj):
+        """Submit an immutable settings snapshot to the catalog's Apply queue."""
         from infernux.engine.interaction import action_origin_scope, current_action_origin
 
         database = cls._mutation_database()
-        settings_type = TextureImportSettings if "::subtex:" in path else MeshImportSettings
-        snapshot = settings_type.from_dict(settings_obj.to_dict()).to_dict()
+        snapshot = cls._import_settings_document(category, path, settings_obj)
+        if snapshot is None:
+            raise ValueError(f"unsupported import settings category: {category}")
         origin = current_action_origin()
 
         def on_published(result, old_version, old_scale):
             with action_origin_scope(origin):
                 cls._suppress_meta_watcher(result.path)
-                cls._publish_reimport_result(
-                    result.path, result, database=cls._mutation_database(), suppress_watcher_echo=False,
+                published = cls._publish_reimport_result(
+                    result.path, result, database=database, suppress_watcher_echo=False,
                     model_baseline=(old_version, old_scale), source_unchanged=True,
                 )
+                if not published:
+                    raise RuntimeError(published.error)
 
         database.begin_model_reimport(path, snapshot, on_published=on_published)
         return database
@@ -910,7 +920,7 @@ class AssetManager:
             cls._suppress_meta_watcher(path)
         return cls._publish_reimport_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
-            model_baseline=model_baseline, **runtime,
+            model_baseline=model_baseline, source_unchanged=import_settings is not None, **runtime,
         )
 
     @classmethod

@@ -248,6 +248,12 @@ void InxResourceMeta::InheritSettings(const InxResourceMeta &source)
             m_metadata.try_emplace(key, value);
 }
 
+void InxResourceMeta::ApplySettings(InxResourceMeta settings)
+{
+    for (auto &[key, value] : settings.m_metadata)
+        m_metadata.insert_or_assign(key, std::move(value));
+}
+
 const std::string &InxResourceMeta::GetResourceName() const
 {
     static const std::string empty;

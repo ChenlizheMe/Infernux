@@ -695,8 +695,9 @@ def read_texture_import_settings(asset_path: str) -> TextureImportSettings:
     return settings
 
 
-def write_texture_import_settings(asset_path: str, settings: TextureImportSettings) -> bool:
-    """Write texture import settings back to the .meta file."""
+def _canonical_texture_import_settings(
+    asset_path: str, settings: TextureImportSettings,
+) -> TextureImportSettings:
     canonical = settings.copy()
     if os.path.splitext(asset_path)[1].lower() == ".inxvfield":
         canonical.texture_type = TextureType.VECTOR_FIELD
@@ -712,7 +713,12 @@ def write_texture_import_settings(asset_path: str, settings: TextureImportSettin
         canonical.compression = TextureCompression.NONE
         if canonical.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
             canonical.format = TextureFormat.RGBA16_FLOAT
-    return write_meta_fields(asset_path, canonical.to_dict())
+    return canonical
+
+
+def write_texture_import_settings(asset_path: str, settings: TextureImportSettings) -> bool:
+    """Write texture import settings back to the .meta file."""
+    return write_meta_fields(asset_path, _canonical_texture_import_settings(asset_path, settings).to_dict())
 
 
 def read_audio_import_settings(asset_path: str) -> AudioImportSettings:

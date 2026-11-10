@@ -2391,6 +2391,8 @@ class AssetMutationResult:
     error_code: AssetMutationErrorCode
     error: str
     query_generation: int
+    _authored_metadata_guid: str
+    _observed_metadata: DocumentFileState | None
     def __bool__(self) -> bool: ...
 
 

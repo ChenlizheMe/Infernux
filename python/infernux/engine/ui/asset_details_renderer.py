@@ -261,79 +261,18 @@ class _ImportSettingsController:
 
         registry = DocumentRegistry.instance()
         content = self._content_document(self.settings)
-        registry.capture_save_revision(
-            ticket.ticket_id,
-            content_token=document_content_token(content),
-        )
-        if self.category == "mesh" or (self.category == "texture" and "::subtex:" in self.file_path):
+        token = document_content_token(content)
+        registry.capture_save_revision(ticket.ticket_id, content_token=token)
+        if self.category in {"mesh", "texture", "audio"}:
             from infernux.core.assets import AssetManager
             from infernux.engine.interaction import DocumentActionResult, DocumentActionStatus
 
             snapshot = copy.deepcopy(self.settings)
-            database = AssetManager.begin_model_reimport(self.file_path, snapshot)
-            self._pending_model_save = (database, ticket.ticket_id, snapshot, document_content_token(content))
-            return DocumentActionResult(DocumentActionStatus.PENDING)
-        if self.category == "texture":
-            from infernux.engine.interaction import (
-                DocumentActionResult,
-                DocumentActionStatus,
-            )
-            from infernux.engine.ui.asset_import_progress import (
-                AssetImportProgressService,
-            )
-
-            settings_snapshot = copy.deepcopy(self.settings)
-            content_token = document_content_token(content)
-
-            def _work() -> bool:
-                # An external sidecar publication can retire this save while
-                # its progress modal is still presenting the opening frame.
-                # Never apply the captured draft after its ticket was cancelled.
-                if not ticket.is_pending:
-                    return False
-                if not self.exec_layer.apply_import_settings(settings_snapshot):
-                    return False
-                from infernux.core.assets import AssetManager
-
-                AssetManager.flush_pending_gpu_texture_reloads(
-                    paths=[self.file_path],
-                    max_items=None,
-                )
-                return True
-
-            def _is_published() -> bool:
-                from infernux.engine.ui.asset_resource_preview import (
-                    ensure_imported_texture_preview,
-                )
-
-                return ensure_imported_texture_preview(self.file_path)
-
-            def _complete(success: bool, message: str) -> None:
-                if success:
-                    self.disk_settings = copy.deepcopy(settings_snapshot)
-                    if self.state is not None and self.state.import_controller is self:
-                        self.state.disk_settings = self.disk_settings
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=success,
-                    message=message,
-                    content_token=content_token if success else None,
-                )
-
-            started = AssetImportProgressService.instance().begin(
-                title=t("asset.import_progress.texture_title"),
-                path=self.file_path,
-                work=_work,
-                is_published=_is_published,
-                complete=_complete,
-            )
-            if not started:
-                registry.complete_save(
-                    ticket.ticket_id,
-                    success=False,
-                    message="another asset import is already in progress",
-                )
-                return False
+            if self.category == "mesh" or "::subtex:" in self.file_path:
+                database = AssetManager.begin_model_reimport(self.file_path, snapshot)
+            else:
+                database = AssetManager.begin_import_settings_apply(self.category, self.file_path, snapshot)
+            self._pending_model_save = (database, ticket.ticket_id, snapshot, token)
             return DocumentActionResult(DocumentActionStatus.PENDING)
 
         if not self.exec_layer.apply_import_settings(self.settings):
@@ -344,7 +283,7 @@ class _ImportSettingsController:
         registry.complete_save(
             ticket.ticket_id,
             success=True,
-            content_token=document_content_token(content),
+            content_token=token,
         )
         return True
 
@@ -374,6 +313,7 @@ class _ImportSettingsController:
                 self.state.disk_settings = self.disk_settings
         completed = DocumentRegistry.instance().complete_save(
             ticket_id, success=success, message=message, content_token=token if success else None,
+            committed_file_state=ticket.expected_file_state,
         )
         from infernux.engine.interaction import SaveTicketStatus
 
@@ -383,7 +323,7 @@ class _ImportSettingsController:
             completed.message,
         )
         if not success:
-            Debug.log_error(f"Model Apply failed for '{self.file_path}': {message}")
+            Debug.log_error(f"Asset Apply failed for '{self.file_path}': {message}")
         return 1
 
     def cancel_pending_writes(self) -> None:
@@ -391,7 +331,7 @@ class _ImportSettingsController:
             database = self._pending_model_save[0]
             cancelled = database.discard_model_reimport()
             self._pending_model_save = None
-            message = "model Apply was cancelled" if cancelled else "model Apply is completing its accepted write"
+            message = "asset Apply was cancelled" if cancelled else "asset Apply is completing its accepted write"
             _ImportSettingsBatch.model_save_completed(self.document_id, False, message)
 
     def discard(self, *, document_id: str):

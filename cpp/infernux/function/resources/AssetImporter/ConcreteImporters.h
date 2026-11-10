@@ -293,6 +293,11 @@ class AudioImporter final : public AssetImporter
 
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
+        ApplyDefaultSettings(meta);
+    }
+
+    static void ApplyDefaultSettings(InxResourceMeta &meta)
+    {
         if (!meta.HasKey("force_mono"))
             meta.AddMetadata("force_mono", false);
         if (!meta.HasKey("load_type"))

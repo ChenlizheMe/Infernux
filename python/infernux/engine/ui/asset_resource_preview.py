@@ -125,28 +125,6 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
     return (int(tex_id), int(w), int(h))
 
 
-def ensure_imported_texture_preview(file_path: str) -> bool:
-    """Advance and verify publication of the final imported GPU texture."""
-    native = _resolve_native_engine(None)
-    if native is None or not file_path:
-        return False
-    norm_path = resolved_path(file_path)
-    native.poll_gpu_completions()
-    texture_id, _, _ = native.query_or_schedule_texture_preview(
-        f"tex|{norm_path}",
-        norm_path,
-        0,
-        nearest=False,
-        srgb=False,
-        max_size=65536,
-        texture_format="auto",
-        texture_type="default",
-        authoring=True,
-        pump=True,
-    )
-    return int(texture_id or 0) != 0
-
-
 def _try_get_cpp_material_preview_texture(native: Any, norm_path: str,
                                           material_json: str = "",
                                           file_mtime_hint: int = 0) -> int:

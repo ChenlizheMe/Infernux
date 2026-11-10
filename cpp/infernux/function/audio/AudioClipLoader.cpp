@@ -57,16 +57,15 @@ bool AudioClipLoader::Reload(const RuntimeAssetPayload &existing, const std::str
         return false;
     }
 
-    // Unload current data and reload from file
-    clip->Unload();
     const auto metadata = adb ? adb->GetMetaByGuid(guid) : nullptr;
-    if (!clip->LoadFromFile(filePath, metadata.get())) {
+    AudioClip candidate;
+    if (!candidate.LoadFromFile(filePath, metadata.get())) {
         INXLOG_ERROR("AudioClipLoader::Reload: failed to decode: ", filePath);
         return false;
     }
 
-    // Restore authoritative GUID
-    clip->SetGuid(guid);
+    candidate.SetGuid(guid);
+    *clip = std::move(candidate);
 
     return true;
 }

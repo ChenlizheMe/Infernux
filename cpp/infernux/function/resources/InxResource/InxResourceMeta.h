@@ -52,6 +52,7 @@ class InxResourceMeta
     /// Retain authored settings absent from freshly prepared source metadata.
     /// GUID ownership and local source observations are not inherited.
     INFERNUX_ASSET_RUNTIME_API void InheritSettings(const InxResourceMeta &source);
+    INFERNUX_ASSET_RUNTIME_API void ApplySettings(InxResourceMeta settings);
 
     /// @brief Get metadata value with type registry
     /// @tparam T The type to retrieve

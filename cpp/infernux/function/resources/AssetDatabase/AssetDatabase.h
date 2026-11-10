@@ -37,6 +37,7 @@ class AssetRegistry;
 class AssetLoadTicket;
 class FrameWorkOwner;
 struct FrameWorkSource;
+enum class FrameWorkResource : uint8_t;
 
 enum class AssetMutationErrorCode : uint8_t
 {
@@ -61,6 +62,8 @@ struct AssetMutationResult
     AssetMutationErrorCode errorCode = AssetMutationErrorCode::None;
     std::string error;
     uint64_t queryGeneration = 0;
+    std::string authoredMetadataGuid;
+    std::optional<AtomicFileState> observedMetadata;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -593,6 +596,7 @@ class AssetDatabase : public NativeLifetimeOwner
     };
 
     struct MetadataPlanCursor;
+    struct MetadataReadCursor;
 
     struct WorkerMetadataPrepare
     {
@@ -602,10 +606,13 @@ class AssetDatabase : public NativeLifetimeOwner
         const IAssetLoader *loader = nullptr;
         std::string fallbackGuid;
         std::string createdGuid;
+        std::string authoredGuid;
         bool inheritedGuid = false;
         std::shared_ptr<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
         std::shared_ptr<MetadataPlanCursor> sidecarPlan;
+        std::shared_ptr<MetadataReadCursor> sidecarRead;
+        std::unique_ptr<InxResourceMeta> decodedSidecar;
         std::optional<FileInput::Revision> sidecarRevision;
         uint64_t sidecarWorkingBytes = 0;
         std::shared_ptr<const InxResourceMeta> publishedSidecar;
@@ -634,6 +641,7 @@ class AssetDatabase : public NativeLifetimeOwner
         enum class Phase
         {
             MetadataPlan,
+            TexturePrepare,
             Cook,
             Write,
             Publish,
@@ -643,6 +651,7 @@ class AssetDatabase : public NativeLifetimeOwner
         PathWriteScope writeScope;
         WorkerImport worker;
         WorkerMetadataPrepare metadata;
+        std::shared_ptr<TextureSourceSnapshot> textureSource;
         std::string textureGuid;
         nlohmann::json settings;
         AssetMutationResult result;
@@ -650,9 +659,9 @@ class AssetDatabase : public NativeLifetimeOwner
         std::shared_ptr<AssetLoadTicket> repairTicket;
         std::unordered_set<std::string> artifactGuids;
         CachedFileState committedFiles;
-        AssetFileFingerprint metadataFingerprint;
+        FileInput::Revision sourceRevision;
+        std::optional<FileInput::Revision> metadataRevision;
         Phase phase = Phase::Cook;
-        bool metadataExists = false;
         bool abandoned = false;
         enum : uint8_t
         {
@@ -703,6 +712,8 @@ class AssetDatabase : public NativeLifetimeOwner
     {
         Scan,
         MetadataPlan,
+        MetadataCapture,
+        MetadataDecode,
         Metadata,
         Sidecar,
         SidecarMeasure,
@@ -734,6 +745,7 @@ class AssetDatabase : public NativeLifetimeOwner
         {
             submitted = count;
             make = {};
+            selectFileWindow = {};
             waiting.clear();
         }
 
@@ -741,6 +753,7 @@ class AssetDatabase : public NativeLifetimeOwner
         uint32_t count = 0;
         uint32_t submitted = 0;
         Factory make;
+        std::function<uint64_t(bool managed)> selectFileWindow;
         std::vector<std::pair<uint64_t, uint32_t>> waiting;
         std::vector<Receipt> active;
     };
@@ -876,10 +889,11 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
     static void PlanMetadataRead(WorkerMetadataPrepare &item, uint64_t range = 0);
-    void RequireMetadataStorage(WorkerMetadataPrepare &item,
-                                const std::shared_ptr<FrameCpuStorageClaim> &storage) const;
+    void RequireMetadataStorage(WorkerMetadataPrepare &item, const std::shared_ptr<FrameCpuStorageClaim> &storage,
+                                uint64_t extraBytes = 0) const;
     [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> ReserveMetadataRead(WorkerMetadataPrepare &item) const;
-    static void PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource = nullptr);
+    static void PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource = nullptr,
+                                const nlohmann::json *sourceSettings = nullptr);
     static void FinishMetadataAdoption(WorkerMetadataPrepare &item, TextureSourceSnapshot *textureSource);
     static void PublishMissingMetadata(WorkerMetadataPrepare &item, const std::string &projectRoot,
                                        TextureSourceSnapshot *textureSource = nullptr, bool deferAdoption = false);
@@ -918,11 +932,15 @@ class AssetDatabase : public NativeLifetimeOwner
     void QueueCatalogJob(CatalogWork &work, CatalogIoStage stage, JobSystem::JobFn job);
     void QueueMetadataRead(CatalogWork &work, CatalogIoStage stage, WorkerMetadataPrepare &item,
                            std::function<void(std::shared_ptr<FrameCpuStorageClaim>)> read);
-    [[nodiscard]] bool CanSubmitCatalogStage(CatalogIoStage stage) const;
+    void QueueMetadataPreparationStep(CatalogWork &work, std::shared_ptr<WorkerMetadataPrepare> item);
+    void DrainMetadataCapture(CatalogWork &work, const std::shared_ptr<WorkerMetadataPrepare> &item);
+    static FrameWorkResource CatalogStageResource(CatalogIoStage stage);
+    [[nodiscard]] bool CanSubmitCatalogStage(CatalogIoStage stage, std::optional<uint64_t> prediction = {}) const;
     [[nodiscard]] bool CanSubmitCatalogWork(const CatalogWork &work) const;
     bool SubmitCatalogWork(CatalogWork &work, bool managed, bool drain = false);
     void ObserveCatalogWork(CatalogWork &work) noexcept;
     void WaitForCatalogWork(CatalogWork &work) noexcept;
+    void DrainCatalogTextureStage(CatalogWork &work, WorkerImport &item);
     bool AdvanceRefresh(bool managed, bool drain = false);
     [[nodiscard]] bool CanAdvanceWatcherImport() const;
     [[nodiscard]] bool IsWatcherMetadataWaiting() const;
@@ -934,6 +952,7 @@ class AssetDatabase : public NativeLifetimeOwner
     void QueueWatcherMetadataPlan(const std::shared_ptr<PendingWatcherImport> &pending);
     void QueueWatcherCook(const std::shared_ptr<PendingWatcherImport> &pending);
     void QueueModelMetadataPlan(const std::shared_ptr<PendingModelReimport> &pending);
+    void QueueTextureApplyPreparation(const std::shared_ptr<PendingModelReimport> &pending);
     void QueueModelCook(const std::shared_ptr<PendingModelReimport> &pending);
     [[nodiscard]] bool CanAdvanceModelReimport() const;
     bool AdvanceModelReimport(bool managed, bool drain = false);
@@ -948,12 +967,12 @@ class AssetDatabase : public NativeLifetimeOwner
     void RemoveMappingByPath(const std::string &path);
     void UpdateCachedFileState(const std::string &path, bool readOnly);
 
-    /// Run the matching importer for this asset (dependency scanning etc.)
-    bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
-                     const InxResourceMeta *candidateMetadata = nullptr,
-                     const AssetFileFingerprint *expectedSource = nullptr,
-                     const AtomicFileState *expectedMetadata = nullptr, const PathWriteScope &writeScope = {},
-                     TextureSourceSnapshot *textureSource = nullptr);
+    /// Cook and publish an asset. The caller decides whether a failure belongs in the catalog.
+    std::optional<std::string> RunImporter(const std::string &guid, const std::string &path, bool isReimport,
+                                           bool persistMetadata, const InxResourceMeta *candidateMetadata,
+                                           const AssetFileFingerprint *expectedSource,
+                                           const AtomicFileState *expectedMetadata, const PathWriteScope &writeScope,
+                                           TextureSourceSnapshot *textureSource);
     bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
     static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
                                         AssetMutationResult &result, TextureSourceSnapshot *textureSource = nullptr);
@@ -962,8 +981,10 @@ class AssetDatabase : public NativeLifetimeOwner
     ImportRequest MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
                                         const InxResourceMeta &metadata) const;
     void ValidateImportPublication(const ImportRequest &request, ImportArtifact &artifact, bool creating = false) const;
+    static void StageTextureArtifact(WorkerImport &item, std::shared_ptr<FrameCpuStorageClaim> storage);
     static std::vector<DocumentTransactionEntry>
-    BuildImportWrites(const ImportRequest &request, ImportArtifact &artifact, const AtomicFileState *expectedMetadata);
+    BuildImportWrites(const ImportRequest &request, ImportArtifact &artifact, const AtomicFileState *expectedMetadata,
+                      std::optional<DocumentTransactionEntry> stagedTexture = std::nullopt);
     std::vector<DocumentTransactionFileState> PersistImportWrites(const ImportRequest &request,
                                                                   std::vector<DocumentTransactionEntry> writes,
                                                                   const PathWriteScope &writeScope) const;
