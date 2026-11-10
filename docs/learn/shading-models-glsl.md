@@ -10,45 +10,7 @@ A `.frag` assembles `SurfaceData`. A `.shadingmodel` defines how that surface re
 
 PBR, unlit color, toon bands, halftone lighting, skin response, and project-specific lighting belong in a ShadingModel. Infernux gives every model the fixed `shading()` entry shown below.
 
-<div class="learn-article-toc"><strong>In this chapter</strong><a href="#python-shader-preview">Python Shader preview</a><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#pass-variants">Pass variants</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
-
-## Python Shader preview {#python-shader-preview}
-
-<div class="learn-note"><strong>Development preview.</strong><p>The Python authoring API below is a design preview. Use the GLSL walkthrough further down to build the example in the released Editor.</p></div>
-
-The planned workflow starts with one `painted.frag.py` asset. A surface uses the standard mesh vertex stage and PBR by default. The same field declaration drives the material's default value, Inspector control and script property. An imported `palette.shaderlib.py` can supply `apply_tint` as a shared GPU function.
-
-```shader-python
-# painted.frag.py
-import infernux.shader as shader
-from .palette import apply_tint
-
-
-class Painted(shader.surface):
-    strength = shader.material.float(default=0.8, range=(0.0, 1.0), label="Strength")
-    albedo_map = shader.material.texture2d(default="white", color_space="srgb")
-
-    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
-        texel = shader.sample(self.albedo_map, ctx.uv0)
-        return shader.SurfaceData(
-            albedo=apply_tint(texel.rgb, self.strength),
-            normal_ws=ctx.normal_ws,
-            alpha=texel.a,
-        )
-```
-
-```shader-python
-# palette.shaderlib.py
-import infernux.shader as shader
-
-
-def apply_tint(rgb: shader.vec3, strength: shader.f32) -> shader.vec3:
-    return rgb * strength
-```
-
-1. Create a Material from `painted.frag.py`. In its Inspector, adjust the `strength` slider and drag a Texture2D into `albedo_map`. The material saves that texture by asset ID. Its sRGB RGB channels are sampled as linear color. An unset slot uses the declared white texture.
-2. For custom lighting, set `shading_model = shader.ref("./painted.shadingmodel.py")` in the surface class. Use `from .palette import apply_tint` to share functions across stages and models. The compiler resolves shader imports statically and generates the GPU layout.
-3. For a full-screen effect, use `shader.fullscreen` and declare only the graph inputs the effect reads, such as scene color and depth. The RenderStack mount stage supplies those inputs for the active camera. The Editor compiles and previews the source. The Player loads the prepared code for its target. [Effects and mount stages in the released Editor](renderstack-mount-points.html)
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#pass-variants">Pass variants</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
 
 <div class="learn-note"><strong>First-pass finish line.</strong><p>Create the three files in the complete example, select the new fragment stage on one Material, and confirm that a lit Cube changes appearance without Console errors. Stop there on a first reading; importer diagnostics and Deferred boundaries are reference material for when that visible result fails or the model grows.</p></div>
 
@@ -236,45 +198,7 @@ These boundaries keep lighting code readable and leave route decisions with the 
 
 PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的美术光照都属于 ShadingModel。每个模型都使用下文展示的固定 `shading()` 入口。
 
-<div class="learn-article-toc"><strong>本章内容</strong><a href="#python-shader-preview_1">Python Shader 预览</a><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#pass-variants_1">Pass 变体</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
-
-## Python Shader 预览 {#python-shader-preview_1}
-
-<div class="learn-note"><strong>开发预览。</strong><p>下方是规划中的 Python 制作接口。要在当前已发布的编辑器里跑通本章，请使用后面的 GLSL 实操教程。</p></div>
-
-新版可以从一个 `painted.frag.py` 资产开始。表面材质默认使用标准网格顶点阶段和 PBR。同一份字段声明提供材质默认值、Inspector 控件和脚本属性。共享 GPU 函数 `apply_tint` 来自 `palette.shaderlib.py`。
-
-```shader-python
-# painted.frag.py
-import infernux.shader as shader
-from .palette import apply_tint
-
-
-class Painted(shader.surface):
-    strength = shader.material.float(default=0.8, range=(0.0, 1.0), label="强度")
-    albedo_map = shader.material.texture2d(default="white", color_space="srgb")
-
-    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
-        texel = shader.sample(self.albedo_map, ctx.uv0)
-        return shader.SurfaceData(
-            albedo=apply_tint(texel.rgb, self.strength),
-            normal_ws=ctx.normal_ws,
-            alpha=texel.a,
-        )
-```
-
-```shader-python
-# palette.shaderlib.py
-import infernux.shader as shader
-
-
-def apply_tint(rgb: shader.vec3, strength: shader.f32) -> shader.vec3:
-    return rgb * strength
-```
-
-1. 从 `painted.frag.py` 创建材质。在 Inspector 拖动 `strength` 滑条，把 Texture2D 拖进 `albedo_map`。材质用资产 ID 保存贴图。采样时将 sRGB 的 RGB 通道转成线性颜色。没有赋值时使用声明的默认白贴图。
-2. 需要自定义光照时，在表面类中加 `shading_model = shader.ref("./painted.shadingmodel.py")`。需要复用函数时，用 `from .palette import apply_tint`。编译器静态解析库导入，并生成 GPU 布局。
-3. 全屏效果继承 `shader.fullscreen`，只声明自己读取的图资源，例如场景颜色和深度。RenderStack 挂载阶段提供当前相机的数据。Editor 用源码编译和预览，Player 加载提前为目标平台制作好的程序。 [发布版的效果与挂载阶段](renderstack-mount-points.html)
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#pass-variants_1">Pass 变体</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
 
 <div class="learn-note"><strong>第一次阅读的完成点。</strong><p>按完整示例创建三份文件，把新的片元阶段选到一个 Material 上，并确认受光 Cube 的外观发生变化且 Console 没有错误。做到这里即可先进入下一章；导入诊断和 Deferred 边界留给结果异常或模型继续扩展时查阅。</p></div>
 

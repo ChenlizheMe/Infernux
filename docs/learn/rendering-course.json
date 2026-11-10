@@ -37,8 +37,8 @@
     "number": 4,
     "title_en": "Shading models and GLSL libraries",
     "title_zh": "ShadingModel 与 GLSL 函数库",
-    "summary_en": "Build a shared lighting model with the released GLSL workflow, and preview Python Shader assets, Inspector sliders, and texture slots.",
-    "summary_zh": "用已发布的 GLSL 工作流制作共享光照模型，并预览新版 Python Shader、Inspector 滑条和贴图槽。",
+    "summary_en": "Write one lighting model for Forward, Forward+, and Deferred, and move reusable math into imported GLSL libraries.",
+    "summary_zh": "用一个光照函数服务 Forward、Forward+ 与 Deferred，并把可复用数学逻辑放入 GLSL 函数库。",
     "tags": ["rendering", "shader", "advanced"],
     "labels_en": ["Rendering", "Shader", "Advanced"],
     "labels_zh": ["渲染", "Shader", "进阶"]

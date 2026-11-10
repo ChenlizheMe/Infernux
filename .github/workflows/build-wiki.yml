@@ -126,7 +126,6 @@ jobs:
           git add docs/wiki/docs docs/wiki/site docs/wiki/mkdocs.yml docs/wiki/mkdocs_api_nav.yml docs/docs-manifest.json docs/api-index.json docs/release-notes.json docs/wiki.html docs/start.html
           git add -A -- ':(glob)docs/css/wiki-template.*.css'
           git add docs/sw.js docs/sitemap.xml docs/js/i18n*.js
-          git add docs/learn/*.html
           git add docs/changelog.html docs/changelog/*.html
 
           if git diff --cached --quiet; then

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="Build a shared lighting model with the released GLSL workflow, and preview Python Shader assets, Inspector sliders, and texture slots.">
+    <meta name="description" content="Write one lighting model for Forward, Forward+, and Deferred, and move reusable math into imported GLSL libraries.">
     <meta name="theme-color" content="#100d12">
     <meta name="color-scheme" content="dark">
     <link rel="canonical" href="https://infernux-engine.com/learn/shading-models-glsl.html">
@@ -37,43 +37,8 @@
 <p>A <code>.frag</code> assembles <code>SurfaceData</code>. A <code>.shadingmodel</code> defines how that surface responds to light. A <code>.glsl</code> file holds reusable functions. Render-path adapters connect those contracts to Forward, Forward+, and eligible Deferred routes.</p>
 <p><code>SurfaceData</code> has a fixed engine-owned shape: base color, world-space shading normal, metallic, smoothness, occlusion, emission, alpha, specular control, and two model-defined scalar channels. It contains material data, not mesh shape. Position, geometric normal, tangent, camera position, view depth, and face orientation live in the separate engine-populated <code>ShadingContext</code>. The previous chapter lists the exact GLSL types and defaults; a ShadingModel reads the context with <code>GetShadingContext()</code> and should not reconstruct it from a particular render path's private resources.</p>
 <p>PBR, unlit color, toon bands, halftone lighting, skin response, and project-specific lighting belong in a ShadingModel. Infernux gives every model the fixed <code>shading()</code> entry shown below.</p>
-<div class="learn-article-toc"><strong>In this chapter</strong><a href="#python-shader-preview">Python Shader preview</a><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#pass-variants">Pass variants</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#complete-example">Build a complete model</a><a href="#discovery-diagnostics">Discovery and diagnostics</a><a href="#pass-variants">Pass variants</a><a href="#requirements">Requirements and Deferred limits</a><a href="#design-boundary">Keep the boundary clean</a></div>
 
-<h2 id="python-shader-preview">Python Shader preview</h2>
-<div class="learn-note"><strong>Development preview.</strong><p>The Python authoring API below is a design preview. Use the GLSL walkthrough further down to build the example in the released Editor.</p></div>
-
-<p>The planned workflow starts with one <code>painted.frag.py</code> asset. A surface uses the standard mesh vertex stage and PBR by default. The same field declaration drives the material's default value, Inspector control and script property. An imported <code>palette.shaderlib.py</code> can supply <code>apply_tint</code> as a shared GPU function.</p>
-<div class="highlight"><pre><span></span><code># painted.frag.py
-import infernux.shader as shader
-from .palette import apply_tint
-
-
-class Painted(shader.surface):
-    strength = shader.material.float(default=0.8, range=(0.0, 1.0), label="Strength")
-    albedo_map = shader.material.texture2d(default="white", color_space="srgb")
-
-    def surface(self, ctx: shader.SurfaceContext) -&gt; shader.SurfaceData:
-        texel = shader.sample(self.albedo_map, ctx.uv0)
-        return shader.SurfaceData(
-            albedo=apply_tint(texel.rgb, self.strength),
-            normal_ws=ctx.normal_ws,
-            alpha=texel.a,
-        )
-</code></pre></div>
-
-<div class="highlight"><pre><span></span><code># palette.shaderlib.py
-import infernux.shader as shader
-
-
-def apply_tint(rgb: shader.vec3, strength: shader.f32) -&gt; shader.vec3:
-    return rgb * strength
-</code></pre></div>
-
-<ol>
-<li>Create a Material from <code>painted.frag.py</code>. In its Inspector, adjust the <code>strength</code> slider and drag a Texture2D into <code>albedo_map</code>. The material saves that texture by asset ID. Its sRGB RGB channels are sampled as linear color. An unset slot uses the declared white texture.</li>
-<li>For custom lighting, set <code>shading_model = shader.ref("./painted.shadingmodel.py")</code> in the surface class. Use <code>from .palette import apply_tint</code> to share functions across stages and models. The compiler resolves shader imports statically and generates the GPU layout.</li>
-<li>For a full-screen effect, use <code>shader.fullscreen</code> and declare only the graph inputs the effect reads, such as scene color and depth. The RenderStack mount stage supplies those inputs for the active camera. The Editor compiles and previews the source. The Player loads the prepared code for its target. <a href="renderstack-mount-points.html">Effects and mount stages in the released Editor</a></li>
-</ol>
 <div class="learn-note"><strong>First-pass finish line.</strong><p>Create the three files in the complete example, select the new fragment stage on one Material, and confirm that a lit Cube changes appearance without Console errors. Stop there on a first reading; importer diagnostics and Deferred boundaries are reference material for when that visible result fails or the model grows.</p></div>
 
 <figure class="learn-figure">
@@ -266,43 +231,8 @@ Learn Band --Imports--&gt; Learn Band Math
 <p><code>.frag</code> 组装 <code>SurfaceData</code>，<code>.shadingmodel</code> 定义表面对光照的响应，<code>.glsl</code> 保存可复用函数。渲染路径适配器把这些契约接到 Forward、Forward+ 与满足条件的 Deferred 路径。</p>
 <p><code>SurfaceData</code> 的结构由引擎固定，包含基础色、世界空间着色法线、金属度、光滑度、环境遮蔽、自发光、Alpha、高光控制以及两个由模型定义的标量通道。它保存材质数据，不描述 Mesh 的几何形状。位置、几何法线、切线、相机位置、观察深度与正反面信息属于引擎单独填写的 <code>ShadingContext</code>。上一章列出了所有字段的准确 GLSL 类型与默认值；ShadingModel 应通过 <code>GetShadingContext()</code> 读取上下文，不应从某条渲染路径的私有资源中重新拼装这些信息。</p>
 <p>PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的美术光照都属于 ShadingModel。每个模型都使用下文展示的固定 <code>shading()</code> 入口。</p>
-<div class="learn-article-toc"><strong>本章内容</strong><a href="#python-shader-preview_1">Python Shader 预览</a><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#pass-variants_1">Pass 变体</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#complete-example_1">构建完整模型</a><a href="#discovery-diagnostics_1">发现与诊断</a><a href="#pass-variants_1">Pass 变体</a><a href="#requirements_1">依赖与 Deferred 限制</a><a href="#design-boundary_1">保持边界清晰</a></div>
 
-<h2 id="python-shader-preview_1">Python Shader 预览</h2>
-<div class="learn-note"><strong>开发预览。</strong><p>下方是规划中的 Python 制作接口。要在当前已发布的编辑器里跑通本章，请使用后面的 GLSL 实操教程。</p></div>
-
-<p>新版可以从一个 <code>painted.frag.py</code> 资产开始。表面材质默认使用标准网格顶点阶段和 PBR。同一份字段声明提供材质默认值、Inspector 控件和脚本属性。共享 GPU 函数 <code>apply_tint</code> 来自 <code>palette.shaderlib.py</code>。</p>
-<div class="highlight"><pre><span></span><code># painted.frag.py
-import infernux.shader as shader
-from .palette import apply_tint
-
-
-class Painted(shader.surface):
-    strength = shader.material.float(default=0.8, range=(0.0, 1.0), label="强度")
-    albedo_map = shader.material.texture2d(default="white", color_space="srgb")
-
-    def surface(self, ctx: shader.SurfaceContext) -&gt; shader.SurfaceData:
-        texel = shader.sample(self.albedo_map, ctx.uv0)
-        return shader.SurfaceData(
-            albedo=apply_tint(texel.rgb, self.strength),
-            normal_ws=ctx.normal_ws,
-            alpha=texel.a,
-        )
-</code></pre></div>
-
-<div class="highlight"><pre><span></span><code># palette.shaderlib.py
-import infernux.shader as shader
-
-
-def apply_tint(rgb: shader.vec3, strength: shader.f32) -&gt; shader.vec3:
-    return rgb * strength
-</code></pre></div>
-
-<ol>
-<li>从 <code>painted.frag.py</code> 创建材质。在 Inspector 拖动 <code>strength</code> 滑条，把 Texture2D 拖进 <code>albedo_map</code>。材质用资产 ID 保存贴图。采样时将 sRGB 的 RGB 通道转成线性颜色。没有赋值时使用声明的默认白贴图。</li>
-<li>需要自定义光照时，在表面类中加 <code>shading_model = shader.ref("./painted.shadingmodel.py")</code>。需要复用函数时，用 <code>from .palette import apply_tint</code>。编译器静态解析库导入，并生成 GPU 布局。</li>
-<li>全屏效果继承 <code>shader.fullscreen</code>，只声明自己读取的图资源，例如场景颜色和深度。RenderStack 挂载阶段提供当前相机的数据。Editor 用源码编译和预览，Player 加载提前为目标平台制作好的程序。 <a href="renderstack-mount-points.html">发布版的效果与挂载阶段</a></li>
-</ol>
 <div class="learn-note"><strong>第一次阅读的完成点。</strong><p>按完整示例创建三份文件，把新的片元阶段选到一个 Material 上，并确认受光 Cube 的外观发生变化且 Console 没有错误。做到这里即可先进入下一章；导入诊断和 Deferred 边界留给结果异常或模型继续扩展时查阅。</p></div>
 
 <figure class="learn-figure">
