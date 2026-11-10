@@ -4592,12 +4592,6 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
     if (!PrepareReimportInput(sourcePath, candidate, result))
         return result;
-    if (!settings.is_null() && result.resourceType != ResourceType::Mesh &&
-        !IsFilesystemPathWithin(sourcePath, m_projectRoot)) {
-        result.errorCode = AssetMutationErrorCode::InvalidPath;
-        result.error = "import settings Apply requires a project asset";
-        return result;
-    }
     TextureSourceSnapshot capture;
     capture.boundedProjectRoot = m_frameWork ? &m_projectRoot : nullptr;
     auto *textureSource = result.resourceType == ResourceType::Texture ? &capture : nullptr;
