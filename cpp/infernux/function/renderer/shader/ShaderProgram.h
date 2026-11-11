@@ -192,6 +192,11 @@ class ShaderProgram
         return m_fragReflection;
     }
 
+    [[nodiscard]] bool HasVertexPushConstants() const noexcept
+    {
+        return !m_vertReflection.GetPushConstants().empty();
+    }
+
     /**
      * @brief Get the number of texture bindings
      */

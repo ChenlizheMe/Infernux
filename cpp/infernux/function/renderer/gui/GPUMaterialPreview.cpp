@@ -500,8 +500,9 @@ std::shared_ptr<PreviewImage> GPUMaterialPreview::BeginRender(InxMaterial &mater
             }
         }
 
-        vkCmdPushConstants(cmd, binding.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
-                           &pushData);
+        if (binding.program->HasVertexPushConstants())
+            vkCmdPushConstants(cmd, binding.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
+                               &pushData);
         vkCmdDrawIndexed(cmd, m_sphereIndexCount, 1, 0, 0, 0);
         anyDrawn = true;
     }

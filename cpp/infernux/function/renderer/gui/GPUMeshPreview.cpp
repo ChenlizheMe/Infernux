@@ -510,7 +510,8 @@ std::shared_ptr<PreviewImage> GPUMeshPreview::BeginRender(const InxMesh &mesh,
             }
         }
 
-        vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
+        if (b.program->HasVertexPushConstants())
+            vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
 
         vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1, b.submesh->indexStart, 0, 0);
         anyDrawn = true;
@@ -1140,7 +1141,8 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
                 }
             }
         }
-        vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
+        if (b.program->HasVertexPushConstants())
+            vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
         vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1, b.submesh->indexStart, 0, 0);
     }
     m_dynamicRenderingCommands.end(cmd);

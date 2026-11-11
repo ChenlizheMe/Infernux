@@ -1436,6 +1436,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     uint32_t batchIndexCount = 0;
     int32_t batchVertexStart = 0;
     VkPipelineLayout batchPipelineLayout = VK_NULL_HANDLE;
+    bool batchUsesPushConstants = false;
 
     auto emitBatch = [&]() {
         if (batchInstanceCount == 0)
@@ -1449,8 +1450,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         PushConstants pushData;
         pushData.model = eligibleDraws[batchFirstInstance].dc->worldMatrix;
         pushData.normalMat = glm::mat4(1.0f); // normalMat computed in shader from SSBO model
-        vkCmdPushConstants(cmdBuf, batchPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
-                           &pushData);
+        if (batchUsesPushConstants)
+            vkCmdPushConstants(cmdBuf, batchPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
+                               &pushData);
         vkCmdDrawIndexed(cmdBuf, batchIndexCount, batchInstanceCount, batchIndexStart, batchVertexStart,
                          writeBase + static_cast<uint32_t>(batchFirstInstance));
         if (motionHistory) {
@@ -1714,6 +1716,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         batchIndexCount = effectiveIndexCount;
         batchVertexStart = dc.vertexStart;
         batchPipelineLayout = pipelineLayout;
+        batchUsesPushConstants = resolved.program->HasVertexPushConstants();
         if (uniformBatch && allowBatching) {
             batchInstanceCount = static_cast<uint32_t>(totalEligible);
             break;
