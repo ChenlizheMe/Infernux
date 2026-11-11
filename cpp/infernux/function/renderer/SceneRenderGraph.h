@@ -398,6 +398,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
     void InvalidateFullscreenShader(const std::string &shaderName)
     {
         m_fullscreenRenderer.InvalidateShader(shaderName);
+        if (m_authorShaderGuids.count(shaderName)) {
+            InvalidateTemporalHistory();
+            m_needsRebuild = true;
+            return;
+        }
         // Resource types (Texture2D vs Texture2DMS) determine resolve topology.
         // Re-publish that contract together with a hot-edited shader, not just
         // its pipeline against the old descriptor/image graph.
@@ -909,6 +914,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     // Python graph description (stored for BuildRenderGraph)
     RenderGraphDescription m_pythonGraphDesc;
+    std::unordered_set<std::string> m_authorShaderGuids;
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> m_workInstances;
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_graphBufferOwners;
     std::vector<std::pair<vk::ResourceHandle, size_t>> m_graphBufferImports;

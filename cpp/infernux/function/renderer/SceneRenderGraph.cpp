@@ -3530,6 +3530,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
     m_renderGraph->Reset();
     m_graphBuilt = false;
     m_authorPassIndices.clear();
+    m_authorShaderGuids.clear();
     m_executedEventPasses.clear();
     m_graphBufferImports.clear();
     m_materialBufferImports.clear();
@@ -4780,6 +4781,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 // Reflect once when building this graph, never in the frame loop.
                 // Texture2DMS retains sample identity; Texture2D consumes resolved data.
                 const auto authorProgram = m_fullscreenRenderer.AcquireProgram(command->shaderName);
+                if (authorProgram)
+                    m_authorShaderGuids.insert(authorProgram->assetGuid);
                 const auto authorParameters = command->pushConstants;
                 struct FullscreenInput
                 {
@@ -5139,6 +5142,22 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         fullscreenShadowInput = shadow->second;
                 }
                 vk::ResourceHandle fsResolvedVersion;
+                FullscreenPipelineKey fullscreenPipelineKey;
+                fullscreenPipelineKey.depthFormat = fsDepthFormat;
+                fullscreenPipelineKey.depth = fsDepthState;
+                fullscreenPipelineKey.alphaBlend = fsAlphaBlend;
+                fullscreenPipelineKey.shaderName = shaderName;
+                fullscreenPipelineKey.samples = fsSamples;
+                fullscreenPipelineKey.colorFormat = fsColorFormat;
+                fullscreenPipelineKey.inputResourceCount = static_cast<uint32_t>(fsReadInputs.size());
+                fullscreenPipelineKey.useDynamicRendering = true;
+                fullscreenPipelineKey.program = authorProgram;
+                for (uint32_t index = 0; index < fsReadInputs.size() && index < 32; ++index) {
+                    if (fsReadInputs[index].storageBuffer)
+                        fullscreenPipelineKey.inputBufferMask |= 1u << index;
+                    if (fsReadInputs[index].depthRead)
+                        fullscreenPipelineKey.depthInputMask |= 1u << index;
+                }
                 const auto pass = m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
                                                                          &fsWrittenDepthVersion](
                                                                             vk::PassBuilder &builder) {
@@ -5235,25 +5254,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             }
                         }
 
-                        // Build pipeline key and ensure pipeline exists
-                        FullscreenPipelineKey key;
-                        key.depthFormat = fsDepthFormat;
-                        key.depth = fsDepthState;
-                        key.alphaBlend = fsAlphaBlend;
-                        key.shaderName = shaderName;
-                        key.samples = fsSamples;
-                        key.colorFormat = fsColorFormat;
-                        key.inputResourceCount = inputCount;
-                        for (uint32_t i = 0; i < inputCount && i < 32; ++i) {
-                            if (inputs[i].buffer.IsValid())
-                                key.inputBufferMask |= 1u << i;
-                            if (inputs[i].depthRead)
-                                key.depthInputMask |= 1u << i;
-                        }
-                        key.useDynamicRendering = true;
-                        key.program = authorProgram;
-
-                        const auto &entry = fsRenderer->EnsurePipeline(key);
+                        const auto &entry = fsRenderer->EnsurePipeline(fullscreenPipelineKey);
                         if (!entry.pipeline.IsValid())
                             return;
 

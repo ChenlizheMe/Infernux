@@ -38,6 +38,7 @@ from infernux.core.mesh import Mesh
 from infernux.core.audio_clip import AudioClip
 from infernux.core.physic_material import PhysicMaterial
 from infernux.core.document_store import PathWriteScope
+from infernux._source_kinds import is_gpu_source, is_host_python_source
 from infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, SHADER_DEPENDENCY_EXTENSIONS,
     SHADER_SOURCE_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
@@ -783,11 +784,10 @@ class AssetManager:
         """Feed successful internal Python mutations into the shared collector.
 
         Asset mutations suppress their matching watchdog echo, so ordinary
-        Python files need an explicit ingress here.  ParticleScript source is
-        owned by the particle compiler and is intentionally excluded.
+        Host Python files need an explicit ingress here. Static GPU and
+        particle sources remain with their respective compilers.
         """
-        lower = str(path or "").lower()
-        if not lower.endswith(".py") or lower.endswith(".particle.py"):
+        if not is_host_python_source(path):
             return
         # A lost script-change event silently breaks component/script refresh;
         # failures here must surface instead of being suppressed.
@@ -931,7 +931,8 @@ class AssetManager:
             previous_shader_id = metadata.get_string("shader_id")
         native = cls._native_engine()
         return dict(native=native, previous_shader_id=previous_shader_id,
-                    has_shader_runtime=bool(ext in SHADER_SOURCE_EXTENSIONS and native is not None and native.has_renderer))
+                    has_shader_runtime=bool((ext in SHADER_SOURCE_EXTENSIONS or is_gpu_source(path))
+                                            and native is not None and native.has_renderer))
 
     @classmethod
     def _publish_reimport_result(cls, path, result, *, database, suppress_watcher_echo=True,
@@ -942,7 +943,7 @@ class AssetManager:
         guid = result.guid
         ext = os.path.splitext(path)[1].lower()
         is_mesh = result.resource_type == ResourceType.Mesh
-        is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
+        is_ordinary_script = is_host_python_source(path)
         if is_ordinary_script:
             # Ordinary scripts have their own validated collector and atomic
             # class-publication transaction. Broadcasting the same edit to
@@ -1117,6 +1118,7 @@ class AssetManager:
         return (
             os.path.splitext(path)[1].lower() in RENDER_EFFECT_EXTENSIONS
             or cls._is_particle_source(path)
+            or is_gpu_source(path)
         )
 
     @classmethod
@@ -1190,7 +1192,7 @@ class AssetManager:
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
         """Publish shader catalog changes independently of runtime renderer state."""
-        if os.path.splitext(path)[1].lower() not in SHADER_SOURCE_EXTENSIONS:
+        if not is_gpu_source(path) and os.path.splitext(path)[1].lower() not in SHADER_SOURCE_EXTENSIONS:
             return
         try:
             from infernux.engine.ui import inspector_shader_utils

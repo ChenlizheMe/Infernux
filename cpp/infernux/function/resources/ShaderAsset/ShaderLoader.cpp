@@ -51,8 +51,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->descriptor.filePath = filePath;
         asset->descriptor.fileExtension = kind->suffix;
         asset->authoringSchema = prepared.schema;
-        asset->program =
-            compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        asset->program = std::make_shared<ShaderCompilation>(
+            compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
         return asset;
     }
 

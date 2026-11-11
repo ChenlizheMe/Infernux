@@ -40,6 +40,7 @@
 #include <function/renderer/gui/MeshPreviewPreparation.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
@@ -4573,6 +4574,21 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                                           const std::string &previousSourcePath)
 {
     m_shaderReloadSources = {shaderPath};
+    if (asset_formats::FindShaderSourceKind(shaderPath)) {
+        auto &registry = AssetRegistry::Instance();
+        auto *database = registry.GetAssetDatabase();
+        const auto guid = database->GetGuidFromPath(shaderPath);
+        try {
+            ShaderLoader loader;
+            auto candidate = loader.Load(shaderPath, guid, database).Get<ShaderAsset>();
+            registry.PublishShader(guid, std::move(candidate));
+            if (m_renderer)
+                m_renderer->InvalidateShaderCache(guid, "fragment");
+            return {};
+        } catch (const std::exception &error) {
+            return error.what();
+        }
+    }
     const InxShaderLoader::SourceDiagnosticScope sourceDiagnostics;
     // INXLOG_INFO("Infernux::ReloadShaderRuntime called: ", shaderPath);
     if (!CheckEngineValid("reload shader") || !m_renderer) {

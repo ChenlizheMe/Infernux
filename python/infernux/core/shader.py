@@ -1,13 +1,14 @@
-"""ShaderInfo queries and runtime shader publication."""
+"""GPU shader schema queries and runtime program publication."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from infernux._source_kinds import SHADER_SOURCE_KINDS, source_extension
 
 
 class Shader:
-    """Query published shaders and reimport edited ShaderInfo source assets."""
+    """Query published shaders and reimport edited GPU author assets."""
 
     _runtime_revision = 0
     _runtime_revisions: dict[str, int] = {}
@@ -42,8 +43,10 @@ class Shader:
         if database is None:
             return
         for path in paths:
-            stage = Path(path).suffix.lower()
-            if stage not in {".vert", ".frag"}:
+            extension = source_extension(path)
+            kind = SHADER_SOURCE_KINDS.get(extension)
+            stage = kind[0] if kind else {".vert": "vertex", ".frag": "fragment"}.get(extension)
+            if stage not in {"vertex", "fragment", "compute"}:
                 continue
             meta = database.get_meta_by_path(path)
             if meta is None or not meta.has_key("shader_id"):
@@ -51,7 +54,7 @@ class Shader:
             shader_id = meta.get_string("shader_id")
             cls._runtime_revision += 1
             cls._runtime_revisions[shader_id] = cls._runtime_revision
-            if stage == ".frag":
+            if stage == "fragment" and kind is None:
                 cls._surface_metadata[shader_id] = cls._read_surface_metadata(meta)
                 schema = cls._read_surface_schema(meta)
                 if schema != cls._surface_schemas.get(shader_id, ((), 0))[0]:
@@ -124,8 +127,7 @@ class Shader:
         normalized = str(shader_type).strip().lower()
         if normalized not in {"vertex", "fragment"}:
             raise ValueError(
-                "shader_type must be 'vertex' or 'fragment'; "
-                "compute shaders are not supported (use an external parallel backend)"
+                "shader_type must be 'vertex' or 'fragment'"
             )
         return normalized
 
@@ -145,7 +147,7 @@ class Shader:
 
     @classmethod
     def reload(cls, shader_id: str, shader_type: str | None = None) -> bool:
-        """Reimport a ShaderInfo Name or registered .vert/.frag asset path.
+        """Reimport a program name or registered GPU author source path.
 
         Editor/headless authoring only; frozen Player assets are read-only.
         A Name shared by vertex and fragment stages reloads both unless a stage
@@ -168,7 +170,9 @@ class Shader:
         paths = []
         if direct_guid:
             path = database.get_path_from_guid(direct_guid)
-            path_stage = {".vert": "vertex", ".frag": "fragment"}.get(Path(path).suffix.lower())
+            extension = source_extension(path)
+            kind = SHADER_SOURCE_KINDS.get(extension)
+            path_stage = kind[0] if kind else {".vert": "vertex", ".frag": "fragment"}.get(extension)
             if path_stage is None or (stage is not None and path_stage != stage):
                 raise ValueError(f"Not a matching ShaderInfo stage asset: {selector}")
             paths.append(path)

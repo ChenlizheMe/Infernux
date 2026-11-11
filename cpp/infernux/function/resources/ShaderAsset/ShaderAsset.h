@@ -52,7 +52,7 @@ struct ShaderAsset
 
     /// Statically authored programs retain both targets and their logical
     /// fields. Device publication chooses the target without recompiling.
-    std::optional<ShaderCompilation> program;
+    std::shared_ptr<const ShaderCompilation> program;
     std::string authoringSchema;
 
     [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept

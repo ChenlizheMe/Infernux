@@ -7,6 +7,7 @@ import infernux as inx
 from infernux.lib import ConsolePanel, GraphParameterBlockUpdate, SceneManager, Vector3
 from infernux.renderstack import RenderPipeline
 from infernux.rendergraph import Format
+from infernux.debug import DebugConsole
 
 
 class AuthorPipeline(RenderPipeline):
@@ -30,7 +31,7 @@ class AuthorPipeline(RenderPipeline):
         update = GraphParameterBlockUpdate()
         update.id = "grayscale"
         update.revision = self.phase + 1
-        update.values = [("strength", self.phase * 0.5)]
+        update.values = [("strength", min(self.phase, 2) * 0.5)]
         context.update_parameter_blocks([update])
         context.submit_culling(culling)
 
@@ -95,18 +96,33 @@ class Grayscale(shader.fullscreen):
                     pixels = ticket.result_numpy().copy().astype(np.float32)
                     original = np.array([0.2, 0.4, 0.8], dtype=np.float32)
                     gray_value = np.dot(original, [0.2126, 0.7152, 0.0722])
-                    linear = original * (1 - pipeline.phase * 0.5) + gray_value * pipeline.phase * 0.5
+                    strength = min(pipeline.phase, 2) * 0.5
+                    if pipeline.phase == 3:
+                        gray_value *= 0.5
+                    linear = original * (1 - strength) + gray_value * strength
                     expected = np.r_[np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055), 1.0]
                     print("AUTHOR_FULLSCREEN", pipeline.phase, pixels[24, 32].tolist(), "builds", pipeline.builds, flush=True)
                     np.testing.assert_allclose(pixels, np.broadcast_to(expected, pixels.shape), atol=0.005)
                     assert pipeline.builds == 1
                     errors = [item for item in console._get_visible_log_snapshot(3000) if item["level"] in ("ERROR", "FATAL")]
                     assert not errors, errors
-                    if pipeline.phase == 2:
+                    python_errors = DebugConsole.instance().get_filtered_entries(
+                        show_logs=False, show_warnings=False, show_errors=True,
+                    )
+                    assert not python_errors, [item.message for item in python_errors]
+                    if pipeline.phase == 4:
                         completed = True
                         native.exit()
                         return
                     pipeline.phase += 1
+                    if pipeline.phase == 3:
+                        text = gray.read_text(encoding="utf-8")
+                        gray.write_text(text.replace("shader.vec3(luminance(color.rgb))", "shader.vec3(0.5 * luminance(color.rgb))"), encoding="utf-8")
+                        assert inx.Shader.reload(str(gray))
+                    elif pipeline.phase == 4:
+                        text = gray.read_text(encoding="utf-8")
+                        gray.write_text(text.replace("shader.vec3(0.5 * luminance(color.rgb))", "shader.vec3(luminance(color.rgb))"), encoding="utf-8")
+                        assert inx.Shader.reload(str(gray))
                     changed, ticket = frame, None
                 if frame > 90:
                     raise AssertionError("Author fullscreen readback timed out")

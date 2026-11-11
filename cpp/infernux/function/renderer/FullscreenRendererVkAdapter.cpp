@@ -55,8 +55,9 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
     {
         auto &registry = AssetRegistry::Instance();
         auto *database = registry.GetAssetDatabase();
-        const auto path =
-            asset_formats::FindShaderSourceKind(name) ? name : database->FindShaderPathById(name, "fragment");
+        auto path = database->GetPathFromGuid(name);
+        if (path.empty())
+            path = asset_formats::FindShaderSourceKind(name) ? name : database->FindShaderPathById(name, "fragment");
         if (!asset_formats::FindShaderSourceKind(path))
             return {};
         const auto asset = registry.LoadAssetByPath<ShaderAsset>(path, ResourceType::Shader);
@@ -67,7 +68,8 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
         if (target == asset->program->targets.end())
             throw std::logic_error("Vulkan shader asset has no SPIR-V target: " + path);
         auto result = std::make_shared<FullscreenProgram>();
-        result->code = std::shared_ptr<const ShaderTargetCode>(asset, &*target);
+        result->assetGuid = database->GetGuidFromPath(path);
+        result->code = std::shared_ptr<const ShaderTargetCode>(asset->program, &*target);
         result->schema = asset->authoringSchema;
         return result;
     }

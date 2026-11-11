@@ -22,6 +22,7 @@ class DeviceShaderProgram;
 
 struct FullscreenProgram
 {
+    std::string assetGuid;
     std::shared_ptr<const ShaderTargetCode> code;
     std::string schema;
 };

@@ -1992,6 +1992,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
         source: bytes | None = None,
     ):
         """Capture exact bytes and submit one immutable frontend revision."""
+        if not is_host_python_source(file_path):
+            return None
         if source is None:
             try:
                 with open(file_path, "rb") as source_file:

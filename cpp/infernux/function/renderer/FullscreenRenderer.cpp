@@ -416,7 +416,8 @@ void FullscreenPipelineCache::InvalidateShader(const std::string &shaderName)
 
     size_t retired = 0;
     for (auto entry = m_impl->pipelines.begin(); entry != m_impl->pipelines.end();) {
-        if (entry->first.shaderName != shaderName && shaderName != "Fullscreen Triangle") {
+        const bool authorAsset = entry->first.program && entry->first.program->assetGuid == shaderName;
+        if (!authorAsset && entry->first.shaderName != shaderName && shaderName != "Fullscreen Triangle") {
             ++entry;
             continue;
         }
