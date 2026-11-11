@@ -1575,6 +1575,22 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     RenderGraphDescription normalizedDesc;
     try {
         normalizedDesc = NormalizeRenderGraphForOutput(desc, HasOutputTexture(), m_renderView.samples);
+        for (auto &pass : normalizedDesc.passes) {
+            for (auto &command : pass.commands) {
+                if (command.type != GraphCommandType::FullscreenQuad)
+                    continue;
+                if (const auto program = m_vkCore->AcquireFullscreenProgram(command.shaderName)) {
+                    const auto prepared = FullscreenRenderer::PrepareParameters(*program, command.parameters);
+                    for (size_t index = 0; index < command.parameters.size(); ++index)
+                        command.parameters[index].second = prepared.values[index];
+                } else {
+                    if (command.parameters.size() > 32)
+                        throw std::invalid_argument("Native fullscreen push constants exceed 128 bytes");
+                    for (auto &[name, value] : command.parameters)
+                        value = value.ScalarFloat();
+                }
+            }
+        }
     } catch (const std::invalid_argument &error) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: ", error.what());
         return rejectGraph(desc);
@@ -1591,7 +1607,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         for (const auto &pass : normalizedDesc.passes) {
             const auto *command = pass.PrimaryCommand();
             if (command && !command->parameterBlock.empty())
-                updates.push_back({command->parameterBlock, 0, command->pushConstants});
+                updates.push_back({command->parameterBlock, 0, command->parameters});
         }
         UpdateParameterBlocks(updates);
     };
@@ -1609,8 +1625,8 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     if (!topologyChanged && !callbackContractChanged) {
         // Replaying an already-applied description must not clobber live
         // parameter blocks: effect edits arrive through UpdateParameterBlocks
-        // *after* the description was built, so the description's push
-        // constants are only authoritative when a genuinely new Python build
+        // *after* the description was built, so its parameter values
+        // are only authoritative when a genuinely new Python build
         // (fresh source revision) is being applied.
         if (desc.sourceRevision == 0 || desc.sourceRevision != m_pythonGraphSourceRevision) {
             publishParameterValues();
@@ -1639,12 +1655,19 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             if (!command || command->parameterBlock.empty())
                 continue;
             RuntimeParameterBlock block;
-            block.names.reserve(command->pushConstants.size());
-            for (size_t i = 0; i < command->pushConstants.size(); ++i) {
-                block.names.push_back(command->pushConstants[i].first);
-                block.values.values[i] = command->pushConstants[i].second;
+            auto values = std::make_shared<std::vector<ShaderParameterValue>>();
+            const bool nativePushConstants = !m_vkCore->AcquireFullscreenProgram(command->shaderName);
+            if (nativePushConstants)
+                block.scalarPushConstants.emplace();
+            block.names.reserve(command->parameters.size());
+            values->reserve(command->parameters.size());
+            for (size_t i = 0; i < command->parameters.size(); ++i) {
+                block.names.push_back(command->parameters[i].first);
+                values->push_back(command->parameters[i].second);
+                if (nativePushConstants)
+                    block.scalarPushConstants->values[i] = values->back().Read<float>();
             }
-            block.byteSize = static_cast<uint32_t>(command->pushConstants.size() * sizeof(float));
+            block.values = std::move(values);
             blocks.emplace(command->parameterBlock, std::move(block));
         }
         m_parameterBlocks = std::move(blocks);
@@ -1822,43 +1845,33 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 
 void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
 {
-    bool publicationChanged = false;
     for (const auto &update : updates) {
         auto blockIt = m_parameterBlocks.find(update.id);
         if (blockIt == m_parameterBlocks.end())
-            continue;
+            throw std::invalid_argument("Parameter block is not declared by this graph: " + update.id);
 
         RuntimeParameterBlock &block = blockIt->second;
         if (update.revision != 0 && update.revision == block.revision)
             continue;
-        if (update.values.size() != block.names.size()) {
-            INXLOG_ERROR("SceneRenderGraph::UpdateParameterBlocks: block '", update.id,
-                         "' value count does not match its compiled layout");
-            continue;
-        }
+        if (update.values.size() != block.names.size())
+            throw std::invalid_argument("Parameter block '" + update.id + "' has a different compiled value count");
 
-        bool valid = true;
-        FullscreenPushConstants values{};
+        auto values = std::make_shared<std::vector<ShaderParameterValue>>();
+        values->reserve(update.values.size());
         for (size_t i = 0; i < update.values.size(); ++i) {
-            if (update.values[i].first != block.names[i] || !std::isfinite(update.values[i].second)) {
-                valid = false;
-                break;
-            }
-            values.values[i] = update.values[i].second;
+            if (update.values[i].first != block.names[i])
+                throw std::invalid_argument("Parameter block '" + update.id + "' has different compiled names");
+            const auto &value = update.values[i].second;
+            values->push_back(block.scalarPushConstants ? ShaderParameterValue(value.ScalarFloat())
+                                                        : value.ConvertTo((*block.values)[i].Kind()));
         }
-        if (!valid) {
-            INXLOG_ERROR("SceneRenderGraph::UpdateParameterBlocks: block '", update.id,
-                         "' does not match its compiled parameter names");
-            continue;
-        }
-
-        block.values = values;
-        block.byteSize = static_cast<uint32_t>(update.values.size() * sizeof(float));
+        if (block.scalarPushConstants)
+            for (size_t index = 0; index < values->size(); ++index)
+                block.scalarPushConstants->values[index] = (*values)[index].Read<float>();
+        block.values = std::move(values);
         block.revision = update.revision;
-        publicationChanged = true;
-    }
-    if (publicationChanged)
         ++m_parameterBlockGeneration;
+    }
 }
 
 void SceneRenderGraph::CaptureParameterBlocksForSubmission()
@@ -2917,7 +2930,12 @@ std::string SceneRenderGraph::GetDebugString() const
                 for (size_t index = 0; index < block.names.size(); ++index) {
                     if (index != 0)
                         result += ", ";
-                    result += block.names[index] + "=" + std::to_string(block.values.values[index]);
+                    const auto &value = (*block.values)[index];
+                    result += block.names[index] + "=";
+                    if (value.Kind() <= ShaderParameterKind::Bool)
+                        result += std::to_string(value.ScalarFloat());
+                    else
+                        result += "(" + std::to_string(value.ByteSize() / sizeof(float)) + " components)";
                 }
                 result += "]\n";
             }
@@ -4773,7 +4791,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const auto authorProgram = m_fullscreenRenderer.AcquireProgram(command->shaderName);
                 if (authorProgram)
                     m_authorShaderGuids.insert(authorProgram->assetGuid);
-                const auto authorParameters = command->pushConstants;
+                const auto authorParameters =
+                    authorProgram ? FullscreenRenderer::PrepareParameters(*authorProgram, command->parameters)
+                                  : FullscreenParameters{};
                 struct FullscreenInput
                 {
                     std::string name;
@@ -5063,8 +5083,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 int32_t historyValidParameterIndex = -1;
                 int32_t cameraDitheringParameterIndex = -1;
                 int32_t cameraStopNaNsParameterIndex = -1;
-                for (const auto &[name, value] : command->pushConstants) {
-                    if (packedPushConstantSize / sizeof(float) < 32) {
+                if (!authorProgram) {
+                    for (const auto &[name, value] : command->parameters) {
                         const auto parameterIndex = static_cast<int32_t>(packedPushConstantSize / sizeof(float));
                         if (name == "_InfernuxHistoryValid")
                             historyValidParameterIndex = parameterIndex;
@@ -5072,12 +5092,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             cameraDitheringParameterIndex = parameterIndex;
                         if (shaderName == "Display Encode" && name == "stopNaNs")
                             cameraStopNaNsParameterIndex = parameterIndex;
-                        packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value;
+                        packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value.Read<float>();
                         packedPushConstantSize += sizeof(float);
-                    } else {
-                        INXLOG_ERROR("FullscreenQuad '", shaderName,
-                                     "': push constants exceed 128 bytes (32 floats), truncating '", name, "'");
-                        break;
                     }
                 }
 
@@ -5248,12 +5264,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             return;
 
                         if (authorProgram) {
-                            const float *values = nullptr;
-                            if (!parameterBlock.empty()) {
-                                const auto block = m_submittedParameterBlocks.find(parameterBlock);
-                                if (block != m_submittedParameterBlocks.end())
-                                    values = block->second.values.values;
-                            }
+                            const auto *values = parameterBlock.empty()
+                                                     ? nullptr
+                                                     : m_submittedParameterBlocks.at(parameterBlock).values->data();
                             fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
                                                     values);
                             return;
@@ -5272,11 +5285,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         FullscreenPushConstants drawPushConstants = packedPushConstants;
                         uint32_t drawPushConstantSize = packedPushConstantSize;
                         if (!parameterBlock.empty()) {
-                            const auto blockIt = m_submittedParameterBlocks.find(parameterBlock);
-                            if (blockIt != m_submittedParameterBlocks.end()) {
-                                drawPushConstants = blockIt->second.values;
-                                drawPushConstantSize = blockIt->second.byteSize;
-                            }
+                            const auto &block = m_submittedParameterBlocks.at(parameterBlock);
+                            drawPushConstants = *block.scalarPushConstants;
+                            drawPushConstantSize = static_cast<uint32_t>(block.values->size() * sizeof(float));
                         }
                         if (historyValidParameterIndex >= 0 &&
                             static_cast<uint32_t>(historyValidParameterIndex) < drawPushConstantSize / sizeof(float)) {

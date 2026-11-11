@@ -877,7 +877,7 @@ class _ParameterBlockSpec:
 
 
 def _pass_parameter_values(mappings):
-    return tuple(tuple((name, float(value)) for name, value in params.items()) for params in mappings)
+    return tuple(tuple(params.items()) for params in mappings)
 
 
 def _pass_parameter_layout(pass_values):
@@ -912,7 +912,7 @@ class CompiledEffectBinding:
             passes, structure = self.parameter_context.record(self.source, self.feature, self.binding_id)
             if structure != self.graph_structure:
                 return True, []
-            pass_values = tuple(tuple(render_pass._push_constants.items()) for render_pass in passes)
+            pass_values = tuple(tuple(render_pass._parameters.items()) for render_pass in passes)
         if _pass_parameter_layout(pass_values) != self.parameter_layout:
             return True, []
         updates = []
@@ -976,7 +976,7 @@ def _compile_effect(
         with graph.name_scope(f"effects/{binding_id}"):
             instance.setup_passes(graph, bus)
         generated = graph._passes[first_pass:]
-        pass_values = tuple(tuple(render_pass._push_constants.items()) for render_pass in generated)
+        pass_values = tuple(tuple(render_pass._parameters.items()) for render_pass in generated)
         if mappings is not None and _pass_parameter_values(mappings) != pass_values:
             raise RenderEffectCompileError(f"{feature.type_id!r} pass parameters do not match setup_passes")
     except Exception:

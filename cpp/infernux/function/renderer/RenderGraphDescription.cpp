@@ -44,11 +44,12 @@ bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
 {
     const auto parameterLayoutEquals = [](const GraphCommandDesc &lhs, const GraphCommandDesc &rhs) {
         if (lhs.parameterBlock.empty())
-            return lhs.pushConstants == rhs.pushConstants;
-        if (lhs.pushConstants.size() != rhs.pushConstants.size())
+            return lhs.parameters == rhs.parameters;
+        if (lhs.parameters.size() != rhs.parameters.size())
             return false;
-        for (size_t i = 0; i < lhs.pushConstants.size(); ++i) {
-            if (lhs.pushConstants[i].first != rhs.pushConstants[i].first)
+        for (size_t i = 0; i < lhs.parameters.size(); ++i) {
+            if (lhs.parameters[i].first != rhs.parameters[i].first ||
+                lhs.parameters[i].second.Kind() != rhs.parameters[i].second.Kind())
                 return false;
         }
         return true;

@@ -11,6 +11,21 @@ from infernux.rendergraph import Format
 from infernux.debug import DebugConsole
 
 
+def fill_parameters(phase):
+    return {
+        "tint": (0.2 + 0.01 * phase, 0.4, 0.8, 1.0),
+        "transform": ((1.0, 0.25, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.5)),
+        "placement": np.asfortranarray(((1.0, 0.0, 0.0, 0.01 * phase), (0.0, 1.0, 0.0, 0.0),
+                                        (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))),
+        "offset": (0.01 * phase, 0.0),
+        "gain": (1.0, 1.0, 1.0),
+        "bias": (0.0, 0.0, 0.0, 0.0),
+        "enabled": phase != 4,
+        "count": np.int32(-3),
+        "mask": 0xF1234567,
+    }
+
+
 class AuthorPipeline(RenderPipeline):
     name = "Python Shader Pipeline"
 
@@ -20,9 +35,11 @@ class AuthorPipeline(RenderPipeline):
         source = graph.create_texture("source", format=Format.RGBA16_SFLOAT, samples=1)
         graded = graph.create_texture("graded", format=Format.RGBA16_SFLOAT, samples=1)
         color = graph.create_texture("color", camera_target=True)
-        graph.add_pass("Fill").write_color(source).fullscreen_quad(str(self.fill))
+        graph.add_pass("Fill").write_color(source).bind_parameter_block(
+            "fill", fill_parameters(0),
+        ).fullscreen_quad(str(self.fill))
         graph.add_pass("Grayscale").write_color(graded).set_texture("image", source).bind_parameter_block(
-            "grayscale", {"strength": 0.0},
+            "grayscale", {"strength": 0},
         ).fullscreen_quad(str(self.gray))
         graph.add_pass("Copy").write_color(color).set_texture("_SourceTex", graded).fullscreen_quad("Fullscreen Copy")
         graph.screen_ui_overlay_section(resources={"color"})
@@ -35,7 +52,10 @@ class AuthorPipeline(RenderPipeline):
         update.id = "grayscale"
         update.revision = self.phase + 1
         update.values = [("strength", min(self.phase, 2) * 0.5)]
-        context.update_parameter_blocks([update])
+        fill = GraphParameterBlockUpdate()
+        fill.id, fill.revision = "fill", self.phase + 1
+        fill.values = list(fill_parameters(self.phase).items())
+        context.update_parameter_blocks([update, fill])
         context.submit_culling(culling)
 
 
@@ -58,15 +78,22 @@ from .palette import tweak
 class Fill(shader.fullscreen):
     tint = shader.parameter.color(default=(0.2, 0.4, 0.8, 1.0))
     transform = shader.parameter.mat3(default=((1.0, 0.25, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.5)))
+    placement = shader.parameter.mat4()
+    offset = shader.parameter.vec2()
+    gain = shader.parameter.vec3(default=(1.0, 1.0, 1.0))
+    bias = shader.parameter.vec4()
+    count = shader.parameter.int()
+    mask = shader.parameter.uint()
     enabled = shader.parameter.bool(default=True)
     def main(self, uv: shader.vec2) -> shader.vec4:
-        rgb = (self.transform @ self.tint.rgb) * (0.5 + 0.5 * uv.x)
+        transformed = self.placement @ shader.vec4(self.transform @ self.tint.rgb, 1.0)
+        rgb = (transformed.rgb * self.gain + shader.vec3(self.offset, 0.0) + self.bias.rgb) * (0.5 + 0.5 * uv.x)
         gate = shader.step(0.0, rgb)
         rgb = shader.lerp(shader.vec3(0.0), rgb, gate)
         valid = shader.isfinite(rgb) and rgb >= shader.vec3(0.0)
         bits = shader.asuint(rgb)
         rgb = shader.asfloat(bits)
-        return tweak(shader.vec4(rgb, self.tint.a)) if self.enabled and shader.all(valid) else shader.vec4(0.0)
+        return tweak(shader.vec4(rgb, self.tint.a)) if self.enabled and shader.all(valid) and self.count == -3 and self.mask == 4045620583 else shader.vec4(0.0, 0.0, 0.0, 1.0)
 ''', encoding="utf-8")
     gray.write_text('''import infernux.shader as shader
 from infernux.shader.lib.color import luminance
@@ -126,7 +153,9 @@ class Grayscale(shader.fullscreen):
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy().copy().astype(np.float32)
                     gain = 0.5 + 0.5 * (np.arange(pixels.shape[1], dtype=np.float32) + 0.5) / pixels.shape[1]
-                    original = np.array([0.3, 0.4, 0.4], dtype=np.float32)[None, None, :] * gain[None, :, None]
+                    original = np.array([0.3 + 0.03 * pipeline.phase, 0.4, 0.4], dtype=np.float32)[None, None, :] * gain[None, :, None]
+                    if pipeline.phase == 4:
+                        original *= 0.0
                     gray_value = np.dot(original, [0.2126, 0.7152, 0.0722])
                     strength = min(pipeline.phase, 2) * 0.5
                     if pipeline.phase == 3:

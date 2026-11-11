@@ -12,6 +12,7 @@
 #include "BindingRegistration.h"
 #include "Infernux.h"
 #include "MatrixPyBridge.h"
+#include "ShaderParameterPyBridge.h"
 #include "function/renderer/RenderGraphDescription.h"
 #include "function/renderer/RendererSelection.h"
 #include "function/renderer/SceneRenderGraph.h"
@@ -130,7 +131,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("depth_compare", &GraphCommandDesc::depthCompare)
         .def_readwrite("alpha_blend", &GraphCommandDesc::alphaBlend)
         .def_readwrite("parameter_block", &GraphCommandDesc::parameterBlock)
-        .def_readwrite("push_constants", &GraphCommandDesc::pushConstants)
+        .def_readwrite("parameters", &GraphCommandDesc::parameters)
         .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings)
         .def_readwrite("source_resource", &GraphCommandDesc::sourceResource)
         .def_readwrite("destination_resource", &GraphCommandDesc::destinationResource)

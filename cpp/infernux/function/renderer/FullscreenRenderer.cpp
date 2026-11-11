@@ -48,7 +48,7 @@ void ReadParameterComponents(const nlohmann::json &value, std::vector<double> &c
         components.push_back(value.is_boolean() ? (value.get<bool>() ? 1.0 : 0.0) : value.get<double>());
 }
 
-void PrepareParameters(FullscreenPipelineEntry &entry, const std::string &schemaText)
+void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText)
 {
     const auto schema = nlohmann::json::parse(schemaText);
     if (schema.at("domain") != "fullscreen")
@@ -68,27 +68,6 @@ void PrepareParameters(FullscreenPipelineEntry &entry, const std::string &schema
             if (resource.binding.type != rhi::BindingType::UniformBuffer || resource.name != "inx_parameters")
                 throw std::logic_error("Fullscreen author resource has no graph binding contract: " + resource.name);
             entry.resourceInputs.push_back(-1);
-        }
-        if (resource.name != "inx_parameters")
-            continue;
-        entry.parameterDefaults.resize(resource.value.byteSize);
-        entry.parameterFields = resource.value.fields;
-        for (const auto &parameter : schema.at("parameters")) {
-            const auto name = parameter.at("name").get<std::string>();
-            const auto field = std::find_if(entry.parameterFields.begin(), entry.parameterFields.end(),
-                                            [&](const auto &value) { return value.name == name; });
-            if (field == entry.parameterFields.end())
-                throw std::logic_error("Compiled fullscreen parameter is missing: " + name);
-            const ShaderValueCopy copy(*field);
-            std::vector<double> components;
-            ReadParameterComponents(parameter.at("default"), components);
-            if (components.size() * sizeof(uint32_t) != copy.GetSourceBytes())
-                throw std::invalid_argument("Shader parameter default has a different declared shape: " + name);
-            std::vector<char> source(copy.GetSourceBytes());
-            const auto scalar = field->kind == ShaderValueKind::Array ? field->fields.front().scalar : field->scalar;
-            for (size_t index = 0; index < components.size(); ++index)
-                StoreParameter(source.data() + index * sizeof(uint32_t), scalar, components[index]);
-            copy.Write(entry.parameterDefaults.data(), source.data());
         }
     }
 }
@@ -183,7 +162,7 @@ struct FullscreenPipelineCache::Impl
                     selected.push_back(index);
             entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected);
             entry.rhi.program->Apply(desc);
-            PrepareParameters(entry.rhi, key.program->schema);
+            PrepareInputs(entry.rhi, key.program->schema);
             entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
             if (!entry.rhi.pipeline.IsValid())
                 throw std::runtime_error("Fullscreen pipeline creation failed: " + key.shaderName);
@@ -534,22 +513,72 @@ std::shared_ptr<const FullscreenProgram> FullscreenRenderer::AcquireProgram(cons
     return m_impl->host->AcquireProgram(name);
 }
 
+FullscreenParameters
+FullscreenRenderer::PrepareParameters(const FullscreenProgram &program,
+                                      const std::vector<std::pair<std::string, ShaderParameterValue>> &parameters)
+{
+    const auto schema = nlohmann::json::parse(program.schema);
+    if (schema.at("domain") != "fullscreen")
+        throw std::invalid_argument("Fullscreen pass requires a shader.fullscreen author program");
+    FullscreenParameters result;
+    const auto &resources = program.code->resources;
+    const auto uniform = std::find_if(resources.begin(), resources.end(),
+                                      [](const auto &item) { return item.name == "inx_parameters"; });
+    if (uniform == resources.end()) {
+        if (!parameters.empty())
+            throw std::invalid_argument("Fullscreen program declares no parameters");
+        return result;
+    }
+    result.defaults.resize(uniform->value.byteSize);
+    const auto &fields = uniform->value.fields;
+    const auto fieldByName = [&](const std::string &name) -> const ShaderValueLayout & {
+        const auto field =
+            std::find_if(fields.begin(), fields.end(), [&](const auto &item) { return item.name == name; });
+        if (field == fields.end())
+            throw std::invalid_argument("Fullscreen parameter is not declared: " + name);
+        return *field;
+    };
+    const auto &declarations = schema.at("parameters");
+    for (const auto &parameter : declarations) {
+        const auto &field = fieldByName(parameter.at("name").get<std::string>());
+        const ShaderValueCopy copy(field);
+        std::vector<double> components;
+        ReadParameterComponents(parameter.at("default"), components);
+        if (components.size() * sizeof(uint32_t) != copy.GetSourceBytes())
+            throw std::logic_error("Shader parameter schema does not match its compiled layout: " + field.name);
+        std::vector<char> source(copy.GetSourceBytes());
+        for (size_t index = 0; index < components.size(); ++index)
+            StoreParameter(source.data() + index * sizeof(uint32_t), field.scalar, components[index]);
+        copy.Write(result.defaults.data(), source.data());
+    }
+    using Kind = ShaderParameterKind;
+    static const std::unordered_map<std::string, Kind> kinds = {
+        {"float", Kind::Float},  {"int", Kind::Int},      {"uint", Kind::UInt},    {"bool", Kind::Bool},
+        {"vec2", Kind::Vector2}, {"vec3", Kind::Vector3}, {"vec4", Kind::Vector4}, {"color", Kind::Vector4},
+        {"mat3", Kind::Matrix3}, {"mat4", Kind::Matrix4},
+    };
+    for (const auto &[name, value] : parameters) {
+        const auto declaration = std::find_if(declarations.begin(), declarations.end(),
+                                              [&](const auto &item) { return item.at("name") == name; });
+        if (declaration == declarations.end())
+            throw std::invalid_argument("Fullscreen parameter is not declared: " + name);
+        result.values.push_back(value.ConvertTo(kinds.at(declaration->at("kind").get<std::string>())));
+        result.copies.emplace_back(fieldByName(name));
+        result.copies.back().Write(result.defaults.data(), result.values.back().Data());
+    }
+    return result;
+}
+
 void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-                                     const FullscreenResourceInput *inputs,
-                                     const std::vector<std::pair<std::string, float>> &parameters, const float *values)
+                                     const FullscreenResourceInput *inputs, const FullscreenParameters &parameters,
+                                     const ShaderParameterValue *values)
 {
     const auto frame = m_impl->CurrentFrame();
     auto &bytes = m_impl->frameParameters[frame].scratch;
-    bytes.assign(entry.parameterDefaults.begin(), entry.parameterDefaults.end());
-    for (size_t index = 0; index < parameters.size(); ++index) {
-        const auto &parameter = parameters[index];
-        const auto value = parameter.second;
-        const auto field = std::find_if(entry.parameterFields.begin(), entry.parameterFields.end(),
-                                        [&](const auto &item) { return item.name == parameter.first; });
-        if (field == entry.parameterFields.end() || field->kind != ShaderValueKind::Scalar)
-            throw std::invalid_argument("Fullscreen scalar parameter is not declared: " + parameter.first);
-        StoreParameter(bytes.data() + field->offset, field->scalar, values ? values[index] : value);
-    }
+    bytes.assign(parameters.defaults.begin(), parameters.defaults.end());
+    if (values)
+        for (size_t index = 0; index < parameters.copies.size(); ++index)
+            parameters.copies[index].Write(bytes.data(), values[index].Data());
     const auto uniform =
         bytes.empty() ? rhi::BufferHandle{} : m_impl->UploadParameters(frame, bytes.data(), bytes.size());
     const auto &layouts = entry.program->GetBindingLayouts();

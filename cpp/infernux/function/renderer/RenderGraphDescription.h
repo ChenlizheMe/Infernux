@@ -17,6 +17,7 @@
 
 #include "GraphEvents.h"
 #include "rhi/RhiDescriptors.h"
+#include "shader/ShaderParameterValue.h"
 #include <core/math/Intervals.h>
 #include <core/types/ShaderTypes.h>
 
@@ -140,11 +141,11 @@ struct GraphCommandDesc
     rhi::CompareFunction depthCompare = rhi::CompareFunction::Always;
     bool alphaBlend = false;
     /// Stable pass-local runtime parameter block. When non-empty,
-    /// pushConstants define the block layout and initial values rather than
+    /// parameters define the block layout and initial values rather than
     /// immutable topology. This payload does not override Material/Renderer,
     /// View or World values by name.
     std::string parameterBlock;
-    std::vector<std::pair<std::string, float>> pushConstants;
+    std::vector<std::pair<std::string, ShaderParameterValue>> parameters;
     std::vector<std::pair<std::string, std::string>> inputBindings;
 
     std::string sourceResource;
@@ -173,7 +174,7 @@ struct GraphParameterBlockUpdate
 {
     std::string id;
     uint64_t revision = 0;
-    std::vector<std::pair<std::string, float>> values;
+    std::vector<std::pair<std::string, ShaderParameterValue>> values;
 };
 
 // ============================================================================

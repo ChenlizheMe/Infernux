@@ -2,7 +2,9 @@
 
 #include <function/renderer/rhi/RenderCoreApi.h>
 #include <function/renderer/rhi/RhiCommand.h>
+#include <function/renderer/shader/ShaderParameterValue.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
+#include <function/renderer/shader/ShaderValueCopy.h>
 
 #include <cstdint>
 #include <memory>
@@ -26,6 +28,15 @@ struct FullscreenProgram
     std::string shaderId;
     std::shared_ptr<const ShaderTargetCode> code;
     std::string schema;
+};
+
+/// Logical overrides and their target copy plans, prepared with the graph.
+/// Each frame only copies bytes; it does not look up fields or convert types.
+struct FullscreenParameters
+{
+    std::vector<char> defaults;
+    std::vector<ShaderValueCopy> copies;
+    std::vector<ShaderParameterValue> values;
 };
 
 class FullscreenRendererHost
@@ -94,8 +105,6 @@ struct FullscreenPipelineEntry
     bool hasPerView = false;
     bool hasGlobals = false;
     std::shared_ptr<DeviceShaderProgram> program;
-    std::vector<char> parameterDefaults;
-    std::vector<ShaderValueLayout> parameterFields;
     std::vector<std::string> inputNames;
     std::vector<int32_t> resourceInputs;
 };
@@ -159,11 +168,15 @@ class FullscreenRenderer
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<const FullscreenProgram>
     AcquireProgram(const std::string &name);
 
+    [[nodiscard]] INFERNUX_RENDER_CORE_API static FullscreenParameters
+    PrepareParameters(const FullscreenProgram &program,
+                      const std::vector<std::pair<std::string, ShaderParameterValue>> &parameters);
+
     INFERNUX_RENDER_CORE_API void DrawProgram(rhi::GraphicsCommandEncoder &encoder,
                                               const FullscreenPipelineEntry &entry,
                                               const FullscreenResourceInput *inputs,
-                                              const std::vector<std::pair<std::string, float>> &parameters,
-                                              const float *values = nullptr);
+                                              const FullscreenParameters &parameters,
+                                              const ShaderParameterValue *values = nullptr);
 
     INFERNUX_RENDER_CORE_API rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout,
                                                                     const FullscreenResourceInput *inputs,

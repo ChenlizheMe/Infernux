@@ -83,7 +83,7 @@ def graph_structure(graph):
                          for name, source in binding._input_bindings.items())),
         ) for binding in graph._work_bindings),
         tuple(freeze({
-            key: tuple(value) if key == "_push_constants" else value
+            key: tuple(value) if key == "_parameters" else value
             for key, value in vars(render_pass).items()
             if key not in {"_graph", "_parameter_block"}
         }) for render_pass in graph._passes),

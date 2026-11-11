@@ -945,8 +945,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     {
         uint64_t revision = 0;
         std::vector<std::string> names;
-        FullscreenPushConstants values{};
-        uint32_t byteSize = 0;
+        std::shared_ptr<const std::vector<ShaderParameterValue>> values;
+        std::optional<FullscreenPushConstants> scalarPushConstants;
     };
 
     // Dynamic values keyed by GraphCommandDesc::parameterBlock. Layout is

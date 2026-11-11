@@ -2875,7 +2875,7 @@ class GraphCommandDesc:
     depth_compare: DepthCompare
     alpha_blend: bool
     parameter_block: str
-    push_constants: List[Tuple[str, float]]
+    parameters: List[Tuple[str, bool | int | float | Sequence[float] | Sequence[Sequence[float]]]]
     source_resource: str
     destination_resource: str
     copy_bytes: int
@@ -2892,7 +2892,7 @@ class GraphParameterBlockUpdate:
 
     id: str
     revision: int
-    values: List[Tuple[str, float]]
+    values: List[Tuple[str, bool | int | float | Sequence[float] | Sequence[Sequence[float]]]]
 
     def __init__(self) -> None: ...
 

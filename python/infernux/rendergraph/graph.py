@@ -27,8 +27,10 @@ from contextlib import contextmanager
 from functools import partial
 from itertools import count
 from operator import index
-from typing import Mapping, Optional, Tuple, List, Dict
+from typing import Mapping, Optional, Tuple, List, Dict, Sequence
 from .renderer_selection import RendererSelection
+
+ShaderParameter = bool | int | float | Sequence[float] | Sequence[Sequence[float]]
 
 # Graph descriptions use the same native schema in tests, Editor and Player.
 from infernux.lib import (
@@ -406,7 +408,7 @@ class RenderPassBuilder:
         self._depth_write = False
         self._alpha_blend = False
         self._parameter_block: str = ""
-        self._push_constants: Dict[str, float] = {}
+        self._parameters: Dict[str, ShaderParameter] = {}
         self._source_resource = ""
         self._destination_resource = ""
         self._copy_bytes = 0
@@ -773,28 +775,27 @@ class RenderPassBuilder:
     def set_param(
         self,
         name: str,
-        value: float,
+        value: ShaderParameter,
     ) -> "RenderPassBuilder":
-        """Set a named push-constant parameter for this pass.
+        """Set a named shader parameter for this pass.
 
-        Parameters are passed to the fragment shader as push constants
-        in the order they are declared.  Call once per parameter::
+        Values follow the shader's declared type. Vectors use sequences;
+        matrices use rows of sequences. Call once per parameter::
 
             p.set_param("intensity", 0.8)
             p.set_param("threshold", 1.0)
 
         Args:
-            name: Parameter name (must match the shader push-constant
-                  struct field name).
-            value: Float value.
+            name: Declared shader parameter name.
+            value: Scalar, vector, color or square matrix.
         """
-        self._push_constants[name] = float(value)
+        self._parameters[name] = value
         return self
 
     def bind_parameter_block(
         self,
         block_id: str,
-        parameters: Mapping[str, float],
+        parameters: Mapping[str, ShaderParameter],
     ) -> "RenderPassBuilder":
         """Bind revisioned runtime values without making them graph topology.
 
@@ -810,14 +811,12 @@ class RenderPassBuilder:
         if not isinstance(parameters, Mapping):
             raise TypeError("parameter block values must be a mapping")
         self._parameter_block = normalized_id
-        self._push_constants.clear()
+        self._parameters.clear()
         for name, value in parameters.items():
             parameter_name = str(name or "").strip()
             if not parameter_name:
                 raise ValueError("parameter block names cannot be empty")
-            self._push_constants[parameter_name] = float(value)
-        if len(self._push_constants) > 32:
-            raise ValueError("fullscreen parameter blocks support at most 32 floats")
+            self._parameters[parameter_name] = value
         return self
 
     def fullscreen_quad(
@@ -830,10 +829,10 @@ class RenderPassBuilder:
     ) -> "RenderPassBuilder":
         """Configure this pass to draw a fullscreen triangle with a named shader.
 
-        The vertex shader is always ``fullscreen_triangle``; the fragment
-        shader is looked up by its matching ``ShaderInfo Name``.
+        The author program supplies its fullscreen stages. ``shader`` accepts
+        the asset's source path, GUID or registered shader id.
 
-        Use ``set_param()`` to pass push constants and ``set_texture()``
+        Use ``set_param()`` to pass typed values and ``set_texture()``
         to bind input textures before calling this method.
 
         Args:
@@ -2444,7 +2443,7 @@ class RenderGraph:
                 command.depth_compare = p._depth_test if p._depth_test is not None else DepthCompare.ALWAYS
                 command.alpha_blend = p._alpha_blend
                 command.parameter_block = p._parameter_block
-                command.push_constants = list(p._push_constants.items())
+                command.parameters = list(p._parameters.items())
                 command.source_resource = p._source_resource
                 command.destination_resource = p._destination_resource
                 command.copy_bytes = p._copy_bytes

@@ -43,6 +43,7 @@ namespace infernux
 {
 
 class FullscreenPipelineCache;
+struct FullscreenProgram;
 struct SceneDepthResolveProgram;
 namespace lighting
 {
@@ -101,6 +102,7 @@ class InxVkCoreModular
     explicit InxVkCoreModular(vk::VulkanBackendContext &backend, int maxFrameInFlight = 2);
     ~InxVkCoreModular();
     [[nodiscard]] std::shared_ptr<FullscreenPipelineCache> GetFullscreenPipelineCache();
+    [[nodiscard]] std::shared_ptr<const FullscreenProgram> AcquireFullscreenProgram(const std::string &name);
     [[nodiscard]] std::shared_ptr<const SceneDepthResolveProgram> GetSceneDepthResolveProgram();
     [[nodiscard]] std::shared_ptr<const lighting::ForwardPlusGridPipeline> GetForwardPlusGridProgram();
 

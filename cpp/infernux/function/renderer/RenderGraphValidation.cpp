@@ -673,16 +673,11 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              pass.name, "'");
                 return false;
             }
-            if (command->pushConstants.size() > 32) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' exceeds the 32-float push constant limit");
-                return false;
-            }
             std::unordered_set<std::string> parameterNames;
-            for (const auto &[name, value] : command->pushConstants) {
-                if (name.empty() || !parameterNames.insert(name).second || !std::isfinite(value)) {
+            for (const auto &[name, value] : command->parameters) {
+                if (name.empty() || !parameterNames.insert(name).second) {
                     INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                                 "' has an invalid push constant layout");
+                                 "' has an invalid parameter layout");
                     return false;
                 }
             }
