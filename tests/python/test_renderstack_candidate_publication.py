@@ -36,11 +36,11 @@ class PublicationContext:
     def submit_culling(self, culling):
         self.submitted += 1
 
-    def render_compiled(self, camera, revision):
+    def is_graph_revision_current(self, revision):
         return self.current_revision == revision
 
-    def render_with_graph(self, camera, graph):
-        if not self.apply_graph(graph):
+    def render_with_graph(self, camera, graph, updates=()):
+        if not self.is_graph_revision_current(graph.source_revision) and not self.apply_graph(graph):
             return False
         self.submit_culling(None)
         return True
@@ -64,7 +64,7 @@ def publication(monkeypatch):
     console.set_native_console(panel)
     stack = RenderStack()
     stack.pipeline
-    monkeypatch.setattr(stack, "_collect_effect_parameter_updates", lambda context: (False, []))
+    monkeypatch.setattr(stack, "_collect_effect_parameter_updates", lambda context, *, force=False: (False, []))
     try:
         yield stack, generation, console, panel
     finally:
@@ -159,7 +159,7 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
     # A successful Inspector probe cannot certify publication of the runtime graph.
     stack._build_full_topology_probe()
     assert panel.get_error_count() == 2
-    monkeypatch.setattr(stack, "_collect_effect_parameter_updates", lambda context: (False, []))
+    monkeypatch.setattr(stack, "_collect_effect_parameter_updates", lambda context, *, force=False: (False, []))
     monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
     monkeypatch.setattr(RenderEffectArtifactRegistry, "topology_generation", classmethod(lambda cls: generation[0]))
 

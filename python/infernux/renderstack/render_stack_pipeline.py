@@ -155,5 +155,4 @@ class RenderStackPipeline(RenderPipeline):
                 f"screen_ui={','.join(screen_ui_passes) or 'none'}"
             )
 
-        if not context.render_compiled(camera, description.source_revision):
-            context.render_with_graph(camera, description)
+        context.render_with_graph(camera, description)

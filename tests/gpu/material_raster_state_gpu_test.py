@@ -33,8 +33,7 @@ class RasterPipeline(RenderPipelineCallback):
         self.description=graph.build()
 
     def render(self, context, camera):
-        if not context.render_compiled(camera, self.description.source_revision):
-            context.render_with_graph(camera, self.description)
+        context.render_with_graph(camera, self.description)
 
 
 def main():

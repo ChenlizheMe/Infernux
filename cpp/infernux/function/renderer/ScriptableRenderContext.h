@@ -174,17 +174,15 @@ class ScriptableRenderContext
     /// single-submit, matching the context's single-submit lifetime.
     void SubmitCulling(CullingResults &culling);
 
-    /// @brief Single-call render path: setup + cull + apply_graph + submit.
-    /// Avoids 3 extra Python→C++ round-trips compared to calling each step separately.
+    /// @brief Prepare this view, apply a changed graph, publish values, cull and submit.
+    /// Unchanged revisions reuse topology. Value publication follows graph
+    /// application, including the first frame of a new camera or Play view.
     /// Returns false without submitting culling when native validation rejects the graph.
-    bool RenderWithGraph(Camera *camera, const RenderGraphDescription &desc);
+    bool RenderWithGraph(Camera *camera, const RenderGraphDescription &desc,
+                         const std::vector<GraphParameterBlockUpdate> &updates = {});
 
     /// Check whether the active SceneRenderGraph already owns an artifact.
     [[nodiscard]] bool IsGraphRevisionCurrent(uint64_t sourceRevision) const;
-
-    /// Single-call steady-state render path that does not upload graph topology.
-    /// Returns false when the caller must fall back to RenderWithGraph().
-    bool RenderCompiled(Camera *camera, uint64_t sourceRevision);
 
     // ====================================================================
     // CommandBuffer integration

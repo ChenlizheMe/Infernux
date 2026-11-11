@@ -955,6 +955,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         """
         self._select_graph_state(context.output_samples)
         state = self._graph_state
+        updates = []
         from infernux.renderstack.render_effect_compiler import (
             RenderEffectArtifactRegistry,
         )
@@ -970,11 +971,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             if not state.description._render_texture_layouts_current():
                 self.invalidate_graph()
             else:
-                requires_rebuild, updates = self._collect_effect_parameter_updates(context)
+                requires_rebuild, updates = self._collect_effect_parameter_updates(
+                    context, force=not context.is_graph_revision_current(state.description.source_revision),
+                )
                 if requires_rebuild:
                     self.invalidate_graph()
-                elif updates:
-                    context.update_parameter_blocks(updates)
         elif any(texture.revision != revision for texture, revision in state.rejected_texture_inputs):
             self.invalidate_graph()
 
@@ -1023,38 +1024,22 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
             context.submit_culling(culling)
         elif state.description is not None:
-            # Steady state sends only a revision integer. A second camera or a
-            # rebuilt native graph falls back to the full description once.
-            if not context.render_compiled(camera, state.description.source_revision):
-                if not context.render_with_graph(camera, state.description):
-                    self._reject_graph_publication(state.description)
-                    return
-                state.last_valid_description = state.description
-                # The native graph may have re-recorded its passes from the
-                # description, whose push constants were baked at build time.
-                # Drop this graph's upload cache so any live effect edits made
-                # since then are collected and resent on the next frame.
-                if state.upload_revisions:
-                    graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
-                    stale_keys = [
-                        key for key in state.upload_revisions if key[0] == graph_id
-                    ]
-                    for key in stale_keys:
-                        del state.upload_revisions[key]
+            if not context.render_with_graph(camera, state.description, updates):
+                self._reject_graph_publication(state.description)
+                return
+            state.last_valid_description = state.description
 
-    def _collect_effect_parameter_updates(self, context):
+    def _collect_effect_parameter_updates(self, context, *, force=False):
         state = self._graph_state
         bindings = state.bindings or ()
         if not bindings:
             return False, []
-        graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
-        if state.upload_revisions is None:
-            state.upload_revisions = {}
+        graph_id = context.graph_instance_id
         updates = []
         for binding in bindings:
             revision_key = (graph_id, binding.binding_id)
             revision = binding.source.revision
-            if state.upload_revisions.get(revision_key) == revision:
+            if not force and state.upload_revisions.get(revision_key) == revision:
                 continue
             try:
                 requires_rebuild, binding_updates = binding.collect_updates()

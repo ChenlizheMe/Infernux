@@ -516,12 +516,14 @@ void ScriptableRenderContext::MarkSubmitted(uint64_t objectBindingIdentity, bool
         m_graph->RequestView(m_draw, objectBindingIdentity, reusesObjectBindings);
 }
 
-bool ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphDescription &desc)
+bool ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphDescription &desc,
+                                              const std::vector<GraphParameterBlockUpdate> &updates)
 {
     SetupCameraProperties(camera);
-    CullingResults &culling = Cull(camera);
-    if (!ApplyGraph(desc))
+    if (!IsGraphRevisionCurrent(desc.sourceRevision) && !ApplyGraph(desc))
         return false;
+    UpdateParameterBlocks(updates);
+    CullingResults &culling = Cull(camera);
     SubmitCulling(culling);
     return true;
 }
@@ -529,16 +531,6 @@ bool ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphD
 bool ScriptableRenderContext::IsGraphRevisionCurrent(uint64_t sourceRevision) const
 {
     return m_graph && m_graph->IsPythonGraphCurrent(sourceRevision);
-}
-
-bool ScriptableRenderContext::RenderCompiled(Camera *camera, uint64_t sourceRevision)
-{
-    SetupCameraProperties(camera);
-    if (!IsGraphRevisionCurrent(sourceRevision))
-        return false;
-    CullingResults &culling = Cull(camera);
-    SubmitCulling(culling);
-    return true;
 }
 
 // ============================================================================

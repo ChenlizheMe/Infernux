@@ -79,17 +79,25 @@ class _Context:
     def apply_graph(self, description):
         self.description = description
         self.applied.append(description.source_revision)
+        return True
 
     def submit_culling(self, culling):
         pass
 
-    def render_compiled(self, camera, revision):
+    def is_graph_revision_current(self, revision):
         return self.description is not None and self.description.source_revision == revision
 
-    def render_with_graph(self, camera, description):
-        self.apply_graph(description)
+    def render_with_graph(self, camera, description, updates=()):
+        if not self.is_graph_revision_current(description.source_revision):
+            self.apply_graph(description)
+        self.update_parameter_blocks(updates)
+        return True
 
     def update_parameter_blocks(self, updates):
+        assert self.description is not None
+        declared = {command.parameter_block for render_pass in self.description.passes
+                    for command in render_pass.commands}
+        assert all(update.id in declared for update in updates)
         self.parameter_updates.extend(updates)
 
 
@@ -109,3 +117,12 @@ def test_effect_parameter_uploads_belong_to_variant_and_native_view(monkeypatch)
         stack.render(context, object())
         assert any(dict(update.values).get("exposure") == 2.0 for update in context.parameter_updates)
         assert len(context.applied) == 1
+    # A new view and a rebuilt view both receive current values in their first
+    # submission, even when the shared effect revision has not changed.
+    late_view = _Context(1, 13)
+    for occurrence in range(2):
+        late_view.description = None
+        late_view.parameter_updates.clear()
+        stack.render(late_view, object())
+        assert any(dict(update.values).get("exposure") == 2.0 for update in late_view.parameter_updates)
+        assert len(late_view.applied) == occurrence + 1

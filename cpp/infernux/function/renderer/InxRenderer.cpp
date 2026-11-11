@@ -3078,8 +3078,7 @@ void InxRenderer::PrepareSceneCameraPreview()
     content.activeScene = camera->GetGameObject()->GetScene();
     ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content);
     const auto &description = *m_sceneCameraPreviewDescription;
-    if (!context.RenderCompiled(camera, description.sourceRevision))
-        context.RenderWithGraph(camera, description);
+    context.RenderWithGraph(camera, description);
 }
 
 void InxRenderer::SupersedePendingImGuiTextureUploads(const std::string &name)
