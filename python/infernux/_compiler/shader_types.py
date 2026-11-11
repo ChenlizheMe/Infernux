@@ -17,4 +17,10 @@ public struct InxFragmentInput
     public float4 position : SV_Position;
     public float2 uv : TEXCOORD0;
 };
+public uint2 inx_image_dimensions(InxColor2D image, uint mip)
+{
+    uint width, height, levels;
+    image.texture.GetDimensions(mip, width, height, levels);
+    return uint2(width, height);
+}
 """)

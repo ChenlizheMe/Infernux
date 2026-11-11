@@ -108,7 +108,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
-for _name in ("sample", "sample_level", "sample_grad", "load"):
+for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "fragment_input", "parameter", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "fragment_input", "parameter", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]

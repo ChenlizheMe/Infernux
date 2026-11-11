@@ -48,7 +48,7 @@ from infernux.renderstack.render_pass import RenderPass
 from infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
 
 if TYPE_CHECKING:
-    from infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph, ShaderParameter
     from infernux.rendergraph.graph import Format
     from infernux.renderstack.resource_bus import ResourceBus
 
@@ -104,11 +104,11 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
     # ---- Class-level serialized field metadata ----
     _serialized_fields_: ClassVar[Dict[str, Any]] = {}
 
-    def get_pass_parameters(self) -> tuple[Mapping[str, float], ...] | None:
-        """Optionally supply push constants in the order of this effect's passes.
+    def get_pass_parameters(self) -> tuple[Mapping[str, ShaderParameter], ...] | None:
+        """Optionally supply typed parameters in the order of this effect's passes.
 
         Reuse these mappings in ``setup_passes`` and include an empty mapping
-        for each pass without constants. Declare any fields that affect pass
+        for each pass without parameters. Declare any fields that affect pass
         layout or resource bindings as ``topology_parameters`` on the feature.
         Returning ``None`` uses graph replay to resolve live parameter edits.
         """

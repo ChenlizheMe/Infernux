@@ -42,6 +42,9 @@ class ShaderEmitter(SlangEmitter):
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) in {"sample", "sample_level", "sample_grad", "load"}):
             return "float4"
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
+                and self.symbol(qualified(node.func)) == "dimensions"):
+            return "uint2"
         if isinstance(node, ast.Call) and (function := self.functions.get(qualified(node.func))):
             return function.result
         return super().infer(node)
@@ -49,7 +52,7 @@ class ShaderEmitter(SlangEmitter):
     def visit_Call(self, node):
         operation = self.symbol(qualified(node.func))
         image_operations = {"sample": (2, "Sample"), "sample_level": (3, "SampleLevel"),
-                            "sample_grad": (4, "SampleGrad"), "load": (3, "Load")}
+                            "sample_grad": (4, "SampleGrad"), "load": (3, "Load"), "dimensions": (2, "GetDimensions")}
         if operation in image_operations and operation != qualified(node.func):
             arity, intrinsic = image_operations[operation]
             if node.keywords or len(node.args) != arity:
@@ -57,6 +60,8 @@ class ShaderEmitter(SlangEmitter):
             if self.infer(node.args[0]) not in RESOURCE_TYPES.values():
                 self.error(node, "Texture operations receive a declared GPU image")
             image, *arguments = (self.visit(argument) for argument in node.args)
+            if operation == "dimensions":
+                return f"inx_image_dimensions({image}, uint({arguments[0]}))"
             if operation == "load":
                 return f"{image}.texture.Load(int3({arguments[0]}, {arguments[1]}))"
             return image + ".texture." + intrinsic + "(" + ", ".join([image + ".sampler", *arguments]) + ")"

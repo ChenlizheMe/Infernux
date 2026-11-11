@@ -61,7 +61,6 @@ class BloomEffect(FullScreenEffect):
 
     def get_shader_list(self) -> List[str]:
         return [
-            "Fullscreen Triangle",
             "Fullscreen Copy",
             "Bloom Prefilter",
             "Bloom Downsample",
@@ -143,7 +142,7 @@ class BloomEffect(FullScreenEffect):
             p.set_texture("_SourceTex", scene_copy)
             p.set_param("threshold", self.threshold)
             p.set_param("knee", 0.5)
-            p.set_param("clampMax", self.clamp)
+            p.set_param("clamp_max", self.clamp)
             p.write_color(mip_textures[0])
             p.fullscreen_quad("Bloom Prefilter")
 
@@ -189,9 +188,7 @@ class BloomEffect(FullScreenEffect):
             p.set_texture("_SceneColor", scene_copy)
             p.write_color(color_out)
             p.set_param("intensity", self.intensity)
-            p.set_param("tintR", self.tint[0])
-            p.set_param("tintG", self.tint[1])
-            p.set_param("tintB", self.tint[2])
+            p.set_param("tint", tuple(self.tint))
             p.fullscreen_quad("Bloom Composite")
 
         # Update bus so subsequent effects read the bloom result
