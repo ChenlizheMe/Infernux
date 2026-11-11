@@ -2,6 +2,7 @@
 
 #include "rhi/RhiDevice.h"
 #include "shader/DeviceShaderProgram.h"
+#include "shader/ShaderValueCopy.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -38,6 +39,15 @@ void StoreParameter(char *destination, ShaderScalarKind scalar, double value)
     }
 }
 
+void ReadParameterComponents(const nlohmann::json &value, std::vector<double> &components)
+{
+    if (value.is_array()) {
+        for (const auto &element : value)
+            ReadParameterComponents(element, components);
+    } else
+        components.push_back(value.is_boolean() ? (value.get<bool>() ? 1.0 : 0.0) : value.get<double>());
+}
+
 void PrepareParameters(FullscreenPipelineEntry &entry, const std::string &schemaText)
 {
     const auto schema = nlohmann::json::parse(schemaText);
@@ -69,13 +79,16 @@ void PrepareParameters(FullscreenPipelineEntry &entry, const std::string &schema
                                             [&](const auto &value) { return value.name == name; });
             if (field == entry.parameterFields.end())
                 throw std::logic_error("Compiled fullscreen parameter is missing: " + name);
-            const auto &value = parameter.at("default");
-            for (uint32_t component = 0; component < field->columns; ++component) {
-                const auto &item = value.is_array() ? value.at(component) : value;
-                const double scalar = item.is_boolean() ? (item.get<bool>() ? 1.0 : 0.0) : item.get<double>();
-                StoreParameter(entry.parameterDefaults.data() + field->offset + component * sizeof(float),
-                               field->scalar, scalar);
-            }
+            const ShaderValueCopy copy(*field);
+            std::vector<double> components;
+            ReadParameterComponents(parameter.at("default"), components);
+            if (components.size() * sizeof(uint32_t) != copy.GetSourceBytes())
+                throw std::invalid_argument("Shader parameter default has a different declared shape: " + name);
+            std::vector<char> source(copy.GetSourceBytes());
+            const auto scalar = field->kind == ShaderValueKind::Array ? field->fields.front().scalar : field->scalar;
+            for (size_t index = 0; index < components.size(); ++index)
+                StoreParameter(source.data() + index * sizeof(uint32_t), scalar, components[index]);
+            copy.Write(entry.parameterDefaults.data(), source.data());
         }
     }
 }

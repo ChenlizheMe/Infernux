@@ -622,7 +622,7 @@ class Material(ResourceProxy):
         self._auto_save()
 
     def set_param(self, name: str | int, value):
-        """Set a non-texture material property using type/shape dispatch.
+        """Set a non-texture property using its declared shader type.
 
         Examples:
             material.set_param("metallic", 0.9)
@@ -668,15 +668,13 @@ class Material(ResourceProxy):
     # Shader Property Getters
     # ==========================================================================
 
-    def get_float(self, name: str | int, default: float = 0.0) -> float:
-        """Get a float shader property."""
-        val = self._native.get_property(name)
-        return float(val) if val is not None else default
+    def get_float(self, name: str | int) -> float:
+        """Read a declared float field; missing or mismatched fields raise."""
+        return self._native.get_float(name)
 
-    def get_int(self, name: str | int, default: int = 0) -> int:
-        """Get an integer shader property."""
-        val = self._native.get_property(name)
-        return int(val) if val is not None else default
+    def get_int(self, name: str | int) -> int:
+        """Read a declared integer field without truncating a float field."""
+        return self._native.get_int(name)
 
     def get_color(self, name: str | int) -> Tuple[float, float, float, float]:
         """Get a color shader property as (r, g, b, a)."""
@@ -700,8 +698,11 @@ class Material(ResourceProxy):
 
     def get_texture(self, name: str | int) -> Optional[str]:
         """Get a texture shader property GUID (or None if not set)."""
-        val = self._native.get_property(name)
-        return str(val) if val is not None else None
+        return self._native.get_texture(name) or None
+
+    def get_matrix(self, name: str | int):
+        """Read a matrix as a NumPy (4, 4) array indexed [row, column]."""
+        return self._native.get_matrix(name)
 
     def has_property(self, name: str | int) -> bool:
         """Check if the material has a property with the given name."""

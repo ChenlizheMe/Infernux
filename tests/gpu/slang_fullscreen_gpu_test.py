@@ -55,9 +55,11 @@ from .palette import tweak
 
 class Fill(shader.fullscreen):
     tint = shader.parameter.color(default=(0.2, 0.4, 0.8, 1.0))
+    transform = shader.parameter.mat3(default=((1.0, 0.25, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.5)))
     enabled = shader.parameter.bool(default=True)
     def main(self, uv: shader.vec2) -> shader.vec4:
-        return tweak(self.tint) if self.enabled else shader.vec4(0.0)
+        rgb = self.transform @ self.tint.rgb
+        return tweak(shader.vec4(rgb, self.tint.a)) if self.enabled else shader.vec4(0.0)
 ''', encoding="utf-8")
     gray.write_text('''import infernux.shader as shader
 from infernux.shader.lib.color import luminance
@@ -109,7 +111,7 @@ class Grayscale(shader.fullscreen):
                     ticket = frontend.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy().copy().astype(np.float32)
-                    original = np.array([0.2, 0.4, 0.8], dtype=np.float32)
+                    original = np.array([0.3, 0.4, 0.4], dtype=np.float32)
                     gray_value = np.dot(original, [0.2126, 0.7152, 0.0722])
                     strength = min(pipeline.phase, 2) * 0.5
                     if pipeline.phase == 3:

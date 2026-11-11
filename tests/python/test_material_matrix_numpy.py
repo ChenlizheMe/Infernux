@@ -26,9 +26,11 @@ def test_material_copies_row_column_matrix_independently_of_array_strides(materi
     elif layout == "negative_stride":
         values = values[::-1, ::-1]
     expected = values.copy()
+    material.set_matrix("projection", np.eye(4))
     getattr(material, setter)("projection", values)
     values[:] = 0
     np.testing.assert_array_equal(stored_matrix(material), expected)
+    np.testing.assert_array_equal(material.get_matrix("projection"), expected)
     # The persistent representation is unchanged, not a second matrix format.
     document = material.native.serialize_document()
     assert document["properties"]["projection"]["type"] == 5
@@ -42,6 +44,24 @@ def test_invalid_matrix_does_not_mutate_previous_property(material, bad):
         with pytest.raises((TypeError, ValueError), match="matrix"):
             setter("projection", bad)
         np.testing.assert_array_equal(stored_matrix(material), np.eye(4))
+
+
+def test_declared_type_controls_numpy_vectors_and_numeric_reads(material):
+    material.set_vector3("direction", 0.0, 0.0, 1.0)
+    material.set_param("direction", np.asarray([1.0, 2.0, 3.0]))
+    assert material.get_vector3("direction") == (1.0, 2.0, 3.0)
+    material.set_int("count", 3)
+    material.set_float("strength", 0.5)
+    before = material.native.serialize_document()
+    with pytest.raises((TypeError, RuntimeError)):
+        material.set_param("count", 2.75)
+    with pytest.raises(ValueError):
+        material.get_int("strength")
+    with pytest.raises(ValueError):
+        material.set_int("strength", 1)
+    with pytest.raises(KeyError):
+        material.set_param("missing", 0.5)
+    assert material.native.serialize_document() == before
 
 
 def test_camera_matrix_passes_directly_to_material_renderer_and_draw(scene, material):

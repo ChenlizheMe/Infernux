@@ -1,4 +1,5 @@
 #include <function/renderer/shader/DeviceShaderProgram.h>
+#include <function/renderer/shader/ShaderValueCopy.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
@@ -25,6 +26,8 @@ void Require(bool result, const char *message)
 constexpr const char *kProgram = R"(
 struct Material {
     float4 tint; uint objectId;
+    float3x3 channelTransform;
+    float weights[2];
     Texture2D<float4> albedo;
     SamplerState albedoSampler;
     Texture2D<float4> generatedImage;
@@ -65,6 +68,7 @@ Targets mesh_fragment(Varyings input)
     Targets result;
     result.color = scene.material.albedo.Sample(scene.material.albedoSampler, input.uv) * scene.material.tint
         * scene.material.generatedImage.Sample(scene.material.albedoSampler, input.uv) * scene.exposure;
+    result.color.rgb = mul(scene.material.channelTransform, result.color.rgb) * scene.material.weights[1];
     result.identity = uint2(scene.material.objectId, 0xfedcba98u);
     return result;
 }
@@ -154,9 +158,13 @@ void Run()
     const auto &fields = uniformLayout.fields;
     std::vector<char> constants(uniformLayout.byteSize);
     const std::array<float, 4> tint{0.5f, 0.75f, 1.0f, 1.0f};
+    const std::array<float, 9> channelTransform{1.0f, 0.2f, 0.0f, 0.0f, 0.9f, 0.1f, 0.1f, 0.0f, 0.8f};
+    const std::array<float, 2> weights{0.25f, 0.8f};
     const uint32_t objectId = 0x1020304;
-    std::memcpy(constants.data() + fields[0].offset, tint.data(), sizeof(tint));
-    std::memcpy(constants.data() + fields[1].offset, &objectId, sizeof(objectId));
+    ShaderValueCopy(fields[0]).Write(constants.data(), tint.data());
+    ShaderValueCopy(fields[1]).Write(constants.data(), &objectId);
+    ShaderValueCopy(fields[2]).Write(constants.data(), channelTransform.data());
+    ShaderValueCopy(fields[3]).Write(constants.data(), weights.data());
     const auto uniform =
         buffer(constants.size(), rhi::BufferUsageFlags::Uniform, rhi::BufferMemory::Upload, constants.data());
     const float exposure = 1.0f;
@@ -390,6 +398,7 @@ void Run()
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
             const uint8_t *encoded = texels.data() + ((size - 1 - y) / 8) * 256 + (x / 8) * 4;
+            std::array<float, 3> input{};
             for (size_t channel = 0; channel < 3; ++channel) {
                 const auto srgb = encoded[channel] / 255.0f;
                 const auto linear = srgb <= 0.04045f ? srgb / 12.92f : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
@@ -399,7 +408,13 @@ void Run()
                 const std::array<float, 3> generatedValue{std::round(derivative * 255.0f) / 255.0f,
                                                           std::round(sigmoid * 255.0f) / 255.0f,
                                                           std::round((1.0f - derivative) * 255.0f) / 255.0f};
-                const auto expected = std::lround(linear * tint[channel] * generatedValue[channel] * 255.0f);
+                input[channel] = linear * tint[channel] * generatedValue[channel];
+            }
+            for (size_t channel = 0; channel < 3; ++channel) {
+                float value = 0;
+                for (size_t source = 0; source < 3; ++source)
+                    value += channelTransform[channel * 3 + source] * input[source];
+                const auto expected = std::lround(value * weights[1] * 255.0f);
                 Require(std::abs(int(colorBytes[y * 256 + x * 4 + channel]) - expected) <= 1,
                         "sRGB sampling/varying/color mismatch");
             }

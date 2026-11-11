@@ -51,6 +51,26 @@ def floating_type(kind):
     return "float"
 
 
+def product_type(left, right):
+    """Slang mul / Python @ contracts, including rectangular matrices."""
+    def dimensions(kind):
+        prefix = next((i for i, char in enumerate(kind) if char.isdigit()), len(kind))
+        return kind[:prefix], tuple(map(int, kind[prefix:].split("x"))) if prefix < len(kind) else ()
+    if left is None or right is None:
+        return left or right
+    scalar, a = dimensions(left)
+    _, b = dimensions(right)
+    if len(a) == 2 and len(b) == 1:
+        return scalar + str(a[0])
+    if len(a) == 1 and len(b) == 2:
+        return scalar + str(b[1])
+    if len(a) == 2 and len(b) == 2:
+        return scalar + str(a[0]) + "x" + str(b[1])
+    if len(a) == len(b) == 1:
+        return common_type(left, right).rstrip("0123456789")
+    return common_type(left, right)
+
+
 class SlangEmitter(ast.NodeVisitor):
     def __init__(self, source: str, path: str, *, aliases=("shader",), types=None):
         self.path = path
@@ -137,6 +157,8 @@ class SlangEmitter(ast.NodeVisitor):
         if isinstance(node, (ast.BoolOp, ast.Compare)):
             return "bool"
         if isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.MatMult):
+                return product_type(self.infer(node.left), self.infer(node.right))
             return common_type(self.infer(node.left), self.infer(node.right))
         if isinstance(node, ast.IfExp):
             return common_type(self.infer(node.body), self.infer(node.orelse))
@@ -148,10 +170,15 @@ class SlangEmitter(ast.NodeVisitor):
                 return "float"
             if name in {"isnan", "isinf", "isfinite", "all", "any"}:
                 return "bool"
+            if name == "mul" and len(node.args) == 2:
+                return product_type(*(self.infer(argument) for argument in node.args))
             if name in INTRINSICS:
                 return self.infer(node.args[0])
         if isinstance(node, ast.Subscript):
             base = self.infer(node.value)
+            if base and "x" in base and base[-1:].isdigit():
+                prefix = next(index for index, char in enumerate(base) if char.isdigit())
+                return base[:prefix] + base.split("x")[1]
             return base.rstrip("0123456789") if base else None
         return None
 

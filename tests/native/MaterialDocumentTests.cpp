@@ -542,10 +542,19 @@ void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
         assert(!material.SynchronizeShaderPropertyDefaults(artifact));
         assert(material.GetVersion() == synchronized);
     }
-    // A genuinely incompatible shape still takes the shader's typed default.
-    material.SetFloat("baseColor", 0.25f);
-    assert(material.SynchronizeShaderPropertyDefaults(artifact));
-    assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(1.0f));
+    // Public updates cannot turn this color into a scalar or change its
+    // color-space semantics by choosing a different vector setter.
+    const auto version = material.GetVersion();
+    bool rejected = false;
+    try {
+        material.SetFloat("baseColor", 0.25f);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    assert(rejected && material.GetVersion() == version);
+    material.SetVector4("baseColor", tint);
+    assert(material.GetProperty("baseColor")->type == infernux::MaterialPropertyType::Color);
+    assert(material.GetColor("baseColor") == tint);
 }
 
 void VerifyTextureSamplerBindingRoundTrip()

@@ -47,9 +47,11 @@ class ShaderDefinition:
 
 
 _PARAMETER_TYPES = {"float": "float", "int": "int", "uint": "uint", "bool": "uint", "color": "float4",
-                    "vec2": "float2", "vec3": "float3", "vec4": "float4"}
+                    "vec2": "float2", "vec3": "float3", "vec4": "float4", "mat3": "float3x3", "mat4": "float4x4"}
 _DEFAULTS = {"float": 0.0, "int": 0, "uint": 0, "bool": False, "color": (1.0, 1.0, 1.0, 1.0),
-             "vec2": (0.0, 0.0), "vec3": (0.0, 0.0, 0.0), "vec4": (0.0, 0.0, 0.0, 0.0)}
+             "vec2": (0.0, 0.0), "vec3": (0.0, 0.0, 0.0), "vec4": (0.0, 0.0, 0.0, 0.0),
+             "mat3": tuple(tuple(float(row == column) for column in range(3)) for row in range(3)),
+             "mat4": tuple(tuple(float(row == column) for column in range(4)) for row in range(4))}
 
 
 class _Author(ShaderEmitter):

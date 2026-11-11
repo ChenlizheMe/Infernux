@@ -624,6 +624,17 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
     [[nodiscard]] bool HasProperty(const std::string &name) const;
     [[nodiscard]] const MaterialProperty *GetProperty(const std::string &name) const;
+    /// Typed public access resolves a field once. Rendering uses the prepared
+    /// property/layout indices rather than repeating name/type checks.
+    [[nodiscard]] const MaterialProperty &RequireProperty(const std::string &name, MaterialPropertyType type) const;
+    [[nodiscard]] float GetFloat(const std::string &name) const;
+    [[nodiscard]] int GetInt(const std::string &name) const;
+    [[nodiscard]] glm::vec2 GetVector2(const std::string &name) const;
+    [[nodiscard]] glm::vec3 GetVector3(const std::string &name) const;
+    [[nodiscard]] glm::vec4 GetVector4(const std::string &name) const;
+    [[nodiscard]] glm::vec4 GetColor(const std::string &name) const;
+    [[nodiscard]] glm::mat4 GetMatrix(const std::string &name) const;
+    [[nodiscard]] const std::string &GetTextureGuid(const std::string &name) const;
     [[nodiscard]] std::string_view GetTextureDefault(const std::string &name) const;
     [[nodiscard]] const std::unordered_map<std::string, MaterialProperty> &GetAllProperties() const
     {

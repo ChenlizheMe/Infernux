@@ -70,6 +70,15 @@ class _Parameters:
         return _Parameter("vec4", default, label=label)
 
     @staticmethod
+    def mat3(default=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), *, label=None):
+        return _Parameter("mat3", default, label=label)
+
+    @staticmethod
+    def mat4(default=((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0),
+                      (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)), *, label=None):
+        return _Parameter("mat4", default, label=label)
+
+    @staticmethod
     def bool(default=False, *, label=None):
         return _Parameter("bool", default, label=label)
 

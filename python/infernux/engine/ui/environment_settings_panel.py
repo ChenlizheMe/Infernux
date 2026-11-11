@@ -298,7 +298,7 @@ class EnvironmentSettingsPanel(EditorPanel):
         else:
             self._finish_sky_material_edit(guid, _SKY_GROUND)
 
-        exposure = mat.get_float(_SKY_EXPOSURE, 1.0)
+        exposure = mat.get_float(_SKY_EXPOSURE)
         self._field_label(ctx, t("environment.sky_exposure"))
         new_exp = ctx.drag_float("##env_sky_exposure", float(exposure), 0.01, 0.0, 8.0)
         if new_exp != exposure:

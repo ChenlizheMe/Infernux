@@ -702,9 +702,14 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
     const bool replacesTexture =
         existing != m_properties.end() && existing->second.type == MaterialPropertyType::Texture2D;
     if (existing != m_properties.end()) {
+        if (!MaterialPropertyTypesCompatible(existing->second.type, type))
+            throw std::invalid_argument("material property '" + name + "' has a different declared type");
         if (existing->second.type == MaterialPropertyType::FloatArray && type == MaterialPropertyType::FloatArray &&
             std::get<std::vector<float>>(existing->second.value).size() != std::get<std::vector<float>>(value).size())
             throw std::invalid_argument("material property '" + name + "' does not match the reflected array length");
+        // Color and Float4 share a value shape; the declaration owns color
+        // conversion and Inspector semantics, never the setter used today.
+        type = existing->second.type;
         if (existing->second.type == MaterialPropertyType::Float4Array && type == MaterialPropertyType::Float4Array &&
             std::get<std::vector<glm::vec4>>(existing->second.value).size() !=
                 std::get<std::vector<glm::vec4>>(value).size())
@@ -725,6 +730,57 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
     ++m_version;
     if (replacesTexture)
         PublishDependencies();
+}
+
+const MaterialProperty &InxMaterial::RequireProperty(const std::string &name, MaterialPropertyType type) const
+{
+    const auto found = m_properties.find(name);
+    if (found == m_properties.end())
+        throw std::out_of_range("material has no property '" + name + "'");
+    const auto &property = found->second;
+    if (!MaterialPropertyTypesCompatible(property.type, type))
+        throw std::invalid_argument("material property '" + name + "' has a different declared type");
+    return property;
+}
+
+float InxMaterial::GetFloat(const std::string &name) const
+{
+    return std::get<float>(RequireProperty(name, MaterialPropertyType::Float).value);
+}
+
+int InxMaterial::GetInt(const std::string &name) const
+{
+    return std::get<int>(RequireProperty(name, MaterialPropertyType::Int).value);
+}
+
+glm::vec2 InxMaterial::GetVector2(const std::string &name) const
+{
+    return std::get<glm::vec2>(RequireProperty(name, MaterialPropertyType::Float2).value);
+}
+
+glm::vec3 InxMaterial::GetVector3(const std::string &name) const
+{
+    return std::get<glm::vec3>(RequireProperty(name, MaterialPropertyType::Float3).value);
+}
+
+glm::vec4 InxMaterial::GetVector4(const std::string &name) const
+{
+    return std::get<glm::vec4>(RequireProperty(name, MaterialPropertyType::Float4).value);
+}
+
+glm::vec4 InxMaterial::GetColor(const std::string &name) const
+{
+    return std::get<glm::vec4>(RequireProperty(name, MaterialPropertyType::Color).value);
+}
+
+glm::mat4 InxMaterial::GetMatrix(const std::string &name) const
+{
+    return std::get<glm::mat4>(RequireProperty(name, MaterialPropertyType::Mat4).value);
+}
+
+const std::string &InxMaterial::GetTextureGuid(const std::string &name) const
+{
+    return std::get<std::string>(RequireProperty(name, MaterialPropertyType::Texture2D).value);
 }
 
 void InxMaterial::SetFloat(const std::string &name, float value)

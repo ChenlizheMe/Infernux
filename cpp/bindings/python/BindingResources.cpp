@@ -43,6 +43,30 @@ namespace infernux
 namespace
 {
 
+template <glm::length_t Size> glm::vec<Size, float> MaterialVectorFromPython(py::handle value)
+{
+    // Registered engine vectors and Python/NumPy sequences share one boundary.
+    if (!PySequence_Check(value.ptr()))
+        return py::cast<glm::vec<Size, float>>(value);
+    const auto sequence = py::reinterpret_borrow<py::sequence>(value);
+    if (py::len(sequence) != Size)
+        throw py::value_error("Material vector has a different declared component count");
+    glm::vec<Size, float> result;
+    for (glm::length_t index = 0; index < Size; ++index)
+        result[index] = py::cast<float>(sequence[index]);
+    return result;
+}
+
+std::vector<glm::vec4> MaterialVectorArrayFromPython(py::handle value)
+{
+    const auto sequence = py::reinterpret_borrow<py::sequence>(value);
+    std::vector<glm::vec4> result;
+    result.reserve(py::len(sequence));
+    for (const auto item : sequence)
+        result.push_back(MaterialVectorFromPython<4>(item));
+    return result;
+}
+
 /// Shared conversion from one reflected material property to its Python value.
 ///
 /// The single-property and bulk getters both use this so their two switches
@@ -836,16 +860,7 @@ void RegisterResourceBindings(py::module_ &m)
         .def(
             "set_vector4_array",
             [](InxMaterial &material, const bindings::MaterialPropertyName &name, py::sequence values) {
-                std::vector<glm::vec4> native;
-                native.reserve(py::len(values));
-                for (py::handle item : values) {
-                    py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
-                    if (py::len(vector) != 4)
-                        throw py::value_error("set_vector4_array requires four-component vectors");
-                    native.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(), vector[2].cast<float>(),
-                                        vector[3].cast<float>());
-                }
-                material.SetVector4Array(name, native);
+                material.SetVector4Array(name, MaterialVectorArrayFromPython(values));
             },
             py::arg("name"), py::arg("values"), "Set a reflected vec4 array property")
         .def("set_texture_guid", bindings::MaterialNameMethod(&InxMaterial::SetTextureGuid), py::arg("name"),
@@ -856,79 +871,43 @@ void RegisterResourceBindings(py::module_ &m)
              "Get a reflected runtime storage buffer binding")
         .def(
             "set_param",
-            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::object value) {
-                const MaterialProperty *prop = mat.GetProperty(name);
-
-                if ((prop && prop->type == MaterialPropertyType::Mat4) || py::isinstance<py::array>(value)) {
+            [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::handle value) {
+                const auto *property = mat.GetProperty(name);
+                if (!property)
+                    throw py::key_error("Material has no declared property: " + name);
+                switch (property->type) {
+                case MaterialPropertyType::Float:
+                    mat.SetFloat(name, py::cast<float>(value));
+                    break;
+                case MaterialPropertyType::Int:
+                    mat.SetInt(name, py::cast<int>(value));
+                    break;
+                case MaterialPropertyType::Float2:
+                    mat.SetVector2(name, MaterialVectorFromPython<2>(value));
+                    break;
+                case MaterialPropertyType::Float3:
+                    mat.SetVector3(name, MaterialVectorFromPython<3>(value));
+                    break;
+                case MaterialPropertyType::Float4:
+                    mat.SetVector4(name, MaterialVectorFromPython<4>(value));
+                    break;
+                case MaterialPropertyType::Color:
+                    mat.SetColor(name, MaterialVectorFromPython<4>(value));
+                    break;
+                case MaterialPropertyType::Mat4:
                     mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
-                    return;
+                    break;
+                case MaterialPropertyType::FloatArray:
+                    mat.SetFloatArray(name, py::cast<std::vector<float>>(value));
+                    break;
+                case MaterialPropertyType::Float4Array:
+                    mat.SetVector4Array(name, MaterialVectorArrayFromPython(value));
+                    break;
+                case MaterialPropertyType::Texture2D:
+                    throw py::type_error("Use set_texture for a texture property: " + name);
                 }
-
-                if (py::isinstance<py::bool_>(value)) {
-                    mat.SetInt(name, value.cast<bool>() ? 1 : 0);
-                    return;
-                }
-                if (py::isinstance<py::int_>(value) && !py::isinstance<py::bool_>(value)) {
-                    if (prop && prop->type == MaterialPropertyType::Float) {
-                        mat.SetFloat(name, value.cast<float>());
-                    } else {
-                        mat.SetInt(name, value.cast<int>());
-                    }
-                    return;
-                }
-                if (py::isinstance<py::float_>(value)) {
-                    if (prop && prop->type == MaterialPropertyType::Int) {
-                        mat.SetInt(name, static_cast<int>(value.cast<float>()));
-                    } else {
-                        mat.SetFloat(name, value.cast<float>());
-                    }
-                    return;
-                }
-                if (py::isinstance<py::tuple>(value) || py::isinstance<py::list>(value)) {
-                    py::sequence seq = value.cast<py::sequence>();
-                    const auto len = py::len(seq);
-                    if (prop && prop->type == MaterialPropertyType::FloatArray) {
-                        mat.SetFloatArray(name, value.cast<std::vector<float>>());
-                        return;
-                    }
-                    if (prop && prop->type == MaterialPropertyType::Float4Array) {
-                        std::vector<glm::vec4> values;
-                        values.reserve(len);
-                        for (py::handle item : seq) {
-                            py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
-                            if (py::len(vector) != 4)
-                                throw py::value_error("Float4Array values require four-component vectors");
-                            values.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(),
-                                                vector[2].cast<float>(), vector[3].cast<float>());
-                        }
-                        mat.SetVector4Array(name, values);
-                        return;
-                    }
-                    if (len == 2) {
-                        mat.SetVector2(name, glm::vec2(seq[0].cast<float>(), seq[1].cast<float>()));
-                        return;
-                    }
-                    if (len == 3) {
-                        mat.SetVector3(name,
-                                       glm::vec3(seq[0].cast<float>(), seq[1].cast<float>(), seq[2].cast<float>()));
-                        return;
-                    }
-                    if (len == 4) {
-                        glm::vec4 v(seq[0].cast<float>(), seq[1].cast<float>(), seq[2].cast<float>(),
-                                    seq[3].cast<float>());
-                        if (prop && prop->type == MaterialPropertyType::Color) {
-                            mat.SetColor(name, v);
-                        } else {
-                            mat.SetVector4(name, v);
-                        }
-                        return;
-                    }
-                }
-
-                throw std::runtime_error(
-                    "set_param: unsupported value type. Expected int/float/bool, vec2/3/4 tuple, or a (4, 4) matrix.");
             },
-            py::arg("name"), py::arg("value"), "Set a non-texture material property using value-shape/type dispatch")
+            py::arg("name"), py::arg("value"), "Set a value using its declared shader type")
         .def("clear_texture", bindings::MaterialNameMethod(&InxMaterial::ClearTexture), py::arg("name"),
              "Clear a texture property (remove texture reference)")
         .def("_set_render_texture", bindings::MaterialNameMethod(&InxMaterial::SetRenderTexture), py::arg("name"),
@@ -973,74 +952,20 @@ void RegisterResourceBindings(py::module_ &m)
                     "set_texture: expected None, a Texture GUID/builtin token, or an object with guid.");
             },
             py::arg("name"), py::arg("value"), "Set a texture property from a Texture GUID or texture object")
-        // Individual property getters (convenience wrappers over GetProperty)
+        // Typed access uses the same native declaration as setters and upload.
+        .def("get_float", bindings::MaterialNameMethod(&InxMaterial::GetFloat), py::arg("name"))
+        .def("get_int", bindings::MaterialNameMethod(&InxMaterial::GetInt), py::arg("name"))
+        .def("get_vector2", bindings::MaterialNameMethod(&InxMaterial::GetVector2), py::arg("name"))
+        .def("get_vector3", bindings::MaterialNameMethod(&InxMaterial::GetVector3), py::arg("name"))
+        .def("get_vector4", bindings::MaterialNameMethod(&InxMaterial::GetVector4), py::arg("name"))
+        .def("get_color", bindings::MaterialNameMethod(&InxMaterial::GetColor), py::arg("name"))
+        .def("get_texture", bindings::MaterialNameMethod(&InxMaterial::GetTextureGuid), py::arg("name"))
         .def(
-            "get_float",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name, float defaultVal) -> float {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && prop->type == MaterialPropertyType::Float)
-                    return std::get<float>(prop->value);
-                return defaultVal;
+            "get_matrix",
+            [](const InxMaterial &material, const bindings::MaterialPropertyName &name) {
+                return binding::Matrix4ToPython(material.GetMatrix(name));
             },
-            py::arg("name"), py::arg("default_value") = 0.0f, "Get a float property")
-        .def(
-            "get_int",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name, int defaultVal) -> int {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && prop->type == MaterialPropertyType::Int)
-                    return std::get<int>(prop->value);
-                return defaultVal;
-            },
-            py::arg("name"), py::arg("default_value") = 0, "Get an int property")
-        .def(
-            "get_color",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec4 {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && (prop->type == MaterialPropertyType::Float4 || prop->type == MaterialPropertyType::Color)) {
-                    return std::get<glm::vec4>(prop->value);
-                }
-                return glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-            },
-            py::arg("name"), "Get a color property as vec4f")
-        .def(
-            "get_vector2",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec2 {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && prop->type == MaterialPropertyType::Float2) {
-                    return std::get<glm::vec2>(prop->value);
-                }
-                return glm::vec2(0.0f);
-            },
-            py::arg("name"), "Get a vec2 property as Vector2")
-        .def(
-            "get_vector3",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec3 {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && prop->type == MaterialPropertyType::Float3) {
-                    return std::get<glm::vec3>(prop->value);
-                }
-                return glm::vec3(0.0f);
-            },
-            py::arg("name"), "Get a vec3 property as Vector3")
-        .def(
-            "get_vector4",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> glm::vec4 {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && (prop->type == MaterialPropertyType::Float4 || prop->type == MaterialPropertyType::Color)) {
-                    return std::get<glm::vec4>(prop->value);
-                }
-                return glm::vec4(0.0f);
-            },
-            py::arg("name"), "Get a vec4 property as vec4f")
-        .def(
-            "get_texture",
-            [](const InxMaterial &mat, const bindings::MaterialPropertyName &name) -> py::object {
-                const MaterialProperty *prop = mat.GetProperty(name);
-                if (prop && prop->type == MaterialPropertyType::Texture2D)
-                    return py::cast(std::get<std::string>(prop->value));
-                return py::none();
-            },
-            py::arg("name"), "Get a texture property GUID (or None)")
+            py::arg("name"))
         // Generic property access
         .def("has_property", bindings::MaterialNameMethod(&InxMaterial::HasProperty), py::arg("name"),
              "Check if material has a property")
