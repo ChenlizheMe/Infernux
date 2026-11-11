@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import json
+from functools import reduce
 
 from infernux.shader._language import INTRINSICS, TYPES
 from .diagnostics import ShaderSourceError
@@ -46,10 +47,14 @@ def common_type(left, right):
 
 
 def floating_type(kind):
+    return shaped_type(kind, "float")
+
+
+def shaped_type(kind, scalar):
     if kind and kind[-1:].isdigit():
         prefix = next(index for index, character in enumerate(kind) if character.isdigit())
-        return "float" + kind[prefix:]
-    return "float"
+        return scalar + kind[prefix:]
+    return scalar
 
 
 def product_type(left, right):
@@ -177,9 +182,12 @@ class SlangEmitter(ast.NodeVisitor):
                 scalar = base.rstrip("0123456789")
                 return scalar + str(len(node.attr)) if len(node.attr) > 1 else scalar
         if isinstance(node, ast.UnaryOp):
-            return "bool" if isinstance(node.op, ast.Not) else self.infer(node.operand)
-        if isinstance(node, (ast.BoolOp, ast.Compare)):
-            return "bool"
+            kind = self.infer(node.operand)
+            return shaped_type(kind, "bool") if isinstance(node.op, ast.Not) else kind
+        if isinstance(node, ast.BoolOp):
+            return shaped_type(reduce(common_type, map(self.infer, node.values)), "bool")
+        if isinstance(node, ast.Compare):
+            return shaped_type(reduce(common_type, map(self.infer, (node.left, *node.comparators))), "bool")
         if isinstance(node, ast.BinOp):
             if isinstance(node.op, ast.MatMult):
                 return product_type(self.infer(node.left), self.infer(node.right))
@@ -190,13 +198,25 @@ class SlangEmitter(ast.NodeVisitor):
             name = self.symbol(qualified(node.func))
             if name in TYPES:
                 return TYPES[name]
+            if name in INTRINSICS and not node.args:
+                self.error(node, "GPU intrinsics need explicit positional arguments", code="author.call")
             if name in {"dot", "length", "distance", "determinant"}:
                 return "float"
-            if name in {"isnan", "isinf", "isfinite", "all", "any"}:
+            if name in {"all", "any"}:
                 return "bool"
+            if name in {"isnan", "isinf", "isfinite"}:
+                return shaped_type(self.infer(node.args[0]), "bool")
+            if name in {"asfloat", "f16tof32"}:
+                return shaped_type(self.infer(node.args[0]), "float")
+            if name == "asint":
+                return shaped_type(self.infer(node.args[0]), "int")
+            if name in {"asuint", "f32tof16", "countbits", "firstbithigh", "firstbitlow"}:
+                return shaped_type(self.infer(node.args[0]), "uint")
             if name == "mul" and len(node.args) == 2:
                 return product_type(*(self.infer(argument) for argument in node.args))
             if name in INTRINSICS:
+                if INTRINSICS[name] in {"min", "max", "clamp", "step", "smoothstep", "pow", "atan2", "lerp", "mad"}:
+                    return reduce(common_type, map(self.infer, node.args))
                 return self.infer(node.args[0])
         if isinstance(node, ast.Subscript):
             base = self.infer(node.value)

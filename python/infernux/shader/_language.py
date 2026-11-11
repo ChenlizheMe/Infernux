@@ -9,5 +9,7 @@ INTRINSICS = {name: name for name in (
     "step", "smoothstep", "normalize", "length", "dot", "cross", "distance",
     "pow", "reflect", "refract", "ddx", "ddy", "fwidth", "isnan", "isinf", "isfinite",
     "radians", "degrees", "lerp", "frac", "mul", "transpose", "determinant", "all", "any",
+    "rcp", "mad", "asfloat", "asint", "asuint", "f16tof32", "f32tof16",
+    "countbits", "reversebits", "firstbithigh", "firstbitlow",
 )}
 INTRINSICS.update(mix="lerp", fract="frac")

@@ -93,6 +93,7 @@ class _Metadata:
 class _NativeEngine:
     has_renderer = True
     _shader_reload_sources = ("old.vert",)
+    _shader_reload_diagnostics = ()
 
     def __init__(self, order):
         self.order = order
@@ -238,7 +239,7 @@ def test_shader_diagnostic_is_retired_only_when_every_rejected_consumer_recovers
 
     monkeypatch.setattr(DebugConsole, "_instance", None)
     monkeypatch.setattr(AssetManager, "_shader_diagnostic_roots", {})
-    receipt = SimpleNamespace(_shader_reload_sources=["One.frag", "Two.frag"])
+    receipt = SimpleNamespace(_shader_reload_sources=["One.frag", "Two.frag"], _shader_reload_diagnostics=[])
     AssetManager._publish_shader_compile_result("Deleted.glsl", "both consumers rejected", receipt)
     Debug.log_error("unrelated error")
 
@@ -262,7 +263,7 @@ def test_shader_receipt_keeps_errors_from_unrelated_consumer_sets(monkeypatch):
 
     monkeypatch.setattr(DebugConsole, "_instance", None)
     monkeypatch.setattr(AssetManager, "_shader_diagnostic_roots", {})
-    receipt = SimpleNamespace(_shader_reload_sources=["Other.frag"])
+    receipt = SimpleNamespace(_shader_reload_sources=["Other.frag"], _shader_reload_diagnostics=[])
     AssetManager._publish_shader_compile_result("Other.glsl", "unrelated rejection", receipt)
     receipt._shader_reload_sources = ["Repaired.frag"]
     AssetManager._publish_shader_compile_result("Replacement.glsl", "", receipt)

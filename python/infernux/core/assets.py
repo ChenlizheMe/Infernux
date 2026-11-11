@@ -1042,7 +1042,7 @@ class AssetManager:
         return result
 
     @staticmethod
-    def _publish_compile_diagnostic(path: str, error: str = "") -> None:
+    def _publish_compile_diagnostic(path: str, error: str = "", *, line: int = 0) -> None:
         """Replace this source's diagnostic after one compiler result."""
         Debug.clear_source_entries(path)
         if error:
@@ -1054,6 +1054,7 @@ class AssetManager:
                 log_type=LogType.ERROR,
                 timestamp=datetime.now(),
                 source_file=path,
+                source_line=line,
             ))
 
     @classmethod
@@ -1062,11 +1063,16 @@ class AssetManager:
         sources = tuple(native._shader_reload_sources)
         roots = frozenset(path_key(source) for source in sources)
         key = path_key(path)
-        cls._publish_compile_diagnostic(path, error)
-        cls._shader_diagnostic_roots.pop(key, None)
+        previous = cls._shader_diagnostic_roots.pop(key, None)
+        if previous is not None:
+            cls._publish_compile_diagnostic(previous[0])
+        diagnostic = next((item for item in native._shader_reload_diagnostics
+                           if item["severity"] in {"error", "fatal error"}), {"path": path, "line": 0})
+        source = diagnostic["path"] or path
+        cls._publish_compile_diagnostic(source, error, line=diagnostic["line"])
         if error:
             if roots:
-                cls._shader_diagnostic_roots[key] = (path, roots)
+                cls._shader_diagnostic_roots[key] = (source, roots)
             return
         Shader._record_runtime_publication(cls._asset_database, sources or (path,))
         for owner, (source, outstanding) in tuple(cls._shader_diagnostic_roots.items()):

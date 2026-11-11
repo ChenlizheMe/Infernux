@@ -1,4 +1,5 @@
 #include "BindingRegistration.h"
+#include "ShaderDiagnosticPyBridge.h"
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
@@ -12,21 +13,7 @@ namespace py = pybind11;
 
 namespace infernux
 {
-namespace
-{
-PyObject *g_shaderCompilationError = nullptr;
-using SourceRangeTuple = std::tuple<std::string, uint32_t, uint32_t, uint32_t, uint32_t>;
-
-std::vector<ShaderAuthorRange> SourceRanges(const std::vector<SourceRangeTuple> &locations)
-{
-    std::vector<ShaderAuthorRange> result;
-    result.reserve(locations.size());
-    for (const auto &[path, line, column, endLine, endColumn] : locations)
-        result.push_back({path, line, column, endLine, endColumn});
-    return result;
-}
-
-py::list DiagnosticList(const std::vector<ShaderDiagnostic> &diagnostics)
+py::list ShaderDiagnosticsToPython(const std::vector<ShaderDiagnostic> &diagnostics)
 {
     py::list result;
     for (const auto &value : diagnostics) {
@@ -43,6 +30,20 @@ py::list DiagnosticList(const std::vector<ShaderDiagnostic> &diagnostics)
         item["target"] = value.target;
         result.append(std::move(item));
     }
+    return result;
+}
+
+namespace
+{
+PyObject *g_shaderCompilationError = nullptr;
+using SourceRangeTuple = std::tuple<std::string, uint32_t, uint32_t, uint32_t, uint32_t>;
+
+std::vector<ShaderAuthorRange> SourceRanges(const std::vector<SourceRangeTuple> &locations)
+{
+    std::vector<ShaderAuthorRange> result;
+    result.reserve(locations.size());
+    for (const auto &[path, line, column, endLine, endColumn] : locations)
+        result.push_back({path, line, column, endLine, endColumn});
     return result;
 }
 
@@ -103,7 +104,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                 std::rethrow_exception(exception);
         } catch (const ShaderCompilationError &error) {
             auto value = py::reinterpret_borrow<py::object>(g_shaderCompilationError)(error.what());
-            value.attr("diagnostics") = DiagnosticList(error.diagnostics);
+            value.attr("diagnostics") = ShaderDiagnosticsToPython(error.diagnostics);
             PyErr_SetObject(g_shaderCompilationError, value.ptr());
         }
     });
@@ -167,7 +168,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
             py::dict result;
             result["valid"] = valid;
             result["schema"] = prepared.schema;
-            result["diagnostics"] = DiagnosticList(diagnostics);
+            result["diagnostics"] = ShaderDiagnosticsToPython(diagnostics);
             return result;
         },
         py::arg("path"), py::arg("source") = py::none());
@@ -213,7 +214,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                                                         SourceRanges(sourceRanges));
             }
             py::dict result;
-            result["diagnostics"] = DiagnosticList(compiled.diagnostics);
+            result["diagnostics"] = ShaderDiagnosticsToPython(compiled.diagnostics);
             py::list targetPrograms;
             for (const auto &target : compiled.targets) {
                 py::dict program;

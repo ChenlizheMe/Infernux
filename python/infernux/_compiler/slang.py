@@ -505,7 +505,8 @@ def compile_kernel(function, params, *, receiver_fields=None, autodiff_mode="non
     cached = _decode_artifact(path, specialization=specialization)
     if cached is not None:
         return cached
-    compiled = _Infernux._compile_shader_program(plan.generated_source, str(function.__code__.co_filename), "inx_kernel", targets=["spirv"], precise=True)
+    compiled = _Infernux._compile_shader_program(plan.generated_source, str(function.__code__.co_filename), "inx_kernel",
+                                                targets=["spirv"], precise=True, source_ranges=plan.lowering.source_ranges)
     artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params, function)
     root.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")

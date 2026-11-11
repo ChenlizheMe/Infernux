@@ -12,5 +12,6 @@ VALUE_TYPES = {
     "vec2": "float2", "vec3": "float3", "vec4": "float4",
     "ivec2": "int2", "ivec3": "int3", "ivec4": "int4",
     "uvec2": "uint2", "uvec3": "uint3", "uvec4": "uint4",
-    "mat3": "float3x3", "mat4": "float4x4",
+    "bvec2": "bool2", "bvec3": "bool3", "bvec4": "bool4",
+    "mat2": "float2x2", "mat3": "float3x3", "mat4": "float4x4",
 }

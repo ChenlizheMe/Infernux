@@ -3,6 +3,7 @@
 #include "Infernux.h"
 #include "MatrixPyBridge.h"
 #include "PythonCallback.h"
+#include "ShaderDiagnosticPyBridge.h"
 #include "SpirvPyBridge.h"
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
@@ -1964,6 +1965,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              "Compile an already-imported shader and refresh renderer state. Returns empty string on success.")
         .def_property_readonly("_shader_reload_sources", &Infernux::GetShaderReloadSources,
                                "Source receipt for the last synchronous shader candidate publication.")
+        .def_property_readonly("_shader_reload_diagnostics", [](const Infernux &engine) {
+            return ShaderDiagnosticsToPython(engine.GetShaderReloadDiagnostics());
+        })
         .def("reload_texture", &Infernux::ReloadTexture, py::arg("texture_path"),
              "Invalidate cached texture and force materials to reload it")
         .def("reload_mesh", &Infernux::ReloadMesh, py::arg("mesh_path"),

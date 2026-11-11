@@ -59,7 +59,12 @@ class Fill(shader.fullscreen):
     enabled = shader.parameter.bool(default=True)
     def main(self, uv: shader.vec2) -> shader.vec4:
         rgb = self.transform @ self.tint.rgb
-        return tweak(shader.vec4(rgb, self.tint.a)) if self.enabled else shader.vec4(0.0)
+        gate = shader.step(0.0, rgb)
+        rgb = shader.lerp(shader.vec3(0.0), rgb, gate)
+        valid = shader.isfinite(rgb) and rgb >= shader.vec3(0.0)
+        bits = shader.asuint(rgb)
+        rgb = shader.asfloat(bits)
+        return tweak(shader.vec4(rgb, self.tint.a)) if self.enabled and shader.all(valid) else shader.vec4(0.0)
 ''', encoding="utf-8")
     gray.write_text('''import infernux.shader as shader
 from infernux.shader.lib.color import luminance
@@ -137,6 +142,10 @@ class Grayscale(shader.fullscreen):
                     messages = [item["message"] for item in errors] + [item.message for item in python_errors]
                     if pipeline.phase == 5:
                         assert messages and all("missing" in message for message in messages), messages
+                        rejected, _ = broken_source
+                        assert python_errors and all(Path(item.source_file) == rejected and item.source_line > 0
+                                                     for item in python_errors)
+                        assert Path(native._shader_reload_diagnostics[0]["path"]) == rejected
                     else:
                         assert not messages, messages
                     if pipeline.phase == 7:

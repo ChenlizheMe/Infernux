@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <function/renderer/InxRenderer.h>
+#include <function/renderer/shader/ShaderDiagnostic.h>
 #include <function/scene/EditorCameraController.h>
 #include <function/scene/SceneManager.h>
 
@@ -286,6 +287,10 @@ class Infernux
     {
         return m_shaderReloadSources;
     }
+    const std::vector<ShaderDiagnostic> &GetShaderReloadDiagnostics() const
+    {
+        return m_shaderReloadDiagnostics;
+    }
 
     /// @brief Invalidate and reload a texture after import settings change
     /// @param texturePath The texture file path whose .meta was updated
@@ -499,6 +504,7 @@ class Infernux
     // Sources checked by the last synchronous candidate publication. Diagnostic
     // owners use this receipt to retire only errors resolved by that result.
     std::vector<std::string> m_shaderReloadSources;
+    std::vector<ShaderDiagnostic> m_shaderReloadDiagnostics;
 
     struct LinkedShaderProgramCacheEntry
     {

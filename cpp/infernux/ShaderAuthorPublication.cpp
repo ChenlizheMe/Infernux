@@ -7,6 +7,7 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <algorithm>
 #include <stdexcept>
@@ -50,6 +51,9 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
                 m_renderer->InvalidateShaderCache(root);
         }
         return {};
+    } catch (const ShaderCompilationError &error) {
+        m_shaderReloadDiagnostics = error.diagnostics;
+        return error.what();
     } catch (const std::exception &error) {
         return error.what();
     }

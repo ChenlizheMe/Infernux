@@ -4574,6 +4574,7 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                                           const std::string &previousSourcePath)
 {
     m_shaderReloadSources = {shaderPath};
+    m_shaderReloadDiagnostics.clear();
     if (asset_formats::FindShaderSourceKind(shaderPath)) {
         if (!CheckEngineValid("reload shader"))
             return "Engine invalid";
