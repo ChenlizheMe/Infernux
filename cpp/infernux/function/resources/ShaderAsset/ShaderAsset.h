@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,6 +53,7 @@ struct ShaderAsset
     /// fields. Device publication chooses the target without recompiling.
     std::shared_ptr<const ShaderCompilation> program;
     std::string authoringSchema;
+    std::optional<ShaderProgramDomain> programDomain;
     std::vector<std::string> sourceDependencies;
 
     [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept

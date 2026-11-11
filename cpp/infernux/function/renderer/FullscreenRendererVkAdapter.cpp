@@ -69,6 +69,7 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
             throw std::logic_error("Vulkan shader asset has no SPIR-V target: " + path);
         auto result = std::make_shared<FullscreenProgram>();
         result->assetGuid = database->GetGuidFromPath(path);
+        result->shaderId = asset->shaderId;
         result->code = std::shared_ptr<const ShaderTargetCode>(asset->program, &*target);
         result->schema = asset->authoringSchema;
         return result;

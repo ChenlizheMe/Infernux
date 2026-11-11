@@ -170,14 +170,15 @@ class _Author(ShaderEmitter):
         if not arguments or arguments[0].arg != "self":
             self.error(main, "Shader main is an instance method")
         if len(arguments) > 2:
-            self.error(main, "Fullscreen main accepts self and an optional vec2 UV")
+            self.error(main, "Fullscreen main accepts self and an optional vec2 or fragment_input")
         signature = ""
         if len(arguments) == 2:
             uv = arguments[1]
-            if uv.annotation is None or self.annotation(uv.annotation) != "float2":
-                self.error(uv, "Fullscreen UV must be annotated as shader.vec2")
-            signature = "float2 " + uv.arg + " : TEXCOORD0"
-            self.types[uv.arg] = "float2"
+            kind = self.annotation(uv.annotation) if uv.annotation is not None else None
+            if kind not in {"float2", "InxFragmentInput"}:
+                self.error(uv, "Fullscreen input is shader.vec2 or shader.fragment_input")
+            signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
+            self.types[uv.arg] = kind
         if main.returns is None or self.annotation(main.returns) != "float4":
             self.error(main, "Fullscreen main returns shader.vec4")
         self.aliases = (self.alias,)

@@ -477,6 +477,12 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     const uint64_t synchronizedVersion = material.GetVersion();
     assert(!material.SynchronizeShaderPropertyDefaults(artifact));
     assert(material.GetVersion() == synchronizedVersion);
+    const auto sparse = material.SerializeDocument();
+    assert(sparse["_shader_property_order"] == nlohmann::json::array({"baseColor"}));
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(sparse));
+    assert(restored.SynchronizeShaderPropertyDefaults(artifact));
+    assert(restored.GetFloat("smoothness") == 0.5f);
     material.ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "0.3");
     assert(material.GetAuthoredVersion() == authoredVersion);
     material.InvalidateTextureAssets("unused", false);

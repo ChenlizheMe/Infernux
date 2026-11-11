@@ -56,6 +56,7 @@
 #include <function/resources/RenderTexture/RenderTextureLoader.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/scene/Collider.h>
 #include <function/scene/Component.h>
 #include <function/scene/ComponentFactory.h>
@@ -3426,7 +3427,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             // A cooked Player already has an immutable catalog. Walking Assets
             // and the engine resource tree here re-imports every builtin
             // texture/icon on launch and is the dominant enter-game stall.
-            // Builtin shaders still import on demand in LoadAndRegisterShaders.
+            // Builtin and project shaders resolve on demand from their catalog entries.
             registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog, true);
         } else {
             const bool restoredCachedCatalog = registry.GetAssetDatabase()->RestoreCachedCatalog();
@@ -3449,14 +3450,13 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
         // ── Load and register shaders via AssetRegistry ─────────────
         phaseBegin = StartupClock::now();
-        LoadAndRegisterShaders(defaultShaderPath, false);
+        InitializeBootstrapShaders();
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
-        LoadAndRegisterShaders(assetsPath, true);
 
         // The material core immediately reflects DefaultLit during
-        // PreparePipeline(). The tiny "default" bootstrap pair is only a
-        // presentation fallback and cannot provide Standard|Lit's material
+        // PreparePipeline(). The tiny "default" startup pair is a
+        // presentation program and cannot provide Standard|Lit's material
         // ABI, so publish the canonical pair before material initialization in
         // both Editor and Player.
         static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> defaultMaterialShaderStages{{
@@ -3738,220 +3738,47 @@ void Infernux::RegisterShaderToRenderer(const ShaderAsset &asset)
     }
 }
 
-void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
+void Infernux::InitializeBootstrapShaders()
 {
-    namespace fs = std::filesystem;
-    auto &registry = AssetRegistry::Instance();
-    auto *adb = registry.GetAssetDatabase();
-    if (!adb || !m_renderer)
-        return;
-
-    fs::path dirPath = ToFsPath(dir);
-    const bool directoryExists = fs::exists(dirPath);
-    if (!directoryExists && !recursive)
-        return;
-    // Project shaders resolve lazily from AssetDatabase metadata in both the
-    // Editor and cooked Player. Eagerly compiling every authored fullscreen
-    // and material stage made startup proportional to the entire project,
-    // although the active scene normally references only a small subset.
-    // Material refresh and FullscreenRenderer share EnsureShaderLoaded(), so
-    // this changes timing rather than shader availability or hot reload.
-    if (recursive)
-        return;
-
-    // Bootstrap needs only a valid surface while the first scene's authored
-    // material programs are being prepared. Running this fallback through the
-    // ShaderInfo linker expands templates and shading models that cannot be
-    // observed before scene publication. Compile a tiny ABI-compatible GLSL
-    // pair instead. This is not a cooked project shader: authored GLSL remains
-    // dynamic and replaces the fallback as soon as its material is resident.
-    static constexpr std::string_view bootstrapVertex = R"glsl(#version 450
-layout(std140, set = 1, binding = 5) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 proj;
-    mat4 previousViewProj;
-    mat4 inverseViewProj;
-    vec4 projectionParams;
-    vec4 zBufferParams;
-} ubo;
-layout(std430, set = 2, binding = 1) readonly buffer InstanceBuffer {
-    mat4 instanceModels[];
+    // Required presentation shaders are independent of project author assets.
+    // The initial scene's material programs resolve lazily from the catalog.
+    static constexpr std::string_view vertexSource = R"(
+struct CameraData {
+    column_major float4x4 model;
+    column_major float4x4 view;
+    column_major float4x4 projection;
+    column_major float4x4 previous_view_projection;
+    column_major float4x4 inverse_view_projection;
+    float4 projection_parameters;
+    float4 depth_parameters;
 };
-layout(location = 0) in vec3 inPosition;
-void main() {
-    gl_Position = ubo.proj * ubo.view * instanceModels[gl_InstanceIndex] * vec4(inPosition, 1.0);
+struct InstanceData { column_major float4x4 model; };
+[[vk::binding(5, 1)]] ConstantBuffer<CameraData> camera;
+[[vk::binding(1, 2)]] StructuredBuffer<InstanceData> instances;
+
+[shader("vertex")]
+float4 main(float3 position : POSITION, uint instance : SV_InstanceID) : SV_Position
+{
+    float4 clip = mul(camera.projection, mul(camera.view, mul(instances[instance].model, float4(position, 1.0))));
+    // This native camera buffer still stores the Vulkan viewport projection.
+    // Convert it to the compiler's canonical clip coordinates at this boundary.
+    clip.y = -clip.y;
+    return clip;
 }
-)glsl";
-    static constexpr std::string_view bootstrapFragment = R"glsl(#version 450
-layout(location = 0) out vec4 outColor;
-void main() {
-    outColor = vec4(1.0);
-}
-)glsl";
-    InxShaderLoader bootstrapCompiler(false, true, false, true, false, false, false, false, false, false);
-    auto bootstrapVertexSpirv =
-        bootstrapCompiler.CompileVertexGlsl(std::string(bootstrapVertex), "<infernux-bootstrap.vert>");
-    auto bootstrapFragmentSpirv =
-        bootstrapCompiler.CompileFragmentGlsl(std::string(bootstrapFragment), "<infernux-bootstrap.frag>");
-    if (!bootstrapVertexSpirv.empty() && !bootstrapFragmentSpirv.empty()) {
-        m_renderer->LoadShader("default", bootstrapVertexSpirv, "vertex");
-        m_renderer->LoadShader("default", bootstrapFragmentSpirv, "fragment");
-        return;
-    }
-    INXLOG_WARN("Minimal default shader bootstrap failed; falling back to authored asset compilation");
-
-    std::unordered_set<std::string> loadedShaderKeys;
-    std::vector<char> defaultVertCode;
-    std::vector<char> defaultFragCode;
-
-    auto processPath = [&](const fs::path &file) {
-        std::error_code fileError;
-        if (!fs::is_regular_file(file, fileError) || fileError)
-            return;
-
-        std::string filePath = FromFsPath(file);
-
-        // Refresh already registers project and built-in roots. Re-importing a
-        // read-only built-in here would create derived sidecars beside package
-        // resources and duplicate importer work.
-        std::string guid = adb->GetGuidFromPath(filePath);
-        if (guid.empty())
-            guid = adb->ImportAsset(filePath).guid;
-        if (guid.empty())
-            return;
-
-        // Imported metadata is authoritative in both Editor and Player; the
-        // source extension remains a fallback for loose GLSL files.
-        std::string shaderId;
-        const auto meta = adb->GetMetaByGuid(guid);
-        if (meta && meta->HasKey("shader_id")) {
-            shaderId = meta->GetDataAs<std::string>("shader_id");
-        }
-        if (shaderId.empty()) {
-            shaderId = FromFsPath(file.stem());
-        }
-
-        std::string shaderType;
-        if (meta && meta->HasKey("type"))
-            shaderType = meta->GetDataAs<std::string>("type");
-        const std::string physicalExt = FromFsPath(file.extension());
-        if (shaderType != "vertex" && shaderType != "fragment") {
-            if (physicalExt == ".vert")
-                shaderType = "vertex";
-            else if (physicalExt == ".frag")
-                shaderType = "fragment";
-        }
-        if (shaderType != "vertex" && shaderType != "fragment")
-            return;
-
-        if (!recursive) {
-            const bool minimalBootstrapShader =
-                (shaderId == "Standard" && shaderType == "vertex") || (shaderId == "Unlit" && shaderType == "fragment");
-            if (!minimalBootstrapShader)
-                return;
-        }
-
-        const std::string stageExt = shaderType == "vertex" ? ".vert" : ".frag";
-
-        std::string shaderKey = shaderId + "_" + stageExt;
-
-        // Skip duplicates
-        if (loadedShaderKeys.count(shaderKey))
-            return;
-
-        // For recursive (asset) shaders, skip if already loaded in renderer
-        if (recursive && m_renderer->HasShader(shaderId, shaderType)) {
-            loadedShaderKeys.insert(shaderKey);
-            return;
-        }
-
-        loadedShaderKeys.insert(shaderKey);
-
-        bool directStructuredStage = false;
-        if (meta && meta->HasKey("shader_capabilities")) {
-            try {
-                const auto capabilities = json::parse(meta->GetDataAs<std::string>("shader_capabilities"));
-                directStructuredStage = capabilities.is_array() &&
-                                        std::any_of(capabilities.begin(), capabilities.end(), [](const json &value) {
-                                            return value.is_string() && (value.get<std::string>() == "Fullscreen" ||
-                                                                         value.get<std::string>() == "Standalone");
-                                        });
-            } catch (const json::exception &) {
-                directStructuredStage = false;
-            }
-        }
-
-        const bool builtinFallbackStage =
-            !recursive &&
-            ((shaderId == "Standard" && stageExt == ".vert") || (shaderId == "Lit" && stageExt == ".frag") ||
-             (shaderId == "Unlit" && stageExt == ".frag") || shaderId == "Error");
-
-        // ShaderInfo material stages are programs and must be linked as a
-        // vertex/fragment pair, regardless of whether they live in Assets or
-        // the engine's read-only resources. Only explicitly direct stages and
-        // the renderer's minimal fallback pair are compiled independently.
-        if (meta && meta->HasKey("shader_schema_format") &&
-            meta->GetDataAs<std::string>("shader_schema_format") == "ShaderInfo" && !directStructuredStage &&
-            !builtinFallbackStage) {
-            return;
-        }
-
-        // Load via AssetRegistry (compiles the shader)
-        auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-        if (!shaderAsset || !shaderAsset->HasVariant(ShaderCompileTarget::Forward))
-            return;
-
-        // Register all variants with the renderer
-        RegisterShaderToRenderer(*shaderAsset);
-        if (m_renderer && !m_renderer->PumpStartupEvents())
-            throw std::runtime_error("Startup cancelled");
-
-        INXLOG_DEBUG("Loaded shader '", shaderId, "' (", stageExt, ") from ", filePath);
-
-        // Track built-in fallback shaders used for the renderer's default program.
-        if (!recursive) {
-            const auto *forward = shaderAsset->FindVariant(ShaderCompileTarget::Forward);
-            if (shaderId == "Standard" && stageExt == ".vert")
-                defaultVertCode = forward->spirv;
-            else if (shaderId == "Unlit" && stageExt == ".frag")
-                defaultFragCode = forward->spirv;
-        }
-    };
-
-    if (recursive) {
-        if (directoryExists) {
-            for (const auto &entry : fs::recursive_directory_iterator(dirPath))
-                processPath(entry.path());
-        }
-
-        // A Player does not retain project shaders under Assets. Its runtime
-        // catalog maps packed GLSL to Library artifacts, so enumerate the
-        // database rather than assuming authoring paths are physically
-        // present. The key set above also prevents duplicate publication.
-        for (const auto &assetPath : adb->GetAllAssetPaths()) {
-            const auto metadata = adb->GetMetaByPath(assetPath);
-            const ResourceType resourceType =
-                metadata ? metadata->GetResourceType() : adb->GetResourceTypeForPath(assetPath);
-            if (resourceType == ResourceType::Shader)
-                processPath(ToFsPath(assetPath));
-        }
-    } else {
-        for (const auto &entry : fs::directory_iterator(dirPath))
-            processPath(entry.path());
-    }
-
-    // Register fallback shaders (non-recursive = builtin shaders only)
-    if (!recursive) {
-        if (!defaultVertCode.empty()) {
-            m_renderer->LoadShader("default", defaultVertCode, "vertex");
-            INXLOG_INFO("Registered 'standard' as default vertex shader");
-        }
-        if (!defaultFragCode.empty()) {
-            m_renderer->LoadShader("default", defaultFragCode, "fragment");
-            INXLOG_INFO("Registered 'unlit' as default fragment shader");
-        }
-    }
+)";
+    static constexpr std::string_view fragmentSource = R"(
+[shader("fragment")]
+float4 main() : SV_Target0 { return float4(1.0); }
+)";
+    auto &compiler = SlangCompiler::Get();
+    const auto vertex =
+        compiler.Compile({"inx_bootstrap_vertex", "Infernux/BootstrapVertex.slang", std::string(vertexSource)}, {},
+                         {ShaderCodeTarget::SpirV});
+    const auto fragment =
+        compiler.Compile({"inx_bootstrap_fragment", "Infernux/BootstrapFragment.slang", std::string(fragmentSource)},
+                         {}, {ShaderCodeTarget::SpirV});
+    m_renderer->LoadShader("default", vertex.targets[0].entries[0].code, "vertex");
+    m_renderer->LoadShader("default", fragment.targets[0].entries[0].code, "fragment");
 }
 
 bool Infernux::EnsureShaderLoaded(const std::string &shaderId, const std::string &shaderType)
@@ -4223,12 +4050,14 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
 
     unsigned int stageCount = 0;
     const auto stageFlags = [&](const ShaderAssetReference &reference, const char *stage) {
+        auto guid = reference.guid;
         std::shared_ptr<const InxResourceMeta> metadata;
-        if (!reference.guid.empty())
-            metadata = database->GetMetaByGuid(reference.guid);
+        if (!guid.empty())
+            metadata = database->GetMetaByGuid(guid);
         else if (reference.pathHint.empty() && !reference.shaderId.empty()) {
             const auto path = database->FindShaderPathById(reference.shaderId, stage);
-            metadata = database->GetMetaByGuid(database->GetGuidFromCatalogPath(path));
+            guid = database->GetGuidFromCatalogPath(path);
+            metadata = database->GetMetaByGuid(guid);
         }
         if (!metadata) {
             if (!reference.guid.empty())
@@ -4236,6 +4065,27 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
             return 0u;
         }
         ++stageCount;
+        if (metadata->HasKey("shader_source_kind")) {
+            const auto asset = AssetRegistry::Instance().LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+            if (!asset)
+                throw std::runtime_error("Material author program could not be loaded: " + guid);
+            if (!asset->programDomain)
+                throw std::invalid_argument("Material stage requires a graphics author program: " + asset->filePath);
+            switch (*asset->programDomain) {
+            case ShaderProgramDomain::Mesh:
+                return 0u;
+            case ShaderProgramDomain::ScreenUI:
+                return 1u;
+            case ShaderProgramDomain::WorldUI:
+                return 2u;
+            case ShaderProgramDomain::ParticleSprite:
+                return 4u;
+            case ShaderProgramDomain::Fullscreen:
+                return 8u;
+            default:
+                throw std::logic_error("Graphics author program has no geometry domain");
+            }
+        }
         const auto capabilities = json::parse(metadata->GetDataAs<std::string>("shader_capabilities"));
         unsigned int flags = 0;
         for (std::string capability : capabilities.get<std::vector<std::string>>()) {

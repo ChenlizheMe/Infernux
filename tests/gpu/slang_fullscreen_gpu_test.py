@@ -18,11 +18,13 @@ class AuthorPipeline(RenderPipeline):
         self.builds += 1
         graph.set_msaa_samples(1)
         source = graph.create_texture("source", format=Format.RGBA16_SFLOAT, samples=1)
+        graded = graph.create_texture("graded", format=Format.RGBA16_SFLOAT, samples=1)
         color = graph.create_texture("color", camera_target=True)
         graph.add_pass("Fill").write_color(source).fullscreen_quad(str(self.fill))
-        graph.add_pass("Grayscale").write_color(color).set_texture("image", source).bind_parameter_block(
+        graph.add_pass("Grayscale").write_color(graded).set_texture("image", source).bind_parameter_block(
             "grayscale", {"strength": 0.0},
         ).fullscreen_quad(str(self.gray))
+        graph.add_pass("Copy").write_color(color).set_texture("_SourceTex", graded).fullscreen_quad("Fullscreen Copy")
         graph.screen_ui_overlay_section(resources={"color"})
         graph.set_output(color)
 
@@ -58,7 +60,7 @@ class Fill(shader.fullscreen):
     transform = shader.parameter.mat3(default=((1.0, 0.25, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.5)))
     enabled = shader.parameter.bool(default=True)
     def main(self, uv: shader.vec2) -> shader.vec4:
-        rgb = self.transform @ self.tint.rgb
+        rgb = (self.transform @ self.tint.rgb) * (0.5 + 0.5 * uv.x)
         gate = shader.step(0.0, rgb)
         rgb = shader.lerp(shader.vec3(0.0), rgb, gate)
         valid = shader.isfinite(rgb) and rgb >= shader.vec3(0.0)
@@ -123,18 +125,23 @@ class Grayscale(shader.fullscreen):
                     ticket = frontend.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy().copy().astype(np.float32)
-                    original = np.array([0.3, 0.4, 0.4], dtype=np.float32)
+                    gain = 0.5 + 0.5 * (np.arange(pixels.shape[1], dtype=np.float32) + 0.5) / pixels.shape[1]
+                    original = np.array([0.3, 0.4, 0.4], dtype=np.float32)[None, None, :] * gain[None, :, None]
                     gray_value = np.dot(original, [0.2126, 0.7152, 0.0722])
                     strength = min(pipeline.phase, 2) * 0.5
                     if pipeline.phase == 3:
                         gray_value *= 0.5
                     elif pipeline.phase == 6:
                         gray_value *= 0.25
-                    linear = original * (1 - strength) + gray_value * strength
-                    expected = np.r_[np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055), 1.0]
+                    linear = original * (1 - strength) + gray_value[..., None] * strength
+                    expected = np.concatenate((np.where(linear <= 0.0031308, linear * 12.92,
+                                                         1.055 * linear ** (1 / 2.4) - 0.055),
+                                               np.ones_like(linear[..., :1])), axis=-1)
                     print("AUTHOR_FULLSCREEN", pipeline.phase, pixels[24, 32].tolist(), "builds", pipeline.builds, flush=True)
                     np.testing.assert_allclose(pixels, np.broadcast_to(expected, pixels.shape), atol=0.005)
                     assert pipeline.builds == 1
+                    assert inx.Shader.is_loaded(str(fill), "fragment")
+                    assert inx.Shader.is_loaded("Fullscreen Copy", "fragment")
                     errors = [item for item in console._get_visible_log_snapshot(3000) if item["level"] in ("ERROR", "FATAL")]
                     python_errors = DebugConsole.instance().get_filtered_entries(
                         show_logs=False, show_warnings=False, show_errors=True,

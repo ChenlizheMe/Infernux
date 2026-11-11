@@ -15,6 +15,13 @@ class fullscreen:
     """Fragment program paired with the engine's fullscreen triangle."""
 
 
+class fragment_input:
+    """Raster position in pixel coordinates and interpolated fullscreen UV."""
+
+    position: vec4
+    uv: vec2
+
+
 class Color2D:
     """A typed sampled RGBA image and the sampler supplied by its graph port."""
 
@@ -104,4 +111,4 @@ for _name in INTRINSICS:
 for _name in ("sample", "sample_level", "sample_grad", "load"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "parameter", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "fragment_input", "parameter", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", *TYPES, *INTRINSICS]

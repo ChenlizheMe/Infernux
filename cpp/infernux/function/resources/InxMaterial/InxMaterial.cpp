@@ -1426,8 +1426,14 @@ nlohmann::json InxMaterial::SerializeDocument() const
         j["textureSamplers"] = std::move(samplers);
     }
 
-    if (!m_shaderPropertyOrder.empty())
-        j["_shader_property_order"] = m_shaderPropertyOrder;
+    // Derived shader defaults are absent from a sparse authored document.
+    // Its order describes only the properties actually written with it.
+    auto authoredOrder = json::array();
+    for (const auto &name : m_shaderPropertyOrder)
+        if (props.contains(name))
+            authoredOrder.push_back(name);
+    if (!authoredOrder.empty())
+        j["_shader_property_order"] = std::move(authoredOrder);
 
     return j;
 }

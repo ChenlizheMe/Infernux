@@ -486,7 +486,7 @@ class Infernux
     /// @brief Load shaders from a directory via AssetRegistry and register them with the renderer.
     /// @param dir Directory to scan for .vert/.frag files
     /// @param recursive If true, scan subdirectories recursively
-    void LoadAndRegisterShaders(const std::string &dir, bool recursive);
+    void InitializeBootstrapShaders();
 
     /// @brief Push a compiled ShaderAsset into the renderer (SPIR-V + variants + render meta).
     void RegisterShaderToRenderer(const struct ShaderAsset &asset);

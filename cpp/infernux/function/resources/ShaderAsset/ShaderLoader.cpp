@@ -12,6 +12,7 @@
 #include <platform/filesystem/InxPath.h>
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
 namespace infernux
 {
 void ShaderLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
@@ -53,6 +54,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->descriptor.filePath = filePath;
         asset->descriptor.fileExtension = kind->suffix;
         asset->authoringSchema = prepared.schema;
+        if (nlohmann::json::parse(prepared.schema).at("domain") == "fullscreen")
+            asset->programDomain = ShaderProgramDomain::Fullscreen;
         for (const auto &library : prepared.libraries) {
             if (!asset_formats::FindShaderSourceKind(library.path))
                 continue;

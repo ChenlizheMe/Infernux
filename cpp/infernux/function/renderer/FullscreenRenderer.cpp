@@ -272,6 +272,18 @@ rhi::Device &FullscreenPipelineCache::GetDevice() const noexcept
     return *m_impl->device;
 }
 
+bool FullscreenPipelineCache::HasShader(const std::string &name, rhi::ShaderStage stage) const
+{
+    return std::any_of(m_impl->pipelines.begin(), m_impl->pipelines.end(), [&](const auto &item) {
+        const auto &[key, pipeline] = item;
+        if (!key.program || (key.shaderName != name && key.program->shaderId != name && key.program->assetGuid != name))
+            return false;
+        return pipeline.rhi.pipeline.IsValid() &&
+               std::any_of(key.program->code->entries.begin(), key.program->code->entries.end(),
+                           [&](const auto &entry) { return entry.stage == stage; });
+    });
+}
+
 struct FullscreenRenderer::Impl
 {
     struct ParameterBuffer

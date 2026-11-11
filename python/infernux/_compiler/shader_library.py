@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
-from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
+from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES
 from .diagnostics import parse_gpu_module
 
 
@@ -33,6 +33,12 @@ class ShaderEmitter(SlangEmitter):
         self.functions = dict(functions or {})
 
     def infer(self, node):
+        if isinstance(node, ast.Attribute):
+            fields = STRUCT_FIELDS.get(self.infer(node.value))
+            if fields is not None:
+                if node.attr not in fields:
+                    self.error(node, "Unknown shader stage input: " + node.attr, code="author.type")
+                return fields[node.attr]
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) in {"sample", "sample_level", "sample_grad", "load"}):
             return "float4"
@@ -66,6 +72,8 @@ class ShaderEmitter(SlangEmitter):
         name = spelling.rsplit(".", 1)[-1]
         if spelling not in {"float", "int", "bool"} and not any(spelling.startswith(alias + ".") for alias in self.aliases):
             self.error(node, "GPU value types come from infernux.shader", code="author.type")
+        if name in STRUCT_TYPES:
+            return STRUCT_TYPES[name]
         return RESOURCE_TYPES[name] if name in RESOURCE_TYPES else super().annotation(node)
 
     def signature(self, definition, symbol, *, method=False):

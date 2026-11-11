@@ -24,7 +24,11 @@ def main():
             (project / name).mkdir()
         resources = Path(inx.__file__).parent / 'resources/shaders'
         full_vertex = (resources / 'fullscreen_triangle.vert').read_text(encoding='utf-8').replace('Fullscreen Triangle', 'Domain Transition Vertex')
-        full_fragment = (resources / 'fullscreen_blit.frag').read_text(encoding='utf-8').replace('Fullscreen Blit', 'Domain Transition Fragment')
+        full_fragment = '''#version 450
+ShaderInfo { Name "Domain Transition Fragment" Hidden On Capabilities [Fullscreen]
+    Resources { Texture2D _SourceTex } Inputs { Float2 inUV } Outputs { Float4 outColor } }
+void main() { outColor = texture(_SourceTex, inUV); }
+'''
         mesh_vertex = '#version 450\nShaderInfo { Name "Domain Transition Vertex" }\nvoid vertex(inout VertexInput v) {}\n'
         mesh_fragment = '#version 450\nShaderInfo { Name "Domain Transition Fragment" ShadingModel Unlit }\nvoid surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(1.0,0.1,0.05); }\n'
         paths = (project / 'Assets/Transition.vert', project / 'Assets/Transition.frag')

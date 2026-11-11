@@ -737,7 +737,10 @@ void InxVkCoreModular::UnloadShader(const char *name)
 
 bool InxVkCoreModular::HasShader(const std::string &name, const std::string &type) const
 {
-    return m_shaderCache.HasShader(name, type);
+    return m_shaderCache.HasShader(name, type) ||
+           (m_fullscreenPipelines && (type == "vertex" || type == "fragment") &&
+            m_fullscreenPipelines->HasShader(name,
+                                             type == "vertex" ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment));
 }
 
 void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType)

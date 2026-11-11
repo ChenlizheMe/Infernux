@@ -23,6 +23,7 @@ class DeviceShaderProgram;
 struct FullscreenProgram
 {
     std::string assetGuid;
+    std::string shaderId;
     std::shared_ptr<const ShaderTargetCode> code;
     std::string schema;
 };
@@ -125,6 +126,8 @@ class FullscreenPipelineCache
 
     INFERNUX_RENDER_CORE_API const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
     INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
+
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasShader(const std::string &name, rhi::ShaderStage stage) const;
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API rhi::Device &GetDevice() const noexcept;
 
