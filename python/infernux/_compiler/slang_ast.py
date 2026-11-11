@@ -10,6 +10,7 @@ import ast
 import json
 
 from infernux.shader._language import INTRINSICS, TYPES
+from .diagnostics import ShaderSourceError
 
 
 _BINARY = {
@@ -83,19 +84,42 @@ class SlangEmitter(ast.NodeVisitor):
         self.line_offset = 0
         self.loop_flags = []
         self.loop_sequence = 0
+        self.current_statement = None
+        self.source_ranges = []
 
-    def error(self, node, message):
+    def source_range(self, node):
         line = getattr(node, "lineno", 1)
         text = self.source_lines[line - 1] if 0 < line <= len(self.source_lines) else ""
-        raise SyntaxError(message, (self.path, line + self.line_offset, getattr(node, "col_offset", 0) + 1, text))
+        end_line = getattr(node, "end_lineno", None) or line
+        end_text = self.source_lines[end_line - 1] if 0 < end_line <= len(self.source_lines) else ""
+        # AST columns count UTF-8 bytes; editor/SyntaxError columns count characters.
+        column = len(text.encode("utf-8")[:getattr(node, "col_offset", 0)].decode("utf-8")) + 1
+        end_byte = getattr(node, "end_col_offset", None)
+        end_column = len(end_text.encode("utf-8")[:end_byte].decode("utf-8")) + 1 if end_byte is not None else column
+        return self.path, line + self.line_offset, column, end_line + self.line_offset, end_column
+
+    def error(self, node, message, *, code="author.syntax"):
+        path, line, column, end_line, end_column = self.source_range(node)
+        source_line = line - self.line_offset
+        text = self.source_lines[source_line - 1] if 0 < source_line <= len(self.source_lines) else ""
+        raise ShaderSourceError(message, (path, line, column, text, end_line, end_column), code=code)
+
+    def source_directive(self, node):
+        location = self.source_range(node)
+        self.source_ranges.append(location)
+        return f"#line {location[1]} {json.dumps(self.path, ensure_ascii=False)}"
 
     def line(self, text):
+        if self.current_statement is not None:
+            self.lines.append(self.source_directive(self.current_statement))
         self.lines.append("    " * self.indent + text)
 
     def block(self, statements):
+        previous = self.current_statement
         for statement in statements:
-            self.lines.append(f"#line {statement.lineno + self.line_offset} {json.dumps(self.path, ensure_ascii=False)}")
+            self.current_statement = statement
             self.visit(statement)
+        self.current_statement = previous
 
     def declare_locals(self, statements):
         """Python locals have function scope, including names assigned in branches."""

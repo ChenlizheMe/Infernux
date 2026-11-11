@@ -71,6 +71,32 @@ def test_generated_diagnostics_keep_author_path_and_line():
         definition.compile()
 
 
+@pytest.mark.parametrize("source,code", [
+    ("import numpy as np\n" + SOURCE, "author.import"),
+    (SOURCE.replace("parameter.float(default=0.5", "parameter.int(default=0.5"), "author.parameter"),
+    (SOURCE.replace("parameter.bool(default=True)", "parameter.bool(default=1)"), "author.parameter"),
+])
+def test_author_diagnostics_are_structured_before_native_compilation(source, code):
+    with pytest.raises(SyntaxError) as failure:
+        parse_shader(source, "静态检查.frag.py", "checked")
+    diagnostic = failure.value.diagnostics[0]
+    assert diagnostic["code"] == code
+    assert diagnostic["phase"] == "author" and diagnostic["severity"] == "error"
+    assert diagnostic["path"] == "静态检查.frag.py" and diagnostic["line"] > 0
+    assert diagnostic["column"] > 0 and diagnostic["end_line"] >= diagnostic["line"]
+
+
+def test_native_error_records_keep_author_statement_ranges_and_recover():
+    definition = parse_shader(SOURCE.replace("uv.x", "uv.z"), "错误.frag.py", "invalid_swizzle")
+    with pytest.raises(RuntimeError) as failure:
+        definition.compile()
+    errors = [item for item in failure.value.diagnostics if item["severity"] == "error"]
+    assert errors and errors[0]["path"] == "错误.frag.py" and errors[0]["line"] == 9
+    assert (errors[0]["column"], errors[0]["end_line"], errors[0]["end_column"]) == (9, 9, len(SOURCE.splitlines()[8]) + 1)
+    assert errors[0]["phase"] == "compile" and errors[0]["code"].startswith("E")
+    assert parse_shader(SOURCE, "错误.frag.py", "invalid_swizzle").compile()["targets"]
+
+
 def test_packaged_standard_module_is_found_by_native_loader():
     from infernux.lib import _Infernux
 
@@ -115,6 +141,14 @@ class Painted(shader.fullscreen):
     palette.write_text(palette.read_text(encoding="utf-8").replace("rgb * pulse(value)", "rgb * pulse(value) * 0.5"), encoding="utf-8")
     edited = parse_shader(source, path, "painted").compile()
     assert edited["targets"][0]["entries"][1]["code"] != previous["targets"][0]["entries"][1]["code"]
+
+    # A dependent library reports its original statement, rather than columns
+    # from the generated Slang expression.
+    palette.write_text(palette.read_text(encoding="utf-8").replace("return rgb", "return rgb.w"), encoding="utf-8")
+    with pytest.raises(RuntimeError) as library_failure:
+        parse_shader(source, path, "painted").compile()
+    error = next(item for item in library_failure.value.diagnostics if item["severity"] == "error")
+    assert (error["path"], error["line"], error["column"]) == (str(palette), 5, 5)
 
     # A source cycle is diagnosed at the import, before any host code can run.
     (tmp_path / "curves.shaderlib.py").write_text('''import infernux.shader as shader

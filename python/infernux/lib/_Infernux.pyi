@@ -31,10 +31,16 @@ _slang_standard_module_name: str
 
 def _slang_version() -> str: ...
 def _shader_source_schema(guid: str) -> str: ...
+def _check_shader_source(path: str, source: str | None = None) -> dict: ...
+def _set_shader_module_directory(directory: str) -> None: ...
+
+class ShaderCompilationError(RuntimeError):
+    diagnostics: list[dict]
 def _compile_shader_program(
     source: str, source_path: str, module_name: str,
     libraries: Sequence[tuple[str, str, str]] = (),
     targets: Sequence[Literal["spirv", "wgsl"]] = ("spirv", "wgsl"), precise: bool = False,
+    source_ranges: Sequence[tuple[str, int, int, int, int]] = (),
 ) -> dict[str, Any]: ...
 
 

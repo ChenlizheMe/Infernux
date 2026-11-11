@@ -24,6 +24,8 @@ import numpy as np
 
 from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
 from infernux.compute_source import BufferSource
+from infernux._compiler.value_types import SCALAR_STORAGE_TYPES
+from infernux.shader import f32, i32, u32, vec2, vec3, vec4
 
 _gpu_buffers = weakref.WeakSet()
 _gpu_works = weakref.WeakSet()
@@ -1010,7 +1012,7 @@ def _buffer_dtypes():
     from infernux.math import vector2, vector3, vector4
 
     layouts = {}
-    for kind in ('float32', 'int32', 'uint32', 'int64'):
+    for kind in SCALAR_STORAGE_TYPES:
         dtype = np.dtype(kind)
         layouts[dtype] = layouts[kind] = _BufferDType(kind, dtype)
     layouts.update({
@@ -1018,6 +1020,8 @@ def _buffer_dtypes():
         vector3: _BufferDType("vector3", np.dtype(np.float32), 3),
         vector4: _BufferDType("vector4", np.dtype(np.float32), 4),
     })
+    layouts.update({f32: layouts["float32"], i32: layouts["int32"], u32: layouts["uint32"],
+                    vec2: layouts[vector2], vec3: layouts[vector3], vec4: layouts[vector4]})
     return layouts
 
 
@@ -3933,6 +3937,7 @@ def _finish_kernels(declarations) -> None:
 
 
 __all__ = [
+    "f32", "i32", "u32", "vec2", "vec3", "vec4",
     "ComputeCapabilityError", "ComputeCompilerError", "KernelCompilationError",
     "ComputeExecutionError",
     "buffer", "Buffer", "BufferDescription", "Readback", "Statistics", "statistics", "transfer",

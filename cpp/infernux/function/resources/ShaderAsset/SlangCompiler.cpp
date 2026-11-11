@@ -5,9 +5,13 @@
 #include <slang.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
+#include <iterator>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace infernux
 {
@@ -20,10 +24,90 @@ std::string BlobText(slang::IBlob *blob)
                 : std::string{};
 }
 
-void CheckCompilation(SlangResult result, const std::string &operation, slang::IBlob *diagnostic)
+// Slang's documented machine-readable output is eight TSV fields. Parse it
+// once at compilation; tools receive the record, never reparse rendered logs.
+std::vector<ShaderDiagnostic> ReadDiagnostics(slang::IBlob *blob, const std::string &phase,
+                                              const std::string &target = {})
+{
+    std::vector<ShaderDiagnostic> result;
+    std::istringstream input(BlobText(blob));
+    std::string line;
+    while (std::getline(input, line)) {
+        std::array<std::string_view, 8> fields;
+        std::string_view remainder(line);
+        size_t count = 0;
+        for (; count < 7; ++count) {
+            const auto separator = remainder.find('\t');
+            if (separator == std::string_view::npos)
+                break;
+            fields[count] = remainder.substr(0, separator);
+            remainder.remove_prefix(separator + 1);
+        }
+        if (count != 7) {
+            // Diagnostic messages can contain line breaks. These are part of
+            // the preceding message, not a second guessed source location.
+            if (result.empty())
+                result.push_back({"compiler.message", "note", {}, 0, 0, 0, 0, line, phase, target});
+            else
+                result.back().message += "\n" + line;
+            continue;
+        }
+        fields[7] = remainder;
+        // The public API may echo a fatal record prefixed by its abort
+        // wrapper. Only the TSV records beginning with E belong to this
+        // protocol; the original fatal record is already present.
+        if (fields[0].empty() || fields[0].front() != 'E')
+            continue;
+        const auto number = [](std::string_view value) {
+            uint32_t result = 0;
+            std::from_chars(value.data(), value.data() + value.size(), result);
+            return result;
+        };
+        result.push_back({std::string(fields[0]), std::string(fields[1]), std::string(fields[2]), number(fields[3]),
+                          number(fields[4]), number(fields[5]), number(fields[6]), std::string(fields[7]), phase,
+                          target});
+    }
+    return result;
+}
+
+std::vector<ShaderDiagnostic> FailureDiagnostics(const std::string &phase, const std::string &path, slang::IBlob *blob,
+                                                 const std::string &target = {})
+{
+    auto result = ReadDiagnostics(blob, phase, target);
+    if (result.empty())
+        result.push_back({"compiler.failure", "error", path, 0, 0, 0, 0, phase + " failed", phase, target});
+    return result;
+}
+
+void CheckCompilation(SlangResult result, const std::string &phase, slang::IBlob *diagnostic,
+                      const std::string &path = {}, const std::string &target = {})
 {
     if (SLANG_FAILED(result))
-        throw std::runtime_error(operation + ":\n" + BlobText(diagnostic));
+        throw ShaderCompilationError(FailureDiagnostics(phase, path, diagnostic, target));
+}
+
+void AppendDiagnostics(ShaderCompilation &compilation, slang::IBlob *blob, const std::string &phase,
+                       const std::string &target = {})
+{
+    auto diagnostics = ReadDiagnostics(blob, phase, target);
+    compilation.diagnostics.insert(compilation.diagnostics.end(), std::make_move_iterator(diagnostics.begin()),
+                                   std::make_move_iterator(diagnostics.end()));
+}
+
+void MapAuthorRanges(std::vector<ShaderDiagnostic> &diagnostics, const std::vector<ShaderAuthorRange> &ranges)
+{
+    for (auto &diagnostic : diagnostics) {
+        const auto range = std::find_if(ranges.begin(), ranges.end(), [&](const auto &range) {
+            return range.path == diagnostic.path && range.line == diagnostic.line;
+        });
+        if (range == ranges.end())
+            continue;
+        // Slang columns refer to generated expressions. Report the original
+        // AST statement, rather than inventing a token column in Python.
+        diagnostic.column = range->column;
+        diagnostic.endLine = range->endLine;
+        diagnostic.endColumn = range->endColumn;
+    }
 }
 
 rhi::ShaderStage StageFromReflection(SlangStage stage)
@@ -84,7 +168,7 @@ struct SlangCompiler::Impl
 
     Impl()
     {
-        CheckCompilation(slang::createGlobalSession(global.writeRef()), "Create Slang compiler", nullptr);
+        CheckCompilation(slang::createGlobalSession(global.writeRef()), "initialize", nullptr);
         version = global->getBuildTagString();
     }
 };
@@ -138,8 +222,9 @@ ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &
 
 ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
                                          const std::vector<ShaderSourceModule> &libraries,
-                                         const std::vector<ShaderCodeTarget> &targets, bool precise)
-{
+                                         const std::vector<ShaderCodeTarget> &targets, bool precise,
+                                         const std::vector<ShaderAuthorRange> &sourceRanges)
+try {
     std::lock_guard lock(impl->mutex);
 
     std::vector<slang::TargetDesc> targetDescriptions;
@@ -153,7 +238,7 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
         targetDescriptions.push_back(description);
     }
 
-    slang::CompilerOptionEntry options[3]{};
+    slang::CompilerOptionEntry options[5]{};
     options[0].name = slang::CompilerOptionName::EmitSpirvMethod;
     options[0].value.intValue0 = SLANG_EMIT_SPIRV_DIRECTLY;
     options[1].name = slang::CompilerOptionName::VulkanUseEntryPointName;
@@ -162,28 +247,33 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
     // viewport needs the opposite position Y; WGSL retains the author value.
     options[2].name = slang::CompilerOptionName::VulkanInvertY;
     options[2].value.intValue0 = 1;
+    options[3].name = slang::CompilerOptionName::EnableMachineReadableDiagnostics;
+    options[3].value.intValue0 = 1;
+    options[4].name = slang::CompilerOptionName::EnableRichDiagnostics;
+    options[4].value.intValue0 = 1;
 
     slang::SessionDesc description;
     description.targets = targetDescriptions.data();
     description.targetCount = static_cast<SlangInt>(targetDescriptions.size());
     description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
     description.compilerOptionEntries = options;
-    description.compilerOptionEntryCount = 3;
+    description.compilerOptionEntryCount = 5;
     const char *moduleDirectory = impl->standardModuleDirectory.c_str();
     description.searchPaths = &moduleDirectory;
     description.searchPathCount = impl->standardModuleDirectory.empty() ? 0 : 1;
 
     Slang::ComPtr<slang::ISession> session;
-    CheckCompilation(impl->global->createSession(description, session.writeRef()), "Create shader session", nullptr);
+    CheckCompilation(impl->global->createSession(description, session.writeRef()), "create_session", nullptr,
+                     source.path);
 
     ShaderCompilation result;
     auto loadModule = [&](const ShaderSourceModule &module) {
         Slang::ComPtr<slang::IBlob> diagnostics;
         auto *loaded = session->loadModuleFromSourceString(module.name.c_str(), module.path.c_str(),
                                                            module.source.c_str(), diagnostics.writeRef());
-        result.diagnostics += BlobText(diagnostics);
+        AppendDiagnostics(result, diagnostics, "compile");
         if (!loaded)
-            throw std::runtime_error("Compile " + module.path + ":\n" + BlobText(diagnostics));
+            throw ShaderCompilationError(FailureDiagnostics("compile", module.path, diagnostics));
         return loaded;
     };
     for (const auto &library : libraries)
@@ -194,7 +284,8 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
     std::vector<Slang::ComPtr<slang::IEntryPoint>> entries(static_cast<size_t>(entryCount));
     std::vector<slang::IComponentType *> components{module};
     for (SlangInt32 index = 0; index < entryCount; ++index) {
-        CheckCompilation(module->getDefinedEntryPoint(index, entries[index].writeRef()), "Find shader entry", nullptr);
+        CheckCompilation(module->getDefinedEntryPoint(index, entries[index].writeRef()), "find_entry", nullptr,
+                         source.path);
         components.push_back(entries[index].get());
     }
 
@@ -202,31 +293,32 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
     Slang::ComPtr<slang::IComponentType> composed;
     auto status = session->createCompositeComponentType(components.data(), static_cast<SlangInt>(components.size()),
                                                         composed.writeRef(), diagnostics.writeRef());
-    CheckCompilation(status, "Compose " + source.path, diagnostics);
-    result.diagnostics += BlobText(diagnostics);
+    CheckCompilation(status, "compose", diagnostics, source.path);
+    AppendDiagnostics(result, diagnostics, "compose");
 
     Slang::ComPtr<slang::IComponentType> program;
     diagnostics.setNull();
     status = composed->link(program.writeRef(), diagnostics.writeRef());
-    CheckCompilation(status, "Link " + source.path, diagnostics);
-    result.diagnostics += BlobText(diagnostics);
+    CheckCompilation(status, "link", diagnostics, source.path);
+    AppendDiagnostics(result, diagnostics, "link");
 
     for (SlangInt targetIndex = 0; targetIndex < static_cast<SlangInt>(targets.size()); ++targetIndex) {
         ShaderTargetCode target;
         target.target = targets[targetIndex];
+        const std::string targetName = target.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl";
         diagnostics.setNull();
         auto *layout = program->getLayout(targetIndex, diagnostics.writeRef());
         if (!layout)
-            throw std::runtime_error("Reflect " + source.path + ":\n" + BlobText(diagnostics));
-        result.diagnostics += BlobText(diagnostics);
+            throw ShaderCompilationError(FailureDiagnostics("reflect", source.path, diagnostics, targetName));
+        AppendDiagnostics(result, diagnostics, "reflect", targetName);
         target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout());
 
         for (SlangInt entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
             Slang::ComPtr<slang::IBlob> code;
             diagnostics.setNull();
             status = program->getEntryPointCode(entryIndex, targetIndex, code.writeRef(), diagnostics.writeRef());
-            CheckCompilation(status, "Generate " + source.path, diagnostics);
-            result.diagnostics += BlobText(diagnostics);
+            CheckCompilation(status, "generate", diagnostics, source.path, targetName);
+            AppendDiagnostics(result, diagnostics, "generate", targetName);
 
             // Code generation may legalize entry-point names for the target.
             auto *entry = layout->getEntryPointByIndex(static_cast<SlangUInt>(entryIndex));
@@ -244,12 +336,12 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
             diagnostics.setNull();
             status =
                 program->getEntryPointMetadata(entryIndex, targetIndex, metadata.writeRef(), diagnostics.writeRef());
-            CheckCompilation(status, "Reflect entry resource use " + source.path, diagnostics);
+            CheckCompilation(status, "entry_resources", diagnostics, source.path, targetName);
             for (const auto &resource : target.resources) {
                 bool used = false;
                 CheckCompilation(metadata->isParameterLocationUsed(SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT,
                                                                    resource.set, resource.binding.binding, used),
-                                 "Reflect descriptor use " + source.path, nullptr);
+                                 "descriptor_use", nullptr, source.path, targetName);
                 if (used)
                     artifact.bindings.push_back({resource.set, resource.binding.binding});
             }
@@ -267,11 +359,16 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
             }
         }
         Slang::ComPtr<slang::IBlob> reflection;
-        CheckCompilation(layout->toJson(reflection.writeRef()), "Serialize target layout", nullptr);
+        CheckCompilation(layout->toJson(reflection.writeRef()), "serialize_layout", nullptr, source.path, targetName);
         target.reflection = BlobText(reflection);
         result.targets.push_back(std::move(target));
     }
+    MapAuthorRanges(result.diagnostics, sourceRanges);
     return result;
+} catch (const ShaderCompilationError &error) {
+    auto diagnostics = error.diagnostics;
+    MapAuthorRanges(diagnostics, sourceRanges);
+    throw ShaderCompilationError(std::move(diagnostics));
 }
 
 } // namespace infernux

@@ -99,27 +99,49 @@ class Shader:
         return InxMaterial.property_to_id(name)
 
     @staticmethod
+    def _author_source(asset: str):
+        from infernux.core.assets import AssetManager
+
+        database = AssetManager.require_asset_database()
+        selector = str(asset)
+        path = database.get_path_from_guid(selector)
+        if path:
+            return database, path, selector
+        candidate = Path(selector)
+        if not candidate.is_absolute():
+            candidate = Path(database.project_root) / candidate
+        path = str(candidate.resolve())
+        return database, path, database.get_guid_from_path(path)
+
+    @staticmethod
+    def check(asset: str, *, source: str | None = None) -> dict:
+        """Check a GPU file or unsaved draft with the same native preparation service.
+
+        Returns ``valid``, the logical ``schema``, and source diagnostics for both
+        GPU targets. It does not publish an asset or create a device pipeline.
+        Shader source is statically parsed; host imports and statements never run.
+        """
+        from infernux.lib import _Infernux
+
+        _, path, _ = Shader._author_source(asset)
+        if source_extension(path) not in SHADER_SOURCE_KINDS:
+            raise ValueError(f"Expected a GPU author source file: {path}")
+        report = _Infernux._check_shader_source(path, source)
+        report["schema"] = json.loads(report["schema"]) if report["schema"] else None
+        return report
+
+    @staticmethod
     def get_schema(asset: str) -> dict:
         """Read a static GPU asset's logical fields and graph input ports.
 
         Accepts an asset GUID or registered project path. The native asset
         owner prepares the source revision; querying fields creates no PSO.
         """
-        from infernux.core.assets import AssetManager
         from infernux.lib import _Infernux
 
-        database = AssetManager.require_asset_database()
-        selector = str(asset)
-        path = database.get_path_from_guid(selector)
-        if path:
-            guid = selector
-        else:
-            candidate = Path(selector)
-            if not candidate.is_absolute():
-                candidate = Path(database.project_root) / candidate
-            guid = database.get_guid_from_path(str(candidate))
-            if not guid:
-                raise FileNotFoundError(f"GPU author asset is not registered: {selector}")
+        _, _, guid = Shader._author_source(asset)
+        if not guid:
+            raise FileNotFoundError(f"GPU author asset is not registered: {asset}")
         return json.loads(_Infernux._shader_source_schema(guid))
 
     @staticmethod

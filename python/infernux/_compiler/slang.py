@@ -11,6 +11,7 @@ import os
 import numpy as np
 
 from .slang_ast import SlangEmitter, common_type, floating_type, qualified
+from .value_types import SCALAR_STORAGE_TYPES
 from .work_item import WorkItem, normalize_work_item, _function_source
 from .cache import compiler_cache_root, prune_cache_files
 from .kernel_contract import WORK_ITEM_FAST_MATH
@@ -98,7 +99,7 @@ def prepare_kernel(function, params, *, receiver_fields=None, autodiff_mode="non
     return plan
 
 
-_SCALAR_TYPES = {"float32": "float", "int32": "int", "uint32": "uint", "int64": "int64_t"}
+_SCALAR_TYPES = SCALAR_STORAGE_TYPES
 
 
 def _element_type(value):

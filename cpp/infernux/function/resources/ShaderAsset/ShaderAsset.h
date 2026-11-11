@@ -99,7 +99,10 @@ struct ShaderAsset
         for (const auto &dependency : sourceDependencies)
             bytes += dependency.capacity();
         if (program) {
-            bytes += program->diagnostics.capacity() + program->targets.capacity() * sizeof(ShaderTargetCode);
+            bytes += program->diagnostics.capacity() * sizeof(ShaderDiagnostic) +
+                     program->targets.capacity() * sizeof(ShaderTargetCode);
+            for (const auto &diagnostic : program->diagnostics)
+                bytes += diagnostic.GetRuntimeMemoryBytes() - sizeof(diagnostic);
             for (const auto &target : program->targets) {
                 bytes += target.reflection.capacity() + target.entries.capacity() * sizeof(ShaderEntryPointCode);
                 bytes += target.resources.capacity() * sizeof(ShaderResourceLayout);

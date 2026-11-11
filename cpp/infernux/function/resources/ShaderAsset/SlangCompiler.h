@@ -8,11 +8,23 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace infernux
 {
+
+class ShaderCompilationError : public std::runtime_error
+{
+  public:
+    explicit ShaderCompilationError(std::vector<ShaderDiagnostic> diagnostics)
+        : std::runtime_error(FormatShaderDiagnostics(diagnostics)), diagnostics(std::move(diagnostics))
+    {
+    }
+    const std::vector<ShaderDiagnostic> diagnostics;
+};
 
 /// A generated module. Source paths are retained in compiler diagnostics;
 /// module names identify static imports, independently of physical files.
@@ -29,6 +41,8 @@ struct ShaderAuthorSource
     std::vector<ShaderSourceModule> libraries;
     /// Logical fields and graph ports. Target addresses belong to compilation.
     std::string schema;
+    /// Original AST statement ranges for generated #line locations.
+    std::vector<ShaderAuthorRange> sourceRanges;
 };
 
 using ShaderTextReader = std::function<std::optional<std::string>(const std::string &)>;
@@ -50,7 +64,8 @@ class SlangCompiler
     INFERNUX_SHADER_COMPILER_API ShaderCompilation Compile(const ShaderSourceModule &source,
                                                            const std::vector<ShaderSourceModule> &libraries,
                                                            const std::vector<ShaderCodeTarget> &targets,
-                                                           bool precise = false);
+                                                           bool precise = false,
+                                                           const std::vector<ShaderAuthorRange> &sourceRanges = {});
 
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API const std::string &GetVersion() const noexcept;
 

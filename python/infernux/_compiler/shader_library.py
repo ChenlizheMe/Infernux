@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
 from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
+from .diagnostics import parse_gpu_module
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class Module:
     path: str
     source: str
     functions: dict[str, Function]
+    source_ranges: tuple = ()
 
 
 class ShaderEmitter(SlangEmitter):
@@ -60,7 +62,10 @@ class ShaderEmitter(SlangEmitter):
         return function.symbol + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
 
     def annotation(self, node):
-        name = qualified(node).rsplit(".", 1)[-1]
+        spelling = qualified(node)
+        name = spelling.rsplit(".", 1)[-1]
+        if spelling not in {"float", "int", "bool"} and not any(spelling.startswith(alias + ".") for alias in self.aliases):
+            self.error(node, "GPU value types come from infernux.shader", code="author.type")
         return RESOURCE_TYPES[name] if name in RESOURCE_TYPES else super().annotation(node)
 
     def signature(self, definition, symbol, *, method=False):
@@ -88,7 +93,8 @@ class ShaderEmitter(SlangEmitter):
         self.local_declarations()
         self.block(definition.body)
         parameters = ", ".join(kind + " " + field.arg for field, kind in zip(fields, function.arguments))
-        return [f'{"public " if public else ""}{function.result} {definition.name}({parameters})',
+        return [self.source_directive(definition),
+                f'{"public " if public else ""}{function.result} {definition.name}({parameters})',
                 "{", *self.lines, "}"]
 
 
@@ -96,11 +102,12 @@ def declarations(source, path):
     """Separate GPU declarations without importing or executing their Python module."""
     emitter = ShaderEmitter(source, path)
     imports, body, aliases = [], [], []
-    for statement in ast.parse(source, filename=path).body:
+    for statement in parse_gpu_module(source, path).body:
         if isinstance(statement, ast.Import):
             for alias in statement.names:
                 if alias.name != "infernux.shader":
-                    emitter.error(statement, "GPU files import infernux.shader and static ShaderLib declarations")
+                    emitter.error(statement, "GPU files import infernux.shader and static ShaderLib declarations; use GPU value types instead of NumPy or host modules",
+                                  code="author.import")
                 aliases.append(alias.asname or alias.name)
         elif isinstance(statement, ast.ImportFrom):
             imports.append(statement)
@@ -184,14 +191,20 @@ class LibraryGraph:
             module.functions[definition.name] = functions[definition.name] = function
         code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies),
                 "namespace " + module.name + " {"]
+        ranges = []
         for definition in body:
             function_emitter = ShaderEmitter(source, str(path), aliases=(alias,), functions=functions)
             code.extend(function_emitter.emit_function(definition, module.functions[definition.name], public=True))
+            ranges.extend(function_emitter.source_ranges)
         code.append("}")
         module.source = "\n".join(code)
+        module.source_ranges = tuple(ranges)
         self.loading.remove(path)
         self.ordered.append(module)
         return module
 
     def sources(self):
         return (RESOURCE_MODULE, *((module.name, module.path, module.source) for module in self.ordered))
+
+    def ranges(self):
+        return tuple(location for module in self.ordered for location in module.source_ranges)

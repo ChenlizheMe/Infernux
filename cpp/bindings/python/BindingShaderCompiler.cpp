@@ -1,4 +1,5 @@
 #include "BindingRegistration.h"
+#include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
@@ -13,6 +14,63 @@ namespace infernux
 {
 namespace
 {
+PyObject *g_shaderCompilationError = nullptr;
+using SourceRangeTuple = std::tuple<std::string, uint32_t, uint32_t, uint32_t, uint32_t>;
+
+std::vector<ShaderAuthorRange> SourceRanges(const std::vector<SourceRangeTuple> &locations)
+{
+    std::vector<ShaderAuthorRange> result;
+    result.reserve(locations.size());
+    for (const auto &[path, line, column, endLine, endColumn] : locations)
+        result.push_back({path, line, column, endLine, endColumn});
+    return result;
+}
+
+py::list DiagnosticList(const std::vector<ShaderDiagnostic> &diagnostics)
+{
+    py::list result;
+    for (const auto &value : diagnostics) {
+        py::dict item;
+        item["code"] = value.code;
+        item["severity"] = value.severity;
+        item["path"] = value.path;
+        item["line"] = value.line;
+        item["column"] = value.column;
+        item["end_line"] = value.endLine;
+        item["end_column"] = value.endColumn;
+        item["message"] = value.message;
+        item["phase"] = value.phase;
+        item["target"] = value.target;
+        result.append(std::move(item));
+    }
+    return result;
+}
+
+std::vector<ShaderDiagnostic> AuthorDiagnostics(py::error_already_set &error, const std::string &path)
+{
+    const auto value = error.value();
+    std::vector<ShaderDiagnostic> result;
+    if (py::hasattr(value, "diagnostics")) {
+        for (const auto record : value.attr("diagnostics")) {
+            const auto item = py::reinterpret_borrow<py::dict>(record);
+            result.push_back({py::cast<std::string>(item["code"]),
+                              py::cast<std::string>(item["severity"]),
+                              py::cast<std::string>(item["path"]),
+                              py::cast<uint32_t>(item["line"]),
+                              py::cast<uint32_t>(item["column"]),
+                              py::cast<uint32_t>(item["end_line"]),
+                              py::cast<uint32_t>(item["end_column"]),
+                              py::cast<std::string>(item["message"]),
+                              "author",
+                              {}});
+        }
+    } else
+        result.push_back({"author.internal", "error", path, 0, 0, 0, 0, py::str(value), "author", {}});
+    error.restore();
+    PyErr_Clear();
+    return result;
+}
+
 py::dict ValueLayout(const ShaderValueLayout &value)
 {
     py::dict result;
@@ -36,6 +94,19 @@ py::dict ValueLayout(const ShaderValueLayout &value)
 
 void RegisterShaderCompilerBindings(py::module_ &m)
 {
+    g_shaderCompilationError =
+        PyErr_NewException("infernux.lib._Infernux.ShaderCompilationError", PyExc_RuntimeError, nullptr);
+    m.add_object("ShaderCompilationError", py::reinterpret_steal<py::object>(g_shaderCompilationError));
+    py::register_local_exception_translator([](std::exception_ptr exception) {
+        try {
+            if (exception)
+                std::rethrow_exception(exception);
+        } catch (const ShaderCompilationError &error) {
+            auto value = py::reinterpret_borrow<py::object>(g_shaderCompilationError)(error.what());
+            value.attr("diagnostics") = DiagnosticList(error.diagnostics);
+            PyErr_SetObject(g_shaderCompilationError, value.ptr());
+        }
+    });
     m.attr("_slang_standard_module_name") = SlangCompiler::GetStandardModuleName();
     {
         py::gil_scoped_release release;
@@ -53,16 +124,53 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                  py::cast<std::vector<std::tuple<std::string, std::string, std::string>>>(fields[1]))
                 result.libraries.push_back({name, path, text});
             result.schema = py::cast<std::string>(fields[2]);
+            result.sourceRanges = SourceRanges(py::cast<std::vector<SourceRangeTuple>>(fields[3]));
             return result;
         } catch (py::error_already_set &error) {
             // Worker tickets retain native diagnostics, never Python exception
             // objects whose destruction could run after interpreter shutdown.
-            const std::string message = error.what();
-            error.restore();
-            PyErr_Clear();
-            throw std::runtime_error(message);
+            throw ShaderCompilationError(AuthorDiagnostics(error, source.path));
         }
     });
+    m.def(
+        "_check_shader_source",
+        [](const std::string &path, const std::optional<std::string> &text) {
+            ShaderAuthorSource prepared;
+            std::vector<ShaderDiagnostic> diagnostics;
+            bool valid = false;
+            {
+                py::gil_scoped_release release;
+                auto *database = AssetRegistry::Instance().GetAssetDatabase();
+                if (!database)
+                    throw std::logic_error("GPU source checking requires an AssetDatabase");
+                const auto reader = [database](const std::string &path) -> std::optional<std::string> {
+                    std::vector<char> contents;
+                    if (!database->ReadFile(path, contents))
+                        return std::nullopt;
+                    return std::string(contents.begin(), contents.end());
+                };
+                const auto source = text ? text : reader(path);
+                if (!source)
+                    throw std::invalid_argument("GPU author source could not be read: " + path);
+                auto &compiler = SlangCompiler::Get();
+                try {
+                    prepared = compiler.PrepareAuthorSource({"check_program", path, *source}, reader);
+                    auto compiled = compiler.Compile(prepared.source, prepared.libraries,
+                                                     {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}, false,
+                                                     prepared.sourceRanges);
+                    diagnostics = std::move(compiled.diagnostics);
+                    valid = true;
+                } catch (const ShaderCompilationError &error) {
+                    diagnostics = error.diagnostics;
+                }
+            }
+            py::dict result;
+            result["valid"] = valid;
+            result["schema"] = prepared.schema;
+            result["diagnostics"] = DiagnosticList(diagnostics);
+            return result;
+        },
+        py::arg("path"), py::arg("source") = py::none());
     m.def(
         "_shader_source_schema",
         [](const std::string &guid) {
@@ -81,7 +189,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         "_compile_shader_program",
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
            const std::vector<std::tuple<std::string, std::string, std::string>> &libraries,
-           const std::vector<std::string> &targetNames, bool precise) {
+           const std::vector<std::string> &targetNames, bool precise,
+           const std::vector<SourceRangeTuple> &sourceRanges) {
             std::vector<ShaderSourceModule> modules;
             for (const auto &[name, path, text] : libraries)
                 modules.push_back({name, path, text});
@@ -100,10 +209,11 @@ void RegisterShaderCompilerBindings(py::module_ &m)
             ShaderCompilation compiled;
             {
                 py::gil_scoped_release release;
-                compiled = SlangCompiler::Get().Compile({moduleName, sourcePath, source}, modules, targets, precise);
+                compiled = SlangCompiler::Get().Compile({moduleName, sourcePath, source}, modules, targets, precise,
+                                                        SourceRanges(sourceRanges));
             }
             py::dict result;
-            result["diagnostics"] = compiled.diagnostics;
+            result["diagnostics"] = DiagnosticList(compiled.diagnostics);
             py::list targetPrograms;
             for (const auto &target : compiled.targets) {
                 py::dict program;
@@ -160,7 +270,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         },
         py::arg("source"), py::arg("source_path"), py::arg("module_name"),
         py::arg("libraries") = std::vector<std::tuple<std::string, std::string, std::string>>{},
-        py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false);
+        py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
+        py::arg("source_ranges") = std::vector<SourceRangeTuple>{});
 }
 
 } // namespace infernux

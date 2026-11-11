@@ -3,6 +3,7 @@ from numpy import ndarray
 from .engine.cpu_continuation import TransferRequest
 from ._work import Continuation as _Continuation
 from .compute_source import BufferSource as BufferSource
+from .shader import f32 as f32, i32 as i32, u32 as u32, vec2 as vec2, vec3 as vec3, vec4 as vec4
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 

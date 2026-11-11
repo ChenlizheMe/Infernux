@@ -1,13 +1,6 @@
 """Shared author vocabulary; the GPU compiler owns numeric implementation."""
 
-TYPES = {
-    "float": "float", "int": "int", "uint": "uint", "bool": "bool",
-    "f32": "float", "i32": "int", "u32": "uint",
-    "vec2": "float2", "vec3": "float3", "vec4": "float4",
-    "ivec2": "int2", "ivec3": "int3", "ivec4": "int4",
-    "uvec2": "uint2", "uvec3": "uint3", "uvec4": "uint4",
-    "mat3": "float3x3", "mat4": "float4x4",
-}
+from infernux._compiler.value_types import VALUE_TYPES as TYPES
 
 INTRINSICS = {name: name for name in (
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",

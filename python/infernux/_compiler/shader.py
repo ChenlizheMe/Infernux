@@ -38,11 +38,13 @@ class ShaderDefinition:
     generated_source: str
     libraries: tuple[tuple[str, str, str], ...] = ()
     inputs: tuple[ShaderInput, ...] = ()
+    source_ranges: tuple = ()
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
         return _Infernux._compile_shader_program(
             self.generated_source, self.source_path, self.module_name, self.libraries, targets,
+            source_ranges=self.source_ranges,
         )
 
 
@@ -60,6 +62,7 @@ class _Author(ShaderEmitter):
         self.source = source
         self.alias = ""
         self.fields = {}
+        self.field_nodes = {}
 
     def qualified(self, node):
         if isinstance(node, ast.Name):
@@ -94,6 +97,7 @@ class _Author(ShaderEmitter):
             self.error(statement, "Expected shader.parameter declaration")
         declaration = self.qualified(call.func)
         name = targets[0].id
+        self.field_nodes[name] = statement
         if declaration == self.alias + ".input":
             if len(call.args) != 2:
                 self.error(call, "shader.input names a semantic and a typed GPU resource")
@@ -118,8 +122,35 @@ class _Author(ShaderEmitter):
             self.error(call, "Unknown shader parameter metadata: " + ", ".join(sorted(unknown)))
         value = ShaderParameter(name, kind, values.get("default", _DEFAULTS[kind]), values.get("label", name),
                                 values.get("range"), values.get("hdr", False))
+        self.validate_default(value, call)
         self.fields[name] = value
         self.types["self." + name] = "bool" if kind == "bool" else _PARAMETER_TYPES[kind]
+
+    def validate_default(self, field, node):
+        value, kind = field.default, field.kind
+        numeric = lambda item: type(item) in (int, float)
+        valid = True
+        if kind == "float":
+            valid = numeric(value)
+        elif kind in {"int", "uint"}:
+            minimum, maximum = (-2**31, 2**31 - 1) if kind == "int" else (0, 2**32 - 1)
+            valid = type(value) is int and minimum <= value <= maximum
+        elif kind == "bool":
+            valid = type(value) is bool
+        elif kind == "color" or kind.startswith("vec"):
+            count = 4 if kind == "color" else int(kind[-1])
+            valid = isinstance(value, (tuple, list)) and len(value) == count and all(map(numeric, value))
+        elif kind.startswith("mat"):
+            count = int(kind[-1])
+            valid = (isinstance(value, (tuple, list)) and len(value) == count
+                     and all(isinstance(row, (tuple, list)) and len(row) == count and all(map(numeric, row)) for row in value))
+        if not valid:
+            self.error(node, f"Default of {field.name!r} must match its declared {kind} type and shape", code="author.parameter")
+        if field.range is not None:
+            valid = (kind in {"float", "int", "uint"} and isinstance(field.range, (tuple, list))
+                     and len(field.range) == 2 and all(map(numeric, field.range)) and field.range[0] <= field.range[1])
+            if not valid:
+                self.error(node, "A slider range is an ordered pair for a scalar numeric parameter", code="author.parameter")
 
     def visit_Attribute(self, node):
         if isinstance(node.value, ast.Name) and node.value.id == "self":
@@ -143,17 +174,18 @@ class _Author(ShaderEmitter):
         signature = ""
         if len(arguments) == 2:
             uv = arguments[1]
-            if uv.annotation is None or self.qualified(uv.annotation) != self.alias + ".vec2":
+            if uv.annotation is None or self.annotation(uv.annotation) != "float2":
                 self.error(uv, "Fullscreen UV must be annotated as shader.vec2")
             signature = "float2 " + uv.arg + " : TEXCOORD0"
             self.types[uv.arg] = "float2"
-        if main.returns is None or self.qualified(main.returns) != self.alias + ".vec4":
+        if main.returns is None or self.annotation(main.returns) != "float4":
             self.error(main, "Fullscreen main returns shader.vec4")
         self.aliases = (self.alias,)
         self.declare_locals(main.body)
         self.local_declarations()
         self.block(main.body)
-        return ['[shader("fragment")]', "float4 fragment_main(" + signature + ") : SV_Target0", "{", *self.lines, "}"]
+        return ['[shader("fragment")]', self.source_directive(main),
+                "float4 fragment_main(" + signature + ") : SV_Target0", "{", *self.lines, "}"]
 
 
 _FULLSCREEN_VERTEX = """
@@ -173,6 +205,7 @@ FullscreenVertex vertex_main(uint id : SV_VertexID)
 def parse_shader(source: str, source_path: str, module_name: str, *, reader=None) -> ShaderDefinition:
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
+    author.aliases = (author.alias,)
     graph = LibraryGraph(reader)
     author.functions, dependencies = graph.imports(imports, author)
     if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
@@ -198,10 +231,14 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
     code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies), _FULLSCREEN_VERTEX]
-    code.extend(RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";" for field in inputs)
+    for field in inputs:
+        code.extend([author.source_directive(author.field_nodes[field.name]),
+                     RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
     if parameters:
         code.append("struct ShaderParameters {")
-        code.extend("    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";" for field in parameters)
+        for field in parameters:
+            code.extend([author.source_directive(author.field_nodes[field.name]),
+                         "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
         code.extend(["};", "ConstantBuffer<ShaderParameters> inx_parameters;"])
     for helper in helpers:
         emitter = _Author(source, source_path)
@@ -211,9 +248,11 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         emitter.types = author.types.copy()
         emitter.functions = author.functions
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
+        author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
-                            "\n".join(code), graph.sources(), inputs)
+                            "\n".join(code), graph.sources(), inputs,
+                            tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))))
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -233,9 +272,9 @@ def _prepare_source(source, source_path, module_name, reader):
                   "functions": [{"name": name, "return_type": function.result, "arguments": function.arguments}
                                 for name, function in module.functions.items()]}
         libraries = tuple(item for item in graph.sources() if item[0] != module.name)
-        return module.source, libraries, json.dumps(schema, ensure_ascii=False)
+        return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
     schema = {"name": definition.name, "domain": "fullscreen",
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
-    return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False)
+    return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges

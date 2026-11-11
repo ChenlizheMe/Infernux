@@ -89,6 +89,13 @@ class Grayscale(shader.fullscreen):
         for path in (palette, unused, fill, gray):
             imported = database.import_asset(str(path))
             assert imported, imported.error
+        # Draft checking uses the asset IO and compiler, without publication.
+        assert inx.Shader.check(str(fill))["valid"]
+        draft = fill.read_text(encoding="utf-8").replace("self.tint.rgb", "self.missing.rgb")
+        checked = inx.Shader.check(str(fill), source=draft)
+        assert not checked["valid"] and checked["diagnostics"][0]["phase"] == "author"
+        assert checked["diagnostics"][0]["path"] == str(fill)
+        assert inx.Shader.check(str(fill))["valid"]
         library_schema = inx.Shader.get_schema(str(palette))
         assert library_schema["domain"] == "library"
         assert library_schema["functions"][0]["name"] == "tweak"

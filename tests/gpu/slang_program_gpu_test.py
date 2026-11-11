@@ -100,8 +100,8 @@ class NativeSource(shader.fullscreen):
                 assert metadata.get_string("file_extension") == suffix
             host = native._acquire_compute_host()
             buffers["params"] = inx.buffer(shape=4, dtype=np.float32, device="gpu", data=constants)
-            buffers["inputs"] = inx.buffer(shape=257, dtype=np.float32, device="gpu", data=initial)
-            buffers["outputs"] = inx.buffer(shape=257, dtype=np.float32, device="gpu",
+            buffers["inputs"] = inx.buffer(shape=257, dtype=inx.compute.f32, device="gpu", data=initial)
+            buffers["outputs"] = inx.buffer(shape=257, dtype=inx.compute.f32, device="gpu",
                                             data=np.full(257, -37.0, dtype=np.float32))
             ordered = [buffers[item["name"]]._native for item in parameters]
             input_serials = {name: buffers[name]._native.last_write_serial for name in ("params", "inputs")}

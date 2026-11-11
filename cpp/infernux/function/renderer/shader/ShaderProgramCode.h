@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ShaderDiagnostic.h"
 #include "ShaderProgramLayout.h"
 
 #include <array>
@@ -35,7 +36,7 @@ struct ShaderTargetCode
 struct ShaderCompilation
 {
     std::vector<ShaderTargetCode> targets;
-    std::string diagnostics;
+    std::vector<ShaderDiagnostic> diagnostics;
 };
 
 } // namespace infernux

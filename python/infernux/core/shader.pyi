@@ -1,7 +1,10 @@
 """Type stubs for ShaderInfo resource operations."""
 
 class Shader:
-    """Query published shaders and reimport edited ShaderInfo authoring assets."""
+    """Query published shaders and check/reimport static GPU author assets."""
+
+    @staticmethod
+    def check(asset: str, *, source: str | None = None) -> dict: ...
 
     @staticmethod
     def property_to_id(name: str) -> int:
