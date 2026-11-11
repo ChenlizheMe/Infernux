@@ -1,7 +1,34 @@
 {
   "$schema": "infernux.hub_catalog",
-  "stable": "0.4.8",
+  "stable": "0.4.8-2",
   "releases": [
+    {
+      "version": "0.4.8-2",
+      "channel": "stable",
+      "published_at": "2026-11-11T04:36:20Z",
+      "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/hub-v0.4.8-v2",
+      "minimum_updatable_version": "0.4.0",
+      "platforms": {
+        "windows-x64": {
+          "installer": {
+            "name": "InfernuxHubInstaller-0.4.8-2-windows-x64.exe",
+            "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHubInstaller-0.4.8-2-windows-x64.exe",
+            "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHubInstaller-0.4.8-2-windows-x64.exe"
+          },
+          "update": {
+            "name": "InfernuxHub-0.4.8-2-windows-x64-full.zip",
+            "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHub-0.4.8-2-windows-x64-full.zip",
+            "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHub-0.4.8-2-windows-x64-full.zip",
+            "size": 30724195
+          },
+          "manifest": {
+            "name": "InfernuxHub-windows-x64-manifest.json",
+            "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHub-windows-x64-manifest.json",
+            "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHub-windows-x64-manifest.json"
+          }
+        }
+      }
+    },
     {
       "version": "0.4.8",
       "channel": "stable",

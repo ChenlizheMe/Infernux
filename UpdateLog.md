@@ -8,7 +8,7 @@ Infernux 0.4.8 brings model authoring, native execution, and checkpoint export i
 
 ### Hub 0.4.8-2 startup hotfix
 
-- Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Empty native-directory overrides no longer resolve to the project directory.
+- Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Hub no longer uses an empty native-directory override that the installed engine can interpret as the project directory.
 - Verified the complete Hub-to-editor startup path with a project's private Python runtime. This is a Hub-only release; the published engine and plugin versions remain unchanged.
 
 ### Neural runtime
